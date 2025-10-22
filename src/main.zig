@@ -5,6 +5,8 @@ const ast = @import("ast/ast.zig");
 const Interpreter = @import("interpreter/interpreter.zig").Interpreter;
 const NativeCodegen = @import("codegen/native_codegen.zig").NativeCodegen;
 const TypeChecker = @import("types/type_system.zig").TypeChecker;
+const Formatter = @import("formatter/formatter.zig").Formatter;
+const DiagnosticReporter = @import("diagnostics/diagnostics.zig").DiagnosticReporter;
 
 const Color = enum {
     Reset,
@@ -39,6 +41,7 @@ fn printUsage() void {
         \\  parse <file>    Tokenize an Ion file and display tokens
         \\  ast <file>      Parse an Ion file and display the AST
         \\  check <file>    Type check an Ion file (fast, no execution)
+        \\  fmt <file>      Format an Ion file with consistent style
         \\  run <file>      Execute an Ion file directly
         \\  build <file>    Compile an Ion file to a native binary
         \\  help            Display this help message
@@ -47,6 +50,7 @@ fn printUsage() void {
         \\  ion parse hello.ion
         \\  ion ast hello.ion
         \\  ion check hello.ion
+        \\  ion fmt hello.ion
         \\  ion run hello.ion
         \\  ion build hello.ion -o hello
         \\  ion help
@@ -283,6 +287,11 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
+    // Initialize diagnostic reporter
+    var reporter = DiagnosticReporter.init(allocator);
+    defer reporter.deinit();
+    try reporter.loadSource(source);
+
     // Tokenize
     var lexer = Lexer.init(allocator, source);
     var tokens = try lexer.tokenize();
@@ -297,25 +306,80 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var type_checker = TypeChecker.init(allocator, program);
     defer type_checker.deinit();
 
-    std.debug.print("{s}Checking:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    std.debug.print("{s}Checking:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
 
     const passed = try type_checker.check();
 
-    if (passed) {
-        std.debug.print("\n{s}Success:{s} Type checking passed ✓\n", .{ Color.Green.code(), Color.Reset.code() });
-    } else {
-        std.debug.print("\n{s}Error:{s} Type checking failed:\n", .{ Color.Red.code(), Color.Reset.code() });
+    if (!passed) {
+        // Convert type checker errors to rich diagnostics
         for (type_checker.errors.items) |err_info| {
-            std.debug.print("  {s}{s}{s} at line {d}, column {d}\n", .{
-                Color.Red.code(),
-                err_info.message,
-                Color.Reset.code(),
-                err_info.loc.line,
-                err_info.loc.column,
-            });
+            const suggestion = getSuggestion(err_info.message);
+            try reporter.addError(err_info.message, err_info.loc, suggestion);
         }
-        std.process.exit(1);
     }
+
+    if (reporter.hasErrors()) {
+        reporter.report(file_path);
+        std.process.exit(1);
+    } else {
+        std.debug.print("{s}Success:{s} Type checking passed ✓\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+}
+
+fn getSuggestion(error_message: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, error_message, "Type mismatch")) |_| {
+        return "ensure the value type matches the declared type";
+    } else if (std.mem.indexOf(u8, error_message, "Undefined variable")) |_| {
+        return "check the variable name or declare it before use";
+    } else if (std.mem.indexOf(u8, error_message, "Undefined function")) |_| {
+        return "check the function name or import the required module";
+    } else if (std.mem.indexOf(u8, error_message, "Wrong number of arguments")) |_| {
+        return "check the function signature";
+    } else if (std.mem.indexOf(u8, error_message, "Use of moved value")) |_| {
+        return "the value was moved, consider cloning it or using a reference";
+    } else if (std.mem.indexOf(u8, error_message, "Cannot borrow")) |_| {
+        return "ensure no conflicting borrows exist";
+    }
+    return null;
+}
+
+fn fmtCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    // Tokenize
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    // Parse
+    var parser = Parser.init(allocator, tokens.items);
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    // Format
+    var formatter = Formatter.init(allocator, program);
+    defer formatter.deinit();
+
+    std.debug.print("{s}Formatting:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    const formatted = try formatter.format(.{});
+    defer allocator.free(formatted);
+
+    // Write back to file
+    const output_file = try std.fs.cwd().createFile(file_path, .{});
+    defer output_file.close();
+
+    try output_file.writeAll(formatted);
+
+    std.debug.print("{s}Success:{s} File formatted ✓\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
@@ -452,6 +516,17 @@ pub fn main() !void {
         }
 
         try checkCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "fmt")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'fmt' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try fmtCommand(allocator, args[2]);
         return;
     }
 

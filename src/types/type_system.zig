@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("../ast/ast.zig");
 const ownership = @import("ownership.zig");
+const diagnostics = @import("../diagnostics/diagnostics.zig");
 
 /// Ion type system
 pub const Type = union(enum) {
