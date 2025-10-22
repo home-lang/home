@@ -1,6 +1,6 @@
 const std = @import("std");
-const Token = @import("token.zig").Token;
-const TokenType = @import("token.zig").TokenType;
+pub const Token = @import("token.zig").Token;
+pub const TokenType = @import("token.zig").TokenType;
 const keywords = @import("token.zig").keywords;
 
 /// Lexer for the Ion programming language
@@ -206,11 +206,11 @@ pub const Lexer = struct {
 
     /// Tokenize the entire source and return all tokens
     pub fn tokenize(self: *Lexer) !std.ArrayList(Token) {
-        var tokens = std.ArrayList(Token).init(self.allocator);
+        var tokens = std.ArrayList(Token){ .items = &.{}, .capacity = 0 };
 
         while (true) {
             const token = self.scanToken();
-            try tokens.append(token);
+            try tokens.append(self.allocator, token);
             if (token.type == .Eof) break;
         }
 
@@ -221,8 +221,8 @@ pub const Lexer = struct {
 test "lexer: single tokens" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "(){}[];,.");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 9), tokens.items.len); // 8 tokens + EOF
     try testing.expectEqual(TokenType.LeftParen, tokens.items[0].type);

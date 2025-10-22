@@ -172,12 +172,10 @@ pub const Token = struct {
 
     pub fn format(
         self: Token,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        _ = fmt;
-        _ = options;
         try writer.print("{s:<16} '{s}' ({d}:{d})", .{
             @tagName(self.type),
             self.lexeme,
@@ -188,7 +186,7 @@ pub const Token = struct {
 };
 
 /// Keyword map for O(1) lookup
-pub const keywords = std.ComptimeStringMap(TokenType, .{
+pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "and", .And },
     .{ "async", .Async },
     .{ "await", .Await },

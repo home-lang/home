@@ -1,5 +1,5 @@
 const std = @import("std");
-const Lexer = @import("../src/lexer/lexer.zig").Lexer;
+const Lexer = @import("lexer").Lexer;
 
 fn benchmark(allocator: std.mem.Allocator, name: []const u8, source: []const u8, iterations: usize) !void {
     var timer = try std.time.Timer.start();
@@ -8,9 +8,9 @@ fn benchmark(allocator: std.mem.Allocator, name: []const u8, source: []const u8,
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
         var lexer = Lexer.init(allocator, source);
-        const tokens = try lexer.tokenize();
+        var tokens = try lexer.tokenize();
         total_tokens = tokens.items.len;
-        tokens.deinit();
+        tokens.deinit(allocator);
     }
 
     const elapsed = timer.read();
@@ -78,33 +78,33 @@ pub fn main() !void {
     try benchmark(allocator, "Struct (13 LOC)", struct_def, 5000);
 
     // Benchmark 4: Large program (100 lines)
-    var large_program = std.ArrayList(u8).init(allocator);
-    defer large_program.deinit();
+    var large_program = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    defer large_program.deinit(allocator);
 
     var line_num: usize = 0;
     while (line_num < 100) : (line_num += 1) {
-        try large_program.appendSlice("let x");
-        try large_program.writer().print("{d}", .{line_num});
-        try large_program.appendSlice(" = ");
-        try large_program.writer().print("{d}", .{line_num});
-        try large_program.appendSlice(" + ");
-        try large_program.writer().print("{d}", .{line_num + 1});
-        try large_program.appendSlice("\n");
+        try large_program.appendSlice(allocator, "let x");
+        try large_program.writer(allocator).print("{d}", .{line_num});
+        try large_program.appendSlice(allocator, " = ");
+        try large_program.writer(allocator).print("{d}", .{line_num});
+        try large_program.appendSlice(allocator, " + ");
+        try large_program.writer(allocator).print("{d}", .{line_num + 1});
+        try large_program.appendSlice(allocator, "\n");
     }
 
     try benchmark(allocator, "Large Program (100 LOC)", large_program.items, 1000);
 
     // Benchmark 5: Large program (1000 lines)
-    var very_large_program = std.ArrayList(u8).init(allocator);
-    defer very_large_program.deinit();
+    var very_large_program = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    defer very_large_program.deinit(allocator);
 
     line_num = 0;
     while (line_num < 1000) : (line_num += 1) {
-        try very_large_program.appendSlice("let variable");
-        try very_large_program.writer().print("{d}", .{line_num});
-        try very_large_program.appendSlice(" = calculate_value(");
-        try very_large_program.writer().print("{d}", .{line_num});
-        try very_large_program.appendSlice(")\n");
+        try very_large_program.appendSlice(allocator, "let variable");
+        try very_large_program.writer(allocator).print("{d}", .{line_num});
+        try very_large_program.appendSlice(allocator, " = calculate_value(");
+        try very_large_program.writer(allocator).print("{d}", .{line_num});
+        try very_large_program.appendSlice(allocator, ")\n");
     }
 
     try benchmark(allocator, "Very Large Program (1000 LOC)", very_large_program.items, 100);
