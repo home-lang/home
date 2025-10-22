@@ -22,3 +22,9 @@ pub const codegen = struct {
     pub const x64 = @import("codegen/x64.zig");
     pub const elf = @import("codegen/elf.zig");
 };
+
+pub const types = struct {
+    pub const Type = @import("types/type_system.zig").Type;
+    pub const TypeChecker = @import("types/type_system.zig").TypeChecker;
+    pub const TypeEnvironment = @import("types/type_system.zig").TypeEnvironment;
+};

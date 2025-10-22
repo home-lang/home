@@ -297,7 +297,7 @@ pub const Parser = struct {
         // Parse prefix expression
         var expr = try self.primary();
 
-        // Parse infix expressions
+        // Parse postfix/infix expressions
         while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
             if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent })) {
                 expr = try self.binary(expr);
@@ -307,6 +307,8 @@ pub const Parser = struct {
                 expr = try self.binary(expr);
             } else if (self.match(&.{.LeftParen})) {
                 expr = try self.call(expr);
+            } else if (self.match(&.{.Question})) {
+                expr = try self.tryExpr(expr);
             } else {
                 break;
             }
@@ -361,6 +363,21 @@ pub const Parser = struct {
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .CallExpr = call_expr };
+        return result;
+    }
+
+    /// Parse a try expression (error propagation with ?)
+    fn tryExpr(self: *Parser, operand: *ast.Expr) !*ast.Expr {
+        const question_token = self.previous();
+
+        const try_expr = try ast.TryExpr.init(
+            self.allocator,
+            operand,
+            ast.SourceLocation.fromToken(question_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TryExpr = try_expr };
         return result;
     }
 

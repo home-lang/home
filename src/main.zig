@@ -4,6 +4,7 @@ const Parser = @import("parser/parser.zig").Parser;
 const ast = @import("ast/ast.zig");
 const Interpreter = @import("interpreter/interpreter.zig").Interpreter;
 const NativeCodegen = @import("codegen/native_codegen.zig").NativeCodegen;
+const TypeChecker = @import("types/type_system.zig").TypeChecker;
 
 const Color = enum {
     Reset,
@@ -37,6 +38,7 @@ fn printUsage() void {
         \\{s}Commands:{s}
         \\  parse <file>    Tokenize an Ion file and display tokens
         \\  ast <file>      Parse an Ion file and display the AST
+        \\  check <file>    Type check an Ion file (fast, no execution)
         \\  run <file>      Execute an Ion file directly
         \\  build <file>    Compile an Ion file to a native binary
         \\  help            Display this help message
@@ -44,6 +46,7 @@ fn printUsage() void {
         \\{s}Examples:{s}
         \\  ion parse hello.ion
         \\  ion ast hello.ion
+        \\  ion check hello.ion
         \\  ion run hello.ion
         \\  ion build hello.ion -o hello
         \\  ion help
@@ -269,6 +272,52 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n{s}Success:{s} Parsed {d} statements\n", .{ Color.Green.code(), Color.Reset.code(), program.statements.len });
 }
 
+fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    // Tokenize
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    // Parse
+    var parser = Parser.init(allocator, tokens.items);
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    // Type check
+    var type_checker = TypeChecker.init(allocator, program);
+    defer type_checker.deinit();
+
+    std.debug.print("{s}Checking:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    const passed = try type_checker.check();
+
+    if (passed) {
+        std.debug.print("\n{s}Success:{s} Type checking passed ✓\n", .{ Color.Green.code(), Color.Reset.code() });
+    } else {
+        std.debug.print("\n{s}Error:{s} Type checking failed:\n", .{ Color.Red.code(), Color.Reset.code() });
+        for (type_checker.errors.items) |err_info| {
+            std.debug.print("  {s}{s}{s} at line {d}, column {d}\n", .{
+                Color.Red.code(),
+                err_info.message,
+                Color.Reset.code(),
+                err_info.loc.line,
+                err_info.loc.column,
+            });
+        }
+        std.process.exit(1);
+    }
+}
+
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -392,6 +441,17 @@ pub fn main() !void {
         }
 
         try astCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "check")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'check' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try checkCommand(allocator, args[2]);
         return;
     }
 

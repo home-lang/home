@@ -16,6 +16,7 @@ pub const NodeType = enum {
     BinaryExpr,
     UnaryExpr,
     CallExpr,
+    TryExpr,
     IndexExpr,
     MemberExpr,
 
@@ -196,6 +197,21 @@ pub const CallExpr = struct {
     }
 };
 
+/// Try expression (error propagation with ?)
+pub const TryExpr = struct {
+    node: Node,
+    operand: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, operand: *Expr, loc: SourceLocation) !*TryExpr {
+        const expr = try allocator.create(TryExpr);
+        expr.* = .{
+            .node = .{ .type = .TryExpr, .loc = loc },
+            .operand = operand,
+        };
+        return expr;
+    }
+};
+
 /// Expression wrapper (tagged union)
 pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
@@ -206,8 +222,7 @@ pub const Expr = union(NodeType) {
     BinaryExpr: *BinaryExpr,
     UnaryExpr: *UnaryExpr,
     CallExpr: *CallExpr,
-
-    // Unused variants (for now)
+    TryExpr: *TryExpr,
     IndexExpr: void,
     MemberExpr: void,
     LetDecl: void,
@@ -232,6 +247,7 @@ pub const Expr = union(NodeType) {
             .BinaryExpr => |expr| expr.node.loc,
             .UnaryExpr => |expr| expr.node.loc,
             .CallExpr => |expr| expr.node.loc,
+            .TryExpr => |expr| expr.node.loc,
             else => unreachable,
         };
     }
@@ -310,6 +326,7 @@ pub const Stmt = union(NodeType) {
     BinaryExpr: void,
     UnaryExpr: void,
     CallExpr: void,
+    TryExpr: void,
     IndexExpr: void,
     MemberExpr: void,
 
