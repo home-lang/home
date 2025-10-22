@@ -1,0 +1,16 @@
+// Structs in Ion
+struct User {
+  name: string
+  email: string
+  age: int
+}
+
+fn main() {
+  let user = User {
+    name: "Alice",
+    email: "alice@example.com",
+    age: 30
+  }
+
+  print("User: {user.name}, Email: {user.email}")
+}
