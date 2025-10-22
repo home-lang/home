@@ -1,0 +1,15 @@
+// Async/await in Ion
+import std/http { get }
+
+fn fetch_user(id: int) -> async Result<User> {
+  let response = await http.get("/api/users/{id}")
+  return await response.json()
+}
+
+fn main() -> async {
+  let user = await fetch_user(1)
+  match user {
+    Ok(u) => print("User: {u.name}"),
+    Err(e) => print("Error: {e}")
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "ion-parser"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Language Parser - AST generation from tokens"
+license = "MIT"
+
+[dependencies]
+ion-lexer = { path = "../lexer" }
+ion-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/parser.zig"

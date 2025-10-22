@@ -1,0 +1,47 @@
+{
+  // Ion project configuration (JSONC - JSON with Comments)
+  // This is the recommended format for Ion projects
+  "name": "my-ion-project",
+  "version": "1.0.0",
+
+  // Dependencies can use semver ranges
+  "dependencies": {
+    "http": "^2.1.0",
+    "database": "~1.5.0",
+
+    // Git dependencies
+    "awesome-lib": {
+      "git": "https://github.com/user/awesome-lib.git",
+      "rev": "v1.2.3"
+    },
+
+    // GitHub shortcuts work too!
+    "another-lib": {
+      "git": "user/another-lib",
+      "rev": "main"
+    },
+
+    // Direct URL dependencies
+    "custom-package": {
+      "url": "https://example.com/package.tar.gz"
+    }
+  },
+
+  // Development dependencies
+  "devDependencies": {
+    "test-framework": "^1.0.0"
+  },
+
+  // Bun-style scripts
+  "scripts": {
+    "dev": "ion run src/main.ion",
+    "build": "ion build --release",
+    "test": "ion test"
+  },
+
+  // Workspaces for monorepos (like Bun!)
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "simple-ion-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "std": "^1.0.0",
+    "http": "^2.0.0"
+  }
+}

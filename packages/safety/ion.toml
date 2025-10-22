@@ -1,0 +1,13 @@
+[package]
+name = "ion-safety"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Safety System - Unsafe blocks and safety checks"
+license = "MIT"
+
+[dependencies]
+ion-ast = { path = "../ast" }
+ion-types = { path = "../types" }
+
+[scripts]
+test = "zig test src/unsafe_blocks.zig"

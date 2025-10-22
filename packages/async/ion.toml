@@ -1,0 +1,12 @@
+[package]
+name = "ion-async"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Async Runtime - Asynchronous programming and concurrency"
+license = "MIT"
+
+[dependencies]
+# May need ion-types for async type checking
+
+[scripts]
+test = "zig test src/async_runtime.zig"

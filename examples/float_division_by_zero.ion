@@ -1,0 +1,5 @@
+// Float division by zero example (should fail type checking)
+fn main() -> int {
+    let x = 10.5 / 0.0
+    return 0
+}

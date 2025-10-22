@@ -1,0 +1,12 @@
+[package]
+name = "ion-ast"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Language Abstract Syntax Tree - AST node definitions"
+license = "MIT"
+
+[dependencies]
+# Core AST - no dependencies
+
+[scripts]
+test = "zig test src/ast.zig"

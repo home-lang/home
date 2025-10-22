@@ -1,0 +1,4 @@
+// Hello World in Ion
+fn main() {
+  print("Hello, Ion!")
+}

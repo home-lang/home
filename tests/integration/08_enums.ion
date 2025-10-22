@@ -1,0 +1,12 @@
+// Test enum declarations
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+enum Status {
+    Active,
+    Inactive,
+    Pending
+}

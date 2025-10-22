@@ -1,0 +1,9 @@
+// Simple array slice test
+
+let numbers = [10, 20, 30, 40, 50];
+
+// Basic slice: arr[start..end]
+let slice1 = numbers[1..3];
+
+// Get first element of slice
+let result = slice1[0];

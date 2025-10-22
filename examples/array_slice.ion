@@ -1,0 +1,27 @@
+// Array slice operations demonstration
+
+let numbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+// Basic slice: arr[start..end]
+let slice1 = numbers[2..5];
+println(slice1);  // Should print [2, 3, 4]
+
+// Inclusive slice: arr[start..=end]
+let slice2 = numbers[2..=5];
+println(slice2);  // Should print [2, 3, 4, 5]
+
+// Slice from beginning: arr[..end]
+let slice3 = numbers[..3];
+println(slice3);  // Should print [0, 1, 2]
+
+// Slice to end: arr[start..]
+let slice4 = numbers[7..];
+println(slice4);  // Should print [7, 8, 9]
+
+// Empty slice
+let slice5 = numbers[5..5];
+println(slice5);  // Should print []
+
+// Full slice
+let slice6 = numbers[..];
+println(slice6);  // Should print [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

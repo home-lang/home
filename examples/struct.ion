@@ -1,0 +1,24 @@
+// Struct declaration and member access example
+struct Point {
+    x: int,
+    y: int
+}
+
+struct Person {
+    name: string
+    age: int
+}
+
+fn main() -> int {
+    // Note: Struct literals not yet implemented
+    // This shows the member access syntax that will work
+    // once struct instantiation is added
+
+    // Future syntax will be:
+    // let p = Point { x: 10, y: 20 }
+    // let x_coord = p.x
+    // let y_coord = p.y
+    // return x_coord + y_coord
+
+    return 0
+}

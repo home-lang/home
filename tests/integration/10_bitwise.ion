@@ -1,0 +1,9 @@
+// Test bitwise operations
+let a = 12;
+let b = 5;
+
+let and_result = a & b;
+let or_result = a | b;
+let xor_result = a ^ b;
+let left_shift = a << 2;
+let right_shift = a >> 1;

@@ -1,0 +1,15 @@
+[package]
+name = "ion-lsp"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Language Server Protocol - Editor integration"
+license = "MIT"
+
+[dependencies]
+ion-lexer = { path = "../lexer" }
+ion-parser = { path = "../parser" }
+ion-types = { path = "../types" }
+ion-diagnostics = { path = "../diagnostics" }
+
+[scripts]
+test = "zig test src/lsp_server.zig"

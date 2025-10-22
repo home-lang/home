@@ -1,0 +1,19 @@
+{
+  // NPM-compatible package.jsonc for Ion
+  // Perfect for hybrid projects that use both Node.js and Ion
+  "name": "@myorg/my-app",
+  "version": "2.0.0",
+  "description": "Hybrid Ion/Node.js application",
+
+  "dependencies": {
+    // Ion dependencies work alongside npm packages
+    "ion-http": "^1.0.0",
+    "ion-db": "^2.0.0"
+  },
+
+  "scripts": {
+    "start": "ion run src/main.ion",
+    "build": "ion build",
+    "dev": "ion dev"
+  }
+}

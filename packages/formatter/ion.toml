@@ -1,0 +1,12 @@
+[package]
+name = "ion-formatter"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Code Formatter - Automatic code formatting"
+license = "MIT"
+
+[dependencies]
+ion-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/formatter.zig"

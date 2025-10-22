@@ -1,0 +1,12 @@
+[package]
+name = "ion-pkg"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Package Manager - Dependency management and installation"
+license = "MIT"
+
+[dependencies]
+# Standalone package manager
+
+[scripts]
+test = "zig test src/package_manager.zig"

@@ -1,0 +1,13 @@
+[package]
+name = "ion-tools"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Developer Tools - Documentation generator and utilities"
+license = "MIT"
+
+[dependencies]
+ion-ast = { path = "../ast" }
+ion-parser = { path = "../parser" }
+
+[scripts]
+test = "zig test src/doc_generator.zig"

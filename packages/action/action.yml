@@ -1,0 +1,29 @@
+name: 'Setup Ion'
+description: 'Setup the Ion programming language compiler in your GitHub Actions workflow'
+author: 'Ion Contributors'
+branding:
+  icon: 'zap'
+  color: 'purple'
+
+inputs:
+  ion-version:
+    description: 'Version of Ion to install (e.g., "latest", "0.1.0", or "canary")'
+    required: false
+    default: 'latest'
+
+  ion-version-file:
+    description: 'Path to a file containing the Ion version (e.g., ".ion-version")'
+    required: false
+
+  cache:
+    description: 'Enable caching of Ion installation'
+    required: false
+    default: 'true'
+
+  scope:
+    description: 'Scope for package registry authentication'
+    required: false
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

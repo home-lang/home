@@ -1,0 +1,13 @@
+[package]
+name = "ion-lexer"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Language Lexer - Tokenization and scanning"
+license = "MIT"
+
+[dependencies]
+# No external dependencies - pure Zig
+
+[scripts]
+test = "zig test src/lexer.zig"
+bench = "zig build-exe bench/lexer_bench.zig && ./lexer_bench"

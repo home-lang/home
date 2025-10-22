@@ -1,0 +1,10 @@
+// Range expression example
+fn main() -> int {
+    // Exclusive range (0..10 means 0 to 9)
+    let r1 = 0..10
+
+    // Inclusive range (1..=100 means 1 to 100)
+    let r2 = 1..=100
+
+    return 0
+}

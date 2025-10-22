@@ -1,0 +1,8 @@
+// Test basic arithmetic operations
+let a = 10;
+let b = 20;
+let sum = a + b;
+let diff = b - a;
+let prod = a * b;
+let quot = b / a;
+let mod = b % 3;

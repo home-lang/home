@@ -1,0 +1,29 @@
+// HTTP server example in Ion
+import std/http { Server, Response }
+
+fn main() {
+  let server = Server.bind(":3000")
+
+  server.get("/", fn(req) -> Response {
+    return Response.ok("Hello from Ion!")
+  })
+
+  server.get("/user/:id", fn(req) -> async Response {
+    let id = req.param("id")
+    let user = await fetch_user(id)
+    return Response.json(user)
+  })
+
+  print("Server running on http://localhost:3000")
+  server.listen()
+}
+
+fn fetch_user(id: string) -> async Result<User> {
+  // Simulate fetching user
+  return Ok(User { name: "Alice", id: id })
+}
+
+struct User {
+  name: string
+  id: string
+}

@@ -1,0 +1,9 @@
+// Test ownership tracking
+fn take_ownership(s: string) -> string {
+    return s
+}
+
+let msg = "hello"
+let msg2 = msg  // msg is still owned (strings are moved)
+print(msg)      // This should work - basic types are Copy for now
+print(msg2)

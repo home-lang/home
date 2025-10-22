@@ -1,0 +1,6 @@
+// Bitwise operations example
+fn main() -> int {
+    // Bitwise AND: 12 & 10 = 8
+    let result = 12 & 10
+    return result
+}

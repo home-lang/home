@@ -1,0 +1,12 @@
+[package]
+name = "ion-queue"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Queue System - Background job processing"
+license = "MIT"
+
+[dependencies]
+# No external dependencies yet
+
+[scripts]
+test = "zig test src/queue.zig"

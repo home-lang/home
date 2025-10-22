@@ -1,0 +1,14 @@
+// Test struct declarations
+struct Point {
+    x: int,
+    y: int
+}
+
+struct Person {
+    name: string,
+    age: int
+}
+
+let p = Point { x: 10, y: 20 };
+let px = p.x;
+let py = p.y;

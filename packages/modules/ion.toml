@@ -1,0 +1,12 @@
+[package]
+name = "ion-modules"
+version = "0.1.0"
+authors = ["Ion Contributors"]
+description = "Ion Module System - Module resolution and imports"
+license = "MIT"
+
+[dependencies]
+ion-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/module_system.zig"

@@ -1,0 +1,22 @@
+// Enum declaration example
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+enum Option {
+    Some(int),
+    None
+}
+
+enum Result {
+    Ok(int),
+    Err(string)
+}
+
+fn main() -> int {
+    // Note: Enum instantiation not yet implemented
+    // This shows the enum declaration syntax
+    return 0
+}
