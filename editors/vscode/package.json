@@ -1,0 +1,134 @@
+{
+  "name": "ion-language",
+  "displayName": "Ion Language Support",
+  "description": "Language support for the Ion programming language",
+  "version": "0.1.0",
+  "publisher": "ion-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ion-lang/ion"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ion",
+    "systems",
+    "programming",
+    "compiler"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ion",
+        "aliases": [
+          "Ion",
+          "ion"
+        ],
+        "extensions": [
+          ".ion"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/ion-light.png",
+          "dark": "./icons/ion-dark.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ion",
+        "scopeName": "source.ion",
+        "path": "./syntaxes/ion.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Ion",
+      "properties": {
+        "ion.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        },
+        "ion.format.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable automatic formatting"
+        },
+        "ion.linting.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable linting"
+        },
+        "ion.path": {
+          "type": "string",
+          "default": "ion",
+          "description": "Path to ion executable"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ion.restartServer",
+        "title": "Restart Ion Language Server"
+      },
+      {
+        "command": "ion.run",
+        "title": "Run Ion Program"
+      },
+      {
+        "command": "ion.build",
+        "title": "Build Ion Program"
+      },
+      {
+        "command": "ion.check",
+        "title": "Check Ion Program"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ion.run",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorTextFocus && resourceLangId == ion"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onLanguage:ion"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}
