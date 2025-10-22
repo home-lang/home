@@ -2,6 +2,7 @@ const std = @import("std");
 const Lexer = @import("lexer/lexer.zig").Lexer;
 const Parser = @import("parser/parser.zig").Parser;
 const ast = @import("ast/ast.zig");
+const Interpreter = @import("interpreter/interpreter.zig").Interpreter;
 
 const Color = enum {
     Reset,
@@ -35,11 +36,13 @@ fn printUsage() void {
         \\{s}Commands:{s}
         \\  parse <file>    Tokenize an Ion file and display tokens
         \\  ast <file>      Parse an Ion file and display the AST
+        \\  run <file>      Execute an Ion file directly
         \\  help            Display this help message
         \\
         \\{s}Examples:{s}
         \\  ion parse hello.ion
         \\  ion ast hello.ion
+        \\  ion run hello.ion
         \\  ion help
         \\
     , .{ Color.Blue.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code() });
@@ -263,6 +266,46 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n{s}Success:{s} Parsed {d} statements\n", .{ Color.Green.code(), Color.Reset.code(), program.statements.len });
 }
 
+fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    // Tokenize
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    // Parse
+    var parser = Parser.init(allocator, tokens.items);
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    // Interpret
+    var interpreter = Interpreter.init(allocator, program);
+    defer interpreter.deinit();
+
+    std.debug.print("{s}Running:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    interpreter.interpret() catch |err| {
+        if (err == error.Return) {
+            // Normal return from main, not an error
+            std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
+            return;
+        }
+        std.debug.print("\n{s}Error:{s} Runtime error: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return err;
+    };
+
+    std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -302,6 +345,17 @@ pub fn main() !void {
         }
 
         try astCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "run")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'run' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try runCommand(allocator, args[2]);
         return;
     }
 

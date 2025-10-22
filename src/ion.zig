@@ -10,3 +10,9 @@ pub const ast = @import("ast/ast.zig");
 pub const parser = struct {
     pub const Parser = @import("parser/parser.zig").Parser;
 };
+
+pub const interpreter = struct {
+    pub const Interpreter = @import("interpreter/interpreter.zig").Interpreter;
+    pub const Value = @import("interpreter/value.zig").Value;
+    pub const Environment = @import("interpreter/environment.zig").Environment;
+};
