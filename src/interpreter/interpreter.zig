@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("../ast/ast.zig");
 const Value = @import("value.zig").Value;
+const FunctionValue = @import("value.zig").FunctionValue;
 const Environment = @import("environment.zig").Environment;
 
 pub const InterpreterError = error{
@@ -61,9 +62,15 @@ pub const Interpreter = struct {
                 try env.define(decl.name, value);
             },
             .FnDecl => |fn_decl| {
-                // For now, just skip function declarations
-                // In a more complete implementation, we'd store the function body
-                _ = fn_decl;
+                // Store function in environment
+                const func_value = Value{
+                    .Function = .{
+                        .name = fn_decl.name,
+                        .params = fn_decl.params,
+                        .body = fn_decl.body,
+                    },
+                };
+                try env.define(fn_decl.name, func_value);
             },
             .ReturnStmt => |ret| {
                 const value = if (ret.value) |val_expr|
@@ -126,8 +133,8 @@ pub const Interpreter = struct {
                 return Value{ .Float = lit.value };
             },
             .StringLiteral => |lit| {
-                const str = try self.allocator.dupe(u8, lit.value);
-                return Value{ .String = str };
+                // Don't copy string literals - they live in the source
+                return Value{ .String = lit.value };
             },
             .BooleanLiteral => |lit| {
                 return Value{ .Bool = lit.value };
@@ -197,7 +204,7 @@ pub const Interpreter = struct {
     }
 
     fn evaluateCallExpression(self: *Interpreter, call: *ast.CallExpr, env: *Environment) InterpreterError!Value {
-        // For built-in functions
+        // Get function name
         if (call.callee.* == .Identifier) {
             const func_name = call.callee.Identifier.name;
 
@@ -207,11 +214,54 @@ pub const Interpreter = struct {
             } else if (std.mem.eql(u8, func_name, "assert")) {
                 return try self.builtinAssert(call.args, env);
             }
+
+            // Look up user-defined function
+            if (env.get(func_name)) |func_value| {
+                if (func_value == .Function) {
+                    return try self.callUserFunction(func_value.Function, call.args, env);
+                }
+            }
+
+            std.debug.print("Undefined function: {s}\n", .{func_name});
+            return error.UndefinedFunction;
         }
 
-        // User-defined functions would be handled here
-        std.debug.print("Function calls not yet fully implemented\n", .{});
-        return error.UndefinedFunction;
+        std.debug.print("Complex function calls not yet supported\n", .{});
+        return error.RuntimeError;
+    }
+
+    fn callUserFunction(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
+        // Check argument count
+        if (args.len != func.params.len) {
+            std.debug.print("Function {s} expects {d} arguments, got {d}\n", .{ func.name, func.params.len, args.len });
+            return error.InvalidArguments;
+        }
+
+        // Create new environment for function scope
+        var func_env = Environment.init(self.allocator, parent_env);
+        defer func_env.deinit();
+
+        // Bind parameters to arguments
+        for (func.params, 0..) |param, i| {
+            const arg_value = try self.evaluateExpression(args[i], parent_env);
+            try func_env.define(param.name, arg_value);
+        }
+
+        // Execute function body
+        for (func.body.statements) |stmt| {
+            self.executeStatement(stmt, &func_env) catch |err| {
+                if (err == error.Return) {
+                    // Return statement was executed
+                    const ret_value = self.return_value.?;
+                    self.return_value = null;
+                    return ret_value;
+                }
+                return err;
+            };
+        }
+
+        // No explicit return, return void
+        return Value.Void;
     }
 
     fn builtinPrint(self: *Interpreter, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {

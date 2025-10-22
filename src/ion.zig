@@ -16,3 +16,9 @@ pub const interpreter = struct {
     pub const Value = @import("interpreter/value.zig").Value;
     pub const Environment = @import("interpreter/environment.zig").Environment;
 };
+
+pub const codegen = struct {
+    pub const NativeCodegen = @import("codegen/native_codegen.zig").NativeCodegen;
+    pub const x64 = @import("codegen/x64.zig");
+    pub const elf = @import("codegen/elf.zig");
+};

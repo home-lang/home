@@ -1,11 +1,12 @@
 const std = @import("std");
 
+const ast = @import("../ast/ast.zig");
+
 /// Function value representation
 pub const FunctionValue = struct {
     name: []const u8,
-    params: []const []const u8,
-    // We'll store the body as an index into the program's statements
-    body_index: usize,
+    params: []const ast.Parameter,
+    body: *ast.BlockStmt,
 };
 
 /// Runtime value types for the Ion interpreter
@@ -42,8 +43,10 @@ pub const Value = union(enum) {
     }
 
     pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
+        _ = allocator;
         switch (self) {
-            .String => |s| allocator.free(s),
+            // For now, don't free strings - they're either literals or need ref counting
+            // .String => |s| allocator.free(s),
             else => {},
         }
     }

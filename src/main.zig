@@ -3,6 +3,7 @@ const Lexer = @import("lexer/lexer.zig").Lexer;
 const Parser = @import("parser/parser.zig").Parser;
 const ast = @import("ast/ast.zig");
 const Interpreter = @import("interpreter/interpreter.zig").Interpreter;
+const NativeCodegen = @import("codegen/native_codegen.zig").NativeCodegen;
 
 const Color = enum {
     Reset,
@@ -37,12 +38,14 @@ fn printUsage() void {
         \\  parse <file>    Tokenize an Ion file and display tokens
         \\  ast <file>      Parse an Ion file and display the AST
         \\  run <file>      Execute an Ion file directly
+        \\  build <file>    Compile an Ion file to a native binary
         \\  help            Display this help message
         \\
         \\{s}Examples:{s}
         \\  ion parse hello.ion
         \\  ion ast hello.ion
         \\  ion run hello.ion
+        \\  ion build hello.ion -o hello
         \\  ion help
         \\
     , .{ Color.Blue.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code(), Color.Green.code(), Color.Reset.code() });
@@ -306,6 +309,50 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
+fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    // Tokenize
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    // Parse
+    var parser = Parser.init(allocator, tokens.items);
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    // Determine output path
+    const out_path = output_path orelse blk: {
+        // Default: remove .ion extension and use that as output name
+        if (std.mem.endsWith(u8, file_path, ".ion")) {
+            break :blk file_path[0 .. file_path.len - 4];
+        }
+        break :blk "a.out";
+    };
+
+    // Generate native machine code
+    var codegen = NativeCodegen.init(allocator, program);
+    defer codegen.deinit();
+
+    std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+
+    try codegen.writeExecutable(out_path);
+
+    std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
+    std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -356,6 +403,22 @@ pub fn main() !void {
         }
 
         try runCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "build")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'build' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        const output_path = if (args.len >= 5 and std.mem.eql(u8, args[3], "-o"))
+            args[4]
+        else
+            null;
+
+        try buildCommand(allocator, args[2], output_path);
         return;
     }
 

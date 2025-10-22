@@ -16,11 +16,12 @@ pub const Environment = struct {
     }
 
     pub fn deinit(self: *Environment) void {
-        // Free all string values and keys
+        // Free all keys (values are not owned currently)
         var it = self.bindings.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.deinit(self.allocator);
+            // Don't free values - they're either literals or need ref counting
+            // entry.value_ptr.deinit(self.allocator);
         }
         self.bindings.deinit();
     }
