@@ -1,1 +1,30 @@
-home.toml
+@ -1,29 +0,0 @@
+[package]
+name = "home"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "The Home Programming Language - Fast, Safe, Joyful"
+
+[workspaces]
+packages = [
+  "packages/*"
+]
+
+[scripts]
+# Build all packages
+build = "zig build"
+
+# Run all tests
+test = "zig build test"
+
+# Run benchmarks
+bench = "zig build bench"
+
+# Format all code
+format = "find src packages -name '*.zig' -exec zig fmt {} +"
+
+# Run the compiler
+run = "zig build run"
+
+# Development mode with watch
+dev = "zig build run -- run examples/hello.ion"
