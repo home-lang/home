@@ -7,10 +7,20 @@ import {
 } from 'vscode-languageclient/node';
 import { IonProfiler } from './profiler';
 import { IonPackageManager } from './packageManager';
+import { CPUProfiler } from './cpuProfiler';
+import { GCProfiler } from './gcProfiler';
+import { MemoryProfiler } from './memoryProfiler';
+import { MultiThreadDebugger } from './multiThreadDebugger';
+import { TimeTravelDebugger } from './timeTravelDebugger';
 
 let client: LanguageClient;
 let profiler: IonProfiler;
 let packageManager: IonPackageManager;
+let cpuProfiler: CPUProfiler;
+let gcProfiler: GCProfiler;
+let memoryProfiler: MemoryProfiler;
+let multiThreadDebugger: MultiThreadDebugger;
+let timeTravelDebugger: TimeTravelDebugger;
 let extensionContext: vscode.ExtensionContext;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -20,6 +30,13 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize profiler and package manager
     profiler = new IonProfiler();
     packageManager = new IonPackageManager();
+
+    // Initialize advanced profilers and debuggers
+    cpuProfiler = new CPUProfiler();
+    gcProfiler = new GCProfiler();
+    memoryProfiler = new MemoryProfiler();
+    multiThreadDebugger = new MultiThreadDebugger();
+    timeTravelDebugger = new TimeTravelDebugger();
 
     // Register commands
     context.subscriptions.push(
@@ -33,10 +50,145 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ion.test', runTests),
         vscode.commands.registerCommand('ion.format', formatDocument),
 
-        // Profiler commands
+        // Basic profiler commands
         vscode.commands.registerCommand('ion.profiler.start', () => profiler.start()),
         vscode.commands.registerCommand('ion.profiler.stop', () => profiler.stop()),
         vscode.commands.registerCommand('ion.profiler.viewReport', () => profiler.viewReport()),
+
+        // CPU profiler commands
+        vscode.commands.registerCommand('ion.cpu.start', () => cpuProfiler.start()),
+        vscode.commands.registerCommand('ion.cpu.stop', () => cpuProfiler.stop()),
+        vscode.commands.registerCommand('ion.cpu.flamegraph', () => cpuProfiler.generateFlameGraphHTML()),
+        vscode.commands.registerCommand('ion.cpu.exportChrome', () => cpuProfiler.saveChromeProfile()),
+
+        // GC profiler commands
+        vscode.commands.registerCommand('ion.gc.start', () => gcProfiler.start()),
+        vscode.commands.registerCommand('ion.gc.stop', () => gcProfiler.stop()),
+        vscode.commands.registerCommand('ion.gc.report', () => gcProfiler.generateReport()),
+        vscode.commands.registerCommand('ion.gc.analyzePressure', () => {
+            const pressure = gcProfiler.detectGCPressure();
+            if (pressure.hasPressure) {
+                vscode.window.showWarningMessage(
+                    `GC Pressure Detected (${pressure.severity}): ${pressure.issues.join(', ')}`,
+                    'View Recommendations'
+                ).then(selection => {
+                    if (selection === 'View Recommendations') {
+                        gcProfiler.generateReport();
+                    }
+                });
+            } else {
+                vscode.window.showInformationMessage('No GC pressure detected');
+            }
+        }),
+
+        // Memory profiler commands
+        vscode.commands.registerCommand('ion.memory.start', () => memoryProfiler.start()),
+        vscode.commands.registerCommand('ion.memory.stop', () => {
+            const stats = memoryProfiler.stop();
+            if (stats.leaks.length > 0) {
+                vscode.window.showWarningMessage(
+                    `Memory profiling stopped. ${stats.leaks.length} potential leaks detected.`,
+                    'View Report'
+                ).then(selection => {
+                    if (selection === 'View Report') {
+                        memoryProfiler.generateReport();
+                    }
+                });
+            } else {
+                vscode.window.showInformationMessage('Memory profiling stopped. No leaks detected.');
+            }
+        }),
+        vscode.commands.registerCommand('ion.memory.snapshot', () => {
+            const snapshot = memoryProfiler.takeSnapshot();
+            vscode.window.showInformationMessage(
+                `Snapshot taken: ${snapshot.allocations.length} allocations, ` +
+                `${(snapshot.currentUsage / 1024 / 1024).toFixed(2)} MB`
+            );
+        }),
+        vscode.commands.registerCommand('ion.memory.findLeaks', () => {
+            const leaks = memoryProfiler.detectLeaks();
+            if (leaks.length > 0) {
+                vscode.window.showWarningMessage(
+                    `Found ${leaks.length} potential memory leaks`,
+                    'View Details'
+                ).then(selection => {
+                    if (selection === 'View Details') {
+                        memoryProfiler.generateReport();
+                    }
+                });
+            } else {
+                vscode.window.showInformationMessage('No memory leaks detected');
+            }
+        }),
+        vscode.commands.registerCommand('ion.memory.report', () => memoryProfiler.generateReport()),
+
+        // Time-travel debugging commands
+        vscode.commands.registerCommand('ion.debug.stepBack', () => {
+            const snapshot = timeTravelDebugger.stepBack();
+            if (snapshot) {
+                vscode.window.showInformationMessage(
+                    `Stepped back to sequence ${snapshot.sequenceNumber}`
+                );
+            } else {
+                vscode.window.showInformationMessage('Already at beginning of execution history');
+            }
+        }),
+        vscode.commands.registerCommand('ion.debug.stepForward', () => {
+            const snapshot = timeTravelDebugger.stepForward();
+            if (snapshot) {
+                vscode.window.showInformationMessage(
+                    `Stepped forward to sequence ${snapshot.sequenceNumber}`
+                );
+            } else {
+                vscode.window.showInformationMessage('Already at end of execution history');
+            }
+        }),
+        vscode.commands.registerCommand('ion.debug.showTimeline', () => {
+            const timeline = timeTravelDebugger.getTimeline();
+            const stats = timeTravelDebugger.getStatistics();
+            vscode.window.showInformationMessage(
+                `Timeline: ${stats.totalSnapshots} snapshots, ` +
+                `position ${stats.currentPosition + 1}/${stats.totalSnapshots}`
+            );
+        }),
+
+        // Multi-threaded debugging commands
+        vscode.commands.registerCommand('ion.threads.showAll', () => {
+            const threads = multiThreadDebugger.getAllThreads();
+            vscode.window.showInformationMessage(
+                `Active threads: ${threads.length}`
+            );
+        }),
+        vscode.commands.registerCommand('ion.threads.showDeadlocks', () => {
+            const deadlocks = multiThreadDebugger.getDeadlocks();
+            if (deadlocks.length > 0) {
+                vscode.window.showWarningMessage(
+                    `Detected ${deadlocks.length} deadlock(s)`,
+                    'View Details'
+                ).then(selection => {
+                    if (selection === 'View Details') {
+                        const info = deadlocks[0];
+                        vscode.window.showErrorMessage(
+                            `Deadlock: ${info.description}`,
+                            { modal: true }
+                        );
+                    }
+                });
+            } else {
+                vscode.window.showInformationMessage('No deadlocks detected');
+            }
+        }),
+        vscode.commands.registerCommand('ion.threads.showRaces', () => {
+            const races = multiThreadDebugger.getRaceConditions();
+            if (races.length > 0) {
+                vscode.window.showWarningMessage(
+                    `Detected ${races.length} potential race condition(s)`,
+                    'View Details'
+                );
+            } else {
+                vscode.window.showInformationMessage('No race conditions detected');
+            }
+        }),
 
         // Package manager commands
         vscode.commands.registerCommand('ion.packageManager.search', () => packageManager.searchPackages()),
@@ -78,6 +230,9 @@ export function activate(context: vscode.ExtensionContext) {
     // Dispose resources
     context.subscriptions.push(profiler);
     context.subscriptions.push(packageManager);
+    context.subscriptions.push(cpuProfiler);
+    context.subscriptions.push(gcProfiler);
+    context.subscriptions.push(memoryProfiler);
 }
 
 export function deactivate(): Thenable<void> | undefined {
@@ -86,6 +241,21 @@ export function deactivate(): Thenable<void> | undefined {
     }
     if (packageManager) {
         packageManager.dispose();
+    }
+    if (cpuProfiler) {
+        cpuProfiler.dispose();
+    }
+    if (gcProfiler) {
+        gcProfiler.dispose();
+    }
+    if (memoryProfiler) {
+        memoryProfiler.dispose();
+    }
+    if (multiThreadDebugger) {
+        multiThreadDebugger.clear();
+    }
+    if (timeTravelDebugger) {
+        timeTravelDebugger.clearHistory();
     }
     if (!client) {
         return undefined;

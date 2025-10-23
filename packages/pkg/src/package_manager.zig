@@ -212,10 +212,70 @@ pub const PackageManager = struct {
 
             std.debug.print("📦 Installing {d} packages ({d} parallel downloads)...\n", .{ num_packages, num_threads });
 
-            // For now, sequential - TODO: implement actual parallel downloads with thread pool
-            for (lock.packages.items) |pkg| {
-                try self.downloadPackage(pkg);
+            // Create a download context for thread synchronization
+            var errors = std.ArrayList(DownloadError){};
+            defer errors.deinit(self.allocator);
+
+            var download_ctx = DownloadContext{
+                .allocator = self.allocator,
+                .packages = lock.packages.items,
+                .pm = self,
+                .current_index = 0,
+                .mutex = std.Thread.Mutex{},
+                .errors = &errors,
+            };
+
+            // Launch worker threads
+            var threads = std.ArrayList(std.Thread){};
+            defer threads.deinit(self.allocator);
+
+            var i: usize = 0;
+            while (i < num_threads) : (i += 1) {
+                const thread = try std.Thread.spawn(.{}, downloadWorker, .{&download_ctx});
+                try threads.append(self.allocator, thread);
             }
+
+            // Wait for all threads to complete
+            for (threads.items) |thread| {
+                thread.join();
+            }
+
+            // Report any errors
+            if (download_ctx.errors.items.len > 0) {
+                std.debug.print("\n⚠️  Download errors:\n", .{});
+                for (download_ctx.errors.items) |err| {
+                    std.debug.print("  • {s}: {s}\n", .{ err.package_name, err.message });
+                }
+                return error.DownloadsFailed;
+            }
+        }
+    }
+
+    /// Worker thread function for parallel downloads
+    fn downloadWorker(ctx: *DownloadContext) void {
+        while (true) {
+            // Get next package to download (thread-safe)
+            ctx.mutex.lock();
+            const index = ctx.current_index;
+            if (index >= ctx.packages.len) {
+                ctx.mutex.unlock();
+                break;
+            }
+            ctx.current_index += 1;
+            ctx.mutex.unlock();
+
+            const pkg = ctx.packages[index];
+
+            // Download package
+            ctx.pm.downloadPackage(pkg) catch |err| {
+                // Record error
+                ctx.mutex.lock();
+                ctx.errors.append(ctx.allocator, .{
+                    .package_name = pkg.name,
+                    .message = @errorName(err),
+                }) catch {};
+                ctx.mutex.unlock();
+            };
         }
     }
 
@@ -343,7 +403,70 @@ pub const PackageManager = struct {
             else => return error.DownloadFailed,
         }
 
-        // TODO: Extract archive if it's a .tar.gz, .zip, etc.
+        // Extract archive if it's a .tar.gz, .zip, etc.
+        const archive_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dest, "package.tar.gz" });
+        defer self.allocator.free(archive_path);
+
+        try self.extractArchive(archive_path, dest);
+    }
+
+    /// Extract an archive (.tar.gz, .zip, etc.)
+    fn extractArchive(self: *PackageManager, archive_path: []const u8, dest_dir: []const u8) !void {
+        // Detect archive type from extension
+        const is_tar_gz = std.mem.endsWith(u8, archive_path, ".tar.gz") or std.mem.endsWith(u8, archive_path, ".tgz");
+        const is_zip = std.mem.endsWith(u8, archive_path, ".zip");
+
+        if (is_tar_gz) {
+            // Extract using tar
+            var child = std.process.Child.init(
+                &[_][]const u8{ "tar", "-xzf", archive_path, "-C", dest_dir },
+                self.allocator,
+            );
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            const term = child.spawnAndWait() catch |err| {
+                return err;
+            };
+
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        return error.ExtractionFailed;
+                    }
+                },
+                else => return error.ExtractionFailed,
+            }
+
+            // Remove the archive file to save space
+            std.fs.cwd().deleteFile(archive_path) catch {};
+        } else if (is_zip) {
+            // Extract using unzip
+            var child = std.process.Child.init(
+                &[_][]const u8{ "unzip", "-q", "-o", archive_path, "-d", dest_dir },
+                self.allocator,
+            );
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            const term = child.spawnAndWait() catch |err| {
+                return err;
+            };
+
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        return error.ExtractionFailed;
+                    }
+                },
+                else => return error.ExtractionFailed,
+            }
+
+            // Remove the archive file to save space
+            std.fs.cwd().deleteFile(archive_path) catch {};
+        } else {
+            // Unknown archive format, leave as-is
+        }
     }
 
     fn copyLocal(self: *PackageManager, src: []const u8, dest: []const u8) !void {
@@ -355,10 +478,128 @@ pub const PackageManager = struct {
 
     fn parseVersion(self: *PackageManager, version_str: []const u8) !Version {
         _ = self;
-        _ = version_str;
-        // Parse semantic version
-        // TODO: Implement proper semantic version parsing
-        return Version{ .semantic = .{ .major = 0, .minor = 1, .patch = 0 } };
+
+        // Handle version range prefixes (^, ~, >=, >, <=, <, =)
+        var clean_version = version_str;
+        if (version_str.len > 0) {
+            if (version_str[0] == '^' or version_str[0] == '~' or version_str[0] == '=') {
+                clean_version = version_str[1..];
+            } else if (version_str.len >= 2 and (std.mem.startsWith(u8, version_str, ">=") or
+                std.mem.startsWith(u8, version_str, "<=") or
+                std.mem.startsWith(u8, version_str, "<") or
+                std.mem.startsWith(u8, version_str, ">")))
+            {
+                // Skip comparison operators
+                var i: usize = 0;
+                while (i < version_str.len and !std.ascii.isDigit(version_str[i])) : (i += 1) {}
+                clean_version = std.mem.trim(u8, version_str[i..], " \t");
+            }
+        }
+
+        // Parse x.y.z format
+        var parts = std.mem.splitScalar(u8, clean_version, '.');
+        const major_str = parts.next() orelse return error.InvalidVersion;
+        const minor_str = parts.next() orelse return error.InvalidVersion;
+        const patch_str = parts.next() orelse return error.InvalidVersion;
+
+        // Handle pre-release and build metadata (e.g., 1.0.0-alpha+build)
+        // For now, just strip them
+        var patch_clean = patch_str;
+        if (std.mem.indexOf(u8, patch_str, "-")) |idx| {
+            patch_clean = patch_str[0..idx];
+        } else if (std.mem.indexOf(u8, patch_str, "+")) |idx| {
+            patch_clean = patch_str[0..idx];
+        }
+
+        const major = std.fmt.parseInt(u32, major_str, 10) catch return error.InvalidVersion;
+        const minor = std.fmt.parseInt(u32, minor_str, 10) catch return error.InvalidVersion;
+        const patch = std.fmt.parseInt(u32, patch_clean, 10) catch return error.InvalidVersion;
+
+        return Version{
+            .semantic = .{
+                .major = major,
+                .minor = minor,
+                .patch = patch,
+            },
+        };
+    }
+
+    /// Compare two semantic versions
+    /// Returns: -1 if a < b, 0 if a == b, 1 if a > b
+    fn compareVersions(a: SemanticVersion, b: SemanticVersion) i32 {
+        if (a.major != b.major) {
+            return if (a.major < b.major) -1 else 1;
+        }
+        if (a.minor != b.minor) {
+            return if (a.minor < b.minor) -1 else 1;
+        }
+        if (a.patch != b.patch) {
+            return if (a.patch < b.patch) -1 else 1;
+        }
+        return 0;
+    }
+
+    /// Check if a version satisfies a version range
+    /// Supports: ^1.2.3 (compatible), ~1.2.3 (reasonably close), >=1.2.3, etc.
+    fn satisfiesRange(version: SemanticVersion, range: []const u8) bool {
+        // Parse range prefix
+        if (range.len == 0) return false;
+
+        if (range[0] == '^') {
+            // Caret: ^1.2.3 allows changes that don't modify left-most non-zero digit
+            // ^0.2.3 → >=0.2.3 <0.3.0
+            // ^1.2.3 → >=1.2.3 <2.0.0
+            const range_ver = parseVersionString(range[1..]) catch return false;
+            if (range_ver.major > 0) {
+                return version.major == range_ver.major and
+                    (version.minor > range_ver.minor or
+                    (version.minor == range_ver.minor and version.patch >= range_ver.patch));
+            } else if (range_ver.minor > 0) {
+                return version.major == 0 and version.minor == range_ver.minor and version.patch >= range_ver.patch;
+            } else {
+                return version.major == 0 and version.minor == 0 and version.patch == range_ver.patch;
+            }
+        } else if (range[0] == '~') {
+            // Tilde: ~1.2.3 allows patch-level changes
+            // ~1.2.3 → >=1.2.3 <1.3.0
+            const range_ver = parseVersionString(range[1..]) catch return false;
+            return version.major == range_ver.major and
+                version.minor == range_ver.minor and
+                version.patch >= range_ver.patch;
+        } else if (std.mem.startsWith(u8, range, ">=")) {
+            const range_ver = parseVersionString(range[2..]) catch return false;
+            return compareVersions(version, range_ver) >= 0;
+        } else if (std.mem.startsWith(u8, range, "<=")) {
+            const range_ver = parseVersionString(range[2..]) catch return false;
+            return compareVersions(version, range_ver) <= 0;
+        } else if (range[0] == '>') {
+            const range_ver = parseVersionString(range[1..]) catch return false;
+            return compareVersions(version, range_ver) > 0;
+        } else if (range[0] == '<') {
+            const range_ver = parseVersionString(range[1..]) catch return false;
+            return compareVersions(version, range_ver) < 0;
+        } else {
+            // Exact match
+            const range_ver = parseVersionString(range) catch return false;
+            return compareVersions(version, range_ver) == 0;
+        }
+    }
+
+    fn parseVersionString(version_str: []const u8) !SemanticVersion {
+        const clean = std.mem.trim(u8, version_str, " \t");
+        var parts = std.mem.splitScalar(u8, clean, '.');
+        const major = std.fmt.parseInt(u32, parts.next() orelse return error.InvalidVersion, 10) catch return error.InvalidVersion;
+        const minor = std.fmt.parseInt(u32, parts.next() orelse return error.InvalidVersion, 10) catch return error.InvalidVersion;
+        const patch_str = parts.next() orelse return error.InvalidVersion;
+
+        // Strip pre-release/build metadata
+        var patch_clean = patch_str;
+        if (std.mem.indexOf(u8, patch_str, "-")) |idx| {
+            patch_clean = patch_str[0..idx];
+        }
+        const patch = std.fmt.parseInt(u32, patch_clean, 10) catch return error.InvalidVersion;
+
+        return SemanticVersion{ .major = major, .minor = minor, .patch = patch };
     }
 };
 
@@ -819,4 +1060,20 @@ pub const ResolvedPackage = struct {
     version: []const u8,
     checksum: []const u8,
     source: DependencySource,
+};
+
+/// Context for parallel downloads
+const DownloadContext = struct {
+    allocator: std.mem.Allocator,
+    packages: []LockedPackage,
+    pm: *PackageManager,
+    current_index: usize,
+    mutex: std.Thread.Mutex,
+    errors: *std.ArrayList(DownloadError),
+};
+
+/// Download error info
+const DownloadError = struct {
+    package_name: []const u8,
+    message: []const u8,
 };

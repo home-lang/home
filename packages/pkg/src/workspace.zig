@@ -97,25 +97,148 @@ pub const Workspace = struct {
     pub fn installAll(self: *Self) !void {
         std.debug.print("📦 Installing workspace packages...\n\n", .{});
 
-        for (self.packages.items) |pkg| {
+        for (self.packages.items) |*pkg| {
             std.debug.print("  Installing {s}...\n", .{pkg.name});
-            // TODO: Install package dependencies
+
+            // Parse ion.toml to extract dependencies
+            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "ion.toml" });
+            defer self.allocator.free(toml_path);
+
+            // Read ion.toml
+            const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {
+                std.debug.print("    ⚠️  Warning: Could not open {s}: {s}\n", .{ toml_path, @errorName(err) });
+                continue;
+            };
+            defer file.close();
+
+            const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+                std.debug.print("    ⚠️  Warning: Could not read {s}: {s}\n", .{ toml_path, @errorName(err) });
+                continue;
+            };
+            defer self.allocator.free(content);
+
+            // Parse dependencies section from TOML
+            try self.parseDependencies(pkg, content);
+
+            if (pkg.dependencies.count() > 0) {
+                std.debug.print("    → Found {d} dependencies\n", .{pkg.dependencies.count()});
+
+                var dep_iter = pkg.dependencies.iterator();
+                while (dep_iter.next()) |entry| {
+                    std.debug.print("      • {s} = {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+            } else {
+                std.debug.print("    → No dependencies\n", .{});
+            }
         }
 
         std.debug.print("\n✨ All workspace packages installed!\n", .{});
     }
 
+    /// Parse dependencies from TOML content
+    fn parseDependencies(self: *Self, pkg: *WorkspacePackage, content: []const u8) !void {
+        // Simple TOML parser for [dependencies] section
+        var in_dependencies = false;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+
+            // Skip empty lines and comments
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+            // Check for [dependencies] section
+            if (std.mem.eql(u8, trimmed, "[dependencies]")) {
+                in_dependencies = true;
+                continue;
+            }
+
+            // Check for other sections (exit dependencies section)
+            if (trimmed[0] == '[') {
+                in_dependencies = false;
+                continue;
+            }
+
+            // Parse dependency lines
+            if (in_dependencies) {
+                // Format: name = "version" or name = { ... }
+                const eq_idx = std.mem.indexOf(u8, trimmed, "=") orelse continue;
+                const name = std.mem.trim(u8, trimmed[0..eq_idx], " \t");
+                var value = std.mem.trim(u8, trimmed[eq_idx + 1 ..], " \t");
+
+                // Remove quotes
+                if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+                    value = value[1 .. value.len - 1];
+                } else if (value.len > 0 and value[0] == '{') {
+                    // Handle inline table: { git = "...", rev = "..." }
+                    // For now, just use the whole inline table as the value
+                    // A real implementation would parse this properly
+                }
+
+                const name_copy = try self.allocator.dupe(u8, name);
+                const value_copy = try self.allocator.dupe(u8, value);
+
+                try pkg.dependencies.put(name_copy, value_copy);
+            }
+        }
+    }
+
     /// Link workspace packages to each other
     pub fn linkPackages(self: *Self) !void {
-        std.debug.print("🔗 Linking workspace packages...\n", .{});
+        std.debug.print("🔗 Linking workspace packages...\n\n", .{});
 
-        // Build dependency graph
+        // Create a map of package names to paths for quick lookup
+        var pkg_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer pkg_map.deinit();
+
         for (self.packages.items) |pkg| {
-            _ = pkg;
-            // TODO: Parse dependencies and create symlinks
+            try pkg_map.put(pkg.name, pkg.path);
         }
 
-        std.debug.print("✓ Packages linked\n", .{});
+        // Link dependencies
+        for (self.packages.items) |pkg| {
+            if (pkg.dependencies.count() == 0) continue;
+
+            std.debug.print("  Linking {s}...\n", .{pkg.name});
+
+            // Create node_modules directory if it doesn't exist
+            const node_modules_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "node_modules" });
+            defer self.allocator.free(node_modules_path);
+
+            std.fs.cwd().makePath(node_modules_path) catch {};
+
+            var dep_iter = pkg.dependencies.iterator();
+            while (dep_iter.next()) |entry| {
+                const dep_name = entry.key_ptr.*;
+                const dep_version = entry.value_ptr.*;
+
+                // Check if this dependency is a workspace package
+                if (pkg_map.get(dep_name)) |dep_path| {
+                    // Create symlink to workspace package
+                    const link_target = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, dep_path });
+                    defer self.allocator.free(link_target);
+
+                    const link_path = try std.fs.path.join(self.allocator, &[_][]const u8{ node_modules_path, dep_name });
+                    defer self.allocator.free(link_path);
+
+                    // Remove existing symlink if it exists
+                    std.fs.cwd().deleteFile(link_path) catch {};
+                    std.fs.cwd().deleteTree(link_path) catch {};
+
+                    // Create symlink
+                    std.fs.cwd().symLink(link_target, link_path, .{ .is_directory = true }) catch |err| {
+                        std.debug.print("    ⚠️  Warning: Could not link {s}: {s}\n", .{ dep_name, @errorName(err) });
+                        continue;
+                    };
+
+                    std.debug.print("    ✓ Linked {s} → {s}\n", .{ dep_name, dep_path });
+                } else {
+                    std.debug.print("    → {s}@{s} (external)\n", .{ dep_name, dep_version });
+                }
+            }
+        }
+
+        std.debug.print("\n✓ Packages linked\n", .{});
     }
 
     /// Run a script in all workspace packages
@@ -124,11 +247,110 @@ pub const Workspace = struct {
 
         for (self.packages.items) |pkg| {
             std.debug.print("  {s}:\n", .{pkg.name});
-            // TODO: Run script in package
-            _ = pkg;
+
+            // Read ion.toml to get scripts
+            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "ion.toml" });
+            defer self.allocator.free(toml_path);
+
+            const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {
+                std.debug.print("    ⚠️  Warning: Could not open {s}: {s}\n", .{ toml_path, @errorName(err) });
+                continue;
+            };
+            defer file.close();
+
+            const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+                std.debug.print("    ⚠️  Warning: Could not read {s}: {s}\n", .{ toml_path, @errorName(err) });
+                continue;
+            };
+            defer self.allocator.free(content);
+
+            // Parse scripts section
+            const script_cmd = try self.parseScript(content, script_name);
+            defer if (script_cmd) |cmd| self.allocator.free(cmd);
+
+            if (script_cmd) |cmd| {
+                // Execute script in package directory
+                const pkg_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path });
+                defer self.allocator.free(pkg_dir);
+
+                std.debug.print("    $ {s}\n", .{cmd});
+
+                // Execute using sh -c
+                var child = std.process.Child.init(&[_][]const u8{ "sh", "-c", cmd }, self.allocator);
+                child.cwd = pkg_dir;
+                child.stdout_behavior = .Inherit;
+                child.stderr_behavior = .Inherit;
+
+                const term = child.spawnAndWait() catch |err| {
+                    std.debug.print("    ❌ Error: {s}\n", .{@errorName(err)});
+                    continue;
+                };
+
+                switch (term) {
+                    .Exited => |code| {
+                        if (code == 0) {
+                            std.debug.print("    ✓ Success\n", .{});
+                        } else {
+                            std.debug.print("    ❌ Exited with code {d}\n", .{code});
+                        }
+                    },
+                    else => {
+                        std.debug.print("    ❌ Process terminated abnormally\n", .{});
+                    },
+                }
+            } else {
+                std.debug.print("    ⚠️  Script '{s}' not found\n", .{script_name});
+            }
         }
 
         std.debug.print("\n✓ Script completed in all packages\n", .{});
+    }
+
+    /// Parse a script from TOML content
+    fn parseScript(self: *Self, content: []const u8, script_name: []const u8) !?[]const u8 {
+        var in_scripts = false;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+
+            // Skip empty lines and comments
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+            // Check for [scripts] section
+            if (std.mem.eql(u8, trimmed, "[scripts]")) {
+                in_scripts = true;
+                continue;
+            }
+
+            // Check for other sections (exit scripts section)
+            if (trimmed[0] == '[') {
+                in_scripts = false;
+                continue;
+            }
+
+            // Parse script lines
+            if (in_scripts) {
+                // Format: name = "command"
+                const eq_idx = std.mem.indexOf(u8, trimmed, "=") orelse continue;
+                const name = std.mem.trim(u8, trimmed[0..eq_idx], " \t");
+                var value = std.mem.trim(u8, trimmed[eq_idx + 1 ..], " \t");
+
+                // Check if this is the script we're looking for
+                if (std.mem.eql(u8, name, script_name)) {
+                    // Remove quotes
+                    if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+                        value = value[1 .. value.len - 1];
+                    } else if (value.len >= 2 and value[0] == '\'' and value[value.len - 1] == '\'') {
+                        value = value[1 .. value.len - 1];
+                    }
+
+                    return try self.allocator.dupe(u8, value);
+                }
+            }
+        }
+
+        return null;
     }
 };
 

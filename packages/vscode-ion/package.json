@@ -166,6 +166,101 @@
       {
         "command": "ion.packageManager.install",
         "title": "Install Ion Package"
+      },
+      {
+        "command": "ion.cpu.start",
+        "title": "Ion: Start CPU Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.stop",
+        "title": "Ion: Stop CPU Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.flamegraph",
+        "title": "Ion: View CPU Flame Graph",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.exportChrome",
+        "title": "Ion: Export CPU Profile to Chrome DevTools",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.start",
+        "title": "Ion: Start GC Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.stop",
+        "title": "Ion: Stop GC Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.report",
+        "title": "Ion: View GC Report",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.analyzePressure",
+        "title": "Ion: Analyze GC Pressure",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.start",
+        "title": "Ion: Start Memory Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.stop",
+        "title": "Ion: Stop Memory Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.snapshot",
+        "title": "Ion: Take Memory Snapshot",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.findLeaks",
+        "title": "Ion: Detect Memory Leaks",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.report",
+        "title": "Ion: View Memory Report",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.debug.stepBack",
+        "title": "Ion: Step Back (Time-Travel)",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.debug.stepForward",
+        "title": "Ion: Step Forward (Time-Travel)",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.debug.showTimeline",
+        "title": "Ion: Show Execution Timeline",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showAll",
+        "title": "Ion: Show All Threads",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showDeadlocks",
+        "title": "Ion: Detect Deadlocks",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showRaces",
+        "title": "Ion: Detect Race Conditions",
+        "category": "Ion Debug"
       }
     ],
     "keybindings": [
@@ -190,6 +285,30 @@
       {
         "command": "ion.format",
         "key": "alt+shift+f",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.debug.stepBack",
+        "key": "ctrl+shift+left",
+        "mac": "cmd+shift+left",
+        "when": "inDebugMode"
+      },
+      {
+        "command": "ion.debug.stepForward",
+        "key": "ctrl+shift+right",
+        "mac": "cmd+shift+right",
+        "when": "inDebugMode"
+      },
+      {
+        "command": "ion.cpu.flamegraph",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.memory.snapshot",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
         "when": "editorTextFocus && resourceLangId == ion"
       }
     ],
