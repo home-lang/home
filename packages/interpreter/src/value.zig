@@ -2,16 +2,28 @@ const std = @import("std");
 
 const ast = @import("ast");
 
-/// Function value representation
+/// Function value representation for closures and function declarations.
+///
+/// Stores the runtime representation of a function, including its name,
+/// parameter list, and body. This is used both for user-defined functions
+/// and for closures that capture their environment.
 pub const FunctionValue = struct {
+    /// Function name (for display and debugging)
     name: []const u8,
+    /// Parameter declarations (names and types)
     params: []const ast.Parameter,
+    /// Function body as a block statement
     body: *ast.BlockStmt,
 };
 
-/// Struct value representation
+/// Struct instance value at runtime.
+///
+/// Represents an instance of a struct type with its field values.
+/// Fields are stored in a hash map for O(1) access by name.
 pub const StructValue = struct {
+    /// Name of the struct type this is an instance of
     type_name: []const u8,
+    /// Field name -> value mapping
     fields: std.StringHashMap(Value),
 };
 
@@ -35,15 +47,32 @@ pub const StructValue = struct {
 /// - Best suited for scripts and short-running programs
 /// - Long-running REPL sessions may need periodic arena reset
 pub const Value = union(enum) {
+    /// 64-bit signed integer
     Int: i64,
+    /// 64-bit floating-point number
     Float: f64,
+    /// Boolean value (true/false)
     Bool: bool,
+    /// String value (UTF-8 encoded)
     String: []const u8,
+    /// Dynamic array of values
     Array: []const Value,
+    /// Struct instance with named fields
     Struct: StructValue,
+    /// Function or closure
     Function: FunctionValue,
+    /// Unit/void value (no value)
     Void,
 
+    /// Format this value for display (implements std.fmt formatting).
+    ///
+    /// Produces a human-readable string representation of the value.
+    /// Arrays are shown as `[elem1, elem2, ...]`, structs as `<TypeName instance>`,
+    /// and functions as `<fn name>`.
+    ///
+    /// Parameters:
+    ///   - self: The value to format
+    ///   - writer: Output writer
     pub fn format(
         self: Value,
         comptime _: []const u8,
@@ -69,6 +98,23 @@ pub const Value = union(enum) {
         }
     }
 
+    /// Determine the truthiness of a value for conditional expressions.
+    ///
+    /// Used by if statements, while loops, and logical operators to
+    /// convert any value to a boolean. The rules are:
+    /// - Bool: Use the boolean value directly
+    /// - Int: True if non-zero
+    /// - Float: True if non-zero
+    /// - String: True if non-empty
+    /// - Array: True if non-empty
+    /// - Struct: Always true
+    /// - Function: Always true
+    /// - Void: Always false
+    ///
+    /// Parameters:
+    ///   - self: The value to test
+    ///
+    /// Returns: true if the value is considered "truthy", false otherwise
     pub fn isTrue(self: Value) bool {
         return switch (self) {
             .Bool => |b| b,
@@ -82,6 +128,16 @@ pub const Value = union(enum) {
         };
     }
 
+    /// Deallocate resources used by this value (no-op with arena allocator).
+    ///
+    /// NOTE: This function is a no-op because Ion uses an arena allocator
+    /// for all runtime values. Memory is freed in bulk when the interpreter
+    /// is deinitialized, not on a per-value basis. This function exists
+    /// for API consistency and future compatibility.
+    ///
+    /// Parameters:
+    ///   - self: The value (unused)
+    ///   - allocator: The allocator (unused)
     pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
         _ = allocator;
         _ = self;

@@ -1,7 +1,17 @@
 const std = @import("std");
 const Token = @import("lexer").Token;
 
-/// AST Node types for the Ion language
+/// Enumeration of all Abstract Syntax Tree node types in Ion.
+///
+/// This enum categorizes every kind of AST node that can appear in an
+/// Ion program. Each NodeType corresponds to a specific struct that
+/// implements that node's data and behavior.
+///
+/// Categories:
+/// - Literals: Constant values (integers, strings, booleans, arrays)
+/// - Expressions: Computations that produce values
+/// - Statements: Actions and declarations
+/// - Special: Program root and control flow constructs
 pub const NodeType = enum {
     // Literals
     IntegerLiteral,
@@ -62,11 +72,24 @@ pub const NodeType = enum {
     Program,
 };
 
-/// Source location information
+/// Source code location for error reporting and debugging.
+///
+/// Every AST node tracks its position in the source file to enable
+/// helpful error messages with line and column numbers.
 pub const SourceLocation = struct {
+    /// Line number in source file (1-indexed)
     line: usize,
+    /// Column number in source line (1-indexed)
     column: usize,
 
+    /// Create a SourceLocation from a Token.
+    ///
+    /// Extracts location information from a lexer token.
+    ///
+    /// Parameters:
+    ///   - token: Token to extract location from
+    ///
+    /// Returns: SourceLocation with token's position
     pub fn fromToken(token: Token) SourceLocation {
         return .{
             .line = token.line,
@@ -75,17 +98,40 @@ pub const SourceLocation = struct {
     }
 };
 
-/// Base node interface
+/// Base node structure shared by all AST nodes.
+///
+/// Every AST node embeds this structure to provide common metadata:
+/// - The specific type of node (for runtime type checking)
+/// - Source location for error reporting
+///
+/// This enables polymorphic handling of AST nodes while maintaining
+/// type safety through the NodeType tag.
 pub const Node = struct {
+    /// The specific kind of AST node
     type: NodeType,
+    /// Source code location where this node appears
     loc: SourceLocation,
 };
 
-/// Integer literal
+/// Integer literal expression.
+///
+/// Represents a constant integer value in the source code.
+/// Currently supports 64-bit signed integers.
+///
+/// Example: `42`, `-17`, `0`
 pub const IntegerLiteral = struct {
+    /// Base node metadata
     node: Node,
+    /// The integer value
     value: i64,
 
+    /// Create a new integer literal node.
+    ///
+    /// Parameters:
+    ///   - value: The integer value
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized IntegerLiteral
     pub fn init(value: i64, loc: SourceLocation) IntegerLiteral {
         return .{
             .node = .{ .type = .IntegerLiteral, .loc = loc },
@@ -94,11 +140,25 @@ pub const IntegerLiteral = struct {
     }
 };
 
-/// Float literal
+/// Floating-point literal expression.
+///
+/// Represents a constant floating-point value using IEEE 754
+/// double-precision (64-bit) format.
+///
+/// Example: `3.14`, `0.5`, `2.0`
 pub const FloatLiteral = struct {
+    /// Base node metadata
     node: Node,
+    /// The floating-point value
     value: f64,
 
+    /// Create a new float literal node.
+    ///
+    /// Parameters:
+    ///   - value: The floating-point value
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized FloatLiteral
     pub fn init(value: f64, loc: SourceLocation) FloatLiteral {
         return .{
             .node = .{ .type = .FloatLiteral, .loc = loc },
@@ -107,11 +167,26 @@ pub const FloatLiteral = struct {
     }
 };
 
-/// String literal
+/// String literal expression.
+///
+/// Represents a constant string value. The value slice includes
+/// the surrounding quotes and any escape sequences as they appear
+/// in source. Escape sequences are processed during interpretation.
+///
+/// Example: `"hello"`, `"world\n"`, `"foo\u{1F600}"`
 pub const StringLiteral = struct {
+    /// Base node metadata
     node: Node,
+    /// The string value (with quotes and raw escapes)
     value: []const u8,
 
+    /// Create a new string literal node.
+    ///
+    /// Parameters:
+    ///   - value: The string slice (must remain valid)
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized StringLiteral
     pub fn init(value: []const u8, loc: SourceLocation) StringLiteral {
         return .{
             .node = .{ .type = .StringLiteral, .loc = loc },
@@ -120,11 +195,24 @@ pub const StringLiteral = struct {
     }
 };
 
-/// Boolean literal
+/// Boolean literal expression.
+///
+/// Represents the constant values `true` or `false`.
+///
+/// Example: `true`, `false`
 pub const BooleanLiteral = struct {
+    /// Base node metadata
     node: Node,
+    /// The boolean value
     value: bool,
 
+    /// Create a new boolean literal node.
+    ///
+    /// Parameters:
+    ///   - value: The boolean value (true or false)
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized BooleanLiteral
     pub fn init(value: bool, loc: SourceLocation) BooleanLiteral {
         return .{
             .node = .{ .type = .BooleanLiteral, .loc = loc },
@@ -133,11 +221,25 @@ pub const BooleanLiteral = struct {
     }
 };
 
-/// Identifier
+/// Identifier expression.
+///
+/// Represents a variable or function name. Identifiers are resolved
+/// during semantic analysis to determine what they refer to.
+///
+/// Example: `x`, `foo`, `_temp`, `myVariable123`
 pub const Identifier = struct {
+    /// Base node metadata
     node: Node,
+    /// The identifier name (without any qualification)
     name: []const u8,
 
+    /// Create a new identifier node.
+    ///
+    /// Parameters:
+    ///   - name: The identifier name (must remain valid)
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized Identifier
     pub fn init(name: []const u8, loc: SourceLocation) Identifier {
         return .{
             .node = .{ .type = .Identifier, .loc = loc },
@@ -146,7 +248,13 @@ pub const Identifier = struct {
     }
 };
 
-/// Binary operator types
+/// Binary operator types for expressions.
+///
+/// These operators combine two operands to produce a result.
+/// Includes arithmetic, comparison, logical, bitwise, and assignment operators.
+///
+/// Precedence and associativity are handled by the parser using
+/// the Precedence enum in parser.zig.
 pub const BinaryOp = enum {
     Add,      // +
     Sub,      // -
@@ -169,13 +277,38 @@ pub const BinaryOp = enum {
     Assign,   // =
 };
 
-/// Binary expression
+/// Binary expression combining two operands with an operator.
+///
+/// Represents operations like `a + b`, `x == y`, `foo && bar`.
+/// The operands are full expressions that are evaluated before
+/// applying the operator.
+///
+/// Examples:
+/// - `2 + 3` (arithmetic)
+/// - `x < 10` (comparison)
+/// - `a && b` (logical)
+/// - `flags | mask` (bitwise)
 pub const BinaryExpr = struct {
+    /// Base node metadata
     node: Node,
+    /// The binary operator
     op: BinaryOp,
+    /// Left operand expression
     left: *Expr,
+    /// Right operand expression
     right: *Expr,
 
+    /// Create a new binary expression node.
+    ///
+    /// Parameters:
+    ///   - allocator: Allocator for the node
+    ///   - op: Binary operator
+    ///   - left: Left operand (owned by this node)
+    ///   - right: Right operand (owned by this node)
+    ///   - loc: Source location
+    ///
+    /// Returns: Pointer to allocated BinaryExpr
+    /// Errors: OutOfMemory if allocation fails
     pub fn init(allocator: std.mem.Allocator, op: BinaryOp, left: *Expr, right: *Expr, loc: SourceLocation) !*BinaryExpr {
         const expr = try allocator.create(BinaryExpr);
         expr.* = .{
@@ -188,15 +321,27 @@ pub const BinaryExpr = struct {
     }
 };
 
-/// Unary operator types
+/// Unary operator types for expressions.
+///
+/// These operators apply to a single operand.
 pub const UnaryOp = enum {
-    Neg,  // -
-    Not,  // !
+    /// Negation: `-x` (arithmetic negation)
+    Neg,
+    /// Logical NOT: `!x` (boolean negation)
+    Not,
 };
 
-/// Unary expression
+/// Unary expression applying an operator to a single operand.
+///
+/// Represents operations like `-x` (negation) or `!flag` (NOT).
+///
+/// Examples:
+/// - `-42` (numeric negation)
+/// - `!is_valid` (logical NOT)
 pub const UnaryExpr = struct {
+    /// Base node metadata
     node: Node,
+    /// The unary operator
     op: UnaryOp,
     operand: *Expr,
 
@@ -834,7 +979,29 @@ pub const MatchArm = struct {
     }
 };
 
-/// Pattern for destructuring and matching
+/// Pattern for destructuring and pattern matching.
+///
+/// Patterns are used in match expressions and destructuring assignments
+/// to match values and extract components. They support:
+/// - Literal matching (exact value comparison)
+/// - Variable binding (capture matched values)
+/// - Structural destructuring (tuples, arrays, structs)
+/// - Variant matching (enum pattern matching)
+/// - Guards and or-patterns for complex conditions
+///
+/// Examples:
+/// ```ion
+/// match value {
+///   0 => "zero",                    // Literal pattern
+///   x => "other",                   // Identifier binding
+///   (a, b) => "tuple",              // Tuple destructure
+///   [first, ...rest] => "array",    // Array with rest
+///   Point { x, y } => "struct",     // Struct destructure
+///   Some(v) => "variant",           // Enum variant
+///   1..10 => "range",               // Range pattern
+///   A | B | C => "alternatives",    // Or pattern
+/// }
+/// ```
 pub const Pattern = union(enum) {
     // Literal patterns
     IntLiteral: i64,

@@ -6,19 +6,40 @@ const ast = @import("ast");
 const diagnostics = @import("diagnostics");
 const errors = diagnostics.errors;
 
-/// Parser error set
+/// Error set for parsing operations.
+///
+/// These errors can occur during the parsing phase when converting
+/// tokens into an Abstract Syntax Tree. The parser uses panic-mode
+/// error recovery to collect multiple errors in one pass.
 pub const ParseError = error{
+    /// Encountered a token that doesn't match the expected syntax
     UnexpectedToken,
+    /// Memory allocation failed during AST construction
     OutOfMemory,
+    /// Invalid character encountered (should be caught by lexer)
     InvalidCharacter,
+    /// Numeric overflow in general operations
     Overflow,
+    /// Integer literal too large to represent
     IntegerOverflow,
+    /// Float literal too large to represent
     FloatOverflow,
+    /// Malformed floating-point literal
     InvalidFloat,
+    /// Unknown reflection operation in @comptime expression
     UnknownReflection,
 };
 
-/// Operator precedence levels
+/// Operator precedence levels for expression parsing.
+///
+/// Used by the Pratt parser (precedence climbing algorithm) to correctly
+/// parse expressions with mixed operators. Higher numeric values indicate
+/// higher precedence (tighter binding).
+///
+/// The precedence hierarchy follows standard programming language conventions:
+/// - Assignments bind loosest (evaluated last)
+/// - Arithmetic operators follow mathematical precedence
+/// - Function calls and member access bind tightest
 const Precedence = enum(u8) {
     None = 0,
     Assignment = 1,     // =
@@ -40,6 +61,15 @@ const Precedence = enum(u8) {
     Call = 17,          // . () [] ?.
     Primary = 18,
 
+    /// Get the precedence level for a given token type.
+    ///
+    /// Maps operator tokens to their precedence levels. Non-operator
+    /// tokens return None precedence.
+    ///
+    /// Parameters:
+    ///   - token_type: The token to get precedence for
+    ///
+    /// Returns: Precedence level for this token
     fn fromToken(token_type: TokenType) Precedence {
         return switch (token_type) {
             .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
@@ -63,26 +93,76 @@ const Precedence = enum(u8) {
     }
 };
 
-/// Parser for the Ion language
-/// Parse error information
+/// Information about a parse error for error reporting.
+///
+/// Stores the error message along with source location to enable
+/// helpful error messages with line and column numbers.
 pub const ParseErrorInfo = struct {
+    /// Human-readable error description
     message: []const u8,
+    /// Line number where error occurred (1-indexed)
     line: usize,
+    /// Column number where error occurred (1-indexed)
     column: usize,
 };
 
+/// Recursive descent parser for the Ion programming language.
+///
+/// The Parser converts a stream of tokens (from the Lexer) into an Abstract
+/// Syntax Tree (AST) representing the program structure. It implements:
+///
+/// Features:
+/// - Recursive descent parsing for statements and declarations
+/// - Pratt parser (precedence climbing) for expressions
+/// - Panic-mode error recovery to collect multiple errors
+/// - Recursion depth limiting to prevent stack overflow
+/// - Support for generics, async functions, pattern matching
+/// - Operator precedence handling for complex expressions
+///
+/// Error Recovery:
+/// The parser uses "panic mode" error recovery. When an error occurs,
+/// it enters panic mode and skips tokens until it finds a synchronization
+/// point (statement boundary), then continues parsing. This allows
+/// collecting multiple errors in one parse run.
+///
+/// Example:
+/// ```zig
+/// var parser = Parser.init(allocator, tokens);
+/// defer parser.deinit();
+/// const program = try parser.parse();
+/// ```
 pub const Parser = struct {
+    /// Memory allocator for AST nodes and error messages
     allocator: std.mem.Allocator,
+    /// Complete token stream from lexer (must include EOF)
     tokens: []const Token,
+    /// Current position in token stream
     current: usize,
+    /// List of accumulated parse errors
     errors: std.ArrayList(ParseErrorInfo),
+    /// Whether we're in panic mode (suppressing cascading errors)
     panic_mode: bool,
+    /// Current recursion depth (for stack overflow prevention)
     recursion_depth: usize,
+    /// Formatter for error messages
     error_formatter: errors.ErrorFormatter,
+    /// Optional source filename for error reporting
     source_file: ?[]const u8,
 
+    /// Maximum allowed recursion depth to prevent stack overflow
     const MAX_RECURSION_DEPTH: usize = 256;
 
+    /// Initialize a new parser with the given token stream
+    ///
+    /// Creates a parser that will convert tokens into an Abstract Syntax Tree (AST).
+    /// The parser uses panic-mode error recovery to continue parsing after errors
+    /// and tracks recursion depth to prevent stack overflow.
+    ///
+    /// Parameters:
+    ///   - allocator: Memory allocator for AST nodes and error messages
+    ///   - tokens: Token slice from the lexer (must include EOF token)
+    ///
+    /// Returns: Initialized Parser ready to parse tokens into AST
     pub fn init(allocator: std.mem.Allocator, tokens: []const Token) Parser {
         return .{
             .allocator = allocator,
@@ -96,6 +176,10 @@ pub const Parser = struct {
         };
     }
 
+    /// Clean up parser resources.
+    ///
+    /// Frees all allocated error messages and the error list. The AST
+    /// itself must be freed separately by the caller.
     pub fn deinit(self: *Parser) void {
         // Free error messages
         for (self.errors.items) |err_info| {
@@ -104,17 +188,25 @@ pub const Parser = struct {
         self.errors.deinit(self.allocator);
     }
 
-    /// Check if we're at the end of tokens
+    /// Check if we've reached the end of the token stream.
+    ///
+    /// Returns: true if current token is EOF, false otherwise
     fn isAtEnd(self: *Parser) bool {
         return self.peek().type == .Eof;
     }
 
-    /// Get current token without advancing
+    /// Get current token without advancing the parser.
+    ///
+    /// Returns: The token at the current position
     fn peek(self: *Parser) Token {
         return self.tokens[self.current];
     }
 
-    /// Get next token without advancing (lookahead)
+    /// Look ahead one token without advancing the parser.
+    ///
+    /// Used for one-token lookahead to disambiguate grammar rules.
+    ///
+    /// Returns: The token after the current position, or EOF if at end
     fn peekNext(self: *Parser) Token {
         if (self.current + 1 >= self.tokens.len) {
             return self.tokens[self.tokens.len - 1]; // Return EOF token
@@ -122,24 +214,42 @@ pub const Parser = struct {
         return self.tokens[self.current + 1];
     }
 
-    /// Get previous token
+    /// Get the most recently consumed token.
+    ///
+    /// Returns: The token just before the current position
     fn previous(self: *Parser) Token {
         return self.tokens[self.current - 1];
     }
 
-    /// Advance to next token
+    /// Consume and return the current token, advancing to the next.
+    ///
+    /// Returns: The token that was current before advancing
     fn advance(self: *Parser) Token {
         if (!self.isAtEnd()) self.current += 1;
         return self.previous();
     }
 
-    /// Check if current token matches expected type
+    /// Check if current token is of a specific type without consuming it.
+    ///
+    /// Parameters:
+    ///   - token_type: The type to check for
+    ///
+    /// Returns: true if current token matches, false otherwise
     fn check(self: *Parser, token_type: TokenType) bool {
         if (self.isAtEnd()) return false;
         return self.peek().type == token_type;
     }
 
-    /// Match current token against multiple types
+    /// Try to match and consume current token against multiple types.
+    ///
+    /// Checks if the current token is any of the specified types. If a match
+    /// is found, consumes the token and returns true. Used for implementing
+    /// grammar alternatives (e.g., "if we see fn OR struct OR enum...").
+    ///
+    /// Parameters:
+    ///   - types: Slice of token types to check against
+    ///
+    /// Returns: true and advances if match found, false otherwise
     fn match(self: *Parser, types: []const TokenType) bool {
         for (types) |t| {
             if (self.check(t)) {
@@ -150,14 +260,34 @@ pub const Parser = struct {
         return false;
     }
 
-    /// Expect a specific token type or return error
+    /// Require a specific token type, consuming it or reporting an error.
+    ///
+    /// This is the primary way to enforce required syntax. If the expected
+    /// token is present, it's consumed and returned. Otherwise, an error
+    /// is reported with the provided message.
+    ///
+    /// Parameters:
+    ///   - token_type: The required token type
+    ///   - message: Error message if token is not found
+    ///
+    /// Returns: The expected token if found
+    /// Errors: UnexpectedToken if current token doesn't match
     fn expect(self: *Parser, token_type: TokenType, message: []const u8) ParseError!Token {
         if (self.check(token_type)) return self.advance();
         try self.reportError(message);
         return error.UnexpectedToken;
     }
 
-    /// Report a parse error
+    /// Report a parse error with location information.
+    ///
+    /// Records the error in the errors list and prints a formatted error
+    /// message to stderr. Uses panic mode to suppress cascading errors.
+    /// Implements a safety limit to prevent infinite loops (100 errors max).
+    ///
+    /// Parameters:
+    ///   - message: Human-readable description of the error
+    ///
+    /// Errors: OutOfMemory if allocation fails, UnexpectedToken if too many errors
     fn reportError(self: *Parser, message: []const u8) !void {
         if (self.panic_mode) return; // Don't report cascading errors
 
@@ -193,7 +323,16 @@ pub const Parser = struct {
         }
     }
 
-    /// Synchronize parser state after an error
+    /// Recover from a parse error by finding a synchronization point.
+    ///
+    /// After encountering an error, the parser enters "panic mode" and
+    /// skips tokens until it finds a likely statement boundary:
+    /// - After a semicolon
+    /// - Before a declaration keyword (fn, struct, let, etc.)
+    /// - After a closing brace
+    ///
+    /// This allows the parser to continue and find more errors rather than
+    /// stopping at the first one.
     fn synchronize(self: *Parser) void {
         self.panic_mode = false;
 
@@ -219,7 +358,15 @@ pub const Parser = struct {
         }
     }
 
-    /// Parse the entire program
+    /// Parse the entire token stream into an Abstract Syntax Tree
+    ///
+    /// This is the main entry point for parsing. It processes all tokens
+    /// and constructs a complete AST representing the program structure.
+    /// The parser uses error recovery to continue parsing after syntax errors,
+    /// collecting all errors for comprehensive error reporting.
+    ///
+    /// Returns: Pointer to Program AST node containing all parsed statements
+    /// Errors: ParseError if syntax errors prevent parsing (with detailed diagnostics)
     pub fn parse(self: *Parser) ParseError!*ast.Program {
         var statements = std.ArrayList(ast.Stmt){};
         defer statements.deinit(self.allocator);
@@ -249,7 +396,17 @@ pub const Parser = struct {
         return ast.Program.init(self.allocator, try statements.toOwnedSlice(self.allocator));
     }
 
-    /// Parse a declaration (function, let, const, etc.)
+    /// Parse a top-level declaration or statement.
+    ///
+    /// Declarations include functions, structs, enums, unions, type aliases,
+    /// and variable declarations (let/const). Falls through to statement
+    /// parsing if no declaration keyword is found.
+    ///
+    /// Grammar:
+    ///   declaration = structDecl | enumDecl | unionDecl | typeAlias
+    ///               | fnDecl | letDecl | constDecl | statement
+    ///
+    /// Returns: Statement AST node (declarations are represented as statements)
     fn declaration(self: *Parser) ParseError!ast.Stmt {
         if (self.match(&.{.Struct})) return self.structDeclaration();
         if (self.match(&.{.Enum})) return self.enumDeclaration();
@@ -261,7 +418,20 @@ pub const Parser = struct {
         return self.statement();
     }
 
-    /// Parse a function declaration
+    /// Parse a function declaration with optional generics and async support.
+    ///
+    /// Grammar:
+    ///   fnDecl = 'async'? 'fn' IDENTIFIER typeParams? '(' params? ')' ('->' type)? block
+    ///   typeParams = '<' IDENTIFIER (',' IDENTIFIER)* '>'
+    ///   params = param (',' param)*
+    ///   param = IDENTIFIER ':' type
+    ///
+    /// Examples:
+    ///   fn add(x: i32, y: i32) -> i32 { return x + y; }
+    ///   async fn fetch(url: string) -> Result { ... }
+    ///   fn map<T, U>(arr: [T], f: fn(T) -> U) -> [U] { ... }
+    ///
+    /// Returns: Function declaration statement node
     fn functionDeclaration(self: *Parser) !ast.Stmt {
         // Check for async keyword before function name
         const is_async = self.match(&.{.Async});
@@ -1155,12 +1325,29 @@ pub const Parser = struct {
         return ast.Stmt{ .ExprStmt = expr };
     }
 
-    /// Parse an expression
+    /// Parse an expression at assignment precedence level
+    ///
+    /// This is the main expression parsing entry point that handles all
+    /// expressions starting from the lowest precedence level (assignments).
+    ///
+    /// Returns: Expression AST node
+    /// Errors: ParseError if the expression is malformed
     fn expression(self: *Parser) !*ast.Expr {
         return self.parsePrecedence(.Assignment);
     }
 
-    /// Parse expression with precedence climbing
+    /// Parse expression using precedence climbing algorithm (Pratt parsing)
+    ///
+    /// Implements operator precedence parsing using the precedence climbing
+    /// technique. This handles all binary, unary, and postfix operators with
+    /// correct precedence and associativity. Tracks recursion depth to prevent
+    /// stack overflow from deeply nested expressions.
+    ///
+    /// Parameters:
+    ///   - precedence: Minimum precedence level to parse at
+    ///
+    /// Returns: Expression AST node
+    /// Errors: ParseError on syntax errors, Overflow if expression is too deeply nested
     fn parsePrecedence(self: *Parser, precedence: Precedence) ParseError!*ast.Expr {
         // Check recursion depth to prevent stack overflow
         self.recursion_depth += 1;

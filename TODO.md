@@ -240,11 +240,11 @@
 - [x] `packages/vscode-ion/README.md`
 
 #### 4.3 Add Doc Comments to Core APIs
-- [ ] Document top 20 public functions in lexer
-- [ ] Document top 20 public functions in parser
-- [ ] Document top 20 public functions in ast
-- [ ] Document top 20 public functions in types
-- [ ] Document top 20 public functions in codegen
+- [x] Document top 20 public functions in lexer
+- [x] Document top 20 public functions in parser
+- [x] Document top 20 public functions in ast
+- [x] Document top 20 public functions in types
+- [x] Document top 20 public functions in codegen
 
 ---
 
