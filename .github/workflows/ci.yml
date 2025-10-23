@@ -93,6 +93,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup Ion
+        uses: ./packages/action
+        with:
+          ion-version: 'latest'
+          cache: 'true'
+
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -124,29 +130,3 @@ jobs:
           name: ion-${{ matrix.os }}
           path: zig-out/bin/ion
           retention-days: 7
-
-  publish-commit:
-    runs-on: ubuntu-latest
-    needs: [lint, typecheck, test, build-and-test-ion]
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Use cached node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: node-modules-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            node-modules-
-
-      - name: Install Dependencies
-        run: bun install
-
-      - name: Build
-        run: bun run build
-
-      - name: Publish Commit
-        run: bunx pkg-pr-new publish './packages/stx' './packages/bun-plugin'

@@ -29,6 +29,7 @@ pub const NodeType = enum {
     NullCoalesceExpr,
     SafeNavExpr,
     TupleExpr,
+    GenericTypeExpr,
 
     // Statements
     LetDecl,
@@ -442,6 +443,23 @@ pub const TupleExpr = struct {
     }
 };
 
+/// Generic type expression (e.g., Vec<T>, Option<String>)
+pub const GenericTypeExpr = struct {
+    node: Node,
+    base_type: []const u8,
+    type_args: []const []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, base_type: []const u8, type_args: []const []const u8, loc: SourceLocation) !*GenericTypeExpr {
+        const expr = try allocator.create(GenericTypeExpr);
+        expr.* = .{
+            .node = .{ .type = .GenericTypeExpr, .loc = loc },
+            .base_type = base_type,
+            .type_args = type_args,
+        };
+        return expr;
+    }
+};
+
 /// Expression wrapper (tagged union)
 pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
@@ -465,6 +483,7 @@ pub const Expr = union(NodeType) {
     NullCoalesceExpr: *NullCoalesceExpr,
     SafeNavExpr: *SafeNavExpr,
     TupleExpr: *TupleExpr,
+    GenericTypeExpr: *GenericTypeExpr,
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
@@ -509,6 +528,7 @@ pub const Expr = union(NodeType) {
             .NullCoalesceExpr => |expr| expr.node.loc,
             .SafeNavExpr => |expr| expr.node.loc,
             .TupleExpr => |expr| expr.node.loc,
+            .GenericTypeExpr => |expr| expr.node.loc,
             else => std.debug.panic("getLocation called on non-expression variant: {s}", .{@tagName(self)}),
         };
     }
@@ -740,6 +760,7 @@ pub const Stmt = union(NodeType) {
     NullCoalesceExpr: void,
     SafeNavExpr: void,
     TupleExpr: void,
+    GenericTypeExpr: void,
 
     // Statement variants (order must match NodeType enum)
     LetDecl: *LetDecl,
@@ -791,15 +812,21 @@ pub const StructDecl = struct {
     node: Node,
     name: []const u8,
     fields: []const StructField,
+    type_params: []const []const u8, // Generic type parameters e.g. ["T", "E"]
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, loc: SourceLocation) !*StructDecl {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);
         decl.* = .{
             .node = .{ .type = .StructDecl, .loc = loc },
             .name = name,
             .fields = fields,
+            .type_params = type_params,
         };
         return decl;
+    }
+
+    pub fn isGeneric(self: *const StructDecl) bool {
+        return self.type_params.len > 0;
     }
 };
 
@@ -874,8 +901,9 @@ pub const FnDecl = struct {
     return_type: ?[]const u8,
     body: *BlockStmt,
     is_async: bool,
+    type_params: []const []const u8, // Generic type parameters e.g. ["T", "U"]
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, loc: SourceLocation) !*FnDecl {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);
         decl.* = .{
             .node = .{ .type = .FnDecl, .loc = loc },
@@ -884,8 +912,13 @@ pub const FnDecl = struct {
             .return_type = return_type,
             .body = body,
             .is_async = is_async,
+            .type_params = type_params,
         };
         return decl;
+    }
+
+    pub fn isGeneric(self: *const FnDecl) bool {
+        return self.type_params.len > 0;
     }
 };
 

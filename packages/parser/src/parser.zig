@@ -250,6 +250,20 @@ pub const Parser = struct {
         const name_token = try self.expect(.Identifier, "Expected function name");
         const name = name_token.lexeme;
 
+        // Parse generic type parameters if present: fn name<T, U>()
+        var type_params = std.ArrayList([]const u8){};
+        defer type_params.deinit(self.allocator);
+
+        if (self.match(&.{.Less})) {
+            while (!self.check(.Greater) and !self.isAtEnd()) {
+                const type_param = try self.expect(.Identifier, "Expected type parameter name");
+                try type_params.append(self.allocator, type_param.lexeme);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.Greater, "Expected '>' after type parameters");
+        }
+
         _ = try self.expect(.LeftParen, "Expected '(' after function name");
 
         // Parse parameters
@@ -288,6 +302,9 @@ pub const Parser = struct {
         const params_slice = try params.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(params_slice);
 
+        const type_params_slice = try type_params.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(type_params_slice);
+
         const fn_decl = try ast.FnDecl.init(
             self.allocator,
             name,
@@ -295,6 +312,7 @@ pub const Parser = struct {
             return_type,
             body,
             is_async,
+            type_params_slice,
             ast.SourceLocation.fromToken(name_token),
         );
 
@@ -306,6 +324,20 @@ pub const Parser = struct {
         const struct_token = self.previous();
         const name_token = try self.expect(.Identifier, "Expected struct name");
         const name = name_token.lexeme;
+
+        // Parse generic type parameters if present: struct Name<T, U>
+        var type_params = std.ArrayList([]const u8){};
+        defer type_params.deinit(self.allocator);
+
+        if (self.match(&.{.Less})) {
+            while (!self.check(.Greater) and !self.isAtEnd()) {
+                const type_param = try self.expect(.Identifier, "Expected type parameter name");
+                try type_params.append(self.allocator, type_param.lexeme);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.Greater, "Expected '>' after type parameters");
+        }
 
         _ = try self.expect(.LeftBrace, "Expected '{' after struct name");
 
@@ -333,10 +365,14 @@ pub const Parser = struct {
         const fields_slice = try fields.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(fields_slice);
 
+        const type_params_slice = try type_params.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(type_params_slice);
+
         const struct_decl = try ast.StructDecl.init(
             self.allocator,
             name,
             fields_slice,
+            type_params_slice,
             ast.SourceLocation.fromToken(struct_token),
         );
 

@@ -33,6 +33,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Ion
+        uses: ./packages/action
+        with:
+          ion-version: 'latest'
+          cache: 'true'
+
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
