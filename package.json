@@ -1,0 +1,29 @@
+{
+  "name": "ion-language",
+  "private": true,
+  "displayName": "Ion Language Support",
+  "description": "Language support for the Ion programming language",
+  "version": "0.1.0",
+  "publisher": "chrisbreuer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stacksjs/ion"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Formatters",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "ion",
+    "systems",
+    "programming",
+    "compiler"
+  ],
+  "workspaces": [
+    "./packages/vscode-ion",
+    "./packages/action"
+  ]
+}
