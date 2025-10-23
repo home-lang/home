@@ -9,7 +9,9 @@ const NativeCodegen = @import("codegen").NativeCodegen;
 const TypeChecker = @import("types").TypeChecker;
 const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
-const PackageManager = @import("pkg_manager").PackageManager;
+const pkg_manager_mod = @import("pkg_manager");
+const PackageManager = pkg_manager_mod.PackageManager;
+const AuthManager = pkg_manager_mod.AuthManager;
 const IRCache = @import("ir_cache").IRCache;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
@@ -1055,19 +1057,23 @@ fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     }
 
     // Check for token in environment variable
+    var env_token_allocated: ?[]const u8 = null;
+    defer if (env_token_allocated) |t| allocator.free(t);
+
     if (token == null) {
-        if (std.os.getenv("ION_TOKEN")) |env_token| {
+        if (std.process.getEnvVarOwned(allocator, "ION_TOKEN")) |env_token| {
+            env_token_allocated = env_token;
             token = env_token;
             std.debug.print("{s}Using token from ION_TOKEN environment variable{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-        }
+        } else |_| {}
     }
 
     var pm = PackageManager.init(allocator) catch {
         // If no project, still allow login (global auth)
-        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);
 
-        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        auth_manager.* = try AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
         defer auth_manager.deinit();
 
         try auth_manager.login(registry, username, token);
@@ -1090,10 +1096,10 @@ fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     var pm = PackageManager.init(allocator) catch {
         // If no project, still allow logout (global auth)
-        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);
 
-        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        auth_manager.* = try AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
         defer auth_manager.deinit();
 
         try auth_manager.logout(registry);
@@ -1108,10 +1114,10 @@ fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 fn pkgWhoami(allocator: std.mem.Allocator) !void {
     var pm = PackageManager.init(allocator) catch {
         // If no project, check global auth
-        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);
 
-        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        auth_manager.* = try AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
         defer auth_manager.deinit();
 
         const registries = try auth_manager.listAuthenticated();

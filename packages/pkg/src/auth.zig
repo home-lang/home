@@ -85,24 +85,26 @@ pub const TokenStore = struct {
         const content = try file.readToEndAlloc(self.allocator, 1024 * 1024); // 1MB max
         defer self.allocator.free(content);
 
-        var parser = std.json.Parser.init(self.allocator, false);
-        defer parser.deinit();
+        const parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            self.allocator,
+            content,
+            .{},
+        );
+        defer parsed.deinit();
 
-        var tree = try parser.parse(content);
-        defer tree.deinit();
+        const root = parsed.value;
+        if (root != .object) return error.InvalidTokenFile;
 
-        const root = tree.root;
-        if (root != .Object) return error.InvalidTokenFile;
-
-        var obj_iter = root.Object.iterator();
+        var obj_iter = root.object.iterator();
         while (obj_iter.next()) |entry| {
             const registry = try self.allocator.dupe(u8, entry.key_ptr.*);
             errdefer self.allocator.free(registry);
 
             const token_obj = entry.value_ptr.*;
-            if (token_obj != .Object) continue;
+            if (token_obj != .object) continue;
 
-            const token = try self.parseToken(token_obj.Object);
+            const token = try self.parseToken(token_obj.object);
             try self.tokens.put(registry, token);
         }
     }
@@ -124,12 +126,11 @@ pub const TokenStore = struct {
 
         // Set restrictive permissions (owner read/write only)
         if (builtin.os.tag != .windows) {
-            try std.os.fchmod(file.handle, 0o600);
+            try std.posix.fchmod(file.handle, 0o600);
         }
 
         // Write JSON
-        var buffered = std.io.bufferedWriter(file.writer());
-        const writer = buffered.writer();
+        const writer = file.writer();
 
         try writer.writeAll("{\n");
 
@@ -166,7 +167,6 @@ pub const TokenStore = struct {
         }
 
         try writer.writeAll("\n}\n");
-        try buffered.flush();
 
         self.modified = false;
     }
@@ -244,12 +244,10 @@ pub const TokenStore = struct {
     fn getHomeDir(allocator: std.mem.Allocator) ![]const u8 {
         if (builtin.os.tag == .windows) {
             // Windows: Use USERPROFILE environment variable
-            const userprofile = std.os.getenv("USERPROFILE") orelse return error.NoHomeDir;
-            return allocator.dupe(u8, userprofile);
+            return std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return error.NoHomeDir;
         } else {
             // Unix-like: Use HOME environment variable
-            const home = std.os.getenv("HOME") orelse return error.NoHomeDir;
-            return allocator.dupe(u8, home);
+            return std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
         }
     }
 
@@ -262,11 +260,11 @@ pub const TokenStore = struct {
         const username = obj.get("username");
 
         return AuthToken{
-            .token = try self.allocator.dupe(u8, token_str.String),
-            .registry = try self.allocator.dupe(u8, registry_str.String),
-            .created_at = @intCast(created_at.Integer),
-            .expires_at = @intCast(expires_at.Integer),
-            .username = if (username) |u| try self.allocator.dupe(u8, u.String) else null,
+            .token = try self.allocator.dupe(u8, token_str.string),
+            .registry = try self.allocator.dupe(u8, registry_str.string),
+            .created_at = @intCast(created_at.integer),
+            .expires_at = @intCast(expires_at.integer),
+            .username = if (username) |u| try self.allocator.dupe(u8, u.string) else null,
         };
     }
 };
@@ -427,7 +425,6 @@ pub fn verifyToken(auth_manager: *AuthManager, registry: []const u8) !bool {
 
     // TODO: Implement actual token verification with registry
     // For now, just check if token exists and is not expired
-    _ = token;
 
     // In production, this would:
     // 1. GET {registry}/api/auth/verify with token

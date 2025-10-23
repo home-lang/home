@@ -327,24 +327,49 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_database_tests.step);
 
     // Parallel test runner with caching and benchmarking
-    const test_runner_exe = b.addExecutable(.{
-        .name = "ion-test",
+    // TODO: Fix ArrayList compilation issue in Zig 0.15.1
+    // const test_runner_pkg = createPackage(b, "packages/testing/src/test_runner.zig", target, optimize);
+
+    // const test_runner_exe = b.addExecutable(.{
+    //     .name = "ion-test",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("packages/testing/src/test_cli.zig"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //     }),
+    // });
+
+    // test_runner_exe.root_module.addImport("test_runner", test_runner_pkg);
+
+    // b.installArtifact(test_runner_exe);
+
+    // const run_test_runner = b.addRunArtifact(test_runner_exe);
+    // if (b.args) |args| {
+    //     run_test_runner.addArgs(args);
+    // }
+
+    // const test_parallel_step = b.step("test-parallel", "Run all tests in parallel with caching");
+    // test_parallel_step.dependOn(&run_test_runner.step);
+
+    // Parallel build demo
+    const parallel_build_demo = b.addExecutable(.{
+        .name = "parallel-build-demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/testing/src/test_cli.zig"),
+            .root_source_file = b.path("packages/build/src/parallel_build_demo.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
-    b.installArtifact(test_runner_exe);
+    b.installArtifact(parallel_build_demo);
 
-    const run_test_runner = b.addRunArtifact(test_runner_exe);
+    const run_parallel_build = b.addRunArtifact(parallel_build_demo);
     if (b.args) |args| {
-        run_test_runner.addArgs(args);
+        run_parallel_build.addArgs(args);
     }
 
-    const test_parallel_step = b.step("test-parallel", "Run all tests in parallel with caching");
-    test_parallel_step.dependOn(&run_test_runner.step);
+    const parallel_build_step = b.step("parallel-build", "Run parallel build demo");
+    parallel_build_step.dependOn(&run_parallel_build.step);
 
     // Lexer benchmark suite
     const lexer_bench = b.addExecutable(.{
