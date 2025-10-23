@@ -18,28 +18,34 @@ pub const ParseError = error{
 /// Operator precedence levels
 const Precedence = enum(u8) {
     None = 0,
-    Assignment = 1,  // =
-    Or = 2,          // ||
-    And = 3,         // &&
-    BitOr = 4,       // |
-    BitXor = 5,      // ^
-    BitAnd = 6,      // &
-    Equality = 7,    // == !=
-    Comparison = 8,  // < > <= >=
-    Range = 9,       // .. ..=
-    Shift = 10,      // << >>
-    Term = 11,       // + -
-    Factor = 12,     // * / %
-    Unary = 13,      // ! -
-    Call = 14,       // . () []
-    Primary = 15,
+    Assignment = 1,     // =
+    Ternary = 2,        // ?:
+    NullCoalesce = 3,   // ??
+    Or = 4,             // ||
+    And = 5,            // &&
+    BitOr = 6,          // |
+    BitXor = 7,         // ^
+    BitAnd = 8,         // &
+    Equality = 9,       // == !=
+    Comparison = 10,    // < > <= >=
+    Range = 11,         // .. ..=
+    Pipe = 12,          // |>
+    Shift = 13,         // << >>
+    Term = 14,          // + -
+    Factor = 15,        // * / %
+    Unary = 16,         // ! - ...
+    Call = 17,          // . () [] ?.
+    Primary = 18,
 
     fn fromToken(token_type: TokenType) Precedence {
         return switch (token_type) {
             .Equal => .Assignment,
+            .Question => .Ternary,
+            .QuestionQuestion => .NullCoalesce,
             .PipePipe, .Or => .Or,
             .AmpersandAmpersand, .And => .And,
             .Pipe => .BitOr,
+            .PipeGreater => .Pipe,
             .Caret => .BitXor,
             .Ampersand => .BitAnd,
             .EqualEqual, .BangEqual => .Equality,
@@ -48,7 +54,7 @@ const Precedence = enum(u8) {
             .LeftShift, .RightShift => .Shift,
             .Plus, .Minus => .Term,
             .Star, .Slash, .Percent => .Factor,
-            .LeftParen, .LeftBracket, .Dot => .Call,
+            .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
             else => .None,
         };
     }
@@ -99,6 +105,14 @@ pub const Parser = struct {
     /// Get current token without advancing
     fn peek(self: *Parser) Token {
         return self.tokens[self.current];
+    }
+
+    /// Get next token without advancing (lookahead)
+    fn peekNext(self: *Parser) Token {
+        if (self.current + 1 >= self.tokens.len) {
+            return self.tokens[self.tokens.len - 1]; // Return EOF token
+        }
+        return self.tokens[self.current + 1];
     }
 
     /// Get previous token
@@ -220,6 +234,7 @@ pub const Parser = struct {
     fn declaration(self: *Parser) ParseError!ast.Stmt {
         if (self.match(&.{.Struct})) return self.structDeclaration();
         if (self.match(&.{.Enum})) return self.enumDeclaration();
+        if (self.match(&.{.Union})) return self.unionDeclaration();
         if (self.match(&.{.Type})) return self.typeAliasDeclaration();
         if (self.match(&.{.Fn})) return self.functionDeclaration();
         if (self.match(&.{.Let})) return self.letDeclaration(false);
@@ -375,6 +390,52 @@ pub const Parser = struct {
         return ast.Stmt{ .EnumDecl = enum_decl };
     }
 
+    /// Parse a union declaration
+    fn unionDeclaration(self: *Parser) !ast.Stmt {
+        const union_token = self.previous();
+        const name_token = try self.expect(.Identifier, "Expected union name");
+        const name = name_token.lexeme;
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after union name");
+
+        var variants = std.ArrayList(ast.UnionVariant){};
+        defer variants.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            const variant_name = try self.expect(.Identifier, "Expected variant name");
+
+            // Check for associated data type
+            var type_name: ?[]const u8 = null;
+            if (self.match(&.{.LeftParen})) {
+                const type_token = try self.expect(.Identifier, "Expected type in variant data");
+                type_name = type_token.lexeme;
+                _ = try self.expect(.RightParen, "Expected ')' after variant data type");
+            }
+
+            try variants.append(self.allocator, .{
+                .name = variant_name.lexeme,
+                .type_name = type_name,
+            });
+
+            // Optional comma between variants
+            _ = self.match(&.{.Comma});
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after union variants");
+
+        const variants_slice = try variants.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(variants_slice);
+
+        const union_decl = try ast.UnionDecl.init(
+            self.allocator,
+            name,
+            variants_slice,
+            ast.SourceLocation.fromToken(union_token),
+        );
+
+        return ast.Stmt{ .UnionDecl = union_decl };
+    }
+
     /// Parse a type alias declaration
     fn typeAliasDeclaration(self: *Parser) !ast.Stmt {
         const type_token = self.previous();
@@ -432,7 +493,11 @@ pub const Parser = struct {
         if (self.match(&.{.Return})) return self.returnStatement();
         if (self.match(&.{.If})) return self.ifStatement();
         if (self.match(&.{.While})) return self.whileStatement();
+        if (self.match(&.{.Do})) return self.doWhileStatement();
         if (self.match(&.{.For})) return self.forStatement();
+        if (self.match(&.{.Switch})) return self.switchStatement();
+        if (self.match(&.{.Try})) return self.tryStatement();
+        if (self.match(&.{.Defer})) return self.deferStatement();
         if (self.match(&.{.LeftBrace})) {
             const block = try self.blockStatement();
             return ast.Stmt{ .BlockStmt = block };
@@ -529,6 +594,184 @@ pub const Parser = struct {
         return ast.Stmt{ .ForStmt = stmt };
     }
 
+    /// Parse a do-while statement
+    fn doWhileStatement(self: *Parser) !ast.Stmt {
+        const do_token = self.previous();
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        _ = try self.expect(.While, "Expected 'while' after do-while body");
+
+        const condition = try self.expression();
+        errdefer ast.Program.deinitExpr(condition, self.allocator);
+
+        const stmt = try ast.DoWhileStmt.init(
+            self.allocator,
+            body,
+            condition,
+            ast.SourceLocation.fromToken(do_token),
+        );
+
+        return ast.Stmt{ .DoWhileStmt = stmt };
+    }
+
+    /// Parse a switch statement
+    fn switchStatement(self: *Parser) ParseError!ast.Stmt {
+        const switch_token = self.previous();
+
+        const value = try self.expression();
+        errdefer ast.Program.deinitExpr(value, self.allocator);
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after switch value");
+
+        var cases = std.ArrayList(*ast.CaseClause){ .items = &.{}, .capacity = 0 };
+        defer cases.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            if (self.match(&.{.Case})) {
+                // Parse case patterns
+                var patterns = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                defer patterns.deinit(self.allocator);
+
+                // Parse first pattern
+                const first_pattern = try self.expression();
+                try patterns.append(self.allocator, first_pattern);
+
+                // Parse additional patterns separated by commas
+                while (self.match(&.{.Comma})) {
+                    const pattern = try self.expression();
+                    try patterns.append(self.allocator, pattern);
+                }
+
+                _ = try self.expect(.Colon, "Expected ':' after case pattern(s)");
+
+                // Parse case body (statements until next case/default/closing brace)
+                var body_stmts = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+                defer body_stmts.deinit(self.allocator);
+
+                while (!self.check(.Case) and !self.check(.Default) and !self.check(.RightBrace) and !self.isAtEnd()) {
+                    const stmt = try self.statement();
+                    try body_stmts.append(self.allocator, stmt);
+                }
+
+                const case_clause = try ast.CaseClause.init(
+                    self.allocator,
+                    try patterns.toOwnedSlice(self.allocator),
+                    try body_stmts.toOwnedSlice(self.allocator),
+                    false,
+                    ast.SourceLocation.fromToken(self.previous()),
+                );
+
+                try cases.append(self.allocator, case_clause);
+            } else if (self.match(&.{.Default})) {
+                _ = try self.expect(.Colon, "Expected ':' after 'default'");
+
+                // Parse default body
+                var body_stmts = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+                defer body_stmts.deinit(self.allocator);
+
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const stmt = try self.statement();
+                    try body_stmts.append(self.allocator, stmt);
+                }
+
+                const default_clause = try ast.CaseClause.init(
+                    self.allocator,
+                    &.{},
+                    try body_stmts.toOwnedSlice(self.allocator),
+                    true,
+                    ast.SourceLocation.fromToken(self.previous()),
+                );
+
+                try cases.append(self.allocator, default_clause);
+                break; // Default must be last
+            } else {
+                try self.reportError("Expected 'case' or 'default' in switch statement");
+                return error.UnexpectedToken;
+            }
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after switch cases");
+
+        const stmt = try ast.SwitchStmt.init(
+            self.allocator,
+            value,
+            try cases.toOwnedSlice(self.allocator),
+            ast.SourceLocation.fromToken(switch_token),
+        );
+
+        return ast.Stmt{ .SwitchStmt = stmt };
+    }
+
+    /// Parse a try-catch-finally statement
+    fn tryStatement(self: *Parser) !ast.Stmt {
+        const try_token = self.previous();
+
+        const try_block = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(try_block, self.allocator);
+
+        var catch_clauses = std.ArrayList(*ast.CatchClause){ .items = &.{}, .capacity = 0 };
+        defer catch_clauses.deinit(self.allocator);
+
+        // Parse catch clauses
+        while (self.match(&.{.Catch})) {
+            var error_name: ?[]const u8 = null;
+
+            // Optional error name in parentheses
+            if (self.match(&.{.LeftParen})) {
+                if (self.check(.Identifier)) {
+                    const error_token = self.advance();
+                    error_name = error_token.lexeme;
+                }
+                _ = try self.expect(.RightParen, "Expected ')' after error name");
+            }
+
+            const catch_body = try self.blockStatement();
+
+            const catch_clause = try ast.CatchClause.init(
+                self.allocator,
+                error_name,
+                catch_body,
+                ast.SourceLocation.fromToken(self.previous()),
+            );
+
+            try catch_clauses.append(self.allocator, catch_clause);
+        }
+
+        // Optional finally block
+        var finally_block: ?*ast.BlockStmt = null;
+        if (self.match(&.{.Finally})) {
+            finally_block = try self.blockStatement();
+        }
+
+        const stmt = try ast.TryStmt.init(
+            self.allocator,
+            try_block,
+            try catch_clauses.toOwnedSlice(self.allocator),
+            finally_block,
+            ast.SourceLocation.fromToken(try_token),
+        );
+
+        return ast.Stmt{ .TryStmt = stmt };
+    }
+
+    /// Parse a defer statement
+    fn deferStatement(self: *Parser) !ast.Stmt {
+        const defer_token = self.previous();
+
+        const body = try self.expression();
+        errdefer ast.Program.deinitExpr(body, self.allocator);
+
+        const stmt = try ast.DeferStmt.init(
+            self.allocator,
+            body,
+            ast.SourceLocation.fromToken(defer_token),
+        );
+
+        return ast.Stmt{ .DeferStmt = stmt };
+    }
+
     /// Parse a block statement
     fn blockStatement(self: *Parser) !*ast.BlockStmt {
         // Expect the opening brace (or use previous if already consumed)
@@ -616,6 +859,13 @@ pub const Parser = struct {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .DotDot, .DotDotEqual })) {
                 expr = try self.rangeExpr(expr);
+            } else if (self.match(&.{.PipeGreater})) {
+                expr = try self.pipeExpr(expr);
+            } else if (self.match(&.{.QuestionQuestion})) {
+                expr = try self.nullCoalesceExpr(expr);
+            } else if (self.check(.Question) and self.peekNext().type == .Colon) {
+                _ = self.advance(); // consume '?'
+                expr = try self.ternaryExpr(expr);
             } else if (self.match(&.{.Equal})) {
                 expr = try self.assignment(expr);
             } else if (self.match(&.{.LeftParen})) {
@@ -624,6 +874,8 @@ pub const Parser = struct {
                 expr = try self.indexExpr(expr);
             } else if (self.match(&.{.Dot})) {
                 expr = try self.memberExpr(expr);
+            } else if (self.match(&.{.QuestionDot})) {
+                expr = try self.safeNavExpr(expr);
             } else if (self.match(&.{.Question})) {
                 expr = try self.tryExpr(expr);
             } else {
@@ -844,6 +1096,80 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Parse a ternary expression (condition ? true_val : false_val)
+    fn ternaryExpr(self: *Parser, condition: *ast.Expr) !*ast.Expr {
+        const question_token = self.previous();
+
+        const true_val = try self.expression();
+        _ = try self.expect(.Colon, "Expected ':' after true branch of ternary expression");
+        const false_val = try self.parsePrecedence(.Ternary);
+
+        const ternary_expr = try ast.TernaryExpr.init(
+            self.allocator,
+            condition,
+            true_val,
+            false_val,
+            ast.SourceLocation.fromToken(question_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TernaryExpr = ternary_expr };
+        return result;
+    }
+
+    /// Parse a pipe expression (value |> function)
+    fn pipeExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
+        const pipe_token = self.previous();
+        const precedence = Precedence.fromToken(pipe_token.type);
+        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+
+        const pipe_expr = try ast.PipeExpr.init(
+            self.allocator,
+            left,
+            right,
+            ast.SourceLocation.fromToken(pipe_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .PipeExpr = pipe_expr };
+        return result;
+    }
+
+    /// Parse a null coalescing expression (value ?? default)
+    fn nullCoalesceExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
+        const null_token = self.previous();
+        const precedence = Precedence.fromToken(null_token.type);
+        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+
+        const null_coalesce_expr = try ast.NullCoalesceExpr.init(
+            self.allocator,
+            left,
+            right,
+            ast.SourceLocation.fromToken(null_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .NullCoalesceExpr = null_coalesce_expr };
+        return result;
+    }
+
+    /// Parse a safe navigation expression (object?.member)
+    fn safeNavExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
+        const safe_nav_token = self.previous();
+        const member_token = try self.expect(.Identifier, "Expected member name after '?.'");
+
+        const safe_nav_expr = try ast.SafeNavExpr.init(
+            self.allocator,
+            object,
+            member_token.lexeme,
+            ast.SourceLocation.fromToken(safe_nav_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .SafeNavExpr = safe_nav_expr };
+        return result;
+    }
+
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
         // Check for invalid tokens and report them clearly
@@ -939,6 +1265,22 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Spread operator
+        if (self.match(&.{.DotDotDot})) {
+            const spread_token = self.previous();
+            const operand = try self.parsePrecedence(.Unary);
+
+            const spread_expr = try ast.SpreadExpr.init(
+                self.allocator,
+                operand,
+                ast.SourceLocation.fromToken(spread_token),
+            );
+
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .SpreadExpr = spread_expr };
+            return expr;
+        }
+
         // Unary expressions
         if (self.match(&.{ .Bang, .Minus })) {
             const op_token = self.previous();
@@ -985,11 +1327,59 @@ pub const Parser = struct {
             return expr;
         }
 
-        // Grouping
+        // Grouping or tuple
         if (self.match(&.{.LeftParen})) {
-            const expr = try self.expression();
+            const paren_token = self.previous();
+
+            // Empty tuple ()
+            if (self.check(.RightParen)) {
+                _ = self.advance();
+                const tuple_expr = try ast.TupleExpr.init(
+                    self.allocator,
+                    &.{},
+                    ast.SourceLocation.fromToken(paren_token),
+                );
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .TupleExpr = tuple_expr };
+                return expr;
+            }
+
+            const first_expr = try self.expression();
+
+            // Check if it's a tuple (comma after first element)
+            if (self.match(&.{.Comma})) {
+                var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                defer elements.deinit(self.allocator);
+
+                try elements.append(self.allocator, first_expr);
+
+                // Parse remaining tuple elements
+                if (!self.check(.RightParen)) {
+                    while (true) {
+                        const elem = try self.expression();
+                        try elements.append(self.allocator, elem);
+                        if (!self.match(&.{.Comma})) break;
+                        // Allow trailing comma
+                        if (self.check(.RightParen)) break;
+                    }
+                }
+
+                _ = try self.expect(.RightParen, "Expected ')' after tuple elements");
+
+                const tuple_expr = try ast.TupleExpr.init(
+                    self.allocator,
+                    try elements.toOwnedSlice(self.allocator),
+                    ast.SourceLocation.fromToken(paren_token),
+                );
+
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .TupleExpr = tuple_expr };
+                return expr;
+            }
+
+            // Just a grouped expression
             _ = try self.expect(.RightParen, "Expected ')' after expression");
-            return expr;
+            return first_expr;
         }
 
         std.debug.print("Parse error at line {d}: Unexpected token '{s}'\n", .{ self.peek().line, self.peek().lexeme });

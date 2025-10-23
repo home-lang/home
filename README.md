@@ -8,7 +8,7 @@ A systems language that doesn't compromise: blazing compile times, memory safety
 
 ## ⚠️ Project Status
 
-**🚧 Active Development** (Phase 0 - Foundation)
+**🚧 Active Development**
 
 Ion is currently in the foundation phase with a working compiler infrastructure and core packages.
 
@@ -18,7 +18,6 @@ Ion is currently in the foundation phase with a working compiler infrastructure 
 - ✅ Package system with 24 core packages
 - ✅ Thorough test infrastructure
 - ✅ Standard library _(HTTP, Queue, Database)_
-- 🏗️ Full language features in progress
 
 **Follow Progress**: Watch this repo • [Discussions](../../discussions) • [Roadmap](./ROADMAP.md)
 
@@ -217,6 +216,7 @@ packages/
 ### ✅ Working Now
 
 #### HTTP Server (Laravel-style)
+
 ```ion
 import http_router { Router }
 
@@ -241,6 +241,7 @@ fn handler(req: Request) Response {
 ```
 
 #### Database Access (Native SQLite)
+
 ```ion
 import database { Connection }
 

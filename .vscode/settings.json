@@ -1,6 +1,10 @@
 {
     "cSpell.words": [
         "codegen",
-        "deinit"
+        "comptime",
+        "deinit",
+        "Laravel",
+        "stdlib",
+        "zyte"
     ]
 }
