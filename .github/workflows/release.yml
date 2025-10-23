@@ -8,25 +8,46 @@ on:
 jobs:
   build-ion-binaries:
     name: Build Ion Compiler Binaries
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-linux
+          # Linux builds (cross-compile from Ubuntu)
+          - runner: ubuntu-latest
+            target: x86_64-linux-gnu
             artifact-name: ion-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-linux
+            binary-name: ion
+            ext: ''
+          - runner: ubuntu-latest
+            target: aarch64-linux-gnu
             artifact-name: ion-linux-arm64
-          - os: macos-latest
+            binary-name: ion
+            ext: ''
+
+          # macOS builds (native builds)
+          - runner: macos-13  # Intel Mac
             target: x86_64-macos
             artifact-name: ion-darwin-x64
-          - os: macos-latest
+            binary-name: ion
+            ext: ''
+          - runner: macos-14  # Apple Silicon Mac
             target: aarch64-macos
             artifact-name: ion-darwin-arm64
-          - os: windows-latest
-            target: x86_64-windows
+            binary-name: ion
+            ext: ''
+
+          # Windows builds (native + cross-compile)
+          - runner: windows-latest
+            target: x86_64-windows-msvc
             artifact-name: ion-windows-x64
+            binary-name: ion
+            ext: '.exe'
+          - runner: ubuntu-latest
+            target: aarch64-windows-gnu
+            artifact-name: ion-windows-arm64
+            binary-name: ion
+            ext: '.exe'
 
     steps:
       - uses: actions/checkout@v5
@@ -44,23 +65,47 @@ jobs:
         with:
           version: '0.15.1'
 
-      - name: Build Ion Compiler
+      - name: Verify Zig Installation
+        run: zig version
+
+      - name: Build Ion Compiler (Native)
+        if: matrix.runner == matrix.runner && (matrix.target == 'x86_64-linux-gnu' || matrix.target == 'x86_64-macos' || matrix.target == 'aarch64-macos' || matrix.target == 'x86_64-windows-msvc')
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Run Tests
+      - name: Build Ion Compiler (Cross-compile)
+        if: matrix.target == 'aarch64-linux-gnu' || matrix.target == 'aarch64-windows-gnu'
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Run Tests (Native builds only)
+        if: matrix.target == 'x86_64-linux-gnu' || matrix.target == 'x86_64-macos' || matrix.target == 'aarch64-macos' || matrix.target == 'x86_64-windows-msvc'
         run: zig build test --summary all
 
-      - name: Package Binary
+      - name: Package Binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p release
-          cp zig-out/bin/ion* release/ || true
-          cd release && zip -r ../${{ matrix.artifact-name }}.zip . && cd ..
+          cp zig-out/bin/${{ matrix.binary-name }}${{ matrix.ext }} release/
+          chmod +x release/${{ matrix.binary-name }}${{ matrix.ext }}
+          cd release
+          tar -czf ../${{ matrix.artifact-name }}.tar.gz .
+          cd ..
+
+      - name: Package Binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item zig-out/bin/${{ matrix.binary-name }}${{ matrix.ext }} release/
+          Compress-Archive -Path release/* -DestinationPath ${{ matrix.artifact-name }}.zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.artifact-name }}.zip
+          path: |
+            ${{ matrix.artifact-name }}.tar.gz
+            ${{ matrix.artifact-name }}.zip
+          if-no-files-found: ignore
 
   npm:
     name: npm
@@ -104,15 +149,11 @@ jobs:
         uses: stacksjs/action-releaser@v1.2.6
         with:
           files: |
-            ion-binaries/ion-linux-x64/ion-linux-x64.zip
-            ion-binaries/ion-linux-arm64/ion-linux-arm64.zip
-            ion-binaries/ion-windows-x64/ion-windows-x64.zip
-            ion-binaries/ion-darwin-x64/ion-darwin-x64.zip
-            ion-binaries/ion-darwin-arm64/ion-darwin-arm64.zip
-            packages/stx/bin/stx-linux-x64.zip
-            packages/stx/bin/stx-linux-arm64.zip
-            packages/stx/bin/stx-windows-x64.zip
-            packages/stx/bin/stx-darwin-x64.zip
-            packages/stx/bin/stx-darwin-arm64.zip
+            ion-binaries/ion-linux-x64/*.tar.gz
+            ion-binaries/ion-linux-arm64/*.tar.gz
+            ion-binaries/ion-windows-x64/*.zip
+            ion-binaries/ion-windows-arm64/*.zip
+            ion-binaries/ion-darwin-x64/*.tar.gz
+            ion-binaries/ion-darwin-arm64/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

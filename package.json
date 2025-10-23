@@ -22,6 +22,12 @@
     "programming",
     "compiler"
   ],
+  "scripts": {
+    "release": "bunx bumpx -r --all"
+  },
+  "devDependencies": {
+    "better-dx": "^0.2.0"
+  },
   "workspaces": [
     "./packages/vscode-ion",
     "./packages/action"

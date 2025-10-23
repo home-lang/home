@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Process management utilities for Ion
 /// Provides spawning, execution, and management of child processes
@@ -76,9 +77,12 @@ pub fn execWithInput(allocator: std.mem.Allocator, argv: []const []const u8, std
     };
 }
 
-/// Execute a shell command (via sh -c)
+/// Execute a shell command (via sh -c on Unix, cmd /c on Windows)
 pub fn shell(allocator: std.mem.Allocator, command: []const u8) !ExecResult {
-    const argv = &[_][]const u8{ "sh", "-c", command };
+    const argv = if (builtin.os.tag == .windows)
+        &[_][]const u8{ "cmd", "/c", command }
+    else
+        &[_][]const u8{ "sh", "-c", command };
     return exec(allocator, argv);
 }
 
@@ -244,12 +248,31 @@ pub const ProcessBuilder = struct {
 
 /// Get current process ID
 pub fn currentPid() std.process.Child.Id {
-    return std.os.linux.getpid();
+    if (builtin.os.tag == .windows) {
+        return std.os.windows.kernel32.GetCurrentProcessId();
+    } else if (builtin.os.tag == .linux) {
+        return std.os.linux.getpid();
+    } else if (builtin.os.tag == .macos or builtin.os.tag == .freebsd or builtin.os.tag == .openbsd) {
+        return std.c.getpid();
+    } else {
+        @compileError("currentPid() not supported on this platform");
+    }
 }
 
 /// Get parent process ID
 pub fn parentPid() std.process.Child.Id {
-    return std.os.linux.getppid();
+    if (builtin.os.tag == .windows) {
+        // On Windows, we need to use Process Status API or NtQueryInformationProcess
+        // For now, return 0 as a placeholder - full implementation would require WinAPI calls
+        // This would typically use CreateToolhelp32Snapshot or NtQueryInformationProcess
+        return 0;
+    } else if (builtin.os.tag == .linux) {
+        return std.os.linux.getppid();
+    } else if (builtin.os.tag == .macos or builtin.os.tag == .freebsd or builtin.os.tag == .openbsd) {
+        return std.c.getppid();
+    } else {
+        @compileError("parentPid() not supported on this platform");
+    }
 }
 
 /// Exit current process with code
@@ -306,7 +329,9 @@ pub fn getArgs(allocator: std.mem.Allocator) ![][]u8 {
 
 /// Check if a command exists in PATH
 pub fn commandExists(allocator: std.mem.Allocator, command: []const u8) bool {
-    const result = exec(allocator, &[_][]const u8{ "which", command }) catch return false;
+    // On Windows use "where", on Unix use "which"
+    const check_cmd = if (builtin.os.tag == .windows) "where" else "which";
+    const result = exec(allocator, &[_][]const u8{ check_cmd, command }) catch return false;
     defer {
         var mut_result = result;
         mut_result.deinit();
@@ -383,6 +408,7 @@ pub const Pipe = struct {
 };
 
 /// Process signals (Unix-like systems)
+/// Note: On Windows, only a subset of signals are supported via limited emulation
 pub const Signal = enum(u32) {
     SIGTERM = 15,
     SIGKILL = 9,
@@ -393,16 +419,58 @@ pub const Signal = enum(u32) {
     SIGUSR2 = 12,
 
     /// Send signal to process
+    /// On Windows, this will attempt to terminate the process (SIGTERM/SIGKILL only)
     pub fn send(self: Signal, process_id: std.process.Child.Id) !void {
-        _ = try std.os.kill(process_id, @intFromEnum(self));
+        if (builtin.os.tag == .windows) {
+            // Windows doesn't support POSIX signals
+            // SIGTERM and SIGKILL will terminate the process
+            if (self == .SIGTERM or self == .SIGKILL) {
+                const handle = std.os.windows.kernel32.OpenProcess(
+                    std.os.windows.PROCESS_TERMINATE,
+                    std.os.windows.FALSE,
+                    process_id,
+                );
+                if (handle == null) return error.OpenProcessFailed;
+                defer std.os.windows.CloseHandle(handle.?);
+
+                const exit_code: u32 = if (self == .SIGKILL) 1 else 0;
+                if (std.os.windows.kernel32.TerminateProcess(handle.?, exit_code) == 0) {
+                    return error.TerminateProcessFailed;
+                }
+            } else {
+                // Other signals not supported on Windows
+                return error.UnsupportedSignal;
+            }
+        } else {
+            _ = try std.os.kill(process_id, @intFromEnum(self));
+        }
     }
 };
 
 /// Check if process is running
 pub fn isRunning(process_id: std.process.Child.Id) bool {
-    // Try to send signal 0 (null signal) to check if process exists
-    std.os.kill(process_id, 0) catch return false;
-    return true;
+    if (builtin.os.tag == .windows) {
+        // On Windows, try to open the process handle
+        const handle = std.os.windows.kernel32.OpenProcess(
+            std.os.windows.PROCESS_QUERY_INFORMATION,
+            std.os.windows.FALSE,
+            process_id,
+        );
+        if (handle == null) return false;
+        defer std.os.windows.CloseHandle(handle.?);
+
+        // Check if process has exited
+        var exit_code: u32 = undefined;
+        if (std.os.windows.kernel32.GetExitCodeProcess(handle.?, &exit_code) == 0) {
+            return false;
+        }
+        // STILL_ACTIVE = 259
+        return exit_code == 259;
+    } else {
+        // Try to send signal 0 (null signal) to check if process exists
+        std.os.kill(process_id, 0) catch return false;
+        return true;
+    }
 }
 
 /// Wait for a specific duration

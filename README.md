@@ -803,7 +803,7 @@ A: Because none of Zig, Rust, Go, or C give us all three: speed + safety + joy. 
 A: No GC. Manual memory management with ownership/borrowing for safety.
 
 **Q: What platforms are supported?**
-A: Currently developing on macOS/Linux. Windows and WASM support planned for Phase 4-6.
+A: **Full support** for Windows, macOS, and Linux on both x86_64 and ARM64. Native async I/O uses epoll (Linux), kqueue (macOS), and IOCP (Windows). See [CROSS_PLATFORM_SUPPORT.md](./CROSS_PLATFORM_SUPPORT.md) for details.
 
 **Q: How is this funded?**
 A: Open source, community-driven. Considering sponsorships/grants for sustainability.

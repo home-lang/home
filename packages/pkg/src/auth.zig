@@ -40,7 +40,9 @@ pub const TokenStore = struct {
     modified: bool,
 
     /// Default config directory name
-    const CONFIG_DIR = ".ion";
+    /// On Windows: "Ion" (goes in APPDATA)
+    /// On Unix: ".ion" (goes in HOME)
+    const CONFIG_DIR = if (builtin.os.tag == .windows) "Ion" else ".ion";
     /// Default token file name
     const TOKEN_FILE = "auth.json";
 
@@ -127,6 +129,11 @@ pub const TokenStore = struct {
         // Set restrictive permissions (owner read/write only)
         if (builtin.os.tag != .windows) {
             try std.posix.fchmod(file.handle, 0o600);
+        } else {
+            // On Windows, the file is created with default permissions
+            // For production use, should implement proper ACL restrictions
+            // using SetSecurityInfo or similar Windows APIs
+            // This would restrict access to the current user only
         }
 
         // Write JSON
@@ -240,11 +247,14 @@ pub const TokenStore = struct {
         return std.fs.path.join(allocator, &.{ config_dir, TOKEN_FILE });
     }
 
-    /// Get the user's home directory
+    /// Get the user's home directory or config directory
     fn getHomeDir(allocator: std.mem.Allocator) ![]const u8 {
         if (builtin.os.tag == .windows) {
-            // Windows: Use USERPROFILE environment variable
-            return std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return error.NoHomeDir;
+            // Windows: Use APPDATA for application data
+            // Falls back to USERPROFILE if APPDATA is not set
+            return std.process.getEnvVarOwned(allocator, "APPDATA") catch blk: {
+                break :blk std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return error.NoHomeDir;
+            };
         } else {
             // Unix-like: Use HOME environment variable
             return std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;

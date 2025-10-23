@@ -1,22 +1,33 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const async_runtime = @import("async_runtime.zig");
 const executor = @import("executor.zig");
 
-/// Async I/O reactor using epoll (Linux) or kqueue (BSD/macOS)
+/// Async I/O reactor using epoll (Linux), kqueue (BSD/macOS), or IOCP (Windows)
 pub const IoReactor = struct {
     allocator: std.mem.Allocator,
-    poll_fd: std.posix.fd_t,
+    poll_fd: if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t,
     events: std.ArrayList(Event),
-    registrations: std.AutoHashMap(std.posix.fd_t, Registration),
+    registrations: if (builtin.os.tag == .windows)
+        std.AutoHashMap(std.os.windows.SOCKET, Registration)
+    else
+        std.AutoHashMap(std.posix.fd_t, Registration),
     running: bool,
 
     const MAX_EVENTS = 1024;
 
     pub fn init(allocator: std.mem.Allocator) !IoReactor {
-        const poll_fd = if (std.Target.current.os.tag == .linux)
+        const poll_fd = if (builtin.os.tag == .linux)
             try std.posix.epoll_create1(0)
-        else if (std.Target.current.os.tag == .macos)
+        else if (builtin.os.tag == .macos)
             try std.posix.kqueue()
+        else if (builtin.os.tag == .windows)
+            try std.os.windows.CreateIoCompletionPort(
+                std.os.windows.INVALID_HANDLE_VALUE,
+                null,
+                0,
+                0,
+            )
         else
             return error.UnsupportedPlatform;
 
@@ -24,20 +35,27 @@ pub const IoReactor = struct {
             .allocator = allocator,
             .poll_fd = poll_fd,
             .events = std.ArrayList(Event).init(allocator),
-            .registrations = std.AutoHashMap(std.posix.fd_t, Registration).init(allocator),
+            .registrations = if (builtin.os.tag == .windows)
+                std.AutoHashMap(std.os.windows.SOCKET, Registration).init(allocator)
+            else
+                std.AutoHashMap(std.posix.fd_t, Registration).init(allocator),
             .running = false,
         };
     }
 
     pub fn deinit(self: *IoReactor) void {
-        std.posix.close(self.poll_fd);
+        if (builtin.os.tag == .windows) {
+            std.os.windows.CloseHandle(self.poll_fd);
+        } else {
+            std.posix.close(self.poll_fd);
+        }
         self.events.deinit();
         self.registrations.deinit();
     }
 
     /// Register a file descriptor for I/O events
-    pub fn register(self: *IoReactor, fd: std.posix.fd_t, interests: Interests, waker: async_runtime.Waker) !void {
-        if (std.Target.current.os.tag == .linux) {
+    pub fn register(self: *IoReactor, fd: if (builtin.os.tag == .windows) std.os.windows.SOCKET else std.posix.fd_t, interests: Interests, waker: async_runtime.Waker) !void {
+        if (builtin.os.tag == .linux) {
             var event = std.os.linux.epoll_event{
                 .events = 0,
                 .data = .{ .fd = @intCast(fd) },
@@ -53,7 +71,7 @@ pub const IoReactor = struct {
                 fd,
                 &event,
             );
-        } else if (std.Target.current.os.tag == .macos) {
+        } else if (builtin.os.tag == .macos) {
             var changes: [2]std.posix.Kevent = undefined;
             var n_changes: usize = 0;
 
@@ -82,6 +100,14 @@ pub const IoReactor = struct {
             }
 
             _ = try std.posix.kevent(self.poll_fd, changes[0..n_changes], &[_]std.posix.Kevent{}, null);
+        } else if (builtin.os.tag == .windows) {
+            // On Windows, associate the socket with the IOCP
+            _ = try std.os.windows.CreateIoCompletionPort(
+                @ptrFromInt(@as(usize, @intCast(fd))),
+                self.poll_fd,
+                fd,
+                0,
+            );
         }
 
         try self.registrations.put(fd, .{
@@ -91,15 +117,15 @@ pub const IoReactor = struct {
     }
 
     /// Deregister a file descriptor
-    pub fn deregister(self: *IoReactor, fd: std.posix.fd_t) !void {
-        if (std.Target.current.os.tag == .linux) {
+    pub fn deregister(self: *IoReactor, fd: if (builtin.os.tag == .windows) std.os.windows.SOCKET else std.posix.fd_t) !void {
+        if (builtin.os.tag == .linux) {
             try std.posix.epoll_ctl(
                 self.poll_fd,
                 std.os.linux.EPOLL.CTL_DEL,
                 fd,
                 null,
             );
-        } else if (std.Target.current.os.tag == .macos) {
+        } else if (builtin.os.tag == .macos) {
             var changes = [_]std.posix.Kevent{
                 .{
                     .ident = @intCast(fd),
@@ -120,6 +146,9 @@ pub const IoReactor = struct {
             };
 
             _ = try std.posix.kevent(self.poll_fd, &changes, &[_]std.posix.Kevent{}, null);
+        } else if (builtin.os.tag == .windows) {
+            // On Windows, IOCP doesn't need explicit deregistration
+            // The socket will be removed when closed
         }
 
         _ = self.registrations.remove(fd);
@@ -129,7 +158,7 @@ pub const IoReactor = struct {
     pub fn poll(self: *IoReactor, timeout_ms: ?i32) !usize {
         var ready_count: usize = 0;
 
-        if (std.Target.current.os.tag == .linux) {
+        if (builtin.os.tag == .linux) {
             var events: [MAX_EVENTS]std.os.linux.epoll_event = undefined;
 
             const n = std.posix.epoll_wait(
@@ -150,7 +179,7 @@ pub const IoReactor = struct {
                     }
                 }
             }
-        } else if (std.Target.current.os.tag == .macos) {
+        } else if (builtin.os.tag == .macos) {
             var events: [MAX_EVENTS]std.posix.Kevent = undefined;
 
             const timespec = if (timeout_ms) |ms| std.posix.timespec{
@@ -169,6 +198,38 @@ pub const IoReactor = struct {
                 const fd: std.posix.fd_t = @intCast(event.ident);
 
                 if (self.registrations.get(fd)) |registration| {
+                    registration.waker.wake();
+                    ready_count += 1;
+                }
+            }
+        } else if (builtin.os.tag == .windows) {
+            // Windows IOCP implementation
+            var overlapped_entries: [MAX_EVENTS]std.os.windows.OVERLAPPED_ENTRY = undefined;
+            var num_entries: u32 = 0;
+
+            const timeout: u32 = if (timeout_ms) |ms| @intCast(ms) else std.os.windows.INFINITE;
+
+            const result = std.os.windows.kernel32.GetQueuedCompletionStatusEx(
+                self.poll_fd,
+                &overlapped_entries,
+                MAX_EVENTS,
+                &num_entries,
+                timeout,
+                std.os.windows.FALSE,
+            );
+
+            if (result == std.os.windows.FALSE) {
+                const err = std.os.windows.kernel32.GetLastError();
+                if (err == .WAIT_TIMEOUT) {
+                    return 0;
+                }
+                return error.WindowsIOCPError;
+            }
+
+            for (overlapped_entries[0..num_entries]) |entry| {
+                const socket: std.os.windows.SOCKET = @intCast(entry.lpCompletionKey);
+
+                if (self.registrations.get(socket)) |registration| {
                     registration.waker.wake();
                     ready_count += 1;
                 }
@@ -193,7 +254,7 @@ pub const IoReactor = struct {
 };
 
 pub const Event = struct {
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) std.os.windows.SOCKET else std.posix.fd_t,
     readable: bool,
     writable: bool,
 };
@@ -210,7 +271,7 @@ pub const Registration = struct {
 
 /// Async TCP listener
 pub const TcpListener = struct {
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) std.os.windows.SOCKET else std.posix.fd_t,
     reactor: *IoReactor,
 
     pub fn bind(allocator: std.mem.Allocator, address: std.net.Address, reactor: *IoReactor) !TcpListener {
@@ -290,7 +351,7 @@ pub const TcpListener = struct {
 
 /// Async TCP stream
 pub const TcpStream = struct {
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) std.os.windows.SOCKET else std.posix.fd_t,
     reactor: *IoReactor,
 
     pub fn connect(allocator: std.mem.Allocator, address: std.net.Address, reactor: *IoReactor) !TcpStream {
@@ -387,7 +448,7 @@ fn wakeCallback(waker: *async_runtime.Waker) void {
 
 /// Async file operations
 pub const File = struct {
-    fd: std.posix.fd_t,
+    fd: if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t,
     reactor: *IoReactor,
 
     pub fn open(path: []const u8, flags: std.fs.File.OpenFlags, reactor: *IoReactor) !File {

@@ -86,9 +86,24 @@ jobs:
   build-and-test-ion:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        zig-version: ['0.15.1']
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            platform: linux
+          - os: ubuntu-latest
+            arch: aarch64
+            platform: linux
+          - os: macos-latest
+            arch: x86_64
+            platform: macos
+          - os: macos-latest
+            arch: aarch64
+            platform: macos
+          - os: windows-latest
+            arch: x86_64
+            platform: windows
 
     steps:
       - uses: actions/checkout@v5
@@ -102,31 +117,63 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: ${{ matrix.zig-version }}
+          version: '0.15.1'
 
       - name: Verify Zig Installation
         run: zig version
 
-      - name: Build Ion Compiler
+      - name: Build Ion Compiler (Native)
+        if: matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')
         run: zig build
 
-      - name: Run Zig Unit Tests
+      - name: Build Ion Compiler (Cross-compile)
+        if: matrix.arch == 'aarch64' && matrix.os != 'macos-latest'
+        run: zig build -Dtarget=${{ matrix.arch }}-${{ matrix.platform }}
+
+      - name: Run Zig Unit Tests (Native only)
+        if: matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')
         run: zig build test --summary all
 
-      - name: Run Integration Tests
+      - name: Run Integration Tests (Unix)
+        if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |
           chmod +x tests/integration/test_runner.sh
           ./tests/integration/test_runner.sh
 
-      - name: Test Native Codegen
+      - name: Run Integration Tests (Windows)
+        if: matrix.platform == 'windows' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          chmod +x tests/integration/test_runner.sh
+          ./tests/integration/test_runner.sh
+
+      - name: Test Native Codegen (Unix)
+        if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |
           ./zig-out/bin/ion parse tests/integration/11_ternary_advanced.ion
           ./zig-out/bin/ion parse tests/integration/17_switch_advanced.ion
           ./zig-out/bin/ion parse tests/integration/20_combined_features.ion
 
-      - name: Upload Ion Binary
+      - name: Test Native Codegen (Windows)
+        if: matrix.platform == 'windows' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          ./zig-out/bin/ion.exe parse tests/integration/11_ternary_advanced.ion
+          ./zig-out/bin/ion.exe parse tests/integration/17_switch_advanced.ion
+          ./zig-out/bin/ion.exe parse tests/integration/20_combined_features.ion
+
+      - name: Upload Ion Binary (Unix)
+        if: matrix.platform != 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ion-${{ matrix.os }}
+          name: ion-${{ matrix.platform }}-${{ matrix.arch }}
           path: zig-out/bin/ion
+          retention-days: 7
+
+      - name: Upload Ion Binary (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ion-${{ matrix.platform }}-${{ matrix.arch }}
+          path: zig-out/bin/ion.exe
           retention-days: 7
