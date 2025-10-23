@@ -199,6 +199,119 @@ pub const Interpreter = struct {
                 // Arena allocator will clean up
                 _ = value;
             },
+            .DoWhileStmt => |do_while| {
+                // Execute body first
+                while (true) {
+                    // Execute body
+                    for (do_while.body.statements) |body_stmt| {
+                        self.executeStatement(body_stmt, env) catch |err| {
+                            if (err == error.Return) return err;
+                            return err;
+                        };
+                    }
+
+                    // Then check condition
+                    const condition = try self.evaluateExpression(do_while.condition, env);
+                    if (!condition.isTrue()) break;
+                }
+            },
+            .SwitchStmt => |switch_stmt| {
+                const switch_value = try self.evaluateExpression(switch_stmt.value, env);
+
+                // Find matching case
+                var matched = false;
+                for (switch_stmt.cases) |case_clause| {
+                    if (case_clause.is_default) {
+                        // Default case - execute if no other match
+                        if (!matched) {
+                            for (case_clause.body) |body_stmt| {
+                                self.executeStatement(body_stmt, env) catch |err| {
+                                    if (err == error.Return) return err;
+                                    return err;
+                                };
+                            }
+                        }
+                    } else {
+                        // Check if any pattern matches
+                        for (case_clause.patterns) |pattern| {
+                            const pattern_value = try self.evaluateExpression(pattern, env);
+                            if (try self.areEqual(switch_value, pattern_value)) {
+                                // Execute case body
+                                for (case_clause.body) |body_stmt| {
+                                    self.executeStatement(body_stmt, env) catch |err| {
+                                        if (err == error.Return) return err;
+                                        return err;
+                                    };
+                                }
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (matched) break;
+                    }
+                }
+            },
+            .TryStmt => |try_stmt| {
+                // Execute try block
+                var try_failed = false;
+                for (try_stmt.try_block.statements) |try_body_stmt| {
+                    self.executeStatement(try_body_stmt, env) catch |err| {
+                        if (err == error.Return) return err;
+                        // On any error, mark as failed and break
+                        try_failed = true;
+                        break;
+                    };
+                }
+
+                // If try failed, execute first catch clause
+                if (try_failed and try_stmt.catch_clauses.len > 0) {
+                    const catch_clause = try_stmt.catch_clauses[0];
+
+                    // Create new scope for error variable if present
+                    if (catch_clause.error_name) |error_name| {
+                        var catch_env = Environment.init(self.arena.allocator(), env);
+                        defer catch_env.deinit();
+
+                        // Define error variable with string value
+                        try catch_env.define(error_name, Value{ .String = "error" });
+
+                        for (catch_clause.body.statements) |catch_body_stmt| {
+                            self.executeStatement(catch_body_stmt, &catch_env) catch |err| {
+                                if (err == error.Return) return err;
+                                return err;
+                            };
+                        }
+                    } else {
+                        for (catch_clause.body.statements) |catch_body_stmt| {
+                            self.executeStatement(catch_body_stmt, env) catch |err| {
+                                if (err == error.Return) return err;
+                                return err;
+                            };
+                        }
+                    }
+                }
+
+                // Always execute finally block if present
+                if (try_stmt.finally_block) |finally_block| {
+                    for (finally_block.statements) |finally_stmt| {
+                        self.executeStatement(finally_stmt, env) catch |err| {
+                            if (err == error.Return) return err;
+                            return err;
+                        };
+                    }
+                }
+            },
+            .DeferStmt => |defer_stmt| {
+                // For a full implementation, we'd need a defer stack
+                // For now, just evaluate the expression (simplified)
+                // In a real implementation, this would be executed at scope exit
+                _ = try self.evaluateExpression(defer_stmt.body, env);
+            },
+            .UnionDecl => |_| {
+                // Union declarations are type-level constructs
+                // They don't execute any runtime code
+                // Type checking handles this
+            },
             else => {
                 std.debug.print("Unimplemented statement type\n", .{});
                 return error.RuntimeError;
@@ -335,6 +448,105 @@ pub const Interpreter = struct {
 
                 std.debug.print("Struct has no field '{s}'\n", .{member.member});
                 return error.RuntimeError;
+            },
+            .TernaryExpr => |ternary| {
+                const condition = try self.evaluateExpression(ternary.condition, env);
+                if (condition.isTrue()) {
+                    return try self.evaluateExpression(ternary.true_val, env);
+                } else {
+                    return try self.evaluateExpression(ternary.false_val, env);
+                }
+            },
+            .NullCoalesceExpr => |null_coalesce| {
+                const left = try self.evaluateExpression(null_coalesce.left, env);
+                // If left is not null/void, return it; otherwise return right
+                if (left == .Void) {
+                    return try self.evaluateExpression(null_coalesce.right, env);
+                }
+                return left;
+            },
+            .PipeExpr => |pipe| {
+                // Evaluate the left side (the value to pipe)
+                const value = try self.evaluateExpression(pipe.left, env);
+
+                // Right side should be a call expression - we'll modify it to include the piped value
+                if (pipe.right.* == .CallExpr) {
+                    const call = pipe.right.CallExpr;
+
+                    // For simplicity, we'll just evaluate the function with the piped value
+                    // In a full implementation, we'd properly construct the new call with piped value as first arg
+                    // For now, we'll evaluate the call and assume it handles the piped value
+                    return try self.evaluateCallExpression(call, env);
+                } else if (pipe.right.* == .Identifier) {
+                    // Function reference - call it with the piped value
+                    const func_name = pipe.right.Identifier.name;
+                    if (env.get(func_name)) |func_value| {
+                        if (func_value == .Function) {
+                            const func = func_value.Function;
+
+                            // Create new environment for function with piped value as first param
+                            var func_env = Environment.init(self.arena.allocator(), env);
+                            defer func_env.deinit();
+
+                            // Define first parameter with piped value
+                            if (func.params.len > 0) {
+                                try func_env.define(func.params[0].name, value);
+                            }
+
+                            // Execute function body
+                            for (func.body.statements) |stmt| {
+                                self.executeStatement(stmt, &func_env) catch |err| {
+                                    if (err == error.Return) {
+                                        const ret_val = self.return_value.?;
+                                        self.return_value = null;
+                                        return ret_val;
+                                    }
+                                    return err;
+                                };
+                            }
+
+                            return Value.Void;
+                        }
+                    }
+                }
+
+                std.debug.print("Pipe right side must be a function\n", .{});
+                return error.TypeMismatch;
+            },
+            .SafeNavExpr => |safe_nav| {
+                const object_value = try self.evaluateExpression(safe_nav.object, env);
+
+                // If object is void/null, return void
+                if (object_value == .Void) {
+                    return Value.Void;
+                }
+
+                // Otherwise, access the member
+                if (object_value != .Struct) {
+                    std.debug.print("Cannot use safe navigation on non-struct value\n", .{});
+                    return error.TypeMismatch;
+                }
+
+                if (object_value.Struct.fields.get(safe_nav.member)) |field_value| {
+                    return field_value;
+                }
+
+                // Field doesn't exist - return void instead of error
+                return Value.Void;
+            },
+            .SpreadExpr => |spread| {
+                // Spread just evaluates to the underlying array/tuple
+                // The containing expression (array literal, call, etc.) handles the spreading
+                return try self.evaluateExpression(spread.operand, env);
+            },
+            .TupleExpr => |tuple| {
+                // Evaluate all tuple elements
+                var elements = try self.arena.allocator().alloc(Value, tuple.elements.len);
+                for (tuple.elements, 0..) |elem, i| {
+                    elements[i] = try self.evaluateExpression(elem, env);
+                }
+                // Store tuple as an array for now (in a full implementation, we'd have a Tuple value type)
+                return Value{ .Array = elements };
             },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});

@@ -2,7 +2,7 @@
 
 > **The speed of Zig. The safety of Rust. The joy of TypeScript.**
 
-A systems language that doesn't compromise: blazing compile times, memory safety without ceremony, and APIs that spark joy.
+A systems & application language that doesn't compromise: blazing compile times, memory safety without ceremony, and APIs that spark joy.
 
 ---
 
