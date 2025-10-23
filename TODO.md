@@ -310,20 +310,20 @@
 - [x] Create `createPackage()` helper function
 - [x] Remove duplicated module creation code
 - [x] Add build mode variants (debug, release-safe, release-small)
-- [ ] Add conditional compilation flags
+- [x] Add conditional compilation flags
 
 #### 7.2 Add Build Targets
 - [x] Add `zig build debug` target
 - [x] Add `zig build release-safe` target
 - [x] Add `zig build release-small` target
 - [x] Add `zig build bench` target (already exists)
-- [ ] Add `zig build docs` target
+- [x] Add `zig build docs` target
 
 #### 7.3 Version Management
-- [ ] Create version sync script
-- [ ] Centralize version in root ion.toml
-- [ ] Update all package versions from root
-- [ ] Add version validation
+- [x] Create version sync script
+- [x] Centralize version in root ion.toml
+- [x] Update all package versions from root
+- [x] Add version validation
 
 ### 8. Complete Unfinished Features (1 week)
 
@@ -333,7 +333,7 @@
 - [x] Implement `*=` operator
 - [x] Implement `/=` operator
 - [x] Implement `%=` operator
-- [ ] Add tests for compound assignments
+- [x] Add tests for compound assignments
 - [x] Remove TODO comment (feature implemented via desugaring)
 
 #### 8.2 Debug Adapter Real Implementation
@@ -360,8 +360,8 @@
 |----------|-------|-----------|------------|
 | **Critical** | 60 | 56 | 93% |
 | **High Priority** | 89 | 90 | 101%* |
-| **Medium Priority** | 47 | 25 | 53% |
-| **Total** | 196 | 171 | 87% |
+| **Medium Priority** | 47 | 32 | 68% |
+| **Total** | 196 | 178 | 91% |
 
 *Over 100% due to completing more tasks than originally estimated
 

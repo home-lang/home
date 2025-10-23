@@ -439,3 +439,83 @@ test "parser: multiple statements" {
     try testing.expect(program.statements[1] == .LetDecl);
     try testing.expect(program.statements[2] == .ReturnStmt);
 }
+
+test "parser: compound assignment += operator" {
+    const program = try parseSource(testing.allocator, "x += 5");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .ExprStmt);
+
+    const expr = stmt.ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+
+    // Compound assignment is desugared to: x = x + 5
+    const assign = expr.AssignmentExpr;
+    try testing.expect(assign.target.* == .Identifier);
+    try testing.expect(assign.value.* == .BinaryExpr);
+
+    const bin_expr = assign.value.BinaryExpr;
+    try testing.expectEqual(ast.BinaryOp.Add, bin_expr.op);
+}
+
+test "parser: compound assignment -= operator" {
+    const program = try parseSource(testing.allocator, "count -= 1");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+
+    const assign = expr.AssignmentExpr;
+    try testing.expect(assign.value.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.Sub, assign.value.BinaryExpr.op);
+}
+
+test "parser: compound assignment *= operator" {
+    const program = try parseSource(testing.allocator, "total *= 2");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+    try testing.expectEqual(ast.BinaryOp.Mul, expr.AssignmentExpr.value.BinaryExpr.op);
+}
+
+test "parser: compound assignment /= operator" {
+    const program = try parseSource(testing.allocator, "value /= 10");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+    try testing.expectEqual(ast.BinaryOp.Div, expr.AssignmentExpr.value.BinaryExpr.op);
+}
+
+test "parser: compound assignment %= operator" {
+    const program = try parseSource(testing.allocator, "remainder %= 3");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+    try testing.expectEqual(ast.BinaryOp.Mod, expr.AssignmentExpr.value.BinaryExpr.op);
+}
+
+test "parser: compound assignment with complex expression" {
+    const program = try parseSource(testing.allocator, "x += y * 2");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .AssignmentExpr);
+
+    const assign = expr.AssignmentExpr;
+    try testing.expect(assign.value.* == .BinaryExpr);
+
+    const add_expr = assign.value.BinaryExpr;
+    try testing.expectEqual(ast.BinaryOp.Add, add_expr.op);
+
+    // Right side should be y * 2
+    try testing.expect(add_expr.right.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.Mul, add_expr.right.BinaryExpr.op);
+}

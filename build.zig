@@ -18,10 +18,24 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Zyte integration option
+    // Build options for conditional compilation
     const enable_zyte = b.option(bool, "zyte", "Enable Zyte integration") orelse false;
     const zyte_path = b.option([]const u8, "zyte-path", "Path to Zyte library") orelse
         "../zyte/packages/zig";
+
+    // Debugging and diagnostics
+    const debug_logging = b.option(bool, "debug-log", "Enable verbose debug logging") orelse false;
+    const memory_tracking = b.option(bool, "track-memory", "Enable memory allocation tracking") orelse false;
+
+    // Performance options
+    const enable_ir_cache = b.option(bool, "ir-cache", "Enable IR caching for faster recompilation") orelse true;
+    const parallel_build = b.option(bool, "parallel", "Enable parallel compilation") orelse true;
+
+    // Safety options
+    const extra_safety = b.option(bool, "extra-safety", "Enable additional runtime safety checks") orelse (optimize == .Debug);
+
+    // Profiling
+    const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
 
     // Create package modules using helper function
     const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize);
@@ -72,6 +86,19 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     exe.root_module.addImport("queue", queue_pkg);
     exe.root_module.addImport("database", database_pkg);
+
+    // Create build options module for conditional compilation
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_zyte", enable_zyte);
+    build_options.addOption(bool, "debug_logging", debug_logging);
+    build_options.addOption(bool, "memory_tracking", memory_tracking);
+    build_options.addOption(bool, "enable_ir_cache", enable_ir_cache);
+    build_options.addOption(bool, "parallel_build", parallel_build);
+    build_options.addOption(bool, "extra_safety", extra_safety);
+    build_options.addOption(bool, "enable_profiling", enable_profiling);
+
+    // Add build options to executable
+    exe.root_module.addImport("build_options", build_options.createModule());
 
     // Link Zyte if enabled
     if (enable_zyte) {
@@ -512,4 +539,14 @@ pub fn build(b: *std.Build) void {
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
     const release_small_step = b.step("release-small", "Build Ion compiler in ReleaseSmall mode (optimized for size)");
     release_small_step.dependOn(&install_release_small.step);
+
+    // Documentation generation
+    const docs_install = b.addInstallDirectory(.{
+        .source_dir = exe.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Generate documentation for Ion");
+    docs_step.dependOn(&docs_install.step);
 }

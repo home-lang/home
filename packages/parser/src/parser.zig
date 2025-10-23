@@ -42,7 +42,7 @@ const Precedence = enum(u8) {
 
     fn fromToken(token_type: TokenType) Precedence {
         return switch (token_type) {
-            .Equal => .Assignment,
+            .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
             .Question => .Ternary,
             .QuestionQuestion => .NullCoalesce,
             .PipePipe, .Or => .Or,
@@ -1312,11 +1312,16 @@ pub const Parser = struct {
             else => unreachable,
         };
 
+        // Clone the target for use in the binary expression
+        // (we need target twice: once in the binary expr, once in the assignment)
+        const target_copy = try self.allocator.create(ast.Expr);
+        target_copy.* = target.*;
+
         // Create binary expression: target <op> rhs
         const bin_expr = try ast.BinaryExpr.init(
             self.allocator,
             bin_op,
-            target,
+            target_copy,
             rhs,
             loc,
         );
