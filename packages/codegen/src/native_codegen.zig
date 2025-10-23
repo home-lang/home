@@ -516,6 +516,7 @@ pub const NativeCodegen = struct {
         // Record function position
         const func_pos = self.assembler.getPosition();
         const name_copy = try self.allocator.dupe(u8, func.name);
+        errdefer self.allocator.free(name_copy);
         try self.functions.put(name_copy, func_pos);
 
         // Function prologue
@@ -548,6 +549,7 @@ pub const NativeCodegen = struct {
 
             // Store variable name and offset
             const name = try self.allocator.dupe(u8, decl.name);
+            errdefer self.allocator.free(name);
             try self.locals.put(name, offset);
 
             // Push rax onto stack

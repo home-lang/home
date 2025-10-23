@@ -183,6 +183,7 @@ pub const QueryBuilder = struct {
 
     pub fn set(self: *QueryBuilder, column: []const u8, value: []const u8) !*QueryBuilder {
         const set_str = try std.fmt.allocPrint(self.allocator, "{s} = {s}", .{ column, value });
+        errdefer self.allocator.free(set_str);
         try self.update_sets.append(self.allocator, set_str);
         return self;
     }
@@ -322,6 +323,7 @@ pub const QueryBuilder = struct {
     fn appendLimit(self: *QueryBuilder, sql: *std.ArrayList(u8)) !void {
         if (self.limit_value) |limit_val| {
             const limit_str = try std.fmt.allocPrint(self.allocator, " LIMIT {d}", .{limit_val});
+            errdefer self.allocator.free(limit_str);
             defer self.allocator.free(limit_str);
             try sql.appendSlice(self.allocator, limit_str);
         }
@@ -330,6 +332,7 @@ pub const QueryBuilder = struct {
     fn appendOffset(self: *QueryBuilder, sql: *std.ArrayList(u8)) !void {
         if (self.offset_value) |offset_val| {
             const offset_str = try std.fmt.allocPrint(self.allocator, " OFFSET {d}", .{offset_val});
+            errdefer self.allocator.free(offset_str);
             defer self.allocator.free(offset_str);
             try sql.appendSlice(self.allocator, offset_str);
         }
@@ -346,20 +349,33 @@ pub const ConnectionPool = struct {
     db_path: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, max_connections: usize) !ConnectionPool {
+        const db_path_copy = try allocator.dupe(u8, db_path);
+        errdefer allocator.free(db_path_copy);
+
         var pool = ConnectionPool{
             .allocator = allocator,
             .connections = std.ArrayList(*Connection){},
             .available = std.ArrayList(*Connection){},
             .mutex = std.Thread.Mutex{},
             .max_connections = max_connections,
-            .db_path = try allocator.dupe(u8, db_path),
+            .db_path = db_path_copy,
         };
+        errdefer {
+            for (pool.connections.items) |conn| {
+                conn.close();
+                allocator.destroy(conn);
+            }
+            pool.connections.deinit(allocator);
+            pool.available.deinit(allocator);
+        }
 
         // Pre-create connections
         var i: usize = 0;
         while (i < max_connections) : (i += 1) {
             const conn = try allocator.create(Connection);
+            errdefer allocator.destroy(conn);
             conn.* = try Connection.open(allocator, db_path);
+            errdefer conn.close();
             try pool.connections.append(allocator, conn);
             try pool.available.append(allocator, conn);
         }

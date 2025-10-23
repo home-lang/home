@@ -216,6 +216,7 @@ pub const PatternChecker = struct {
     /// Find missing patterns for better error messages
     fn findMissingPatterns(self: *PatternChecker, typ: types.Type, coverage: *PatternCoverage) ![][]const u8 {
         var missing = std.ArrayList([]const u8).init(self.allocator);
+        errdefer missing.deinit();
 
         switch (typ) {
             .Bool => {

@@ -412,6 +412,7 @@ pub const TypeChecker = struct {
     fn registerBuiltins(self: *TypeChecker) !void {
         // Create static Void type for return types
         const void_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(void_type);
         void_type.* = Type.Void;
         try self.allocated_types.append(self.allocator, void_type);
 
@@ -426,6 +427,7 @@ pub const TypeChecker = struct {
 
         // assert: fn(bool) -> void
         const assert_params = try self.allocator.alloc(Type, 1);
+        errdefer self.allocator.free(assert_params);
         try self.allocated_slices.append(self.allocator, assert_params);
         assert_params[0] = Type.Bool;
         const assert_type = Type{
@@ -439,6 +441,7 @@ pub const TypeChecker = struct {
 
     fn collectFunctionSignature(self: *TypeChecker, fn_decl: *const ast.FnDecl) !void {
         var param_types = try self.allocator.alloc(Type, fn_decl.params.len);
+        errdefer self.allocator.free(param_types);
         try self.allocated_slices.append(self.allocator, param_types);
 
         for (fn_decl.params, 0..) |param, i| {
@@ -446,6 +449,7 @@ pub const TypeChecker = struct {
         }
 
         const return_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(return_type);
         try self.allocated_types.append(self.allocator, return_type);
         if (fn_decl.return_type) |rt| {
             return_type.* = try self.parseTypeName(rt);
@@ -923,7 +927,9 @@ pub const TypeChecker = struct {
             // Empty array - we'll infer type from context or default to void array
             // For now, return an array of void (not very useful, but valid)
             const elem_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(elem_type);
             elem_type.* = Type.Void;
+            try self.allocated_types.append(self.allocator, elem_type);
             return Type{ .Array = .{ .element_type = elem_type } };
         }
 
@@ -941,7 +947,9 @@ pub const TypeChecker = struct {
 
         // Create array type with element type
         const elem_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(elem_type);
         elem_type.* = first_type;
+        try self.allocated_types.append(self.allocator, elem_type);
         return Type{ .Array = .{ .element_type = elem_type } };
     }
 
@@ -1112,6 +1120,7 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, field.name, safe_nav.member)) {
                 // Return the field type wrapped in Optional
                 const field_type_ptr = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(field_type_ptr);
                 field_type_ptr.* = field.type;
                 try self.allocated_types.append(self.allocator, field_type_ptr);
                 return Type{ .Optional = field_type_ptr };
@@ -1124,6 +1133,7 @@ pub const TypeChecker = struct {
             "Struct '{s}' has no field '{s}'",
             .{ actual_type.Struct.name, safe_nav.member },
         );
+        errdefer self.allocator.free(err_msg);
         try self.addError(err_msg, safe_nav.node.loc);
         self.allocator.free(err_msg);
         return error.TypeMismatch;
@@ -1150,6 +1160,7 @@ pub const TypeChecker = struct {
 
         // Infer types of all elements
         var element_types = try self.allocator.alloc(Type, tuple.elements.len);
+        errdefer self.allocator.free(element_types);
         try self.allocated_slices.append(self.allocator, element_types);
 
         for (tuple.elements, 0..) |elem, i| {
@@ -1172,6 +1183,7 @@ pub const TypeChecker = struct {
             const inner_type_name = name[5..];
             const inner_type = try self.parseTypeName(inner_type_name);
             const inner_ptr = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(inner_ptr);
             inner_ptr.* = inner_type;
             try self.allocated_types.append(self.allocator, inner_ptr);
             return Type{ .MutableReference = inner_ptr };
@@ -1181,6 +1193,7 @@ pub const TypeChecker = struct {
             const inner_type_name = name[1..];
             const inner_type = try self.parseTypeName(inner_type_name);
             const inner_ptr = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(inner_ptr);
             inner_ptr.* = inner_type;
             try self.allocated_types.append(self.allocator, inner_ptr);
             return Type{ .Reference = inner_ptr };
@@ -1194,10 +1207,12 @@ pub const TypeChecker = struct {
                 // For now, return a generic Result type
                 // Full implementation would parse the generic parameters
                 const ok_type = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(ok_type);
                 ok_type.* = Type.Void;
                 try self.allocated_types.append(self.allocator, ok_type);
 
                 const err_type = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(err_type);
                 err_type.* = Type.Void;
                 try self.allocated_types.append(self.allocator, err_type);
 
@@ -1219,6 +1234,7 @@ pub const TypeChecker = struct {
 
     fn addError(self: *TypeChecker, message: []const u8, loc: ast.SourceLocation) !void {
         const msg = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
     }
 };
@@ -1246,6 +1262,7 @@ pub const TypeEnvironment = struct {
 
     pub fn define(self: *TypeEnvironment, name: []const u8, typ: Type) !void {
         const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
         try self.bindings.put(name_copy, typ);
     }
 

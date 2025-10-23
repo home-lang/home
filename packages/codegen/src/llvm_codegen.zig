@@ -236,6 +236,8 @@ pub const LLVMCodegen = struct {
 
             // Allocate stack space for variable
             const temp = try self.getNextTemp();
+            errdefer self.allocator.free(temp);
+
             const var_type = try self.mapTypeToLLVM(let_decl.type_name);
             try writer.print("  {s} = alloca {s}\n", .{ temp, var_type });
 
@@ -280,8 +282,13 @@ pub const LLVMCodegen = struct {
 
         // Create labels
         const then_label = try self.getNextLabel("then");
+        errdefer self.allocator.free(then_label);
+
         const else_label = try self.getNextLabel("else");
+        errdefer self.allocator.free(else_label);
+
         const end_label = try self.getNextLabel("end");
+        errdefer self.allocator.free(end_label);
 
         // Branch based on condition
         if (if_stmt.else_branch) |_| {
@@ -406,6 +413,7 @@ pub const LLVMCodegen = struct {
     fn generateCall(self: *LLVMCodegen, call_expr: *ast.CallExpr) ![]const u8 {
         const writer = self.output.writer();
         const result = try self.getNextTemp();
+        errdefer self.allocator.free(result);
 
         // Get callee name
         const callee_name = switch (call_expr.callee.*) {
@@ -415,6 +423,7 @@ pub const LLVMCodegen = struct {
 
         // Generate arguments
         var args = std.ArrayList([]const u8).init(self.allocator);
+        errdefer args.deinit();
         defer args.deinit();
 
         for (call_expr.arguments) |arg| {
@@ -465,12 +474,14 @@ pub const LLVMCodegen = struct {
 
     fn getNextTemp(self: *LLVMCodegen) ![]const u8 {
         const temp = try std.fmt.allocPrint(self.allocator, "%{d}", .{self.temp_counter});
+        errdefer self.allocator.free(temp);
         self.temp_counter += 1;
         return temp;
     }
 
     fn getNextLabel(self: *LLVMCodegen, prefix: []const u8) ![]const u8 {
         const label = try std.fmt.allocPrint(self.allocator, "{s}.{d}", .{ prefix, self.label_counter });
+        errdefer self.allocator.free(label);
         self.label_counter += 1;
         return label;
     }

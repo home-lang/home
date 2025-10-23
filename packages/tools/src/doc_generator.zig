@@ -38,11 +38,13 @@ pub const DocGenerator = struct {
 
         // Read source file
         const source = try std.fs.cwd().readFileAlloc(self.allocator, file_path, 10 * 1024 * 1024);
+        errdefer self.allocator.free(source);
         defer self.allocator.free(source);
 
         // Parse file
         var lex = lexer.Lexer.init(source);
         var tokens = std.ArrayList(lexer.Token).init(self.allocator);
+        errdefer tokens.deinit();
         defer tokens.deinit();
 
         while (true) {
@@ -76,10 +78,13 @@ pub const DocGenerator = struct {
                         "{s}\n{s}",
                         .{ doc, comment },
                     );
+                    errdefer self.allocator.free(new_doc);
                     self.allocator.free(doc);
                     current_doc = new_doc;
                 } else {
-                    current_doc = try self.allocator.dupe(u8, comment);
+                    const doc = try self.allocator.dupe(u8, comment);
+                    errdefer self.allocator.free(doc);
+                    current_doc = doc;
                 }
                 continue;
             }

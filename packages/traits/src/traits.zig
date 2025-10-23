@@ -79,10 +79,19 @@ pub const TraitSystem = struct {
         super_traits: []const []const u8,
         generic_params: []const []const u8,
     ) !void {
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+
+        const methods_copy = try self.allocator.dupe(TraitDef.MethodSignature, methods);
+        errdefer self.allocator.free(methods_copy);
+
+        const associated_types_copy = try self.allocator.dupe(TraitDef.AssociatedType, associated_types);
+        errdefer self.allocator.free(associated_types_copy);
+
         const trait_def = TraitDef{
-            .name = try self.allocator.dupe(u8, name),
-            .methods = try self.allocator.dupe(TraitDef.MethodSignature, methods),
-            .associated_types = try self.allocator.dupe(TraitDef.AssociatedType, associated_types),
+            .name = name_copy,
+            .methods = methods_copy,
+            .associated_types = associated_types_copy,
             .super_traits = super_traits,
             .generic_params = generic_params,
         };
@@ -117,10 +126,19 @@ pub const TraitSystem = struct {
             }
         }
 
+        const trait_name_copy = try self.allocator.dupe(u8, trait_name);
+        errdefer self.allocator.free(trait_name_copy);
+
+        const for_type_copy = try self.allocator.dupe(u8, for_type);
+        errdefer self.allocator.free(for_type_copy);
+
+        const methods_copy = try self.allocator.dupe(TraitImpl.MethodImpl, methods);
+        errdefer self.allocator.free(methods_copy);
+
         const impl = TraitImpl{
-            .trait_name = try self.allocator.dupe(u8, trait_name),
-            .for_type = try self.allocator.dupe(u8, for_type),
-            .methods = try self.allocator.dupe(TraitImpl.MethodImpl, methods),
+            .trait_name = trait_name_copy,
+            .for_type = for_type_copy,
+            .methods = methods_copy,
             .associated_types = std.StringHashMap([]const u8).init(self.allocator),
         };
 
@@ -162,12 +180,19 @@ pub const TraitSystem = struct {
     fn generateVTable(self: *TraitSystem, trait_name: []const u8, type_name: []const u8) !void {
         const impl = self.getImplementation(type_name, trait_name) orelse return error.NoImplementation;
 
+        const trait_name_copy = try self.allocator.dupe(u8, trait_name);
+        errdefer self.allocator.free(trait_name_copy);
+
+        const type_name_copy = try self.allocator.dupe(u8, type_name);
+        errdefer self.allocator.free(type_name_copy);
+
         var vtable = VTable{
-            .trait_name = try self.allocator.dupe(u8, trait_name),
-            .type_name = try self.allocator.dupe(u8, type_name),
+            .trait_name = trait_name_copy,
+            .type_name = type_name_copy,
             .methods = std.StringHashMap(usize).init(self.allocator),
             .destructor = null,
         };
+        errdefer vtable.methods.deinit();
 
         // Build method table
         for (impl.methods, 0..) |method, i| {
@@ -175,6 +200,7 @@ pub const TraitSystem = struct {
         }
 
         const key = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ type_name, trait_name });
+        errdefer self.allocator.free(key);
         try self.vtables.put(key, vtable);
     }
 
@@ -199,6 +225,7 @@ pub const TraitSystem = struct {
         data: *anyopaque,
     ) !TraitObject {
         const key = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ type_name, trait_name });
+        errdefer self.allocator.free(key);
         defer self.allocator.free(key);
 
         const vtable = self.vtables.getPtr(key) orelse return error.NoVTable;

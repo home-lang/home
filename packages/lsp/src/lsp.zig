@@ -182,7 +182,10 @@ pub const LanguageServer = struct {
     /// Handle document open
     pub fn didOpenTextDocument(self: *LanguageServer, uri: []const u8, text: []const u8, version: i32) !void {
         const uri_copy = try self.allocator.dupe(u8, uri);
+        errdefer self.allocator.free(uri_copy);
+
         const text_copy = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(text_copy);
 
         var doc = Document{
             .uri = uri_copy,
@@ -191,6 +194,7 @@ pub const LanguageServer = struct {
             .ast = null,
             .diagnostics = std.ArrayList(Diagnostic).init(self.allocator),
         };
+        errdefer doc.diagnostics.deinit();
 
         // Parse and analyze
         try self.analyzeDocument(&doc);
@@ -201,8 +205,13 @@ pub const LanguageServer = struct {
     /// Handle document change
     pub fn didChangeTextDocument(self: *LanguageServer, uri: []const u8, text: []const u8, version: i32) !void {
         if (self.documents.getPtr(uri)) |doc| {
-            self.allocator.free(doc.text);
+            const old_text = doc.text;
             doc.text = try self.allocator.dupe(u8, text);
+            errdefer {
+                self.allocator.free(doc.text);
+                doc.text = old_text;
+            };
+            self.allocator.free(old_text);
             doc.version = version;
             doc.diagnostics.clearRetainingCapacity();
 
@@ -232,18 +241,23 @@ pub const LanguageServer = struct {
         }
 
         // Parse
-        var parser = parser_mod.Parser.init(self.allocator, try tokens.toOwnedSlice());
+        const tokens_slice = try tokens.toOwnedSlice();
+        errdefer self.allocator.free(tokens_slice);
+
+        var parser = parser_mod.Parser.init(self.allocator, tokens_slice);
         defer parser.deinit();
 
         const program = parser.parse() catch |err| {
             // Add parse error as diagnostic
+            const err_msg = try std.fmt.allocPrint(self.allocator, "Parse error: {}", .{err});
+            errdefer self.allocator.free(err_msg);
             try doc.diagnostics.append(.{
                 .range = .{
                     .start = .{ .line = 0, .character = 0 },
                     .end = .{ .line = 0, .character = 0 },
                 },
                 .severity = .Error,
-                .message = try std.fmt.allocPrint(self.allocator, "Parse error: {}", .{err}),
+                .message = err_msg,
                 .source = "ion-lsp",
             });
             return;
@@ -263,7 +277,7 @@ pub const LanguageServer = struct {
         _ = doc;
 
         var items = std.ArrayList(CompletionItem).init(self.allocator);
-        defer items.deinit();
+        errdefer items.deinit();
 
         // Keywords
         const keywords = [_][]const u8{
@@ -329,7 +343,7 @@ pub const LanguageServer = struct {
         const doc = self.documents.get(uri) orelse return &[_]SymbolInformation{};
 
         var symbols = std.ArrayList(SymbolInformation).init(self.allocator);
-        defer symbols.deinit();
+        errdefer symbols.deinit();
 
         if (doc.ast) |program| {
             for (program.statements) |stmt| {
