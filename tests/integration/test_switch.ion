@@ -1,0 +1,67 @@
+// Integration test for switch/case statements
+
+// Basic switch
+let day = 3;
+switch day {
+    case 1: {
+        print("Monday");
+    },
+    case 2: {
+        print("Tuesday");
+    },
+    case 3: {
+        print("Wednesday");
+    },
+    default: {
+        print("Other day");
+    }
+}
+
+// Switch with multiple patterns per case
+let grade = 85;
+switch grade {
+    case 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100: {
+        print("A");
+    },
+    case 80, 81, 82, 83, 84, 85, 86, 87, 88, 89: {
+        print("B");
+    },
+    case 70, 71, 72, 73, 74, 75, 76, 77, 78, 79: {
+        print("C");
+    },
+    default: {
+        print("F");
+    }
+}
+
+// Switch with expressions in cases
+let x = 5;
+let doubled = x * 2;
+switch doubled {
+    case 10: {
+        print("Correct!");
+    },
+    default: {
+        print("Incorrect");
+    }
+}
+
+// Switch in function
+fn getDayName(day: int) -> string {
+    switch day {
+        case 1: {
+            return "Monday";
+        },
+        case 2: {
+            return "Tuesday";
+        },
+        default: {
+            return "Unknown";
+        }
+    }
+    return "Never reached";
+}
+
+let dayName = getDayName(2);
+
+print("✓ All switch/case tests passed!");

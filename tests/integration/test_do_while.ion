@@ -1,0 +1,33 @@
+// Integration test for do-while loops
+
+// Basic do-while
+let count = 0;
+do {
+    count = count + 1;
+} while count < 5;
+assert(count == 5);
+
+// Do-while with complex condition
+let sum = 0;
+let i = 1;
+do {
+    sum = sum + i;
+    i = i + 1;
+} while i <= 10;
+assert(sum == 55);
+
+// Do-while executes at least once
+let executed = false;
+do {
+    executed = true;
+} while false;
+assert(executed == true);
+
+// Do-while with break condition
+let n = 0;
+do {
+    n = n + 2;
+} while n < 100;
+assert(n >= 100);
+
+print("✓ All do-while loop tests passed!");

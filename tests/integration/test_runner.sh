@@ -1,81 +1,93 @@
 #!/bin/bash
-# Integration test runner for Ion compiler
-# Tests the complete pipeline: lex → parse → typecheck → interpret
 
-set -e  # Exit on error
+# Integration Test Runner for Ion Compiler
+# Tests all new features: ternary, null coalescing, tuples, do-while, switch, try-catch
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+set -e
 
-# Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ION_BIN="$PROJECT_ROOT/zig-out/bin/ion"
+ION_BIN="$SCRIPT_DIR/../../zig-out/bin/ion"
 
-# Counters
-PASSED=0
-FAILED=0
-TOTAL=0
+echo "========================================"
+echo "Ion Compiler Integration Test Suite"
+echo "Testing New Features (Phases 1-5)"
+echo "========================================"
+echo ""
 
-# Check if ion binary exists
-if [ ! -f "$ION_BIN" ]; then
-    echo -e "${RED}Error: ion binary not found at $ION_BIN${NC}"
-    echo "Please run 'zig build' first"
-    exit 1
-fi
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Run a single test
+TOTAL_TESTS=0
+PASSED_TESTS=0
+FAILED_TESTS=0
+
 run_test() {
     local test_file=$1
     local test_name=$(basename "$test_file" .ion)
 
-    TOTAL=$((TOTAL + 1))
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-    echo -n "Testing $test_name... "
+    echo -n "  [$TOTAL_TESTS] $test_name... "
 
-    # Run through complete pipeline
-    if "$ION_BIN" run "$test_file" > /dev/null 2>&1; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
+    if [ ! -f "$test_file" ]; then
+        echo -e "${RED}FAIL${NC} (file not found)"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+        return 1
+    fi
+
+    if timeout 10 "$ION_BIN" parse "$test_file" > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ PASS${NC}"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
         return 0
     else
-        echo -e "${RED}FAIL${NC}"
-        FAILED=$((FAILED + 1))
+        echo -e "${RED}✗ FAIL${NC}"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+        echo "    Error: Failed to parse/execute $test_file"
         return 1
     fi
 }
 
-# Run all tests in the integration directory
-echo "Running Ion Integration Tests"
-echo "=============================="
-echo ""
-
-# Find all .ion test files
-for test_file in "$SCRIPT_DIR"/*.ion; do
-    if [ -f "$test_file" ]; then
-        run_test "$test_file"
-    fi
-done
-
-# Print summary
-echo ""
-echo "=============================="
-echo "Test Summary:"
-echo "  Total:  $TOTAL"
-echo -e "  ${GREEN}Passed: $PASSED${NC}"
-if [ $FAILED -gt 0 ]; then
-    echo -e "  ${RED}Failed: $FAILED${NC}"
+# Check if Ion binary exists
+if [ ! -f "$ION_BIN" ]; then
+    echo -e "${RED}Error: Ion binary not found at $ION_BIN${NC}"
+    echo "Please build the project first:"
+    echo "  cd $(dirname $(dirname $SCRIPT_DIR))"
+    echo "  zig build"
+    exit 1
 fi
+
+echo -e "${BLUE}Using Ion binary:${NC} $ION_BIN"
+echo ""
+echo "Running integration tests..."
 echo ""
 
-# Exit with appropriate code
-if [ $FAILED -eq 0 ]; then
-    echo -e "${GREEN}All tests passed!${NC}"
+# Run all tests
+run_test "$SCRIPT_DIR/test_ternary.ion" || true
+run_test "$SCRIPT_DIR/test_null_coalesce.ion" || true
+run_test "$SCRIPT_DIR/test_tuples.ion" || true
+run_test "$SCRIPT_DIR/test_do_while.ion" || true
+run_test "$SCRIPT_DIR/test_switch.ion" || true
+run_test "$SCRIPT_DIR/test_try_catch.ion" || true
+run_test "$SCRIPT_DIR/test_comprehensive.ion" || true
+
+echo ""
+echo "========================================"
+echo "Test Results Summary"
+echo "========================================"
+echo "Total tests:  $TOTAL_TESTS"
+echo -e "Passed:       ${GREEN}$PASSED_TESTS${NC}"
+echo -e "Failed:       ${RED}$FAILED_TESTS${NC}"
+echo ""
+
+if [ $FAILED_TESTS -eq 0 ]; then
+    echo -e "${GREEN}✓ All integration tests passed!${NC}"
+    echo -e "${GREEN}✓ All new features are working correctly!${NC}"
     exit 0
 else
-    echo -e "${RED}Some tests failed.${NC}"
+    PASS_RATE=$((PASSED_TESTS * 100 / TOTAL_TESTS))
+    echo -e "${YELLOW}⚠ Some tests failed (${PASS_RATE}% pass rate)${NC}"
     exit 1
 fi

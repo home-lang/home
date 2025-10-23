@@ -1,0 +1,30 @@
+// Integration test for tuple expressions
+
+// Empty tuple
+let empty = ();
+
+// Single element tuple
+let single = (42,);
+
+// Two element tuple (pair)
+let pair = (1, 2);
+
+// Three element tuple (triple)
+let point = (10, 20, 30);
+
+// Tuple with mixed expressions
+let a = 5;
+let b = 10;
+let mixed = (a + b, a * b, a - b);
+
+// Tuple with function calls
+fn double(x: int) -> int {
+    return x * 2;
+}
+
+let withFunc = (double(5), double(10));
+
+// Nested tuples
+let nested = ((1, 2), (3, 4));
+
+print("✓ All tuple tests passed!");

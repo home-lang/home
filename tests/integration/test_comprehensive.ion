@@ -1,0 +1,92 @@
+// Comprehensive integration test combining multiple new features
+
+// Test 1: Ternary with do-while
+let count = 0;
+do {
+    count = count + 1;
+} while count < (count > 3 ? 5 : 10);
+assert(count >= 5);
+
+// Test 2: Switch with ternary
+let score = 85;
+let letter = "";
+switch score {
+    case 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100: {
+        letter = score > 95 ? "A+" : "A";
+    },
+    case 80, 81, 82, 83, 84, 85, 86, 87, 88, 89: {
+        letter = score > 85 ? "B+" : "B";
+    },
+    default: {
+        letter = "C";
+    }
+}
+
+// Test 3: Try-catch with tuples
+try {
+    let point = (10, 20);
+    let coords = (point, (30, 40));
+} catch (err) {
+    print("Error with tuples");
+}
+
+// Test 4: Function using multiple features
+fn processValue(val: int) -> int {
+    let result = 0;
+
+    // Use ternary
+    result = val > 0 ? val : -val;
+
+    // Use do-while
+    let iterations = 0;
+    do {
+        result = result + 1;
+        iterations = iterations + 1;
+    } while iterations < 3;
+
+    // Use switch
+    switch result {
+        case 0, 1, 2: {
+            result = result * 2;
+        },
+        default: {
+            result = result + 10;
+        }
+    }
+
+    return result;
+}
+
+let finalResult = processValue(-5);
+assert(finalResult > 0);
+
+// Test 5: Complex control flow
+fn fibonacci(n: int) -> int {
+    // Use ternary for base case
+    return n <= 1 ? n : fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+let fib5 = fibonacci(5);
+assert(fib5 == 5);
+
+// Test 6: Nested structures
+let outer = 0;
+do {
+    switch outer {
+        case 0, 1: {
+            try {
+                let inner = outer * 2;
+                let tuple = (inner, outer);
+            } catch {
+                print("Error in nested structure");
+            }
+        },
+        default: {
+            let other = outer > 5 ? 10 : 0;
+        }
+    }
+    outer = outer + 1;
+} while outer < 3;
+
+print("✓ All comprehensive integration tests passed!");
+print("✓ All new features working together correctly!");

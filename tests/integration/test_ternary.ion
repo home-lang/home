@@ -1,0 +1,38 @@
+// Integration test for ternary operator
+
+// Basic ternary
+let a = 5;
+let b = 10;
+let max = a > b ? a : b;
+assert(max == 10);
+
+// Nested ternary
+let grade = 85;
+let letter = grade >= 90 ? "A" : grade >= 80 ? "B" : grade >= 70 ? "C" : "F";
+
+// Ternary with expressions
+let x = 3;
+let y = 4;
+let result = (x + y) > 5 ? x * 2 : y * 2;
+assert(result == 6);
+
+// Ternary as function argument
+fn checkPositive(n: int) -> string {
+    return n > 0 ? "positive" : "non-positive";
+}
+
+let check1 = checkPositive(5);
+let check2 = checkPositive(-3);
+
+// Ternary in return statement
+fn abs(n: int) -> int {
+    return n >= 0 ? n : -n;
+}
+
+let abs1 = abs(-5);
+assert(abs1 == 5);
+
+let abs2 = abs(7);
+assert(abs2 == 7);
+
+print("✓ All ternary operator tests passed!");
