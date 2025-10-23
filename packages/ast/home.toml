@@ -1,0 +1,12 @@
+[package]
+name = "home-ast"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Language Abstract Syntax Tree - AST node definitions"
+license = "MIT"
+
+[dependencies]
+# Core AST - no dependencies
+
+[scripts]
+test = "zig test src/ast.zig"

@@ -1,35 +1,42 @@
 const std = @import("std");
 const auth_mod = @import("auth.zig");
+const lockfile_mod = @import("lockfile.zig");
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
+pub const Lockfile = lockfile_mod.Lockfile;
 
-/// Package manager for Ion
+/// Package manager for Home
 pub const PackageManager = struct {
     allocator: std.mem.Allocator,
     config: *PackageConfig,
-    lock_file: ?*LockFile,
+    lockfile: ?*Lockfile,
     cache_dir: []const u8,
     registry_url: []const u8,
     auth_manager: ?*AuthManager,
 
-    pub const DEFAULT_REGISTRY = "https://packages.ion-lang.org";
-    pub const DEFAULT_CACHE_DIR = ".ion/cache";
+    pub const DEFAULT_REGISTRY = "https://packages.home-lang.org";
+    pub const DEFAULT_CACHE_DIR = ".home/cache";
+    pub const PACKAGES_DIR = "pantry"; // Where dependencies are installed
+    pub const LOCKFILE_NAME = ".freezer"; // Lockfile for reproducible builds
 
     pub fn init(allocator: std.mem.Allocator) !*PackageManager {
         const pm = try allocator.create(PackageManager);
 
         // Try config files in priority order:
-        // 1. ion.jsonc (preferred - JSON with comments)
-        // 2. ion.json
-        // 3. package.jsonc (npm-compatible with comments)
-        // 4. package.json (npm-compatible)
-        // 5. ion.toml (fallback)
+        // 1. couch.jsonc (preferred - JSON with comments)
+        // 2. couch.json
+        // 3. home.json
+        // 4. package.jsonc (npm-compatible with comments)
+        // 5. package.json (npm-compatible)
+        // 6. home.toml / couch.toml (fallback)
         const config_files = [_][]const u8{
-            "ion.jsonc",
-            "ion.json",
+            "couch.jsonc",
+            "couch.json",
+            "home.json",
             "package.jsonc",
             "package.json",
-            "ion.toml",
+            "home.toml",
+            "couch.toml",
         };
 
         var config: ?*PackageConfig = null;
@@ -45,11 +52,13 @@ pub const PackageManager = struct {
 
         if (config == null) {
             std.debug.print("Error: No configuration file found. Expected one of:\n", .{});
-            std.debug.print("  - ion.jsonc (recommended)\n", .{});
-            std.debug.print("  - ion.json\n", .{});
+            std.debug.print("  - couch.jsonc (recommended)\n", .{});
+            std.debug.print("  - couch.json\n", .{});
+            std.debug.print("  - home.json\n", .{});
             std.debug.print("  - package.jsonc\n", .{});
             std.debug.print("  - package.json\n", .{});
-            std.debug.print("  - ion.toml\n", .{});
+            std.debug.print("  - home.toml\n", .{});
+            std.debug.print("  - couch.toml\n", .{});
             return last_err orelse error.NoConfigFile;
         }
 
@@ -116,7 +125,7 @@ pub const PackageManager = struct {
         return auth.listAuthenticated();
     }
 
-    /// Add a dependency to ion.toml
+    /// Add a dependency to home.toml (or couch.toml/couch.json)
     pub fn addDependency(self: *PackageManager, name: []const u8, version: []const u8) !void {
         const dep = Dependency{
             .name = name,
@@ -199,7 +208,7 @@ pub const PackageManager = struct {
             i += 1;
         }
 
-        try self.config.save("ion.toml");
+        try self.config.save("home.toml");
         try self.resolve();
     }
 
@@ -648,7 +657,7 @@ pub const PackageManager = struct {
     }
 };
 
-/// Package configuration from ion.toml
+/// Package configuration from home.toml (or couch.toml/couch.json)
 pub const PackageConfig = struct {
     allocator: std.mem.Allocator,
     name: []const u8,

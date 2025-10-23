@@ -6,7 +6,7 @@ const types = @import("../../types/src/type_system.zig");
 const borrow_checker = @import("../../safety/src/borrow_checker.zig");
 const ownership = @import("../../types/src/ownership.zig");
 
-/// Ion check tool - runs all static analysis without compilation
+/// Home check tool - runs all static analysis without compilation
 pub const Check = struct {
     allocator: std.mem.Allocator,
     errors: std.ArrayList(CheckError),

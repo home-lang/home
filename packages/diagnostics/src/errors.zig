@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Centralized error types for the Ion compiler
+/// Centralized error types for the Home compiler
 
 /// Compiler errors - issues during compilation phases
 pub const CompilerError = error{

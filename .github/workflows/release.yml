@@ -6,8 +6,8 @@ on:
       - 'v*'
 
 jobs:
-  build-ion-binaries:
-    name: Build Ion Compiler Binaries
+  build-home-binaries:
+    name: Build Home Compiler Binaries
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -16,37 +16,37 @@ jobs:
           # Linux builds (cross-compile from Ubuntu)
           - runner: ubuntu-latest
             target: x86_64-linux-gnu
-            artifact-name: ion-linux-x64
-            binary-name: ion
+            artifact-name: home-linux-x64
+            binary-name: home
             ext: ''
           - runner: ubuntu-latest
             target: aarch64-linux-gnu
-            artifact-name: ion-linux-arm64
-            binary-name: ion
+            artifact-name: home-linux-arm64
+            binary-name: home
             ext: ''
 
           # macOS builds (native builds)
           - runner: macos-13  # Intel Mac
             target: x86_64-macos
-            artifact-name: ion-darwin-x64
-            binary-name: ion
+            artifact-name: home-darwin-x64
+            binary-name: home
             ext: ''
           - runner: macos-14  # Apple Silicon Mac
             target: aarch64-macos
-            artifact-name: ion-darwin-arm64
-            binary-name: ion
+            artifact-name: home-darwin-arm64
+            binary-name: home
             ext: ''
 
           # Windows builds (native + cross-compile)
           - runner: windows-latest
             target: x86_64-windows-msvc
-            artifact-name: ion-windows-x64
-            binary-name: ion
+            artifact-name: home-windows-x64
+            binary-name: home
             ext: '.exe'
           - runner: ubuntu-latest
             target: aarch64-windows-gnu
-            artifact-name: ion-windows-arm64
-            binary-name: ion
+            artifact-name: home-windows-arm64
+            binary-name: home
             ext: '.exe'
 
     steps:
@@ -54,10 +54,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Ion
+      - name: Setup Home
         uses: ./packages/action
         with:
-          ion-version: 'latest'
+          home-version: 'latest'
           cache: 'true'
 
       - name: Setup Zig
@@ -68,11 +68,11 @@ jobs:
       - name: Verify Zig Installation
         run: zig version
 
-      - name: Build Ion Compiler (Native)
+      - name: Build Home Compiler (Native)
         if: matrix.runner == matrix.runner && (matrix.target == 'x86_64-linux-gnu' || matrix.target == 'x86_64-macos' || matrix.target == 'aarch64-macos' || matrix.target == 'x86_64-windows-msvc')
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Build Ion Compiler (Cross-compile)
+      - name: Build Home Compiler (Cross-compile)
         if: matrix.target == 'aarch64-linux-gnu' || matrix.target == 'aarch64-windows-gnu'
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
 
@@ -110,7 +110,7 @@ jobs:
   npm:
     name: npm
     runs-on: ubuntu-latest
-    needs: [build-ion-binaries]
+    needs: [build-home-binaries]
 
     steps:
       - uses: actions/checkout@v5
@@ -140,20 +140,20 @@ jobs:
         env:
           BUN_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
 
-      - name: Download Ion Binaries
+      - name: Download Home Binaries
         uses: actions/download-artifact@v4
         with:
-          path: ion-binaries
+          path: home-binaries
 
       - name: Create GitHub Release
-        uses: stacksjs/action-releaser@v1.2.6
+        uses: stacksjs/action-releaser@v1.2.7
         with:
           files: |
-            ion-binaries/ion-linux-x64/*.tar.gz
-            ion-binaries/ion-linux-arm64/*.tar.gz
-            ion-binaries/ion-windows-x64/*.zip
-            ion-binaries/ion-windows-arm64/*.zip
-            ion-binaries/ion-darwin-x64/*.tar.gz
-            ion-binaries/ion-darwin-arm64/*.tar.gz
+            home-binaries/ion-linux-x64/*.tar.gz
+            home-binaries/ion-linux-arm64/*.tar.gz
+            home-binaries/ion-windows-x64/*.zip
+            home-binaries/ion-windows-arm64/*.zip
+            home-binaries/ion-darwin-x64/*.tar.gz
+            home-binaries/ion-darwin-arm64/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

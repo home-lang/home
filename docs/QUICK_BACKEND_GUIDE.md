@@ -1,4 +1,4 @@
-# Ion Backend Quick Guide
+# Home Backend Quick Guide
 
 ## TL;DR - Which Backend Should I Use?
 
@@ -95,9 +95,9 @@ ion build --backend=llvm -O3  # Takes 15 seconds
 
 ### Code Changes Required: **ZERO**
 
-Your Ion code stays exactly the same:
+Your Home code stays exactly the same:
 
-```ion
+```home
 // Your code - works with BOTH backends!
 fn fibonacci(n: i64) -> i64 {
     if (n <= 1) return n;
@@ -113,9 +113,9 @@ fn fibonacci(n: i64) -> i64 {
 ```
 your-project/
 ├── src/
-│   └── main.ion      ← Same code
+│   └── main.home      ← Same code
 ├── tests/
-│   └── test.ion      ← Same tests
+│   └── test.home      ← Same tests
 ├── ion.toml          ← Just add backend config
 └── README.md
 ```
@@ -282,7 +282,7 @@ ion release  # Uses LLVM -O2
 ion build --backend=native
 
 # Performance-critical modules with LLVM
-ion build src/hot_path.ion --backend=llvm -O3
+ion build src/hot_path.home --backend=llvm -O3
 
 # Link together
 ion link -o myapp

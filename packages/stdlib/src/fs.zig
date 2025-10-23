@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// File system operations for Ion standard library
+/// File system operations for Home standard library
 pub const File = struct {
     handle: std.fs.File,
     path: []const u8,

@@ -3,7 +3,7 @@ const Value = @import("value.zig").Value;
 
 /// Lexical scope environment for variable bindings.
 ///
-/// The Environment implements lexical scoping for Ion programs using a
+/// The Environment implements lexical scoping for Home programs using a
 /// chain of hash maps. Each Environment represents one scope level and
 /// can have an optional parent scope. Variable lookup walks up the scope
 /// chain until a binding is found.

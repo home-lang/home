@@ -7,7 +7,7 @@ const parser_mod = @import("../parser/parser.zig");
 /// This prevents loading extremely large files that could exhaust memory
 const MAX_MODULE_SIZE = 10 * 1024 * 1024;
 
-/// Module represents a compiled Ion module
+/// Module represents a compiled Home module
 pub const Module = struct {
     name: []const u8,
     file_path: []const u8,
@@ -131,7 +131,7 @@ pub const ModuleLoader = struct {
 
     fn findModuleFile(self: *ModuleLoader, module_name: []const u8) ![]const u8 {
         // Try current directory first
-        const filename = try std.fmt.allocPrint(self.allocator, "{s}.ion", .{module_name});
+        const filename = try std.fmt.allocPrint(self.allocator, "{s}.home", .{module_name});
         defer self.allocator.free(filename);
 
         // Check if file exists in current directory

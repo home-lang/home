@@ -27,11 +27,11 @@ pub const StructValue = struct {
     fields: std.StringHashMap(Value),
 };
 
-/// Runtime value types for the Ion interpreter
+/// Runtime value types for the Home interpreter
 ///
 /// MEMORY OWNERSHIP MODEL:
 /// -----------------------
-/// The Ion interpreter uses an arena allocator for all runtime values.
+/// The Home interpreter uses an arena allocator for all runtime values.
 /// This provides several benefits:
 /// 1. No need to track individual allocations or reference counts
 /// 2. All memory is freed at once when the interpreter is deinitialized
@@ -130,7 +130,7 @@ pub const Value = union(enum) {
 
     /// Deallocate resources used by this value (no-op with arena allocator).
     ///
-    /// NOTE: This function is a no-op because Ion uses an arena allocator
+    /// NOTE: This function is a no-op because Home uses an arena allocator
     /// for all runtime values. Memory is freed in bulk when the interpreter
     /// is deinitialized, not on a per-value basis. This function exists
     /// for API consistency and future compatibility.

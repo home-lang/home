@@ -1,0 +1,16 @@
+[package]
+name = "home-action"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "GitHub Action for setting up Home in CI/CD workflows"
+license = "MIT"
+
+[dependencies]
+# This is a TypeScript/JavaScript package, no Home dependencies
+
+[scripts]
+install = "bun install"
+build = "bun run build"
+package = "bun run package"
+test = "bun test"
+format = "bun run format"

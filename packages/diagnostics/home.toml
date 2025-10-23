@@ -1,0 +1,12 @@
+[package]
+name = "home-diagnostics"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Diagnostics - Error reporting and source location tracking"
+license = "MIT"
+
+[dependencies]
+# Standalone diagnostics
+
+[scripts]
+test = "zig test src/diagnostics.zig"

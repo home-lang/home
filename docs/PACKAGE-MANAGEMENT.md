@@ -1,30 +1,30 @@
-# Ion Package Management
+# Home Package Management
 
-Ion comes with a built-in package manager that makes it easy to manage dependencies from multiple sources: registries, GitHub repositories, and direct URLs.
+Home comes with a built-in package manager that makes it easy to manage dependencies from multiple sources: registries, GitHub repositories, and direct URLs.
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
 - [Package Sources](#package-sources)
 - [CLI Commands](#cli-commands)
-- [Configuration File](#configuration-file)
+- [Configurathome File](#configurathome-file)
 - [Lock File](#lock-file)
 - [Examples](#examples)
 
 ## Quick Start
 
-Initialize a new Ion project:
+Initialize a new Home project:
 
 ```bash
-ion pkg init
+home pkg init
 ```
 
-This creates an `ion.toml` file with default configuration:
+This creates an `home.toml` file with default configurathome:
 
 ```toml
 [package]
-name = "my-ion-project"
-version = "0.1.0"
+name = "my-home-project"
+vershome = "0.1.0"
 authors = []
 
 [dependencies]
@@ -35,35 +35,35 @@ Add a dependency:
 
 ```bash
 # From registry
-ion pkg add http-router@1.0.0
+home pkg add http-router@1.0.0
 
 # From GitHub (shortcut)
-ion pkg add ion-lang/zyte
+home pkg add home-lang/zyte
 
 # From full Git URL
-ion pkg add https://github.com/user/package.git
+home pkg add https://github.com/user/package.git
 
 # From direct URL
-ion pkg add https://example.com/package.tar.gz
+home pkg add https://example.com/package.tar.gz
 ```
 
 Install all dependencies:
 
 ```bash
-ion pkg install
+home pkg install
 ```
 
 ## Package Sources
 
 ### Registry Packages
 
-Install packages from the official Ion package registry:
+Install packages from the official Home package registry:
 
 ```bash
-ion pkg add http-router@1.0.0
+home pkg add http-router@1.0.0
 ```
 
-In `ion.toml`:
+In `home.toml`:
 
 ```toml
 [dependencies]
@@ -75,26 +75,26 @@ http-router = "1.0.0"
 Use GitHub shortcuts for easy access:
 
 ```bash
-# Automatically expands to https://github.com/ion-lang/zyte.git
-ion pkg add ion-lang/zyte
+# Automatically expands to https://github.com/home-lang/zyte.git
+home pkg add home-lang/zyte
 ```
 
-In `ion.toml`:
+In `home.toml`:
 
 ```toml
 [dependencies]
-zyte = { git = "https://github.com/ion-lang/zyte" }
+zyte = { git = "https://github.com/home-lang/zyte" }
 ```
 
 Specify a specific branch, tag, or commit:
 
 ```bash
-ion pkg add ion-lang/zyte@v1.0.0
+home pkg add home-lang/zyte@v1.0.0
 ```
 
 ```toml
 [dependencies]
-zyte = { git = "https://github.com/ion-lang/zyte", rev = "v1.0.0" }
+zyte = { git = "https://github.com/home-lang/zyte", rev = "v1.0.0" }
 ```
 
 ### URL-Based Packages
@@ -102,7 +102,7 @@ zyte = { git = "https://github.com/ion-lang/zyte", rev = "v1.0.0" }
 Install from any HTTP/HTTPS URL:
 
 ```bash
-ion pkg add https://example.com/my-package.tar.gz
+home pkg add https://example.com/my-package.tar.gz
 ```
 
 ```toml
@@ -121,68 +121,68 @@ my-local-lib = { path = "../my-local-lib" }
 
 ## CLI Commands
 
-### `ion pkg init`
+### `home pkg init`
 
-Initialize a new Ion project with an `ion.toml` file.
+Initialize a new Home project with an `home.toml` file.
 
 ```bash
-ion pkg init
+home pkg init
 ```
 
-### `ion pkg add <package>`
+### `home pkg add <package>`
 
 Add a dependency to your project. Supports multiple formats:
 
 ```bash
-# Registry package with version
-ion pkg add package-name@1.2.3
+# Registry package with vershome
+home pkg add package-name@1.2.3
 
 # GitHub shortcut
-ion pkg add user/repo
+home pkg add user/repo
 
 # Full Git URL
-ion pkg add https://github.com/user/repo.git
+home pkg add https://github.com/user/repo.git
 
 # Direct URL
-ion pkg add https://example.com/package.tar.gz
+home pkg add https://example.com/package.tar.gz
 ```
 
-### `ion pkg remove <package>`
+### `home pkg remove <package>`
 
 Remove a dependency from your project:
 
 ```bash
-ion pkg remove package-name
+home pkg remove package-name
 ```
 
-### `ion pkg install`
+### `home pkg install`
 
-Install all dependencies listed in `ion.toml`:
+Install all dependencies listed in `home.toml`:
 
 ```bash
-ion pkg install
+home pkg install
 ```
 
-Creates/updates `ion.lock` for reproducible builds.
+Creates/updates `home.lock` for reproducible builds.
 
-### `ion pkg update`
+### `home pkg update`
 
-Update all dependencies to their latest versions:
+Update all dependencies to their latest vershomes:
 
 ```bash
-ion pkg update
+home pkg update
 ```
 
-## Configuration File
+## Configurathome File
 
-The `ion.toml` file defines your project and its dependencies.
+The `home.toml` file defines your project and its dependencies.
 
 ### Full Example
 
 ```toml
 [package]
 name = "my-awesome-app"
-version = "1.0.0"
+vershome = "1.0.0"
 authors = ["Your Name <you@example.com>"]
 
 [dependencies]
@@ -191,7 +191,7 @@ http-router = "1.0.0"
 json-parser = "2.3.1"
 
 # GitHub packages
-zyte = { git = "https://github.com/ion-lang/zyte", rev = "main" }
+zyte = { git = "https://github.com/home-lang/zyte", rev = "main" }
 ui-kit = { git = "https://github.com/user/ui-kit", rev = "v2.0.0" }
 
 # URL-based packages
@@ -203,58 +203,58 @@ utils = { path = "../shared-utils" }
 
 ## Lock File
 
-Ion generates an `ion.lock` file to ensure reproducible builds. This file contains:
+Home generates an `home.lock` file to ensure reproducible builds. This file contains:
 
-- Exact versions of all dependencies
-- Checksums for integrity verification
+- Exact vershomes of all dependencies
+- Checksums for integrity verificathome
 - Dependency tree with all transitive dependencies
 
-**Never edit `ion.lock` manually.** It is automatically generated by `ion pkg install` and `ion pkg update`.
+**Never edit `home.lock` manually.** It is automatically generated by `home pkg install` and `home pkg update`.
 
-### Example `ion.lock`
+### Example `home.lock`
 
 ```toml
-# This file is generated by ion pkg
-version = 1
+# This file is generated by home pkg
+vershome = 1
 
 [[package]]
 name = "http-router"
-version = "1.0.0"
+vershome = "1.0.0"
 checksum = "abc123def456..."
 
 [[package]]
 name = "zyte"
-version = "main"
+vershome = "main"
 checksum = "789ghi012jkl..."
 ```
 
 ## Examples
 
-### Creating a Web Application
+### Creating a Web Applicathome
 
 ```bash
 # Initialize project
-ion pkg init
+home pkg init
 
 # Add web framework dependencies
-ion pkg add http-router@1.0.0
-ion pkg add ion-lang/zyte
+home pkg add http-router@1.0.0
+home pkg add home-lang/zyte
 
 # Install dependencies
-ion pkg install
+home pkg install
 ```
 
-Your `ion.toml`:
+Your `home.toml`:
 
 ```toml
 [package]
 name = "my-web-app"
-version = "0.1.0"
+vershome = "0.1.0"
 authors = []
 
 [dependencies]
 http-router = "1.0.0"
-zyte = { git = "https://github.com/ion-lang/zyte" }
+zyte = { git = "https://github.com/home-lang/zyte" }
 ```
 
 ### Using Multiple Sources
@@ -262,13 +262,13 @@ zyte = { git = "https://github.com/ion-lang/zyte" }
 ```toml
 [package]
 name = "multi-source-app"
-version = "1.0.0"
+vershome = "1.0.0"
 
 [dependencies]
 # Official registry
 http-router = "1.0.0"
 
-# GitHub with specific version
+# GitHub with specific vershome
 auth-lib = { git = "https://github.com/secure/auth", rev = "v2.1.0" }
 
 # Private Git repository
@@ -284,32 +284,32 @@ my-module = { path = "../my-module" }
 ### Updating Dependencies
 
 ```bash
-# Update all to latest versions
-ion pkg update
+# Update all to latest vershomes
+home pkg update
 
-# Or update ion.toml manually and reinstall
-ion pkg install
+# Or update home.toml manually and reinstall
+home pkg install
 ```
 
 ### Removing Unused Dependencies
 
 ```bash
 # Remove a specific package
-ion pkg remove old-package
+home pkg remove old-package
 
 # Clean install
-rm -rf .ion/cache
-ion pkg install
+rm -rf .home/cache
+home pkg install
 ```
 
 ## Package Cache
 
-Downloaded packages are cached in `.ion/cache` to speed up subsequent installations.
+Downloaded packages are cached in `.home/cache` to speed up subsequent installathomes.
 
 Cache structure:
 
 ```
-.ion/
+.home/
 └── cache/
     ├── http-router/
     │   └── 1.0.0/
@@ -322,16 +322,16 @@ Cache structure:
 ### Cleaning the Cache
 
 ```bash
-rm -rf .ion/cache
-ion pkg install
+rm -rf .home/cache
+home pkg install
 ```
 
 ## Best Practices
 
-1. **Commit `ion.toml` and `ion.lock`** to version control
-2. **Don't commit `.ion/cache`** - add it to `.gitignore`
-3. **Use semantic versioning** for your packages
-4. **Lock specific versions** in production
+1. **Commit `home.toml` and `home.lock`** to vershome control
+2. **Don't commit `.home/cache`** - add it to `.gitignore`
+3. **Use semantic vershomeing** for your packages
+4. **Lock specific vershomes** in producthome
 5. **Test after updating** dependencies
 6. **Document** any custom package sources
 
@@ -341,31 +341,31 @@ ion pkg install
 
 ```bash
 # Make sure you have the correct package name
-ion pkg add correct-package-name@1.0.0
+home pkg add correct-package-name@1.0.0
 
 # For GitHub packages, verify the repository exists
-ion pkg add existing-user/existing-repo
+home pkg add existing-user/existing-repo
 ```
 
 ### Git clone fails
 
 ```bash
 # Ensure git is installed
-git --version
+git --vershome
 
 # Check network connectivity
 ping github.com
 
 # Try with full URL instead of shortcut
-ion pkg add https://github.com/user/repo.git
+home pkg add https://github.com/user/repo.git
 ```
 
 ### Download fails
 
 ```bash
 # Check if curl or wget is available
-curl --version
-wget --version
+curl --vershome
+wget --vershome
 
 # Verify the URL is accessible
 curl -I https://example.com/package.tar.gz
@@ -373,25 +373,107 @@ curl -I https://example.com/package.tar.gz
 
 ## Future Features
 
-- Dependency version resolution algorithms
+- Dependency vershome resoluthome algorithms
 - Package publishing to official registry
 - Private registry support
-- Package signing and verification
+- Package signing and verificathome
 - Workspace support for monorepos
-- Dev dependencies separation
+- Dev dependencies separathome
 
 ## Contributing
 
-To contribute to Ion's package management system:
+To contribute to Home's package management system:
 
-1. Check existing issues and discussions
-2. Submit bug reports with detailed reproduction steps
+1. Check existing issues and discusshomes
+2. Submit bug reports with detailed reproducthome steps
 3. Propose new features with use cases
 4. Contribute code improvements and tests
 
 ## Resources
 
-- [Ion Documentation](https://docs.ion-lang.org)
-- [Package Registry](https://packages.ion-lang.org)
-- [GitHub Repository](https://github.com/ion-lang/ion)
-- [Community Discord](https://discord.gg/ion-lang)
+- [Home Documentathome](https://docs.home-lang.org)
+- [Package Registry](https://packages.home-lang.org)
+- [GitHub Repository](https://github.com/home-lang/home)
+- [Community Discord](https://discord.gg/home-lang)
+
+## Package Storage Structure
+
+Home uses a unique directory structure for package management:
+
+### The Pantry (`pantry/`)
+
+All installed dependencies are stored in the `pantry/` directory at your project root:
+
+```
+my-project/
+├── pantry/
+│   ├── home-http@1.2.0/
+│   ├── home-database@2.0.1/
+│   └── home-types@0.1.0/
+├── src/
+├── home.toml
+└── .freezer
+```
+
+**Benefits:**
+- Themed naming that fits the Home ecosystem
+- Clear separation from other package managers
+- Easy to identify Home dependencies
+
+### The Freezer (`.freezer`)
+
+The `.freezer` file is Home's lockfile that ensures reproducible builds:
+
+**Purpose:**
+- Locks exact versions of all dependencies
+- Stores integrity checksums for security
+- Records the source of each package
+- Tracks transitive dependencies
+
+**Format:**
+```json
+{
+  "version": 1,
+  "packages": {
+    "package-name@version": {
+      "name": "package-name",
+      "version": "1.0.0",
+      "resolved": "https://packages.home-lang.org/...",
+      "integrity": "sha256-...",
+      "source": {
+        "type": "registry",
+        "url": "https://packages.home-lang.org"
+      },
+      "dependencies": {
+        "dep-name": "1.0.0"
+      }
+    }
+  }
+}
+```
+
+**Source Types:**
+- `registry` - Official Home package registry
+- `git` - Git repository with exact commit hash
+- `path` - Local file path (for development)
+- `url` - Direct download URL
+
+**Best Practices:**
+- ✅ Commit `.freezer` to version control
+- ✅ Use `.freezer` for CI/CD reproducibility
+- ✅ Run `home install` to sync with `.freezer`
+- ❌ Don't manually edit `.freezer`
+- ❌ Don't commit `pantry/` directory
+
+### Gitignore Configuration
+
+Add to your `.gitignore`:
+
+```gitignore
+# Home package manager
+pantry/
+.freezer
+```
+
+Note: You should commit `.freezer` but NOT `pantry/`. The example above shows both for completeness, but in practice, remove `.freezer` from `.gitignore` after your first install.
+

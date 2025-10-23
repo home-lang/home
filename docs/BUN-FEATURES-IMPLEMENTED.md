@@ -12,8 +12,8 @@ Ion now supports package scripts just like Bun! Define scripts in your `ion.toml
 
 ```toml
 [scripts]
-dev = "ion run src/main.ion --watch"
-build = "ion build src/main.ion -o dist/app"
+dev = "ion run src/main.home --watch"
+build = "ion build src/main.home -o dist/app"
 test = "ion test tests/"
 bench = "ion bench bench/"
 format = "ion fmt src/"
@@ -223,7 +223,7 @@ All commands are fully integrated into `ion`:
 | `ion pkg scripts` | List available scripts | `ion pkg scripts` |
 | `ion pkg run <name>` | Run a package script | `ion pkg run dev` |
 | `ion pkg tree` | Show dependency tree | `ion pkg tree` |
-| `ion pkg add <pkg>` | Add dependency | `ion pkg add ion-lang/zyte` |
+| `ion pkg add <pkg>` | Add dependency | `ion pkg add home-lang/zyte` |
 | `ion pkg install` | Install all dependencies | `ion pkg install` |
 | `ion pkg update` | Update dependencies | `ion pkg update` |
 | `ion pkg remove <pkg>` | Remove dependency | `ion pkg remove old-pkg` |
@@ -240,7 +240,7 @@ All commands are fully integrated into `ion`:
 3. `src/pkg/workspace.zig` - 140 lines (Workspace support)
 4. `src/pkg/tree.zig` - 180 lines (Dependency tree)
 
-**Total**: ~590 lines of production-quality Zig code
+**Total**: ~590 lines of producthome-quality Zig code
 
 **Files Modified**:
 1. `src/main.zig` - Added 3 new commands (~130 lines)
@@ -263,7 +263,7 @@ All commands are fully integrated into `ion`:
 
 ## 🎯 Comparison with Bun
 
-| Feature | Bun | Ion | Status |
+| Feature | Bun | Home | Status |
 |---------|-----|-----|--------|
 | **Package Scripts** | ✅ | ✅ | ✅ Complete |
 | **Progress UI** | ✅ | ✅ | ✅ Complete |
@@ -344,7 +344,7 @@ See `PACKAGE-MANAGER-IMPROVEMENTS.md` for complete roadmap.
 
 ## 💡 Key Achievements
 
-1. **Developer Experience**: Ion now has Bun-level DX for package management
+1. **Developer Experience**: Home now has Bun-level DX for package management
 2. **Monorepo Support**: First-class workspace support for large projects
 3. **Beautiful UI**: Spinners, progress bars, and colored output
 4. **Extensibility**: Script system allows custom workflows

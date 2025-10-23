@@ -1,0 +1,12 @@
+[package]
+name = "home-formatter"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Code Formatter - Automatic code formatting"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/formatter.zig"

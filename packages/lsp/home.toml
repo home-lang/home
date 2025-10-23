@@ -1,0 +1,15 @@
+[package]
+name = "home-lsp"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Language Server Protocol - Editor integration"
+license = "MIT"
+
+[dependencies]
+home-lexer = { path = "../lexer" }
+home-parser = { path = "../parser" }
+home-types = { path = "../types" }
+home-diagnostics = { path = "../diagnostics" }
+
+[scripts]
+test = "zig test src/lsp_server.zig"

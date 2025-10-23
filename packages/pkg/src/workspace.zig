@@ -71,15 +71,24 @@ pub const Workspace = struct {
             // Check if matches glob
             if (!matchGlob(entry.name, glob)) continue;
 
-            // Check for ion.toml
+            // Check for config file (home.toml, couch.toml, etc.)
             const pkg_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir, entry.name });
-            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg_path, "ion.toml" });
-            defer self.allocator.free(toml_path);
+            const config_names = [_][]const u8{ "home.toml", "couch.toml", "home.json", "couch.json", "couch.jsonc" };
+            var found_config = false;
 
-            std.fs.cwd().access(toml_path, .{}) catch {
+            for (config_names) |config_name| {
+                const config_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg_path, config_name });
+                defer self.allocator.free(config_path);
+
+                std.fs.cwd().access(config_path, .{}) catch continue;
+                found_config = true;
+                break;
+            }
+
+            if (!found_config) {
                 self.allocator.free(pkg_path);
-                continue; // No ion.toml, skip
-            };
+                continue; // No config file, skip
+            }
 
             // Add package
             const pkg = WorkspacePackage{
@@ -100,7 +109,7 @@ pub const Workspace = struct {
         for (self.packages.items) |*pkg| {
             std.debug.print("  Installing {s}...\n", .{pkg.name});
 
-            // Parse ion.toml to extract dependencies
+            // Parse config file to extract dependencies
             const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "ion.toml" });
             defer self.allocator.free(toml_path);
 

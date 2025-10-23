@@ -22,7 +22,7 @@ NC='\033[0m' # No Color
 mkdir -p "$SCRIPT_DIR/programs"
 
 # 1. Hello World
-cat > "$SCRIPT_DIR/programs/hello.ion" << 'EOF'
+cat > "$SCRIPT_DIR/programs/hello.home" << 'EOF'
 fn main() {
     print("Hello, World!")
 }
@@ -36,7 +36,7 @@ pub fn main() void {
 EOF
 
 # 2. Fibonacci (recursive)
-cat > "$SCRIPT_DIR/programs/fib_recursive.ion" << 'EOF'
+cat > "$SCRIPT_DIR/programs/fib_recursive.home" << 'EOF'
 fn fib(n: int) -> int {
     if n <= 1 {
         return n
@@ -65,7 +65,7 @@ pub fn main() void {
 EOF
 
 # 3. Fibonacci (iterative)
-cat > "$SCRIPT_DIR/programs/fib_iterative.ion" << 'EOF'
+cat > "$SCRIPT_DIR/programs/fib_iterative.home" << 'EOF'
 fn fib(n: int) -> int {
     if n <= 1 {
         return n
@@ -117,7 +117,7 @@ pub fn main() void {
 EOF
 
 # 4. String manipulation
-cat > "$SCRIPT_DIR/programs/strings.ion" << 'EOF'
+cat > "$SCRIPT_DIR/programs/strings.home" << 'EOF'
 fn main() {
     let s1 = "Hello"
     let s2 = "World"
@@ -138,7 +138,7 @@ pub fn main() void {
 EOF
 
 # 5. Array operations
-cat > "$SCRIPT_DIR/programs/arrays.ion" << 'EOF'
+cat > "$SCRIPT_DIR/programs/arrays.home" << 'EOF'
 fn sum(arr: [5]int) -> int {
     let mut total = 0
     let mut i = 0
@@ -191,7 +191,7 @@ echo "|---------|----------|----------|---------|"
 for prog in "${PROGRAMS[@]}"; do
     # Ion compilation time
     ION_TIME=$(hyperfine --warmup 3 --runs 10 \
-        "$PROJECT_ROOT/zig-out/bin/ion build $SCRIPT_DIR/programs/${prog}.ion -o /tmp/ion_${prog}" \
+        "$PROJECT_ROOT/zig-out/bin/ion build $SCRIPT_DIR/programs/${prog}.home -o /tmp/ion_${prog}" \
         --style none --export-json /tmp/ion_bench.json 2>/dev/null | \
         jq -r '.results[0].mean * 1000' || echo "N/A")
 
@@ -220,7 +220,7 @@ echo "|---------|----------|----------|-------|"
 
 for prog in "${PROGRAMS[@]}"; do
     # Build first
-    "$PROJECT_ROOT/zig-out/bin/ion" build "$SCRIPT_DIR/programs/${prog}.ion" -o "/tmp/ion_${prog}" 2>/dev/null || true
+    "$PROJECT_ROOT/zig-out/bin/ion" build "$SCRIPT_DIR/programs/${prog}.home" -o "/tmp/ion_${prog}" 2>/dev/null || true
     zig build-exe "$SCRIPT_DIR/programs/${prog}.zig" -femit-bin="/tmp/zig_${prog}" -O ReleaseFast 2>/dev/null || true
 
     # Ion runtime

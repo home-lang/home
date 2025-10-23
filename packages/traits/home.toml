@@ -1,0 +1,13 @@
+[package]
+name = "home-traits"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Trait System - Trait definitions and implementations"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+home-types = { path = "../types" }
+
+[scripts]
+test = "zig test src/trait_system.zig"

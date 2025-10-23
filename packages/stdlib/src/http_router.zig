@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// HTTP Router for Ion - Express.js/Laravel-style routing
+/// HTTP Router for Home - Express.js/Laravel-style routing
 /// Provides high-level routing with middleware support
 
 pub const Method = enum {

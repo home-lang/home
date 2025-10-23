@@ -2,7 +2,7 @@ const std = @import("std");
 const ast = @import("ast");
 const DiagnosticReporter = @import("diagnostics.zig").DiagnosticReporter;
 
-/// Warning detector for common issues in Ion code
+/// Warning detector for common issues in Home code
 pub const WarningDetector = struct {
     allocator: std.mem.Allocator,
     reporter: *DiagnosticReporter,

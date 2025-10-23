@@ -1,0 +1,12 @@
+[package]
+name = "home-codegen"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Code Generator - Native machine code generation"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/native_codegen.zig"

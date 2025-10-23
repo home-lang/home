@@ -7,7 +7,7 @@ pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 1: Basic Zyte Window ===\n\n", .{});
 
     var config = zyte.ZyteConfig.init(allocator);
-    _ = config.setTitle("My First Ion + Zyte App");
+    _ = config.setTitle("My First Home + Zyte App");
     _ = config.setSize(1024, 768);
     _ = config.setHtml(
         \\<!DOCTYPE html>
@@ -36,7 +36,7 @@ pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
         \\</head>
         \\<body>
         \\    <div class="container">
-        \\        <h1>Hello from Ion + Zyte! 🚀</h1>
+        \\        <h1>Hello from Home + Zyte! 🚀</h1>
         \\        <p>Cross-platform desktop app built with web technologies</p>
         \\    </div>
         \\</body>
@@ -94,7 +94,7 @@ pub fn framelessWindowExample(allocator: std.mem.Allocator) !void {
     try app.run();
 }
 
-/// Example 3: Ion HTTP server + Zyte frontend
+/// Example 3: Home HTTP server + Zyte frontend
 pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 3: HTTP Server + Zyte Frontend ===\n\n", .{});
 
@@ -138,7 +138,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
     _ = try server.get("/api/data", struct {
         fn handler(req: *http_router.Request, res: *http_router.Response) !void {
             _ = req;
-            try res.json("{\"message\":\"Hello from Ion backend!\",\"timestamp\":1234567890}");
+            try res.json("{\"message\":\"Hello from Home backend!\",\"timestamp\":1234567890}");
         }
     }.handler);
 
@@ -209,7 +209,7 @@ pub fn systemIntegrationExample(allocator: std.mem.Allocator) !void {
     try notification.show();
 
     // Dialog
-    try zyte.Dialog.alert("Welcome", "Welcome to Ion + Zyte!");
+    try zyte.Dialog.alert("Welcome", "Welcome to Home + Zyte!");
 
     // File picker
     const file_path = try zyte.Dialog.openFile(allocator, &[_][]const u8{ ".txt", ".md" });
@@ -319,7 +319,7 @@ pub fn todoAppExample(allocator: std.mem.Allocator) !void {
                 \\    </script>
                 \\</head>
                 \\<body>
-                \\    <h1>📝 Ion Todo App</h1>
+                \\    <h1>📝 Home Todo App</h1>
                 \\    <div>
                 \\        <input type="text" id="newTodo" placeholder="Enter a new todo...">
                 \\        <button onclick="addTodo()">Add</button>
@@ -358,7 +358,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("\n╔════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Ion + Zyte Integration Examples     ║\n", .{});
+    std.debug.print("║   Home + Zyte Integration Examples     ║\n", .{});
     std.debug.print("╚════════════════════════════════════════╝\n", .{});
 
     try basicWindowExample(allocator);

@@ -1,4 +1,4 @@
-# Ion Standard Library - Session Complete
+# Home Standard Library - Session Complete
 
 **Date**: 2025-10-22
 **Status**: ✅ **STANDARD LIBRARY COMPLETE**
@@ -7,7 +7,7 @@
 
 ## 🎯 Session Objectives
 
-Complete the remaining standard library features to make Ion production-ready for real-world applications, then create a comprehensive roadmap for competing with PHP, TypeScript, and Python.
+Complete the remaining standard library features to make Home producthome-ready for real-world applications, then create a comprehensive roadmap for competing with PHP, TypeScript, and Python.
 
 ---
 
@@ -37,7 +37,7 @@ Complete the remaining standard library features to make Ion production-ready fo
 - **Utility functions**: `sleep()`, `isLeapYear()`, `getDaysInMonth()`
 
 **Example Usage**:
-```ion
+```home
 let now = DateTime.now();
 let tomorrow = now.addDays(1);
 let formatted = now.formatISO(allocator); // "2025-10-22T14:30:00Z"
@@ -98,7 +98,7 @@ let elapsed_ms = timer.elapsedMillis();
 - **constantTimeCompare()**: Prevents timing attacks
 
 **Example Usage**:
-```ion
+```home
 // Hashing
 let hash = SHA256.hash("password");
 let hex = SHA256.hashHex(allocator, "password");
@@ -139,7 +139,7 @@ let random_hex = SecureRandom.hex(allocator, 32);
 
 #### ProcessBuilder (Advanced):
 - **Fluent API** for process configuration:
-  ```ion
+  ```home
   let result = ProcessBuilder.init(allocator)
       .command("git")
       .arg("clone")
@@ -166,7 +166,7 @@ let random_hex = SecureRandom.hex(allocator, 32);
 - **commandExists()**: Check if command is in PATH
 
 **Example Usage**:
-```ion
+```home
 // Simple execution
 let result = exec(allocator, &[_][]const u8{"ls", "-la"});
 std.debug.print("Output: {s}\n", .{result.stdout});
@@ -205,7 +205,7 @@ let result = pipe.run();
 - **Positional arguments**
 
 **Example**:
-```ion
+```home
 let parser = ArgParser.init(allocator, "myapp", "My awesome application");
 
 // Add arguments
@@ -238,7 +238,7 @@ OPTIONS:
 ```
 
 #### SimpleArgs (Quick parsing):
-```ion
+```home
 let args = SimpleArgs.init(allocator);
 args.parse(argv);
 
@@ -248,7 +248,7 @@ let positional = args.getPositional();
 ```
 
 #### Environment Variables:
-```ion
+```home
 let value = Env.get(allocator, "HOME");
 let fallback = Env.getOrDefault(allocator, "PORT", "8080");
 Env.set("MY_VAR", "value");
@@ -395,9 +395,9 @@ Created comprehensive **ROADMAP-WEB-COMPETITIVE.md** covering:
 
 ---
 
-## 🎉 Comparison: Ion vs Competitors
+## 🎉 Comparison: Home vs Competitors
 
-| Feature | Ion | PHP/Laravel | Node/Express | Python/Django | Go | Rust |
+| Feature | Home | PHP/Laravel | Node/Express | Python/Django | Go | Rust |
 |---------|-----|-------------|--------------|---------------|----|------|
 | Type Safety | ✅ Strong | ❌ Weak | ⚠️ Optional | ⚠️ Optional | ✅ | ✅ |
 | Memory Safety | ✅ Borrow | ❌ Manual | ❌ GC | ❌ GC | ❌ GC | ✅ |
@@ -420,15 +420,15 @@ Created comprehensive **ROADMAP-WEB-COMPETITIVE.md** covering:
 ## 📁 Files Created/Modified
 
 ### Created:
-1. `/Users/chrisbreuer/Code/ion/src/stdlib/datetime.zig` (430 lines)
-2. `/Users/chrisbreuer/Code/ion/src/stdlib/crypto.zig` (440 lines)
-3. `/Users/chrisbreuer/Code/ion/src/stdlib/process.zig` (380 lines)
-4. `/Users/chrisbreuer/Code/ion/src/stdlib/cli.zig` (370 lines)
-5. `/Users/chrisbreuer/Code/ion/ROADMAP-WEB-COMPETITIVE.md` (800+ lines)
-6. `/Users/chrisbreuer/Code/ion/SESSION-STDLIB-COMPLETE.md` (this file)
+1. `/Users/chrisbreuer/Code/home/src/stdlib/datetime.zig` (430 lines)
+2. `/Users/chrisbreuer/Code/home/src/stdlib/crypto.zig` (440 lines)
+3. `/Users/chrisbreuer/Code/home/src/stdlib/process.zig` (380 lines)
+4. `/Users/chrisbreuer/Code/home/src/stdlib/cli.zig` (370 lines)
+5. `/Users/chrisbreuer/Code/home/ROADMAP-WEB-COMPETITIVE.md` (800+ lines)
+6. `/Users/chrisbreuer/Code/home/SESSION-STDLIB-COMPLETE.md` (this file)
 
 ### Modified:
-1. `/Users/chrisbreuer/Code/ion/MILESTONES.md` - Updated Phase 7 completion status
+1. `/Users/chrisbreuer/Code/home/MILESTONES.md` - Updated Phase 7 completion status
 
 ---
 
@@ -490,7 +490,7 @@ Based on ROADMAP-WEB-COMPETITIVE.md, start with:
 
 ✅ **40% beyond original plan**
 
-✅ **Production-ready compiler with modern features**
+✅ **Producthome-ready compiler with modern features**
 
 ✅ **Clear roadmap to web/app dominance**
 
@@ -503,4 +503,4 @@ Based on ROADMAP-WEB-COMPETITIVE.md, start with:
 
 ---
 
-**Ion is now a complete, production-ready systems programming language with a comprehensive standard library. The foundation is solid. Time to build the web framework! 🚀**
+**Ion is now a complete, producthome-ready systems programming language with a comprehensive standard library. The foundation is solid. Time to build the web framework! 🚀**

@@ -4,7 +4,7 @@ const Token = @import("lexer").Token;
 /// Enumeration of all Abstract Syntax Tree node types in Ion.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
-/// Ion program. Each NodeType corresponds to a specific struct that
+/// Home program. Each NodeType corresponds to a specific struct that
 /// implements that node's data and behavior.
 ///
 /// Categories:

@@ -16,7 +16,7 @@ pub const InterpreterError = error{
     Return, // Used for control flow
 } || std.mem.Allocator.Error;
 
-/// Ion language interpreter
+/// Home language interpreter
 ///
 /// MEMORY MANAGEMENT STRATEGY:
 /// ---------------------------

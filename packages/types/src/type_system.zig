@@ -5,7 +5,7 @@ const diagnostics = @import("diagnostics");
 
 /// Ion's static type system with support for advanced features.
 ///
-/// The Type union represents all possible types in the Ion language, including:
+/// The Type union represents all possible types in the Home language, including:
 /// - Primitive types (Int, Float, Bool, String, Void)
 /// - Composite types (Array, Tuple, Struct, Enum, Union)
 /// - Function types with parameter and return types
@@ -66,7 +66,7 @@ pub const Type = union(enum) {
     /// Homogeneous array type.
     ///
     /// Represents an array where all elements have the same type.
-    /// Arrays in Ion are dynamically sized at runtime.
+    /// Arrays in Home are dynamically sized at runtime.
     ///
     /// Example: `[i32]` is an array of integers
     pub const ArrayType = struct {

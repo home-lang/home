@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
 
     // Main executable
     const exe = b.addExecutable(.{
-        .name = "ion",
+        .name = "home",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -137,21 +137,21 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the Ion compiler");
+    const run_step = b.step("run", "Run the Home compiler");
     run_step.dependOn(&run_cmd.step);
 
     // Test suite - use ion module as root
-    const ion_module = b.createModule(.{
-        .root_source_file = b.path("src/ion.zig"),
+    const home_module = b.createModule(.{
+        .root_source_file = b.path("src/home.zig"),
         .target = target,
         .optimize = optimize,
     });
-    ion_module.addImport("lexer", lexer_pkg);
-    ion_module.addImport("ast", ast_pkg);
-    ion_module.addImport("parser", parser_pkg);
-    ion_module.addImport("types", types_pkg);
-    ion_module.addImport("interpreter", interpreter_pkg);
-    ion_module.addImport("codegen", codegen_pkg);
+    home_module.addImport("lexer", lexer_pkg);
+    home_module.addImport("ast", ast_pkg);
+    home_module.addImport("parser", parser_pkg);
+    home_module.addImport("types", types_pkg);
+    home_module.addImport("interpreter", interpreter_pkg);
+    home_module.addImport("codegen", codegen_pkg);
 
     // Create stdlib modules for tests and examples
     const http_router_module = b.createModule(.{
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    parser_tests.root_module.addImport("ion", ion_module);
+    parser_tests.root_module.addImport("ion", home_module);
 
     const run_parser_tests = b.addRunArtifact(parser_tests);
 
@@ -402,7 +402,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    parser_bench.root_module.addImport("ion", ion_module);
+    parser_bench.root_module.addImport("ion", home_module);
 
     b.installArtifact(parser_bench);
 
@@ -514,7 +514,7 @@ pub fn build(b: *std.Build) void {
 
     // Debug build (with debug symbols and runtime safety)
     const debug_exe = b.addExecutable(.{
-        .name = "ion-debug",
+        .name = "home-debug",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -534,12 +534,12 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("database", database_pkg);
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
-    const debug_step = b.step("debug", "Build Ion compiler in Debug mode (with safety checks)");
+    const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
     debug_step.dependOn(&install_debug.step);
 
     // Release-safe build (optimized but with runtime safety)
     const release_safe_exe = b.addExecutable(.{
-        .name = "ion-release-safe",
+        .name = "home-release-safe",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -559,12 +559,12 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("database", database_pkg);
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
-    const release_safe_step = b.step("release-safe", "Build Ion compiler in ReleaseSafe mode (optimized with safety)");
+    const release_safe_step = b.step("release-safe", "Build Home compiler in ReleaseSafe mode (optimized with safety)");
     release_safe_step.dependOn(&install_release_safe.step);
 
     // Release-small build (optimize for size)
     const release_small_exe = b.addExecutable(.{
-        .name = "ion-release-small",
+        .name = "home-release-small",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -584,7 +584,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("database", database_pkg);
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
-    const release_small_step = b.step("release-small", "Build Ion compiler in ReleaseSmall mode (optimized for size)");
+    const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");
     release_small_step.dependOn(&install_release_small.step);
 
     // Documentation generation

@@ -47,16 +47,16 @@ fn printUsage() void {
         \\  ion <command> [arguments]
         \\
         \\{s}Commands:{s}
-        \\  parse <file>       Tokenize an Ion file and display tokens
-        \\  ast <file>         Parse an Ion file and display the AST
-        \\  check <file>       Type check an Ion file (fast, no execution)
-        \\  fmt <file>         Format an Ion file with consistent style
-        \\  run <file>         Execute an Ion file directly
-        \\  build <file>       Compile an Ion file to a native binary
+        \\  parse <file>       Tokenize an Home file and display tokens
+        \\  ast <file>         Parse an Home file and display the AST
+        \\  check <file>       Type check an Home file (fast, no execution)
+        \\  fmt <file>         Format an Home file with consistent style
+        \\  run <file>         Execute an Home file directly
+        \\  build <file>       Compile an Home file to a native binary
         \\  profile <file>     Profile memory allocations during compilation
         \\
         \\  {s}Package Management:{s}
-        \\  pkg init           Initialize a new Ion project with ion.toml
+        \\  pkg init           Initialize a new Home project with ion.toml
         \\  pkg add <name>     Add a dependency (registry package)
         \\  pkg add <url>      Add from GitHub (user/repo) or URL
         \\  pkg remove <name>  Remove a dependency
@@ -72,10 +72,10 @@ fn printUsage() void {
         \\  help               Display this help message
         \\
         \\{s}Examples:{s}
-        \\  ion parse hello.ion
-        \\  ion check hello.ion
-        \\  ion run hello.ion
-        \\  ion build hello.ion -o hello
+        \\  ion parse hello.home
+        \\  ion check hello.home
+        \\  ion run hello.home
+        \\  ion build hello.home -o hello
         \\
         \\  ion pkg init
         \\  ion pkg add http-router@1.0.0
@@ -494,7 +494,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     // Initialize IR cache if enabled
     var cache: ?IRCache = null;
     if (build_options.enable_ir_cache) {
-        cache = try IRCache.init(allocator, ".ion-cache");
+        cache = try IRCache.init(allocator, ".home-cache");
         std.debug.print("{s}IR Cache:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
         // Check if we have a valid cached result
@@ -521,9 +521,11 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
     // Determine output path
     const out_path = output_path orelse blk: {
-        // Default: remove .ion extension and use that as output name
-        if (std.mem.endsWith(u8, file_path, ".ion")) {
-            break :blk file_path[0 .. file_path.len - 4];
+        // Default: remove .home or .hm extension and use that as output name
+        if (std.mem.endsWith(u8, file_path, ".home")) {
+            break :blk file_path[0 .. file_path.len - 5];
+        } else if (std.mem.endsWith(u8, file_path, ".hm")) {
+            break :blk file_path[0 .. file_path.len - 3];
         }
         break :blk "a.out";
     };
@@ -811,7 +813,7 @@ fn pkgCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
 fn pkgInit(allocator: std.mem.Allocator) !void {
     _ = allocator;
-    std.debug.print("{s}Initializing new Ion project...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}Initializing new Home project...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     // Create ion.toml with default content
     const content =
@@ -829,8 +831,8 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\
         \\[scripts]
         \\# Bun-style package scripts
-        \\dev = "ion run src/main.ion --watch"
-        \\build = "ion build src/main.ion -o dist/app"
+        \\dev = "ion run src/main.home --watch"
+        \\build = "ion build src/main.home -o dist/app"
         \\test = "ion test tests/"
         \\bench = "ion bench bench/"
         \\format = "ion fmt src/"
@@ -1002,9 +1004,9 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
     // TODO: Parse ion.toml and look for [scripts] section
     // For now, show common scripts
     if (std.mem.eql(u8, script_name, "dev")) {
-        std.debug.print("🚀 ion run src/main.ion --watch\n", .{});
+        std.debug.print("🚀 ion run src/main.home --watch\n", .{});
     } else if (std.mem.eql(u8, script_name, "build")) {
-        std.debug.print("🔨 ion build src/main.ion -o dist/app\n", .{});
+        std.debug.print("🔨 ion build src/main.home -o dist/app\n", .{});
     } else if (std.mem.eql(u8, script_name, "test")) {
         std.debug.print("🧪 ion test tests/\n", .{});
     } else {
@@ -1022,8 +1024,8 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
 
     // TODO: Parse ion.toml for actual scripts
     // For now, show example scripts
-    std.debug.print("  {s}dev{s}      ion run src/main.ion --watch\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}build{s}    ion build src/main.ion -o dist/app\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}dev{s}      ion run src/main.home --watch\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}build{s}    ion build src/main.home -o dist/app\n", .{ Color.Green.code(), Color.Reset.code() });
     std.debug.print("  {s}test{s}     ion test tests/\n", .{ Color.Green.code(), Color.Reset.code() });
     std.debug.print("  {s}bench{s}    ion bench bench/\n", .{ Color.Green.code(), Color.Reset.code() });
     std.debug.print("  {s}format{s}   ion fmt src/\n", .{ Color.Green.code(), Color.Reset.code() });
@@ -1035,7 +1037,7 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
 
 /// Login to package registry
 fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
-    std.debug.print("{s}Login to Ion Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}Login to Home Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     // Parse optional arguments
     var registry: ?[]const u8 = null;
@@ -1086,7 +1088,7 @@ fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
 /// Logout from package registry
 fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
-    std.debug.print("{s}Logout from Ion Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}Logout from Home Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     var registry: ?[]const u8 = null;
 

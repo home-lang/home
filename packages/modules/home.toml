@@ -1,0 +1,12 @@
+[package]
+name = "home-modules"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Module System - Module resolution and imports"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/module_system.zig"

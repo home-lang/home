@@ -6,7 +6,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("\n=== Ion Database Client - Advanced Features ===\n\n", .{});
+    std.debug.print("\n=== Home Database Client - Advanced Features ===\n\n", .{});
 
     // Example 1: Basic Connection & Transactions
     try exampleTransactions(allocator);

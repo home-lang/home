@@ -1,13 +1,13 @@
 {
-  "name": "ion-language",
+  "name": "home-language",
   "private": true,
-  "displayName": "Ion Language Support",
-  "description": "Language support for the Ion programming language",
+  "displayName": "Home Language Support",
+  "description": "Language support for the Home programming language",
   "version": "0.1.0",
   "publisher": "chrisbreuer",
   "repository": {
     "type": "git",
-    "url": "https://github.com/stacksjs/ion"
+    "url": "https://github.com/stacksjs/home"
   },
   "categories": [
     "Programming Languages",
@@ -17,7 +17,7 @@
     "Snippets"
   ],
   "keywords": [
-    "ion",
+    "home",
     "systems",
     "programming",
     "compiler"
@@ -29,7 +29,7 @@
     "better-dx": "^0.2.0"
   },
   "workspaces": [
-    "./packages/vscode-ion",
+    "./packages/vscode-home",
     "./packages/action"
   ]
 }

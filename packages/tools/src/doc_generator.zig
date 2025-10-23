@@ -3,7 +3,7 @@ const ast = @import("../ast/ast.zig");
 const parser = @import("../parser/parser.zig");
 const lexer = @import("../lexer/lexer.zig");
 
-/// Documentation generator for Ion code
+/// Documentation generator for Home code
 pub const DocGenerator = struct {
     allocator: std.mem.Allocator,
     output_dir: []const u8,
@@ -222,7 +222,7 @@ pub const DocGenerator = struct {
 
         var writer = file.writer();
 
-        try writer.writeAll("# Ion Documentation\n\n");
+        try writer.writeAll("# Home Documentation\n\n");
 
         // Table of contents
         try writer.writeAll("## Table of Contents\n\n");

@@ -1,11 +1,11 @@
-# Ion Compiler Architecture
+# Home Compiler Architecture
 
 > **Last Updated**: 2025-10-22
-> **Status**: Ion is at 88% completion (43/49 tasks complete)
+> **Status**: Home is at 88% completion (43/49 tasks complete)
 
 ## Overview
 
-The Ion compiler is a modern, multi-stage compiler written in Zig that compiles Ion source code through several distinct phases:
+The Home compiler is a modern, multi-stage compiler written in Zig that compiles Home source code through several distinct phases:
 
 ```
 Source Code → Lexer → Parser → Type Checker → Interpreter/Codegen
@@ -14,7 +14,7 @@ Source Code → Lexer → Parser → Type Checker → Interpreter/Codegen
 ## Project Structure
 
 ```
-ion/
+home/
 ├── packages/           # Core compiler packages
 │   ├── lexer/         # Tokenization (220+ tests)
 │   ├── parser/        # AST construction (33 tests)
@@ -26,7 +26,7 @@ ion/
 │   ├── modules/       # Module system and imports
 │   └── patterns/      # Pattern matching
 ├── src/               # Main CLI application
-├── examples/          # Example Ion programs
+├── examples/          # Example Home programs
 ├── tests/             # Integration tests
 └── docs/              # Documentation
 
@@ -259,7 +259,7 @@ Inspired by Rust's ownership system but simplified:
 ### Integration Tests
 - End-to-end pipeline tests
 - Real-world code examples
-- Located in `/tests/integration/`
+- Located in `/tests/integrathome/`
 
 ## Performance Characteristics
 
@@ -321,7 +321,7 @@ When adding new features:
 
 ## References
 
-- [Ion Language Specification](./LANGUAGE.md) (TODO)
+- [Home Language Specification](./LANGUAGE.md) (TODO)
 - [TODO Roadmap](../TODO.md)
 - [Configuration Guide](./CONFIGURATION.md)
 - [Examples](../examples/)

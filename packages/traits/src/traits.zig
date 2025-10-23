@@ -1,7 +1,7 @@
 const std = @import("std");
 const ast = @import("ast");
 
-/// Trait system for Ion (similar to Rust traits / TypeScript interfaces)
+/// Trait system for Home (similar to Rust traits / TypeScript interfaces)
 /// Provides polymorphism, code reuse, and abstraction
 pub const TraitSystem = struct {
     allocator: std.mem.Allocator,

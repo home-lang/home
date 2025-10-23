@@ -74,7 +74,7 @@ pub const DebugState = enum {
     Terminated,
 };
 
-/// Debugger interface for Ion interpreter
+/// Debugger interface for Home interpreter
 ///
 /// Provides debugging capabilities including:
 /// - Breakpoint management

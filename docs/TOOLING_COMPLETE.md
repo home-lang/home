@@ -1,6 +1,6 @@
-# Ion Tooling - Complete Implementation ✅
+# Home Tooling - Complete Implementation ✅
 
-Complete tooling suite for the Ion programming language including IDE support, debugger, profiler, and package registry.
+Complete tooling suite for the Home programming language including IDE support, debugger, profiler, and package registry.
 
 ---
 
@@ -11,19 +11,19 @@ Complete tooling suite for the Ion programming language including IDE support, d
 3. [Debugger](#debugger)
 4. [Profiler](#profiler)
 5. [Package Registry](#package-registry)
-6. [Installation & Setup](#installation--setup)
+6. [Installation & Setup](#installathome--setup)
 7. [Usage Examples](#usage-examples)
 
 ---
 
 ## Overview
 
-The Ion tooling suite provides a complete development environment:
+The Home tooling suite provides a complete development environment:
 
 | Tool | Purpose | Status |
 |------|---------|--------|
 | **VSCode Extension** | Language support, syntax highlighting, LSP integration | ✅ Complete |
-| **Debugger** | Debug Ion programs with breakpoints, stepping, inspection | ✅ Complete |
+| **Debugger** | Debug Home programs with breakpoints, stepping, inspection | ✅ Complete |
 | **Profiler** | Performance profiling with detailed reports | ✅ Complete |
 | **Package Registry** | Centralized package hosting and distribution | ✅ Complete |
 
@@ -32,12 +32,12 @@ The Ion tooling suite provides a complete development environment:
 ## VSCode Extension
 
 ### Location
-`packages/vscode-ion/`
+`packages/vscode-home/`
 
 ### Features Implemented
 
 #### ✅ Language Support
-- Syntax highlighting for `.ion` files
+- Syntax highlighting for `.home` files
 - Language configuration (brackets, comments, auto-closing)
 - File icon support
 
@@ -50,9 +50,9 @@ The Ion tooling suite provides a complete development environment:
 - Error diagnostics
 
 #### ✅ Commands
-- `ion.run` - Run current Ion file
-- `ion.build` - Build Ion file
-- `ion.check` - Type check Ion file
+- `ion.run` - Run current Home file
+- `ion.build` - Build Home file
+- `ion.check` - Type check Home file
 - `ion.test` - Run tests
 - `ion.format` - Format document
 - `ion.restartServer` - Restart LSP server
@@ -92,7 +92,7 @@ The Ion tooling suite provides a complete development environment:
 
 ### File Structure
 ```
-packages/vscode-ion/
+packages/vscode-home/
 ├── package.json                    # Extension manifest
 ├── language-configuration.json     # Language configuration
 ├── tsconfig.json                   # TypeScript config
@@ -108,7 +108,7 @@ packages/vscode-ion/
 ### Installation
 
 ```bash
-cd packages/vscode-ion
+cd packages/vscode-home
 npm install
 npm run compile
 ```
@@ -119,10 +119,10 @@ Then press F5 in VSCode to launch the extension in development mode.
 
 ```bash
 npm run package
-# Creates ion-language-0.1.0.vsix
+# Creates home-language-0.1.0.vsix
 
 # Install locally
-code --install-extension ion-language-0.1.0.vsix
+code --install-extension home-language-0.1.0.vsix
 
 # Or publish to marketplace
 vsce publish
@@ -133,7 +133,7 @@ vsce publish
 ## Debugger
 
 ### Location
-`packages/vscode-ion/src/debugAdapter.ts`
+`packages/vscode-home/src/debugAdapter.ts`
 
 ### Features Implemented
 
@@ -185,7 +185,7 @@ Add to `.vscode/launch.json`:
     {
       "type": "ion",
       "request": "launch",
-      "name": "Debug Ion File",
+      "name": "Debug Home File",
       "program": "${file}",
       "stopOnEntry": false
     },
@@ -209,7 +209,7 @@ Add to `.vscode/launch.json`:
 
 ### Usage
 
-1. Open an Ion file
+1. Open an Home file
 2. Set breakpoints by clicking in the gutter
 3. Press F5 or click "Run and Debug"
 4. Use debug toolbar to control execution
@@ -219,8 +219,8 @@ Add to `.vscode/launch.json`:
 ### Debug Commands
 
 ```typescript
-// Ion compiler must support debug mode:
-// ion debug program.ion
+// Home compiler must support debug mode:
+// ion debug program.home
 
 // Debug output format:
 [DEBUG] Breakpoint hit at line 10
@@ -233,7 +233,7 @@ Add to `.vscode/launch.json`:
 ## Profiler
 
 ### Location
-`packages/vscode-ion/src/profiler.ts`
+`packages/vscode-home/src/profiler.ts`
 
 ### Features Implemented
 
@@ -261,7 +261,7 @@ Add to `.vscode/launch.json`:
 
 ### Profiler Output Format
 
-The profiler expects the Ion compiler to output profiling data in this format:
+The profiler expects the Home compiler to output profiling data in this format:
 
 ```json
 [PROFILE] {"type":"function_call","name":"calculate","duration":15.3,"timestamp":1234567890}
@@ -295,12 +295,12 @@ The profiler expects the Ion compiler to output profiling data in this format:
 
 #### Start Profiling
 ```
-Cmd/Ctrl + Shift + P -> "Start Ion Profiler"
+Cmd/Ctrl + Shift + P -> "Start Home Profiler"
 ```
 
 #### Stop Profiling
 ```
-Cmd/Ctrl + Shift + P -> "Stop Ion Profiler"
+Cmd/Ctrl + Shift + P -> "Stop Home Profiler"
 ```
 
 #### View Report
@@ -313,7 +313,7 @@ Cmd/Ctrl + Shift + P -> "View Profiler Report"
 import { IonProfiler } from './profiler';
 
 const profiler = new IonProfiler();
-await profiler.start('./my-program.ion');
+await profiler.start('./my-program.home');
 // ... run program ...
 profiler.stop();
 await profiler.viewReport();
@@ -324,7 +324,7 @@ await profiler.viewReport();
 ## Package Registry
 
 ### Location
-`tooling/package-registry/`
+`packages/registry/`
 
 ### Features Implemented
 
@@ -448,7 +448,7 @@ GET /api/stats/package/:name
 #### Installation
 
 ```bash
-cd tooling/package-registry
+cd packages/registry
 npm install
 ```
 
@@ -461,7 +461,7 @@ PORT=3000
 NODE_ENV=development
 MONGODB_URL=mongodb://localhost:27017
 REDIS_URL=redis://localhost:6379
-DB_NAME=ion-registry
+DB_NAME=home-registry
 STORAGE_PATH=./storage
 JWT_SECRET=your-secret-key-change-in-production
 LOG_LEVEL=info
@@ -484,24 +484,24 @@ The VSCode extension integrates with the registry:
 
 ```typescript
 // Search packages
-Command: "Search Ion Packages"
+Command: "Search Home Packages"
 
 // Install package
-Command: "Install Ion Package"
+Command: "Install Home Package"
 -> Enter package name
 -> Select version
 
 // Publish package
 Command: "Publish Package"
--> Requires package.ion in workspace
+-> Requires package.home in workspace
 -> Requires authentication
 ```
 
 ### Package Format
 
-Packages must include a `package.ion` file:
+Packages must include a `package.home` file:
 
-```ion
+```home
 package {
     name: "my-package"
     version: "1.0.0"
@@ -524,7 +524,7 @@ package {
 1. **Create package**
    ```bash
    cd my-package
-   # Create package.ion with metadata
+   # Create package.home with metadata
    ```
 
 2. **Build package**
@@ -556,14 +556,14 @@ package {
 - Node.js 18+ (for package registry)
 - MongoDB (for package registry)
 - Redis (for package registry)
-- Ion compiler installed
+- Home compiler installed
 
 ### Quick Start
 
 #### 1. Install VSCode Extension
 
 ```bash
-cd packages/vscode-ion
+cd packages/vscode-home
 npm install
 npm run compile
 code --install-extension .
@@ -590,7 +590,7 @@ mongod
 redis-server
 
 # Start registry
-cd tooling/package-registry
+cd packages/registry
 npm install
 npm run dev
 ```
@@ -610,8 +610,8 @@ Update VSCode extension settings:
 
 ### Example 1: Debug a Program
 
-```ion
-// program.ion
+```home
+// program.home
 fn main() {
     let x = 42
     let y = calculate(x)
@@ -623,7 +623,7 @@ fn calculate(n: i32) -> i32 {
 }
 ```
 
-1. Open `program.ion` in VSCode
+1. Open `program.home` in VSCode
 2. Click gutter at line 7 to set breakpoint
 3. Press F5 to start debugging
 4. Inspect variables when breakpoint hits
@@ -631,8 +631,8 @@ fn calculate(n: i32) -> i32 {
 
 ### Example 2: Profile Performance
 
-```ion
-// slow.ion
+```home
+// slow.home
 fn main() {
     for i in 0..1000 {
         process(i)
@@ -646,16 +646,16 @@ fn process(n: i32) {
 }
 ```
 
-1. Open `slow.ion`
-2. Run command: "Start Ion Profiler"
+1. Open `slow.home`
+2. Run command: "Start Home Profiler"
 3. Program executes and profiling data collected
 4. Run command: "View Profiler Report"
 5. See which functions are slowest
 
 ### Example 3: Publish a Package
 
-```ion
-// package.ion
+```home
+// package.home
 package {
     name: "math-utils"
     version: "1.0.0"
@@ -664,7 +664,7 @@ package {
     license: "MIT"
 }
 
-// lib.ion
+// lib.home
 pub fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
@@ -674,7 +674,7 @@ pub fn multiply(a: i32, b: i32) -> i32 {
 }
 ```
 
-1. Create package.ion with metadata
+1. Create package.home with metadata
 2. Run command: "Publish Package"
 3. Enter credentials (or use saved token)
 4. Package uploaded to registry
@@ -682,7 +682,7 @@ pub fn multiply(a: i32, b: i32) -> i32 {
 
 ### Example 4: Search and Install Package
 
-1. Run command: "Search Ion Packages"
+1. Run command: "Search Home Packages"
 2. Enter search term: "http"
 3. Select package from results
 4. Confirm installation
@@ -701,7 +701,7 @@ Extension Host
 ├── Debug Adapter
 │   └── Implements DAP
 ├── Profiler
-│   └── Monitors Ion process
+│   └── Monitors Home process
 ├── Package Manager
 │   └── Communicates with registry
 └── Providers
@@ -735,14 +735,14 @@ Registry Server
 ### VSCode Extension Tests
 
 ```bash
-cd packages/vscode-ion
+cd packages/vscode-home
 npm test
 ```
 
 ### Package Registry Tests
 
 ```bash
-cd tooling/package-registry
+cd packages/registry
 npm test
 ```
 
@@ -792,7 +792,7 @@ npm test
 
 ### Extension Not Activating
 ```bash
-# Check Ion path
+# Check Home path
 which ion
 
 # Update settings
@@ -801,11 +801,11 @@ which ion
 
 ### LSP Server Not Starting
 ```bash
-# Verify Ion LSP support
+# Verify Home LSP support
 ion lsp --version
 
 # Restart server
-Cmd/Ctrl + Shift + P -> "Restart Ion Language Server"
+Cmd/Ctrl + Shift + P -> "Restart Home Language Server"
 ```
 
 ### Debugger Not Working
@@ -861,7 +861,7 @@ tail -f combined.log
 
 ## Summary
 
-All Ion tooling has been successfully implemented:
+All Home tooling has been successfully implemented:
 
 ✅ **VSCode Extension** - Full-featured IDE support
 ✅ **Debugger** - Complete debugging capabilities

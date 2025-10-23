@@ -10,7 +10,7 @@ This document outlines future improvements to Ion's package manager, taking insp
 **Priority**: High
 **Impact**: Massive speed improvement
 
-Bun downloads packages in parallel, making installations incredibly fast. Ion should do the same.
+Bun downloads packages in parallel, making installations incredibly fast. Home should do the same.
 
 **Implementation**:
 ```zig
@@ -47,7 +47,7 @@ Like Bun, store packages globally and symlink them into projects.
 
 **Cache Structure**:
 ```
-~/.ion/
+~/.home/
   cache/
     packages/
       <hash1>/  # Content-addressed by checksum
@@ -91,7 +91,7 @@ http_client.compression = .gzip;
 **Priority**: High
 **Impact**: Developer delight
 
-Bun shows beautiful progress bars with speed indicators. Ion should too!
+Bun shows beautiful progress bars with speed indicators. Home should too!
 
 **Example Output**:
 ```
@@ -147,8 +147,8 @@ name = "my-app"
 version = "1.0.0"
 
 [scripts]
-dev = "ion run src/main.ion --watch"
-build = "ion build src/main.ion -o dist/app"
+dev = "ion run src/main.home --watch"
+build = "ion build src/main.home -o dist/app"
 test = "ion test tests/"
 bench = "ion bench bench/"
 format = "ion fmt src/"
@@ -215,7 +215,7 @@ my-monorepo/
 Like Bun, cache package metadata locally:
 
 ```
-~/.ion/
+~/.home/
   registry/
     metadata/
       http-router.json
@@ -252,13 +252,13 @@ ion pkg publish --tag beta
 [package]
 name = "my-awesome-lib"
 version = "1.0.0"
-description = "An awesome Ion library"
+description = "An awesome Home library"
 license = "MIT"
 repository = "https://github.com/user/my-awesome-lib"
 keywords = ["http", "server", "fast"]
 
 [package.publish]
-registry = "https://packages.ion-lang.org"
+registry = "https://packages.home-lang.org"
 include = ["src/", "README.md", "LICENSE"]
 exclude = ["tests/", "bench/"]
 ```
@@ -353,7 +353,7 @@ Before:
 
 After (with deduplication):
   app/
-    .ion/
+    .home/
       lodash@4.17.0  # Shared instance
     node_modules/
       package-a/  # Links to shared lodash
@@ -368,10 +368,10 @@ After (with deduplication):
 
 Like Bun, auto-install missing packages:
 
-```ion
+```home
 import "http-router"  // Not installed yet
 
-// Ion automatically runs: ion pkg add http-router
+// Home automatically runs: ion pkg add http-router
 // Then continues execution
 ```
 
@@ -542,7 +542,7 @@ test-framework = "1.0.0"
 benchmark = "2.0.0"
 
 [dependencies.production]
-# Production-only (minified, optimized)
+# Producthome-only (minified, optimized)
 logger = { version = "1.0.0", features = ["fast"] }
 ```
 

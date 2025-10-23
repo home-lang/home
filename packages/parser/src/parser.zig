@@ -106,7 +106,7 @@ pub const ParseErrorInfo = struct {
     column: usize,
 };
 
-/// Recursive descent parser for the Ion programming language.
+/// Recursive descent parser for the Home programming language.
 ///
 /// The Parser converts a stream of tokens (from the Lexer) into an Abstract
 /// Syntax Tree (AST) representing the program structure. It implements:

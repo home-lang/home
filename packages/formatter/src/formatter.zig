@@ -3,7 +3,7 @@ const ast = @import("ast");
 const lexer = @import("lexer");
 const parser = @import("parser");
 
-/// Ion code formatter
+/// Home code formatter
 pub const Formatter = struct {
     allocator: std.mem.Allocator,
     program: *const ast.Program,

@@ -1,4 +1,4 @@
-# Ion Standard Library Modules
+# Home Standard Library Modules
 
 Complete reference for Ion's standard library.
 
@@ -9,7 +9,7 @@ Complete reference for Ion's standard library.
 ### Core Utilities
 
 #### `datetime.zig` - Date and Time
-```ion
+```home
 import std.datetime;
 
 let now = DateTime.now();
@@ -28,7 +28,7 @@ let timer = Timer.start();
 ---
 
 #### `crypto.zig` - Cryptography
-```ion
+```home
 import std.crypto;
 
 let hash = SHA256.hash("data");
@@ -49,7 +49,7 @@ let salt = Password.generateSalt(allocator);
 ---
 
 #### `process.zig` - Process Management
-```ion
+```home
 import std.process;
 
 let result = exec(allocator, &[_][]const u8{"ls", "-la"});
@@ -68,7 +68,7 @@ let builder = ProcessBuilder.init(allocator)
 ---
 
 #### `cli.zig` - Command-Line Arguments
-```ion
+```home
 import std.cli;
 
 let parser = ArgParser.init(allocator, "myapp", "Description");
@@ -85,7 +85,7 @@ let input = parser.getString("input");
 ---
 
 #### `regex.zig` - Regular Expressions
-```ion
+```home
 import std.regex;
 
 let regex = Regex.compile(allocator, "[0-9]+");
@@ -103,13 +103,13 @@ let replaced = regex.replaceAll("text", "replacement");
 ### Networking
 
 #### `http.zig` - HTTP Client
-```ion
+```home
 import std.http;
 
 let client = HttpClient.init(allocator);
 let response = client.get("https://api.example.com/users");
 let json_response = client.post("https://api.example.com/users", 
-    .{ .body = "{\"name\":\"John\"}", .content_type = "application/json" });
+    .{ .body = "{\"name\":\"John\"}", .content_type = "applicathome/json" });
 ```
 
 **Exports**:
@@ -120,7 +120,7 @@ let json_response = client.post("https://api.example.com/users",
 ---
 
 #### `tcp.zig` - TCP Sockets
-```ion
+```home
 import std.tcp;
 
 let server = TcpServer.init(allocator, "127.0.0.1", 8080);
@@ -137,7 +137,7 @@ client.write("Hello");
 ---
 
 #### `udp.zig` - UDP Sockets
-```ion
+```home
 import std.udp;
 
 let socket = UdpSocket.bind(allocator, "127.0.0.1", 8080);
@@ -152,7 +152,7 @@ socket.sendTo("data", "127.0.0.1", 9000);
 ### Data Formats
 
 #### `json.zig` - JSON Parsing/Serialization
-```ion
+```home
 import std.json;
 
 let parsed = JSON.parse(allocator, "{\"name\":\"John\"}");
@@ -173,7 +173,7 @@ let builder = JSON.object()
 ### File System
 
 #### `file.zig` - File I/O
-```ion
+```home
 import std.file;
 
 let content = File.read(allocator, "path/to/file.txt");
@@ -210,7 +210,7 @@ File.append("path/to/file.txt", "more content");
 ## 🎯 Usage Patterns
 
 ### Web API Example
-```ion
+```home
 import std.http;
 import std.json;
 import std.crypto;
@@ -235,7 +235,7 @@ fn main() async {
 ```
 
 ### CLI Tool Example
-```ion
+```home
 import std.cli;
 import std.file;
 import std.process;
@@ -258,7 +258,7 @@ fn main() !void {
 ```
 
 ### Background Job Example
-```ion
+```home
 import std.process;
 import std.datetime;
 import std.crypto;

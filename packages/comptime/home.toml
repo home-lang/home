@@ -1,0 +1,13 @@
+[package]
+name = "home-comptime"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Compile-Time Execution - Comptime evaluation"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+home-interpreter = { path = "../interpreter" }
+
+[scripts]
+test = "zig test src/comptime_executor.zig"

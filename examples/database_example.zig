@@ -6,7 +6,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("\n=== Ion Database (SQLite) Example ===\n\n", .{});
+    std.debug.print("\n=== Home Database (SQLite) Example ===\n\n", .{});
 
     // Example 1: Open in-memory database
     std.debug.print("1. Opening in-memory database...\n", .{});

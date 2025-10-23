@@ -52,11 +52,11 @@ test "Version: url version" {
 // ═══════════════════════════════════════════════════════════════
 
 test "DependencySource: Registry" {
-    const source = pkg.DependencySource{ .Registry = "https://packages.ion-lang.org" };
+    const source = pkg.DependencySource{ .Registry = "https://packages.home-lang.org" };
 
     switch (source) {
         .Registry => |url| {
-            try testing.expectEqualStrings("https://packages.ion-lang.org", url);
+            try testing.expectEqualStrings("https://packages.home-lang.org", url);
         },
         else => return error.WrongSourceType,
     }
@@ -104,7 +104,7 @@ test "Dependency: create with semantic version" {
                 .patch = 0,
             },
         },
-        .source = pkg.DependencySource{ .Registry = "https://packages.ion-lang.org" },
+        .source = pkg.DependencySource{ .Registry = "https://packages.home-lang.org" },
     };
 
     try testing.expectEqualStrings("http-router", dep.name);
@@ -161,7 +161,7 @@ test "DependencyResolver: add dependency" {
     const dep = pkg.Dependency{
         .name = "test-pkg",
         .version = pkg.Version{ .semantic = .{ .major = 1, .minor = 0, .patch = 0 } },
-        .source = pkg.DependencySource{ .Registry = "https://packages.ion-lang.org" },
+        .source = pkg.DependencySource{ .Registry = "https://packages.home-lang.org" },
     };
 
     try resolver.addDependency(dep);

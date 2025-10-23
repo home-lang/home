@@ -206,7 +206,7 @@ pub fn fullWebAppExample(allocator: std.mem.Allocator) !void {
                 \\    </style>
                 \\</head>
                 \\<body>
-                \\    <h1>Welcome to Ion + Zyte!</h1>
+                \\    <h1>Welcome to Home + Zyte!</h1>
                 \\    <p>A modern web framework built with safety and speed.</p>
                 \\    <ul>
                 \\        <li><a href="/api/users">View Users API</a></li>
@@ -223,7 +223,7 @@ pub fn fullWebAppExample(allocator: std.mem.Allocator) !void {
     _ = try server.get("/about", struct {
         fn handler(req: *http_router.Request, res: *http_router.Response) !void {
             _ = req;
-            try res.html("<h1>About</h1><p>Built with Ion programming language</p>");
+            try res.html("<h1>About</h1><p>Built with Home programming language</p>");
         }
     }.handler);
 
@@ -280,7 +280,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("\n╔════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Ion HTTP Router Examples            ║\n", .{});
+    std.debug.print("║   Home HTTP Router Examples            ║\n", .{});
     std.debug.print("╚════════════════════════════════════════╝\n", .{});
 
     try basicRoutingExample(allocator);

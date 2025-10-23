@@ -35,7 +35,7 @@ pub fn main() !void {
     }
 
     std.debug.print("╔════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║     Ion Parallel Build System Demo            ║\n", .{});
+    std.debug.print("║     Home Parallel Build System Demo            ║\n", .{});
     std.debug.print("╚════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -46,7 +46,7 @@ pub fn main() !void {
     builder.verbose = verbose;
     builder.benchmark = benchmark;
 
-    // Add demo tasks (simulating Ion package compilation)
+    // Add demo tasks (simulating Home package compilation)
     const packages = [_]struct { name: []const u8, file: []const u8, deps: []const []const u8 }{
         .{ .name = "lexer", .file = "packages/lexer/src/lexer.zig", .deps = &.{} },
         .{ .name = "token", .file = "packages/lexer/src/token.zig", .deps = &.{} },

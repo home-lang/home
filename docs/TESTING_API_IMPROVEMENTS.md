@@ -281,7 +281,7 @@ const text = "hello world";
 // Exact substring
 try expect.toContain("world");
 
-// Position-based
+// Posithome-based
 try expect.toStartWith("hello");
 try expect.toEndWith("world");
 
@@ -554,12 +554,12 @@ All matchers are highly optimized:
 
 ## Conclusion
 
-The Ion testing framework now features:
+The Home testing framework now features:
 
 - ✅ **Clean API** with `test.*` namespace
 - ✅ **32+ matchers** covering all common scenarios
 - ✅ **Complete documentation** with examples
-- ✅ **Production-ready** implementation
+- ✅ **Producthome-ready** implementation
 - ✅ **Best-in-class** testing experience
 
 **Status:** Complete and ready for use! 🎉

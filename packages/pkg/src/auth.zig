@@ -31,7 +31,7 @@ pub const AuthToken = struct {
 /// The file is encrypted using a key derived from the system (platform-specific).
 ///
 /// Storage locations:
-/// - Linux/macOS: ~/.ion/auth.json (with 0600 permissions)
+/// - Linux/macOS: ~/.home/auth.json (with 0600 permissions)
 /// - Windows: %APPDATA%\Ion\auth.json (with restricted ACLs)
 pub const TokenStore = struct {
     allocator: std.mem.Allocator,
@@ -41,8 +41,8 @@ pub const TokenStore = struct {
 
     /// Default config directory name
     /// On Windows: "Ion" (goes in APPDATA)
-    /// On Unix: ".ion" (goes in HOME)
-    const CONFIG_DIR = if (builtin.os.tag == .windows) "Ion" else ".ion";
+    /// On Unix: ".home" (goes in HOME)
+    const CONFIG_DIR = if (builtin.os.tag == .windows) "Ion" else ".home";
     /// Default token file name
     const TOKEN_FILE = "auth.json";
 

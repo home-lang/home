@@ -1,8 +1,8 @@
 const std = @import("std");
 
-/// Enumeration of all token types recognized by the Ion lexer.
+/// Enumeration of all token types recognized by the Home lexer.
 ///
-/// This enum represents every category of lexical token in the Ion language,
+/// This enum represents every category of lexical token in the Home language,
 /// including operators, keywords, literals, and special symbols. Tokens are
 /// the atomic units produced by lexical analysis and consumed by the parser.
 ///
@@ -280,7 +280,7 @@ pub const Token = struct {
 /// is a reserved keyword. It's initialized at compile-time for zero runtime
 /// overhead. Used by the lexer to distinguish keywords from user identifiers.
 ///
-/// All Ion language keywords are registered here, including control flow
+/// All Home language keywords are registered here, including control flow
 /// (if, else, for), declarations (fn, let, const), and special forms
 /// (async, await, match, comptime).
 pub const keywords = std.StaticStringMap(TokenType).initComptime(.{

@@ -1,0 +1,444 @@
+{
+  "name": "home-language",
+  "displayName": "Home Language Support",
+  "description": "Language support for the Home programming language",
+  "version": "0.1.0",
+  "publisher": "home-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stacksjs/home"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Formatters",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "home",
+    "systems",
+    "programming",
+    "compiler"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "home",
+        "aliases": [
+          "Home",
+          "home"
+        ],
+        "extensions": [
+          ".home",
+          ".hm"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/ion-light.png",
+          "dark": "./icons/ion-dark.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "home",
+        "scopeName": "source.home",
+        "path": "./syntaxes/ion.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Home",
+      "properties": {
+        "ion.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        },
+        "ion.format.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable automatic formatting"
+        },
+        "ion.linting.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable linting"
+        },
+        "ion.path": {
+          "type": "string",
+          "default": "home",
+          "description": "Path to ion executable"
+        },
+        "ion.debugger.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Ion debugger"
+        },
+        "ion.profiler.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Ion profiler"
+        },
+        "ion.profiler.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start profiler when debugging"
+        },
+        "ion.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inlay hints for types and parameters"
+        },
+        "ion.inlayHints.parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show parameter name hints"
+        },
+        "ion.inlayHints.typeAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show type annotation hints"
+        },
+        "ion.codelens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable CodeLens for run/test buttons"
+        },
+        "ion.format.onSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Format Ion files on save"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ion.restartServer",
+        "title": "Restart Ion Language Server"
+      },
+      {
+        "command": "ion.run",
+        "title": "Run Ion Program"
+      },
+      {
+        "command": "ion.build",
+        "title": "Build Ion Program"
+      },
+      {
+        "command": "ion.check",
+        "title": "Check Ion Program"
+      },
+      {
+        "command": "ion.test",
+        "title": "Run Ion Tests"
+      },
+      {
+        "command": "ion.format",
+        "title": "Format Ion Document"
+      },
+      {
+        "command": "ion.profiler.start",
+        "title": "Start Ion Profiler"
+      },
+      {
+        "command": "ion.profiler.stop",
+        "title": "Stop Ion Profiler"
+      },
+      {
+        "command": "ion.profiler.viewReport",
+        "title": "View Profiler Report"
+      },
+      {
+        "command": "ion.packageManager.search",
+        "title": "Search Ion Packages"
+      },
+      {
+        "command": "ion.packageManager.install",
+        "title": "Install Ion Package"
+      },
+      {
+        "command": "ion.cpu.start",
+        "title": "Ion: Start CPU Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.stop",
+        "title": "Ion: Stop CPU Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.flamegraph",
+        "title": "Ion: View CPU Flame Graph",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.cpu.exportChrome",
+        "title": "Ion: Export CPU Profile to Chrome DevTools",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.start",
+        "title": "Ion: Start GC Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.stop",
+        "title": "Ion: Stop GC Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.report",
+        "title": "Ion: View GC Report",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.gc.analyzePressure",
+        "title": "Ion: Analyze GC Pressure",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.start",
+        "title": "Ion: Start Memory Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.stop",
+        "title": "Ion: Stop Memory Profiler",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.snapshot",
+        "title": "Ion: Take Memory Snapshot",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.findLeaks",
+        "title": "Ion: Detect Memory Leaks",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.memory.report",
+        "title": "Ion: View Memory Report",
+        "category": "Ion Profiler"
+      },
+      {
+        "command": "ion.debug.stepBack",
+        "title": "Ion: Step Back (Time-Travel)",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.debug.stepForward",
+        "title": "Ion: Step Forward (Time-Travel)",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.debug.showTimeline",
+        "title": "Ion: Show Execution Timeline",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showAll",
+        "title": "Ion: Show All Threads",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showDeadlocks",
+        "title": "Ion: Detect Deadlocks",
+        "category": "Ion Debug"
+      },
+      {
+        "command": "ion.threads.showRaces",
+        "title": "Ion: Detect Race Conditions",
+        "category": "Ion Debug"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ion.run",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.test",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.format",
+        "key": "alt+shift+f",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.debug.stepBack",
+        "key": "ctrl+shift+left",
+        "mac": "cmd+shift+left",
+        "when": "inDebugMode"
+      },
+      {
+        "command": "ion.debug.stepForward",
+        "key": "ctrl+shift+right",
+        "mac": "cmd+shift+right",
+        "when": "inDebugMode"
+      },
+      {
+        "command": "ion.cpu.flamegraph",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorTextFocus && resourceLangId == ion"
+      },
+      {
+        "command": "ion.memory.snapshot",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "editorTextFocus && resourceLangId == ion"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "home"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "home",
+        "label": "Ion Debug",
+        "program": "./out/debugAdapter.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the Ion file to debug",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "description": "Command line arguments passed to the program",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Absolute path to the working directory",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop after launch",
+                "default": false
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Enable logging of the Debug Adapter Protocol",
+                "default": false
+              },
+              "profiler": {
+                "type": "boolean",
+                "description": "Enable profiler during debugging",
+                "default": false
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "processId"
+            ],
+            "properties": {
+              "processId": {
+                "type": "number",
+                "description": "Process ID to attach to"
+              },
+              "trace": {
+                "type": "boolean",
+                "description": "Enable logging of the Debug Adapter Protocol",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "home",
+            "request": "launch",
+            "name": "Debug Ion File",
+            "program": "${file}",
+            "stopOnEntry": false
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Ion Debug: Launch",
+            "description": "A new configuration for debugging an Ion file",
+            "body": {
+              "type": "home",
+              "request": "launch",
+              "name": "Debug Ion File",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": false
+            }
+          },
+          {
+            "label": "Ion Debug: Launch with Profiler",
+            "description": "Debug an Ion file with profiler enabled",
+            "body": {
+              "type": "home",
+              "request": "launch",
+              "name": "Debug Ion File (Profiler)",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": false,
+              "profiler": true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "activationEvents": [
+    "onLanguage:ion"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0",
+    "vscode-debugadapter": "^1.51.0",
+    "vscode-debugprotocol": "^1.51.0"
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "home-parser"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Language Parser - AST generation from tokens"
+license = "MIT"
+
+[dependencies]
+home-lexer = { path = "../lexer" }
+home-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/parser.zig"

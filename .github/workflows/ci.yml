@@ -83,7 +83,7 @@ jobs:
       - name: Unit Test
         run: bun test
 
-  build-and-test-ion:
+  build-and-test-home:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -108,10 +108,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Ion
+      - name: Setup Home
         uses: ./packages/action
         with:
-          ion-version: 'latest'
+          home-version: 'latest'
           cache: 'true'
 
       - name: Setup Zig
@@ -122,11 +122,11 @@ jobs:
       - name: Verify Zig Installation
         run: zig version
 
-      - name: Build Ion Compiler (Native)
+      - name: Build Home Compiler (Native)
         if: matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')
         run: zig build
 
-      - name: Build Ion Compiler (Cross-compile)
+      - name: Build Home Compiler (Cross-compile)
         if: matrix.arch == 'aarch64' && matrix.os != 'macos-latest'
         run: zig build -Dtarget=${{ matrix.arch }}-${{ matrix.platform }}
 
@@ -150,30 +150,30 @@ jobs:
       - name: Test Native Codegen (Unix)
         if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |
-          ./zig-out/bin/ion parse tests/integration/11_ternary_advanced.ion
-          ./zig-out/bin/ion parse tests/integration/17_switch_advanced.ion
-          ./zig-out/bin/ion parse tests/integration/20_combined_features.ion
+          ./zig-out/bin/home parse tests/integration/11_ternary_advanced.ion
+          ./zig-out/bin/home parse tests/integration/17_switch_advanced.ion
+          ./zig-out/bin/home parse tests/integration/20_combined_features.ion
 
       - name: Test Native Codegen (Windows)
         if: matrix.platform == 'windows' && matrix.arch == 'x86_64'
         shell: bash
         run: |
-          ./zig-out/bin/ion.exe parse tests/integration/11_ternary_advanced.ion
-          ./zig-out/bin/ion.exe parse tests/integration/17_switch_advanced.ion
-          ./zig-out/bin/ion.exe parse tests/integration/20_combined_features.ion
+          ./zig-out/bin/home.exe parse tests/integration/11_ternary_advanced.ion
+          ./zig-out/bin/home.exe parse tests/integration/17_switch_advanced.ion
+          ./zig-out/bin/home.exe parse tests/integration/20_combined_features.ion
 
-      - name: Upload Ion Binary (Unix)
+      - name: Upload Home Binary (Unix)
         if: matrix.platform != 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ion-${{ matrix.platform }}-${{ matrix.arch }}
-          path: zig-out/bin/ion
+          name: home-${{ matrix.platform }}-${{ matrix.arch }}
+          path: zig-out/bin/home
           retention-days: 7
 
-      - name: Upload Ion Binary (Windows)
+      - name: Upload Home Binary (Windows)
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ion-${{ matrix.platform }}-${{ matrix.arch }}
-          path: zig-out/bin/ion.exe
+          name: home-${{ matrix.platform }}-${{ matrix.arch }}
+          path: zig-out/bin/home.exe
           retention-days: 7

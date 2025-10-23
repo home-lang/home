@@ -1,3 +1,7 @@
 /.zig-cache
 /zig-out
 node_modules
+
+# Home package manager
+pantry/
+.freezer

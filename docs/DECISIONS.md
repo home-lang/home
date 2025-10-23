@@ -1,4 +1,4 @@
-# Ion Technical Decisions
+# Home Technical Decisions
 
 Track architectural and design decisions to maintain consistency and provide historical context.
 
@@ -19,7 +19,7 @@ Ion aims for "safety without ceremony." Need to decide how much borrowing syntax
 **Options**:
 
 **A) Fully Explicit (Rust-style)**:
-```ion
+```home
 fn process(data: &string) -> usize {  // & required
   return data.len()
 }
@@ -32,7 +32,7 @@ fn modify(data: &mut string) {  // &mut required
 *Cons*: Verbose, ceremony
 
 **B) Fully Implicit (Inferred)**:
-```ion
+```home
 fn process(data: string) -> usize {  // compiler infers &string
   return data.len()
 }
@@ -45,7 +45,7 @@ fn modify(data: mut string) {  // compiler infers &mut string
 *Cons*: Less obvious, harder to reason about ownership
 
 **C) Hybrid (Default implicit, explicit override)**:
-```ion
+```home
 // Implicit by default
 fn process(data: string) {  // inferred: &string
   print(data)
@@ -87,7 +87,7 @@ Need consistent syntax for generic types that's familiar but distinct.
 **Options**:
 
 **A) Angle Brackets (Rust/TypeScript/C++)**:
-```ion
+```home
 fn identity<T>(value: T) -> T { value }
 let list: Vec<int> = Vec.new()
 let map: Map<string, User> = Map.new()
@@ -96,7 +96,7 @@ let map: Map<string, User> = Map.new()
 *Cons*: Parsing complexity (>> vs >), visual noise
 
 **B) Parentheses (Zig-style)**:
-```ion
+```home
 fn identity(comptime T: type)(value: T) -> T { value }
 let list: Vec(int) = Vec.new()
 let map: Map(string, User) = Map.new()
@@ -105,7 +105,7 @@ let map: Map(string, User) = Map.new()
 *Cons*: Less familiar, function syntax verbose
 
 **C) Square Brackets**:
-```ion
+```home
 fn identity[T](value: T) -> T { value }
 let list: Vec[int] = Vec.new()
 let map: Map[string, User] = Map.new()
@@ -114,7 +114,7 @@ let map: Map[string, User] = Map.new()
 *Cons*: Conflicts with array syntax
 
 **D) Hybrid (Square for types, parens for bounds)**:
-```ion
+```home
 fn identity[T](value: T) -> T { value }
 fn bounded[T: Trait](value: T) -> T { value }
 let list: Vec[int] = Vec.new()
@@ -127,7 +127,7 @@ let list: Vec[int] = Vec.new()
 **Rationale**: Easier parsing, no `>>` issues, consistent with function calls. Zig-style syntax familiar to systems programmers.
 
 **Implementation**:
-```ion
+```home
 fn identity(comptime T: type)(value: T) -> T { value }
 let list: Vec(int) = Vec.new()
 let map: Map(string, User) = Map.new()
@@ -146,7 +146,7 @@ Need to decide Result type API and default error type.
 **Options**:
 
 **A) Explicit Error Type (Rust-style)**:
-```ion
+```home
 fn read_file(path: string) -> Result<string, IOError> {
   // ...
 }
@@ -155,7 +155,7 @@ fn read_file(path: string) -> Result<string, IOError> {
 *Cons*: Verbose for simple cases
 
 **B) Default Error Type**:
-```ion
+```home
 fn read_file(path: string) -> Result<string> {  // Error type implicit
   // returns Result<string, Error>
 }
@@ -164,7 +164,7 @@ fn read_file(path: string) -> Result<string> {  // Error type implicit
 *Cons*: Less type safety, hidden type
 
 **C) Multiple Return Values (Go-style)**:
-```ion
+```home
 fn read_file(path: string) -> (string, error) {
   // ...
 }
@@ -177,7 +177,7 @@ fn read_file(path: string) -> (string, error) {
 **Rationale**: Reduce ceremony for typical errors while allowing specificity when needed. Global `Error` trait that custom errors implement.
 
 **Implementation**:
-```ion
+```home
 // Default error type
 fn read_file(path: string) -> Result(string) { }
 
@@ -200,26 +200,26 @@ How do modules map to files and how are they imported?
 **A) File-based (Rust/TypeScript)**:
 ```
 src/
-  main.ion
+  main.home
   parser/
-    mod.ion      # or parser.ion
-    lexer.ion
+    mod.home      # or parser.home
+    lexer.home
 ```
-```ion
+```home
 import parser/lexer { Lexer, Token }
 ```
 *Pros*: Simple, predictable  
 *Cons*: File structure dictates API
 
 **B) Explicit Modules**:
-```ion
-// lexer.ion
+```home
+// lexer.home
 module parser.lexer
 
 export struct Lexer { }
 ```
-```ion
-// main.ion
+```home
+// main.home
 import parser.lexer { Lexer }
 ```
 *Pros*: Flexible, decoupled from filesystem  
@@ -228,18 +228,18 @@ import parser.lexer { Lexer }
 **C) Hybrid (File-based with re-exports)**:
 ```
 src/
-  main.ion
-  parser.ion   # Re-exports lexer + parser
+  main.home
+  parser.home   # Re-exports lexer + parser
   parser/
-    lexer.ion
-    parser.ion
+    lexer.home
+    parser.home
 ```
-```ion
-// parser.ion
+```home
+// parser.home
 export * from parser/lexer
 export * from parser/parser
 
-// main.ion
+// main.home
 import parser { Lexer, Parser }
 ```
 *Pros*: Control over public API, familiar  
@@ -250,12 +250,12 @@ import parser { Lexer, Parser }
 **Rationale**: File-based for simplicity with explicit exports for API control. Matches TypeScript/Rust patterns.
 
 **Implementation**:
-```ion
-// parser.ion - controls public API
+```home
+// parser.home - controls public API
 export * from parser/lexer
 export * from parser/parser
 
-// main.ion
+// main.home
 import parser { Lexer, Parser }
 ```
 
@@ -272,7 +272,7 @@ Balance between safety, performance, and ergonomics.
 **Options**:
 
 **A) UTF-8 Validated**:
-```ion
+```home
 let s: string = "Hello"  // Always valid UTF-8
 // Invalid UTF-8 rejected at compile time or runtime
 ```
@@ -280,7 +280,7 @@ let s: string = "Hello"  // Always valid UTF-8
 *Cons*: Performance overhead, validation cost
 
 **B) Byte Slice**:
-```ion
+```home
 let s: string = "Hello"  // Just []u8
 // No validation, raw bytes
 ```
@@ -288,7 +288,7 @@ let s: string = "Hello"  // Just []u8
 *Cons*: Unsafe, can have invalid UTF-8
 
 **C) Two Types (Swift/Rust-style)**:
-```ion
+```home
 let s: String = "Hello"  // UTF-8 validated, heap allocated
 let b: &str = "Hello"    // UTF-8 slice, borrowed
 ```
@@ -296,7 +296,7 @@ let b: &str = "Hello"    // UTF-8 slice, borrowed
 *Cons*: Complexity, two types to learn
 
 **D) UTF-8 with unsafe escape**:
-```ion
+```home
 let s: string = "Hello"  // Validated by default
 let raw = unsafe { string.from_bytes(bytes) }  // Skip validation
 ```
@@ -308,7 +308,7 @@ let raw = unsafe { string.from_bytes(bytes) }  // Skip validation
 **Rationale**: Default to safety and correctness. Provide unsafe path for performance-critical code. Most code doesn't need raw bytes.
 
 **Implementation**:
-```ion
+```home
 let s: string = "Hello"  // UTF-8 validated
 let raw = unsafe { string.from_bytes(bytes) }  // Skip validation
 ```
@@ -326,25 +326,25 @@ What happens when integer arithmetic overflows?
 **Options**:
 
 **A) Panic in Debug, Wrap in Release (Rust)**:
-```ion
+```home
 let x: u8 = 255
 let y = x + 1  // Panics in debug, wraps to 0 in release
 ```
 
 **B) Always Panic**:
-```ion
+```home
 let x: u8 = 255
 let y = x + 1  // Always panics
 ```
 
 **C) Always Wrap**:
-```ion
+```home
 let x: u8 = 255
 let y = x + 1  // Always wraps to 0
 ```
 
 **D) Explicit Methods**:
-```ion
+```home
 let y = x.wrapping_add(1)  // Explicit wrapping
 let y = x.saturating_add(1)  // Saturates at max
 let y = x.checked_add(1)  // Returns Result
@@ -355,7 +355,7 @@ let y = x.checked_add(1)  // Returns Result
 **Rationale**: Catch bugs in development while maintaining performance in production. Provide explicit methods for different semantics.
 
 **Implementation**:
-```ion
+```home
 let y = x + 1              // Panic in debug, wrap in release
 let y = x.wrapping_add(1)  // Explicit wrapping
 let y = x.saturating_add(1) // Saturating
@@ -425,7 +425,7 @@ ion build --opt   # Uses LLVM (slow but optimized)
 
 **Structure**:
 ```
-.ion/cache/
+.home/cache/
   ir/
     ab/cd/abcdef123...  # IR files by hash
   obj/
@@ -529,7 +529,7 @@ ion daemon lsp   # Via daemon (shared cache)
 **Options**:
 
 **A) Bundled (Go/JavaScript)**:
-```ion
+```home
 // Runtime always available
 async fn handler() { }
 ```
@@ -537,7 +537,7 @@ async fn handler() { }
 *Cons*: Binary size, not needed for all programs
 
 **B) Optional (Rust)**:
-```ion
+```home
 import std/runtime { Runtime }
 
 fn main() {
@@ -549,7 +549,7 @@ fn main() {
 *Cons*: Setup boilerplate
 
 **C) Implicit but Tree-Shakeable**:
-```ion
+```home
 // Runtime linked only if async used
 async fn handler() { }  // Pulls in runtime automatically
 ```
@@ -561,7 +561,7 @@ async fn handler() { }  // Pulls in runtime automatically
 **Rationale**: Best DX. Linker can eliminate runtime if no async functions. Compiler warns if runtime size is large.
 
 **Implementation**:
-```ion
+```home
 // Runtime auto-linked only if async used
 async fn handler() { }  // Pulls in runtime
 fn main() { }           // No async = no runtime overhead
@@ -577,19 +577,19 @@ fn main() { }           // No async = no runtime overhead
 **Options**:
 
 **A) Concrete Types (Zig/Go)**:
-```ion
+```home
 let v: Vec<int> = Vec.new()
 let m: Map<string, int> = Map.new()
 ```
 
 **B) Interface-based (Java)**:
-```ion
+```home
 let v: List<int> = Vec.new()
 let m: Dict<string, int> = HashMap.new()
 ```
 
 **C) Hybrid (Rust)**:
-```ion
+```home
 // Concrete by default
 let v: Vec<int> = Vec.new()
 
@@ -602,7 +602,7 @@ fn process(items: impl Iterator<int>) { }
 **Rationale**: Concrete for simplicity, traits for abstraction. Most code doesn't need interface indirection.
 
 **Implementation**:
-```ion
+```home
 // Concrete by default
 let v: Vec(int) = Vec.new()
 

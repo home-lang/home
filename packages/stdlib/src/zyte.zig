@@ -276,7 +276,7 @@ pub const ZyteServer = struct {
 
     /// Start HTTP server and show in Zyte window
     pub fn start(self: *ZyteServer) !void {
-        std.debug.print("\n🌐 Starting Ion HTTP Server + Zyte Window\n", .{});
+        std.debug.print("\n🌐 Starting Home HTTP Server + Zyte Window\n", .{});
         std.debug.print("═══════════════════════════════════════════\n", .{});
         std.debug.print("HTTP Port:  {d}\n", .{self.http_port});
         std.debug.print("Window URL: http://localhost:{d}\n", .{self.http_port});

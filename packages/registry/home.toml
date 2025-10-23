@@ -1,0 +1,15 @@
+[package]
+name = "home-registry"
+version = "1.0.0"
+authors = ["Home Contributors"]
+description = "Package registry server for the Home programming language"
+license = "MIT"
+
+[dependencies]
+# JavaScript/TypeScript dependencies managed via package.json
+
+[scripts]
+dev = "npm run dev"
+build = "npm run build"
+test = "npm test"
+start = "npm start"

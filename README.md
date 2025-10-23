@@ -1,4 +1,4 @@
-# 🧬 Ion
+# 🧬 Home
 
 > **The speed of Zig. The safety of Rust. The joy of TypeScript.**
 
@@ -10,7 +10,7 @@ A systems & application language that doesn't compromise: blazing compile times,
 
 **🚧 Active Development**
 
-Ion is currently in the foundation phase with a working compiler infrastructure and core packages.
+Home is currently in the foundation phase with a working compiler infrastructure and core packages.
 
 - ✅ Lexer & Parser implementation
 - ✅ AST & Type system foundation
@@ -24,7 +24,7 @@ Ion is currently in the foundation phase with a working compiler infrastructure 
 
 ---
 
-## Why Ion?
+## Why Home?
 
 Modern systems languages force impossible choices:
 
@@ -33,7 +33,7 @@ Modern systems languages force impossible choices:
 - **Go**: Fast builds, but garbage collected (unpredictable performance)
 - **C/C++**: Performance, but undefined behavior everywhere
 
-**Ion refuses to choose.** We're building a language that delivers:
+**Home refuses to choose.** We're building a language that delivers:
 
 ### ⚡ Speed
 
@@ -58,7 +58,7 @@ Modern systems languages force impossible choices:
 
 ## Quick Example
 
-```ion
+```home
 import std/http { Server }
 import std/database { Connection }
 
@@ -67,7 +67,7 @@ fn main() {
   let db = Connection.open("app.db")
 
   server.get("/", fn(req) {
-    return "Hello from Ion!"
+    return "Hello from Home!"
   })
 
   server.get("/users", fn(req) -> async Response {
@@ -115,8 +115,8 @@ struct User {
 
 ```bash
 # Clone repository
-git clone https://github.com/stacksjs/ion.git
-cd ion
+git clone https://github.com/stacksjs/home.git
+cd home
 
 # Build compiler
 zig build
@@ -128,7 +128,7 @@ zig build test
 zig build examples
 ```
 
-### Your First Ion Program
+### Your First Home Program
 
 ```bash
 # Run the HTTP server example
@@ -164,7 +164,7 @@ sudo pacman -S zig sqlite
 
 ## Core Architecture
 
-Ion is built as a **modular monorepo** with specialized packages:
+Home is built as a **modular monorepo** with specialized packages:
 
 ### Compiler Packages
 
@@ -209,14 +209,14 @@ packages/
 ├── patterns/       # Pattern matching
 ├── safety/         # Memory safety checks
 ├── traits/         # Trait system
-└── action/         # GitHub Actions integration
+└── acthome/         # GitHub Actions integration
 ```
 
 ### Developer Tooling
 
 ```
 packages/
-└── vscode-ion/     # VSCode extension with:
+└── vscode-home/     # VSCode extension with:
     ├── Language Server Protocol (LSP)
     ├── Debug Adapter Protocol (DAP)
     ├── Time-travel debugging
@@ -235,7 +235,7 @@ packages/
 
 #### HTTP Server (Laravel-style)
 
-```ion
+```home
 import http_router { Router }
 
 let router = Router.init()
@@ -260,7 +260,7 @@ fn handler(req: Request) Response {
 
 #### Database Access (Native SQLite)
 
-```ion
+```home
 import database { Connection }
 
 let conn = Connection.open(":memory:")
@@ -291,7 +291,7 @@ let sql = builder.build()  // Generates SQL string
 
 #### Background Jobs (Queue System)
 
-```ion
+```home
 import queue { Queue, QueueConfig }
 
 let config = QueueConfig.default()
@@ -330,31 +330,46 @@ queue.retry_failed()  // Retry all failed jobs
 
 ## Package System
 
-Ion uses a **workspace-based monorepo** structure:
+Home uses a **workspace-based monorepo** structure:
 
-### Package Configuration (`ion.toml`)
+### File Extensions
+
+Home supports multiple file extensions for flexibility:
+
+**Source Files:**
+- `.home` - Full extension (e.g., `main.home`)
+- `.hm` - Short extension (e.g., `main.hm`)
+
+**Configuration Files:**
+- `couch.jsonc` - JSON with comments (recommended)
+- `couch.json` - JSON configuration
+- `home.json` - Alternative JSON name
+- `home.toml` - TOML configuration
+- `couch.toml` - Alternative TOML name (symlink to home.toml)
+
+### Package Configuration (`home.toml` or `couch.jsonc`)
 
 ```toml
 [package]
-name = "ion-database"
+name = "home-database"
 version = "0.1.0"
-authors = ["Ion Contributors"]
+authors = ["Home Contributors"]
 description = "SQL database access with SQLite driver"
 license = "MIT"
 
 [dependencies]
-ion-diagnostics = { path = "../diagnostics" }
+home-diagnostics = { path = "../diagnostics" }
 
 [scripts]
 test = "zig test src/database.zig"
 bench = "zig build bench"
 ```
 
-### Workspace Root (`ion.toml`)
+### Workspace Root (`home.toml` or `couch.jsonc`)
 
 ```toml
 [package]
-name = "ion"
+name = "home"
 version = "0.1.0"
 
 [workspaces]
@@ -366,27 +381,58 @@ test = "zig build test"
 format = "find src packages -name '*.zig' -exec zig fmt {} +"
 ```
 
-### Installing Ion Packages
+### Installing Home Packages
 
 ```bash
 # Install from registry (planned)
-ion add http database queue
+home add http database queue
 
 # Install from GitHub
-ion add github:user/repo
+home add github:user/repo
 
 # Install from Git URL
-ion add https://github.com/user/repo.git
+home add https://github.com/user/repo.git
 
 # Install specific version
-ion add database@0.1.0
+home add database@0.1.0
 ```
+
+### Package Storage
+
+Home uses a unique approach to dependency management:
+
+**Dependency Directory: `pantry/`**
+- All dependencies are installed to the `pantry/` directory (not `node_modules`)
+- Keeps your project organized and themed
+
+**Lockfile: `.freezer`**
+- Ensures reproducible builds by freezing exact versions
+- JSON format for easy inspection and version control
+- Stores checksums for integrity verification
+- Example:
+  ```json
+  {
+    "version": 1,
+    "packages": {
+      "http@1.0.0": {
+        "name": "http",
+        "version": "1.0.0",
+        "resolved": "https://packages.home-lang.org/http/1.0.0",
+        "integrity": "sha256-...",
+        "source": {
+          "type": "registry",
+          "url": "https://packages.home-lang.org"
+        }
+      }
+    }
+  }
+  ```
 
 ---
 
 ## Testing
 
-Ion has comprehensive test coverage across all packages:
+Home has comprehensive test coverage across all packages:
 
 ```bash
 # Run all tests (200+ tests)
@@ -404,10 +450,10 @@ zig build bench
 
 ### Test Infrastructure
 
-Ion features a modern testing framework inspired by Vitest and Jest:
+Home features a modern testing framework inspired by Vitest and Jest:
 
-```ion
-import { test, expect, describe, mock, snapshot } from '@ion/testing'
+```home
+import { test, expect, describe, mock, snapshot } from '@home/testing'
 
 describe('User API', () => {
   test('creates user successfully', async () => {
@@ -446,13 +492,13 @@ describe('User API', () => {
 
 ## VSCode Extension & Developer Tools
 
-Ion includes a comprehensive VSCode extension with professional-grade debugging and profiling tools:
+Home includes a comprehensive VSCode extension with professional-grade debugging and profiling tools:
 
 ### Installation
 
 ```bash
-# From the Ion repository
-cd packages/vscode-ion
+# From the Home repository
+cd packages/vscode-home
 npm install
 npm run compile
 
@@ -512,17 +558,17 @@ Analyze GC performance:
 Available in VSCode Command Palette:
 
 ```
-Ion: Start Debugging
-Ion: Start CPU Profiler
-Ion: Stop CPU Profiler
-Ion: Generate Flame Graph
-Ion: Export Chrome DevTools Profile
-Ion: Start Memory Profiler
-Ion: Stop Memory Profiler
+Home: Start Debugging
+Home: Start CPU Profiler
+Home: Stop CPU Profiler
+Home: Generate Flame Graph
+Home: Export Chrome DevTools Profile
+Home: Start Memory Profiler
+Home: Stop Memory Profiler
 Ion: Take Memory Snapshot
-Ion: Generate Memory Report
-Ion: Start GC Profiler
-Ion: Stop GC Profiler
+Home: Generate Memory Report
+Home: Start GC Profiler
+Home: Stop GC Profiler
 Ion: Analyze GC Pressure
 Ion: Time-Travel: Step Back
 Ion: Time-Travel: Step Forward
@@ -600,9 +646,9 @@ Combines HTTP + Database + Queue for a complete application.
 ## Language Features (Planned)
 
 ### Memory Management
-```ion
+```home
 // Ownership (implicit, no ceremony)
-let data = read_file("config.ion")  // data owns the string
+let data = read_file("config.home")  // data owns the string
 
 // Automatic borrowing
 fn process(data: string) {  // compiler infers &string
@@ -622,9 +668,9 @@ consume(data)
 ```
 
 ### Error Handling
-```ion
+```home
 fn read_config() -> Result<Config> {
-  let file = fs.read_file("config.ion")?  // ? propagates errors
+  let file = fs.read_file("config.home")?  // ? propagates errors
   let config = json.parse(file)?
   return Ok(config)
 }
@@ -639,7 +685,7 @@ let config = read_config().unwrap_or(Config.default())
 ```
 
 ### Async/Await
-```ion
+```home
 fn fetch_users() -> async []User {
   let tasks = [
     http.get("/users/1"),
@@ -662,10 +708,10 @@ fn get_dashboard_data() -> async Dashboard {
 ```
 
 ### Comptime Magic
-```ion
+```home
 // Run at compile time
 comptime fn generate_routes() -> []Route {
-  return fs.glob("routes/**/*.ion")
+  return fs.glob("routes/**/*.home")
     .map(|path| Route.from_path(path))
 }
 
@@ -684,7 +730,7 @@ comptime validate_query("SELECT * FROM users WHERE id = ?")
 ```
 
 ### Pattern Matching
-```ion
+```home
 match value {
   Ok(x) if x > 0 => print("Positive: {x}"),
   Ok(0) => print("Zero"),
@@ -709,7 +755,7 @@ match response {
 ```
 
 ### Generics
-```ion
+```home
 fn map<T, U>(items: []T, f: fn(T) -> U) -> []U {
   let result = []U.init(items.len)
   for (item, i in items) {
@@ -787,17 +833,17 @@ We're looking for:
 
 ## FAQ
 
-**Q: Is Ion production-ready?**
-A: Not yet. Ion has a working compiler infrastructure and 200+ passing tests, but the full language specification is still being implemented. Expect alpha release by Month 6, 1.0 by Month 24.
+**Q: Is Home production-ready?**
+A: Not yet. Home has a working compiler infrastructure and 200+ passing tests, but the full language specification is still being implemented. Expect alpha release by Month 6, 1.0 by Month 24.
 
-**Q: Can I use Ion now?**
+**Q: Can I use Home now?**
 A: Yes, for experimentation! You can build the compiler, run the examples, and explore the standard library. Not recommended for production use yet.
 
-**Q: How can Ion be faster than Zig?**
+**Q: How can Home be faster than Zig?**
 A: Aggressive IR caching at function level + parallel compilation + simpler type system. Will be validated via continuous benchmarking starting Month 4.
 
 **Q: Why another systems language?**
-A: Because none of Zig, Rust, Go, or C give us all three: speed + safety + joy. Ion does.
+A: Because none of Zig, Rust, Go, or C give us all three: speed + safety + joy. Home does.
 
 **Q: What about garbage collection?**
 A: No GC. Manual memory management with ownership/borrowing for safety.
@@ -809,18 +855,18 @@ A: **Full support** for Windows, macOS, and Linux on both x86_64 and ARM64. Nati
 A: Open source, community-driven. Considering sponsorships/grants for sustainability.
 
 **Q: Why Zig for bootstrapping?**
-A: To learn from Zig's strengths/weaknesses while building a fast foundation. Self-host in Ion at Phase 6.
+A: To learn from Zig's strengths/weaknesses while building a fast foundation. Self-host in Home at Phase 6.
 
 **Q: What about C interop?**
 A: Full C interop planned. You can already see this in the database package (SQLite bindings).
 
-**Q: Does Ion have a package registry?**
+**Q: Does Home have a package registry?**
 A: Not yet. Packages currently installed from Git. Official registry planned for Phase 1.
 
-**Q: What makes Ion's debugging tools special?**
-A: Ion includes time-travel debugging (step backward through execution), automatic deadlock detection for multi-threaded programs, memory leak detection, CPU flame graphs, and GC pressure analysis - all integrated into VSCode. Most languages don't have this level of tooling out of the box.
+**Q: What makes Home's debugging tools special?**
+A: Home includes time-travel debugging (step backward through execution), automatic deadlock detection for multi-threaded programs, memory leak detection, CPU flame graphs, and GC pressure analysis - all integrated into VSCode. Most languages don't have this level of tooling out of the box.
 
-**Q: Can I use Ion's testing framework now?**
+**Q: Can I use Home's testing framework now?**
 A: Yes! The testing framework is fully functional with snapshot testing, mocks, async support, and benchmarking utilities. It's inspired by Vitest and Jest but designed for systems programming.
 
 ---
@@ -848,7 +894,7 @@ A: Yes! The testing framework is fully functional with snapshot testing, mocks, 
 ## Project Structure
 
 ```
-ion/
+home/
 ├── src/
 │   ├── main.zig          # CLI entry point
 │   └── ion.zig           # Compiler library
@@ -865,7 +911,7 @@ ion/
 │   ├── stdlib/          # Standard library
 │   ├── database/        # SQLite access
 │   ├── queue/           # Job processing
-│   └── vscode-ion/      # VSCode extension with advanced tooling
+│   └── vscode-home/      # VSCode extension with advanced tooling
 ├── examples/            # Usage examples
 │   ├── http_router_example.zig
 │   ├── database_example.zig
@@ -906,14 +952,14 @@ Thank you to the language design community for paving the way.
 
 ## Citation
 
-If you reference Ion in academic work:
+If you reference Home in academic work:
 
 ```bibtex
-@software{ion2025,
-  title = {Ion: A Systems Language for Speed, Safety, and Joy},
+@software{home2025,
+  title = {Home: A Systems Language for Speed, Safety, and Joy},
   author = {Stacks.js Team and Contributors},
   year = {2025},
-  url = {https://github.com/stacksjs/ion},
+  url = {https://github.com/stacksjs/home},
 }
 ```
 

@@ -1,0 +1,12 @@
+[package]
+name = "home-types"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Type System - Type checking, ownership, and safety"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+
+[scripts]
+test = "zig test src/type_system.zig"

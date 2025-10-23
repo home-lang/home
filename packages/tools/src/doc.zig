@@ -3,7 +3,7 @@ const ast = @import("ast");
 const parser = @import("parser");
 const lexer = @import("lexer");
 
-/// Ion documentation generator
+/// Home documentation generator
 pub const DocGenerator = struct {
     allocator: std.mem.Allocator,
     output_dir: []const u8,
@@ -208,7 +208,7 @@ pub const DocGenerator = struct {
             \\  </style>
             \\</head>
             \\<body>
-            \\  <h1>🧬 Ion Documentation</h1>
+            \\  <h1>🧬 Home Documentation</h1>
             \\
         );
 

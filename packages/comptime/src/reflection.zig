@@ -2,7 +2,7 @@ const std = @import("std");
 const ast = @import("ast");
 const comptime_mod = @import("comptime.zig");
 
-/// Reflection API for Ion types and values
+/// Reflection API for Home types and values
 pub const Reflection = struct {
     allocator: std.mem.Allocator,
     type_database: TypeDatabase,
@@ -99,7 +99,7 @@ pub const Reflection = struct {
                         .name = field.name,
                         .type_name = field.type_name,
                         .offset = offset,
-                        .is_public = true, // Ion doesn't have visibility modifiers yet
+                        .is_public = true, // Home doesn't have visibility modifiers yet
                     });
                     // Simplistic offset calculation (would need proper alignment)
                     offset += 8; // Assume 8 bytes per field for now

@@ -1,0 +1,13 @@
+[package]
+name = "home-macros"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Macro System - Compile-time code generation"
+license = "MIT"
+
+[dependencies]
+home-ast = { path = "../ast" }
+home-parser = { path = "../parser" }
+
+[scripts]
+test = "zig test src/macro_system.zig"

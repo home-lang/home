@@ -3,9 +3,9 @@ pub const Token = @import("token.zig").Token;
 pub const TokenType = @import("token.zig").TokenType;
 const keywords = @import("token.zig").keywords;
 
-/// Lexer for the Ion programming language.
+/// Lexer for the Home programming language.
 ///
-/// The Lexer performs lexical analysis (tokenization) of Ion source code,
+/// The Lexer performs lexical analysis (tokenization) of Home source code,
 /// converting raw text into a stream of tokens. It uses a single-pass
 /// scanning algorithm with lookahead for multi-character operators.
 ///
@@ -39,14 +39,14 @@ pub const Lexer = struct {
     /// Memory allocator for token list
     allocator: std.mem.Allocator,
 
-    /// Initialize a new lexer for Ion source code
+    /// Initialize a new lexer for Home source code
     ///
     /// Creates a lexer that will tokenize the provided source string.
     /// The lexer tracks line and column positions for error reporting.
     ///
     /// Parameters:
     ///   - allocator: Memory allocator for token list
-    ///   - source: Ion source code to tokenize
+    ///   - source: Home source code to tokenize
     ///
     /// Returns: Initialized Lexer ready to scan tokens
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Lexer {

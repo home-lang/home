@@ -1,0 +1,12 @@
+[package]
+name = "home-queue"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Queue System - Background job processing"
+license = "MIT"
+
+[dependencies]
+# No external dependencies yet
+
+[scripts]
+test = "zig test src/queue.zig"

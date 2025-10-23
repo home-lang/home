@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// JSON parser and serializer for Ion's standard library.
 ///
-/// Provides parsing from JSON strings to Ion Value objects and serialization
+/// Provides parsing from JSON strings to Home Value objects and serialization
 /// back to JSON. Supports both compact and pretty-printed output.
 ///
 /// Features:

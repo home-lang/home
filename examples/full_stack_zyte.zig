@@ -2,7 +2,7 @@ const std = @import("std");
 const http_router = @import("http_router");
 const zyte = @import("zyte");
 
-/// Full-stack application with Ion backend + Zyte native UI
+/// Full-stack application with Home backend + Zyte native UI
 ///
 /// This example demonstrates:
 /// 1. HTTP server with Express-style routing
@@ -17,7 +17,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("\n╔═══════════════════════════════════════════╗\n", .{});
-    std.debug.print("║  Ion Full-Stack Example (HTTP + Zyte)    ║\n", .{});
+    std.debug.print("║  Home Full-Stack Example (HTTP + Zyte)    ║\n", .{});
     std.debug.print("╚═══════════════════════════════════════════╝\n\n", .{});
 
     // Configure HTTP server
@@ -149,12 +149,12 @@ fn homeHandler(req: *http_router.Request, res: *http_router.Response) !void {
         \\</head>
         \\<body>
         \\    <div class="container">
-        \\        <h1>🚀 Ion Full-Stack Application</h1>
+        \\        <h1>🚀 Home Full-Stack Application</h1>
         \\        <p>A modern, safe, fast framework for building cross-platform desktop apps</p>
         \\
         \\        <div class="tech-stack">
         \\            <div class="tech-card">
-        \\                <h3>⚡ Ion Backend</h3>
+        \\                <h3>⚡ Home Backend</h3>
         \\                <p>Memory-safe HTTP server with Express-style routing</p>
         \\            </div>
         \\            <div class="tech-card">
@@ -218,7 +218,7 @@ fn homeHandler(req: *http_router.Request, res: *http_router.Response) !void {
         \\        }
         \\
         \\        function sendNativeMessage() {
-        \\            // IPC bridge to send message to native Ion code
+        \\            // IPC bridge to send message to native Home code
         \\            window.postMessage({ type: 'native-call', data: 'Hello from JavaScript!' }, '*');
         \\            output.innerHTML = '<strong>Sent message to native code via IPC bridge</strong>';
         \\        }

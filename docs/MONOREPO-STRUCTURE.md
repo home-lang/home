@@ -1,4 +1,4 @@
-# Ion Monorepo Structure
+# Home Monorepo Structure
 
 ## Overview
 
@@ -7,9 +7,9 @@ Ion now features a Bun/pnpm-style monorepo structure with independent packages t
 ## Directory Structure
 
 ```
-ion/
+home/
 ├── ion.toml                    # Root workspace configuration (or ion.json)
-├── packages/                   # All Ion packages (22 total)
+├── packages/                   # All Home packages (22 total)
 │   ├── lexer/                 # Tokenization and scanning
 │   ├── parser/                # Syntax analysis and AST generation
 │   ├── ast/                   # Abstract syntax tree definitions
@@ -32,7 +32,7 @@ ion/
 │   ├── traits/                # Trait system
 │   ├── stdlib/                # Standard library (HTTP, crypto, fs, etc.)
 │   └── pkg/                   # Package manager
-├── src/                       # Main Ion CLI and compiler
+├── src/                       # Main Home CLI and compiler
 │   ├── main.zig              # CLI entry point
 │   └── ion.zig               # Root library module
 ├── tests/                     # Integration tests
@@ -61,7 +61,7 @@ test = "zig build test"
 bench = "zig build bench"
 format = "find src packages -name '*.zig' -exec zig fmt {} +"
 run = "zig build run"
-dev = "zig build run -- run examples/hello.ion"
+dev = "zig build run -- run examples/hello.home"
 ```
 
 ## Package Structure
@@ -72,10 +72,10 @@ Each package has its own `ion.toml` with:
 
 ```toml
 [package]
-name = "ion-lexer"
+name = "home-lexer"
 version = "0.1.0"
 authors = ["Ion Contributors"]
-description = "Ion Language Lexer - Tokenization and scanning"
+description = "Home Language Lexer - Tokenization and scanning"
 license = "MIT"
 
 [dependencies]
@@ -89,15 +89,15 @@ test = "zig test src/lexer.zig"
 
 ```toml
 [package]
-name = "ion-parser"
+name = "home-parser"
 version = "0.1.0"
 authors = ["Ion Contributors"]
-description = "Ion Language Parser - AST generation from tokens"
+description = "Home Language Parser - AST generation from tokens"
 license = "MIT"
 
 [dependencies]
-ion-lexer = { path = "../lexer" }
-ion-ast = { path = "../ast" }
+home-lexer = { path = "../lexer" }
+home-ast = { path = "../ast" }
 
 [scripts]
 test = "zig test src/parser.zig"
@@ -108,22 +108,22 @@ test = "zig test src/parser.zig"
 The package dependency graph:
 
 ```
-ion-lexer (no deps)
+home-lexer (no deps)
     ↓
-ion-ast (no deps)
+home-ast (no deps)
     ↓
-ion-parser → ion-lexer, ion-ast
+home-parser → home-lexer, home-ast
     ↓
-ion-types → ion-ast
+home-types → home-ast
     ↓
-ion-interpreter → ion-ast
+home-interpreter → home-ast
     ↓
-ion-codegen → ion-ast
+home-codegen → home-ast
     ↓
-ion-diagnostics (no deps)
-ion-formatter → ion-ast
-ion-stdlib → ion-ast, ion-types
-ion-pkg (no deps)
+home-diagnostics (no deps)
+home-formatter → home-ast
+home-stdlib → home-ast, home-types
+home-pkg (no deps)
 ```
 
 ## Benefits of This Structure
@@ -172,7 +172,7 @@ ion pkg scripts
 2. Create `packages/my-package/ion.toml`:
    ```toml
    [package]
-   name = "ion-my-package"
+   name = "home-my-package"
    version = "0.1.0"
    authors = ["Your Name"]
    description = "Description"
@@ -210,8 +210,8 @@ Packages can depend on each other using path dependencies:
 
 ```toml
 [dependencies]
-ion-lexer = { path = "../lexer" }
-ion-ast = { path = "../ast" }
+home-lexer = { path = "../lexer" }
+home-ast = { path = "../ast" }
 ```
 
 Or depend on external packages:
@@ -279,7 +279,7 @@ ion pkg install
 
 ## Example: Using Packages
 
-Other Ion projects can now depend on Ion packages:
+Other Home projects can now depend on Home packages:
 
 ```toml
 # my-project/ion.toml
@@ -288,8 +288,8 @@ name = "my-tool"
 version = "0.1.0"
 
 [dependencies]
-ion-lexer = { path = "../ion/packages/lexer" }
-ion-parser = { path = "../ion/packages/parser" }
+home-lexer = { path = "../home/packages/lexer" }
+home-parser = { path = "../home/packages/parser" }
 ```
 
 ## Summary
@@ -302,4 +302,4 @@ The monorepo structure provides:
 - ✅ Reusability
 - ✅ Bun-style developer experience
 
-This positions Ion for better modularity, easier contribution, and more flexible usage patterns.
+This positions Home for better modularity, easier contribution, and more flexible usage patterns.

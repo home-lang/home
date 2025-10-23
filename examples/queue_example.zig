@@ -11,7 +11,7 @@ pub fn main() !void {
     var queue = queue_mod.Queue.init(allocator, config);
     defer queue.deinit();
 
-    std.debug.print("\n=== Ion Queue System Example ===\n\n", .{});
+    std.debug.print("\n=== Home Queue System Example ===\n\n", .{});
 
     // Example 1: Dispatch a simple job
     std.debug.print("1. Dispatching a simple job...\n", .{});

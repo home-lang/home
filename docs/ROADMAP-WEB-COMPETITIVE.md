@@ -1,6 +1,6 @@
-# Ion Web/Application Development Competitive Roadmap
+# Home Web/Application Development Competitive Roadmap
 
-**Goal**: Make Ion a compelling alternative to PHP, TypeScript, Python, and Ruby for web and application development
+**Goal**: Make Home a compelling alternative to PHP, TypeScript, Python, and Ruby for web and application development
 
 **Last Updated**: 2025-10-22
 
@@ -26,7 +26,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 
 **Needed**:
 - [ ] High-level HTTP router (like Express.js/Laravel routing)
-  ```ion
+  ```home
   let app = HttpServer.new();
   app.get("/users/:id", async (req, res) => {
       let user = await User.find(req.params.id);
@@ -34,7 +34,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
   });
   ```
 - [ ] Middleware system
-  ```ion
+  ```home
   app.use(cors());
   app.use(bodyParser());
   app.use(authenticate());
@@ -68,7 +68,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Transaction support
 - [ ] Prepared statements
 - [ ] Query builder (like Knex.js/Eloquent)
-  ```ion
+  ```home
   let users = await db.table("users")
       .where("active", true)
       .orderBy("created_at", "desc")
@@ -88,7 +88,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 
 **Needed**:
 - [ ] Model definitions with decorators/attributes
-  ```ion
+  ```home
   @table("users")
   struct User {
       @primary_key
@@ -104,7 +104,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
   }
   ```
 - [ ] Relationships (one-to-one, one-to-many, many-to-many)
-  ```ion
+  ```home
   impl User {
       fn posts(self: &Self) -> HasMany<Post> {
           self.hasMany(Post)
@@ -114,7 +114,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Eager loading (N+1 prevention)
 - [ ] Lazy loading
 - [ ] Migrations system
-  ```ion
+  ```home
   migration.create_table("users", |table| {
       table.id();
       table.string("email").unique();
@@ -141,7 +141,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 
 **Needed**:
 - [ ] JWT authentication
-  ```ion
+  ```home
   let token = JWT.sign(user_id, secret, expires_in: 24h);
   let user_id = JWT.verify(token, secret)?;
   ```
@@ -150,7 +150,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] API key authentication
 - [ ] Rate limiting middleware
 - [ ] Role-based access control (RBAC)
-  ```ion
+  ```home
   @authorize("admin")
   async fn delete_user(req: Request) -> Response {
       // Only admins can delete users
@@ -159,7 +159,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Permission system
 - [ ] Password hashing (Argon2/bcrypt) ✅ DONE (via crypto.zig)
 - [ ] Two-factor authentication (TOTP)
-- [ ] Session-based auth
+- [ ] Sesshome-based auth
 
 **Success Criteria**:
 - Complete auth in <50 lines
@@ -182,7 +182,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Email verification flows
 
 **Example**:
-```ion
+```home
 await Mail.to(user.email)
     .subject("Welcome!")
     .template("welcome", { name: user.name })
@@ -196,7 +196,7 @@ await Mail.to(user.email)
 
 **Needed**:
 - [ ] Input validation library
-  ```ion
+  ```home
   let rules = Validator.new()
       .field("email").required().email()
       .field("age").optional().int().min(18).max(120)
@@ -225,7 +225,7 @@ await Mail.to(user.email)
 
 **Enhancements Needed**:
 - [ ] Interactive prompts
-  ```ion
+  ```home
   let name = prompt("What's your name?");
   let confirmed = confirm("Are you sure?");
   let choice = select("Choose option:", ["A", "B", "C"]);
@@ -235,7 +235,7 @@ await Mail.to(user.email)
 - [ ] Colored output (styled text)
 - [ ] Tables (ASCII/Unicode)
 - [ ] Command scaffolding
-  ```ion
+  ```home
   @command("make:controller")
   async fn make_controller(name: String) {
       // Generate controller file
@@ -249,7 +249,7 @@ await Mail.to(user.email)
 
 **Needed**:
 - [ ] BDD-style testing (like Jest/RSpec)
-  ```ion
+  ```home
   describe("User", || {
       it("should create a user", async || {
           let user = await User.create({ name: "John" });
@@ -325,7 +325,7 @@ await Mail.to(user.email)
 **Needed**:
 - [ ] Template engine
   ```html
-  <!-- views/user.ion.html -->
+  <!-- views/user.home.html -->
   <h1>{{ user.name }}</h1>
   @if user.is_admin {
       <span class="badge">Admin</span>
@@ -349,7 +349,7 @@ await Mail.to(user.email)
 **Needed**:
 - [ ] REST API scaffolding
 - [ ] GraphQL server
-  ```ion
+  ```home
   @graphql_query
   fn users(limit: i32) -> Vec<User> {
       User.all().limit(limit)
@@ -362,7 +362,7 @@ await Mail.to(user.email)
   ```
 - [ ] GraphQL schema generation
 - [ ] tRPC-like type-safe RPC
-  ```ion
+  ```home
   // Server
   let router = trpc.router({
       getUser: trpc.query(|id: i64| User.find(id)),
@@ -381,7 +381,7 @@ await Mail.to(user.email)
 
 **Needed**:
 - [ ] WebSocket rooms/channels
-  ```ion
+  ```home
   ws.join("room:123");
   ws.broadcast("room:123", { type: "message", data: "Hello" });
   ```
@@ -390,7 +390,7 @@ await Mail.to(user.email)
 - [ ] Server-Sent Events (SSE) wrapper
 - [ ] Long polling fallback
 - [ ] Real-time database subscriptions
-  ```ion
+  ```home
   let subscription = db.table("posts")
       .where("author_id", user.id)
       .subscribe(|post| {
@@ -407,7 +407,7 @@ await Mail.to(user.email)
 
 **Needed**:
 - [ ] Structured logging
-  ```ion
+  ```home
   log.info("User created", { user_id: user.id, email: user.email });
   ```
 - [ ] Log levels (trace, debug, info, warn, error)
@@ -416,7 +416,7 @@ await Mail.to(user.email)
 - [ ] JSON log formatting
 - [ ] Contextual logging (request IDs, etc.)
 - [ ] Performance metrics
-  ```ion
+  ```home
   metrics.counter("requests.total").inc();
   metrics.histogram("request.duration").observe(duration);
   ```
@@ -437,7 +437,7 @@ await Mail.to(user.email)
 - [ ] Cache tags/groups
 - [ ] Cache-aside pattern helpers
 - [ ] Response caching
-  ```ion
+  ```home
   @cache(ttl: 5m, key: "user:{id}")
   async fn get_user(id: i64) -> User {
       User.find(id)
@@ -453,7 +453,7 @@ await Mail.to(user.email)
 
 **Needed**:
 - [ ] Job queue system
-  ```ion
+  ```home
   struct SendEmailJob {
       to: String,
       subject: String,
@@ -474,7 +474,7 @@ await Mail.to(user.email)
 - [ ] Job retries with exponential backoff
 - [ ] Failed job tracking
 - [ ] Job scheduling (cron-like)
-  ```ion
+  ```home
   schedule.every("1 hour").do(cleanup_temp_files);
   schedule.cron("0 0 * * *").do(send_daily_report);
   ```
@@ -513,7 +513,7 @@ await Mail.to(user.email)
 - [ ] Schema-per-tenant
 - [ ] Shared database with tenant_id
 - [ ] Tenant-aware models
-  ```ion
+  ```home
   @tenant_aware
   struct Post {
       id: i64,
@@ -657,18 +657,18 @@ await Mail.to(user.email)
 **Unique Features**:
 - [x] Comptime execution - Done ✅
 - [ ] Comptime web framework (zero runtime overhead)
-  ```ion
+  ```home
   @comptime
   let routes = generate_routes_from_directory("./controllers");
   ```
 - [ ] SQL in comptime (validated at compile time)
-  ```ion
+  ```home
   @comptime_sql("SELECT * FROM users WHERE id = ?")
   fn get_user(id: i64) -> User;
   ```
 - [ ] Type-safe HTML templates (prevents XSS at compile time)
 - [ ] Automatic API client generation
-  ```ion
+  ```home
   // Server defines routes
   // TypeScript/Swift/Kotlin clients auto-generated with full types
   ```
@@ -771,9 +771,9 @@ await Mail.to(user.email)
 
 ---
 
-## Comparison Table: Ion vs Competitors
+## Comparison Table: Home vs Competitors
 
-| Feature | Ion (Target) | PHP/Laravel | Node/Express | Python/Django | Go | Rust |
+| Feature | Home (Target) | PHP/Laravel | Node/Express | Python/Django | Go | Rust |
 |---------|-------------|-------------|--------------|---------------|-----|------|
 | **Type Safety** | ✅ Strong | ❌ Weak | ⚠️ Optional | ⚠️ Optional | ✅ Strong | ✅ Strong |
 | **Memory Safety** | ✅ Borrow Checker | ❌ Manual | ❌ GC | ❌ GC | ❌ GC | ✅ Borrow Checker |

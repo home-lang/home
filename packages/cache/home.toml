@@ -1,0 +1,12 @@
+[package]
+name = "home-cache"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Cache System - IR caching for faster compilation"
+license = "MIT"
+
+[dependencies]
+# Cache utilities
+
+[scripts]
+test = "zig test src/ir_cache.zig"

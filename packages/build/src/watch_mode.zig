@@ -182,7 +182,7 @@ pub const WatchBuilder = struct {
 
         // Watch all imported modules (would need to traverse module graph)
         // For now, watch common patterns
-        try self.watchPattern("**/*.ion");
+        try self.watchPattern("**/*.home");
     }
 
     fn watchPattern(self: *WatchBuilder, pattern: []const u8) !void {
@@ -271,10 +271,10 @@ pub const WatchConfig = struct {
 
     pub fn default() WatchConfig {
         return .{
-            .watch_patterns = &[_][]const u8{"**/*.ion"},
+            .watch_patterns = &[_][]const u8{"**/*.home"},
             .ignore_patterns = &[_][]const u8{
                 "**/zig-out/**",
-                "**/.ion/**",
+                "**/.home/**",
                 "**/node_modules/**",
             },
             .poll_interval_ms = 500,

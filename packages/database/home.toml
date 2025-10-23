@@ -1,0 +1,12 @@
+[package]
+name = "home-database"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "Home Database - SQL database access with SQLite driver"
+license = "MIT"
+
+[dependencies]
+# No external dependencies - uses native SQLite
+
+[scripts]
+test = "zig test src/database.zig"

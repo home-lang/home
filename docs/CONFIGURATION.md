@@ -1,4 +1,4 @@
-# Ion Configuration Files
+# Home Configuration Files
 
 Ion supports multiple configuration file formats for maximum flexibility and compatibility with existing ecosystems.
 
@@ -14,7 +14,7 @@ Ion will automatically detect and load configuration from the first file it find
 
 ## Why JSONC?
 
-We recommend **`ion.jsonc`** for Ion projects because:
+We recommend **`ion.jsonc`** for Home projects because:
 
 - ✅ **Comments** - Document your config inline
 - ✅ **Familiar** - JSON syntax everyone knows
@@ -31,7 +31,7 @@ We recommend **`ion.jsonc`** for Ion projects because:
   // Project metadata
   "name": "my-awesome-app",
   "version": "1.0.0",
-  "description": "My awesome Ion application",
+  "description": "My awesome Home application",
 
   // Dependencies with semver ranges
   "dependencies": {
@@ -65,7 +65,7 @@ We recommend **`ion.jsonc`** for Ion projects because:
 
   // Scripts (Bun-style)
   "scripts": {
-    "dev": "ion run src/main.ion --watch",
+    "dev": "ion run src/main.home --watch",
     "build": "ion build --release",
     "test": "ion test",
     "bench": "ion bench"
@@ -103,17 +103,17 @@ Perfect for projects that use both Node.js and Ion:
   "version": "2.0.0",
 
   "dependencies": {
-    // Ion dependencies
-    "ion-http": "^1.0.0",
-    "ion-db": "^2.0.0",
+    // Home dependencies
+    "home-http": "^1.0.0",
+    "home-db": "^2.0.0",
 
     // NPM dependencies can coexist
     "express": "^4.18.0"
   },
 
   "scripts": {
-    // Ion scripts
-    "start:ion": "ion run src/main.ion",
+    // Home scripts
+    "start:ion": "ion run src/main.home",
     "build:ion": "ion build",
 
     // Node.js scripts
@@ -129,7 +129,7 @@ Perfect for projects that use both Node.js and Ion:
   "name": "@myorg/my-app",
   "version": "1.0.0",
   "dependencies": {
-    "ion-core": "^1.0.0"
+    "home-core": "^1.0.0"
   }
 }
 ```
@@ -242,12 +242,12 @@ database = { git = "https://github.com/user/db.git", rev = "v1.0.0" }
 
 ### From package.json to ion.jsonc
 
-Simply rename `package.json` to `ion.jsonc` and add comments as needed! Ion is fully compatible with the package.json format.
+Simply rename `package.json` to `ion.jsonc` and add comments as needed! Home is fully compatible with the package.json format.
 
 ## Best Practices
 
-1. **Use ion.jsonc** - It's the recommended format for pure Ion projects
-2. **Use package.jsonc** - For hybrid Node.js + Ion projects
+1. **Use ion.jsonc** - It's the recommended format for pure Home projects
+2. **Use package.jsonc** - For hybrid Node.js + Home projects
 3. **Add comments** - Document why you're using specific versions
 4. **Use semver ranges** - Stay up to date with compatible versions
 5. **Pin critical deps** - Use exact versions for production dependencies if needed
@@ -264,7 +264,7 @@ package.json    ← NPM compatible
 ion.toml        ← Legacy support
 ```
 
-If no config file is found, Ion will show an error with suggestions:
+If no config file is found, Home will show an error with suggestions:
 
 ```
 Error: No configuration file found. Expected one of:
@@ -296,7 +296,7 @@ Ion supports multiple configuration formats to:
 
 1. **Ease migration** - Existing package.json files work out of the box
 2. **Team preferences** - Some teams prefer JSON, others TOML
-3. **Hybrid projects** - Use package.json for Node.js + Ion projects
+3. **Hybrid projects** - Use package.json for Node.js + Home projects
 4. **Comments** - JSONC adds comments to JSON
 5. **Ecosystem compatibility** - Work seamlessly with existing tools
 

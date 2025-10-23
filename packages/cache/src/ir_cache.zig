@@ -140,9 +140,11 @@ pub const IRCache = struct {
     fn getCacheKey(self: *IRCache, file_path: []const u8) ![]const u8 {
         // Use basename as cache key
         const basename = std.fs.path.basename(file_path);
-        // Remove .ion extension
-        if (std.mem.endsWith(u8, basename, ".ion")) {
-            return std.fmt.allocPrint(self.allocator, "{s}", .{basename[0 .. basename.len - 4]});
+        // Remove .home or .hm extension
+        if (std.mem.endsWith(u8, basename, ".home")) {
+            return std.fmt.allocPrint(self.allocator, "{s}", .{basename[0 .. basename.len - 5]});
+        } else if (std.mem.endsWith(u8, basename, ".hm")) {
+            return std.fmt.allocPrint(self.allocator, "{s}", .{basename[0 .. basename.len - 3]});
         }
         return std.fmt.allocPrint(self.allocator, "{s}", .{basename});
     }
@@ -150,7 +152,7 @@ pub const IRCache = struct {
     fn getCachePath(self: *IRCache, cache_key: []const u8) ![]const u8 {
         return std.fmt.allocPrint(
             self.allocator,
-            "{s}/{s}.irc", // .irc = Ion Cache
+            "{s}/{s}.irc", // .irc = Home Cache
             .{ self.cache_dir, cache_key },
         );
     }
