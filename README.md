@@ -800,7 +800,6 @@ If you reference Ion in academic work:
   author = {Stacks.js Team and Contributors},
   year = {2025},
   url = {https://github.com/stacksjs/ion},
-  note = {Phase 0: Foundation complete with 200+ tests}
 }
 ```
 

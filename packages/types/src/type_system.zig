@@ -16,6 +16,9 @@ pub const Type = union(enum) {
     Enum: EnumType,
     Generic: GenericType,
     Result: ResultType,
+    Tuple: TupleType,
+    Union: UnionType,
+    Optional: *const Type, // Optional type for safe navigation (T?)
     Reference: *const Type, // Borrowed reference
     MutableReference: *const Type, // Mutable borrow
 
@@ -56,6 +59,20 @@ pub const Type = union(enum) {
     pub const ResultType = struct {
         ok_type: *const Type,
         err_type: *const Type,
+    };
+
+    pub const TupleType = struct {
+        element_types: []const Type,
+    };
+
+    pub const UnionType = struct {
+        name: []const u8,
+        variants: []const Variant,
+
+        pub const Variant = struct {
+            name: []const u8,
+            data_type: ?Type, // Optional associated data
+        };
     };
 
     pub fn equals(self: Type, other: Type) bool {
@@ -108,6 +125,19 @@ pub const Type = union(enum) {
                 const r2 = other.Result;
                 return r1.ok_type.equals(r2.ok_type.*) and r1.err_type.equals(r2.err_type.*);
             },
+            .Tuple => |t1| {
+                const t2 = other.Tuple;
+                if (t1.element_types.len != t2.element_types.len) return false;
+                for (t1.element_types, t2.element_types) |e1, e2| {
+                    if (!e1.equals(e2)) return false;
+                }
+                return true;
+            },
+            .Union => |union1| {
+                const union2 = other.Union;
+                return std.mem.eql(u8, union1.name, union2.name);
+            },
+            .Optional => |o1| o1.equals(other.Optional.*),
         };
     }
 
@@ -131,6 +161,16 @@ pub const Type = union(enum) {
             .Reference => |r| try writer.print("&{}", .{r.*}),
             .MutableReference => |r| try writer.print("&mut {}", .{r.*}),
             .Result => |r| try writer.print("Result<{}, {}>", .{ r.ok_type.*, r.err_type.* }),
+            .Tuple => |t| {
+                try writer.writeAll("(");
+                for (t.element_types, 0..) |elem, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try writer.print("{}", .{elem});
+                }
+                try writer.writeAll(")");
+            },
+            .Union => |u| try writer.print("union {s}", .{u.name}),
+            .Optional => |o| try writer.print("{}?", .{o.*}),
             else => try writer.writeAll("<complex-type>"),
         }
     }
@@ -473,6 +513,135 @@ pub const TypeChecker = struct {
             .ExprStmt => |expr| {
                 _ = try self.inferExpression(expr);
             },
+            .DoWhileStmt => |do_while| {
+                // Check body
+                for (do_while.body.statements) |body_stmt| {
+                    self.checkStatement(body_stmt) catch |err| {
+                        if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                            return err;
+                        }
+                    };
+                }
+
+                // Check condition is boolean
+                const cond_type = try self.inferExpression(do_while.condition);
+                if (!cond_type.equals(Type.Bool)) {
+                    try self.addError("Do-while condition must be boolean", do_while.node.loc);
+                    return error.TypeMismatch;
+                }
+            },
+            .SwitchStmt => |switch_stmt| {
+                // Infer the type of the switch value
+                const value_type = try self.inferExpression(switch_stmt.value);
+
+                // Check all case patterns and bodies
+                for (switch_stmt.cases) |case_clause| {
+                    // Check that patterns match the switch value type
+                    if (!case_clause.is_default) {
+                        for (case_clause.patterns) |pattern| {
+                            const pattern_type = try self.inferExpression(pattern);
+                            if (!pattern_type.equals(value_type)) {
+                                try self.addError("Case pattern type must match switch value type", case_clause.node.loc);
+                                return error.TypeMismatch;
+                            }
+                        }
+                    }
+
+                    // Check case body statements
+                    for (case_clause.body) |body_stmt| {
+                        self.checkStatement(body_stmt) catch |err| {
+                            if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                                return err;
+                            }
+                        };
+                    }
+                }
+            },
+            .TryStmt => |try_stmt| {
+                // Check try block
+                for (try_stmt.try_block.statements) |try_body_stmt| {
+                    self.checkStatement(try_body_stmt) catch |err| {
+                        if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                            return err;
+                        }
+                    };
+                }
+
+                // Check catch clauses
+                for (try_stmt.catch_clauses) |catch_clause| {
+                    // Create new scope for error variable if present
+                    if (catch_clause.error_name) |error_name| {
+                        var catch_env = TypeEnvironment.init(self.allocator);
+                        catch_env.parent = &self.env;
+                        defer catch_env.deinit();
+
+                        // Define error variable (type is string for now)
+                        try catch_env.define(error_name, Type.String);
+
+                        const saved_env = self.env;
+                        self.env = catch_env;
+                        defer self.env = saved_env;
+
+                        for (catch_clause.body.statements) |catch_body_stmt| {
+                            self.checkStatement(catch_body_stmt) catch |err| {
+                                if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                                    return err;
+                                }
+                            };
+                        }
+                    } else {
+                        // No error variable, just check body
+                        for (catch_clause.body.statements) |catch_body_stmt| {
+                            self.checkStatement(catch_body_stmt) catch |err| {
+                                if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                                    return err;
+                                }
+                            };
+                        }
+                    }
+                }
+
+                // Check finally block if present
+                if (try_stmt.finally_block) |finally_block| {
+                    for (finally_block.statements) |finally_stmt| {
+                        self.checkStatement(finally_stmt) catch |err| {
+                            if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                                return err;
+                            }
+                        };
+                    }
+                }
+            },
+            .DeferStmt => |defer_stmt| {
+                // Check the deferred expression
+                _ = try self.inferExpression(defer_stmt.body);
+            },
+            .UnionDecl => |union_decl| {
+                // Build union type from variants
+                var variants = std.ArrayList(Type.UnionType.Variant){};
+                defer variants.deinit(self.allocator);
+
+                for (union_decl.variants) |variant| {
+                    var data_type: ?Type = null;
+                    if (variant.type_name) |type_name| {
+                        data_type = try self.parseTypeName(type_name);
+                    }
+                    try variants.append(self.allocator, .{
+                        .name = variant.name,
+                        .data_type = data_type,
+                    });
+                }
+
+                const union_type = Type{
+                    .Union = .{
+                        .name = union_decl.name,
+                        .variants = try variants.toOwnedSlice(self.allocator),
+                    },
+                };
+
+                // Register union type in environment
+                try self.env.define(union_decl.name, union_type);
+            },
             else => {},
         }
     }
@@ -502,6 +671,12 @@ pub const TypeChecker = struct {
             .SliceExpr => |slice| try self.inferSliceExpression(slice),
             .MemberExpr => |member| try self.inferMemberExpression(member),
             .TryExpr => |try_expr| try self.inferTryExpression(try_expr),
+            .TernaryExpr => |ternary| try self.inferTernaryExpression(ternary),
+            .NullCoalesceExpr => |null_coalesce| try self.inferNullCoalesceExpression(null_coalesce),
+            .PipeExpr => |pipe| try self.inferPipeExpression(pipe),
+            .SafeNavExpr => |safe_nav| try self.inferSafeNavExpression(safe_nav),
+            .SpreadExpr => |spread| try self.inferSpreadExpression(spread),
+            .TupleExpr => |tuple| try self.inferTupleExpression(tuple),
             else => Type.Void,
         };
     }
@@ -703,6 +878,142 @@ pub const TypeChecker = struct {
         try self.addError(err_msg, member.node.loc);
         self.allocator.free(err_msg);
         return error.TypeMismatch;
+    }
+
+    fn inferTernaryExpression(self: *TypeChecker, ternary: *const ast.TernaryExpr) TypeError!Type {
+        // Check condition is boolean
+        const cond_type = try self.inferExpression(ternary.condition);
+        if (!cond_type.equals(Type.Bool)) {
+            try self.addError("Ternary condition must be boolean", ternary.node.loc);
+            return error.TypeMismatch;
+        }
+
+        // Both branches must have the same type
+        const true_type = try self.inferExpression(ternary.true_val);
+        const false_type = try self.inferExpression(ternary.false_val);
+
+        if (!true_type.equals(false_type)) {
+            try self.addError("Ternary branches must have the same type", ternary.node.loc);
+            return error.TypeMismatch;
+        }
+
+        return true_type;
+    }
+
+    fn inferNullCoalesceExpression(self: *TypeChecker, null_coalesce: *const ast.NullCoalesceExpr) TypeError!Type {
+        const left_type = try self.inferExpression(null_coalesce.left);
+        const right_type = try self.inferExpression(null_coalesce.right);
+
+        // Left side should be Optional type, but we'll be permissive and allow any type
+        // Right side must be compatible with the unwrapped left type
+        if (left_type == .Optional) {
+            const inner_type = left_type.Optional.*;
+            if (!inner_type.equals(right_type)) {
+                try self.addError("Null coalesce default value must match optional type", null_coalesce.node.loc);
+                return error.TypeMismatch;
+            }
+            return right_type;
+        }
+
+        // If left is not optional, just return its type (it will never be null)
+        return left_type;
+    }
+
+    fn inferPipeExpression(self: *TypeChecker, pipe: *const ast.PipeExpr) TypeError!Type {
+        // Infer type of left expression (the value being piped)
+        const left_type = try self.inferExpression(pipe.left);
+
+        // Right side should be a function that takes left_type as its first argument
+        const right_type = try self.inferExpression(pipe.right);
+
+        if (right_type == .Function) {
+            const func_type = right_type.Function;
+
+            // Function should have at least one parameter
+            if (func_type.params.len == 0) {
+                try self.addError("Pipe target function must have at least one parameter", pipe.node.loc);
+                return error.TypeMismatch;
+            }
+
+            // First parameter should match left type
+            if (!func_type.params[0].equals(left_type)) {
+                try self.addError("Pipe type mismatch: function parameter doesn't match piped value", pipe.node.loc);
+                return error.TypeMismatch;
+            }
+
+            // Return the function's return type
+            return func_type.return_type.*;
+        }
+
+        try self.addError("Pipe right side must be a function", pipe.node.loc);
+        return error.TypeMismatch;
+    }
+
+    fn inferSafeNavExpression(self: *TypeChecker, safe_nav: *const ast.SafeNavExpr) TypeError!Type {
+        const object_type = try self.inferExpression(safe_nav.object);
+
+        // Object can be Optional<Struct> or just Struct
+        var actual_type = object_type;
+        if (object_type == .Optional) {
+            actual_type = object_type.Optional.*;
+        }
+
+        // Actual type must be a struct
+        if (actual_type != .Struct) {
+            try self.addError("Safe navigation can only be used on struct types", safe_nav.node.loc);
+            return error.TypeMismatch;
+        }
+
+        // Find the field in the struct
+        for (actual_type.Struct.fields) |field| {
+            if (std.mem.eql(u8, field.name, safe_nav.member)) {
+                // Return the field type wrapped in Optional
+                const field_type_ptr = try self.allocator.create(Type);
+                field_type_ptr.* = field.type;
+                try self.allocated_types.append(self.allocator, field_type_ptr);
+                return Type{ .Optional = field_type_ptr };
+            }
+        }
+
+        // Field not found
+        const err_msg = try std.fmt.allocPrint(
+            self.allocator,
+            "Struct '{s}' has no field '{s}'",
+            .{ actual_type.Struct.name, safe_nav.member },
+        );
+        try self.addError(err_msg, safe_nav.node.loc);
+        self.allocator.free(err_msg);
+        return error.TypeMismatch;
+    }
+
+    fn inferSpreadExpression(self: *TypeChecker, spread: *const ast.SpreadExpr) TypeError!Type {
+        const operand_type = try self.inferExpression(spread.operand);
+
+        // Spread can only be used on array or tuple types
+        if (operand_type != .Array and operand_type != .Tuple) {
+            try self.addError("Spread operator can only be used on arrays or tuples", spread.node.loc);
+            return error.TypeMismatch;
+        }
+
+        // Return the same type (spread doesn't change the type, just unpacks it)
+        return operand_type;
+    }
+
+    fn inferTupleExpression(self: *TypeChecker, tuple: *const ast.TupleExpr) TypeError!Type {
+        if (tuple.elements.len == 0) {
+            // Empty tuple ()
+            return Type{ .Tuple = .{ .element_types = &.{} } };
+        }
+
+        // Infer types of all elements
+        var element_types = try self.allocator.alloc(Type, tuple.elements.len);
+        try self.allocated_slices.append(self.allocator, element_types);
+
+        for (tuple.elements, 0..) |elem, i| {
+            element_types[i] = try self.inferExpression(elem);
+        }
+
+        return Type{ .Tuple = .{ .element_types = element_types } };
     }
 
     fn parseTypeName(self: *TypeChecker, name: []const u8) !Type {
