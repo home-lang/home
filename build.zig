@@ -1,5 +1,19 @@
 const std = @import("std");
 
+/// Helper function to create a package module with less boilerplate
+fn createPackage(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path(path),
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -9,83 +23,32 @@ pub fn build(b: *std.Build) void {
     const zyte_path = b.option([]const u8, "zyte-path", "Path to Zyte library") orelse
         "../zyte/packages/zig";
 
-    // Create package modules
-    const lexer_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/lexer/src/lexer.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Create package modules using helper function
+    const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize);
+    const ast_pkg = createPackage(b, "packages/ast/src/ast.zig", target, optimize);
+    const parser_pkg = createPackage(b, "packages/parser/src/parser.zig", target, optimize);
+    const diagnostics_pkg = createPackage(b, "packages/diagnostics/src/diagnostics.zig", target, optimize);
+    const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize);
+    const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize);
+    const codegen_pkg = createPackage(b, "packages/codegen/src/native_codegen.zig", target, optimize);
+    const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize);
+    const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize);
+    const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
+    const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize);
 
-    const ast_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/ast/src/ast.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
-
-    const parser_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/parser/src/parser.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     parser_pkg.addImport("lexer", lexer_pkg);
     parser_pkg.addImport("ast", ast_pkg);
-
-    const diagnostics_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/diagnostics/src/diagnostics.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     diagnostics_pkg.addImport("ast", ast_pkg);
-
-    const types_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/types/src/type_system.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    parser_pkg.addImport("diagnostics", diagnostics_pkg);
     types_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("diagnostics", diagnostics_pkg);
-
-    const interpreter_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/interpreter/src/interpreter.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     interpreter_pkg.addImport("ast", ast_pkg);
-
-    const codegen_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/codegen/src/native_codegen.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     codegen_pkg.addImport("ast", ast_pkg);
-
-    const formatter_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/formatter/src/formatter.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);
-
-    const pkg_manager_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/pkg/src/package_manager.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const queue_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/queue/src/queue.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const database_pkg = b.createModule(.{
-        .root_source_file = b.path("packages/database/src/database.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
 
     // Main executable
     const exe = b.addExecutable(.{
@@ -470,4 +433,83 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_fullstack_example.step);
     examples_step.dependOn(&run_queue_example.step);
     examples_step.dependOn(&run_database_example.step);
+
+    // ═══════════════════════════════════════════════════════════════
+    // Additional Build Modes
+    // ═══════════════════════════════════════════════════════════════
+
+    // Debug build (with debug symbols and runtime safety)
+    const debug_exe = b.addExecutable(.{
+        .name = "ion-debug",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+    debug_exe.root_module.addImport("lexer", lexer_pkg);
+    debug_exe.root_module.addImport("ast", ast_pkg);
+    debug_exe.root_module.addImport("parser", parser_pkg);
+    debug_exe.root_module.addImport("types", types_pkg);
+    debug_exe.root_module.addImport("interpreter", interpreter_pkg);
+    debug_exe.root_module.addImport("codegen", codegen_pkg);
+    debug_exe.root_module.addImport("formatter", formatter_pkg);
+    debug_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    debug_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
+    debug_exe.root_module.addImport("queue", queue_pkg);
+    debug_exe.root_module.addImport("database", database_pkg);
+
+    const install_debug = b.addInstallArtifact(debug_exe, .{});
+    const debug_step = b.step("debug", "Build Ion compiler in Debug mode (with safety checks)");
+    debug_step.dependOn(&install_debug.step);
+
+    // Release-safe build (optimized but with runtime safety)
+    const release_safe_exe = b.addExecutable(.{
+        .name = "ion-release-safe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    release_safe_exe.root_module.addImport("lexer", lexer_pkg);
+    release_safe_exe.root_module.addImport("ast", ast_pkg);
+    release_safe_exe.root_module.addImport("parser", parser_pkg);
+    release_safe_exe.root_module.addImport("types", types_pkg);
+    release_safe_exe.root_module.addImport("interpreter", interpreter_pkg);
+    release_safe_exe.root_module.addImport("codegen", codegen_pkg);
+    release_safe_exe.root_module.addImport("formatter", formatter_pkg);
+    release_safe_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    release_safe_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
+    release_safe_exe.root_module.addImport("queue", queue_pkg);
+    release_safe_exe.root_module.addImport("database", database_pkg);
+
+    const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
+    const release_safe_step = b.step("release-safe", "Build Ion compiler in ReleaseSafe mode (optimized with safety)");
+    release_safe_step.dependOn(&install_release_safe.step);
+
+    // Release-small build (optimize for size)
+    const release_small_exe = b.addExecutable(.{
+        .name = "ion-release-small",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    release_small_exe.root_module.addImport("lexer", lexer_pkg);
+    release_small_exe.root_module.addImport("ast", ast_pkg);
+    release_small_exe.root_module.addImport("parser", parser_pkg);
+    release_small_exe.root_module.addImport("types", types_pkg);
+    release_small_exe.root_module.addImport("interpreter", interpreter_pkg);
+    release_small_exe.root_module.addImport("codegen", codegen_pkg);
+    release_small_exe.root_module.addImport("formatter", formatter_pkg);
+    release_small_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    release_small_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
+    release_small_exe.root_module.addImport("queue", queue_pkg);
+    release_small_exe.root_module.addImport("database", database_pkg);
+
+    const install_release_small = b.addInstallArtifact(release_small_exe, .{});
+    const release_small_step = b.step("release-small", "Build Ion compiler in ReleaseSmall mode (optimized for size)");
+    release_small_step.dependOn(&install_release_small.step);
 }

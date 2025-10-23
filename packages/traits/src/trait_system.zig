@@ -13,6 +13,7 @@ pub const Trait = struct {
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, loc: ast.SourceLocation) !*Trait {
         const trait = try allocator.create(Trait);
+        errdefer allocator.destroy(trait);
         trait.* = .{
             .name = name,
             .methods = &[_]TraitMethod{},

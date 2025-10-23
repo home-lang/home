@@ -13,6 +13,8 @@ pub const GenericParam = struct {
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, loc: ast.SourceLocation) !*GenericParam {
         const param = try allocator.create(GenericParam);
+        errdefer allocator.destroy(param);
+
         param.* = .{
             .name = name,
             .bounds = &[_]traits.TraitBound{},
@@ -54,6 +56,8 @@ pub const GenericDecl = struct {
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, loc: ast.SourceLocation) !*GenericDecl {
         const decl = try allocator.create(GenericDecl);
+        errdefer allocator.destroy(decl);
+
         decl.* = .{
             .name = name,
             .params = &[_]*GenericParam{},

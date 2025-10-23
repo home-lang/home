@@ -253,25 +253,26 @@
 ### 5. Error Handling Improvements (3-4 days)
 
 #### 5.1 Create Centralized Error Types
-- [ ] Define `CompilerError` error set
-- [ ] Define `RuntimeError` error set
-- [ ] Define `PackageError` error set
-- [ ] Define `BuildError` error set
-- [ ] Add error context structs
+- [x] Define `CompilerError` error set
+- [x] Define `RuntimeError` error set
+- [x] Define `PackageError` error set
+- [x] Define `BuildError` error set
+- [x] Add error context structs
 
 #### 5.2 Add Error Handling to Missing Files
-- [ ] Add errdefer to packages/generics/src/*.zig
-- [ ] Add errdefer to packages/comptime/src/macro.zig
-- [ ] Add errdefer to packages/traits/src/*.zig
-- [ ] Add errdefer to packages/async/src/*.zig
-- [ ] Add errdefer to packages/cache/src/ir_cache.zig
-- [ ] Add errdefer to packages/build/src/watch_mode.zig
-- [ ] Add errdefer to remaining 34+ files
+- [x] Add errdefer to packages/generics/src/*.zig
+- [x] Add errdefer to packages/comptime/src/macro.zig
+- [x] Add errdefer to packages/traits/src/*.zig
+- [x] Add errdefer to packages/async/src/*.zig
+- [x] Add errdefer to packages/cache/src/ir_cache.zig
+- [x] Add errdefer to packages/build/src/watch_mode.zig
+- [ ] Add errdefer to remaining 34+ files (in progress)
 
 #### 5.3 Standardize Error Messages
-- [ ] Create error message formatter
-- [ ] Add file location to all errors
-- [ ] Add error codes
+- [x] Create error message formatter
+- [x] Add file location to all errors
+- [x] Add error codes
+- [x] Integrate error formatter into parser
 - [ ] Add fix suggestions where applicable
 
 ### 6. Performance Optimizations (1 week)
@@ -306,16 +307,16 @@
 ### 7. Build System Improvements (2-3 days)
 
 #### 7.1 Refactor build.zig
-- [ ] Create `createPackage()` helper function
-- [ ] Remove duplicated module creation code
-- [ ] Add build mode variants (debug, release-safe, release-small)
+- [x] Create `createPackage()` helper function
+- [x] Remove duplicated module creation code
+- [x] Add build mode variants (debug, release-safe, release-small)
 - [ ] Add conditional compilation flags
 
 #### 7.2 Add Build Targets
-- [ ] Add `zig build debug` target
-- [ ] Add `zig build release-safe` target
-- [ ] Add `zig build release-small` target
-- [ ] Add `zig build bench` target
+- [x] Add `zig build debug` target
+- [x] Add `zig build release-safe` target
+- [x] Add `zig build release-small` target
+- [x] Add `zig build bench` target (already exists)
 - [ ] Add `zig build docs` target
 
 #### 7.3 Version Management
@@ -327,13 +328,13 @@
 ### 8. Complete Unfinished Features (1 week)
 
 #### 8.1 Interpreter Compound Assignments
-- [ ] Implement `+=` operator
-- [ ] Implement `-=` operator
-- [ ] Implement `*=` operator
-- [ ] Implement `/=` operator
-- [ ] Implement `%=` operator
+- [x] Implement `+=` operator
+- [x] Implement `-=` operator
+- [x] Implement `*=` operator
+- [x] Implement `/=` operator
+- [x] Implement `%=` operator
 - [ ] Add tests for compound assignments
-- [ ] Remove TODO comment
+- [x] Remove TODO comment (feature implemented via desugaring)
 
 #### 8.2 Debug Adapter Real Implementation
 - [ ] Remove hard-coded dummy stack frames
@@ -359,8 +360,8 @@
 |----------|-------|-----------|------------|
 | **Critical** | 60 | 56 | 93% |
 | **High Priority** | 89 | 90 | 101%* |
-| **Medium Priority** | 47 | 0 | 0% |
-| **Total** | 196 | 146 | 75% |
+| **Medium Priority** | 47 | 25 | 53% |
+| **Total** | 196 | 171 | 87% |
 
 *Over 100% due to completing more tasks than originally estimated
 

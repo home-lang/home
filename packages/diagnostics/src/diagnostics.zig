@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const ast = @import("ast");
+pub const errors = @import("errors.zig");
 
 /// Color codes for terminal output
 pub const Color = enum {

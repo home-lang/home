@@ -109,17 +109,29 @@ pub const IRCache = struct {
         defer self.allocator.free(cache_key);
 
         const ir = try self.allocator.create(IR);
+        errdefer self.allocator.destroy(ir);
+
+        const module_name = try self.allocator.dupe(u8, cache_key);
+        errdefer self.allocator.free(module_name);
+
+        const ast_data_copy = try self.allocator.dupe(u8, ast_data);
+        errdefer self.allocator.free(ast_data_copy);
+
+        const type_info_copy = try self.allocator.dupe(u8, type_info);
+        errdefer self.allocator.free(type_info_copy);
+
         ir.* = .{
-            .module_name = try self.allocator.dupe(u8, cache_key),
+            .module_name = module_name,
             .source_hash = hashSource(source),
             .timestamp = std.time.timestamp(),
-            .ast_data = try self.allocator.dupe(u8, ast_data),
-            .type_info = try self.allocator.dupe(u8, type_info),
+            .ast_data = ast_data_copy,
+            .type_info = type_info_copy,
             .allocator = self.allocator,
         };
 
         // Store in memory cache
         const key_copy = try self.allocator.dupe(u8, cache_key);
+        errdefer self.allocator.free(key_copy);
         try self.cache.put(key_copy, ir);
 
         // Write to disk
@@ -183,8 +195,13 @@ pub const IRCache = struct {
         _ = try file.readAll(type_info);
 
         const ir = try self.allocator.create(IR);
+        errdefer self.allocator.destroy(ir);
+
+        const module_name = try self.allocator.dupe(u8, cache_key);
+        errdefer self.allocator.free(module_name);
+
         ir.* = .{
-            .module_name = try self.allocator.dupe(u8, cache_key),
+            .module_name = module_name,
             .source_hash = source_hash,
             .timestamp = timestamp,
             .ast_data = ast_data,

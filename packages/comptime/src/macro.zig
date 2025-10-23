@@ -123,6 +123,7 @@ pub const MacroSystem = struct {
                 const right = try self.expandAll(bin_expr.right);
 
                 const new_expr = try self.allocator.create(ast.BinaryExpr);
+                errdefer self.allocator.destroy(new_expr);
                 new_expr.* = .{
                     .node = bin_expr.node,
                     .op = bin_expr.op,
@@ -131,6 +132,7 @@ pub const MacroSystem = struct {
                 };
 
                 const result = try self.allocator.create(ast.Expr);
+                errdefer self.allocator.destroy(result);
                 result.* = ast.Expr{ .BinaryExpr = new_expr };
                 break :blk result;
             },
@@ -150,6 +152,7 @@ pub const MacroSystem = struct {
                 }
 
                 const new_expr = try self.allocator.create(ast.CallExpr);
+                errdefer self.allocator.destroy(new_expr);
                 new_expr.* = .{
                     .node = call_expr.node,
                     .callee = callee,
@@ -157,6 +160,7 @@ pub const MacroSystem = struct {
                 };
 
                 const result = try self.allocator.create(ast.Expr);
+                errdefer self.allocator.destroy(result);
                 result.* = ast.Expr{ .CallExpr = new_expr };
                 break :blk result;
             },
@@ -171,9 +175,11 @@ pub const MacroSystem = struct {
 fn printMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     // Transform print!("format", args...) into a function call
     const print_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(print_ident);
     print_ident.* = ast.Identifier.init("print", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = print_ident.* };
 
     const call_expr = try ast.CallExpr.init(
@@ -184,6 +190,7 @@ fn printMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -195,6 +202,7 @@ fn debugMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
 
     // Transform debug!(value) into print("value = ", value)
     const format_str = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(format_str);
     format_str.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "debug: ",
@@ -203,12 +211,15 @@ fn debugMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     };
 
     const print_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(print_ident);
     print_ident.* = ast.Identifier.init("print", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = print_ident.* };
 
     const call_args = try allocator.alloc(*ast.Expr, 2);
+    errdefer allocator.free(call_args);
     call_args[0] = format_str;
     call_args[1] = args[0];
 
@@ -220,6 +231,7 @@ fn debugMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -231,9 +243,11 @@ fn assertMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
 
     // Transform assert!(condition) into if (!condition) { panic("assertion failed") }
     const assert_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(assert_ident);
     assert_ident.* = ast.Identifier.init("assert", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = assert_ident.* };
 
     const call_expr = try ast.CallExpr.init(
@@ -244,6 +258,7 @@ fn assertMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -253,12 +268,15 @@ fn todoMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
 
     // Transform todo!() into panic("not yet implemented")
     const panic_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(panic_ident);
     panic_ident.* = ast.Identifier.init("panic", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = panic_ident.* };
 
     const msg_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(msg_expr);
     msg_expr.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "not yet implemented",
@@ -267,6 +285,7 @@ fn todoMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     };
 
     const call_args = try allocator.alloc(*ast.Expr, 1);
+    errdefer allocator.free(call_args);
     call_args[0] = msg_expr;
 
     const call_expr = try ast.CallExpr.init(
@@ -277,6 +296,7 @@ fn todoMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -286,12 +306,15 @@ fn unreachableMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr 
 
     // Transform unreachable!() into panic("unreachable code reached")
     const panic_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(panic_ident);
     panic_ident.* = ast.Identifier.init("panic", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = panic_ident.* };
 
     const msg_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(msg_expr);
     msg_expr.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "unreachable code reached",
@@ -300,6 +323,7 @@ fn unreachableMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr 
     };
 
     const call_args = try allocator.alloc(*ast.Expr, 1);
+    errdefer allocator.free(call_args);
     call_args[0] = msg_expr;
 
     const call_expr = try ast.CallExpr.init(
@@ -310,6 +334,7 @@ fn unreachableMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr 
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -330,9 +355,11 @@ fn vecMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
 fn formatMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     // Transform format!("template", args...) into format("template", args...)
     const format_ident = try allocator.create(ast.Identifier);
+    errdefer allocator.destroy(format_ident);
     format_ident.* = ast.Identifier.init("format", ast.SourceLocation{ .line = 0, .column = 0 });
 
     const ident_expr = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(ident_expr);
     ident_expr.* = ast.Expr{ .Identifier = format_ident.* };
 
     const call_expr = try ast.CallExpr.init(
@@ -343,6 +370,7 @@ fn formatMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     );
 
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{ .CallExpr = call_expr };
     return result;
 }
@@ -356,6 +384,7 @@ fn stringifyMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     // This would require converting expr to string representation
     // For simplicity, just return a placeholder string
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "<stringified>",
@@ -374,6 +403,7 @@ fn includeStrMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     // This would read the file at compile time
     // For now, return a placeholder
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "<file contents>",
@@ -391,6 +421,7 @@ fn envMacro(allocator: std.mem.Allocator, args: []*ast.Expr) !*ast.Expr {
     // Transform env!("NAME") into environment variable value at compile time
     // For now, return a placeholder
     const result = try allocator.create(ast.Expr);
+    errdefer allocator.destroy(result);
     result.* = ast.Expr{
         .StringLiteral = ast.StringLiteral.init(
             "<env value>",

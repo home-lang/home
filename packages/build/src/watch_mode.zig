@@ -30,8 +30,14 @@ pub const FileWatcher = struct {
     pub fn watch(self: *FileWatcher, path: []const u8) !void {
         const stat = try std.fs.cwd().statFile(path);
 
-        try self.watched_files.put(try self.allocator.dupe(u8, path), .{
-            .path = try self.allocator.dupe(u8, path),
+        const key_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(key_copy);
+
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+
+        try self.watched_files.put(key_copy, .{
+            .path = path_copy,
             .last_modified = stat.mtime,
             .size = stat.size,
         });

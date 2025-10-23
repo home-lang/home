@@ -3,6 +3,8 @@ const lexer_mod = @import("lexer");
 const Token = lexer_mod.Token;
 const TokenType = lexer_mod.TokenType;
 const ast = @import("ast");
+const diagnostics = @import("diagnostics");
+const errors = diagnostics.errors;
 
 /// Parser error set
 pub const ParseError = error{
@@ -76,6 +78,8 @@ pub const Parser = struct {
     errors: std.ArrayList(ParseErrorInfo),
     panic_mode: bool,
     recursion_depth: usize,
+    error_formatter: errors.ErrorFormatter,
+    source_file: ?[]const u8,
 
     const MAX_RECURSION_DEPTH: usize = 256;
 
@@ -87,6 +91,8 @@ pub const Parser = struct {
             .errors = std.ArrayList(ParseErrorInfo){ .items = &.{}, .capacity = 0 },
             .panic_mode = false,
             .recursion_depth = 0,
+            .error_formatter = errors.ErrorFormatter.init(allocator),
+            .source_file = null,
         };
     }
 
@@ -163,8 +169,20 @@ pub const Parser = struct {
             .column = token.column,
         });
 
-        // Print immediately for visibility
-        std.debug.print("Parse error at line {d}, column {d}: {s}\n", .{ token.line, token.column, message });
+        // Use centralized error formatter for consistent output
+        const filename = self.source_file orelse "<input>";
+        const formatted = try self.error_formatter.formatError(
+            filename,
+            token.line,
+            token.column,
+            message,
+            null, // source_line (would need access to source)
+            errors.E_PARSER_UNEXPECTED_TOKEN,
+            null, // suggestion
+        );
+        defer self.allocator.free(formatted);
+
+        std.debug.print("{s}", .{formatted});
 
         self.panic_mode = true;
 
@@ -1177,6 +1195,8 @@ pub const Parser = struct {
                 expr = try self.ternaryExpr(expr);
             } else if (self.match(&.{.Equal})) {
                 expr = try self.assignment(expr);
+            } else if (self.match(&.{ .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual })) {
+                expr = try self.compoundAssignment(expr);
             } else if (self.match(&.{.LeftParen})) {
                 expr = try self.call(expr);
             } else if (self.match(&.{.LeftBracket})) {
@@ -1257,6 +1277,58 @@ pub const Parser = struct {
             target,
             value,
             ast.SourceLocation.fromToken(assign_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .AssignmentExpr = assign_expr };
+        return result;
+    }
+
+    /// Parse a compound assignment expression (e.g., x += 5)
+    /// Desugars to: x = x + 5
+    fn compoundAssignment(self: *Parser, target: *ast.Expr) !*ast.Expr {
+        const op_token = self.previous();
+        const loc = ast.SourceLocation.fromToken(op_token);
+
+        // Validate that the target is a valid lvalue
+        switch (target.*) {
+            .Identifier, .IndexExpr, .MemberExpr => {},
+            else => {
+                try self.reportError("Invalid assignment target");
+                return ParseError.UnexpectedToken;
+            },
+        }
+
+        // Parse the right-hand side
+        const rhs = try self.parsePrecedence(.Assignment);
+
+        // Determine the binary operator based on compound operator
+        const bin_op: ast.BinaryOp = switch (op_token.type) {
+            .PlusEqual => .Add,
+            .MinusEqual => .Sub,
+            .StarEqual => .Mul,
+            .SlashEqual => .Div,
+            .PercentEqual => .Mod,
+            else => unreachable,
+        };
+
+        // Create binary expression: target <op> rhs
+        const bin_expr = try ast.BinaryExpr.init(
+            self.allocator,
+            bin_op,
+            target,
+            rhs,
+            loc,
+        );
+        const bin_expr_node = try self.allocator.create(ast.Expr);
+        bin_expr_node.* = ast.Expr{ .BinaryExpr = bin_expr };
+
+        // Create assignment: target = (target <op> rhs)
+        const assign_expr = try ast.AssignmentExpr.init(
+            self.allocator,
+            target,
+            bin_expr_node,
+            loc,
         );
 
         const result = try self.allocator.create(ast.Expr);

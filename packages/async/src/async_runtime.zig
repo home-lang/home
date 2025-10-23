@@ -107,6 +107,7 @@ pub const AsyncRuntime = struct {
         data: ?*anyopaque,
     ) !*Task {
         const task = try self.allocator.create(Task);
+        errdefer self.allocator.destroy(task);
         task.* = .{
             .id = self.next_task_id,
             .state = .Pending,
