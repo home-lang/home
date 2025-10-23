@@ -15,9 +15,10 @@ Ion is currently in the foundation phase with a working compiler infrastructure 
 - ✅ Lexer & Parser implementation
 - ✅ AST & Type system foundation
 - ✅ Interpreter & Code generation _(x64)_
-- ✅ Package system with 24 core packages
-- ✅ Thorough test infrastructure
+- ✅ Package system with 27 core packages
+- ✅ Modern testing framework with snapshots, mocks & benchmarks
 - ✅ Standard library _(HTTP, Queue, Database)_
+- ✅ VSCode extension with advanced debugging & profiling
 
 **Follow Progress**: Watch this repo • [Discussions](../../discussions) • [Roadmap](./ROADMAP.md)
 
@@ -178,7 +179,8 @@ packages/
 ├── codegen/        # Native x64 code generation
 ├── formatter/      # Code formatting
 ├── lsp/            # Language Server Protocol
-└── pkg/            # Package manager
+├── pkg/            # Package manager
+└── testing/        # Modern test framework (snapshots, mocks, benchmarks)
 ```
 
 ### Standard Library Packages
@@ -206,7 +208,23 @@ packages/
 ├── modules/        # Module system
 ├── patterns/       # Pattern matching
 ├── safety/         # Memory safety checks
-└── traits/         # Trait system
+├── traits/         # Trait system
+└── action/         # GitHub Actions integration
+```
+
+### Developer Tooling
+
+```
+packages/
+└── vscode-ion/     # VSCode extension with:
+    ├── Language Server Protocol (LSP)
+    ├── Debug Adapter Protocol (DAP)
+    ├── Time-travel debugging
+    ├── Memory profiling with leak detection
+    ├── CPU profiling with flame graphs
+    ├── Multi-threaded debugging (deadlock detection)
+    ├── GC profiling with pressure analysis
+    └── Chrome DevTools format export
 ```
 
 ---
@@ -384,14 +402,143 @@ zig build test --summary all
 zig build bench
 ```
 
-### Test Statistics
+### Test Infrastructure
 
+Ion features a modern testing framework inspired by Vitest and Jest:
+
+```ion
+import { test, expect, describe, mock, snapshot } from '@ion/testing'
+
+describe('User API', () => {
+  test('creates user successfully', async () => {
+    const user = await createUser({ name: 'Alice' })
+    expect(user.name).toBe('Alice')
+    expect(user).toMatchSnapshot()
+  })
+
+  test('handles validation errors', () => {
+    const mockDb = mock(database)
+    mockDb.save.mockReject(new Error('Invalid email'))
+
+    expect(() => createUser({})).toThrow('Invalid email')
+  })
+})
+```
+
+**Features:**
+- Snapshot testing with auto-update
+- Comprehensive matchers (toBe, toEqual, toThrow, etc.)
+- Mock functions with call tracking
+- Async/await support
+- Benchmarking utilities
+- Parallel test execution
+- Watch mode for development
+
+**Test Statistics:**
 - **Core Compiler**: 89 tests (lexer, parser, AST, types)
 - **Standard Library**: 95 tests (HTTP, database, queue)
 - **Code Generation**: 12 tests (x64 assembler)
 - **Interpreter**: 15 tests (value system)
 - **Diagnostics**: 12 tests (error reporting)
 - **Total**: **200+ tests passing**
+
+---
+
+## VSCode Extension & Developer Tools
+
+Ion includes a comprehensive VSCode extension with professional-grade debugging and profiling tools:
+
+### Installation
+
+```bash
+# From the Ion repository
+cd packages/vscode-ion
+npm install
+npm run compile
+
+# Install in VSCode
+# Open Command Palette (Cmd+Shift+P)
+# Run: Extensions: Install from VSIX
+```
+
+### Features
+
+#### 🔍 **Time-Travel Debugging**
+Step backward and forward through execution history:
+- Record full program state at each step
+- Compare snapshots to see what changed
+- Navigate execution timeline
+- Export/import debug sessions
+
+```typescript
+// Automatically records snapshots during debugging
+// Use debugger controls to step back/forward
+// View variable changes between any two points
+```
+
+#### 💾 **Memory Profiling**
+Track allocations and detect leaks:
+- Real-time allocation tracking
+- Memory leak detection with heuristics
+- Heap snapshot comparison
+- Fragmentation analysis
+- HTML reports with visualizations
+
+#### ⚡ **CPU Profiling**
+Sample-based performance profiling:
+- Function call time tracking
+- Interactive flame graphs
+- Chrome DevTools format export
+- Self-time vs total-time analysis
+
+#### 🧵 **Multi-threaded Debugging**
+Debug concurrent programs safely:
+- Thread state tracking
+- Automatic deadlock detection
+- Race condition detection
+- Synchronization event timeline
+- Resource contention statistics
+
+#### 🗑️ **Garbage Collection Profiling**
+Analyze GC performance:
+- GC event tracking (minor/major/incremental)
+- Object lifetime analysis
+- Generation statistics
+- GC pressure detection
+- Performance recommendations
+
+### Commands
+
+Available in VSCode Command Palette:
+
+```
+Ion: Start Debugging
+Ion: Start CPU Profiler
+Ion: Stop CPU Profiler
+Ion: Generate Flame Graph
+Ion: Export Chrome DevTools Profile
+Ion: Start Memory Profiler
+Ion: Stop Memory Profiler
+Ion: Take Memory Snapshot
+Ion: Generate Memory Report
+Ion: Start GC Profiler
+Ion: Stop GC Profiler
+Ion: Analyze GC Pressure
+Ion: Time-Travel: Step Back
+Ion: Time-Travel: Step Forward
+Ion: Multi-thread: Show Deadlocks
+Ion: Multi-thread: Show Race Conditions
+```
+
+### Keybindings
+
+- **F5**: Start debugging
+- **Shift+F5**: Stop debugging
+- **F10**: Step over
+- **F11**: Step into
+- **Shift+F11**: Step out
+- **Cmd+Shift+B**: Time-travel step back
+- **Cmd+Shift+F**: Time-travel step forward
 
 ---
 
@@ -681,7 +828,9 @@ A: Not yet. Packages currently installed from Git. Official registry planned for
 | Async/await | ✅* | ❌ | ⚠️ | ✅ | ⚠️ |
 | Comptime | ✅* | ✅ | ⚠️ | ❌ | ⚠️ |
 | Package manager | ✅ | ⚠️ | ✅ | ✅ | ❌ |
-| IDE support | 🏗️ | ⚡ | ✅ | ✅ | ✅ |
+| IDE support | ✅ | ⚡ | ✅ | ✅ | ✅ |
+| Modern testing | ✅ | ⚠️ | ✅ | ✅ | ⚠️ |
+| Time-travel debug | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Database access | ✅ | ⚠️ | ✅ | ✅ | ⚠️ |
 | HTTP server | ✅ | ⚠️ | ✅ | ✅ | ⚠️ |
 
@@ -696,7 +845,7 @@ ion/
 ├── src/
 │   ├── main.zig          # CLI entry point
 │   └── ion.zig           # Compiler library
-├── packages/             # Core packages (24 total)
+├── packages/             # Core packages (27 total)
 │   ├── lexer/           # Tokenization
 │   ├── parser/          # AST generation
 │   ├── ast/             # Syntax tree
@@ -705,9 +854,11 @@ ion/
 │   ├── codegen/         # x64 generation
 │   ├── diagnostics/     # Error reporting
 │   ├── formatter/       # Code formatting
+│   ├── testing/         # Modern test framework
 │   ├── stdlib/          # Standard library
 │   ├── database/        # SQLite access
-│   └── queue/           # Job processing
+│   ├── queue/           # Job processing
+│   └── vscode-ion/      # VSCode extension with advanced tooling
 ├── examples/            # Usage examples
 │   ├── http_router_example.zig
 │   ├── database_example.zig
