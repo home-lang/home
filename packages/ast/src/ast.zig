@@ -23,6 +23,12 @@ pub const NodeType = enum {
     MemberExpr,
     RangeExpr,
     SliceExpr,
+    TernaryExpr,
+    PipeExpr,
+    SpreadExpr,
+    NullCoalesceExpr,
+    SafeNavExpr,
+    TupleExpr,
 
     // Statements
     LetDecl,
@@ -31,10 +37,17 @@ pub const NodeType = enum {
     StructDecl,
     EnumDecl,
     TypeAliasDecl,
+    UnionDecl,
     ReturnStmt,
     IfStmt,
     WhileStmt,
+    DoWhileStmt,
     ForStmt,
+    SwitchStmt,
+    CaseClause,
+    TryStmt,
+    CatchClause,
+    DeferStmt,
     BlockStmt,
     ExprStmt,
 
@@ -329,6 +342,106 @@ pub const SliceExpr = struct {
     }
 };
 
+/// Ternary expression (condition ? true_val : false_val)
+pub const TernaryExpr = struct {
+    node: Node,
+    condition: *Expr,
+    true_val: *Expr,
+    false_val: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, condition: *Expr, true_val: *Expr, false_val: *Expr, loc: SourceLocation) !*TernaryExpr {
+        const expr = try allocator.create(TernaryExpr);
+        expr.* = .{
+            .node = .{ .type = .TernaryExpr, .loc = loc },
+            .condition = condition,
+            .true_val = true_val,
+            .false_val = false_val,
+        };
+        return expr;
+    }
+};
+
+/// Pipe expression (value |> function)
+pub const PipeExpr = struct {
+    node: Node,
+    left: *Expr,
+    right: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, left: *Expr, right: *Expr, loc: SourceLocation) !*PipeExpr {
+        const expr = try allocator.create(PipeExpr);
+        expr.* = .{
+            .node = .{ .type = .PipeExpr, .loc = loc },
+            .left = left,
+            .right = right,
+        };
+        return expr;
+    }
+};
+
+/// Spread expression (...array)
+pub const SpreadExpr = struct {
+    node: Node,
+    operand: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, operand: *Expr, loc: SourceLocation) !*SpreadExpr {
+        const expr = try allocator.create(SpreadExpr);
+        expr.* = .{
+            .node = .{ .type = .SpreadExpr, .loc = loc },
+            .operand = operand,
+        };
+        return expr;
+    }
+};
+
+/// Null coalescing expression (value ?? default)
+pub const NullCoalesceExpr = struct {
+    node: Node,
+    left: *Expr,
+    right: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, left: *Expr, right: *Expr, loc: SourceLocation) !*NullCoalesceExpr {
+        const expr = try allocator.create(NullCoalesceExpr);
+        expr.* = .{
+            .node = .{ .type = .NullCoalesceExpr, .loc = loc },
+            .left = left,
+            .right = right,
+        };
+        return expr;
+    }
+};
+
+/// Safe navigation expression (object?.member)
+pub const SafeNavExpr = struct {
+    node: Node,
+    object: *Expr,
+    member: []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, object: *Expr, member: []const u8, loc: SourceLocation) !*SafeNavExpr {
+        const expr = try allocator.create(SafeNavExpr);
+        expr.* = .{
+            .node = .{ .type = .SafeNavExpr, .loc = loc },
+            .object = object,
+            .member = member,
+        };
+        return expr;
+    }
+};
+
+/// Tuple expression ((a, b, c))
+pub const TupleExpr = struct {
+    node: Node,
+    elements: []const *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, elements: []const *Expr, loc: SourceLocation) !*TupleExpr {
+        const expr = try allocator.create(TupleExpr);
+        expr.* = .{
+            .node = .{ .type = .TupleExpr, .loc = loc },
+            .elements = elements,
+        };
+        return expr;
+    }
+};
+
 /// Expression wrapper (tagged union)
 pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
@@ -346,16 +459,29 @@ pub const Expr = union(NodeType) {
     MemberExpr: *MemberExpr,
     RangeExpr: *RangeExpr,
     SliceExpr: *SliceExpr,
+    TernaryExpr: *TernaryExpr,
+    PipeExpr: *PipeExpr,
+    SpreadExpr: *SpreadExpr,
+    NullCoalesceExpr: *NullCoalesceExpr,
+    SafeNavExpr: *SafeNavExpr,
+    TupleExpr: *TupleExpr,
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
     StructDecl: void,
     EnumDecl: void,
     TypeAliasDecl: void,
+    UnionDecl: void,
     ReturnStmt: void,
     IfStmt: void,
     WhileStmt: void,
+    DoWhileStmt: void,
     ForStmt: void,
+    SwitchStmt: void,
+    CaseClause: void,
+    TryStmt: void,
+    CatchClause: void,
+    DeferStmt: void,
     BlockStmt: void,
     ExprStmt: void,
     Program: void,
@@ -377,6 +503,12 @@ pub const Expr = union(NodeType) {
             .MemberExpr => |expr| expr.node.loc,
             .RangeExpr => |expr| expr.node.loc,
             .SliceExpr => |expr| expr.node.loc,
+            .TernaryExpr => |expr| expr.node.loc,
+            .PipeExpr => |expr| expr.node.loc,
+            .SpreadExpr => |expr| expr.node.loc,
+            .NullCoalesceExpr => |expr| expr.node.loc,
+            .SafeNavExpr => |expr| expr.node.loc,
+            .TupleExpr => |expr| expr.node.loc,
             else => std.debug.panic("getLocation called on non-expression variant: {s}", .{@tagName(self)}),
         };
     }
@@ -480,6 +612,110 @@ pub const ForStmt = struct {
     }
 };
 
+/// Do-while statement (do { ... } while condition)
+pub const DoWhileStmt = struct {
+    node: Node,
+    body: *BlockStmt,
+    condition: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, body: *BlockStmt, condition: *Expr, loc: SourceLocation) !*DoWhileStmt {
+        const stmt = try allocator.create(DoWhileStmt);
+        stmt.* = .{
+            .node = .{ .type = .DoWhileStmt, .loc = loc },
+            .body = body,
+            .condition = condition,
+        };
+        return stmt;
+    }
+};
+
+/// Case clause for switch statement
+pub const CaseClause = struct {
+    node: Node,
+    patterns: []const *Expr, // Can match multiple patterns
+    body: []const Stmt,
+    is_default: bool,
+
+    pub fn init(allocator: std.mem.Allocator, patterns: []const *Expr, body: []const Stmt, is_default: bool, loc: SourceLocation) !*CaseClause {
+        const clause = try allocator.create(CaseClause);
+        clause.* = .{
+            .node = .{ .type = .CaseClause, .loc = loc },
+            .patterns = patterns,
+            .body = body,
+            .is_default = is_default,
+        };
+        return clause;
+    }
+};
+
+/// Switch statement (switch value { case 1: ..., default: ... })
+pub const SwitchStmt = struct {
+    node: Node,
+    value: *Expr,
+    cases: []const *CaseClause,
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, cases: []const *CaseClause, loc: SourceLocation) !*SwitchStmt {
+        const stmt = try allocator.create(SwitchStmt);
+        stmt.* = .{
+            .node = .{ .type = .SwitchStmt, .loc = loc },
+            .value = value,
+            .cases = cases,
+        };
+        return stmt;
+    }
+};
+
+/// Catch clause for try statement
+pub const CatchClause = struct {
+    node: Node,
+    error_name: ?[]const u8, // null for catch-all
+    body: *BlockStmt,
+
+    pub fn init(allocator: std.mem.Allocator, error_name: ?[]const u8, body: *BlockStmt, loc: SourceLocation) !*CatchClause {
+        const clause = try allocator.create(CatchClause);
+        clause.* = .{
+            .node = .{ .type = .CatchClause, .loc = loc },
+            .error_name = error_name,
+            .body = body,
+        };
+        return clause;
+    }
+};
+
+/// Try-catch-finally statement
+pub const TryStmt = struct {
+    node: Node,
+    try_block: *BlockStmt,
+    catch_clauses: []const *CatchClause,
+    finally_block: ?*BlockStmt,
+
+    pub fn init(allocator: std.mem.Allocator, try_block: *BlockStmt, catch_clauses: []const *CatchClause, finally_block: ?*BlockStmt, loc: SourceLocation) !*TryStmt {
+        const stmt = try allocator.create(TryStmt);
+        stmt.* = .{
+            .node = .{ .type = .TryStmt, .loc = loc },
+            .try_block = try_block,
+            .catch_clauses = catch_clauses,
+            .finally_block = finally_block,
+        };
+        return stmt;
+    }
+};
+
+/// Defer statement (defer expr)
+pub const DeferStmt = struct {
+    node: Node,
+    body: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, body: *Expr, loc: SourceLocation) !*DeferStmt {
+        const stmt = try allocator.create(DeferStmt);
+        stmt.* = .{
+            .node = .{ .type = .DeferStmt, .loc = loc },
+            .body = body,
+        };
+        return stmt;
+    }
+};
+
 /// Statement wrapper
 pub const Stmt = union(NodeType) {
     // Unused expression variants (for union completeness)
@@ -498,6 +734,12 @@ pub const Stmt = union(NodeType) {
     MemberExpr: void,
     RangeExpr: void,
     SliceExpr: void,
+    TernaryExpr: void,
+    PipeExpr: void,
+    SpreadExpr: void,
+    NullCoalesceExpr: void,
+    SafeNavExpr: void,
+    TupleExpr: void,
 
     // Statement variants (order must match NodeType enum)
     LetDecl: *LetDecl,
@@ -506,10 +748,17 @@ pub const Stmt = union(NodeType) {
     StructDecl: *StructDecl,
     EnumDecl: *EnumDecl,
     TypeAliasDecl: *TypeAliasDecl,
+    UnionDecl: *UnionDecl,
     ReturnStmt: *ReturnStmt,
     IfStmt: *IfStmt,
     WhileStmt: *WhileStmt,
+    DoWhileStmt: *DoWhileStmt,
     ForStmt: *ForStmt,
+    SwitchStmt: *SwitchStmt,
+    CaseClause: *CaseClause,
+    TryStmt: *TryStmt,
+    CatchClause: *CatchClause,
+    DeferStmt: *DeferStmt,
     BlockStmt: *BlockStmt,
     ExprStmt: *Expr,
     Program: void,
@@ -570,6 +819,29 @@ pub const EnumDecl = struct {
         const decl = try allocator.create(EnumDecl);
         decl.* = .{
             .node = .{ .type = .EnumDecl, .loc = loc },
+            .name = name,
+            .variants = variants,
+        };
+        return decl;
+    }
+};
+
+/// Union variant (like enum with data)
+pub const UnionVariant = struct {
+    name: []const u8,
+    type_name: ?[]const u8, // Type of the variant's data
+};
+
+/// Union declaration (discriminated union)
+pub const UnionDecl = struct {
+    node: Node,
+    name: []const u8,
+    variants: []const UnionVariant,
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, variants: []const UnionVariant, loc: SourceLocation) !*UnionDecl {
+        const decl = try allocator.create(UnionDecl);
+        decl.* = .{
+            .node = .{ .type = .UnionDecl, .loc = loc },
             .name = name,
             .variants = variants,
         };

@@ -252,11 +252,21 @@ pub const Lexer = struct {
             ']' => self.makeToken(.RightBracket),
             ',' => self.makeToken(.Comma),
             '.' => if (self.match('.'))
-                (if (self.match('=')) self.makeToken(.DotDotEqual) else self.makeToken(.DotDot))
+                (if (self.match('.'))
+                    self.makeToken(.DotDotDot)
+                else if (self.match('='))
+                    self.makeToken(.DotDotEqual)
+                else
+                    self.makeToken(.DotDot))
             else self.makeToken(.Dot),
             ';' => self.makeToken(.Semicolon),
             ':' => self.makeToken(.Colon),
-            '?' => self.makeToken(.Question),
+            '?' => if (self.match('.'))
+                self.makeToken(.QuestionDot)
+            else if (self.match('?'))
+                self.makeToken(.QuestionQuestion)
+            else
+                self.makeToken(.Question),
             '@' => self.makeToken(.At),
             '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
             '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
@@ -268,7 +278,12 @@ pub const Lexer = struct {
             '>' => if (self.match('>')) self.makeToken(.RightShift) else if (self.match('=')) self.makeToken(.GreaterEqual) else self.makeToken(.Greater),
             '<' => if (self.match('<')) self.makeToken(.LeftShift) else if (self.match('=')) self.makeToken(.LessEqual) else self.makeToken(.Less),
             '&' => if (self.match('&')) self.makeToken(.AmpersandAmpersand) else self.makeToken(.Ampersand),
-            '|' => if (self.match('|')) self.makeToken(.PipePipe) else self.makeToken(.Pipe),
+            '|' => if (self.match('>'))
+                self.makeToken(.PipeGreater)
+            else if (self.match('|'))
+                self.makeToken(.PipePipe)
+            else
+                self.makeToken(.Pipe),
             '^' => self.makeToken(.Caret),
             else => self.makeToken(.Invalid),
         };

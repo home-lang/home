@@ -13,9 +13,12 @@ pub const TokenType = enum {
     Dot, // .
     DotDot, // ..
     DotDotEqual, // ..=
+    DotDotDot, // ...
     Semicolon, // ;
     Colon, // :
     Question, // ?
+    QuestionDot, // ?.
+    QuestionQuestion, // ??
     At, // @
 
     // One or two character tokens
@@ -42,6 +45,7 @@ pub const TokenType = enum {
     AmpersandAmpersand, // &&
     Pipe, // |
     PipePipe, // ||
+    PipeGreater, // |>
     Caret, // ^
     LeftShift, // <<
     RightShift, // >>
@@ -57,10 +61,16 @@ pub const TokenType = enum {
     Async,
     Await,
     Break,
+    Case,
+    Catch,
     Comptime,
     Const,
     Continue,
+    Default,
+    Defer,
+    Do,
     Else,
+    Finally,
     Enum,
     False,
     Fn,
@@ -76,8 +86,11 @@ pub const TokenType = enum {
     Or,
     Return,
     Struct,
+    Switch,
     True,
+    Try,
     Type,
+    Union,
     Unsafe,
     While,
 
@@ -97,9 +110,12 @@ pub const TokenType = enum {
             .Dot => ".",
             .DotDot => "..",
             .DotDotEqual => "..=",
+            .DotDotDot => "...",
             .Semicolon => ";",
             .Colon => ":",
             .Question => "?",
+            .QuestionDot => "?.",
+            .QuestionQuestion => "??",
             .At => "@",
             .Plus => "+",
             .PlusEqual => "+=",
@@ -124,6 +140,7 @@ pub const TokenType = enum {
             .AmpersandAmpersand => "&&",
             .Pipe => "|",
             .PipePipe => "||",
+            .PipeGreater => "|>",
             .Caret => "^",
             .LeftShift => "<<",
             .RightShift => ">>",
@@ -135,10 +152,16 @@ pub const TokenType = enum {
             .Async => "async",
             .Await => "await",
             .Break => "break",
+            .Case => "case",
+            .Catch => "catch",
             .Comptime => "comptime",
             .Const => "const",
             .Continue => "continue",
+            .Default => "default",
+            .Defer => "defer",
+            .Do => "do",
             .Else => "else",
+            .Finally => "finally",
             .Enum => "enum",
             .False => "false",
             .Fn => "fn",
@@ -154,8 +177,11 @@ pub const TokenType = enum {
             .Or => "or",
             .Return => "return",
             .Struct => "struct",
+            .Switch => "switch",
             .True => "true",
+            .Try => "try",
             .Type => "type",
+            .Union => "union",
             .Unsafe => "unsafe",
             .While => "while",
             .Eof => "eof",
@@ -201,10 +227,16 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "async", .Async },
     .{ "await", .Await },
     .{ "break", .Break },
+    .{ "case", .Case },
+    .{ "catch", .Catch },
     .{ "comptime", .Comptime },
     .{ "const", .Const },
     .{ "continue", .Continue },
+    .{ "default", .Default },
+    .{ "defer", .Defer },
+    .{ "do", .Do },
     .{ "else", .Else },
+    .{ "finally", .Finally },
     .{ "enum", .Enum },
     .{ "false", .False },
     .{ "fn", .Fn },
@@ -220,8 +252,11 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "or", .Or },
     .{ "return", .Return },
     .{ "struct", .Struct },
+    .{ "switch", .Switch },
     .{ "true", .True },
+    .{ "try", .Try },
     .{ "type", .Type },
+    .{ "union", .Union },
     .{ "unsafe", .Unsafe },
     .{ "while", .While },
 });
