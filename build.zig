@@ -326,6 +326,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_codegen_tests.step);
     test_step.dependOn(&run_database_tests.step);
 
+    // Parallel test runner with caching and benchmarking
+    const test_runner_exe = b.addExecutable(.{
+        .name = "ion-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/testing/src/test_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(test_runner_exe);
+
+    const run_test_runner = b.addRunArtifact(test_runner_exe);
+    if (b.args) |args| {
+        run_test_runner.addArgs(args);
+    }
+
+    const test_parallel_step = b.step("test-parallel", "Run all tests in parallel with caching");
+    test_parallel_step.dependOn(&run_test_runner.step);
+
     // Lexer benchmark suite
     const lexer_bench = b.addExecutable(.{
         .name = "lexer_bench",
