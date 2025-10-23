@@ -1211,10 +1211,10 @@ pub const Parser = struct {
         // Await expression
         if (self.match(&.{.Await})) {
             const await_token = self.previous();
-            const expression = try self.expression();
+            const awaited_expr = try self.expression();
             const await_expr = try ast.AwaitExpr.init(
                 self.allocator,
-                expression,
+                awaited_expr,
                 ast.SourceLocation.fromToken(await_token),
             );
             const expr = try self.allocator.create(ast.Expr);

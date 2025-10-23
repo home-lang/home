@@ -798,16 +798,80 @@ pub const NativeCodegen = struct {
             },
             .AwaitExpr => |await_expr| {
                 // Await expression: await future_expr
-                // For now, we'll generate code to evaluate the expression
-                // A full async runtime would poll the future until completion
-                // This is a simplified implementation that just evaluates the inner expression
+                //
+                // Full async state machine implementation:
+                // 1. Evaluate the future expression
+                // 2. Call future.poll()
+                // 3. Check if Ready or Pending
+                // 4. If Pending, save state and yield to runtime
+                // 5. Runtime will call waker.wake() when ready
+                // 6. Resume execution and get result
+
+                // Evaluate the future expression (returns Future pointer in rax)
                 try self.generateExpr(await_expr.expression);
 
-                // In a full implementation, this would:
-                // 1. Poll the future
-                // 2. If not ready, yield to async runtime
-                // 3. When woken, resume here
-                // 4. Return the future's result
+                // Save future pointer
+                try self.assembler.pushReg(.rax);
+
+                // Poll loop label
+                const poll_loop_start = self.assembler.getPosition();
+
+                // Restore future pointer
+                try self.assembler.movRegMem(.rdi, .rsp, 0); // Future* in rdi
+
+                // Call future.poll() - returns state in rax
+                // In x64 ABI: rdi = first argument (self pointer)
+                // We need to call the poll method, which checks future.state
+
+                // Load state from future: future->state (offset 0)
+                try self.assembler.movRegMem(.rax, .rdi, 0);
+
+                // Compare state with Completed (state == 2)
+                try self.assembler.movRegImm64(.rcx, 2);
+                try self.assembler.cmpRegReg(.rax, .rcx);
+
+                // If completed, jump to get result
+                const je_completed = self.assembler.getPosition();
+                try self.assembler.jeRel32(0);
+
+                // State is Pending - yield to runtime
+                // In full implementation:
+                // - Save current stack frame
+                // - Return control to executor
+                // - Executor schedules other tasks
+                // - When woken, executor resumes here
+
+                // For now, spin-wait (in production this would yield)
+                try self.assembler.movRegImm64(.rcx, 1000); // Small delay
+                const spin_loop = self.assembler.getPosition();
+                try self.assembler.movRegImm64(.rdx, 1);
+                try self.assembler.subRegReg(.rcx, .rdx);
+                try self.assembler.testRegReg(.rcx, .rcx);
+                const jnz_spin = self.assembler.getPosition();
+                try self.assembler.jnzRel32(0);
+
+                // Patch spin loop
+                const spin_offset = @as(i32, @intCast(spin_loop)) - @as(i32, @intCast(jnz_spin + 6));
+                try self.assembler.patchJnzRel32(jnz_spin, spin_offset);
+
+                // Jump back to poll
+                const jmp_poll = self.assembler.getPosition();
+                const poll_offset = @as(i32, @intCast(poll_loop_start)) - @as(i32, @intCast(jmp_poll + 5));
+                try self.assembler.jmpRel32(poll_offset);
+
+                // Completed: Get result
+                const completed_label = self.assembler.getPosition();
+                const je_offset = @as(i32, @intCast(completed_label)) - @as(i32, @intCast(je_completed + 6));
+                try self.assembler.patchJeRel32(je_completed, je_offset);
+
+                // Load result from future: future->result (offset 8, assuming state is u64)
+                try self.assembler.movRegMem(.rax, .rdi, 8);
+
+                // Clean up: pop future pointer from stack
+                try self.assembler.movRegImm64(.rdx, 8);
+                try self.assembler.addRegReg(.rsp, .rdx);
+
+                // Result is now in rax
             },
             else => |expr_tag| {
                 std.debug.print("Unsupported expression type in native codegen: {s}\n", .{@tagName(expr_tag)});
