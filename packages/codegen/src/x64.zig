@@ -235,4 +235,54 @@ pub const Assembler = struct {
         const offset = @as(i32, @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(current))));
         std.mem.writeInt(i32, self.code.items[pos..][0..4], offset, .little);
     }
+
+    /// test reg, reg (AND operation but only sets flags, doesn't store result)
+    pub fn testRegReg(self: *Assembler, left: Register, right: Register) !void {
+        // REX.W + 85 /r
+        try self.emitRex(true, right.needsRexPrefix(), false, left.needsRexPrefix());
+        try self.code.append(self.allocator, 0x85);
+        try self.emitModRM(0b11, @intFromEnum(right), @intFromEnum(left));
+    }
+
+    /// jz rel32 (jump if zero) - same as je
+    pub fn jzRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x84);
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// jnz rel32 (jump if not zero) - same as jne
+    pub fn jnzRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x85);
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// Patch a jz (je) rel32 instruction at a specific position
+    pub fn patchJzRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jz/je is 6 bytes: 0F 84 [rel32]
+        // The rel32 starts at pos + 2
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
+    /// Patch a jnz (jne) rel32 instruction at a specific position
+    pub fn patchJnzRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jnz/jne is 6 bytes: 0F 85 [rel32]
+        // The rel32 starts at pos + 2
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
+    /// Patch a jmp rel32 instruction at a specific position
+    pub fn patchJmpRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jmp is 5 bytes: E9 [rel32]
+        // The rel32 starts at pos + 1
+        std.mem.writeInt(i32, self.code.items[pos + 1 ..][0..4], offset, .little);
+    }
+
+    /// Patch a je rel32 instruction at a specific position
+    pub fn patchJeRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // je is 6 bytes: 0F 84 [rel32]
+        // The rel32 starts at pos + 2
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
 };
