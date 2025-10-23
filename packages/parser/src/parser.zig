@@ -533,6 +533,7 @@ pub const Parser = struct {
         if (self.match(&.{.Do})) return self.doWhileStatement();
         if (self.match(&.{.For})) return self.forStatement();
         if (self.match(&.{.Switch})) return self.switchStatement();
+        if (self.match(&.{.Match})) return self.matchStatement();
         if (self.match(&.{.Try})) return self.tryStatement();
         if (self.match(&.{.Defer})) return self.deferStatement();
         if (self.match(&.{.LeftBrace})) {
@@ -739,6 +740,277 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .SwitchStmt = stmt };
+    }
+
+    /// Parse a match statement with pattern matching
+    fn matchStatement(self: *Parser) !ast.Stmt {
+        const match_token = self.previous();
+
+        // Parse the value to match against
+        const value = try self.expression();
+        errdefer ast.Program.deinitExpr(value, self.allocator);
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after match value");
+
+        var arms = std.ArrayList(*ast.MatchArm){ .items = &.{}, .capacity = 0 };
+        defer arms.deinit(self.allocator);
+
+        // Parse match arms
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Parse pattern
+            const pattern = try self.parsePattern();
+
+            // Parse optional guard (if expression)
+            var guard: ?*ast.Expr = null;
+            if (self.match(&.{.If})) {
+                guard = try self.expression();
+            }
+
+            // Expect => arrow
+            _ = try self.expect(.EqualEqual, "Expected '=>' after match pattern");
+            if (!self.match(&.{.Greater})) {
+                try self.reportError("Expected '=>' after match pattern");
+                return error.UnexpectedToken;
+            }
+
+            // Parse arm body (just parse as expression, blocks are expressions too)
+            const body = try self.expression();
+
+            errdefer ast.Program.deinitExpr(body, self.allocator);
+
+            // Expect comma or closing brace
+            if (!self.check(.RightBrace)) {
+                _ = try self.expect(.Comma, "Expected ',' after match arm");
+            }
+
+            const arm = try ast.MatchArm.init(
+                self.allocator,
+                pattern,
+                guard,
+                body,
+                ast.SourceLocation.fromToken(match_token),
+            );
+
+            try arms.append(self.allocator, arm);
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after match arms");
+
+        const stmt = try ast.MatchStmt.init(
+            self.allocator,
+            value,
+            try arms.toOwnedSlice(self.allocator),
+            ast.SourceLocation.fromToken(match_token),
+        );
+
+        return ast.Stmt{ .MatchStmt = stmt };
+    }
+
+    /// Parse a pattern for match statements
+    fn parsePattern(self: *Parser) !*ast.Pattern {
+        const pattern = try self.allocator.create(ast.Pattern);
+        errdefer self.allocator.destroy(pattern);
+
+        // Integer literal pattern
+        if (self.match(&.{.Integer})) {
+            const token = self.previous();
+            const value = try std.fmt.parseInt(i64, token.lexeme, 10);
+            pattern.* = ast.Pattern{ .IntLiteral = value };
+            return pattern;
+        }
+
+        // Float literal pattern
+        if (self.match(&.{.Float})) {
+            const token = self.previous();
+            const value = try std.fmt.parseFloat(f64, token.lexeme);
+            pattern.* = ast.Pattern{ .FloatLiteral = value };
+            return pattern;
+        }
+
+        // String literal pattern
+        if (self.match(&.{.String})) {
+            const token = self.previous();
+            // Remove quotes from string
+            const str_value = if (token.lexeme.len >= 2)
+                token.lexeme[1 .. token.lexeme.len - 1]
+            else
+                token.lexeme;
+            pattern.* = ast.Pattern{ .StringLiteral = try self.allocator.dupe(u8, str_value) };
+            return pattern;
+        }
+
+        // Boolean literal pattern
+        if (self.match(&.{.True})) {
+            pattern.* = ast.Pattern{ .BoolLiteral = true };
+            return pattern;
+        }
+        if (self.match(&.{.False})) {
+            pattern.* = ast.Pattern{ .BoolLiteral = false };
+            return pattern;
+        }
+
+        // Wildcard pattern '_'
+        if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "_")) {
+            _ = self.advance();
+            pattern.* = ast.Pattern.Wildcard;
+            return pattern;
+        }
+
+        // Tuple pattern: (pattern1, pattern2, ...)
+        if (self.match(&.{.LeftParen})) {
+            var elements = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+            defer elements.deinit(self.allocator);
+
+            if (!self.check(.RightParen)) {
+                while (true) {
+                    const elem = try self.parsePattern();
+                    try elements.append(self.allocator, elem);
+
+                    if (!self.match(&.{.Comma})) break;
+                    if (self.check(.RightParen)) break; // Trailing comma
+                }
+            }
+
+            _ = try self.expect(.RightParen, "Expected ')' after tuple pattern");
+            pattern.* = ast.Pattern{ .Tuple = try elements.toOwnedSlice(self.allocator) };
+            return pattern;
+        }
+
+        // Array pattern: [pattern1, pattern2, ..rest]
+        if (self.match(&.{.LeftBracket})) {
+            var elements = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+            defer elements.deinit(self.allocator);
+            var rest: ?[]const u8 = null;
+
+            if (!self.check(.RightBracket)) {
+                while (true) {
+                    // Check for rest pattern ..name
+                    if (self.match(&.{.DotDot})) {
+                        const rest_name = try self.expect(.Identifier, "Expected identifier after '..'");
+                        rest = rest_name.lexeme;
+                        if (self.match(&.{.Comma})) {
+                            // More patterns after rest (error in most languages, but we'll allow it)
+                        }
+                        break;
+                    }
+
+                    const elem = try self.parsePattern();
+                    try elements.append(self.allocator, elem);
+
+                    if (!self.match(&.{.Comma})) break;
+                    if (self.check(.RightBracket)) break; // Trailing comma
+                }
+            }
+
+            _ = try self.expect(.RightBracket, "Expected ']' after array pattern");
+            pattern.* = ast.Pattern{
+                .Array = .{
+                    .elements = try elements.toOwnedSlice(self.allocator),
+                    .rest = rest,
+                },
+            };
+            return pattern;
+        }
+
+        // Range pattern: start..end or start..=end
+        // Check for identifier or number first
+        if (self.check(.Integer) or self.check(.Identifier)) {
+            const start_pos = self.current;
+
+            // Try to parse as range
+            const start_expr = try self.expression();
+
+            if (self.match(&.{.DotDot, .DotDotEqual})) {
+                const is_inclusive = self.previous().type == .DotDotEqual;
+                const end_expr = try self.expression();
+
+                pattern.* = ast.Pattern{
+                    .Range = .{
+                        .start = start_expr,
+                        .end = end_expr,
+                        .inclusive = is_inclusive,
+                    },
+                };
+                return pattern;
+            }
+
+            // Not a range, backtrack and parse as identifier or enum variant
+            self.current = start_pos;
+        }
+
+        // Identifier, Struct pattern, or Enum variant pattern
+        if (self.match(&.{.Identifier})) {
+            const name_token = self.previous();
+            const name = name_token.lexeme;
+
+            // Check if it's a struct pattern: Name { field1, field2: pattern }
+            if (self.match(&.{.LeftBrace})) {
+                var fields = std.ArrayList(ast.Pattern.FieldPattern){ .items = &.{}, .capacity = 0 };
+                defer fields.deinit(self.allocator);
+
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const field_name_token = try self.expect(.Identifier, "Expected field name");
+                    const field_name = field_name_token.lexeme;
+
+                    // field: pattern or just field (shorthand)
+                    var is_shorthand = false;
+                    const field_pattern = if (self.match(&.{.Colon}))
+                        try self.parsePattern()
+                    else blk: {
+                        // Shorthand: field is both the name and an identifier pattern
+                        is_shorthand = true;
+                        const id_pattern = try self.allocator.create(ast.Pattern);
+                        id_pattern.* = ast.Pattern{ .Identifier = field_name };
+                        break :blk id_pattern;
+                    };
+
+                    try fields.append(self.allocator, .{
+                        .name = field_name,
+                        .pattern = field_pattern,
+                        .shorthand = is_shorthand,
+                    });
+
+                    if (!self.match(&.{.Comma})) break;
+                }
+
+                _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+                pattern.* = ast.Pattern{
+                    .Struct = .{
+                        .name = name,
+                        .fields = try fields.toOwnedSlice(self.allocator),
+                    },
+                };
+                return pattern;
+            }
+
+            // Check if it's an enum variant: Variant(payload) or Variant
+            if (self.match(&.{.LeftParen})) {
+                const payload = if (!self.check(.RightParen))
+                    try self.parsePattern()
+                else
+                    null;
+
+                _ = try self.expect(.RightParen, "Expected ')' after enum variant");
+                pattern.* = ast.Pattern{
+                    .EnumVariant = .{
+                        .variant = name,
+                        .payload = payload,
+                    },
+                };
+                return pattern;
+            }
+
+            // Just an identifier pattern (variable binding)
+            pattern.* = ast.Pattern{ .Identifier = name };
+            return pattern;
+        }
+
+        // Or pattern: pattern1 | pattern2 | pattern3
+        // This is handled at a higher level by checking for '|' after parsing a pattern
+        // For now, we just parse a single pattern
+
+        try self.reportError("Expected pattern");
+        return error.UnexpectedToken;
     }
 
     /// Parse a try-catch-finally statement

@@ -50,6 +50,8 @@ pub const NodeType = enum {
     ForStmt,
     SwitchStmt,
     CaseClause,
+    MatchStmt,
+    MatchArm,
     TryStmt,
     CatchClause,
     DeferStmt,
@@ -595,6 +597,8 @@ pub const Expr = union(NodeType) {
     ForStmt: void,
     SwitchStmt: void,
     CaseClause: void,
+    MatchStmt: void,
+    MatchArm: void,
     TryStmt: void,
     CatchClause: void,
     DeferStmt: void,
@@ -783,6 +787,105 @@ pub const SwitchStmt = struct {
     }
 };
 
+/// Pattern matching statement
+/// match value {
+///     Pattern1 => expr1,
+///     Pattern2 if guard => expr2,
+///     _ => default
+/// }
+pub const MatchStmt = struct {
+    node: Node,
+    value: *Expr,
+    arms: []const *MatchArm,
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, arms: []const *MatchArm, loc: SourceLocation) !*MatchStmt {
+        const stmt = try allocator.create(MatchStmt);
+        stmt.* = .{
+            .node = .{ .type = .MatchStmt, .loc = loc },
+            .value = value,
+            .arms = arms,
+        };
+        return stmt;
+    }
+};
+
+/// Match arm with pattern and optional guard
+pub const MatchArm = struct {
+    node: Node,
+    pattern: *Pattern,
+    guard: ?*Expr, // Optional guard expression (if condition)
+    body: *Expr,   // Expression to evaluate if pattern matches
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        pattern: *Pattern,
+        guard: ?*Expr,
+        body: *Expr,
+        loc: SourceLocation,
+    ) !*MatchArm {
+        const arm = try allocator.create(MatchArm);
+        arm.* = .{
+            .node = .{ .type = .MatchArm, .loc = loc },
+            .pattern = pattern,
+            .guard = guard,
+            .body = body,
+        };
+        return arm;
+    }
+};
+
+/// Pattern for destructuring and matching
+pub const Pattern = union(enum) {
+    // Literal patterns
+    IntLiteral: i64,
+    FloatLiteral: f64,
+    StringLiteral: []const u8,
+    BoolLiteral: bool,
+
+    // Identifier pattern (binds variable)
+    Identifier: []const u8,
+
+    // Wildcard pattern (_)
+    Wildcard,
+
+    // Tuple pattern: (a, b, c)
+    Tuple: []const *Pattern,
+
+    // Array pattern: [a, b, c] or [head, ...tail]
+    Array: struct {
+        elements: []const *Pattern,
+        rest: ?[]const u8, // For spread pattern
+    },
+
+    // Struct pattern: Point { x, y } or Point { x: px, y: py }
+    Struct: struct {
+        name: []const u8,
+        fields: []const FieldPattern,
+    },
+
+    // Enum variant pattern: Some(value) or None
+    EnumVariant: struct {
+        variant: []const u8,
+        payload: ?*Pattern,
+    },
+
+    // Range pattern: 1..10 or 'a'..'z'
+    Range: struct {
+        start: *Expr,
+        end: *Expr,
+        inclusive: bool,
+    },
+
+    // Or pattern: A | B | C
+    Or: []const *Pattern,
+
+    pub const FieldPattern = struct {
+        name: []const u8,
+        pattern: *Pattern,
+        shorthand: bool, // true for { x } instead of { x: x }
+    };
+};
+
 /// Catch clause for try statement
 pub const CatchClause = struct {
     node: Node,
@@ -879,6 +982,8 @@ pub const Stmt = union(NodeType) {
     ForStmt: *ForStmt,
     SwitchStmt: *SwitchStmt,
     CaseClause: *CaseClause,
+    MatchStmt: *MatchStmt,
+    MatchArm: *MatchArm,
     TryStmt: *TryStmt,
     CatchClause: *CatchClause,
     DeferStmt: *DeferStmt,
