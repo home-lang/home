@@ -242,9 +242,252 @@ pub const ModernTest = struct {
             return false;
         }
 
+        pub fn toBeGreaterThanOrEqual(self: *Expect, threshold: anytype) !void {
+            const actual_num = self.getNumericValue();
+            const threshold_num = @as(f64, @floatFromInt(threshold));
+
+            if (self.not) {
+                if (actual_num >= threshold_num) {
+                    try self.fail("Expected value not to be greater than or equal", threshold, self.value);
+                }
+            } else {
+                if (actual_num < threshold_num) {
+                    try self.fail("Expected value to be greater than or equal", threshold, self.value);
+                }
+            }
+        }
+
+        pub fn toBeLessThanOrEqual(self: *Expect, threshold: anytype) !void {
+            const actual_num = self.getNumericValue();
+            const threshold_num = @as(f64, @floatFromInt(threshold));
+
+            if (self.not) {
+                if (actual_num <= threshold_num) {
+                    try self.fail("Expected value not to be less than or equal", threshold, self.value);
+                }
+            } else {
+                if (actual_num > threshold_num) {
+                    try self.fail("Expected value to be less than or equal", threshold, self.value);
+                }
+            }
+        }
+
+        pub fn toBeCloseTo(self: *Expect, expected: f64, precision: ?usize) !void {
+            const actual_num = self.getNumericValue();
+            const digits = precision orelse 2;
+            const factor = std.math.pow(f64, 10.0, @floatFromInt(digits));
+
+            const actual_rounded = @round(actual_num * factor) / factor;
+            const expected_rounded = @round(expected * factor) / factor;
+
+            const is_close = actual_rounded == expected_rounded;
+
+            if (self.not) {
+                if (is_close) {
+                    try self.fail("Expected value not to be close to", expected, self.value);
+                }
+            } else {
+                if (!is_close) {
+                    try self.fail("Expected value to be close to", expected, self.value);
+                }
+            }
+        }
+
+        pub fn toBeDefined(self: *Expect) !void {
+            const is_defined = switch (self.value) {
+                .null_value => false,
+                else => true,
+            };
+
+            if (self.not) {
+                if (is_defined) try self.fail("Expected value to be undefined", null, self.value);
+            } else {
+                if (!is_defined) try self.fail("Expected value to be defined", null, null);
+            }
+        }
+
+        pub fn toBeUndefined(self: *Expect) !void {
+            self.not = !self.not;
+            try self.toBeDefined();
+            self.not = !self.not;
+        }
+
+        pub fn toBeNaN(self: *Expect) !void {
+            const is_nan = switch (self.value) {
+                .float => |f| std.math.isNan(f),
+                else => false,
+            };
+
+            if (self.not) {
+                if (is_nan) try self.fail("Expected value not to be NaN", null, self.value);
+            } else {
+                if (!is_nan) try self.fail("Expected value to be NaN", null, self.value);
+            }
+        }
+
+        pub fn toBeInfinite(self: *Expect) !void {
+            const is_infinite = switch (self.value) {
+                .float => |f| std.math.isInf(f),
+                else => false,
+            };
+
+            if (self.not) {
+                if (is_infinite) try self.fail("Expected value not to be Infinite", null, self.value);
+            } else {
+                if (!is_infinite) try self.fail("Expected value to be Infinite", null, self.value);
+            }
+        }
+
+        pub fn toBePositive(self: *Expect) !void {
+            const num = self.getNumericValue();
+            const is_positive = num > 0;
+
+            if (self.not) {
+                if (is_positive) try self.fail("Expected value not to be positive", null, self.value);
+            } else {
+                if (!is_positive) try self.fail("Expected value to be positive", null, self.value);
+            }
+        }
+
+        pub fn toBeNegative(self: *Expect) !void {
+            const num = self.getNumericValue();
+            const is_negative = num < 0;
+
+            if (self.not) {
+                if (is_negative) try self.fail("Expected value not to be negative", null, self.value);
+            } else {
+                if (!is_negative) try self.fail("Expected value to be negative", null, self.value);
+            }
+        }
+
+        pub fn toBeZero(self: *Expect) !void {
+            const num = self.getNumericValue();
+            const is_zero = num == 0;
+
+            if (self.not) {
+                if (is_zero) try self.fail("Expected value not to be zero", null, self.value);
+            } else {
+                if (!is_zero) try self.fail("Expected value to be zero", null, self.value);
+            }
+        }
+
+        pub fn toBeEven(self: *Expect) !void {
+            const num = switch (self.value) {
+                .int => |i| i,
+                .uint => |u| @as(i64, @intCast(u)),
+                else => return error.InvalidType,
+            };
+            const is_even = @mod(num, 2) == 0;
+
+            if (self.not) {
+                if (is_even) try self.fail("Expected value not to be even", null, self.value);
+            } else {
+                if (!is_even) try self.fail("Expected value to be even", null, self.value);
+            }
+        }
+
+        pub fn toBeOdd(self: *Expect) !void {
+            self.not = !self.not;
+            try self.toBeEven();
+            self.not = !self.not;
+        }
+
+        pub fn toStartWith(self: *Expect, prefix: []const u8) !void {
+            const text = switch (self.value) {
+                .string => |s| s,
+                else => return error.InvalidType,
+            };
+
+            const starts_with = std.mem.startsWith(u8, text, prefix);
+
+            if (self.not) {
+                if (starts_with) {
+                    try self.fail("Expected value not to start with", prefix, self.value);
+                }
+            } else {
+                if (!starts_with) {
+                    try self.fail("Expected value to start with", prefix, self.value);
+                }
+            }
+        }
+
+        pub fn toEndWith(self: *Expect, suffix: []const u8) !void {
+            const text = switch (self.value) {
+                .string => |s| s,
+                else => return error.InvalidType,
+            };
+
+            const ends_with = std.mem.endsWith(u8, text, suffix);
+
+            if (self.not) {
+                if (ends_with) {
+                    try self.fail("Expected value not to end with", suffix, self.value);
+                }
+            } else {
+                if (!ends_with) {
+                    try self.fail("Expected value to end with", suffix, self.value);
+                }
+            }
+        }
+
+        pub fn toBeEmpty(self: *Expect) !void {
+            const is_empty = switch (self.value) {
+                .string => |s| s.len == 0,
+                .null_value => true,
+                else => false,
+            };
+
+            if (self.not) {
+                if (is_empty) try self.fail("Expected value not to be empty", null, self.value);
+            } else {
+                if (!is_empty) try self.fail("Expected value to be empty", null, self.value);
+            }
+        }
+
+        pub fn toBeBetween(self: *Expect, min: anytype, max: anytype) !void {
+            const num = self.getNumericValue();
+            const min_num = @as(f64, @floatFromInt(min));
+            const max_num = @as(f64, @floatFromInt(max));
+            const is_between = num >= min_num and num <= max_num;
+
+            if (self.not) {
+                if (is_between) {
+                    try self.fail("Expected value not to be between range", .{ min, max }, self.value);
+                }
+            } else {
+                if (!is_between) {
+                    try self.fail("Expected value to be between range", .{ min, max }, self.value);
+                }
+            }
+        }
+
+        pub fn toHaveBeenCalled(self: *Expect) !void {
+            // For mock/spy assertions - placeholder for now
+            _ = self;
+            return error.NotImplemented;
+        }
+
+        pub fn toHaveBeenCalledTimes(self: *Expect, times: usize) !void {
+            _ = self;
+            _ = times;
+            return error.NotImplemented;
+        }
+
+        pub fn toHaveBeenCalledWith(self: *Expect, args: anytype) !void {
+            _ = self;
+            _ = args;
+            return error.NotImplemented;
+        }
+
         pub fn toThrow(self: *Expect) !void {
             // Check if function throws
             _ = self;
+            return error.NotImplemented;
+        }
+
+        pub fn toThrowError(self: *Expect, error_type: anytype) !void {
+            _ = self;
+            _ = error_type;
             return error.NotImplemented;
         }
 
@@ -861,8 +1104,9 @@ pub fn expect(allocator: std.mem.Allocator, value: anytype, failures: *std.Array
     };
 }
 
-/// test - Convenient namespace for all testing functions
-pub const test = struct {
+/// t - Convenient namespace for all testing functions
+/// (Cannot use 'test' as it's a reserved keyword in Zig)
+pub const t = struct {
     pub usingnamespace struct {
         pub const describe = @import("modern_test.zig").describe;
         pub const it = @import("modern_test.zig").it;
