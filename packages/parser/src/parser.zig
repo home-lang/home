@@ -1208,6 +1208,20 @@ pub const Parser = struct {
 
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
+        // Await expression
+        if (self.match(&.{.Await})) {
+            const await_token = self.previous();
+            const expression = try self.expression();
+            const await_expr = try ast.AwaitExpr.init(
+                self.allocator,
+                expression,
+                ast.SourceLocation.fromToken(await_token),
+            );
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .AwaitExpr = await_expr };
+            return expr;
+        }
+
         // Check for invalid tokens and report them clearly
         if (self.peek().type == .Invalid) {
             const token = self.advance();

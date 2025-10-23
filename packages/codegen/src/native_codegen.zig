@@ -796,6 +796,19 @@ pub const NativeCodegen = struct {
                 // Return pointer to tuple start (current rsp)
                 try self.assembler.movRegReg(.rax, .rsp);
             },
+            .AwaitExpr => |await_expr| {
+                // Await expression: await future_expr
+                // For now, we'll generate code to evaluate the expression
+                // A full async runtime would poll the future until completion
+                // This is a simplified implementation that just evaluates the inner expression
+                try self.generateExpr(await_expr.expression);
+
+                // In a full implementation, this would:
+                // 1. Poll the future
+                // 2. If not ready, yield to async runtime
+                // 3. When woken, resume here
+                // 4. Return the future's result
+            },
             else => |expr_tag| {
                 std.debug.print("Unsupported expression type in native codegen: {s}\n", .{@tagName(expr_tag)});
                 return error.UnsupportedFeature;

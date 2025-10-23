@@ -30,6 +30,7 @@ pub const NodeType = enum {
     SafeNavExpr,
     TupleExpr,
     GenericTypeExpr,
+    AwaitExpr,
 
     // Statements
     LetDecl,
@@ -460,6 +461,21 @@ pub const GenericTypeExpr = struct {
     }
 };
 
+/// Await expression (await future_expr)
+pub const AwaitExpr = struct {
+    node: Node,
+    expression: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, expression: *Expr, loc: SourceLocation) !*AwaitExpr {
+        const expr = try allocator.create(AwaitExpr);
+        expr.* = .{
+            .node = .{ .type = .AwaitExpr, .loc = loc },
+            .expression = expression,
+        };
+        return expr;
+    }
+};
+
 /// Expression wrapper (tagged union)
 pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
@@ -484,6 +500,7 @@ pub const Expr = union(NodeType) {
     SafeNavExpr: *SafeNavExpr,
     TupleExpr: *TupleExpr,
     GenericTypeExpr: *GenericTypeExpr,
+    AwaitExpr: *AwaitExpr,
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
@@ -529,6 +546,7 @@ pub const Expr = union(NodeType) {
             .SafeNavExpr => |expr| expr.node.loc,
             .TupleExpr => |expr| expr.node.loc,
             .GenericTypeExpr => |expr| expr.node.loc,
+            .AwaitExpr => |expr| expr.node.loc,
             else => std.debug.panic("getLocation called on non-expression variant: {s}", .{@tagName(self)}),
         };
     }
@@ -761,6 +779,7 @@ pub const Stmt = union(NodeType) {
     SafeNavExpr: void,
     TupleExpr: void,
     GenericTypeExpr: void,
+    AwaitExpr: void,
 
     // Statement variants (order must match NodeType enum)
     LetDecl: *LetDecl,
