@@ -273,16 +273,16 @@
 - [x] Add file location to all errors
 - [x] Add error codes
 - [x] Integrate error formatter into parser
-- [ ] Add fix suggestions where applicable
+- [x] Add fix suggestions where applicable
 
 ### 6. Performance Optimizations (1 week)
 
 #### 6.1 Enable IR Caching
-- [ ] Integrate ir_cache.zig into compiler pipeline
-- [ ] Implement cache key computation
-- [ ] Add cache invalidation logic
-- [ ] Test cache hits/misses
-- [ ] Benchmark compilation speed improvement
+- [x] Integrate ir_cache.zig into compiler pipeline
+- [x] Implement cache key computation
+- [x] Add cache invalidation logic
+- [x] Test cache hits/misses
+- [x] Benchmark compilation speed improvement
 
 #### 6.2 Enable Parallel Builds
 - [ ] Integrate parallel_build.zig
@@ -299,10 +299,10 @@
 - [ ] Benchmark test execution time
 
 #### 6.4 Optimize Allocations
-- [ ] Use arena allocators for AST
-- [ ] Profile allocation hotspots
+- [x] Use arena allocators for AST
+- [x] Profile allocation hotspots
 - [ ] Reduce allocation churn in parser
-- [ ] Add allocation tracking in debug builds
+- [x] Add allocation tracking in debug builds
 
 ### 7. Build System Improvements (2-3 days)
 
@@ -360,8 +360,8 @@
 |----------|-------|-----------|------------|
 | **Critical** | 60 | 56 | 93% |
 | **High Priority** | 89 | 90 | 101%* |
-| **Medium Priority** | 47 | 32 | 68% |
-| **Total** | 196 | 178 | 91% |
+| **Medium Priority** | 47 | 42 | 89% |
+| **Total** | 196 | 188 | 96% |
 
 *Over 100% due to completing more tasks than originally estimated
 

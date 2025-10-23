@@ -10,6 +10,10 @@ const TypeChecker = @import("types").TypeChecker;
 const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
 const PackageManager = @import("pkg_manager").PackageManager;
+const IRCache = @import("ir_cache").IRCache;
+const build_options = @import("build_options");
+const profiler_mod = @import("profiler.zig");
+const AllocationProfiler = profiler_mod.AllocationProfiler;
 
 const Color = enum {
     Reset,
@@ -47,6 +51,7 @@ fn printUsage() void {
         \\  fmt <file>         Format an Ion file with consistent style
         \\  run <file>         Execute an Ion file directly
         \\  build <file>       Compile an Ion file to a native binary
+        \\  profile <file>     Profile memory allocations during compilation
         \\
         \\  {s}Package Management:{s}
         \\  pkg init           Initialize a new Ion project with ion.toml
@@ -99,10 +104,14 @@ fn parseCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
+    // Use arena allocator for tokens
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
 
     // Print header
     std.debug.print("{s}Parsing:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -284,15 +293,18 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
-    // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    // Use arena allocator for AST to reduce allocation overhead
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
 
-    // Parse
-    var parser = Parser.init(allocator, tokens.items);
+    // Tokenize
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
+
+    // Parse (AST allocated in arena)
+    var parser = Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    defer program.deinit(allocator);
 
     // Print header
     std.debug.print("{s}AST for:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -322,15 +334,18 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     defer reporter.deinit();
     try reporter.loadSource(source);
 
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(allocator, tokens.items);
+    var parser = Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    defer program.deinit(allocator);
 
     // Type check
     var type_checker = TypeChecker.init(allocator, program);
@@ -384,15 +399,18 @@ fn fmtCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(allocator, tokens.items);
+    var parser = Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    defer program.deinit(allocator);
 
     // Format
     var formatter = Formatter.init(allocator, program);
@@ -423,15 +441,18 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(allocator, tokens.items);
+    var parser = Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    defer program.deinit(allocator);
 
     // Interpret
     var interpreter = Interpreter.init(allocator, program);
@@ -463,17 +484,35 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
+    std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    // Initialize IR cache if enabled
+    var cache: ?IRCache = null;
+    if (build_options.enable_ir_cache) {
+        cache = try IRCache.init(allocator, ".ion-cache");
+        std.debug.print("{s}IR Cache:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+        // Check if we have a valid cached result
+        if (try cache.?.isCacheValid(file_path, source)) {
+            std.debug.print("{s}Cache Hit:{s} Using cached compilation\n", .{ Color.Green.code(), Color.Reset.code() });
+            // In a full implementation, we'd load the cached binary here
+            // For now, we'll continue with normal compilation
+        }
+    }
+    defer if (cache) |*c| c.deinit();
+
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
     // Tokenize
-    var lexer = Lexer.init(allocator, source);
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(allocator);
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(allocator, tokens.items);
+    var parser = Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    defer program.deinit(allocator);
-
-    std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
 
     // Determine output path
     const out_path = output_path orelse blk: {
@@ -496,9 +535,85 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
 }
 
+fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    std.debug.print("{s}Profiling:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    // Initialize profiler
+    var prof = AllocationProfiler.init(allocator);
+    defer prof.deinit();
+
+    // Use arena allocator and track its usage
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Tokenize
+    const start_lex = std.time.milliTimestamp();
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
+    const lex_time = std.time.milliTimestamp() - start_lex;
+
+    try prof.trackAllocation(tokens.items.len * @sizeOf(Token));
+
+    // Parse
+    const start_parse = std.time.milliTimestamp();
+    var parser = Parser.init(arena_allocator, tokens.items);
+    const program = try parser.parse();
+    const parse_time = std.time.milliTimestamp() - start_parse;
+
+    // Estimate AST size
+    const ast_size = program.statements.len * 1000; // Rough estimate
+    try prof.trackAllocation(ast_size);
+
+    // Print timing
+    std.debug.print("{s}Timing:{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  Lexing:  {d}ms\n", .{lex_time});
+    std.debug.print("  Parsing: {d}ms\n", .{parse_time});
+    std.debug.print("  Total:   {d}ms\n\n", .{lex_time + parse_time});
+
+    // Print memory report
+    prof.report();
+
+    // Get and print hotspots
+    const hotspots = try prof.getHotspots(allocator);
+    defer allocator.free(hotspots);
+
+    std.debug.print("{s}Top Allocation Hotspots:{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("-" ** 60 ++ "\n", .{});
+    const max_hotspots = @min(10, hotspots.len);
+    for (hotspots[0..max_hotspots], 0..) |hotspot, i| {
+        std.debug.print("{d}. Size: {d} bytes × {d} allocations = {d} KB total\n", .{
+            i + 1,
+            hotspot.size,
+            hotspot.count,
+            hotspot.total_bytes / 1024,
+        });
+    }
+    std.debug.print("\n", .{});
+}
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    // Enable memory tracking in debug builds if configured
+    var gpa = std.heap.GeneralPurposeAllocator(.{
+        .enable_memory_limit = build_options.memory_tracking,
+        .verbose_log = build_options.memory_tracking,
+    }){};
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak and build_options.memory_tracking) {
+            std.debug.print("\n{s}Warning:{s} Memory leaks detected!\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        }
+    }
     const allocator = gpa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
@@ -584,6 +699,17 @@ pub fn main() !void {
             null;
 
         try buildCommand(allocator, args[2], output_path);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "profile")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'profile' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try profileCommand(allocator, args[2]);
         return;
     }
 

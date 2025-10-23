@@ -49,6 +49,7 @@ pub fn build(b: *std.Build) void {
     const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize);
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize);
+    const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -86,6 +87,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     exe.root_module.addImport("queue", queue_pkg);
     exe.root_module.addImport("database", database_pkg);
+    exe.root_module.addImport("ir_cache", cache_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();

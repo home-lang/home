@@ -266,7 +266,27 @@ pub const ErrorFormatter = struct {
             error.InvalidPattern => "invalid pattern",
         };
 
-        return self.formatError(file, line, column, message, source_line, null, null);
+        const suggestion = switch (err) {
+            error.UnterminatedString => "add closing quote",
+            error.UnterminatedComment => "add closing */",
+            error.MissingClosingBrace => "add } to close the block",
+            error.MissingClosingParen => "add ) to close the expression",
+            error.MissingSemicolon => "add ; at the end of the statement",
+            error.TypeMismatch => "ensure the value matches the expected type",
+            error.UndefinedVariable => "check spelling or declare the variable first",
+            error.UndefinedFunction => "check spelling or import the required module",
+            error.ImmutableAssignment => "declare variable as 'let mut' to allow mutation",
+            error.UseBeforeInitialization => "initialize the variable before use",
+            error.MissingReturnStatement => "add 'return' statement to all code paths",
+            error.TooManyArguments => "remove extra arguments",
+            error.TooFewArguments => "add missing arguments",
+            error.NonExhaustiveMatch => "add missing match arms or use '_' catch-all",
+            error.DuplicateDefinition => "rename one of the definitions or remove duplicate",
+            error.CircularDependency => "break the dependency cycle by restructuring code",
+            else => null,
+        };
+
+        return self.formatError(file, line, column, message, source_line, null, suggestion);
     }
 
     pub fn runtimeError(

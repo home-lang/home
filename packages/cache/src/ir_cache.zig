@@ -1,5 +1,4 @@
 const std = @import("std");
-const ast = @import("../ast/ast.zig");
 
 /// Intermediate Representation for caching
 pub const IR = struct {
@@ -139,7 +138,6 @@ pub const IRCache = struct {
     }
 
     fn getCacheKey(self: *IRCache, file_path: []const u8) ![]const u8 {
-        _ = self;
         // Use basename as cache key
         const basename = std.fs.path.basename(file_path);
         // Remove .ion extension
@@ -181,10 +179,14 @@ pub const IRCache = struct {
         const file = try std.fs.cwd().openFile(cache_path, .{});
         defer file.close();
 
-        const source_hash = try file.reader().readInt(u64, .little);
-        const timestamp = try file.reader().readInt(i64, .little);
-        const ast_len = try file.reader().readInt(u64, .little);
-        const type_len = try file.reader().readInt(u64, .little);
+        // Read metadata (4 x u64/i64 = 32 bytes)
+        var metadata: [32]u8 = undefined;
+        _ = try file.readAll(&metadata);
+
+        const source_hash = std.mem.readInt(u64, metadata[0..8], .little);
+        const timestamp = std.mem.readInt(i64, metadata[8..16], .little);
+        const ast_len = std.mem.readInt(u64, metadata[16..24], .little);
+        const type_len = std.mem.readInt(u64, metadata[24..32], .little);
 
         const ast_data = try self.allocator.alloc(u8, ast_len);
         errdefer self.allocator.free(ast_data);
