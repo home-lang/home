@@ -1,37 +1,87 @@
 const std = @import("std");
 pub const sqlite = @import("sqlite.zig");
 
-// Re-export main types for convenience
+// Re-export main SQLite types for convenience
+/// Database connection handle
 pub const Connection = sqlite.Connection;
+/// Prepared SQL statement
 pub const Statement = sqlite.Statement;
+/// Result row from a query
 pub const Row = sqlite.Row;
+/// Query result set
 pub const QueryResult = sqlite.QueryResult;
+/// Database operation errors
 pub const DatabaseError = sqlite.DatabaseError;
 
-/// Query type enumeration
+/// SQL query types supported by the query builder.
 pub const QueryType = enum {
+    /// SELECT query for reading data
     Select,
+    /// INSERT query for adding rows
     Insert,
+    /// UPDATE query for modifying rows
     Update,
+    /// DELETE query for removing rows
     Delete,
 };
 
-/// Database query builder
+/// Fluent SQL query builder for type-safe database queries.
+///
+/// The QueryBuilder provides a chainable API for constructing SQL queries
+/// without writing raw SQL strings. This helps prevent SQL injection and
+/// provides a more ergonomic interface.
+///
+/// Features:
+/// - Method chaining for readable query construction
+/// - Type-safe query building
+/// - Automatic SQL generation
+/// - Support for all common SQL clauses (WHERE, ORDER BY, LIMIT, etc.)
+///
+/// Example:
+/// ```zig
+/// var builder = QueryBuilder.init(allocator);
+/// defer builder.deinit();
+///
+/// const query = try builder
+///     .from("users")
+///     .select(&.{"name", "email"})
+///     .where("age > ?")
+///     .orderBy("name ASC")
+///     .limit(10)
+///     .build();
+/// ```
 pub const QueryBuilder = struct {
+    /// Memory allocator for query components
     allocator: std.mem.Allocator,
+    /// Type of SQL query being built
     query_type: QueryType,
+    /// Target table name
     table: ?[]const u8,
+    /// Fields to select (SELECT queries)
     select_fields: std.ArrayList([]const u8),
+    /// WHERE clause conditions
     where_conditions: std.ArrayList([]const u8),
+    /// ORDER BY clause
     order_by: ?[]const u8,
+    /// LIMIT value (max rows)
     limit_value: ?usize,
+    /// OFFSET value (skip rows)
     offset_value: ?usize,
-    // For INSERT
+    // For INSERT queries
+    /// Column names for INSERT
     insert_columns: std.ArrayList([]const u8),
+    /// Values for INSERT
     insert_values: std.ArrayList([]const u8),
-    // For UPDATE
+    // For UPDATE queries
+    /// SET clauses for UPDATE
     update_sets: std.ArrayList([]const u8),
 
+    /// Create a new query builder.
+    ///
+    /// Parameters:
+    ///   - allocator: Allocator for query components
+    ///
+    /// Returns: Initialized QueryBuilder (defaults to SELECT)
     pub fn init(allocator: std.mem.Allocator) QueryBuilder {
         return .{
             .allocator = allocator,
@@ -48,6 +98,9 @@ pub const QueryBuilder = struct {
         };
     }
 
+    /// Clean up query builder resources.
+    ///
+    /// Frees all allocated query component lists.
     pub fn deinit(self: *QueryBuilder) void {
         self.select_fields.deinit(self.allocator);
         self.where_conditions.deinit(self.allocator);
@@ -56,23 +109,53 @@ pub const QueryBuilder = struct {
         self.update_sets.deinit(self.allocator);
     }
 
+    /// Set the source table for a SELECT query.
+    ///
+    /// Parameters:
+    ///   - table_name: Name of the table to query
+    ///
+    /// Returns: Self for method chaining
     pub fn from(self: *QueryBuilder, table_name: []const u8) *QueryBuilder {
         self.table = table_name;
         return self;
     }
 
+    /// Set the target table for an INSERT query.
+    ///
+    /// Changes query type to INSERT and sets the table.
+    ///
+    /// Parameters:
+    ///   - table_name: Name of the table to insert into
+    ///
+    /// Returns: Self for method chaining
     pub fn into(self: *QueryBuilder, table_name: []const u8) *QueryBuilder {
         self.query_type = .Insert;
         self.table = table_name;
         return self;
     }
 
+    /// Set the target table for an UPDATE query.
+    ///
+    /// Changes query type to UPDATE and sets the table.
+    ///
+    /// Parameters:
+    ///   - table_name: Name of the table to update
+    ///
+    /// Returns: Self for method chaining
     pub fn update(self: *QueryBuilder, table_name: []const u8) *QueryBuilder {
         self.query_type = .Update;
         self.table = table_name;
         return self;
     }
 
+    /// Set the target table for a DELETE query.
+    ///
+    /// Changes query type to DELETE and sets the table.
+    ///
+    /// Parameters:
+    ///   - table_name: Name of the table to delete from
+    ///
+    /// Returns: Self for method chaining
     pub fn deleteFrom(self: *QueryBuilder, table_name: []const u8) *QueryBuilder {
         self.query_type = .Delete;
         self.table = table_name;

@@ -3,6 +3,7 @@ const ast = @import("ast");
 pub const Value = @import("value.zig").Value;
 const FunctionValue = @import("value.zig").FunctionValue;
 const Environment = @import("environment.zig").Environment;
+pub const Debugger = @import("debugger.zig").Debugger;
 
 pub const InterpreterError = error{
     RuntimeError,
@@ -41,6 +42,9 @@ pub const Interpreter = struct {
     global_env: Environment,
     program: *const ast.Program,
     return_value: ?Value,
+    debugger: ?*Debugger,
+    debug_enabled: bool,
+    source_file: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Interpreter {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -52,7 +56,24 @@ pub const Interpreter = struct {
             .global_env = Environment.init(arena_allocator, null),
             .program = program,
             .return_value = null,
+            .debugger = null,
+            .debug_enabled = false,
+            .source_file = "",
         };
+    }
+
+    /// Initialize interpreter with debug support
+    pub fn initWithDebug(
+        allocator: std.mem.Allocator,
+        program: *const ast.Program,
+        debugger: *Debugger,
+        source_file: []const u8,
+    ) Interpreter {
+        var interpreter = init(allocator, program);
+        interpreter.debugger = debugger;
+        interpreter.debug_enabled = true;
+        interpreter.source_file = source_file;
+        return interpreter;
     }
 
     pub fn deinit(self: *Interpreter) void {

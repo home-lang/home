@@ -1,4 +1,7 @@
 const std = @import("std");
+const auth_mod = @import("auth.zig");
+pub const AuthManager = auth_mod.AuthManager;
+pub const AuthToken = auth_mod.AuthToken;
 
 /// Package manager for Ion
 pub const PackageManager = struct {
@@ -7,6 +10,7 @@ pub const PackageManager = struct {
     lock_file: ?*LockFile,
     cache_dir: []const u8,
     registry_url: []const u8,
+    auth_manager: ?*AuthManager,
 
     pub const DEFAULT_REGISTRY = "https://packages.ion-lang.org";
     pub const DEFAULT_CACHE_DIR = ".ion/cache";
@@ -49,12 +53,17 @@ pub const PackageManager = struct {
             return last_err orelse error.NoConfigFile;
         }
 
+        // Initialize auth manager
+        const auth_manager = try allocator.create(AuthManager);
+        auth_manager.* = try AuthManager.init(allocator, DEFAULT_REGISTRY);
+
         pm.* = .{
             .allocator = allocator,
             .config = config.?,
             .lock_file = null,
             .cache_dir = DEFAULT_CACHE_DIR,
             .registry_url = DEFAULT_REGISTRY,
+            .auth_manager = auth_manager,
         };
 
         // Try to load lockfile
@@ -68,7 +77,43 @@ pub const PackageManager = struct {
         if (self.lock_file) |lock| {
             lock.deinit();
         }
+        if (self.auth_manager) |auth| {
+            auth.deinit();
+            self.allocator.destroy(auth);
+        }
         self.allocator.destroy(self);
+    }
+
+    /// Login to package registry
+    pub fn login(self: *PackageManager, registry: ?[]const u8, username: ?[]const u8, token: ?[]const u8) !void {
+        const auth = self.auth_manager orelse return error.AuthNotInitialized;
+        try auth.login(registry, username, token);
+    }
+
+    /// Logout from package registry
+    pub fn logout(self: *PackageManager, registry: ?[]const u8) !void {
+        const auth = self.auth_manager orelse return error.AuthNotInitialized;
+        try auth.logout(registry);
+    }
+
+    /// Check if authenticated to registry
+    pub fn isAuthenticated(self: *PackageManager, registry: ?[]const u8) bool {
+        const auth = self.auth_manager orelse return false;
+        const reg = registry orelse self.registry_url;
+        return auth.isAuthenticated(reg);
+    }
+
+    /// Get authentication token for registry
+    pub fn getAuthToken(self: *PackageManager, registry: ?[]const u8) ?AuthToken {
+        const auth = self.auth_manager orelse return null;
+        const reg = registry orelse self.registry_url;
+        return auth.getToken(reg);
+    }
+
+    /// List authenticated registries
+    pub fn listAuthenticatedRegistries(self: *PackageManager) ![][]const u8 {
+        const auth = self.auth_manager orelse return error.AuthNotInitialized;
+        return auth.listAuthenticated();
     }
 
     /// Add a dependency to ion.toml

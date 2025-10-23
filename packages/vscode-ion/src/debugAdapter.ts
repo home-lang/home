@@ -31,14 +31,45 @@ interface AttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     trace?: boolean;
 }
 
+interface DebuggerState {
+    stackFrames: StackFrameData[];
+    variables: Map<number, VariableData[]>;
+    currentLine: number;
+    currentFile: string;
+}
+
+interface StackFrameData {
+    id: number;
+    name: string;
+    file: string;
+    line: number;
+    column: number;
+    environmentId: number;
+}
+
+interface VariableData {
+    name: string;
+    value: string;
+    type: string;
+    variablesReference: number;
+}
+
 export class IonDebugSession extends LoggingDebugSession {
     private static THREAD_ID = 1;
 
-    private _variableHandles = new Handles<string>();
+    private _variableHandles = new Handles<VariableData[]>();
+    private _scopeHandles = new Handles<number>(); // Maps to environment/frame ID
     private _ionProcess: ChildProcess | undefined;
     private _breakpoints = new Map<string, DebugProtocol.Breakpoint[]>();
     private _profilerEnabled = false;
     private _profilerData: any[] = [];
+    private _debuggerState: DebuggerState = {
+        stackFrames: [],
+        variables: new Map(),
+        currentLine: 0,
+        currentFile: ''
+    };
+    private _debugOutputBuffer: string = '';
 
     public constructor() {
         super("ion-debug.txt");
@@ -158,9 +189,21 @@ export class IonDebugSession extends LoggingDebugSession {
         });
 
         this._ionProcess.stdout?.on('data', (data) => {
-            this.sendEvent(new OutputEvent(data.toString(), 'stdout'));
+            const output = data.toString();
+
+            // Parse debug messages from Ion runtime
+            this.parseDebugOutput(output);
+
+            // Send regular output to console
+            const lines = output.split('\n');
+            for (const line of lines) {
+                if (!line.startsWith('[DEBUG]')) {
+                    this.sendEvent(new OutputEvent(line + '\n', 'stdout'));
+                }
+            }
+
             if (this._profilerEnabled) {
-                this.collectProfilerData(data.toString());
+                this.collectProfilerData(output);
             }
         });
 
@@ -262,20 +305,40 @@ export class IonDebugSession extends LoggingDebugSession {
         const startFrame = typeof args.startFrame === 'number' ? args.startFrame : 0;
         const maxLevels = typeof args.levels === 'number' ? args.levels : 1000;
 
-        // Return a dummy stack frame for now
-        const frames: StackFrame[] = [
-            new StackFrame(
+        // Get real stack frames from debugger state
+        const allFrames = this._debuggerState.stackFrames;
+        const frames: StackFrame[] = [];
+
+        const endFrame = Math.min(startFrame + maxLevels, allFrames.length);
+        for (let i = startFrame; i < endFrame; i++) {
+            const frameData = allFrames[i];
+            const frame = new StackFrame(
+                frameData.id,
+                frameData.name,
+                new Source(path.basename(frameData.file), frameData.file),
+                frameData.line,
+                frameData.column
+            );
+            frames.push(frame);
+        }
+
+        // If no frames from debugger, show at least current location
+        if (frames.length === 0 && this._debuggerState.currentFile) {
+            frames.push(new StackFrame(
                 0,
                 'main',
-                new Source('main.ion', 'main.ion'),
-                1,
+                new Source(
+                    path.basename(this._debuggerState.currentFile),
+                    this._debuggerState.currentFile
+                ),
+                this._debuggerState.currentLine || 1,
                 0
-            )
-        ];
+            ));
+        }
 
         response.body = {
             stackFrames: frames,
-            totalFrames: frames.length
+            totalFrames: allFrames.length || frames.length
         };
         this.sendResponse(response);
     }
@@ -284,12 +347,17 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.ScopesResponse,
         args: DebugProtocol.ScopesArguments
     ): void {
-        response.body = {
-            scopes: [
-                new Scope("Local", this._variableHandles.create("local"), false),
-                new Scope("Global", this._variableHandles.create("global"), true)
-            ]
-        };
+        const frameId = args.frameId;
+        const scopes: DebugProtocol.Scope[] = [];
+
+        // Create scope handles for this frame
+        const localScopeHandle = this._scopeHandles.create(frameId);
+        const globalScopeHandle = this._scopeHandles.create(-1); // -1 for global
+
+        scopes.push(new Scope("Local", localScopeHandle, false));
+        scopes.push(new Scope("Global", globalScopeHandle, true));
+
+        response.body = { scopes };
         this.sendResponse(response);
     }
 
@@ -297,30 +365,36 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.VariablesResponse,
         args: DebugProtocol.VariablesArguments
     ): void {
-        const variables: DebugProtocol.Variable[] = [];
-        const id = this._variableHandles.get(args.variablesReference);
+        let variables: DebugProtocol.Variable[] = [];
 
-        if (id === 'local') {
-            // Return local variables
-            variables.push({
-                name: 'i',
-                type: 'integer',
-                value: '42',
-                variablesReference: 0
-            });
-        } else if (id === 'global') {
-            // Return global variables
-            variables.push({
-                name: 'version',
-                type: 'string',
-                value: '"1.0.0"',
-                variablesReference: 0
-            });
+        // Check if this is a scope handle or variable handle
+        const scopeFrameId = this._scopeHandles.get(args.variablesReference);
+
+        if (scopeFrameId !== undefined) {
+            // This is a scope request - get variables for this frame
+            const frameVars = this._debuggerState.variables.get(scopeFrameId);
+            if (frameVars) {
+                variables = frameVars.map(v => ({
+                    name: v.name,
+                    type: v.type,
+                    value: v.value,
+                    variablesReference: v.variablesReference
+                }));
+            }
+        } else {
+            // This is a structured variable request
+            const varData = this._variableHandles.get(args.variablesReference);
+            if (varData) {
+                variables = varData.map(v => ({
+                    name: v.name,
+                    type: v.type,
+                    value: v.value,
+                    variablesReference: v.variablesReference
+                }));
+            }
         }
 
-        response.body = {
-            variables: variables
-        };
+        response.body = { variables };
         this.sendResponse(response);
     }
 
@@ -424,6 +498,142 @@ export class IonDebugSession extends LoggingDebugSession {
         fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
         this.sendEvent(new OutputEvent(`Profiler report saved to ${reportPath}\n`, 'console'));
+    }
+
+    /**
+     * Parse debug output from Ion runtime
+     *
+     * Expected format from Zig debugger:
+     * [DEBUG] Breakpoint hit at file.ion:42
+     * [DEBUG] STACK: {"frames":[...]}
+     * [DEBUG] VARS: {"frameId":0,"variables":[...]}
+     */
+    private parseDebugOutput(output: string) {
+        this._debugOutputBuffer += output;
+
+        const lines = this._debugOutputBuffer.split('\n');
+        this._debugOutputBuffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+            if (!line.startsWith('[DEBUG]')) continue;
+
+            const debugMsg = line.substring(7).trim();
+
+            // Parse breakpoint hit
+            if (debugMsg.startsWith('Breakpoint hit at')) {
+                const match = debugMsg.match(/Breakpoint hit at (.+):(\d+)/);
+                if (match) {
+                    this._debuggerState.currentFile = match[1];
+                    this._debuggerState.currentLine = parseInt(match[2], 10);
+                    this.sendEvent(new StoppedEvent('breakpoint', IonDebugSession.THREAD_ID));
+                }
+            }
+            // Parse stack trace
+            else if (debugMsg.startsWith('STACK:')) {
+                try {
+                    const jsonData = debugMsg.substring(6).trim();
+                    const stackData = JSON.parse(jsonData);
+                    this._debuggerState.stackFrames = stackData.frames.map((f: any, idx: number) => ({
+                        id: idx,
+                        name: f.name || 'anonymous',
+                        file: f.file || '',
+                        line: f.line || 0,
+                        column: f.column || 0,
+                        environmentId: f.environmentId || idx
+                    }));
+                } catch (e) {
+                    this.sendEvent(new OutputEvent(`Failed to parse stack trace: ${e}\n`, 'stderr'));
+                }
+            }
+            // Parse variables
+            else if (debugMsg.startsWith('VARS:')) {
+                try {
+                    const jsonData = debugMsg.substring(5).trim();
+                    const varsData = JSON.parse(jsonData);
+                    const frameId = varsData.frameId || 0;
+
+                    const variables: VariableData[] = varsData.variables.map((v: any) => ({
+                        name: v.name,
+                        value: this.formatValue(v.value, v.type),
+                        type: v.type || 'unknown',
+                        variablesReference: this.createVariableReference(v.value, v.type)
+                    }));
+
+                    this._debuggerState.variables.set(frameId, variables);
+                } catch (e) {
+                    this.sendEvent(new OutputEvent(`Failed to parse variables: ${e}\n`, 'stderr'));
+                }
+            }
+            // Parse step completed
+            else if (debugMsg.startsWith('Step completed')) {
+                this.sendEvent(new StoppedEvent('step', IonDebugSession.THREAD_ID));
+            }
+            // Parse program entry
+            else if (debugMsg.startsWith('Stopped on entry')) {
+                this.sendEvent(new StoppedEvent('entry', IonDebugSession.THREAD_ID));
+            }
+            // Parse exceptions
+            else if (debugMsg.startsWith('Exception:')) {
+                const exceptionMsg = debugMsg.substring(10).trim();
+                this.sendEvent(new OutputEvent(`Exception: ${exceptionMsg}\n`, 'stderr'));
+                this.sendEvent(new StoppedEvent('exception', IonDebugSession.THREAD_ID));
+            }
+        }
+    }
+
+    /**
+     * Format a value for display
+     */
+    private formatValue(value: any, type: string): string {
+        if (value === null || value === undefined) {
+            return 'void';
+        }
+
+        switch (type) {
+            case 'Int':
+                return value.toString();
+            case 'Float':
+                return value.toFixed(2);
+            case 'Bool':
+                return value ? 'true' : 'false';
+            case 'String':
+                return `"${value}"`;
+            case 'Array':
+                if (Array.isArray(value)) {
+                    return `[${value.length} elements]`;
+                }
+                return '[Array]';
+            case 'Struct':
+                return `{${Object.keys(value || {}).join(', ')}}`;
+            case 'Function':
+                return `<function>`;
+            default:
+                return String(value);
+        }
+    }
+
+    /**
+     * Create variable reference for structured types
+     */
+    private createVariableReference(value: any, type: string): number {
+        if (type === 'Array' && Array.isArray(value)) {
+            const children: VariableData[] = value.map((v, idx) => ({
+                name: `[${idx}]`,
+                value: this.formatValue(v.value, v.type),
+                type: v.type || 'unknown',
+                variablesReference: 0
+            }));
+            return this._variableHandles.create(children);
+        } else if (type === 'Struct' && typeof value === 'object') {
+            const children: VariableData[] = Object.entries(value).map(([key, v]: [string, any]) => ({
+                name: key,
+                value: this.formatValue(v.value, v.type),
+                type: v.type || 'unknown',
+                variablesReference: 0
+            }));
+            return this._variableHandles.create(children);
+        }
+        return 0;
     }
 }
 

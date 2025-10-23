@@ -337,18 +337,26 @@
 - [x] Remove TODO comment (feature implemented via desugaring)
 
 #### 8.2 Debug Adapter Real Implementation
-- [ ] Remove hard-coded dummy stack frames
-- [ ] Remove hard-coded dummy variables
-- [ ] Implement real DAP communication with Ion runtime
-- [ ] Add actual breakpoint handling
-- [ ] Add actual variable inspection
-- [ ] Test with real Ion programs
+- [x] Remove hard-coded dummy stack frames
+- [x] Remove hard-coded dummy variables
+- [x] Implement real DAP communication with Ion runtime
+- [x] Add actual breakpoint handling
+- [x] Add actual variable inspection
+- [x] Created debugger.zig interface for interpreter
+- [x] Updated debugAdapter.ts with real stack frame handling
+- [x] Implemented JSON protocol parsing for debug messages
+- [ ] Test with real Ion programs (requires CLI integration)
 
 #### 8.3 Package Manager Authentication
-- [ ] Implement registry authentication
-- [ ] Add token storage
-- [ ] Add login/logout commands
-- [ ] Secure token handling
+- [x] Implement registry authentication
+- [x] Add token storage (secure ~/.ion/auth.json with 0600 permissions)
+- [x] Add login command (`ion pkg login`)
+- [x] Add logout command (`ion pkg logout`)
+- [x] Add whoami command (`ion pkg whoami`)
+- [x] Secure token handling with file permissions
+- [x] Token expiry checking
+- [x] Support for environment variable (ION_TOKEN)
+- [x] Multiple registry support
 
 ---
 

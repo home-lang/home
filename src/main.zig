@@ -63,6 +63,9 @@ fn printUsage() void {
         \\  pkg tree           Show dependency tree
         \\  pkg run <script>   Run a package script
         \\  pkg scripts        List all available scripts
+        \\  pkg login          Login to package registry
+        \\  pkg logout         Logout from package registry
+        \\  pkg whoami         Show authenticated user
         \\
         \\  help               Display this help message
         \\
@@ -737,6 +740,21 @@ fn pkgCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
         return;
     }
 
+    if (std.mem.eql(u8, subcmd, "login")) {
+        try pkgLogin(allocator, args[1..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "logout")) {
+        try pkgLogout(allocator, args[1..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "whoami")) {
+        try pkgWhoami(allocator);
+        return;
+    }
+
     if (std.mem.eql(u8, subcmd, "add")) {
         if (args.len < 2) {
             std.debug.print("{s}Error:{s} 'pkg add' requires a package specifier\n", .{ Color.Red.code(), Color.Reset.code() });
@@ -1011,4 +1029,162 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
     std.debug.print("\n{s}Tip:{s} Define custom scripts in ion.toml [scripts] section\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     _ = allocator;
+}
+
+/// Login to package registry
+fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    std.debug.print("{s}Login to Ion Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    // Parse optional arguments
+    var registry: ?[]const u8 = null;
+    var username: ?[]const u8 = null;
+    var token: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--registry") and i + 1 < args.len) {
+            registry = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--username") and i + 1 < args.len) {
+            username = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--token") and i + 1 < args.len) {
+            token = args[i + 1];
+            i += 1;
+        }
+    }
+
+    // Check for token in environment variable
+    if (token == null) {
+        if (std.os.getenv("ION_TOKEN")) |env_token| {
+            token = env_token;
+            std.debug.print("{s}Using token from ION_TOKEN environment variable{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        }
+    }
+
+    var pm = PackageManager.init(allocator) catch {
+        // If no project, still allow login (global auth)
+        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        defer allocator.destroy(auth_manager);
+
+        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        defer auth_manager.deinit();
+
+        try auth_manager.login(registry, username, token);
+        return;
+    };
+    defer pm.deinit();
+
+    try pm.login(registry, username, token);
+}
+
+/// Logout from package registry
+fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    std.debug.print("{s}Logout from Ion Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    var registry: ?[]const u8 = null;
+
+    if (args.len > 0 and std.mem.eql(u8, args[0], "--registry") and args.len > 1) {
+        registry = args[1];
+    }
+
+    var pm = PackageManager.init(allocator) catch {
+        // If no project, still allow logout (global auth)
+        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        defer allocator.destroy(auth_manager);
+
+        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        defer auth_manager.deinit();
+
+        try auth_manager.logout(registry);
+        return;
+    };
+    defer pm.deinit();
+
+    try pm.logout(registry);
+}
+
+/// Show authenticated user
+fn pkgWhoami(allocator: std.mem.Allocator) !void {
+    var pm = PackageManager.init(allocator) catch {
+        // If no project, check global auth
+        var auth_manager = try allocator.create(PackageManager.AuthManager);
+        defer allocator.destroy(auth_manager);
+
+        auth_manager.* = try PackageManager.AuthManager.init(allocator, PackageManager.DEFAULT_REGISTRY);
+        defer auth_manager.deinit();
+
+        const registries = try auth_manager.listAuthenticated();
+        defer {
+            for (registries) |reg| {
+                allocator.free(reg);
+            }
+            allocator.free(registries);
+        }
+
+        if (registries.len == 0) {
+            std.debug.print("{s}Not logged in to any registry{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+            std.debug.print("\nRun {s}ion pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
+            return;
+        }
+
+        std.debug.print("{s}Authenticated Registries:{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+        for (registries) |reg| {
+            if (auth_manager.getToken(reg)) |token| {
+                const username_str = if (token.username) |u| u else "<token auth>";
+                std.debug.print("  {s}●{s} {s}\n", .{ Color.Green.code(), Color.Reset.code(), reg });
+                std.debug.print("    User: {s}\n", .{username_str});
+
+                if (token.isExpired()) {
+                    std.debug.print("    {s}Status: EXPIRED{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+                } else {
+                    std.debug.print("    {s}Status: Active{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+                }
+            }
+        }
+
+        return;
+    };
+    defer pm.deinit();
+
+    // With project context
+    const default_auth = pm.isAuthenticated(null);
+
+    if (!default_auth) {
+        std.debug.print("{s}Not logged in to default registry{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("Registry: {s}\n", .{pm.registry_url});
+        std.debug.print("\nRun {s}ion pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        return;
+    }
+
+    const registries = try pm.listAuthenticatedRegistries();
+    defer {
+        for (registries) |reg| {
+            allocator.free(reg);
+        }
+        allocator.free(registries);
+    }
+
+    std.debug.print("{s}Authenticated as:{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    for (registries) |reg| {
+        if (pm.getAuthToken(reg)) |token| {
+            const username_str = if (token.username) |u| u else "<token auth>";
+            const is_default = std.mem.eql(u8, reg, pm.registry_url);
+
+            if (is_default) {
+                std.debug.print("  {s}●{s} {s} {s}(default){s}\n", .{ Color.Green.code(), Color.Reset.code(), reg, Color.Cyan.code(), Color.Reset.code() });
+            } else {
+                std.debug.print("  {s}●{s} {s}\n", .{ Color.Green.code(), Color.Reset.code(), reg });
+            }
+
+            std.debug.print("    User: {s}\n", .{username_str});
+
+            if (token.isExpired()) {
+                std.debug.print("    {s}Status: EXPIRED - please login again{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+            } else {
+                std.debug.print("    {s}Status: Active{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+            }
+        }
+    }
 }

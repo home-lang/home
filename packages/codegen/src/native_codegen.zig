@@ -3,54 +3,134 @@ const ast = @import("ast");
 pub const x64 = @import("x64.zig");
 const elf = @import("elf.zig");
 
+/// Error set for code generation operations.
+///
+/// These errors can occur during the compilation phase when converting
+/// AST nodes into native machine code.
 pub const CodegenError = error{
+    /// Feature not yet implemented in codegen
     UnsupportedFeature,
+    /// Code generation failed for unspecified reason
     CodegenFailed,
+    /// Exceeded maximum number of local variables (MAX_LOCALS)
     TooManyVariables,
+    /// Referenced an undefined variable
     UndefinedVariable,
+    /// Macro was not expanded before codegen
     UnexpandedMacro,
 } || std.mem.Allocator.Error;
 
-/// Maximum number of local variables per function
-/// This limit is based on typical x64 register allocation and stack frame constraints
+/// Maximum number of local variables per function.
+///
+/// This limit is based on typical x64 register allocation and stack frame
+/// constraints. Each local variable occupies stack space indexed by an 8-bit
+/// offset, allowing for efficient encoding in x64 instructions.
 const MAX_LOCALS = 256;
 
-/// Runtime heap allocation - simple bump allocator
-/// In a real implementation, this would be a proper allocator
+/// Start address for runtime heap memory.
+///
+/// In a real implementation, this would be determined by the OS loader.
+/// The heap pointer metadata is stored at HEAP_START - 8.
 const HEAP_START: usize = 0x10000000; // Start of heap memory
+
+/// Total heap size available for runtime allocation.
+///
+/// Uses a simple bump allocator for now. A production implementation
+/// would use a proper allocator with deallocation support.
 const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 
-/// Structure layout information
+/// Memory layout information for a struct type.
+///
+/// Stores the field offsets and sizes needed for struct field access
+/// code generation. This includes padding for alignment requirements.
 pub const StructLayout = struct {
+    /// Struct type name
     name: []const u8,
+    /// Field layout information (ordered by declaration)
     fields: []const FieldInfo,
+    /// Total size of the struct in bytes (including padding)
     total_size: usize,
 };
 
+/// Layout information for a single struct field.
+///
+/// Contains the offset and size needed to generate field access code.
 pub const FieldInfo = struct {
+    /// Field name
     name: []const u8,
+    /// Byte offset from struct base pointer
     offset: usize,
+    /// Size of field in bytes
     size: usize,
 };
 
+/// Native x86-64 code generator for Ion.
+///
+/// Compiles Ion AST directly to native x64 machine code without going
+/// through LLVM or other intermediate representations. This provides:
+/// - Fast compilation times
+/// - Direct control over code generation
+/// - Minimal dependencies
+/// - Learning opportunity for compiler internals
+///
+/// Architecture:
+/// - Uses a single-pass code generator with fixups
+/// - Implements a simple register allocation scheme
+/// - Generates x64 assembly via the Assembler interface
+/// - Supports basic optimizations (constant folding, dead code elimination)
+///
+/// Code Generation Strategy:
+/// - Expressions leave their result in RAX
+/// - Local variables stored on stack with negative offsets from RBP
+/// - Function calls use System V AMD64 ABI calling convention
+/// - Heap allocation via simple bump allocator
+///
+/// Limitations (current implementation):
+/// - Limited optimization (no register allocation, no CSE)
+/// - No SIMD support
+/// - Basic error handling
+/// - Stack-only closures (no heap allocation for closures yet)
+///
+/// Example usage:
+/// ```zig
+/// var codegen = NativeCodegen.init(allocator, program);
+/// defer codegen.deinit();
+/// try codegen.generate();
+/// const machine_code = codegen.assembler.getCode();
+/// ```
 pub const NativeCodegen = struct {
+    /// Memory allocator for codegen data structures
     allocator: std.mem.Allocator,
+    /// x64 assembler for emitting machine code
     assembler: x64.Assembler,
+    /// AST to compile
     program: *const ast.Program,
 
     // Variable tracking
-    locals: std.StringHashMap(u8), // name -> stack offset
+    /// Map of variable names to stack offsets (RBP-relative)
+    locals: std.StringHashMap(u8),
+    /// Next available stack offset for local variables
     next_local_offset: u8,
 
     // Function tracking
-    functions: std.StringHashMap(usize), // name -> code position
+    /// Map of function names to their code positions (for calls)
+    functions: std.StringHashMap(usize),
 
     // Heap management
-    heap_ptr: usize, // Current heap allocation pointer
+    /// Current heap allocation pointer (bump allocator state)
+    heap_ptr: usize,
 
     // Type/struct layouts
-    struct_layouts: std.StringHashMap(StructLayout), // struct name -> layout
+    /// Map of struct names to their memory layouts
+    struct_layouts: std.StringHashMap(StructLayout),
 
+    /// Create a new native code generator for the given program.
+    ///
+    /// Parameters:
+    ///   - allocator: Allocator for codegen data structures
+    ///   - program: AST program to compile
+    ///
+    /// Returns: Initialized NativeCodegen
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) NativeCodegen {
         return .{
             .allocator = allocator,
@@ -64,6 +144,10 @@ pub const NativeCodegen = struct {
         };
     }
 
+    /// Clean up codegen resources.
+    ///
+    /// Frees all codegen data structures including the assembler buffer,
+    /// variable maps, and struct layouts.
     pub fn deinit(self: *NativeCodegen) void {
         self.assembler.deinit();
         self.locals.deinit();
@@ -71,12 +155,25 @@ pub const NativeCodegen = struct {
         self.struct_layouts.deinit();
     }
 
-    /// Allocate memory on the heap (bump allocator with runtime state)
-    /// Input: rdi = size in bytes
-    /// Output: rax = pointer to allocated memory
+    /// Generate heap allocation code (bump allocator).
     ///
-    /// This uses a runtime global variable stored at a fixed address
-    /// The heap pointer is stored at address HEAP_START - 8
+    /// Emits x64 code to allocate memory from the runtime heap using
+    /// a simple bump allocator. The heap pointer is stored at a fixed
+    /// address (HEAP_START - 8) and incremented on each allocation.
+    ///
+    /// Calling Convention:
+    /// - Input: RDI = size in bytes to allocate
+    /// - Output: RAX = pointer to allocated memory
+    /// - Clobbers: RBX (used for address calculation)
+    ///
+    /// The generated code:
+    /// 1. Loads current heap pointer from memory
+    /// 2. Saves it as the return value
+    /// 3. Increments heap pointer by requested size
+    /// 4. Stores new heap pointer back to memory
+    /// 5. Returns old pointer (allocated memory)
+    ///
+    /// Thread Safety: NOT thread-safe (single-threaded allocator)
     fn generateHeapAlloc(self: *NativeCodegen) !void {
         const heap_ptr_addr = HEAP_START - 8;
 

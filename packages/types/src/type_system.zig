@@ -3,78 +3,221 @@ const ast = @import("ast");
 const ownership = @import("ownership.zig");
 const diagnostics = @import("diagnostics");
 
-/// Ion type system
+/// Ion's static type system with support for advanced features.
+///
+/// The Type union represents all possible types in the Ion language, including:
+/// - Primitive types (Int, Float, Bool, String, Void)
+/// - Composite types (Array, Tuple, Struct, Enum, Union)
+/// - Function types with parameter and return types
+/// - Advanced types (Generics, Result/Either, Optional, References)
+///
+/// Type System Features:
+/// - Static type checking with inference
+/// - Algebraic data types (enums/tagged unions)
+/// - Generic/parametric polymorphism
+/// - Result types for error handling (Result<T, E>)
+/// - Optional types for null safety (T?)
+/// - Reference types for ownership tracking (&T, &mut T)
+///
+/// The type system integrates with the ownership checker to ensure
+/// memory safety without garbage collection.
+///
+/// Example types:
+/// - `[i32]` - Array of integers (ArrayType)
+/// - `fn(i32, i32) -> i32` - Function type (FunctionType)
+/// - `Result<T, E>` - Result type for error handling
+/// - `T?` - Optional type (Optional)
+/// - `&T` - Immutable reference (Reference)
+/// - `&mut T` - Mutable reference (MutableReference)
 pub const Type = union(enum) {
+    /// 32 or 64-bit signed integer (platform dependent)
     Int,
+    /// 64-bit IEEE 754 floating-point number
     Float,
+    /// Boolean true/false value
     Bool,
+    /// UTF-8 encoded string
     String,
+    /// Unit/void type (no value)
     Void,
+    /// Homogeneous array type: [T]
     Array: ArrayType,
+    /// Function type with parameters and return type
     Function: FunctionType,
+    /// Product type with named fields
     Struct: StructType,
+    /// Sum type with variants (algebraic data type)
     Enum: EnumType,
+    /// Generic/parametric type with bounds
     Generic: GenericType,
+    /// Result type for error handling: Result<T, E>
     Result: ResultType,
+    /// Product type with positional fields: (T1, T2, ...)
     Tuple: TupleType,
+    /// Tagged union with variants
     Union: UnionType,
-    Optional: *const Type, // Optional type for safe navigation (T?)
-    Reference: *const Type, // Borrowed reference
-    MutableReference: *const Type, // Mutable borrow
+    /// Optional type for null safety: T?
+    Optional: *const Type,
+    /// Immutable borrowed reference: &T
+    Reference: *const Type,
+    /// Mutable borrowed reference: &mut T
+    MutableReference: *const Type,
 
+    /// Homogeneous array type.
+    ///
+    /// Represents an array where all elements have the same type.
+    /// Arrays in Ion are dynamically sized at runtime.
+    ///
+    /// Example: `[i32]` is an array of integers
     pub const ArrayType = struct {
+        /// Type of elements in the array
         element_type: *const Type,
     };
 
+    /// Function type with parameters and return type.
+    ///
+    /// Represents first-class function values, including closures
+    /// and function pointers. Used for type checking function calls,
+    /// higher-order functions, and callbacks.
+    ///
+    /// Example: `fn(i32, string) -> bool`
     pub const FunctionType = struct {
+        /// Parameter types (ordered)
         params: []const Type,
+        /// Return type (Void for procedures)
         return_type: *const Type,
     };
 
+    /// Struct type with named fields (product type).
+    ///
+    /// Represents a nominal record type with named fields. Structs
+    /// are nominally typed (name-based) rather than structurally typed.
+    ///
+    /// Example:
+    /// ```ion
+    /// struct Point {
+    ///   x: f64,
+    ///   y: f64,
+    /// }
+    /// ```
     pub const StructType = struct {
+        /// Struct type name
         name: []const u8,
+        /// Field definitions
         fields: []const Field,
 
+        /// A single field in a struct.
         pub const Field = struct {
+            /// Field name
             name: []const u8,
+            /// Field type
             type: Type,
         };
     };
 
+    /// Enum type with variants (sum type/algebraic data type).
+    ///
+    /// Represents a tagged union where each variant can optionally
+    /// carry associated data. This is the foundation for algebraic
+    /// data types and pattern matching.
+    ///
+    /// Examples:
+    /// ```ion
+    /// enum Option<T> {
+    ///   Some(T),
+    ///   None,
+    /// }
+    ///
+    /// enum Result<T, E> {
+    ///   Ok(T),
+    ///   Err(E),
+    /// }
+    /// ```
     pub const EnumType = struct {
+        /// Enum type name
         name: []const u8,
+        /// Variant definitions
         variants: []const Variant,
 
+        /// A single variant in an enum.
         pub const Variant = struct {
+            /// Variant name
             name: []const u8,
-            data_type: ?Type, // Optional associated data
+            /// Optional associated data type (null for unit variants)
+            data_type: ?Type,
         };
     };
 
+    /// Generic/parametric type with trait bounds.
+    ///
+    /// Represents a type parameter that can be instantiated with
+    /// concrete types. Bounds specify trait requirements that
+    /// the concrete type must satisfy.
+    ///
+    /// Example: `T: Comparable + Hashable`
     pub const GenericType = struct {
+        /// Type parameter name
         name: []const u8,
-        bounds: []const Type, // Trait bounds
+        /// Trait bounds (constraints on T)
+        bounds: []const Type,
     };
 
+    /// Result type for typed error handling.
+    ///
+    /// Represents a computation that can either succeed with a value
+    /// of type T or fail with an error of type E. This provides
+    /// type-safe error handling without exceptions.
+    ///
+    /// Example: `Result<User, DatabaseError>`
     pub const ResultType = struct {
+        /// Success value type
         ok_type: *const Type,
+        /// Error value type
         err_type: *const Type,
     };
 
+    /// Tuple type with positional fields (anonymous product type).
+    ///
+    /// Represents a fixed-size heterogeneous collection accessed
+    /// by position rather than name. Useful for multiple return
+    /// values and temporary groupings.
+    ///
+    /// Example: `(i32, string, bool)`
     pub const TupleType = struct {
+        /// Types of tuple elements (ordered)
         element_types: []const Type,
     };
 
+    /// Union type with variants (discriminated union).
+    ///
+    /// Similar to Enum but represents a structural union type.
+    /// Each variant can optionally carry associated data.
     pub const UnionType = struct {
+        /// Union type name
         name: []const u8,
+        /// Variant definitions
         variants: []const Variant,
 
+        /// A single variant in a union.
         pub const Variant = struct {
+            /// Variant name
             name: []const u8,
-            data_type: ?Type, // Optional associated data
+            /// Optional associated data type
+            data_type: ?Type,
         };
     };
 
+    /// Check if two types are equivalent.
+    ///
+    /// Performs structural equality for most types, but uses nominal
+    /// equality for named types (structs, enums). Generic types are
+    /// compared by name and bounds.
+    ///
+    /// Parameters:
+    ///   - self: First type to compare
+    ///   - other: Second type to compare
+    ///
+    /// Returns: true if types are equivalent, false otherwise
     pub fn equals(self: Type, other: Type) bool {
         const self_tag = @as(std.meta.Tag(Type), self);
         const other_tag = @as(std.meta.Tag(Type), other);
