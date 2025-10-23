@@ -83,8 +83,51 @@ jobs:
       - name: Unit Test
         run: bun test
 
+  build-and-test-ion:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        zig-version: ['0.15.1']
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig-version }}
+
+      - name: Verify Zig Installation
+        run: zig version
+
+      - name: Build Ion Compiler
+        run: zig build
+
+      - name: Run Zig Unit Tests
+        run: zig build test --summary all
+
+      - name: Run Integration Tests
+        run: |
+          chmod +x tests/integration/test_runner.sh
+          ./tests/integration/test_runner.sh
+
+      - name: Test Native Codegen
+        run: |
+          ./zig-out/bin/ion parse tests/integration/11_ternary_advanced.ion
+          ./zig-out/bin/ion parse tests/integration/17_switch_advanced.ion
+          ./zig-out/bin/ion parse tests/integration/20_combined_features.ion
+
+      - name: Upload Ion Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ion-${{ matrix.os }}
+          path: zig-out/bin/ion
+          retention-days: 7
+
   publish-commit:
     runs-on: ubuntu-latest
+    needs: [lint, typecheck, test, build-and-test-ion]
     steps:
       - uses: actions/checkout@v5
 

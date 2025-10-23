@@ -64,7 +64,8 @@ echo ""
 echo "Running integration tests..."
 echo ""
 
-# Run all tests
+# Run basic feature tests
+echo -e "${YELLOW}Basic Feature Tests:${NC}"
 run_test "$SCRIPT_DIR/test_ternary.ion" || true
 run_test "$SCRIPT_DIR/test_null_coalesce.ion" || true
 run_test "$SCRIPT_DIR/test_tuples.ion" || true
@@ -72,6 +73,32 @@ run_test "$SCRIPT_DIR/test_do_while.ion" || true
 run_test "$SCRIPT_DIR/test_switch.ion" || true
 run_test "$SCRIPT_DIR/test_try_catch.ion" || true
 run_test "$SCRIPT_DIR/test_comprehensive.ion" || true
+
+echo ""
+echo -e "${YELLOW}Advanced Feature Tests:${NC}"
+run_test "$SCRIPT_DIR/11_ternary_advanced.ion" || true
+run_test "$SCRIPT_DIR/12_null_coalesce_advanced.ion" || true
+run_test "$SCRIPT_DIR/13_pipe_operator.ion" || true
+run_test "$SCRIPT_DIR/14_safe_navigation.ion" || true
+run_test "$SCRIPT_DIR/15_spread_operator.ion" || true
+run_test "$SCRIPT_DIR/16_tuples_advanced.ion" || true
+run_test "$SCRIPT_DIR/17_switch_advanced.ion" || true
+run_test "$SCRIPT_DIR/18_do_while_advanced.ion" || true
+run_test "$SCRIPT_DIR/19_try_catch_advanced.ion" || true
+run_test "$SCRIPT_DIR/20_combined_features.ion" || true
+
+echo ""
+echo -e "${YELLOW}Core Language Tests:${NC}"
+run_test "$SCRIPT_DIR/01_basic_arithmetic.ion" || true
+run_test "$SCRIPT_DIR/02_conditionals.ion" || true
+run_test "$SCRIPT_DIR/03_loops.ion" || true
+run_test "$SCRIPT_DIR/04_functions.ion" || true
+run_test "$SCRIPT_DIR/05_arrays.ion" || true
+run_test "$SCRIPT_DIR/06_structs.ion" || true
+run_test "$SCRIPT_DIR/07_type_aliases.ion" || true
+run_test "$SCRIPT_DIR/08_enums.ion" || true
+run_test "$SCRIPT_DIR/09_strings.ion" || true
+run_test "$SCRIPT_DIR/10_bitwise.ion" || true
 
 echo ""
 echo "========================================"

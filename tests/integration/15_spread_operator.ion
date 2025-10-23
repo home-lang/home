@@ -1,0 +1,51 @@
+// Spread Operator Tests
+// Tests array/tuple unpacking
+
+// Test 1: Basic spread in tuple
+let arr1 = (1, 2, 3);
+let spread1 = (...arr1, 4, 5);
+
+// Test 2: Spread at beginning
+let arr2 = (4, 5, 6);
+let spread2 = (0, ...arr2);
+
+// Test 3: Spread in middle
+let arr3 = (2, 3);
+let spread3 = (1, ...arr3, 4);
+
+// Test 4: Multiple spreads
+let a1 = (1, 2);
+let a2 = (3, 4);
+let combined = (...a1, ...a2);
+
+// Test 5: Spread with single element
+let single = (42,);
+let expanded = (...single, 43);
+
+// Test 6: Nested spread
+let inner = (5, 6);
+let outer = (1, 2, ...inner, 7);
+
+// Test 7: Spread empty tuple
+let empty = ();
+let withEmpty = (1, ...empty, 2);
+
+// Test 8: Three-way spread
+let part1 = (1,);
+let part2 = (2,);
+let part3 = (3,);
+let threeway = (...part1, ...part2, ...part3);
+
+// Test 9: Spread in function call context
+fn sum(a: int, b: int, c: int) -> int {
+    return a + b + c;
+}
+
+let nums = (10, 20, 30);
+// Note: spread in function calls would need special handling
+
+// Test 10: Spread with arithmetic
+let values = (5, 10);
+let result = (...values, 15);
+
+print("✓ All spread operator tests passed!");

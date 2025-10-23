@@ -1,0 +1,72 @@
+// Advanced Ternary Operator Tests
+// Tests nested ternaries, complex conditions, and edge cases
+
+// Test 1: Basic ternary
+let a = 5;
+let b = 10;
+let max = a > b ? a : b;
+assert(max == 10);
+
+// Test 2: Ternary with arithmetic
+let x = 3;
+let y = 4;
+let result = x > y ? x * 2 : y * 2;
+assert(result == 8);
+
+// Test 3: Nested ternary (3-level)
+let score = 75;
+let grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : "D";
+
+// Test 4: Ternary with function calls
+fn double(n: int) -> int {
+    return n * 2;
+}
+
+fn triple(n: int) -> int {
+    return n * 3;
+}
+
+let val = 5;
+let transformed = val > 3 ? double(val) : triple(val);
+assert(transformed == 10);
+
+// Test 5: Ternary in return statement
+fn abs(n: int) -> int {
+    return n >= 0 ? n : -n;
+}
+
+assert(abs(5) == 5);
+assert(abs(-5) == 5);
+
+// Test 6: Ternary with boolean expressions
+let flag = true;
+let num = flag ? 1 : 0;
+assert(num == 1);
+
+// Test 7: Chained ternary for min/max
+let n1 = 15;
+let n2 = 20;
+let n3 = 10;
+let minimum = n1 < n2 ? (n1 < n3 ? n1 : n3) : (n2 < n3 ? n2 : n3);
+assert(minimum == 10);
+
+// Test 8: Ternary with variable assignment
+let isPositive = true;
+let value = isPositive ? 100 : -100;
+assert(value == 100);
+
+// Test 9: Multiple ternaries in sequence
+let v1 = 1 > 0 ? 10 : 20;
+let v2 = 2 < 1 ? 30 : 40;
+let v3 = 5 == 5 ? 50 : 60;
+assert(v1 == 10);
+assert(v2 == 40);
+assert(v3 == 50);
+
+// Test 10: Ternary with complex boolean logic
+let age = 25;
+let hasLicense = true;
+let canDrive = age >= 18 ? (hasLicense ? 1 : 0) : 0;
+assert(canDrive == 1);
+
+print("✓ All advanced ternary tests passed!");

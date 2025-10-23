@@ -593,50 +593,6 @@ struct Result<T, E> {
 }
 ```
 
----
-
-## Roadmap to 1.0
-
-### ✅ Phase 0: Foundation (Months 1-3) ← **Completed**
-- ✅ Lexer, parser, AST
-- ✅ Interpreter & code generation
-- ✅ Package system (24 packages)
-- ✅ Standard library (HTTP, Database, Queue)
-- ✅ Test infrastructure (200+ tests)
-- ✅ Build system integration
-- ✅ Examples and documentation
-
-### Phase 1: Core Language (Months 4-8)
-- Type system with generics
-- Ownership & borrow checking
-- Developer tooling (fmt, doc, check)
-- Package registry
-- **Goal**: Sub-100ms incremental builds
-
-### Phase 2: Async & Concurrency (Months 9-11)
-- Async/await syntax
-- Thread safety analysis
-- Async I/O and networking
-- **Goal**: Match Tokio throughput
-
-### Phase 3: Comptime (Months 12-14)
-- Compile-time execution
-- Reflection and codegen
-- Advanced optimizations
-- **Goal**: Zig-level metaprogramming
-
-### Phase 4-6: Production (Months 15-24)
-- Complete standard library
-- Cross-platform (Linux, macOS, Windows, WASM)
-- Full IDE support (LSP)
-- Package registry
-- Self-hosting compiler
-- **Goal**: 1.0 release
-
-[Full roadmap →](./ROADMAP.md)
-
----
-
 ## Performance Goals
 
 ### Compile Time (vs Zig)

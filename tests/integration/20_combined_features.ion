@@ -1,0 +1,171 @@
+// Combined Features Test
+// Tests multiple new features working together
+
+// Test 1: Ternary with null coalescing
+let val1 = 0;
+let result1 = (val1 ?? 10) > 5 ? 100 : 50;
+assert(result1 == 100);
+
+// Test 2: Pipe with ternary
+fn double(n: int) -> int {
+    return n * 2;
+}
+
+fn triple(n: int) -> int {
+    return n * 3;
+}
+
+let result2 = 5 |> (5 > 3 ? double : triple);
+
+// Test 3: Switch with ternary in cases
+let switchVal = 2;
+let switchRes = 0;
+switch switchVal {
+    case 1, 2, 3: {
+        switchRes = switchVal > 2 ? 100 : 200;
+    },
+    default: {
+        switchRes = 0;
+    }
+}
+assert(switchRes == 200);
+
+// Test 4: Do-while with ternary condition
+let dwCount = 0;
+do {
+    dwCount = dwCount + 1;
+} while dwCount < (dwCount > 5 ? 10 : 7);
+assert(dwCount == 7);
+
+// Test 5: Try-catch with null coalescing
+let tcVal = 0;
+try {
+    tcVal = tcVal ?? 42;
+} catch {
+    tcVal = 0;
+}
+assert(tcVal == 42);
+
+// Test 6: Tuple with ternary elements
+let tupleTern = (1 > 0 ? 10 : 20, 2 < 1 ? 30 : 40);
+
+// Test 7: Nested ternary with null coalescing
+let nested = 0;
+let nestedResult = nested ?? (1 > 0 ? 100 : (2 > 1 ? 200 : 300));
+assert(nestedResult == 100);
+
+// Test 8: Pipe chain with null coalescing
+fn addTen(n: int) -> int {
+    return n + 10;
+}
+
+let pipeNull = 0 ?? 5 |> addTen |> double;
+assert(pipeNull == 30);
+
+// Test 9: Switch in do-while
+let swdw = 0;
+let swdwRes = 0;
+do {
+    switch swdw {
+        case 0: { swdwRes = swdwRes + 1; },
+        case 1: { swdwRes = swdwRes + 2; },
+        default: { swdwRes = swdwRes + 3; }
+    }
+    swdw = swdw + 1;
+} while swdw < 3;
+assert(swdwRes == 6);
+
+// Test 10: Try-catch with switch
+try {
+    let trySwitch = 2;
+    let trySwitchRes = 0;
+    switch trySwitch {
+        case 2: { trySwitchRes = 222; },
+        default: { trySwitchRes = 0; }
+    }
+    assert(trySwitchRes == 222);
+} catch {
+    print("Switch in try failed");
+}
+
+// Test 11: All features combined
+fn complexFunc(input: int) -> int {
+    let result = 0;
+
+    // Ternary
+    let base = input > 0 ? input : -input;
+
+    // Null coalescing
+    let value = base ?? 1;
+
+    // Do-while
+    let count = 0;
+    do {
+        count = count + 1;
+        result = result + value;
+    } while count < 3;
+
+    // Switch
+    switch result {
+        case 0, 1, 2, 3: {
+            result = result * 2;
+        },
+        default: {
+            result = result + 10;
+        }
+    }
+
+    // Try-catch
+    try {
+        result = result + 5;
+    } finally {
+        result = result + 1;
+    }
+
+    return result;
+}
+
+let final = complexFunc(5);
+assert(final > 0);
+
+// Test 12: Tuple with all features
+let megaTuple = (
+    1 > 0 ? 10 : 20,
+    0 ?? 30,
+    5 |> double,
+    100
+);
+
+// Test 13: Chained operations
+let chained = 0 ?? 10 |> double;
+assert(chained == 20);
+
+// Test 14: Safe navigation with null coalescing
+let safeNull = 0?.value ?? 999;
+assert(safeNull == 999);
+
+// Test 15: Everything together
+try {
+    let everything = 0;
+
+    do {
+        let ternVal = everything > 0 ? 5 : 10;
+        let nullVal = ternVal ?? 0;
+        let pipedVal = nullVal |> addTen;
+
+        switch pipedVal {
+            case 20: {
+                everything = everything + 1;
+            },
+            default: {
+                everything = everything + 2;
+            }
+        }
+    } while everything < 1;
+
+    assert(everything == 1);
+} catch {
+    print("Complex test failed");
+} finally {
+    print("✓ All combined features tests passed!");
+}
