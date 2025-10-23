@@ -779,6 +779,7 @@ We're looking for:
 - **DX enthusiasts** - Tooling and LSP
 - **Technical writers** - Documentation
 - **Early adopters** - Feedback and testing
+- **Profiling experts** - Advanced debugging tools
 
 [See open issues →](../../issues)
 
@@ -815,6 +816,12 @@ A: Full C interop planned. You can already see this in the database package (SQL
 
 **Q: Does Ion have a package registry?**
 A: Not yet. Packages currently installed from Git. Official registry planned for Phase 1.
+
+**Q: What makes Ion's debugging tools special?**
+A: Ion includes time-travel debugging (step backward through execution), automatic deadlock detection for multi-threaded programs, memory leak detection, CPU flame graphs, and GC pressure analysis - all integrated into VSCode. Most languages don't have this level of tooling out of the box.
+
+**Q: Can I use Ion's testing framework now?**
+A: Yes! The testing framework is fully functional with snapshot testing, mocks, async support, and benchmarking utilities. It's inspired by Vitest and Jest but designed for systems programming.
 
 ---
 
