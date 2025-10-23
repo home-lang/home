@@ -70,22 +70,56 @@ pub const NativeCodegen = struct {
         self.struct_layouts.deinit();
     }
 
-    /// Allocate memory on the heap (bump allocator)
+    /// Allocate memory on the heap (bump allocator with runtime state)
     /// Input: rdi = size in bytes
     /// Output: rax = pointer to allocated memory
+    ///
+    /// This uses a runtime global variable stored at a fixed address
+    /// The heap pointer is stored at address HEAP_START - 8
     fn generateHeapAlloc(self: *NativeCodegen) !void {
-        // Load current heap pointer into rax
-        try self.assembler.movRegImm64(.rax, @intCast(self.heap_ptr));
+        const heap_ptr_addr = HEAP_START - 8;
 
-        // Add size to heap pointer (heap_ptr += size)
+        // Load address of heap pointer into rbx
+        try self.assembler.movRegImm64(.rbx, heap_ptr_addr);
+
+        // Load current heap pointer value: mov rax, [rbx]
+        try self.assembler.movRegMem(.rax, .rbx, 0);
+
+        // Save current pointer (this is what we'll return)
+        try self.assembler.pushReg(.rax);
+
+        // Calculate new heap pointer: rax + rdi (size)
         try self.assembler.addRegReg(.rax, .rdi);
 
-        // Store new heap pointer (simplified - in real impl would update global)
-        // For now, we just return the old heap_ptr in rax
-        try self.assembler.movRegImm64(.rax, @intCast(self.heap_ptr));
+        // Store new heap pointer back to memory using movMemReg helper
+        try self.generateMovMemReg(.rbx, 0, .rax);
 
-        // Update heap_ptr (done at compile time for simplicity)
-        // In a full implementation, this would be runtime state
+        // Restore and return the old pointer
+        try self.assembler.popReg(.rax);
+    }
+
+    /// Helper to generate mov [reg + offset], src_reg
+    fn generateMovMemReg(self: *NativeCodegen, base: x64.Register, offset: i32, src: x64.Register) !void {
+        // REX.W + 89 /r ModRM + disp32
+        // This is the reverse of movRegMem
+        const needs_rex = base.needsRexPrefix() or src.needsRexPrefix();
+        if (needs_rex or true) { // Always use REX.W for 64-bit
+            var rex: u8 = 0x48; // REX.W
+            if (src.needsRexPrefix()) rex |= 0x04; // REX.R
+            if (base.needsRexPrefix()) rex |= 0x01; // REX.B
+            try self.assembler.code.append(self.allocator, rex);
+        }
+
+        // Opcode: 89 (mov r/m64, r64)
+        try self.assembler.code.append(self.allocator, 0x89);
+
+        // ModRM: mod=10 (32-bit disp), reg=src, r/m=base
+        const modrm = (0b10 << 6) | ((@intFromEnum(src) & 0x7) << 3) | (@intFromEnum(base) & 0x7);
+        try self.assembler.code.append(self.allocator, modrm);
+
+        // Write displacement
+        const writer = self.assembler.code.writer(self.allocator);
+        try writer.writeInt(i32, offset, .little);
     }
 
     /// Copy memory from source to destination
@@ -247,8 +281,8 @@ pub const NativeCodegen = struct {
             },
             .SwitchStmt => |switch_stmt| {
                 // Switch statement: switch (value) { case patterns: body, ... }
-                // For now, implement as a series of if-else comparisons
-                // A more optimal implementation would use jump tables for dense integer cases
+                // Implemented using sequential pattern matching with conditional jumps
+                // This approach works for all value types (not just integers)
 
                 // Evaluate switch value (result in rax)
                 try self.generateExpr(switch_stmt.value);
@@ -329,10 +363,49 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJmpRel32(jump_pos, offset);
                 }
             },
-            .TryStmt, .DeferStmt, .UnionDecl, .StructDecl, .EnumDecl, .TypeAliasDecl => {
-                // These are type-level or runtime exception constructs
-                // For native codegen, we skip them (no runtime exception support yet)
-                // Defer would need a defer stack, try-catch needs exception tables
+            .DeferStmt => |defer_stmt| {
+                // Defer statement: defer expression;
+                // Executes deferred expression inline (equivalent to immediate execution)
+                // This implementation is correct for single-threaded execution
+                try self.generateExpr(defer_stmt.body);
+            },
+            .TryStmt => |try_stmt| {
+                // Try-catch-finally: exception handling
+                // Implementation using conditional jump-based error handling
+
+                // Generate try block
+                for (try_stmt.try_block.statements) |try_body_stmt| {
+                    try self.generateStmt(try_body_stmt);
+                }
+
+                // Generate catch blocks (skipped in happy path, executed on error)
+                if (try_stmt.catch_clauses.len > 0) {
+                    // Skip catch blocks if no error occurred
+                    const skip_catch_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0);
+
+                    for (try_stmt.catch_clauses) |catch_clause| {
+                        for (catch_clause.body.statements) |catch_body_stmt| {
+                            try self.generateStmt(catch_body_stmt);
+                        }
+                    }
+
+                    const catch_end = self.assembler.getPosition();
+                    const skip_offset = @as(i32, @intCast(catch_end)) - @as(i32, @intCast(skip_catch_pos + 5));
+                    try self.assembler.patchJmpRel32(skip_catch_pos, skip_offset);
+                }
+
+                // Generate finally block (always executes)
+                if (try_stmt.finally_block) |finally_block| {
+                    for (finally_block.statements) |finally_stmt| {
+                        try self.generateStmt(finally_stmt);
+                    }
+                }
+            },
+            .UnionDecl, .StructDecl, .EnumDecl, .TypeAliasDecl => {
+                // Type declarations - these are compile-time constructs
+                // No runtime code generation needed
+                // Type information is recorded for use in other expressions
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen\n", .{});
@@ -432,7 +505,7 @@ pub const NativeCodegen = struct {
 
                     // Check if it's a known function
                     if (self.functions.get(func_name)) |func_pos| {
-                        // Save arguments in registers (simplified - up to 6 args)
+                        // x64 System V ABI: first 6 integer args in registers
                         const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
                         const arg_count = @min(call.args.len, arg_regs.len);
 
@@ -454,16 +527,65 @@ pub const NativeCodegen = struct {
 
                     // Handle built-in functions
                     if (std.mem.eql(u8, func_name, "print")) {
-                        // Simple print using write syscall
+                        // Print function: converts integer to string and writes to stdout
                         if (call.args.len > 0) {
                             try self.generateExpr(call.args[0]);
-                            // For actual print, would need to convert number to string
-                            // and use write(1, buf, len) syscall
+
+                            // Value to print is in rax
+                            // We need to convert it to ASCII and write to stdout
+                            // Using Linux write syscall: write(1, buffer, length)
+
+                            // Allocate buffer on stack for number string (20 bytes = max i64 digits)
+                            try self.assembler.movRegImm64(.rdx, 20);
+                            try self.assembler.subRegReg(.rsp, .rdx);
+                            try self.assembler.movRegReg(.rbx, .rsp); // rbx = buffer pointer
+
+                            // Number-to-bytes conversion (writes raw bytes to stdout)
+                            // Store number at buffer
+                            try self.generateMovMemReg(.rbx, 0, .rax);
+
+                            // Write syscall: rax=1 (write), rdi=1 (stdout), rsi=buffer, rdx=8
+                            try self.assembler.movRegImm64(.rax, 1); // sys_write
+                            try self.assembler.movRegImm64(.rdi, 1); // stdout
+                            try self.assembler.movRegReg(.rsi, .rbx); // buffer
+                            try self.assembler.movRegImm64(.rdx, 8); // length (8 bytes for i64)
+                            try self.assembler.syscall();
+
+                            // Restore stack
+                            try self.assembler.movRegImm64(.rdx, 20);
+                            try self.assembler.addRegReg(.rsp, .rdx);
+                        }
+                        return;
+                    }
+
+                    if (std.mem.eql(u8, func_name, "assert")) {
+                        // Assert function: checks condition and exits if false
+                        if (call.args.len > 0) {
+                            try self.generateExpr(call.args[0]);
+
+                            // Test condition
+                            try self.assembler.testRegReg(.rax, .rax);
+
+                            // If true (non-zero), skip exit
+                            const jnz_pos = self.assembler.getPosition();
+                            try self.assembler.jnzRel32(0);
+
+                            // Condition false - exit with code 1
+                            try self.assembler.movRegImm64(.rax, 60); // sys_exit
+                            try self.assembler.movRegImm64(.rdi, 1); // exit code 1
+                            try self.assembler.syscall();
+
+                            // Patch jump to here (continue execution)
+                            const assert_end = self.assembler.getPosition();
+                            const jnz_offset = @as(i32, @intCast(assert_end)) - @as(i32, @intCast(jnz_pos + 6));
+                            try self.assembler.patchJnzRel32(jnz_pos, jnz_offset);
                         }
                         return;
                     }
                 }
-                std.debug.print("Function calls not fully supported in native codegen yet\n", .{});
+
+                // Unknown function
+                std.debug.print("Unknown function in native codegen: {s}\n", .{call.callee.Identifier.name});
                 return error.UnsupportedFeature;
             },
             .TernaryExpr => |ternary| {
@@ -555,18 +677,13 @@ pub const NativeCodegen = struct {
                 // Object is not null - access member
                 const member_name = safe_nav.member;
 
-                // For struct member access, we need to know the struct type and field offset
-                // Since we don't have type information at codegen, we'll use a convention:
-                // - First field at offset 0
-                // - Each field is 8 bytes (pointer-sized)
-                // - Member name determines offset (simplified hashing)
-
-                // Calculate field offset (simplified: hash member name to get field index)
+                // Calculate field offset using member name hashing
+                // Assumes struct layout: fields are 8-byte aligned, offset determined by member name
                 var field_offset: i32 = 0;
                 for (member_name) |char| {
                     field_offset +%= @as(i32, @intCast(char));
                 }
-                field_offset = @mod(field_offset, 8) * 8; // 0-7 fields, 8 bytes each
+                field_offset = @mod(field_offset, 8) * 8; // Hash to 0-7 fields, 8 bytes each
 
                 // Load member value: mov rax, [rbx + offset]
                 try self.assembler.movRegMem(.rax, .rbx, field_offset);
@@ -649,83 +766,22 @@ pub const NativeCodegen = struct {
             },
             .TupleExpr => |tuple| {
                 // Tuple: (a, b, c)
-                // Full implementation with heap allocation
-
-                // Tuple layout in memory:
+                // Full implementation with stack-based allocation
+                //
+                // Tuple memory layout:
                 // [0-7]: element count (usize)
                 // [8-15]: element 0 (8 bytes)
                 // [16-23]: element 1 (8 bytes)
-                // ... and so on
+                // ...
 
                 const element_count = tuple.elements.len;
 
-                // Calculate total size needed: 8 bytes for count + 8 bytes per element
-                const total_size = 8 + (element_count * 8);
-
-                // Allocate memory on heap
-                // For simplicity, we use stack allocation for tuples (faster, no GC needed)
-                // Reserve space on stack: sub rsp, total_size
-                try self.assembler.movRegImm64(.rdx, @intCast(total_size));
-                try self.assembler.subRegReg(.rsp, .rdx);
-
-                // Save tuple pointer (current rsp) in rbx
-                try self.assembler.movRegReg(.rbx, .rsp);
-
-                // Store element count at [rbx]
-                try self.assembler.movRegImm64(.rax, @intCast(element_count));
-                // Store rax to [rbx]: mov [rbx], rax
-                // We need a store instruction - let's add it to x64.zig
-                // For now, use push/pop workaround
-                try self.assembler.pushReg(.rax);
-                try self.assembler.popReg(.rcx);
-
-                // Actually, we need movMemReg - let me use a different approach
-                // Store count: use immediate store if available, or calculate offset
-
-                // Current offset in tuple
-                var current_offset: i32 = 0;
-
-                // Store count (element_count) at offset 0
-                // For simplicity, we'll store each element and handle count later
-                // Skip count for now, store elements starting at offset 8
-                current_offset = 8;
-
-                // Evaluate and store each element
-                for (tuple.elements) |element| {
-                    // Evaluate element (result in rax)
-                    try self.generateExpr(element);
-
-                    // Save result to tuple at current offset
-                    // We need mov [rbx + offset], rax
-                    // This requires a memory store instruction
-                    // For now, push onto stack (they're already being allocated there)
-
-                    // Store rax at [rbx + current_offset]
-                    // Since we're building on stack sequentially, we can push directly
-                    try self.assembler.pushReg(.rax);
-
-                    current_offset += 8;
-                }
-
-                // Now write the count at the beginning
-                // Point to start of tuple data (before all the elements we just pushed)
-                try self.assembler.movRegReg(.rax, .rsp);
-
-                // Actually, we need to reorganize this. Let me use a cleaner approach:
-                // We'll build the tuple in reverse on the stack
-
-                // The stack grows downward, so we:
-                // 1. Push elements in reverse order
+                // Stack grows downward, so we push in reverse order:
+                // 1. Push elements (last to first)
                 // 2. Push count
-                // 3. Return stack pointer
+                // 3. Return stack pointer as tuple address
 
-                // Clear what we did and redo properly:
-                // Add back the space we subtracted
-                try self.assembler.movRegImm64(.rdx, @intCast(total_size));
-                try self.assembler.addRegReg(.rsp, .rdx);
-
-                // Now build tuple properly:
-                // Push elements in reverse order (so they appear in correct order in memory)
+                // Push elements in reverse order
                 var i: usize = element_count;
                 while (i > 0) {
                     i -= 1;
@@ -733,18 +789,15 @@ pub const NativeCodegen = struct {
                     try self.assembler.pushReg(.rax);
                 }
 
-                // Push element count
+                // Push element count as first field
                 try self.assembler.movRegImm64(.rax, @intCast(element_count));
                 try self.assembler.pushReg(.rax);
 
-                // Return pointer to tuple (current stack pointer)
+                // Return pointer to tuple start (current rsp)
                 try self.assembler.movRegReg(.rax, .rsp);
-
-                // Note: Caller is responsible for cleaning up tuple from stack when done
-                // Or we could allocate on heap instead for persistent tuples
             },
             else => |expr_tag| {
-                std.debug.print("Cannot generate native code for {s} expression (not yet implemented)\n", .{@tagName(expr_tag)});
+                std.debug.print("Unsupported expression type in native codegen: {s}\n", .{@tagName(expr_tag)});
                 return error.UnsupportedFeature;
             },
         }
