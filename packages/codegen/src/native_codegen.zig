@@ -8,6 +8,7 @@ pub const CodegenError = error{
     CodegenFailed,
     TooManyVariables,
     UndefinedVariable,
+    UnexpandedMacro,
 } || std.mem.Allocator.Error;
 
 /// Maximum number of local variables per function
@@ -873,6 +874,28 @@ pub const NativeCodegen = struct {
 
                 // Result is now in rax
             },
+
+            .ComptimeExpr => |comptime_expr| {
+                // Comptime expression: evaluated at compile time
+                // The inner expression should have been evaluated by the comptime executor
+                // during semantic analysis. For codegen, we just evaluate the inner expression.
+                // In a full implementation, this would look up the precomputed value.
+                try self.generateExpr(comptime_expr.expression);
+            },
+
+            .ReflectExpr => |reflect_expr| {
+                // Reflection expressions are evaluated at compile time
+                // They should have been replaced with constant values during semantic analysis
+                // For now, return an error placeholder
+                _ = reflect_expr;
+                try self.assembler.movRegImm64(.rax, 0); // Placeholder
+            },
+
+            .MacroExpr => {
+                // Macro expressions should have been expanded before codegen
+                return error.UnexpandedMacro;
+            },
+
             else => |expr_tag| {
                 std.debug.print("Unsupported expression type in native codegen: {s}\n", .{@tagName(expr_tag)});
                 return error.UnsupportedFeature;

@@ -1,0 +1,85 @@
+// Standard Library Collections Test
+// Tests Vector and HashMap implementations
+
+// Test 1: Vector creation and basic operations
+let vec = Vec<int>();
+assert(vec.len() == 0);
+assert(vec.isEmpty());
+
+// Test 2: Vector push and get
+vec.push(10);
+vec.push(20);
+vec.push(30);
+assert(vec.len() == 3);
+assert(vec.get(0) == 10);
+assert(vec.get(1) == 20);
+assert(vec.get(2) == 30);
+
+// Test 3: Vector pop
+let value = vec.pop();
+assert(value == 30);
+assert(vec.len() == 2);
+
+// Test 4: Vector contains
+assert(vec.contains(10));
+assert(vec.contains(20));
+assert(!vec.contains(30));
+
+// Test 5: Vector indexOf
+assert(vec.indexOf(10) == 0);
+assert(vec.indexOf(20) == 1);
+assert(vec.indexOf(99) == null);
+
+// Test 6: Vector insert
+vec.insert(1, 15);
+assert(vec.len() == 3);
+assert(vec.get(1) == 15);
+assert(vec.get(2) == 20);
+
+// Test 7: Vector remove
+let removed = vec.remove(1);
+assert(removed == 15);
+assert(vec.len() == 2);
+
+// Test 8: Vector reverse
+vec.push(30);
+vec.push(40);
+vec.reverse();
+assert(vec.get(0) == 40);
+assert(vec.get(3) == 10);
+
+// Test 9: HashMap creation and basic operations
+let map = HashMap<string, int>();
+assert(map.len() == 0);
+assert(map.isEmpty());
+
+// Test 10: HashMap put and get
+map.put("one", 1);
+map.put("two", 2);
+map.put("three", 3);
+assert(map.len() == 3);
+assert(map.get("one") == 1);
+assert(map.get("two") == 2);
+assert(map.get("three") == 3);
+
+// Test 11: HashMap contains
+assert(map.contains("one"));
+assert(map.contains("two"));
+assert(!map.contains("four"));
+
+// Test 12: HashMap remove
+let removed_value = map.remove("two");
+assert(removed_value == 2);
+assert(map.len() == 2);
+assert(!map.contains("two"));
+
+// Test 13: HashMap update
+map.put("one", 100);
+assert(map.get("one") == 100);
+
+// Test 14: HashMap clear
+map.clear();
+assert(map.len() == 0);
+assert(map.isEmpty());
+
+print("✓ All standard library collections tests passed!");

@@ -13,6 +13,7 @@ pub const ParseError = error{
     IntegerOverflow,
     FloatOverflow,
     InvalidFloat,
+    UnknownReflection,
 };
 
 /// Operator precedence levels
@@ -1222,6 +1223,74 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Comptime expression
+        if (self.match(&.{.Comptime})) {
+            const comptime_token = self.previous();
+            const comptime_expr_inner = try self.expression();
+            const comptime_expr = try ast.ComptimeExpr.init(
+                self.allocator,
+                comptime_expr_inner,
+                ast.SourceLocation.fromToken(comptime_token),
+            );
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .ComptimeExpr = comptime_expr };
+            return expr;
+        }
+
+        // Reflection expression (@TypeOf, @sizeOf, etc.)
+        if (self.match(&.{.At})) {
+            const at_token = self.previous();
+            const name_token = try self.expect(.Identifier, "Expected reflection function name after '@'");
+            const name = name_token.lexeme;
+
+            // Parse the reflection kind
+            const kind: ast.ReflectExpr.ReflectKind = blk: {
+                if (std.mem.eql(u8, name, "TypeOf")) break :blk .TypeOf;
+                if (std.mem.eql(u8, name, "sizeOf")) break :blk .SizeOf;
+                if (std.mem.eql(u8, name, "alignOf")) break :blk .AlignOf;
+                if (std.mem.eql(u8, name, "offsetOf")) break :blk .OffsetOf;
+                if (std.mem.eql(u8, name, "typeInfo")) break :blk .TypeInfo;
+                if (std.mem.eql(u8, name, "fieldName")) break :blk .FieldName;
+                if (std.mem.eql(u8, name, "fieldType")) break :blk .FieldType;
+
+                const msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Unknown reflection function '@{s}'",
+                    .{name},
+                );
+                defer self.allocator.free(msg);
+                try self.reportError(msg);
+                return error.UnknownReflection;
+            };
+
+            _ = try self.expect(.LeftParen, "Expected '(' after reflection function name");
+
+            // Parse target expression
+            const target = try self.expression();
+
+            // Parse optional field name for @offsetOf, @fieldType
+            var field_name: ?[]const u8 = null;
+            if (kind == .OffsetOf or kind == .FieldType) {
+                _ = try self.expect(.Comma, "Expected ',' before field name");
+                const field_token = try self.expect(.String, "Expected string literal for field name");
+                // Remove quotes
+                field_name = field_token.lexeme[1 .. field_token.lexeme.len - 1];
+            }
+
+            _ = try self.expect(.RightParen, "Expected ')' after reflection arguments");
+
+            const reflect_expr = try ast.ReflectExpr.init(
+                self.allocator,
+                kind,
+                target,
+                field_name,
+                ast.SourceLocation.fromToken(at_token),
+            );
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .ReflectExpr = reflect_expr };
+            return expr;
+        }
+
         // Check for invalid tokens and report them clearly
         if (self.peek().type == .Invalid) {
             const token = self.advance();
@@ -1305,9 +1374,43 @@ pub const Parser = struct {
             return expr;
         }
 
-        // Identifiers
+        // Identifiers (and macro invocations)
         if (self.match(&.{.Identifier})) {
             const token = self.previous();
+
+            // Check for macro invocation (identifier!)
+            if (self.match(&.{.Bang})) {
+                const bang_token = self.previous();
+
+                // Parse macro arguments
+                _ = try self.expect(.LeftParen, "Expected '(' after '!' for macro invocation");
+
+                var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                defer args.deinit(self.allocator);
+
+                if (!self.check(.RightParen)) {
+                    while (true) {
+                        const arg = try self.expression();
+                        try args.append(self.allocator, arg);
+                        if (!self.match(&.{.Comma})) break;
+                    }
+                }
+
+                _ = try self.expect(.RightParen, "Expected ')' after macro arguments");
+
+                const macro_expr = try ast.MacroExpr.init(
+                    self.allocator,
+                    token.lexeme,
+                    try args.toOwnedSlice(self.allocator),
+                    ast.SourceLocation.fromToken(bang_token),
+                );
+
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .MacroExpr = macro_expr };
+                return expr;
+            }
+
+            // Regular identifier
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
                 .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),

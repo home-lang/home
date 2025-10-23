@@ -31,6 +31,9 @@ pub const NodeType = enum {
     TupleExpr,
     GenericTypeExpr,
     AwaitExpr,
+    ComptimeExpr,
+    ReflectExpr,
+    MacroExpr,
 
     // Statements
     LetDecl,
@@ -476,6 +479,80 @@ pub const AwaitExpr = struct {
     }
 };
 
+/// Comptime expression (comptime expr)
+/// Evaluates expression at compile time
+pub const ComptimeExpr = struct {
+    node: Node,
+    expression: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, expression: *Expr, loc: SourceLocation) !*ComptimeExpr {
+        const expr = try allocator.create(ComptimeExpr);
+        expr.* = .{
+            .node = .{ .type = .ComptimeExpr, .loc = loc },
+            .expression = expression,
+        };
+        return expr;
+    }
+};
+
+/// Reflection expression (@TypeOf, @sizeOf, @alignOf, @offsetOf, @typeInfo, @fieldName, @fieldType)
+pub const ReflectExpr = struct {
+    node: Node,
+    kind: ReflectKind,
+    target: *Expr,
+    field_name: ?[]const u8, // For @offsetOf, @fieldName, @fieldType
+
+    pub const ReflectKind = enum {
+        TypeOf,    // @TypeOf(expr) - returns type of expression
+        SizeOf,    // @sizeOf(Type) - returns size in bytes
+        AlignOf,   // @alignOf(Type) - returns alignment in bytes
+        OffsetOf,  // @offsetOf(Type, "field") - returns field offset
+        TypeInfo,  // @typeInfo(Type) - returns type metadata
+        FieldName, // @fieldName(Type, index) - returns field name
+        FieldType, // @fieldType(Type, "field") - returns field type
+    };
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        kind: ReflectKind,
+        target: *Expr,
+        field_name: ?[]const u8,
+        loc: SourceLocation,
+    ) !*ReflectExpr {
+        const expr = try allocator.create(ReflectExpr);
+        expr.* = .{
+            .node = .{ .type = .ReflectExpr, .loc = loc },
+            .kind = kind,
+            .target = target,
+            .field_name = field_name,
+        };
+        return expr;
+    }
+};
+
+/// Macro expression (macro invocation with !)
+/// Example: debug!("value = {}", value)
+pub const MacroExpr = struct {
+    node: Node,
+    name: []const u8,
+    args: []*Expr,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        args: []*Expr,
+        loc: SourceLocation,
+    ) !*MacroExpr {
+        const expr = try allocator.create(MacroExpr);
+        expr.* = .{
+            .node = .{ .type = .MacroExpr, .loc = loc },
+            .name = name,
+            .args = args,
+        };
+        return expr;
+    }
+};
+
 /// Expression wrapper (tagged union)
 pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
@@ -501,6 +578,9 @@ pub const Expr = union(NodeType) {
     TupleExpr: *TupleExpr,
     GenericTypeExpr: *GenericTypeExpr,
     AwaitExpr: *AwaitExpr,
+    ComptimeExpr: *ComptimeExpr,
+    ReflectExpr: *ReflectExpr,
+    MacroExpr: *MacroExpr,
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
@@ -780,6 +860,9 @@ pub const Stmt = union(NodeType) {
     TupleExpr: void,
     GenericTypeExpr: void,
     AwaitExpr: void,
+    ComptimeExpr: void,
+    ReflectExpr: void,
+    MacroExpr: void,
 
     // Statement variants (order must match NodeType enum)
     LetDecl: *LetDecl,

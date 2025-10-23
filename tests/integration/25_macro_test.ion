@@ -1,0 +1,42 @@
+// Macro System Test
+// Tests the complete macro implementation
+
+// Test 1: print! macro
+print!("Hello from macro!");
+
+// Test 2: debug! macro
+let value = 42;
+debug!(value);
+
+// Test 3: assert! macro
+assert!(10 > 5);
+assert!(true);
+
+// Test 4: vec! macro
+let numbers = vec!(1, 2, 3, 4, 5);
+assert(numbers[0] == 1);
+assert(numbers[4] == 5);
+
+// Test 5: format! macro
+let formatted = format!("The answer is {}", 42);
+assert(formatted == "The answer is 42");
+
+// Test 6: Multiple macro arguments
+print!("Value: {}, Double: {}", value, value * 2);
+
+// Test 7: Nested macro calls
+debug!(vec!(1, 2, 3));
+
+// Test 8: Macro with expression
+assert!(10 + 20 == 30);
+
+// Test 9: stringify! macro
+let code_str = stringify!(x + y);
+assert(code_str == "x + y");
+
+// Test 10: Macro composition
+let items = vec!(10, 20, 30);
+debug!(items);
+print!("Created array with {} elements", items.len());
+
+print("✓ All macro tests passed!");
