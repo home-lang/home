@@ -32,6 +32,21 @@ pub const atomic = @import("atomic.zig");
 /// Synchronization primitives (locks, mutexes, semaphores)
 pub const sync = @import("sync.zig");
 
+/// CPU context and register state management
+pub const cpu_context = @import("cpu_context.zig");
+
+/// GDT (Global Descriptor Table) management
+pub const gdt = @import("gdt.zig");
+
+/// System call interface (SYSCALL/SYSRET)
+pub const syscall = @import("syscall.zig");
+
+/// Serial port driver for debugging
+pub const serial = @import("serial.zig");
+
+/// VGA text mode driver
+pub const vga = @import("vga.zig");
+
 // ============================================================================
 // Re-exports for Convenience
 // ============================================================================
@@ -71,6 +86,29 @@ pub const RwSpinlock = sync.RwSpinlock;
 pub const Mutex = sync.Mutex;
 pub const Semaphore = sync.Semaphore;
 pub const Once = sync.Once;
+
+// CPU context types
+pub const CpuContext = cpu_context.CpuContext;
+pub const RFlags = cpu_context.RFlags;
+pub const StackFrame = cpu_context.StackFrame;
+pub const FpuState = cpu_context.FpuState;
+pub const TaskState = cpu_context.TaskState;
+
+// GDT types
+pub const Gdt = gdt.Gdt;
+pub const GdtEntry = gdt.GdtEntry;
+pub const Tss = gdt.Tss;
+pub const SegmentSelector = gdt.SegmentSelector;
+
+// System call types
+pub const SyscallNumber = syscall.SyscallNumber;
+pub const SyscallTable = syscall.SyscallTable;
+
+// Serial and VGA
+pub const SerialPort = serial.SerialPort;
+pub const VgaBuffer = vga.VgaBuffer;
+pub const Color = vga.Color;
+pub const ColorCode = vga.ColorCode;
 
 // ============================================================================
 // Kernel Initialization
