@@ -1,8 +1,8 @@
 [package]
-name = "home-stdlib"
+name = "basics"
 version = "0.1.0"
 authors = ["Home Contributors"]
-description = "Home Standard Library - Built-in modules and functions"
+description = "Home Basics - Core functionality and web framework utilities"
 license = "MIT"
 
 [dependencies]
@@ -10,4 +10,4 @@ home-ast = { path = "../ast" }
 home-types = { path = "../types" }
 
 [scripts]
-test = "zig test src/stdlib.zig"
+test = "zig test src/basics.zig"

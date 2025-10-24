@@ -1,13 +1,12 @@
 [package]
-name = "home-comptime"
+name = "comptime"
 version = "0.1.0"
-authors = ["Home Contributors"]
-description = "Home Compile-Time Execution - Comptime evaluation"
+description = "Compile-time utilities and metaprogramming for Home"
 license = "MIT"
+authors = ["Home Contributors"]
 
 [dependencies]
-home-ast = { path = "../ast" }
-home-interpreter = { path = "../interpreter" }
+# No dependencies - pure compile-time code
 
-[scripts]
-test = "zig test src/comptime_executor.zig"
+[build]
+zig_version = "0.13.0"
