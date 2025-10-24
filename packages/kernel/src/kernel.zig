@@ -48,6 +48,29 @@ pub const serial = @import("serial.zig");
 pub const vga = @import("vga.zig");
 
 // ============================================================================
+// Device Drivers and Hardware
+// ============================================================================
+
+/// PCI bus enumeration and device discovery
+pub const pci = @import("pci.zig");
+
+/// DMA buffer management
+pub const dma = @import("dma.zig");
+
+// ============================================================================
+// Process and Thread Management
+// ============================================================================
+
+/// Process management
+pub const process = @import("process.zig");
+
+/// Thread management
+pub const thread = @import("thread.zig");
+
+/// Scheduler
+pub const sched = @import("sched.zig");
+
+// ============================================================================
 // Re-exports for Convenience
 // ============================================================================
 
@@ -109,6 +132,22 @@ pub const SerialPort = serial.SerialPort;
 pub const VgaBuffer = vga.VgaBuffer;
 pub const Color = vga.Color;
 pub const ColorCode = vga.ColorCode;
+
+// PCI types
+pub const PciDevice = pci.PciDevice;
+pub const PciAddress = pci.PciAddress;
+
+// DMA types
+pub const DmaBuffer = dma.DmaBuffer;
+pub const DmaPool = dma.DmaPool;
+pub const SgList = dma.SgList;
+
+// Process/Thread types
+pub const Process = process.Process;
+pub const ProcessState = process.ProcessState;
+pub const Thread = thread.Thread;
+pub const ThreadState = thread.ThreadState;
+pub const Scheduler = sched.CpuScheduler;
 
 // ============================================================================
 // Kernel Initialization
