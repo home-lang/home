@@ -1,0 +1,12 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+description = "Home OS Development Primitives - Low-level kernel components for operating system development"
+authors = ["Home Language Team"]
+license = "MIT"
+
+[dependencies]
+basics = { path = "../basics" }
+
+[build]
+main = "src/kernel.zig"
