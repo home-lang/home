@@ -403,6 +403,155 @@ pub fn stackSegmentFaultHandler(frame_with_error: *InterruptFrameWithError) call
     @panic("Stack segment fault");
 }
 
+/// Overflow handler
+pub fn overflowHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Overflow at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("Overflow");
+}
+
+/// Bound range exceeded handler
+pub fn boundRangeExceededHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Bound Range Exceeded at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("Bound range exceeded");
+}
+
+/// Device not available handler (FPU/SSE)
+pub fn deviceNotAvailableHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Device Not Available at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("Device not available");
+}
+
+/// Invalid TSS handler
+pub fn invalidTssHandler(frame_with_error: *InterruptFrameWithError) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Invalid TSS (error code: 0x{x})\n", .{frame_with_error.error_code});
+    Basics.debug.print("{}\n", .{frame_with_error.frame});
+    @panic("Invalid TSS");
+}
+
+/// Segment not present handler
+pub fn segmentNotPresentHandler(frame_with_error: *InterruptFrameWithError) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Segment Not Present (error code: 0x{x})\n", .{frame_with_error.error_code});
+    Basics.debug.print("{}\n", .{frame_with_error.frame});
+    @panic("Segment not present");
+}
+
+/// x87 Floating-Point Exception handler
+pub fn x87FloatingPointHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: x87 Floating-Point Exception at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("x87 floating-point exception");
+}
+
+/// Alignment Check handler
+pub fn alignmentCheckHandler(frame_with_error: *InterruptFrameWithError) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Alignment Check (error code: 0x{x})\n", .{frame_with_error.error_code});
+    Basics.debug.print("{}\n", .{frame_with_error.frame});
+    @panic("Alignment check");
+}
+
+/// Machine Check handler
+pub fn machineCheckHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: Machine Check at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("Machine check");
+}
+
+/// SIMD Floating-Point Exception handler
+pub fn simdFloatingPointHandler(frame: *InterruptFrame) callconv(.Interrupt) void {
+    Basics.debug.print("EXCEPTION: SIMD Floating-Point Exception at 0x{x}\n", .{frame.instruction_pointer});
+    Basics.debug.print("{}\n", .{frame});
+    @panic("SIMD floating-point exception");
+}
+
+// ============================================================================
+// Interrupt Safety Features
+// ============================================================================
+
+const atomic = Basics.atomic;
+
+/// Per-CPU interrupt nesting counter (prevents recursive interrupt overflow)
+threadlocal var interrupt_nesting_count: u32 = 0;
+
+/// Maximum allowed interrupt nesting depth
+const MAX_INTERRUPT_NESTING: u32 = 16;
+
+/// Kernel stack red zone size for overflow detection (4KB)
+const STACK_RED_ZONE_SIZE: usize = 4096;
+
+/// Interrupt Nesting Guard
+pub const InterruptNestingGuard = struct {
+    entered: bool,
+
+    /// Enter interrupt context with nesting check
+    pub fn enter() !InterruptNestingGuard {
+        interrupt_nesting_count += 1;
+
+        if (interrupt_nesting_count > MAX_INTERRUPT_NESTING) {
+            Basics.debug.print("FATAL: Interrupt nesting depth exceeded ({} > {})\n",
+                .{interrupt_nesting_count, MAX_INTERRUPT_NESTING});
+            @panic("Interrupt nesting overflow");
+        }
+
+        return .{ .entered = true };
+    }
+
+    /// Exit interrupt context
+    pub fn exit(self: *InterruptNestingGuard) void {
+        if (self.entered) {
+            if (interrupt_nesting_count > 0) {
+                interrupt_nesting_count -= 1;
+            }
+            self.entered = false;
+        }
+    }
+
+    /// Get current nesting depth
+    pub fn getNestingDepth() u32 {
+        return interrupt_nesting_count;
+    }
+};
+
+/// Stack Overflow Detector
+pub const StackGuard = struct {
+    /// Check if we're approaching stack overflow
+    pub fn checkStack() bool {
+        const rsp = asm.readRsp();
+
+        // Get current thread/process kernel stack base
+        // TODO: Get actual stack base from thread/process structure
+        const stack_base = getKernelStackBase();
+
+        // Check if we're in the red zone
+        if (rsp < stack_base + STACK_RED_ZONE_SIZE) {
+            Basics.debug.print("WARNING: Stack approaching overflow (RSP: 0x{x}, base: 0x{x})\n",
+                .{rsp, stack_base});
+            return false;
+        }
+
+        return true;
+    }
+
+    /// Panic if stack overflow detected
+    pub fn checkStackOrPanic() void {
+        if (!checkStack()) {
+            @panic("Stack overflow detected");
+        }
+    }
+};
+
+/// Get kernel stack base for current thread
+fn getKernelStackBase() usize {
+    // TODO: Integrate with actual thread/process structure
+    // For now, return a conservative estimate based on RSP
+    const rsp = asm.readRsp();
+    // Assume 16KB kernel stacks, aligned to 16KB
+    const stack_size = 16 * 1024;
+    return (rsp & ~(stack_size - 1));
+}
+
 // ============================================================================
 // PIC (Programmable Interrupt Controller) Support
 // ============================================================================
@@ -501,14 +650,26 @@ pub const InterruptManager = struct {
 
     /// Install default exception handlers
     pub fn installDefaultHandlers(self: *InterruptManager) void {
+        // Exceptions without error codes
         self.idt.setException(.DivideByZero, divideByZeroHandler);
         self.idt.setException(.Debug, debugHandler);
         self.idt.setException(.Breakpoint, breakpointHandler);
+        self.idt.setException(.Overflow, overflowHandler);
+        self.idt.setException(.BoundRangeExceeded, boundRangeExceededHandler);
         self.idt.setException(.InvalidOpcode, invalidOpcodeHandler);
+        self.idt.setException(.DeviceNotAvailable, deviceNotAvailableHandler);
+        self.idt.setException(.x87FloatingPoint, x87FloatingPointHandler);
+        self.idt.setException(.MachineCheck, machineCheckHandler);
+        self.idt.setException(.SIMDFloatingPoint, simdFloatingPointHandler);
+
+        // Exceptions with error codes
         self.idt.setExceptionWithError(.DoubleFault, doubleFaultHandler);
+        self.idt.setExceptionWithError(.InvalidTSS, invalidTssHandler);
+        self.idt.setExceptionWithError(.SegmentNotPresent, segmentNotPresentHandler);
+        self.idt.setExceptionWithError(.StackSegmentFault, stackSegmentFaultHandler);
         self.idt.setExceptionWithError(.GeneralProtectionFault, generalProtectionFaultHandler);
         self.idt.setExceptionWithError(.PageFault, pageFaultHandler);
-        self.idt.setExceptionWithError(.StackSegmentFault, stackSegmentFaultHandler);
+        self.idt.setExceptionWithError(.AlignmentCheck, alignmentCheckHandler);
     }
 
     /// Register IRQ handler

@@ -380,6 +380,13 @@ pub inline fn readFlags() u64 {
     );
 }
 
+/// Read stack pointer (RSP)
+pub inline fn readRsp() u64 {
+    return asm volatile ("movq %%rsp, %[result]"
+        : [result] "=r" (-> u64),
+    );
+}
+
 /// Write flags
 pub inline fn writeFlags(flags: u64) void {
     asm volatile ("pushq %[flags]; popfq"

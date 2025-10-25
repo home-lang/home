@@ -4,6 +4,7 @@
 const Basics = @import("basics");
 const asm = @import("asm.zig");
 const memory = @import("memory.zig");
+const atomic = @import("atomic.zig");
 
 // ============================================================================
 // Page Table Entry Flags
@@ -285,6 +286,9 @@ pub const PageMapper = struct {
             .cache_disable = flags.cache_disable,
             .no_execute = flags.no_execute,
         });
+
+        // Invalidate TLB for this page
+        asm.invlpg(virt);
     }
 
     /// Unmap a virtual address
@@ -435,6 +439,96 @@ pub fn createIdentityMap(allocator: Basics.Allocator, size: u64) !PageMapper {
 
 pub const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
 pub const USER_END: u64 = 0x0000_7FFF_FFFF_FFFF;
+
+// ============================================================================
+// TLB Shootdown for Multi-Core
+// ============================================================================
+
+/// TLB shootdown request for IPI
+pub const TlbShootdownRequest = struct {
+    address: u64,
+    is_range: bool,
+    size: u64,
+    acknowledged: atomic.AtomicUsize,
+    target_cpus: u64, // Bitmask of CPUs to invalidate
+
+    pub fn init(address: u64, is_range: bool, size: u64, target_cpus: u64) TlbShootdownRequest {
+        return .{
+            .address = address,
+            .is_range = is_range,
+            .size = size,
+            .acknowledged = atomic.AtomicUsize.init(0),
+            .target_cpus = target_cpus,
+        };
+    }
+
+    pub fn acknowledge(self: *TlbShootdownRequest) void {
+        _ = self.acknowledged.fetchAdd(1, .Release);
+    }
+
+    pub fn waitForAcknowledgments(self: *TlbShootdownRequest, expected: usize) void {
+        while (self.acknowledged.load(.Acquire) < expected) {
+            asm.pause();
+        }
+    }
+};
+
+/// Global TLB shootdown request (used by IPI handler)
+pub var tlb_shootdown_request: ?*TlbShootdownRequest = null;
+
+/// Perform TLB shootdown on all CPUs
+pub fn tlbShootdownAll(address: u64) void {
+    // Invalidate on local CPU
+    asm.invlpg(address);
+
+    // TODO: Send IPI to all other CPUs
+    // This requires the APIC/SMP subsystem to be available
+    // For now, we only invalidate locally
+    // When SMP is active, this should:
+    // 1. Create a TlbShootdownRequest
+    // 2. Send IPI to all other CPUs
+    // 3. Wait for acknowledgments
+}
+
+/// Perform TLB shootdown for a range on all CPUs
+pub fn tlbShootdownRange(address: u64, size: u64) void {
+    // Invalidate range on local CPU
+    const page_count = memory.pageCount(size);
+    var i: usize = 0;
+    while (i < page_count) : (i += 1) {
+        const virt = address + (i * memory.PAGE_SIZE);
+        asm.invlpg(virt);
+    }
+
+    // TODO: Send IPI to all other CPUs
+}
+
+/// TLB shootdown IPI handler (called by interrupt handler)
+pub fn tlbShootdownIpiHandler() void {
+    if (tlb_shootdown_request) |req| {
+        if (req.is_range) {
+            const page_count = memory.pageCount(req.size);
+            var i: usize = 0;
+            while (i < page_count) : (i += 1) {
+                const virt = req.address + (i * memory.PAGE_SIZE);
+                asm.invlpg(virt);
+            }
+        } else {
+            asm.invlpg(req.address);
+        }
+        req.acknowledge();
+    }
+}
+
+/// Flush entire TLB (reload CR3)
+pub fn flushTlb() void {
+    const cr3 = asm.readCr3();
+    asm.writeCr3(cr3);
+}
+
+// ============================================================================
+// Kernel Space Mapping
+// ============================================================================
 
 pub fn mapKernelSpace(
     mapper: *PageMapper,

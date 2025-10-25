@@ -213,11 +213,8 @@ pub const CpuScheduler = struct {
         return null;
     }
 
-    /// Pick next thread to run
-    pub fn pickNext(self: *CpuScheduler) ?*Thread {
-        self.lock.acquire();
-        defer self.lock.release();
-
+    /// Pick next thread to run (must be called with lock held)
+    fn pickNextLocked(self: *CpuScheduler) ?*Thread {
         const priority = self.findHighestPriority() orelse return self.idle_thread;
 
         const next = self.run_queues[priority].dequeue() orelse return self.idle_thread;
@@ -232,12 +229,19 @@ pub const CpuScheduler = struct {
         return next;
     }
 
+    /// Pick next thread to run
+    pub fn pickNext(self: *CpuScheduler) ?*Thread {
+        self.lock.acquire();
+        defer self.lock.release();
+        return self.pickNextLocked();
+    }
+
     /// Schedule next thread (context switch)
     pub fn schedule(self: *CpuScheduler) void {
         self.lock.acquire();
 
         const prev = self.current;
-        const next = self.pickNext();
+        const next = self.pickNextLocked();
 
         if (next == prev) {
             // Same thread, just continue

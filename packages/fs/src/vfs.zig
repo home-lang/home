@@ -425,6 +425,205 @@ pub const Mount = struct {
 };
 
 // ============================================================================
+// Inode Cache and Eviction
+// ============================================================================
+
+pub const InodeCache = struct {
+    inodes: Basics.HashMap(u64, *Inode, Basics.hash_map.AutoContext(u64), 80),
+    lock: sync.RwLock,
+    max_inodes: usize,
+    allocator: Basics.Allocator,
+
+    pub fn init(allocator: Basics.Allocator, max_inodes: usize) !InodeCache {
+        return .{
+            .inodes = Basics.HashMap(u64, *Inode, Basics.hash_map.AutoContext(u64), 80).init(allocator),
+            .lock = sync.RwLock.init(),
+            .max_inodes = max_inodes,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *InodeCache) void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        var it = self.inodes.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.release(self.allocator);
+        }
+        self.inodes.deinit();
+    }
+
+    /// Get inode from cache or null if not found
+    pub fn get(self: *InodeCache, ino: u64) ?*Inode {
+        self.lock.acquireRead();
+        defer self.lock.releaseRead();
+
+        if (self.inodes.get(ino)) |inode| {
+            inode.acquire();
+            return inode;
+        }
+        return null;
+    }
+
+    /// Add inode to cache
+    pub fn add(self: *InodeCache, inode: *Inode) !void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        // Evict if cache is full
+        if (self.inodes.count() >= self.max_inodes) {
+            try self.evictOne();
+        }
+
+        inode.acquire();
+        try self.inodes.put(inode.ino, inode);
+    }
+
+    /// Remove inode from cache
+    pub fn remove(self: *InodeCache, ino: u64) void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        if (self.inodes.fetchRemove(ino)) |entry| {
+            entry.value.release(self.allocator);
+        }
+    }
+
+    /// Evict one inode from cache (LRU-like, removes first with refcount==1)
+    fn evictOne(self: *InodeCache) !void {
+        var it = self.inodes.iterator();
+        while (it.next()) |entry| {
+            const inode = entry.value_ptr.*;
+            // Only evict if refcount == 1 (only cache has reference)
+            if (inode.refcount.load(.Acquire) == 1) {
+                const ino = entry.key_ptr.*;
+                _ = self.inodes.remove(ino);
+                inode.release(self.allocator);
+                return;
+            }
+        }
+
+        // If no evictable inodes, expand cache temporarily
+        return error.CacheFull;
+    }
+
+    /// Evict all unused inodes (refcount == 1)
+    pub fn evictUnused(self: *InodeCache) void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        var to_remove = Basics.ArrayList(u64).init(self.allocator);
+        defer to_remove.deinit();
+
+        var it = self.inodes.iterator();
+        while (it.next()) |entry| {
+            const inode = entry.value_ptr.*;
+            if (inode.refcount.load(.Acquire) == 1) {
+                to_remove.append(entry.key_ptr.*) catch continue;
+            }
+        }
+
+        for (to_remove.items) |ino| {
+            if (self.inodes.fetchRemove(ino)) |entry| {
+                entry.value.release(self.allocator);
+            }
+        }
+    }
+};
+
+// ============================================================================
+// Reference Leak Detection (Debug Mode)
+// ============================================================================
+
+const debug_refcount = Basics.builtin.mode == .Debug;
+
+pub const RefTracker = if (debug_refcount) struct {
+    allocations: Basics.HashMap(*anyopaque, StackTrace, Basics.hash_map.AutoContext(*anyopaque), 80),
+    lock: sync.Spinlock,
+    allocator: Basics.Allocator,
+
+    const StackTrace = struct {
+        type_name: []const u8,
+        refcount: u32,
+        allocated_at: usize,
+    };
+
+    pub fn init(allocator: Basics.Allocator) RefTracker {
+        return .{
+            .allocations = Basics.HashMap(*anyopaque, StackTrace, Basics.hash_map.AutoContext(*anyopaque), 80).init(allocator),
+            .lock = sync.Spinlock.init(),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *RefTracker) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Report leaks
+        var it = self.allocations.iterator();
+        var leak_count: usize = 0;
+        while (it.next()) |entry| {
+            const trace = entry.value_ptr.*;
+            if (trace.refcount > 0) {
+                Basics.debug.print("LEAK: {s} at 0x{x} (refcount: {})\n",
+                    .{trace.type_name, @intFromPtr(entry.key_ptr.*), trace.refcount});
+                leak_count += 1;
+            }
+        }
+
+        if (leak_count > 0) {
+            Basics.debug.print("Total reference leaks: {}\n", .{leak_count});
+        }
+
+        self.allocations.deinit();
+    }
+
+    pub fn track(self: *RefTracker, ptr: *anyopaque, type_name: []const u8) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        self.allocations.put(ptr, .{
+            .type_name = type_name,
+            .refcount = 1,
+            .allocated_at = @returnAddress(),
+        }) catch {};
+    }
+
+    pub fn acquire(self: *RefTracker, ptr: *anyopaque) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        if (self.allocations.getPtr(ptr)) |trace| {
+            trace.refcount += 1;
+        }
+    }
+
+    pub fn release(self: *RefTracker, ptr: *anyopaque) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        if (self.allocations.getPtr(ptr)) |trace| {
+            if (trace.refcount > 0) {
+                trace.refcount -= 1;
+            }
+            if (trace.refcount == 0) {
+                _ = self.allocations.remove(ptr);
+            }
+        }
+    }
+} else struct {
+    pub fn init(_: Basics.Allocator) @This() {
+        return .{};
+    }
+    pub fn deinit(_: *@This()) void {}
+    pub fn track(_: *@This(), _: *anyopaque, _: []const u8) void {}
+    pub fn acquire(_: *@This(), _: *anyopaque) void {}
+    pub fn release(_: *@This(), _: *anyopaque) void {}
+};
+
+// ============================================================================
 // Path Resolution
 // ============================================================================
 
@@ -457,8 +656,14 @@ pub fn resolvePath(
         }
 
         // Lookup in current directory
-        const inode = current.inode orelse return error.NoInode;
-        if (!inode.isDirectory()) return error.NotADirectory;
+        const inode = current.inode orelse {
+            current.release();
+            return error.NoInode;
+        };
+        if (!inode.isDirectory()) {
+            current.release();
+            return error.NotADirectory;
+        }
 
         // Try cache first
         if (current.findChild(component)) |child| {
@@ -470,9 +675,20 @@ pub fn resolvePath(
 
         // Lookup in filesystem
         if (inode.ops.lookup) |lookup| {
-            const child_inode = try lookup(inode, component);
-            const child_dentry = try Dentry.init(allocator, component, child_inode);
-            try current.addChild(child_dentry);
+            const child_inode = lookup(inode, component) catch |err| {
+                current.release();
+                return err;
+            };
+            const child_dentry = Dentry.init(allocator, component, child_inode) catch |err| {
+                child_inode.release(allocator);
+                current.release();
+                return err;
+            };
+            current.addChild(child_dentry) catch |err| {
+                child_dentry.release();
+                current.release();
+                return err;
+            };
 
             const old = current;
             current = child_dentry;

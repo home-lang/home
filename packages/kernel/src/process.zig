@@ -420,8 +420,95 @@ pub const Process = struct {
         self.state = .Zombie;
         self.exit_code = exit_code;
 
+        // Clean up resources
+        self.cleanupResources();
+
         // Wake up parent if waiting
         // TODO: Implement wait queue
+    }
+
+    /// Clean up all process resources
+    fn cleanupResources(self: *Process) void {
+        // 1. Close all file descriptors
+        self.fd_lock.acquire();
+        for (self.file_descriptors.items, 0..) |fd, i| {
+            if (fd) |_| {
+                // Close FD (will be handled by VFS layer)
+                self.file_descriptors.items[i] = null;
+            }
+        }
+        self.fd_lock.release();
+
+        // 2. Clean up memory mappings (VMAs)
+        self.memory_lock.acquire();
+        if (self.page_directory) |pd| {
+            // TODO: Free all user-space page tables
+            // This should iterate through VMAs and unmap them
+            _ = pd;
+        }
+        self.memory_lock.release();
+
+        // 3. Clean up IPC resources
+        // Pipes - close any pipe FDs (handled above in FD cleanup)
+
+        // Shared memory - detach all segments
+        // TODO: Implement shm cleanup when shm.zig is available
+
+        // Message queues - close all queues
+        // TODO: Implement mqueue cleanup when mqueue.zig is available
+
+        // 4. Clean up signal handlers
+        // Reset to default handlers
+        self.signal_lock.acquire();
+        for (&self.signal_handlers) |*handler| {
+            handler.* = null;
+        }
+        self.signal_lock.release();
+
+        // 5. Terminate all threads
+        self.thread_lock.acquire();
+        for (self.threads.items) |thread_ptr| {
+            // Mark thread as terminated
+            thread_ptr.terminate();
+        }
+        self.thread_lock.release();
+
+        // Note: Actual memory deallocation happens when parent reaps us
+        // or when we transition from Zombie to Dead state
+    }
+
+    /// Fully destroy process and free all memory (called after reaping)
+    pub fn destroy(self: *Process, allocator: Basics.Allocator) void {
+        // Ensure we're already a zombie
+        if (self.state != .Zombie) {
+            self.terminate(0);
+        }
+
+        // Free all dynamically allocated memory
+        self.fd_lock.acquire();
+        self.file_descriptors.deinit();
+        self.fd_lock.release();
+
+        self.thread_lock.acquire();
+        for (self.threads.items) |thread_ptr| {
+            // Free thread resources
+            allocator.destroy(thread_ptr);
+        }
+        self.threads.deinit();
+        self.thread_lock.release();
+
+        // Free page directory if allocated
+        if (self.page_directory) |pd| {
+            allocator.destroy(pd);
+        }
+
+        // Free children list
+        self.children_lock.acquire();
+        self.children.deinit();
+        self.children_lock.release();
+
+        // Mark as dead
+        self.state = .Dead;
     }
 
     /// Check if process is alive

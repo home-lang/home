@@ -62,6 +62,188 @@ pub fn receiveEthernet(skb: *netdev.PacketBuffer) !void {
 }
 
 // ============================================================================
+// ARP Cache with Timeout
+// ============================================================================
+
+const atomic = Basics.atomic;
+
+pub const ArpCacheEntry = struct {
+    ip: IPv4Address,
+    mac: netdev.MacAddress,
+    timestamp: u64, // Monotonic time in milliseconds
+    state: EntryState,
+    retries: u8,
+
+    const EntryState = enum {
+        Incomplete, // Waiting for ARP reply
+        Reachable,  // Valid entry
+        Stale,      // Entry timeout, needs refresh
+    };
+
+    const TIMEOUT_MS: u64 = 300000; // 5 minutes
+    const STALE_MS: u64 = 60000;    // 1 minute before marking stale
+    const MAX_RETRIES: u8 = 3;
+
+    pub fn init(ip: IPv4Address) ArpCacheEntry {
+        return .{
+            .ip = ip,
+            .mac = netdev.MacAddress.init([_]u8{0} ** 6),
+            .timestamp = getMonotonicTime(),
+            .state = .Incomplete,
+            .retries = 0,
+        };
+    }
+
+    pub fn isValid(self: *const ArpCacheEntry) bool {
+        const now = getMonotonicTime();
+        return self.state == .Reachable and (now - self.timestamp) < TIMEOUT_MS;
+    }
+
+    pub fn isStale(self: *const ArpCacheEntry) bool {
+        const now = getMonotonicTime();
+        return (now - self.timestamp) > STALE_MS;
+    }
+
+    pub fn needsRetry(self: *const ArpCacheEntry) bool {
+        return self.state == .Incomplete and self.retries < MAX_RETRIES;
+    }
+
+    pub fn update(self: *ArpCacheEntry, mac: netdev.MacAddress) void {
+        self.mac = mac;
+        self.timestamp = getMonotonicTime();
+        self.state = .Reachable;
+        self.retries = 0;
+    }
+
+    pub fn markStale(self: *ArpCacheEntry) void {
+        self.state = .Stale;
+    }
+};
+
+pub const ArpCache = struct {
+    entries: Basics.HashMap(u32, ArpCacheEntry, Basics.hash_map.AutoContext(u32), 80),
+    lock: sync.RwLock,
+    allocator: Basics.Allocator,
+
+    pub fn init(allocator: Basics.Allocator) !ArpCache {
+        return .{
+            .entries = Basics.HashMap(u32, ArpCacheEntry, Basics.hash_map.AutoContext(u32), 80).init(allocator),
+            .lock = sync.RwLock.init(),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ArpCache) void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+        self.entries.deinit();
+    }
+
+    /// Lookup MAC address for IP (returns null if not found or expired)
+    pub fn lookup(self: *ArpCache, ip: IPv4Address) ?netdev.MacAddress {
+        self.lock.acquireRead();
+        defer self.lock.releaseRead();
+
+        const key = ip.toU32();
+        if (self.entries.get(key)) |entry| {
+            if (entry.isValid()) {
+                return entry.mac;
+            }
+        }
+        return null;
+    }
+
+    /// Add or update entry
+    pub fn update(self: *ArpCache, ip: IPv4Address, mac: netdev.MacAddress) !void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        const key = ip.toU32();
+        if (self.entries.getPtr(key)) |entry| {
+            entry.update(mac);
+        } else {
+            var new_entry = ArpCacheEntry.init(ip);
+            new_entry.update(mac);
+            try self.entries.put(key, new_entry);
+        }
+    }
+
+    /// Mark entry as incomplete (waiting for ARP reply)
+    pub fn markIncomplete(self: *ArpCache, ip: IPv4Address) !void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        const key = ip.toU32();
+        if (self.entries.getPtr(key)) |entry| {
+            if (entry.state == .Incomplete) {
+                entry.retries += 1;
+            }
+        } else {
+            const entry = ArpCacheEntry.init(ip);
+            try self.entries.put(key, entry);
+        }
+    }
+
+    /// Check if entry needs retry
+    pub fn needsRetry(self: *ArpCache, ip: IPv4Address) bool {
+        self.lock.acquireRead();
+        defer self.lock.releaseRead();
+
+        const key = ip.toU32();
+        if (self.entries.get(key)) |entry| {
+            return entry.needsRetry();
+        }
+        return false;
+    }
+
+    /// Remove expired entries
+    pub fn evictExpired(self: *ArpCache) void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        var to_remove = Basics.ArrayList(u32).init(self.allocator);
+        defer to_remove.deinit();
+
+        var it = self.entries.iterator();
+        while (it.next()) |entry| {
+            if (!entry.value_ptr.*.isValid()) {
+                to_remove.append(entry.key_ptr.*) catch continue;
+            }
+        }
+
+        for (to_remove.items) |key| {
+            _ = self.entries.remove(key);
+        }
+    }
+};
+
+/// Global ARP cache (per network device in real implementation)
+var global_arp_cache: ?*ArpCache = null;
+var arp_cache_init_lock: sync.Spinlock = sync.Spinlock.init();
+
+pub fn getArpCache(allocator: Basics.Allocator) !*ArpCache {
+    if (global_arp_cache) |cache| {
+        return cache;
+    }
+
+    arp_cache_init_lock.acquire();
+    defer arp_cache_init_lock.release();
+
+    if (global_arp_cache == null) {
+        const cache = try allocator.create(ArpCache);
+        cache.* = try ArpCache.init(allocator);
+        global_arp_cache = cache;
+    }
+
+    return global_arp_cache.?;
+}
+
+fn getMonotonicTime() u64 {
+    // TODO: Get actual monotonic time from timer
+    return 0;
+}
+
+// ============================================================================
 // ARP Protocol
 // ============================================================================
 
@@ -101,7 +283,11 @@ pub const ArpHeader = extern struct {
     }
 };
 
-pub fn sendArpRequest(dev: *netdev.NetDevice, target_ip: IPv4Address) !void {
+pub fn sendArpRequest(dev: *netdev.NetDevice, target_ip: IPv4Address, allocator: Basics.Allocator) !void {
+    // Mark as incomplete in cache (will increment retry count)
+    const cache = try getArpCache(allocator);
+    try cache.markIncomplete(target_ip);
+
     const arp = ArpHeader.init(.Request, dev.mac_address, getDeviceIP(dev), target_ip);
 
     var buffer: [@sizeOf(ArpHeader)]u8 = undefined;
@@ -116,11 +302,27 @@ pub fn receiveARP(skb: *netdev.PacketBuffer) !void {
     if (arp_data.len < @sizeOf(ArpHeader)) return error.InvalidARP;
 
     const arp: *const ArpHeader = @ptrCast(@alignCast(arp_data.ptr));
+    const sender_ip = IPv4Address{ .bytes = arp.sender_ip };
+    const sender_mac = netdev.MacAddress{ .bytes = arp.sender_mac };
+
+    // Update ARP cache with sender info (for both request and reply)
+    const cache = try getArpCache(skb.allocator);
+    try cache.update(sender_ip, sender_mac);
 
     if (arp.getOpcode() == .Request) {
-        // TODO: Check if target_ip matches our IP, send reply
+        const target_ip = IPv4Address{ .bytes = arp.target_ip };
+        const our_ip = getDeviceIP(skb.dev);
+
+        // Check if target_ip matches our IP
+        if (target_ip.equals(our_ip)) {
+            // Send ARP reply
+            const reply = ArpHeader.init(.Reply, skb.dev.mac_address, our_ip, sender_ip);
+            var buffer: [@sizeOf(ArpHeader)]u8 = undefined;
+            @memcpy(&buffer, Basics.mem.asBytes(&reply));
+            try sendEthernet(skb.dev, sender_mac, .ARP, &buffer);
+        }
     } else if (arp.getOpcode() == .Reply) {
-        // TODO: Update ARP cache
+        // Cache already updated above
     }
 }
 
@@ -166,6 +368,56 @@ pub const IpProtocol = enum(u8) {
     _,
 };
 
+// ============================================================================
+// Internet Checksum (RFC 1071)
+// ============================================================================
+
+/// Calculate Internet checksum (used for IP, ICMP, TCP, UDP)
+pub fn internetChecksum(data: []const u8) u16 {
+    var sum: u32 = 0;
+    var i: usize = 0;
+
+    // Sum 16-bit words
+    while (i + 1 < data.len) : (i += 2) {
+        const word = @as(u16, data[i]) << 8 | @as(u16, data[i + 1]);
+        sum +%= word;
+    }
+
+    // Add remaining byte if odd length
+    if (i < data.len) {
+        sum +%= @as(u16, data[i]) << 8;
+    }
+
+    // Fold 32-bit sum to 16 bits
+    while (sum >> 16 != 0) {
+        sum = (sum & 0xFFFF) +% (sum >> 16);
+    }
+
+    // Return one's complement
+    return @truncate(~sum);
+}
+
+/// Calculate pseudo-header checksum for TCP/UDP
+pub fn pseudoHeaderChecksum(src_ip: IPv4Address, dest_ip: IPv4Address, protocol: IpProtocol, length: u16) u32 {
+    var sum: u32 = 0;
+
+    // Source IP
+    sum +%= @as(u16, src_ip.bytes[0]) << 8 | @as(u16, src_ip.bytes[1]);
+    sum +%= @as(u16, src_ip.bytes[2]) << 8 | @as(u16, src_ip.bytes[3]);
+
+    // Dest IP
+    sum +%= @as(u16, dest_ip.bytes[0]) << 8 | @as(u16, dest_ip.bytes[1]);
+    sum +%= @as(u16, dest_ip.bytes[2]) << 8 | @as(u16, dest_ip.bytes[3]);
+
+    // Protocol
+    sum +%= @intFromEnum(protocol);
+
+    // Length
+    sum +%= length;
+
+    return sum;
+}
+
 pub const IPv4Header = extern struct {
     version_ihl: u8,
     tos: u8,
@@ -195,6 +447,25 @@ pub const IPv4Header = extern struct {
 
     pub fn getProtocol(self: *const IPv4Header) IpProtocol {
         return @enumFromInt(self.protocol);
+    }
+
+    /// Calculate IP header checksum
+    pub fn calculateChecksum(self: *const IPv4Header) u16 {
+        const header_bytes = Basics.mem.asBytes(self);
+        return internetChecksum(header_bytes);
+    }
+
+    /// Verify IP header checksum
+    pub fn verifyChecksum(self: *const IPv4Header) bool {
+        const header_bytes = Basics.mem.asBytes(self);
+        const checksum = internetChecksum(header_bytes);
+        return checksum == 0; // Should be 0 when checksum field is included
+    }
+
+    /// Set checksum field (call after header initialization)
+    pub fn setChecksum(self: *IPv4Header) void {
+        self.checksum = 0;
+        self.checksum = self.calculateChecksum();
     }
 };
 
@@ -316,6 +587,52 @@ pub const UdpHeader = extern struct {
 
     pub fn getLength(self: *const UdpHeader) u16 {
         return @byteSwap(self.length);
+    }
+
+    /// Calculate UDP checksum with pseudo-header
+    pub fn calculateChecksum(self: *const UdpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) u16 {
+        var sum = pseudoHeaderChecksum(src_ip, dest_ip, .UDP, self.getLength());
+
+        // Add UDP header
+        const header_bytes = Basics.mem.asBytes(self);
+        var i: usize = 0;
+        while (i + 1 < header_bytes.len) : (i += 2) {
+            if (i == 6) { // Skip checksum field
+                i += 2;
+                continue;
+            }
+            const word = @as(u16, header_bytes[i]) << 8 | @as(u16, header_bytes[i + 1]);
+            sum +%= word;
+        }
+
+        // Add payload
+        i = 0;
+        while (i + 1 < payload.len) : (i += 2) {
+            const word = @as(u16, payload[i]) << 8 | @as(u16, payload[i + 1]);
+            sum +%= word;
+        }
+        if (i < payload.len) {
+            sum +%= @as(u16, payload[i]) << 8;
+        }
+
+        // Fold and complement
+        while (sum >> 16 != 0) {
+            sum = (sum & 0xFFFF) +% (sum >> 16);
+        }
+        return @truncate(~sum);
+    }
+
+    /// Verify UDP checksum (checksum of 0 means no checksum for IPv4)
+    pub fn verifyChecksum(self: *const UdpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) bool {
+        if (self.checksum == 0) return true; // No checksum
+        const calculated = self.calculateChecksum(src_ip, dest_ip, payload);
+        return calculated == 0 or calculated == self.checksum;
+    }
+
+    /// Set checksum field
+    pub fn setChecksum(self: *UdpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) void {
+        self.checksum = 0;
+        self.checksum = self.calculateChecksum(src_ip, dest_ip, payload);
     }
 };
 
@@ -505,6 +822,51 @@ pub const TcpHeader = extern struct {
 
     pub fn getWindowSize(self: *const TcpHeader) u16 {
         return @byteSwap(self.window_size);
+    }
+
+    /// Calculate TCP checksum with pseudo-header
+    pub fn calculateChecksum(self: *const TcpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) u16 {
+        const tcp_len: u16 = @sizeOf(TcpHeader) + @as(u16, @intCast(payload.len));
+        var sum = pseudoHeaderChecksum(src_ip, dest_ip, .TCP, tcp_len);
+
+        // Add TCP header
+        const header_bytes = Basics.mem.asBytes(self);
+        var i: usize = 0;
+        while (i + 1 < header_bytes.len) : (i += 2) {
+            if (i == 16) { // Skip checksum field (offset 16 in TCP header)
+                continue;
+            }
+            const word = @as(u16, header_bytes[i]) << 8 | @as(u16, header_bytes[i + 1]);
+            sum +%= word;
+        }
+
+        // Add payload
+        i = 0;
+        while (i + 1 < payload.len) : (i += 2) {
+            const word = @as(u16, payload[i]) << 8 | @as(u16, payload[i + 1]);
+            sum +%= word;
+        }
+        if (i < payload.len) {
+            sum +%= @as(u16, payload[i]) << 8;
+        }
+
+        // Fold and complement
+        while (sum >> 16 != 0) {
+            sum = (sum & 0xFFFF) +% (sum >> 16);
+        }
+        return @truncate(~sum);
+    }
+
+    /// Verify TCP checksum
+    pub fn verifyChecksum(self: *const TcpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) bool {
+        const calculated = self.calculateChecksum(src_ip, dest_ip, payload);
+        return calculated == 0;
+    }
+
+    /// Set checksum field
+    pub fn setChecksum(self: *TcpHeader, src_ip: IPv4Address, dest_ip: IPv4Address, payload: []const u8) void {
+        self.checksum = 0;
+        self.checksum = self.calculateChecksum(src_ip, dest_ip, payload);
     }
 };
 

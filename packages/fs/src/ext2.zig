@@ -373,6 +373,372 @@ pub const Ext2Filesystem = struct {
     pub fn getRootInode(self: *Ext2Filesystem) !Ext2Inode {
         return try self.readInode(2); // Root inode is always 2
     }
+
+    // ========================================================================
+    // Write Support
+    // ========================================================================
+
+    /// Write a block to disk
+    pub fn writeBlock(self: *Ext2Filesystem, block_num: u32, data: []const u8) !void {
+        if (data.len < self.block_size) {
+            return error.BufferTooSmall;
+        }
+
+        const lba = block_num * (self.block_size / 512);
+        _ = try self.block_device.write(lba, data[0..self.block_size]);
+    }
+
+    /// Allocate a free block from the block bitmap
+    pub fn allocateBlock(self: *Ext2Filesystem) !u32 {
+        // Search each block group for a free block
+        for (self.block_groups, 0..) |*bgd, group_idx| {
+            if (bgd.bg_free_blocks_count == 0) continue;
+
+            // Read block bitmap
+            var bitmap_buffer: [4096]u8 = undefined;
+            try self.readBlock(bgd.bg_block_bitmap, &bitmap_buffer);
+
+            // Find first free bit
+            const bits_per_group = self.superblock.s_blocks_per_group;
+            for (0..bits_per_group) |bit_idx| {
+                const byte_idx = bit_idx / 8;
+                const bit_in_byte: u3 = @intCast(bit_idx % 8);
+
+                if ((bitmap_buffer[byte_idx] & (@as(u8, 1) << bit_in_byte)) == 0) {
+                    // Found free block, mark as used
+                    bitmap_buffer[byte_idx] |= (@as(u8, 1) << bit_in_byte);
+
+                    // Write bitmap back
+                    try self.writeBlock(bgd.bg_block_bitmap, &bitmap_buffer);
+
+                    // Update counters
+                    bgd.bg_free_blocks_count -= 1;
+                    self.superblock.s_free_blocks_count -= 1;
+
+                    // Calculate absolute block number
+                    const block_num = @as(u32, @intCast(group_idx)) * self.superblock.s_blocks_per_group + @as(u32, @intCast(bit_idx));
+
+                    // Write updated superblock and BGD
+                    try self.writeSuperblock();
+                    try self.writeBlockGroupDescriptor(@intCast(group_idx));
+
+                    return block_num;
+                }
+            }
+        }
+
+        return error.NoSpaceLeft;
+    }
+
+    /// Free a block (mark as unused in bitmap)
+    pub fn freeBlock(self: *Ext2Filesystem, block_num: u32) !void {
+        const group = block_num / self.superblock.s_blocks_per_group;
+        const bit_idx = block_num % self.superblock.s_blocks_per_group;
+
+        const bgd = &self.block_groups[group];
+
+        // Read block bitmap
+        var bitmap_buffer: [4096]u8 = undefined;
+        try self.readBlock(bgd.bg_block_bitmap, &bitmap_buffer);
+
+        // Mark as free
+        const byte_idx = bit_idx / 8;
+        const bit_in_byte: u3 = @intCast(bit_idx % 8);
+        bitmap_buffer[byte_idx] &= ~(@as(u8, 1) << bit_in_byte);
+
+        // Write bitmap back
+        try self.writeBlock(bgd.bg_block_bitmap, &bitmap_buffer);
+
+        // Update counters
+        bgd.bg_free_blocks_count += 1;
+        self.superblock.s_free_blocks_count += 1;
+
+        // Write updated structures
+        try self.writeSuperblock();
+        try self.writeBlockGroupDescriptor(group);
+    }
+
+    /// Allocate a free inode
+    pub fn allocateInode(self: *Ext2Filesystem, is_directory: bool) !u32 {
+        // Search each block group for a free inode
+        for (self.block_groups, 0..) |*bgd, group_idx| {
+            if (bgd.bg_free_inodes_count == 0) continue;
+
+            // Read inode bitmap
+            var bitmap_buffer: [4096]u8 = undefined;
+            try self.readBlock(bgd.bg_inode_bitmap, &bitmap_buffer);
+
+            // Find first free bit
+            const bits_per_group = self.superblock.s_inodes_per_group;
+            for (0..bits_per_group) |bit_idx| {
+                const byte_idx = bit_idx / 8;
+                const bit_in_byte: u3 = @intCast(bit_idx % 8);
+
+                if ((bitmap_buffer[byte_idx] & (@as(u8, 1) << bit_in_byte)) == 0) {
+                    // Found free inode, mark as used
+                    bitmap_buffer[byte_idx] |= (@as(u8, 1) << bit_in_byte);
+
+                    // Write bitmap back
+                    try self.writeBlock(bgd.bg_inode_bitmap, &bitmap_buffer);
+
+                    // Update counters
+                    bgd.bg_free_inodes_count -= 1;
+                    self.superblock.s_free_inodes_count -= 1;
+
+                    if (is_directory) {
+                        bgd.bg_used_dirs_count += 1;
+                    }
+
+                    // Calculate absolute inode number (1-indexed)
+                    const inode_num = @as(u32, @intCast(group_idx)) * self.superblock.s_inodes_per_group + @as(u32, @intCast(bit_idx)) + 1;
+
+                    // Write updated structures
+                    try self.writeSuperblock();
+                    try self.writeBlockGroupDescriptor(@intCast(group_idx));
+
+                    return inode_num;
+                }
+            }
+        }
+
+        return error.NoSpaceLeft;
+    }
+
+    /// Free an inode
+    pub fn freeInode(self: *Ext2Filesystem, inode_num: u32, is_directory: bool) !void {
+        const adjusted = inode_num - 1;
+        const group = adjusted / self.superblock.s_inodes_per_group;
+        const bit_idx = adjusted % self.superblock.s_inodes_per_group;
+
+        const bgd = &self.block_groups[group];
+
+        // Read inode bitmap
+        var bitmap_buffer: [4096]u8 = undefined;
+        try self.readBlock(bgd.bg_inode_bitmap, &bitmap_buffer);
+
+        // Mark as free
+        const byte_idx = bit_idx / 8;
+        const bit_in_byte: u3 = @intCast(bit_idx % 8);
+        bitmap_buffer[byte_idx] &= ~(@as(u8, 1) << bit_in_byte);
+
+        // Write bitmap back
+        try self.writeBlock(bgd.bg_inode_bitmap, &bitmap_buffer);
+
+        // Update counters
+        bgd.bg_free_inodes_count += 1;
+        self.superblock.s_free_inodes_count += 1;
+
+        if (is_directory) {
+            if (bgd.bg_used_dirs_count > 0) {
+                bgd.bg_used_dirs_count -= 1;
+            }
+        }
+
+        // Write updated structures
+        try self.writeSuperblock();
+        try self.writeBlockGroupDescriptor(group);
+    }
+
+    /// Write inode to disk
+    pub fn writeInode(self: *Ext2Filesystem, inode_num: u32, inode: *const Ext2Inode) !void {
+        if (inode_num == 0 or inode_num > self.superblock.s_inodes_count) {
+            return error.InvalidInode;
+        }
+
+        // Calculate inode location
+        const group = (inode_num - 1) / self.superblock.s_inodes_per_group;
+        const index = (inode_num - 1) % self.superblock.s_inodes_per_group;
+        const inode_size = self.superblock.getInodeSize();
+
+        const bgd = &self.block_groups[group];
+        const inode_table_block = bgd.bg_inode_table;
+        const inode_offset = index * inode_size;
+        const block_offset = inode_offset / self.block_size;
+        const offset_in_block = inode_offset % self.block_size;
+
+        // Read block containing inode
+        var buffer: [4096]u8 = undefined;
+        const lba = (inode_table_block + block_offset) * (self.block_size / 512);
+        _ = try self.block_device.read(lba, &buffer);
+
+        // Copy inode data
+        const inode_bytes = Basics.mem.asBytes(inode);
+        @memcpy(buffer[offset_in_block .. offset_in_block + @sizeOf(Ext2Inode)], inode_bytes);
+
+        // Write block back
+        _ = try self.block_device.write(lba, &buffer);
+    }
+
+    /// Write data to an inode (allocates blocks as needed)
+    pub fn writeInodeData(self: *Ext2Filesystem, inode_num: u32, inode: *Ext2Inode, offset: u64, data: []const u8) !usize {
+        var bytes_written: usize = 0;
+        var current_offset = offset;
+
+        while (bytes_written < data.len) {
+            const block_index = current_offset / self.block_size;
+            const offset_in_block = current_offset % self.block_size;
+            const bytes_in_block = Basics.math.min(self.block_size - @as(u32, @intCast(offset_in_block)), @as(u32, @intCast(data.len - bytes_written)));
+
+            // Get or allocate block
+            var block_num = try self.getInodeBlock(inode, @intCast(block_index));
+            if (block_num == 0) {
+                block_num = try self.allocateBlock();
+                try self.setInodeBlock(inode, @intCast(block_index), block_num);
+            }
+
+            // Read block, modify, write back
+            var block_buffer: [4096]u8 = undefined;
+            if (offset_in_block != 0 or bytes_in_block < self.block_size) {
+                // Partial block write, need to read first
+                try self.readBlock(block_num, &block_buffer);
+            }
+
+            @memcpy(block_buffer[offset_in_block .. offset_in_block + bytes_in_block], data[bytes_written .. bytes_written + bytes_in_block]);
+            try self.writeBlock(block_num, &block_buffer);
+
+            bytes_written += bytes_in_block;
+            current_offset += bytes_in_block;
+        }
+
+        // Update inode size if we extended the file
+        const new_size = offset + bytes_written;
+        if (new_size > inode.i_size) {
+            inode.i_size = @intCast(new_size);
+            try self.writeInode(inode_num, inode);
+        }
+
+        return bytes_written;
+    }
+
+    /// Set a specific block pointer in an inode (handles indirect blocks)
+    fn setInodeBlock(self: *Ext2Filesystem, inode: *Ext2Inode, block_index: u32, block_num: u32) !void {
+        // Direct blocks (0-11)
+        if (block_index < 12) {
+            inode.i_block[block_index] = block_num;
+            return;
+        }
+
+        const blocks_per_indirect = self.block_size / 4;
+
+        // Single indirect (12)
+        if (block_index < 12 + blocks_per_indirect) {
+            if (inode.i_block[12] == 0) {
+                inode.i_block[12] = try self.allocateBlock();
+            }
+
+            var indirect_buffer: [4096]u8 = undefined;
+            try self.readBlock(inode.i_block[12], &indirect_buffer);
+
+            const indirect_table = @as([*]u32, @ptrCast(@alignCast(&indirect_buffer)));
+            indirect_table[block_index - 12] = block_num;
+
+            try self.writeBlock(inode.i_block[12], &indirect_buffer);
+            return;
+        }
+
+        // Double indirect and triple indirect not implemented
+        return error.BlockIndexTooLarge;
+    }
+
+    /// Write superblock to disk
+    fn writeSuperblock(self: *Ext2Filesystem) !void {
+        var sb_buffer: [1024]u8 = undefined;
+        @memcpy(&sb_buffer, Basics.mem.asBytes(&self.superblock));
+
+        const lba = 2; // Superblock is at offset 1024 (LBA 2 for 512-byte sectors)
+        _ = try self.block_device.write(lba, &sb_buffer);
+    }
+
+    /// Write block group descriptor to disk
+    fn writeBlockGroupDescriptor(self: *Ext2Filesystem, group: u32) !void {
+        const bgd_start_block = if (self.block_size == 1024) 2 else 1;
+        const bgd_offset = group * @sizeOf(Ext2BlockGroupDescriptor);
+        const block_offset = bgd_offset / self.block_size;
+
+        var buffer: [4096]u8 = undefined;
+        const lba = (bgd_start_block + block_offset) * (self.block_size / 512);
+        _ = try self.block_device.read(lba, &buffer);
+
+        const offset_in_block = bgd_offset % self.block_size;
+        const bgd_bytes = Basics.mem.asBytes(&self.block_groups[group]);
+        @memcpy(buffer[offset_in_block .. offset_in_block + @sizeOf(Ext2BlockGroupDescriptor)], bgd_bytes);
+
+        _ = try self.block_device.write(lba, &buffer);
+    }
+
+    /// Create a new directory entry
+    pub fn createDirEntry(self: *Ext2Filesystem, parent_inode_num: u32, name: []const u8, inode_num: u32, file_type: u8) !void {
+        var parent_inode = try self.readInode(parent_inode_num);
+        if (!parent_inode.isDirectory()) {
+            return error.NotADirectory;
+        }
+
+        const entry_size = @sizeOf(Ext2DirEntry) + name.len;
+        const aligned_size = (entry_size + 3) & ~@as(usize, 3); // 4-byte alignment
+
+        // For simplicity, append to the end of the directory
+        const dir_size = parent_inode.getSize();
+        var entry_buffer: [512]u8 = undefined;
+
+        const entry: *Ext2DirEntry = @ptrCast(@alignCast(&entry_buffer));
+        entry.* = .{
+            .inode = inode_num,
+            .rec_len = @intCast(aligned_size),
+            .name_len = @intCast(name.len),
+            .file_type = file_type,
+        };
+
+        // Copy name after entry
+        const name_ptr = entry_buffer[@sizeOf(Ext2DirEntry)..];
+        @memcpy(name_ptr[0..name.len], name);
+
+        // Write entry to directory
+        _ = try self.writeInodeData(parent_inode_num, &parent_inode, dir_size, entry_buffer[0..aligned_size]);
+    }
+
+    /// Delete a directory entry by name
+    pub fn deleteDirEntry(self: *Ext2Filesystem, parent_inode_num: u32, name: []const u8) !void {
+        var parent_inode = try self.readInode(parent_inode_num);
+        if (!parent_inode.isDirectory()) {
+            return error.NotADirectory;
+        }
+
+        // Read directory entries
+        const dir_size = parent_inode.getSize();
+        var dir_buffer = try self.allocator.alloc(u8, @intCast(dir_size));
+        defer self.allocator.free(dir_buffer);
+
+        _ = try self.readInodeData(&parent_inode, 0, dir_buffer);
+
+        // Find entry
+        var offset: usize = 0;
+        var prev_entry: ?*Ext2DirEntry = null;
+
+        while (offset < dir_size) {
+            const entry: *Ext2DirEntry = @ptrCast(@alignCast(dir_buffer[offset..].ptr));
+            const entry_name = entry.getName();
+
+            if (Basics.mem.eql(u8, entry_name, name)) {
+                // Found entry to delete
+                if (prev_entry) |prev| {
+                    // Extend previous entry to cover this one
+                    prev.rec_len += entry.rec_len;
+                } else {
+                    // First entry, mark as deleted by setting inode to 0
+                    entry.inode = 0;
+                }
+
+                // Write modified directory back
+                _ = try self.writeInodeData(parent_inode_num, &parent_inode, 0, dir_buffer);
+                return;
+            }
+
+            prev_entry = entry;
+            offset += entry.rec_len;
+        }
+
+        return error.FileNotFound;
+    }
 };
 
 // ============================================================================
@@ -398,7 +764,6 @@ pub fn mount(allocator: Basics.Allocator, device: *block.BlockDevice) !*vfs.Supe
 
     return sb;
 }
-
 // ============================================================================
 // Tests
 // ============================================================================

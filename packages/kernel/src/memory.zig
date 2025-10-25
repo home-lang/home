@@ -2,6 +2,7 @@
 // Low-level memory primitives for OS development
 
 const Basics = @import("basics");
+const sync = @import("sync.zig");
 
 /// Physical memory address
 pub const PhysicalAddress = usize;
@@ -164,15 +165,20 @@ pub fn pageCou​nt(size: usize) usize {
 pub const BumpAllocator = struct {
     current: usize,
     limit: usize,
+    lock: sync.Spinlock,
 
     pub fn init(start: usize, size: usize) @This() {
         return .{
             .current = start,
             .limit = start + size,
+            .lock = sync.Spinlock.init(),
         };
     }
 
     pub fn alloc(self: *@This(), size: usize, alignment: usize) ![]u8 {
+        self.lock.acquire();
+        defer self.lock.release();
+
         // Align current pointer
         const aligned = Basics.mem.alignForward(usize, self.current, alignment);
 
@@ -216,12 +222,19 @@ pub fn SlabAllocator(comptime T: type) type {
         };
 
         free_list: ?*Slab,
+        lock: sync.Spinlock,
 
         pub fn init() Self {
-            return .{ .free_list = null };
+            return .{
+                .free_list = null,
+                .lock = sync.Spinlock.init(),
+            };
         }
 
         pub fn alloc(self: *Self) !*T {
+            self.lock.acquire();
+            defer self.lock.release();
+
             if (self.free_list) |slab| {
                 self.free_list = slab.next;
                 const ptr: *T = @ptrCast(@alignCast(slab));
@@ -232,6 +245,9 @@ pub fn SlabAllocator(comptime T: type) type {
         }
 
         pub fn free(self: *Self, ptr: *T) void {
+            self.lock.acquire();
+            defer self.lock.release();
+
             const slab: *Slab = @ptrCast(@alignCast(ptr));
             slab.next = self.free_list;
             self.free_list = slab;
@@ -244,13 +260,18 @@ pub fn SlabAllocator(comptime T: type) type {
                 }
             }
 
+            self.lock.acquire();
+            defer self.lock.release();
+
             const object_size = @sizeOf(T);
             const count = memory.len / object_size;
 
             for (0..count) |i| {
                 const offset = i * object_size;
                 const slab: *Slab = @ptrCast(@alignCast(memory[offset..].ptr));
-                self.free(slab);
+                // Add to free list without locking (we already hold the lock)
+                slab.next = self.free_list;
+                self.free_list = slab;
             }
         }
     };
@@ -269,16 +290,21 @@ pub const BuddyAllocator = struct {
     free_lists: [MAX_ORDER]?*Block,
     base_address: usize,
     total_size: usize,
+    lock: sync.Spinlock,
 
     pub fn init(base: usize, size: usize) @This() {
         return .{
             .free_lists = [_]?*Block{null} ** MAX_ORDER,
             .base_address = base,
             .total_size = size,
+            .lock = sync.Spinlock.init(),
         };
     }
 
     pub fn alloc(self: *@This(), size: usize) ![]u8 {
+        self.lock.acquire();
+        defer self.lock.release();
+
         const order = sizeToOrder(size);
 
         // Find smallest available block
@@ -305,6 +331,9 @@ pub const BuddyAllocator = struct {
     }
 
     pub fn free(self: *@This(), memory: []u8) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
         var addr = @intFromPtr(memory.ptr);
         var order = sizeToOrder(memory.len);
 

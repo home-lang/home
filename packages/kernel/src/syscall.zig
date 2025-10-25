@@ -408,14 +408,25 @@ pub const SyscallTable = struct {
 // ============================================================================
 
 var syscall_table: SyscallTable = undefined;
+var syscall_table_initialized: bool = false;
 
 export fn syscallDispatcher(args: SyscallArgs) callconv(.C) u64 {
+    if (!syscall_table_initialized) {
+        // Syscall table not initialized
+        return @as(u64, @bitCast(@as(i64, -38))); // ENOSYS
+    }
+
     const handler = syscall_table.get(args.number) orelse {
-        // Invalid syscall number
-        return @as(u64, @bitCast(@as(i64, -1)));
+        // Invalid/unimplemented syscall number
+        return @as(u64, @bitCast(@as(i64, -38))); // ENOSYS
     };
 
     return handler(args);
+}
+
+/// Get mutable reference to syscall table for registration
+pub fn getSyscallTable() *SyscallTable {
+    return &syscall_table;
 }
 
 // ============================================================================
@@ -483,6 +494,7 @@ export fn syscallEntry() callconv(.Naked) noreturn {
 
 pub fn initSyscalls(kernel_cs: u16, user_cs: u16) void {
     syscall_table = SyscallTable.init();
+    syscall_table_initialized = true;
 
     // Enable SYSCALL/SYSRET in EFER
     var efer = asm.rdmsr(IA32_EFER);
