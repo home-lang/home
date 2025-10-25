@@ -9,6 +9,7 @@ const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
 const random = @import("random.zig");
 const limits = @import("limits.zig");
+const namespaces = @import("namespaces.zig");
 
 // Forward declaration
 const Thread = @import("thread.zig").Thread;
@@ -318,6 +319,9 @@ pub const Process = struct {
     /// Memory statistics (RSS, VM size, peak usage)
     memory_stats: limits.MemoryStats,
 
+    /// Namespace set (PID, mount, network, IPC, UTS isolation)
+    namespaces: ?*namespaces.NamespaceSet,
+
     /// Process lock
     lock: sync.Spinlock,
 
@@ -367,9 +371,13 @@ pub const Process = struct {
             .num_groups = 0,
             .capabilities = 0xFFFFFFFFFFFFFFFF, // All capabilities for kernel processes
             .memory_stats = limits.MemoryStats.init(),
+            .namespaces = null, // Will be initialized later
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
         };
+
+        // Initialize default namespaces
+        process.namespaces = namespaces.NamespaceSet.initDefault(allocator) catch null;
 
         // Set default cwd to /
         process.cwd[0] = '/';
@@ -756,6 +764,70 @@ pub fn fork(parent: *Process, allocator: Basics.Allocator) !*Process {
 
     // Initialize child's memory stats (starts with 0 RSS)
     child.memory_stats = limits.MemoryStats.init();
+
+    // Inherit namespaces from parent (no new namespaces in basic fork)
+    // For clone() with namespace flags, use forkWithFlags()
+    if (parent.namespaces) |parent_ns| {
+        // Share all namespaces (increment refcounts)
+        parent_ns.pid_ns.acquire();
+        parent_ns.mnt_ns.acquire();
+        parent_ns.net_ns.acquire();
+        parent_ns.ipc_ns.acquire();
+        parent_ns.uts_ns.acquire();
+        child.namespaces = parent_ns;
+    }
+
+    // Add to parent's children
+    try parent.addChild(child);
+
+    // Register globally
+    try registerProcess(child);
+
+    return child;
+}
+
+/// Fork with clone flags (supports namespace creation)
+pub fn forkWithFlags(parent: *Process, allocator: Basics.Allocator, flags: u32) !*Process {
+    // Check if user can create namespaces
+    if (flags & (@intFromEnum(namespaces.NamespaceType.CLONE_NEWPID) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWNS) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWNET) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWIPC) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWUTS)) != 0)
+    {
+        if (!namespaces.canCreateNamespace()) {
+            return error.PermissionDenied;
+        }
+    }
+
+    const child = try Process.create(allocator, parent.getName());
+    errdefer child.destroy();
+
+    // Copy process state (same as fork)
+    child.ppid = parent.pid;
+    child.parent = parent;
+    @memcpy(&child.fd_table, &parent.fd_table);
+    @memcpy(child.cwd[0..parent.cwd_len], parent.cwd[0..parent.cwd_len]);
+    child.cwd_len = parent.cwd_len;
+
+    // Inherit credentials
+    child.uid = parent.uid;
+    child.gid = parent.gid;
+    child.euid = parent.euid;
+    child.egid = parent.egid;
+    child.saved_uid = parent.saved_uid;
+    child.saved_gid = parent.saved_gid;
+    child.fsuid = parent.fsuid;
+    child.fsgid = parent.fsgid;
+    @memcpy(&child.groups, &parent.groups);
+    child.num_groups = parent.num_groups;
+    child.capabilities = parent.capabilities;
+    child.memory_stats = limits.MemoryStats.init();
+
+    // Clone namespaces based on flags
+    if (parent.namespaces) |parent_ns| {
+        child.namespaces = try parent_ns.clone(allocator, flags);
+    }
 
     // Add to parent's children
     try parent.addChild(child);

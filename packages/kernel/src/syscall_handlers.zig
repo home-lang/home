@@ -11,6 +11,8 @@ const pipe = @import("pipe.zig");
 const vmm = @import("vmm.zig");
 const capabilities = @import("capabilities.zig");
 const limits = @import("limits.zig");
+const namespaces = @import("namespaces.zig");
+const audit = @import("audit.zig");
 
 // ============================================================================
 // Error Handling
@@ -611,4 +613,105 @@ pub fn registerAllSyscalls(table: *syscall.SyscallTable) void {
 
     // Time
     table.register(.Nanosleep, sys_nanosleep);
+
+    // Namespaces
+    // table.register(.Unshare, sys_unshare);
+    // table.register(.Setns, sys_setns);
+}
+
+// ============================================================================
+// Namespace System Calls
+// ============================================================================
+
+/// unshare - create new namespaces for current process
+export fn sys_unshare(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const flags = @as(u32, @truncate(args.arg1));
+
+    const current = process.getCurrentProcess() orelse return returnError(error.NoProcess);
+
+    // Check if user has permission to create namespaces
+    if (!namespaces.canCreateNamespace()) {
+        audit.logSecurityViolation("Unprivileged namespace creation attempt");
+        return returnError(error.PermissionDenied);
+    }
+
+    // Create new namespace set with specified flags
+    if (current.namespaces) |old_ns| {
+        const new_ns = old_ns.clone(current.allocator, flags) catch |err| {
+            return returnError(err);
+        };
+
+        // Release old namespaces
+        old_ns.release();
+
+        // Set new namespaces
+        current.namespaces = new_ns;
+
+        // Log namespace creation
+        audit.logSecurityViolation("Namespace created via unshare");
+    }
+
+    return 0;
+}
+
+/// setns - join an existing namespace
+export fn sys_setns(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const ns_fd = @as(i32, @bitCast(@as(u32, @truncate(args.arg1))));
+    const ns_type = @as(u32, @truncate(args.arg2));
+
+    _ = ns_fd;
+    _ = ns_type;
+
+    // Check permission
+    if (!namespaces.canEnterNamespace(0)) {
+        audit.logSecurityViolation("Unprivileged setns attempt");
+        return returnError(error.PermissionDenied);
+    }
+
+    // TODO: Implement namespace file descriptor lookup and joining
+    // For now, just return ENOSYS (not implemented)
+    return returnError(error.NotImplemented);
+}
+
+/// clone - create child process with namespace flags
+export fn sys_clone(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const flags = @as(u32, @truncate(args.arg1));
+    // arg2 = child_stack (not used in basic implementation)
+    // arg3 = parent_tid ptr
+    // arg4 = child_tid ptr
+    // arg5 = tls
+
+    const current = process.getCurrentProcess() orelse return returnError(error.NoProcess);
+
+    // Check fork rate limit
+    limits.checkCanFork() catch |err| {
+        audit.logRateLimitExceeded("fork");
+        return returnError(err);
+    };
+
+    limits.checkForkRateLimit() catch |err| {
+        audit.logRateLimitExceeded("fork");
+        return returnError(err);
+    };
+
+    // Create child with namespace flags
+    const child = process.forkWithFlags(current, current.allocator, flags) catch |err| {
+        return returnError(err);
+    };
+
+    // Log process creation
+    audit.logProcessCreate(child.pid);
+
+    // Log namespace creation if flags were specified
+    if (flags & (@intFromEnum(namespaces.NamespaceType.CLONE_NEWPID) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWNS) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWNET) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWIPC) |
+        @intFromEnum(namespaces.NamespaceType.CLONE_NEWUTS)) != 0)
+    {
+        audit.logSecurityViolation("Namespace created via clone");
+    }
+
+    // Return child PID to parent
+    return child.pid;
 }
