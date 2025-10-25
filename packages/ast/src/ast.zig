@@ -256,25 +256,25 @@ pub const Identifier = struct {
 /// Precedence and associativity are handled by the parser using
 /// the Precedence enum in parser.zig.
 pub const BinaryOp = enum {
-    Add,      // +
-    Sub,      // -
-    Mul,      // *
-    Div,      // /
-    Mod,      // %
-    Equal,    // ==
+    Add, // +
+    Sub, // -
+    Mul, // *
+    Div, // /
+    Mod, // %
+    Equal, // ==
     NotEqual, // !=
-    Less,     // <
-    LessEq,   // <=
-    Greater,  // >
-    GreaterEq,// >=
-    And,      // &&
-    Or,       // ||
-    BitAnd,   // &
-    BitOr,    // |
-    BitXor,   // ^
-    LeftShift,  // <<
+    Less, // <
+    LessEq, // <=
+    Greater, // >
+    GreaterEq, // >=
+    And, // &&
+    Or, // ||
+    BitAnd, // &
+    BitOr, // |
+    BitXor, // ^
+    LeftShift, // <<
     RightShift, // >>
-    Assign,   // =
+    Assign, // =
 };
 
 /// Binary expression combining two operands with an operator.
@@ -650,11 +650,11 @@ pub const ReflectExpr = struct {
     field_name: ?[]const u8, // For @offsetOf, @fieldName, @fieldType
 
     pub const ReflectKind = enum {
-        TypeOf,    // @TypeOf(expr) - returns type of expression
-        SizeOf,    // @sizeOf(Type) - returns size in bytes
-        AlignOf,   // @alignOf(Type) - returns alignment in bytes
-        OffsetOf,  // @offsetOf(Type, "field") - returns field offset
-        TypeInfo,  // @typeInfo(Type) - returns type metadata
+        TypeOf, // @TypeOf(expr) - returns type of expression
+        SizeOf, // @sizeOf(Type) - returns size in bytes
+        AlignOf, // @alignOf(Type) - returns alignment in bytes
+        OffsetOf, // @offsetOf(Type, "field") - returns field offset
+        TypeInfo, // @typeInfo(Type) - returns type metadata
         FieldName, // @fieldName(Type, index) - returns field name
         FieldType, // @fieldType(Type, "field") - returns field type
     };
@@ -959,7 +959,7 @@ pub const MatchArm = struct {
     node: Node,
     pattern: *Pattern,
     guard: ?*Expr, // Optional guard expression (if condition)
-    body: *Expr,   // Expression to evaluate if pattern matches
+    body: *Expr, // Expression to evaluate if pattern matches
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -990,7 +990,7 @@ pub const MatchArm = struct {
 /// - Guards and or-patterns for complex conditions
 ///
 /// Examples:
-/// ```ion
+/// ```home
 /// match value {
 ///   0 => "zero",                    // Literal pattern
 ///   x => "other",                   // Identifier binding

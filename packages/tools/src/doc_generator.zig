@@ -239,7 +239,7 @@ pub const DocGenerator = struct {
 
             try writer.print("## {s}\n\n", .{item.name});
             try writer.print("**Type:** {s}\n\n", .{@tagName(item.kind)});
-            try writer.print("**Signature:**\n```ion\n{s}\n```\n\n", .{item.signature});
+            try writer.print("**Signature:**\n```home\n{s}\n```\n\n", .{item.signature});
             try writer.print("{s}\n\n", .{item.doc});
             try writer.print("*Defined in {s}:{d}*\n\n", .{ item.file_path, item.line });
             try writer.writeAll("---\n\n");

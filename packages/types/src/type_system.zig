@@ -94,7 +94,7 @@ pub const Type = union(enum) {
     /// are nominally typed (name-based) rather than structurally typed.
     ///
     /// Example:
-    /// ```ion
+    /// ```home
     /// struct Point {
     ///   x: f64,
     ///   y: f64,
@@ -122,7 +122,7 @@ pub const Type = union(enum) {
     /// data types and pattern matching.
     ///
     /// Examples:
-    /// ```ion
+    /// ```home
     /// enum Option<T> {
     ///   Some(T),
     ///   None,
