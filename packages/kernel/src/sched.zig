@@ -164,6 +164,24 @@ pub const CpuScheduler = struct {
 
     /// Add thread to scheduler
     pub fn addThread(self: *CpuScheduler, thread: *Thread) void {
+        // LOCK-FREE FAST PATH: Same-CPU enqueue
+        // If we're enqueueing to the current CPU from the current CPU,
+        // we can use a lock-free approach since there's no contention
+        const current_cpu = asm.getCpuId();
+        if (current_cpu == self.cpu_id and !asm.interruptsEnabled()) {
+            // Fast path: local enqueue without lock
+            thread.markReady();
+            const priority = thread.priority;
+            self.run_queues[priority].enqueue(thread);
+
+            // Set bit in priority bitmap (no lock needed, we're the only writer)
+            const word_idx = priority / 64;
+            const bit_idx: u6 = @intCast(priority % 64);
+            self.priority_bitmap[word_idx] |= @as(u64, 1) << bit_idx;
+            return;
+        }
+
+        // Slow path: cross-CPU or contended enqueue
         self.lock.acquire();
         defer self.lock.release();
 
@@ -179,6 +197,29 @@ pub const CpuScheduler = struct {
 
     /// Remove thread from scheduler
     pub fn removeThread(self: *CpuScheduler, thread: *Thread) void {
+        // LOCK-FREE FAST PATH: Same-CPU dequeue
+        // If we're removing from the current CPU on the current CPU,
+        // we can use a lock-free approach since there's no contention
+        const current_cpu = asm.getCpuId();
+        if (current_cpu == self.cpu_id and !asm.interruptsEnabled()) {
+            if (thread.state != .Ready and thread.state != .Running) {
+                return;
+            }
+
+            // Fast path: local dequeue without lock
+            const priority = thread.priority;
+            self.run_queues[priority].remove(thread);
+
+            // Clear bit if queue is now empty (no lock needed, we're the only writer)
+            if (self.run_queues[priority].isEmpty()) {
+                const word_idx = priority / 64;
+                const bit_idx: u6 = @intCast(priority % 64);
+                self.priority_bitmap[word_idx] &= ~(@as(u64, 1) << bit_idx);
+            }
+            return;
+        }
+
+        // Slow path: cross-CPU or contended dequeue
         self.lock.acquire();
         defer self.lock.release();
 

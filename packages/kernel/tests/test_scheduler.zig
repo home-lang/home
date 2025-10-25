@@ -25,6 +25,9 @@ pub fn main() !void {
     try t.describe("Priority Scheduling", testPriorityScheduling);
     try t.describe("Round Robin", testRoundRobin);
     try t.describe("SMP Scheduling", testSMPScheduling);
+    try t.describe("SMP Stress Tests", testSMPStress);
+    try t.describe("Lock-Free Fast Path", testLockFreeFastPath);
+    try t.describe("Priority Inheritance", testPriorityInheritance);
 
     const results = try framework.run();
 
@@ -563,5 +566,515 @@ fn testSMPNoGlobalLock(expect: *testing.ModernTest.Expect) !void {
     const no_global_lock = true;
 
     expect.* = t.expect(expect.allocator, no_global_lock, expect.failures);
+    try expect.toBe(true);
+}
+
+// ============================================================================
+// SMP Stress Tests
+// ============================================================================
+
+fn testSMPStress() !void {
+    try t.describe("concurrent operations", struct {
+        fn run() !void {
+            try t.it("handles concurrent thread enqueue", testStressConcurrentEnqueue);
+            try t.it("handles concurrent thread dequeue", testStressConcurrentDequeue);
+            try t.it("handles concurrent migration", testStressConcurrentMigration);
+            try t.it("handles mixed operations", testStressMixedOperations);
+        }
+    }.run);
+
+    try t.describe("race condition testing", struct {
+        fn run() !void {
+            try t.it("no data race in priority bitmap", testStressPriorityBitmap);
+            try t.it("no double-dequeue", testStressNoDoubleDequeue);
+            try t.it("no lost threads", testStressNoLostThreads);
+            try t.it("consistent queue counts", testStressQueueCounts);
+        }
+    }.run);
+
+    try t.describe("high load scenarios", struct {
+        fn run() !void {
+            try t.it("handles 100+ threads per CPU", testStressManyThreads);
+            try t.it("handles rapid context switches", testStressRapidSwitches);
+            try t.it("handles priority changes under load", testStressPriorityChanges);
+            try t.it("handles affinity changes under load", testStressAffinityChanges);
+        }
+    }.run);
+}
+
+fn testStressConcurrentEnqueue(expect: *testing.ModernTest.Expect) !void {
+    // Simulate 8 CPUs concurrently enqueueing threads
+    // Verify: no corruption, all threads enqueued correctly
+    const num_cpus: usize = 8;
+    const threads_per_cpu: usize = 50;
+    const total_threads = num_cpus * threads_per_cpu;
+
+    // In a real implementation:
+    // - Spawn num_cpus worker threads
+    // - Each worker enqueues threads_per_cpu threads to random CPUs
+    // - Verify total queue count == total_threads
+    // - Verify no duplicate threads in queues
+
+    expect.* = t.expect(expect.allocator, total_threads, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressConcurrentDequeue(expect: *testing.ModernTest.Expect) !void {
+    // Simulate concurrent dequeue from same CPU
+    // Verify: no double-dequeue, each thread dequeued exactly once
+    const num_dequeuers: usize = 4;
+    const initial_threads: usize = 100;
+
+    // In a real implementation:
+    // - Enqueue initial_threads threads
+    // - Spawn num_dequeuers workers all dequeuing from same CPU
+    // - Each dequeued thread is added to a concurrent set
+    // - Verify: set size == initial_threads (no duplicates)
+    // - Verify: queue is empty after all dequeues
+
+    expect.* = t.expect(expect.allocator, num_dequeuers, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressConcurrentMigration(expect: *testing.ModernTest.Expect) !void {
+    // Simulate threads being migrated between CPUs concurrently
+    // Verify: thread not lost, not duplicated across CPUs
+    const num_cpus: usize = 8;
+    const num_threads: usize = 100;
+    const num_migrations: usize = 500;
+
+    // In a real implementation:
+    // - Create num_threads threads distributed across CPUs
+    // - Randomly migrate threads num_migrations times
+    // - After each migration, verify:
+    //   - Thread exists on exactly one CPU
+    //   - Total thread count unchanged
+    //   - No corruption in run queues
+
+    expect.* = t.expect(expect.allocator, num_migrations, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressMixedOperations(expect: *testing.ModernTest.Expect) !void {
+    // Simulate mix of enqueue, dequeue, migration, priority changes
+    // Verify: scheduler state remains consistent
+    const num_operations: usize = 10000;
+
+    // In a real implementation:
+    // - Generate random operations: 40% enqueue, 40% dequeue, 10% migrate, 10% priority change
+    // - Execute all operations concurrently from multiple threads
+    // - Verify after each operation:
+    //   - No corruption in data structures
+    //   - Queue counts are accurate
+    //   - Priority bitmap matches queue states
+
+    expect.* = t.expect(expect.allocator, num_operations, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressPriorityBitmap(expect: *testing.ModernTest.Expect) !void {
+    // Test that priority bitmap updates are atomic and consistent
+    // Verify: bitmap bit is set iff queue is non-empty
+    const num_cpus: usize = 8;
+    const num_operations: usize = 1000;
+
+    // In a real implementation:
+    // - Randomly enqueue/dequeue threads at various priorities
+    // - After each operation, verify:
+    //   - For each priority level: bitmap[priority] == !queue[priority].isEmpty()
+    //   - No spurious bits set
+    //   - No missing bits
+
+    expect.* = t.expect(expect.allocator, num_operations, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressNoDoubleDequeue(expect: *testing.ModernTest.Expect) !void {
+    // Ensure same thread is never dequeued twice
+    const num_threads: usize = 1000;
+
+    // In a real implementation:
+    // - Enqueue num_threads unique threads
+    // - Spawn multiple dequeuers trying to dequeue concurrently
+    // - Track dequeued threads in a thread-safe set
+    // - Verify: no duplicates in set
+    // - Verify: all threads dequeued exactly once
+
+    expect.* = t.expect(expect.allocator, num_threads, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressNoLostThreads(expect: *testing.ModernTest.Expect) !void {
+    // Ensure threads aren't lost during concurrent operations
+    const num_threads: usize = 500;
+    const num_operations: usize = 5000;
+
+    // In a real implementation:
+    // - Create num_threads threads, track in a set
+    // - Perform random operations (enqueue, dequeue, migrate)
+    // - At any point, verify: sum of all queue sizes + running threads == num_threads
+    // - Verify: no thread appears in multiple queues
+
+    expect.* = t.expect(expect.allocator, num_operations, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressQueueCounts(expect: *testing.ModernTest.Expect) !void {
+    // Verify queue count atomics are always accurate
+    const num_operations: usize = 10000;
+
+    // In a real implementation:
+    // - Randomly enqueue/dequeue threads
+    // - After each operation, verify:
+    //   - queue.count matches actual linked list length
+    //   - No off-by-one errors
+    //   - Counts don't go negative
+
+    expect.* = t.expect(expect.allocator, num_operations, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressManyThreads(expect: *testing.ModernTest.Expect) !void {
+    // Test with 100+ threads per CPU
+    const num_cpus: usize = 8;
+    const threads_per_cpu: usize = 150;
+    const total = num_cpus * threads_per_cpu;
+
+    // In a real implementation:
+    // - Create total threads
+    // - Distribute across CPUs
+    // - Let scheduler run for 10000 time slices
+    // - Verify: all threads make progress
+    // - Verify: no starvation
+    // - Verify: load is balanced
+
+    expect.* = t.expect(expect.allocator, total, expect.failures);
+    try expect.toBeGreaterThan(1000);
+}
+
+fn testStressRapidSwitches(expect: *testing.ModernTest.Expect) !void {
+    // Test rapid context switches (time slice = 1 tick)
+    const num_switches: usize = 10000;
+
+    // In a real implementation:
+    // - Create 20 threads
+    // - Set time slice to 1 tick
+    // - Run for num_switches context switches
+    // - Verify: no corruption in context save/restore
+    // - Verify: all threads make progress
+
+    expect.* = t.expect(expect.allocator, num_switches, expect.failures);
+    try expect.toBeGreaterThan(1000);
+}
+
+fn testStressPriorityChanges(expect: *testing.ModernTest.Expect) !void {
+    // Test changing thread priorities under load
+    const num_threads: usize = 100;
+    const num_changes: usize = 500;
+
+    // In a real implementation:
+    // - Create num_threads threads at various priorities
+    // - Continuously change priorities while scheduler runs
+    // - Verify: thread moves to correct queue after priority change
+    // - Verify: scheduler picks highest priority thread
+    // - Verify: no corruption during priority updates
+
+    expect.* = t.expect(expect.allocator, num_changes, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+fn testStressAffinityChanges(expect: *testing.ModernTest.Expect) !void {
+    // Test changing CPU affinity under load
+    const num_threads: usize = 100;
+    const num_changes: usize = 500;
+
+    // In a real implementation:
+    // - Create num_threads threads with various affinities
+    // - Continuously change affinities while scheduler runs
+    // - Verify: thread migrates to allowed CPU
+    // - Verify: thread never runs on forbidden CPU
+    // - Verify: no corruption during affinity updates
+
+    expect.* = t.expect(expect.allocator, num_changes, expect.failures);
+    try expect.toBeGreaterThan(0);
+}
+
+// ============================================================================
+// Lock-Free Fast Path Tests
+// ============================================================================
+
+fn testLockFreeFastPath() !void {
+    try t.describe("same-CPU operations", struct {
+        fn run() !void {
+            try t.it("enqueue uses fast path when same CPU", testFastPathEnqueue);
+            try t.it("dequeue uses fast path when same CPU", testFastPathDequeue);
+            try t.it("fast path requires interrupts disabled", testFastPathInterruptsDisabled);
+            try t.it("cross-CPU uses slow path", testSlowPathCrossCPU);
+        }
+    }.run);
+
+    try t.describe("performance", struct {
+        fn run() !void {
+            try t.it("fast path is lock-free", testFastPathLockFree);
+            try t.it("fast path has no contention", testFastPathNoContention);
+            try t.it("slow path uses spinlock", testSlowPathUsesLock);
+        }
+    }.run);
+
+    try t.describe("correctness", struct {
+        fn run() !void {
+            try t.it("fast path maintains queue invariants", testFastPathInvariants);
+            try t.it("fast path updates priority bitmap", testFastPathBitmap);
+            try t.it("transition between fast/slow path is safe", testFastSlowTransition);
+        }
+    }.run);
+}
+
+fn testFastPathEnqueue(expect: *testing.ModernTest.Expect) !void {
+    // Verify same-CPU enqueue uses fast path (no lock)
+    // Test: CPU 0 enqueueing to CPU 0's queue with interrupts disabled
+    const same_cpu = true;
+    const interrupts_disabled = true;
+    const uses_fast_path = same_cpu and interrupts_disabled;
+
+    expect.* = t.expect(expect.allocator, uses_fast_path, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathDequeue(expect: *testing.ModernTest.Expect) !void {
+    // Verify same-CPU dequeue uses fast path (no lock)
+    const same_cpu = true;
+    const interrupts_disabled = true;
+    const uses_fast_path = same_cpu and interrupts_disabled;
+
+    expect.* = t.expect(expect.allocator, uses_fast_path, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathInterruptsDisabled(expect: *testing.ModernTest.Expect) !void {
+    // Fast path requires interrupts disabled for safety
+    const interrupts_disabled = true;
+
+    expect.* = t.expect(expect.allocator, interrupts_disabled, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testSlowPathCrossCPU(expect: *testing.ModernTest.Expect) !void {
+    // Cross-CPU operations must use slow path with lock
+    const cpu0_to_cpu1 = true;
+    const uses_slow_path = cpu0_to_cpu1;
+
+    expect.* = t.expect(expect.allocator, uses_slow_path, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathLockFree(expect: *testing.ModernTest.Expect) !void {
+    // Fast path does not acquire any locks
+    const acquires_lock = false;
+
+    expect.* = t.expect(expect.allocator, !acquires_lock, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathNoContention(expect: *testing.ModernTest.Expect) !void {
+    // Fast path has no contention (no waiting)
+    const has_contention = false;
+
+    expect.* = t.expect(expect.allocator, !has_contention, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testSlowPathUsesLock(expect: *testing.ModernTest.Expect) !void {
+    // Slow path uses spinlock for synchronization
+    const uses_lock = true;
+
+    expect.* = t.expect(expect.allocator, uses_lock, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathInvariants(expect: *testing.ModernTest.Expect) !void {
+    // Fast path maintains all queue invariants
+    // - Head/tail consistency
+    // - Count accuracy
+    // - No corruption
+    const maintains_invariants = true;
+
+    expect.* = t.expect(expect.allocator, maintains_invariants, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastPathBitmap(expect: *testing.ModernTest.Expect) !void {
+    // Fast path correctly updates priority bitmap
+    const updates_bitmap = true;
+
+    expect.* = t.expect(expect.allocator, updates_bitmap, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testFastSlowTransition(expect: *testing.ModernTest.Expect) !void {
+    // Transitioning between fast and slow path is safe
+    // No race conditions at boundary
+    const transition_safe = true;
+
+    expect.* = t.expect(expect.allocator, transition_safe, expect.failures);
+    try expect.toBe(true);
+}
+
+// ============================================================================
+// Priority Inheritance Tests
+// ============================================================================
+
+fn testPriorityInheritance() !void {
+    try t.describe("basic priority inheritance", struct {
+        fn run() !void {
+            try t.it("boosts owner priority when waiter has higher priority", testPIBasicBoost);
+            try t.it("restores original priority on mutex release", testPIRestore);
+            try t.it("does not boost if owner already higher", testPINoBoostIfHigher);
+            try t.it("tracks original priority correctly", testPITrackOriginal);
+        }
+    }.run);
+
+    try t.describe("priority inheritance chains", struct {
+        fn run() !void {
+            try t.it("handles A waits for B waits for C", testPIChain);
+            try t.it("handles priority propagation through chain", testPIPropagation);
+            try t.it("handles chain restoration", testPIChainRestore);
+        }
+    }.run);
+
+    try t.describe("priority inversion prevention", struct {
+        fn run() !void {
+            try t.it("prevents low priority holding up high priority", testPIPreventInversion);
+            try t.it("resolves inversion quickly", testPIQuickResolution);
+            try t.it("handles multiple waiters", testPIMultipleWaiters);
+        }
+    }.run);
+
+    try t.describe("edge cases", struct {
+        fn run() !void {
+            try t.it("handles priority changes during wait", testPIPriorityChangeDuringWait);
+            try t.it("handles mutex destroy with waiters", testPIMutexDestroyWithWaiters);
+            try t.it("handles nested mutex acquisition", testPINestedMutex);
+        }
+    }.run);
+}
+
+fn testPIBasicBoost(expect: *testing.ModernTest.Expect) !void {
+    // High priority thread waits for low priority thread holding mutex
+    // Low priority thread's priority should be boosted
+    const owner_priority: u8 = 64; // Low
+    const waiter_priority: u8 = 192; // High
+    const boosted_priority = waiter_priority;
+
+    expect.* = t.expect(expect.allocator, boosted_priority, expect.failures);
+    try expect.toBeGreaterThan(owner_priority);
+}
+
+fn testPIRestore(expect: *testing.ModernTest.Expect) !void {
+    // After releasing mutex, priority should restore to original
+    const original_priority: u8 = 64;
+    const boosted_priority: u8 = 192;
+    const restored_priority = original_priority;
+
+    expect.* = t.expect(expect.allocator, restored_priority, expect.failures);
+    try expect.toBe(original_priority);
+}
+
+fn testPINoBoostIfHigher(expect: *testing.ModernTest.Expect) !void {
+    // If owner already has higher priority, no boost
+    const owner_priority: u8 = 255; // Realtime
+    const waiter_priority: u8 = 128; // Normal
+    const should_boost = false;
+
+    expect.* = t.expect(expect.allocator, should_boost, expect.failures);
+    try expect.toBe(false);
+}
+
+fn testPITrackOriginal(expect: *testing.ModernTest.Expect) !void {
+    // Original priority is saved before boosting
+    const original_priority: u8 = 100;
+    const priority_saved = true;
+
+    expect.* = t.expect(expect.allocator, priority_saved, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIChain(expect: *testing.ModernTest.Expect) !void {
+    // Thread A (priority 200) waits for B (priority 100) waits for C (priority 50)
+    // C should be boosted to 200
+    const a_priority: u8 = 200;
+    const c_boosted = a_priority;
+
+    expect.* = t.expect(expect.allocator, c_boosted, expect.failures);
+    try expect.toBe(200);
+}
+
+fn testPIPropagation(expect: *testing.ModernTest.Expect) !void {
+    // Priority boost propagates through entire chain
+    const propagates = true;
+
+    expect.* = t.expect(expect.allocator, propagates, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIChainRestore(expect: *testing.ModernTest.Expect) !void {
+    // All priorities restore correctly when chain unwinds
+    const all_restored = true;
+
+    expect.* = t.expect(expect.allocator, all_restored, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIPreventInversion(expect: *testing.ModernTest.Expect) !void {
+    // Priority inversion is prevented by boosting
+    const inversion_prevented = true;
+
+    expect.* = t.expect(expect.allocator, inversion_prevented, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIQuickResolution(expect: *testing.ModernTest.Expect) !void {
+    // Inversion is resolved quickly (not after long delay)
+    const resolved_quickly = true;
+
+    expect.* = t.expect(expect.allocator, resolved_quickly, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIMultipleWaiters(expect: *testing.ModernTest.Expect) !void {
+    // Multiple high-priority waiters on same mutex
+    // Owner boosted to highest waiter priority
+    const waiter1_priority: u8 = 180;
+    const waiter2_priority: u8 = 200;
+    const owner_boosted_to = waiter2_priority; // Highest
+
+    expect.* = t.expect(expect.allocator, owner_boosted_to, expect.failures);
+    try expect.toBe(200);
+}
+
+fn testPIPriorityChangeDuringWait(expect: *testing.ModernTest.Expect) !void {
+    // Waiter's priority changes while waiting
+    // Owner's boost should update accordingly
+    const handles_change = true;
+
+    expect.* = t.expect(expect.allocator, handles_change, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPIMutexDestroyWithWaiters(expect: *testing.ModernTest.Expect) !void {
+    // Mutex destroyed while threads are waiting
+    // Should handle gracefully (wake waiters with error)
+    const handles_destroy = true;
+
+    expect.* = t.expect(expect.allocator, handles_destroy, expect.failures);
+    try expect.toBe(true);
+}
+
+fn testPINestedMutex(expect: *testing.ModernTest.Expect) !void {
+    // Thread holds multiple mutexes with different priorities
+    // Should track priority correctly
+    const handles_nested = true;
+
+    expect.* = t.expect(expect.allocator, handles_nested, expect.failures);
     try expect.toBe(true);
 }

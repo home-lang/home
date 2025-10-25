@@ -105,6 +105,10 @@ pub const Thread = struct {
     state: ThreadState,
     /// Priority (0-255, higher = more important)
     priority: u8,
+    /// Original priority (before any priority inheritance boost)
+    original_priority: u8,
+    /// True if priority has been boosted via priority inheritance
+    priority_boosted: bool,
     /// CPU affinity mask (which CPUs this thread can run on)
     cpu_affinity: u64,
     /// Current CPU (if running)
@@ -160,13 +164,16 @@ pub const Thread = struct {
         const name_len = Basics.math.min(name.len, 63);
         @memcpy(thread_name[0..name_len], name[0..name_len]);
 
+        const default_priority = Priority.Normal.toU8();
         thread.* = .{
             .tid = allocateTid(),
             .process = process,
             .name = thread_name,
             .name_len = name_len,
             .state = .Created,
-            .priority = Priority.Normal.toU8(),
+            .priority = default_priority,
+            .original_priority = default_priority,
+            .priority_boosted = false,
             .cpu_affinity = 0xFFFFFFFFFFFFFFFF, // All CPUs
             .current_cpu = 0,
             .context = cpu_context.CpuContext.init(),
@@ -236,7 +243,41 @@ pub const Thread = struct {
     pub fn setPriority(self: *Thread, priority: Priority) void {
         self.lock.acquire();
         defer self.lock.release();
-        self.priority = priority.toU8();
+        const new_priority = priority.toU8();
+        self.priority = new_priority;
+        // Update original priority if not currently boosted
+        if (!self.priority_boosted) {
+            self.original_priority = new_priority;
+        }
+    }
+
+    /// Boost thread priority for priority inheritance
+    /// Returns true if priority was actually boosted (not already higher)
+    pub fn boostPriority(self: *Thread, new_priority: u8) bool {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Only boost if new priority is higher than current
+        if (new_priority > self.priority) {
+            if (!self.priority_boosted) {
+                self.original_priority = self.priority;
+            }
+            self.priority = new_priority;
+            self.priority_boosted = true;
+            return true;
+        }
+        return false;
+    }
+
+    /// Restore thread's original priority after priority inheritance
+    pub fn restorePriority(self: *Thread) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        if (self.priority_boosted) {
+            self.priority = self.original_priority;
+            self.priority_boosted = false;
+        }
     }
 
     /// Set CPU affinity

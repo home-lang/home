@@ -206,26 +206,51 @@ pub const RwSpinlock = struct {
 };
 
 // ============================================================================
-// Mutex (ticket-based spinlock for fairness)
+// Mutex (ticket-based spinlock for fairness with priority inheritance)
 // ============================================================================
 
 pub const Mutex = struct {
     next_ticket: atomic.AtomicU64,
     now_serving: atomic.AtomicU64,
+    /// Current owner (for priority inheritance) - pointer to Thread
+    owner: atomic.AtomicUsize,
 
     pub fn init() Mutex {
         return .{
             .next_ticket = atomic.AtomicU64.init(0),
             .now_serving = atomic.AtomicU64.init(0),
+            .owner = atomic.AtomicUsize.init(0),
         };
     }
 
-    /// Acquire the mutex
+    /// Acquire the mutex (with priority inheritance support)
     pub fn acquire(self: *Mutex) void {
         const ticket = self.next_ticket.fetchAdd(1, .Relaxed);
 
-        while (self.now_serving.load(.Acquire) != ticket) {
-            asm.pause();
+        // Check if we need to wait
+        if (self.now_serving.load(.Acquire) != ticket) {
+            // We need to wait - implement priority inheritance
+            const current_thread = @import("thread.zig").getCurrentThread();
+            if (current_thread) |waiter| {
+                const owner_addr = self.owner.load(.Acquire);
+                if (owner_addr != 0) {
+                    const Thread = @import("thread.zig").Thread;
+                    const owner: *Thread = @ptrFromInt(owner_addr);
+                    // Boost owner's priority if ours is higher
+                    _ = owner.boostPriority(waiter.priority);
+                }
+            }
+
+            // Wait for our turn
+            while (self.now_serving.load(.Acquire) != ticket) {
+                asm.pause();
+            }
+        }
+
+        // We now own the mutex - record ownership
+        const current_thread = @import("thread.zig").getCurrentThread();
+        if (current_thread) |thread| {
+            self.owner.store(@intFromPtr(thread), .Release);
         }
     }
 
@@ -238,11 +263,32 @@ pub const Mutex = struct {
             return false;
         }
 
-        return self.next_ticket.compareExchange(ticket, ticket + 1, .Acquire, .Relaxed) == null;
+        if (self.next_ticket.compareExchange(ticket, ticket + 1, .Acquire, .Relaxed) == null) {
+            // Successfully acquired - record ownership
+            const current_thread = @import("thread.zig").getCurrentThread();
+            if (current_thread) |thread| {
+                self.owner.store(@intFromPtr(thread), .Release);
+            }
+            return true;
+        }
+
+        return false;
     }
 
-    /// Release the mutex
+    /// Release the mutex (restore priority if inherited)
     pub fn release(self: *Mutex) void {
+        // Restore priority if we had boosted it
+        const owner_addr = self.owner.load(.Acquire);
+        if (owner_addr != 0) {
+            const Thread = @import("thread.zig").Thread;
+            const owner: *Thread = @ptrFromInt(owner_addr);
+            owner.restorePriority();
+        }
+
+        // Clear ownership
+        self.owner.store(0, .Release);
+
+        // Release the mutex
         _ = self.now_serving.fetchAdd(1, .Release);
     }
 
