@@ -8,6 +8,7 @@ const cpu_context = @import("cpu_context.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
 const random = @import("random.zig");
+const limits = @import("limits.zig");
 
 // Forward declaration
 const Thread = @import("thread.zig").Thread;
@@ -314,6 +315,9 @@ pub const Process = struct {
     /// Capabilities (for fine-grained privileges)
     capabilities: u64,
 
+    /// Memory statistics (RSS, VM size, peak usage)
+    memory_stats: limits.MemoryStats,
+
     /// Process lock
     lock: sync.Spinlock,
 
@@ -362,6 +366,7 @@ pub const Process = struct {
             .groups = [_]u32{0} ** 32,
             .num_groups = 0,
             .capabilities = 0xFFFFFFFFFFFFFFFF, // All capabilities for kernel processes
+            .memory_stats = limits.MemoryStats.init(),
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
         };
@@ -748,6 +753,9 @@ pub fn fork(parent: *Process, allocator: Basics.Allocator) !*Process {
 
     // Inherit capabilities
     child.capabilities = parent.capabilities;
+
+    // Initialize child's memory stats (starts with 0 RSS)
+    child.memory_stats = limits.MemoryStats.init();
 
     // Add to parent's children
     try parent.addChild(child);

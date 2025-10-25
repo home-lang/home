@@ -396,8 +396,19 @@ export fn sys_open(args: syscall.SyscallArgs) callconv(.C) u64 {
     };
 
     const fd = vfs.open(path_slice, flags, mode) catch |err| {
+        // Log file access denials for security monitoring
+        if (err == error.AccessDenied or err == error.PermissionDenied) {
+            audit.logFileAccess(path_slice, true);
+        }
+        // Log symlink-related errors for TOCTOU detection
+        if (err == error.SymlinkNotAllowed or err == error.TooManySymlinks) {
+            audit.logSecurityViolation("Symlink attack attempt detected");
+        }
         return returnError(err);
     };
+
+    // Log successful file access (if configured)
+    audit.logFileAccess(path_slice, false);
 
     return @as(u64, @bitCast(@as(i64, fd)));
 }

@@ -240,6 +240,28 @@ pub fn getAslrBase(base: u64, max_offset: u64, alignment: u64) u64 {
 }
 
 // ============================================================================
+// Entropy Addition (for /dev/random writes)
+// ============================================================================
+
+/// Add user-provided entropy to the pool
+/// This allows userspace to contribute randomness from hardware sources
+pub fn addEntropy(data: []const u8) void {
+    entropy_pool_lock.acquire();
+    defer entropy_pool_lock.release();
+
+    // Mix the data into the entropy pool using XOR
+    // In a production system, this would use a proper mixing function
+    // like SHA-256 or ChaCha20, but for now we use simple XOR
+    for (data, 0..) |byte, i| {
+        const pool_idx = (entropy_pool_index + i) % ENTROPY_POOL_SIZE;
+        entropy_pool[pool_idx] ^= byte;
+    }
+
+    // Advance the pool index
+    entropy_pool_index = (entropy_pool_index + data.len) % ENTROPY_POOL_SIZE;
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -284,4 +306,15 @@ test "ASLR offset generation" {
 
     // Should be within bounds
     try Basics.testing.expect(offset < 0x10000000);
+}
+
+test "add entropy to pool" {
+    initEntropyPool();
+
+    const test_data = "test entropy data";
+    addEntropy(test_data);
+
+    // Verify that reading random data doesn't crash
+    var buffer: [16]u8 = undefined;
+    getRandomBytes(&buffer);
 }

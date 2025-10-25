@@ -160,6 +160,180 @@ fn inSupplementaryGroups(proc: *const @import("../kernel/src/process.zig").Proce
 }
 
 // ============================================================================
+// Symlink Security (TOCTOU Prevention)
+// ============================================================================
+
+/// File open flags
+pub const O_RDONLY: i32 = 0x0000;
+pub const O_WRONLY: i32 = 0x0001;
+pub const O_RDWR: i32 = 0x0002;
+pub const O_CREAT: i32 = 0x0040;
+pub const O_EXCL: i32 = 0x0080;
+pub const O_NOFOLLOW: i32 = 0x0100; // Don't follow symlinks
+pub const O_DIRECTORY: i32 = 0x0200; // Must be directory
+pub const O_TRUNC: i32 = 0x0400;
+
+/// Check if symlink can be safely followed
+pub fn checkSymlinkSafety(symlink_inode: *Inode, parent_dir: *Inode) !void {
+    const process_mod = @import("../kernel/src/process.zig");
+    const current = process_mod.getCurrentProcess() orelse return error.NoProcess;
+
+    // Symlinks owned by root are always safe
+    if (symlink_inode.uid == 0) return;
+
+    // Symlink must be owned by the current user or parent directory owner
+    if (symlink_inode.uid != current.uid and symlink_inode.uid != parent_dir.uid) {
+        // Also check if current user is root
+        if (current.euid != 0) {
+            return error.SymlinkNotTrusted;
+        }
+    }
+
+    // Check that parent directory is not world-writable (sticky bit check)
+    const parent_mode = parent_dir.mode.toOctal();
+    const world_write = (parent_mode & 0x2) != 0;
+    const sticky = parent_dir.mode.sticky;
+
+    // If parent is world-writable and doesn't have sticky bit, it's dangerous
+    if (world_write and !sticky) {
+        return error.UnsafeSymlinkLocation;
+    }
+}
+
+/// Path resolution options
+pub const PathResolutionFlags = struct {
+    /// Don't follow symlinks at all
+    no_follow: bool = false,
+    /// Must be a directory
+    must_be_dir: bool = false,
+    /// Follow symlinks except the final component
+    no_follow_final: bool = false,
+    /// Maximum symlink depth
+    max_symlink_depth: u32 = 40,
+}
+
+/// Resolve a path to an inode, respecting symlink security
+pub fn resolvePath(start: *Inode, path: []const u8, flags: PathResolutionFlags) !*Inode {
+    // Validate and sanitize path
+    const sanitized = try sanitizePath(path);
+
+    // Track symlink depth to prevent infinite loops
+    var symlink_depth: u32 = 0;
+    var current = start;
+    current.acquire();
+
+    // Split path into components
+    var path_iter = Basics.mem.splitScalar(u8, sanitized, '/');
+    var is_final = false;
+
+    while (path_iter.next()) |component| {
+        // Skip empty components (from leading/trailing slashes)
+        if (component.len == 0) continue;
+
+        // Check if this is the final component
+        const remaining = path_iter.rest();
+        is_final = remaining.len == 0;
+
+        // Check if current is a directory
+        if (!current.isDirectory()) {
+            current.release(current.allocator);
+            return error.NotADirectory;
+        }
+
+        // Check read permission on directory
+        try checkPermission(current, PERM_READ);
+
+        // Look up the component
+        if (current.ops.lookup) |lookup_fn| {
+            const next = lookup_fn(current, component) catch |err| {
+                current.release(current.allocator);
+                return err;
+            };
+
+            // Check if it's a symlink
+            if (next.isSymlink()) {
+                // Check if we should follow symlinks
+                if (flags.no_follow or (is_final and flags.no_follow_final)) {
+                    current.release(current.allocator);
+                    return error.SymlinkNotAllowed;
+                }
+
+                // Check symlink depth limit
+                if (symlink_depth >= flags.max_symlink_depth) {
+                    next.release(next.allocator);
+                    current.release(current.allocator);
+                    return error.TooManySymlinks;
+                }
+
+                // Security: Check symlink safety
+                try checkSymlinkSafety(next, current);
+
+                // Read symlink target
+                var target_buf: [4096]u8 = undefined;
+                const target_len = if (next.ops.readlink) |readlink_fn|
+                    readlink_fn(next, &target_buf) catch {
+                        next.release(next.allocator);
+                        current.release(current.allocator);
+                        return error.InvalidSymlink;
+                    }
+                else {
+                    next.release(next.allocator);
+                    current.release(current.allocator);
+                    return error.InvalidSymlink;
+                };
+
+                const target = target_buf[0..target_len];
+
+                // Release the symlink inode
+                next.release(next.allocator);
+
+                // Increment symlink depth
+                symlink_depth += 1;
+
+                // Recursively resolve the symlink target
+                const resolved = resolvePath(current, target, flags) catch |err| {
+                    current.release(current.allocator);
+                    return err;
+                };
+
+                current.release(current.allocator);
+                current = resolved;
+            } else {
+                // Not a symlink, move to next component
+                current.release(current.allocator);
+                current = next;
+            }
+        } else {
+            current.release(current.allocator);
+            return error.NotSupported;
+        }
+    }
+
+    // Final checks
+    if (flags.must_be_dir and !current.isDirectory()) {
+        current.release(current.allocator);
+        return error.NotADirectory;
+    }
+
+    return current;
+}
+
+/// Helper to resolve path from flags
+pub fn resolvePathFromFlags(start: *Inode, path: []const u8, open_flags: i32) !*Inode {
+    var flags = PathResolutionFlags{};
+
+    if (open_flags & O_NOFOLLOW != 0) {
+        flags.no_follow_final = true;
+    }
+
+    if (open_flags & O_DIRECTORY != 0) {
+        flags.must_be_dir = true;
+    }
+
+    return resolvePath(start, path, flags);
+}
+
+// ============================================================================
 // Inode Operations
 // ============================================================================
 
