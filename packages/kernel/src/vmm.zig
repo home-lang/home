@@ -49,7 +49,7 @@ pub const Vma = struct {
         return self.end - self.start;
     }
 
-    pub fn contains(self: *const Vma) bool {
+    pub fn contains(self: *const Vma, addr: u64) bool {
         return addr >= self.start and addr < self.end;
     }
 };
@@ -165,3 +165,142 @@ pub const Vmm = struct {
         return null;
     }
 };
+
+// ============================================================================
+// Security - User Pointer Validation
+// ============================================================================
+
+/// User space address range for x86-64
+const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
+const USER_SPACE_END: u64 = 0x0000_7FFF_FFFF_FFFF;
+
+/// Maximum sizes for syscall buffers
+pub const MAX_READ_SIZE: usize = 0x7FFFF000; // 2GB - 4KB
+pub const MAX_WRITE_SIZE: usize = 0x7FFFF000;
+pub const MAX_PATH_LEN: usize = 4096;
+pub const MAX_ARG_LEN: usize = 131072; // 128KB for execve args
+
+/// Validate that a user pointer is safe to access
+pub fn validateUserPointer(addr: usize, len: usize, write: bool) !void {
+    const process = @import("process.zig");
+
+    // Check for null pointer
+    if (addr == 0) return error.InvalidAddress;
+
+    // Check if in user space
+    if (addr < USER_SPACE_START or addr >= USER_SPACE_END) {
+        return error.InvalidAddress;
+    }
+
+    // Check for overflow
+    if (addr > USER_SPACE_END - len) {
+        return error.InvalidAddress;
+    }
+
+    // Get current process
+    const current = process.getCurrentProcess() orelse return error.NoProcess;
+
+    // Check if address range is mapped in process VMA
+    current.address_space.lock.acquire();
+    defer current.address_space.lock.release();
+
+    // Find VMA that contains this address range
+    const start_addr = addr;
+    const end_addr = addr + len;
+
+    var current_addr = start_addr;
+    while (current_addr < end_addr) {
+        const vma = current.address_space.findVma(current_addr) orelse {
+            return error.NotMapped;
+        };
+
+        // Check permissions
+        if (write and !vma.flags.write) {
+            return error.AccessDenied;
+        }
+        if (!write and !vma.flags.read) {
+            return error.AccessDenied;
+        }
+
+        // Move to next VMA if needed
+        if (vma.end >= end_addr) {
+            break; // Entire range covered
+        }
+        current_addr = vma.end;
+    }
+}
+
+/// Copy data from user space to kernel space safely
+pub fn copyFromUser(dst: []u8, src_addr: usize, len: usize) !void {
+    try validateUserPointer(src_addr, len, false);
+    const src: [*]const u8 = @ptrFromInt(src_addr);
+    @memcpy(dst[0..len], src[0..len]);
+}
+
+/// Copy data from kernel space to user space safely
+pub fn copyToUser(dst_addr: usize, src: []const u8) !void {
+    try validateUserPointer(dst_addr, src.len, true);
+    const dst: [*]u8 = @ptrFromInt(dst_addr);
+    @memcpy(dst[0..src.len], src);
+}
+
+/// Safely read a null-terminated string from user space
+pub fn copyStringFromUser(allocator: Basics.Allocator, src_addr: usize, max_len: usize) ![]u8 {
+    try validateUserPointer(src_addr, max_len, false);
+
+    const src: [*:0]const u8 = @ptrFromInt(src_addr);
+    const len = Basics.mem.len(src);
+
+    if (len > max_len) return error.StringTooLong;
+
+    const result = try allocator.alloc(u8, len);
+    @memcpy(result, src[0..len]);
+    return result;
+}
+
+// ============================================================================
+// Path Sanitization
+// ============================================================================
+
+/// Sanitize and validate a file path to prevent directory traversal attacks
+pub fn sanitizePath(path: []const u8) !void {
+    const process_mod = @import("process.zig");
+
+    if (path.len == 0) return error.InvalidPath;
+    if (path.len > MAX_PATH_LEN) return error.PathTooLong;
+
+    const current = process_mod.getCurrentProcess() orelse return error.NoProcess;
+
+    // Absolute paths only allowed for root
+    if (path.len > 0 and path[0] == '/' and current.euid != 0) {
+        return error.AccessDenied;
+    }
+
+    // Check for null bytes in path
+    if (Basics.mem.indexOfScalar(u8, path, 0)) |_| {
+        return error.InvalidPath;
+    }
+
+    // Check each component for path traversal attempts
+    var start: usize = 0;
+    for (path, 0..) |c, i| {
+        if (c == '/' or i == path.len - 1) {
+            const end = if (c == '/') i else i + 1;
+            if (end > start) {
+                const component = path[start..end];
+
+                // Reject ".." components (path traversal)
+                if (Basics.mem.eql(u8, component, "..")) {
+                    return error.InvalidPath;
+                }
+
+                // Check for double slashes
+                if (component.len == 0 and c == '/') {
+                    return error.InvalidPath;
+                }
+            }
+
+            start = if (c == '/') i + 1 else i + 1;
+        }
+    }
+}

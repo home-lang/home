@@ -7,6 +7,7 @@ const paging = @import("paging.zig");
 const cpu_context = @import("cpu_context.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
+const random = @import("random.zig");
 
 // Forward declaration
 const Thread = @import("thread.zig").Thread;
@@ -111,15 +112,47 @@ pub const AddressSpace = struct {
     /// Reference count
     refcount: atomic.AtomicU32,
 
+    // ASLR - Randomized base addresses
+    /// Randomized stack base address
+    stack_base: u64,
+    /// Randomized heap base address
+    heap_base: u64,
+    /// Randomized mmap base address
+    mmap_base: u64,
+
     pub fn init(allocator: Basics.Allocator) !*AddressSpace {
         const space = try allocator.create(AddressSpace);
         errdefer allocator.destroy(space);
+
+        // ASLR: Generate randomized base addresses
+        // User space on x86-64: 0x0000_0000_0000_0000 to 0x0000_7FFF_FFFF_FFFF
+
+        // Stack: grows down from high address
+        // Base: 0x0000_7000_0000_0000 + random(0-256MB)
+        const STACK_BASE = 0x0000_7000_0000_0000;
+        const STACK_RAND_SIZE = 0x10000000; // 256MB randomization
+        const stack_base = random.getAslrBase(STACK_BASE, STACK_RAND_SIZE, 0x1000);
+
+        // Heap: grows up from low address
+        // Base: 0x0000_0000_1000_0000 + random(0-256MB)
+        const HEAP_BASE = 0x0000_0000_1000_0000;
+        const HEAP_RAND_SIZE = 0x10000000; // 256MB randomization
+        const heap_base = random.getAslrBase(HEAP_BASE, HEAP_RAND_SIZE, 0x1000);
+
+        // Mmap: middle of address space
+        // Base: 0x0000_4000_0000_0000 + random(0-1GB)
+        const MMAP_BASE = 0x0000_4000_0000_0000;
+        const MMAP_RAND_SIZE = 0x40000000; // 1GB randomization
+        const mmap_base = random.getAslrBase(MMAP_BASE, MMAP_RAND_SIZE, 0x1000);
 
         space.* = .{
             .page_mapper = try paging.PageMapper.init(allocator),
             .vma_list = null,
             .lock = sync.Spinlock.init(),
             .refcount = atomic.AtomicU32.init(1),
+            .stack_base = stack_base,
+            .heap_base = heap_base,
+            .mmap_base = mmap_base,
         };
 
         return space;
@@ -226,6 +259,31 @@ pub const Process = struct {
     cwd: [4096]u8,
     cwd_len: usize,
 
+    // Security credentials
+    /// Real user ID
+    uid: u32,
+    /// Real group ID
+    gid: u32,
+    /// Effective user ID (used for permission checks)
+    euid: u32,
+    /// Effective group ID (used for permission checks)
+    egid: u32,
+    /// Saved set-user-ID (for setuid programs)
+    saved_uid: u32,
+    /// Saved set-group-ID (for setuid programs)
+    saved_gid: u32,
+    /// Filesystem user ID (for file operations)
+    fsuid: u32,
+    /// Filesystem group ID (for file operations)
+    fsgid: u32,
+
+    /// Supplementary groups
+    groups: [32]u32,
+    num_groups: usize,
+
+    /// Capabilities (for fine-grained privileges)
+    capabilities: u64,
+
     /// Process lock
     lock: sync.Spinlock,
 
@@ -262,6 +320,18 @@ pub const Process = struct {
             .fd_lock = sync.Spinlock.init(),
             .cwd = undefined,
             .cwd_len = 1,
+            // Initialize credentials (kernel processes start as root)
+            .uid = 0,
+            .gid = 0,
+            .euid = 0,
+            .egid = 0,
+            .saved_uid = 0,
+            .saved_gid = 0,
+            .fsuid = 0,
+            .fsgid = 0,
+            .groups = [_]u32{0} ** 32,
+            .num_groups = 0,
+            .capabilities = 0xFFFFFFFFFFFFFFFF, // All capabilities for kernel processes
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
         };
@@ -275,27 +345,6 @@ pub const Process = struct {
         process.fd_table[2] = FileDescriptor.init(2); // stderr
 
         return process;
-    }
-
-    /// Clean up process resources
-    pub fn destroy(self: *Process) void {
-        self.lock.acquire();
-        defer self.lock.release();
-
-        // Clean up threads
-        for (self.threads.items) |thread| {
-            thread.destroy();
-        }
-        self.threads.deinit();
-
-        // Clean up children list (not the children themselves)
-        self.children.deinit();
-
-        // Release address space
-        self.address_space.release(self.allocator);
-
-        // Free process structure
-        self.allocator.destroy(self);
     }
 
     /// Add a thread to this process
@@ -556,6 +605,7 @@ pub const Process = struct {
 // ============================================================================
 
 var process_list_lock = sync.Spinlock.init();
+pub const process_table_lock = &process_list_lock; // Public alias for syscall security
 var process_list: ?Basics.ArrayList(*Process) = null;
 
 /// Initialize process management subsystem
@@ -606,6 +656,19 @@ pub fn findProcess(pid: Pid) ?*Process {
     return null;
 }
 
+/// Find process by PID (returns error instead of null, assumes lock is held)
+pub fn findProcessById(pid: Pid) !*Process {
+    // NOTE: This function assumes the caller already holds process_list_lock
+    if (process_list) |list| {
+        for (list.items) |p| {
+            if (p.pid == pid) {
+                return p;
+            }
+        }
+    }
+    return error.NoSuchProcess;
+}
+
 /// Get all processes (returns a copy of the list)
 pub fn getAllProcesses(allocator: Basics.Allocator) ![]const *Process {
     process_list_lock.acquire();
@@ -638,6 +701,23 @@ pub fn fork(parent: *Process, allocator: Basics.Allocator) !*Process {
     // Copy working directory
     @memcpy(child.cwd[0..parent.cwd_len], parent.cwd[0..parent.cwd_len]);
     child.cwd_len = parent.cwd_len;
+
+    // Inherit security credentials from parent
+    child.uid = parent.uid;
+    child.gid = parent.gid;
+    child.euid = parent.euid;
+    child.egid = parent.egid;
+    child.saved_uid = parent.saved_uid;
+    child.saved_gid = parent.saved_gid;
+    child.fsuid = parent.fsuid;
+    child.fsgid = parent.fsgid;
+
+    // Copy supplementary groups
+    @memcpy(&child.groups, &parent.groups);
+    child.num_groups = parent.num_groups;
+
+    // Inherit capabilities
+    child.capabilities = parent.capabilities;
 
     // Add to parent's children
     try parent.addChild(child);

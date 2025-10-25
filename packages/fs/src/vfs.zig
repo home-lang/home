@@ -113,6 +113,53 @@ pub const Inode = struct {
 };
 
 // ============================================================================
+// Permission Checking
+// ============================================================================
+
+/// Permission bits
+pub const PERM_READ: u32 = 0x4;
+pub const PERM_WRITE: u32 = 0x2;
+pub const PERM_EXECUTE: u32 = 0x1;
+
+/// Check if current process has permission to access inode
+pub fn checkPermission(inode: *Inode, requested: u32) !void {
+    const process = @import("../kernel/src/process.zig");
+    const current = process.getCurrentProcess() orelse return error.NoProcess;
+
+    // Root bypasses all permission checks
+    if (current.euid == 0) return;
+
+    var perm: u32 = 0;
+    const mode_bits = inode.mode.toOctal();
+
+    // Check user bits (owner)
+    if (inode.uid == current.euid) {
+        perm = (mode_bits >> 6) & 0x7;
+    }
+    // Check group bits
+    else if (inode.gid == current.egid or inSupplementaryGroups(current, inode.gid)) {
+        perm = (mode_bits >> 3) & 0x7;
+    }
+    // Check other bits
+    else {
+        perm = mode_bits & 0x7;
+    }
+
+    // Verify requested permission is granted
+    if ((perm & requested) != requested) {
+        return error.AccessDenied;
+    }
+}
+
+/// Check if process is in supplementary group
+fn inSupplementaryGroups(proc: *const @import("../kernel/src/process.zig").Process, gid: u32) bool {
+    for (proc.groups[0..proc.num_groups]) |group| {
+        if (group == gid) return true;
+    }
+    return false;
+}
+
+// ============================================================================
 // Inode Operations
 // ============================================================================
 

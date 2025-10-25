@@ -8,10 +8,34 @@ const thread = @import("thread.zig");
 const vfs = @import("../fs/src/vfs.zig");
 const signal = @import("signal.zig");
 const pipe = @import("pipe.zig");
+const vmm = @import("vmm.zig");
+const capabilities = @import("capabilities.zig");
 
 // ============================================================================
 // Error Handling
 // ============================================================================
+
+/// Validate and return file descriptor entry
+fn validateFd(fd: i32) !void {
+    const current = process.getCurrentProcess() orelse return error.NoProcess;
+
+    // Check bounds
+    if (fd < 0 or fd >= 256) {
+        return error.BadFileDescriptor;
+    }
+
+    // Lock FD table
+    current.fd_lock.acquire();
+    defer current.fd_lock.release();
+
+    // Check if FD exists
+    const fd_entry = current.fd_table[@intCast(fd)] orelse {
+        return error.BadFileDescriptor;
+    };
+
+    // FD is valid
+    _ = fd_entry;
+}
 
 /// Convert Zig error to errno
 fn errorToErrno(err: anyerror) u64 {
@@ -77,6 +101,106 @@ export fn sys_getegid(args: syscall.SyscallArgs) callconv(.C) u64 {
     return current.egid;
 }
 
+export fn sys_setuid(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const uid = @as(u32, @truncate(args.arg1));
+    const current = process.getCurrentProcess() orelse return returnError(error.InvalidArgument);
+
+    current.lock.acquire();
+    defer current.lock.release();
+
+    // Process with CAP_SETUID can set to any UID
+    if (capabilities.canSetUid()) {
+        current.uid = uid;
+        current.euid = uid;
+        current.saved_uid = uid;
+        current.fsuid = uid;
+        return 0;
+    }
+
+    // Without CAP_SETUID, can only set to real, effective, or saved UID
+    if (uid == current.uid or uid == current.euid or uid == current.saved_uid) {
+        current.euid = uid;
+        current.fsuid = uid;
+        return 0;
+    }
+
+    return returnError(error.AccessDenied);
+}
+
+export fn sys_setgid(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const gid = @as(u32, @truncate(args.arg1));
+    const current = process.getCurrentProcess() orelse return returnError(error.InvalidArgument);
+
+    current.lock.acquire();
+    defer current.lock.release();
+
+    // Process with CAP_SETGID can set to any GID
+    if (capabilities.canSetGid()) {
+        current.gid = gid;
+        current.egid = gid;
+        current.saved_gid = gid;
+        current.fsgid = gid;
+        return 0;
+    }
+
+    // Without CAP_SETGID, can only set to real, effective, or saved GID
+    if (gid == current.gid or gid == current.egid or gid == current.saved_gid) {
+        current.egid = gid;
+        current.fsgid = gid;
+        return 0;
+    }
+
+    return returnError(error.AccessDenied);
+}
+
+export fn sys_seteuid(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const euid = @as(u32, @truncate(args.arg1));
+    const current = process.getCurrentProcess() orelse return returnError(error.InvalidArgument);
+
+    current.lock.acquire();
+    defer current.lock.release();
+
+    // Root can set to any effective UID
+    if (current.euid == 0) {
+        current.euid = euid;
+        current.fsuid = euid;
+        return 0;
+    }
+
+    // Non-root can only set to real, effective, or saved UID
+    if (euid == current.uid or euid == current.euid or euid == current.saved_uid) {
+        current.euid = euid;
+        current.fsuid = euid;
+        return 0;
+    }
+
+    return returnError(error.AccessDenied);
+}
+
+export fn sys_setegid(args: syscall.SyscallArgs) callconv(.C) u64 {
+    const egid = @as(u32, @truncate(args.arg1));
+    const current = process.getCurrentProcess() orelse return returnError(error.InvalidArgument);
+
+    current.lock.acquire();
+    defer current.lock.release();
+
+    // Root can set to any effective GID
+    if (current.euid == 0) {
+        current.egid = egid;
+        current.fsgid = egid;
+        return 0;
+    }
+
+    // Non-root can only set to real, effective, or saved GID
+    if (egid == current.gid or egid == current.egid or egid == current.saved_gid) {
+        current.egid = egid;
+        current.fsgid = egid;
+        return 0;
+    }
+
+    return returnError(error.AccessDenied);
+}
+
 export fn sys_exit(args: syscall.SyscallArgs) callconv(.C) u64 {
     const exit_code = @as(i32, @truncate(@as(i64, @bitCast(args.arg1))));
     process.exitCurrentProcess(exit_code);
@@ -97,6 +221,13 @@ export fn sys_wait4(args: syscall.SyscallArgs) callconv(.C) u64 {
     const options = @as(i32, @bitCast(@as(u32, @truncate(args.arg3))));
     _ = options; // TODO: Use options
 
+    // Validate status pointer if provided
+    if (wstatus_ptr != 0) {
+        vmm.validateUserPointer(wstatus_ptr, @sizeOf(i32), true) catch |err| {
+            return returnError(err);
+        };
+    }
+
     const result = process.waitForProcess(pid) catch |err| {
         return returnError(err);
     };
@@ -112,9 +243,51 @@ export fn sys_wait4(args: syscall.SyscallArgs) callconv(.C) u64 {
 
 export fn sys_kill(args: syscall.SyscallArgs) callconv(.C) u64 {
     const pid = @as(i32, @bitCast(@as(u32, @truncate(args.arg1))));
-    const sig = @as(i32, @bitCast(@as(u32, @truncate(args.arg2))));
+    const sig_num = @as(i32, @bitCast(@as(u32, @truncate(args.arg2))));
 
-    signal.sendSignal(pid, sig) catch |err| {
+    // Validate signal number
+    if (sig_num < 1 or sig_num > signal.MAX_SIGNALS) {
+        return returnError(error.InvalidArgument);
+    }
+
+    const sig: signal.Signal = @enumFromInt(@as(u8, @intCast(sig_num)));
+    const current = process.getCurrentProcess() orelse return returnError(error.NoProcess);
+
+    // Acquire process table lock for atomicity
+    process.process_table_lock.acquire();
+    defer process.process_table_lock.release();
+
+    // Find target process (this must happen while holding the lock)
+    const target = process.findProcessById(pid) catch |err| {
+        return returnError(err);
+    };
+
+    // Check if process is still alive (prevent race condition)
+    if (target.state == .Dead or target.state == .Zombie) {
+        return returnError(error.NoSuchProcess);
+    }
+
+    // Check signal permission (root can signal anyone)
+    if (current.euid != 0) {
+        // Non-root can only signal processes with same uid/euid
+        if (target.uid != current.euid and target.euid != current.euid) {
+            return returnError(error.AccessDenied);
+        }
+    }
+
+    // Create signal info
+    const sig_info = signal.SigInfo{
+        .signal = sig,
+        .code = 0, // SI_USER
+        .errno = 0,
+        .pid = @intCast(current.pid),
+        .uid = current.uid,
+        .addr = null,
+        .value = 0,
+    };
+
+    // Send signal (process lock is held, safe from race)
+    signal.sendSignal(target, sig, sig_info) catch |err| {
         return returnError(err);
     };
 
@@ -136,7 +309,20 @@ export fn sys_read(args: syscall.SyscallArgs) callconv(.C) u64 {
     const buf_ptr = args.arg2;
     const count = args.arg3;
 
-    if (buf_ptr == 0) return returnError(error.InvalidArgument);
+    // Validate file descriptor
+    validateFd(fd) catch |err| {
+        return returnError(err);
+    };
+
+    // Validate buffer size
+    if (count > vmm.MAX_READ_SIZE) {
+        return returnError(error.InvalidArgument);
+    }
+
+    // Validate user pointer
+    vmm.validateUserPointer(buf_ptr, count, true) catch |err| {
+        return returnError(err);
+    };
 
     const buffer: [*]u8 = @ptrFromInt(buf_ptr);
     const slice = buffer[0..count];
@@ -153,7 +339,20 @@ export fn sys_write(args: syscall.SyscallArgs) callconv(.C) u64 {
     const buf_ptr = args.arg2;
     const count = args.arg3;
 
-    if (buf_ptr == 0) return returnError(error.InvalidArgument);
+    // Validate file descriptor
+    validateFd(fd) catch |err| {
+        return returnError(err);
+    };
+
+    // Validate buffer size
+    if (count > vmm.MAX_WRITE_SIZE) {
+        return returnError(error.InvalidArgument);
+    }
+
+    // Validate user pointer
+    vmm.validateUserPointer(buf_ptr, count, false) catch |err| {
+        return returnError(err);
+    };
 
     const buffer: [*]const u8 = @ptrFromInt(buf_ptr);
     const slice = buffer[0..count];
@@ -170,11 +369,18 @@ export fn sys_open(args: syscall.SyscallArgs) callconv(.C) u64 {
     const flags = @as(i32, @bitCast(@as(u32, @truncate(args.arg2))));
     const mode = @as(u32, @truncate(args.arg3));
 
-    if (pathname_ptr == 0) return returnError(error.InvalidArgument);
+    // Validate path pointer
+    vmm.validateUserPointer(pathname_ptr, vmm.MAX_PATH_LEN, false) catch |err| {
+        return returnError(err);
+    };
 
-    // TODO: Properly parse null-terminated string from userspace
     const pathname: [*:0]const u8 = @ptrFromInt(pathname_ptr);
     const path_slice = Basics.mem.sliceTo(pathname, 0);
+
+    // Sanitize path to prevent directory traversal
+    vmm.sanitizePath(path_slice) catch |err| {
+        return returnError(err);
+    };
 
     const fd = vfs.open(path_slice, flags, mode) catch |err| {
         return returnError(err);
