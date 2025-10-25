@@ -10,6 +10,7 @@ const signal = @import("signal.zig");
 const pipe = @import("pipe.zig");
 const vmm = @import("vmm.zig");
 const capabilities = @import("capabilities.zig");
+const limits = @import("limits.zig");
 
 // ============================================================================
 // Error Handling
@@ -209,9 +210,21 @@ export fn sys_exit(args: syscall.SyscallArgs) callconv(.C) u64 {
 
 export fn sys_fork(args: syscall.SyscallArgs) callconv(.C) u64 {
     _ = args;
+
+    // Check resource limits (fork bomb prevention)
+    limits.checkCanFork() catch |err| {
+        return returnError(err);
+    };
+
+    // Check fork rate limit
+    limits.checkForkRateLimit() catch |err| {
+        return returnError(err);
+    };
+
     const child_pid = process.forkCurrentProcess() catch |err| {
         return returnError(err);
     };
+
     return child_pid;
 }
 

@@ -81,6 +81,20 @@ pub const VmaFlags = packed struct(u32) {
     stack: bool = false,
     heap: bool = false,
     _padding: u26 = 0,
+
+    /// Validate W^X (Write XOR Execute) - no page should be both writable AND executable
+    pub fn validateWX(self: VmaFlags) !void {
+        if (self.write and self.execute) {
+            return error.WriteAndExecuteNotAllowed;
+        }
+    }
+
+    /// Check if flags are valid for security
+    pub fn isSecure(self: VmaFlags) bool {
+        // W^X: Cannot be both writable and executable
+        if (self.write and self.execute) return false;
+        return true;
+    }
 };
 
 pub const Vma = struct {
@@ -176,6 +190,9 @@ pub const AddressSpace = struct {
         self.lock.acquire();
         defer self.lock.release();
 
+        // Enforce W^X security policy
+        try flags.validateWX();
+
         const vma = try allocator.create(Vma);
         vma.* = .{
             .start = start,
@@ -186,6 +203,19 @@ pub const AddressSpace = struct {
 
         self.vma_list = vma;
         return vma;
+    }
+
+    /// Change VMA protection flags (like mprotect syscall)
+    pub fn protectVma(self: *AddressSpace, vma: *Vma, new_flags: VmaFlags) !void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Enforce W^X: cannot make a region both writable and executable
+        try new_flags.validateWX();
+
+        vma.flags = new_flags;
+
+        // TODO: Update page table entries to reflect new permissions
     }
 
     /// Find VMA containing an address
