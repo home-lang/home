@@ -1,5 +1,6 @@
 {
     "cSpell.words": [
+        "basics",
         "bumpx",
         "bunx",
         "chrisbreuer",
@@ -12,7 +13,6 @@
         "lockfiles",
         "milli",
         "orelse",
-        "stdlib",
         "subcmd",
         "usize",
         "zyte"

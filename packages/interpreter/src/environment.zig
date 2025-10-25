@@ -47,13 +47,14 @@ pub const Environment = struct {
 
     /// Clean up the environment's resources.
     ///
-    /// Frees the hash map structure. Variable names and values are
-    /// freed automatically by the arena allocator, so we only need
-    /// to deinit the map itself.
+    /// NOTE: When using an arena allocator (which is the norm for the interpreter),
+    /// the hash map's internal storage will be freed by the arena, so we don't
+    /// need to call deinit here. In fact, calling deinit causes issues because
+    /// the HashMap tries to free memory that the arena owns.
     pub fn deinit(self: *Environment) void {
-        // Arena allocator handles cleanup of keys and values
-        // Just deinit the hash map structure itself
-        self.bindings.deinit();
+        // Arena allocator handles cleanup of keys, values, AND the hash map storage
+        // Do nothing here - arena.deinit() will clean everything up
+        _ = self;
     }
 
     /// Define a new variable in this scope.

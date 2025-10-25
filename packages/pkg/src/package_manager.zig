@@ -9,7 +9,7 @@ pub const Lockfile = lockfile_mod.Lockfile;
 pub const PackageManager = struct {
     allocator: std.mem.Allocator,
     config: *PackageConfig,
-    lockfile: ?*Lockfile,
+    lockfile: ?*LockFile,
     cache_dir: []const u8,
     registry_url: []const u8,
     auth_manager: ?*AuthManager,
@@ -69,21 +69,21 @@ pub const PackageManager = struct {
         pm.* = .{
             .allocator = allocator,
             .config = config.?,
-            .lock_file = null,
+            .lockfile = null,
             .cache_dir = DEFAULT_CACHE_DIR,
             .registry_url = DEFAULT_REGISTRY,
             .auth_manager = auth_manager,
         };
 
         // Try to load lockfile
-        pm.lock_file = LockFile.load(allocator, "ion.lock") catch null;
+        pm.lockfile = LockFile.load(allocator, "ion.lock") catch null;
 
         return pm;
     }
 
     pub fn deinit(self: *PackageManager) void {
         self.config.deinit();
-        if (self.lock_file) |lock| {
+        if (self.lockfile) |lock| {
             lock.deinit();
         }
         if (self.auth_manager) |auth| {
@@ -229,12 +229,12 @@ pub const PackageManager = struct {
         defer self.allocator.free(resolved);
 
         // Create new lockfile
-        if (self.lock_file) |old_lock| {
+        if (self.lockfile) |old_lock| {
             old_lock.deinit();
         }
 
-        self.lock_file = try LockFile.create(self.allocator, resolved);
-        try self.lock_file.?.save("ion.lock");
+        self.lockfile = try LockFile.create(self.allocator, resolved);
+        try self.lockfile.?.save("ion.lock");
 
         // Download packages
         try self.downloadAll();
@@ -247,9 +247,9 @@ pub const PackageManager = struct {
         std.debug.print("Updating dependencies...\n", .{});
 
         // Clear lockfile to force re-resolution
-        if (self.lock_file) |lock| {
+        if (self.lockfile) |lock| {
             lock.deinit();
-            self.lock_file = null;
+            self.lockfile = null;
         }
 
         try self.resolve();
@@ -257,7 +257,7 @@ pub const PackageManager = struct {
 
     /// Download all dependencies (parallel like Bun!)
     fn downloadAll(self: *PackageManager) !void {
-        if (self.lock_file) |lock| {
+        if (self.lockfile) |lock| {
             const num_packages = lock.packages.items.len;
             if (num_packages == 0) return;
 

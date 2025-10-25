@@ -63,23 +63,23 @@ pub const WorkDeque = struct {
     mutex: std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) WorkDeque {
+    pub fn init(allocator: std.mem.Allocator) !WorkDeque {
         return .{
-            .tasks = std.ArrayList(*BuildTask).init(allocator),
+            .tasks = try std.ArrayList(*BuildTask).initCapacity(allocator, 16),
             .mutex = .{},
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *WorkDeque) void {
-        self.tasks.deinit();
+        self.tasks.deinit(self.allocator);
     }
 
     /// Push task to the end (owner's side)
     pub fn push(self: *WorkDeque, task: *BuildTask) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.tasks.append(task);
+        try self.tasks.append(self.allocator, task);
     }
 
     /// Pop task from the end (owner's side)
@@ -132,7 +132,7 @@ pub const ParallelBuilder = struct {
 
         const deques = try allocator.alloc(WorkDeque, threads);
         for (deques) |*deque| {
-            deque.* = WorkDeque.init(allocator);
+            deque.* = try WorkDeque.init(allocator);
         }
 
         const worker_util = try allocator.alloc(f64, threads);
@@ -140,7 +140,7 @@ pub const ParallelBuilder = struct {
 
         return .{
             .allocator = allocator,
-            .tasks = std.ArrayList(*BuildTask).init(allocator),
+            .tasks = try std.ArrayList(*BuildTask).initCapacity(allocator, 64),
             .num_threads = threads,
             .work_deques = deques,
             .stats = .{
@@ -165,7 +165,7 @@ pub const ParallelBuilder = struct {
             self.allocator.free(task.dependencies);
             self.allocator.destroy(task);
         }
-        self.tasks.deinit();
+        self.tasks.deinit(self.allocator);
 
         for (self.work_deques) |*deque| {
             deque.deinit();
@@ -196,7 +196,7 @@ pub const ParallelBuilder = struct {
             .status = .Pending,
         };
 
-        try self.tasks.append(task);
+        try self.tasks.append(self.allocator, task);
     }
 
     /// Build all tasks in parallel with work stealing
@@ -367,8 +367,8 @@ pub const ParallelBuilder = struct {
     }
 
     fn getReadyTasks(self: *ParallelBuilder) ![]const *BuildTask {
-        var ready = std.ArrayList(*BuildTask).init(self.allocator);
-        defer ready.deinit();
+        var ready = try std.ArrayList(*BuildTask).initCapacity(self.allocator, 16);
+        defer ready.deinit(self.allocator);
 
         for (self.tasks.items) |task| {
             if (task.status != .Pending) continue;
@@ -382,11 +382,11 @@ pub const ParallelBuilder = struct {
             }
 
             if (dependencies_met) {
-                try ready.append(task);
+                try ready.append(self.allocator, task);
             }
         }
 
-        return ready.toOwnedSlice();
+        return try ready.toOwnedSlice(self.allocator);
     }
 
     fn isDependencyCompleted(self: *ParallelBuilder, dep_name: []const u8) bool {
@@ -437,7 +437,7 @@ pub const ParallelBuilder = struct {
         defer self.allocator.free(source);
 
         // Simulate work (remove in real implementation)
-        std.time.sleep(1_000_000); // 1ms per task
+        std.Thread.sleep(1_000_000); // 1ms per task
 
         task.status = .Completed;
         task.end_time = std.time.milliTimestamp();

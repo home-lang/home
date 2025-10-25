@@ -52,7 +52,7 @@ Modern systems languages force impossible choices:
 - **TypeScript-inspired syntax** - familiar and clean
 - **Helpful error messages** with fix suggestions
 - **All tools in one binary** - no Makefile, no npm, no cargo
-- **Batteries included** - HTTP, JSON, CLI tools, database access in stdlib
+- **Batteries included** - HTTP, JSON, CLI tools, database access in basics
 
 ---
 
@@ -187,7 +187,7 @@ packages/
 
 ```
 packages/
-├── stdlib/         # Core standard library
+├── basics/         # Core standard library
 │   ├── http_router # HTTP server with routing
 │   └── zyte        # Desktop app integration
 ├── database/       # SQL database access (SQLite)
@@ -821,7 +821,7 @@ struct Result<T, E> {
 
 We're looking for:
 - **Compiler engineers** - Core implementation
-- **Systems programmers** - stdlib development
+- **Systems programmers** - Basics library development
 - **DX enthusiasts** - Tooling and LSP
 - **Technical writers** - Documentation
 - **Early adopters** - Feedback and testing
@@ -908,7 +908,7 @@ home/
 │   ├── diagnostics/     # Error reporting
 │   ├── formatter/       # Code formatting
 │   ├── testing/         # Modern test framework
-│   ├── stdlib/          # Standard library
+│   ├── basics/          # Standard library
 │   ├── database/        # SQLite access
 │   ├── queue/           # Job processing
 │   └── vscode-home/      # VSCode extension with advanced tooling

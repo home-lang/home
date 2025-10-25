@@ -30,7 +30,7 @@ home/
 │   ├── safety/                # Unsafe blocks and safety
 │   ├── tools/                 # Developer tools (doc gen, etc.)
 │   ├── traits/                # Trait system
-│   ├── stdlib/                # Standard library (HTTP, crypto, fs, etc.)
+│   ├── basics/                # Standard library (HTTP, crypto, fs, etc.)
 │   └── pkg/                   # Package manager
 ├── src/                       # Main Home CLI and compiler
 │   ├── main.zig              # CLI entry point
@@ -122,7 +122,7 @@ home-codegen → home-ast
     ↓
 home-diagnostics (no deps)
 home-formatter → home-ast
-home-stdlib → home-ast, home-types
+home-basics → home-ast, home-types
 home-pkg (no deps)
 ```
 

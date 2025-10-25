@@ -16,6 +16,7 @@ const IRCache = @import("ir_cache").IRCache;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
 const AllocationProfiler = profiler_mod.AllocationProfiler;
+const repl = @import("repl.zig");
 
 const Color = enum {
     Reset,
@@ -626,9 +627,10 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
+    // If no arguments provided, start REPL
     if (args.len < 2) {
-        printUsage();
-        std.process.exit(1);
+        try repl.start(allocator);
+        return;
     }
 
     const command = args[1];
@@ -684,9 +686,9 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, command, "run")) {
         if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'run' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
-            printUsage();
-            std.process.exit(1);
+            // No file provided, start REPL
+            try repl.start(allocator);
+            return;
         }
 
         try runCommand(allocator, args[2]);

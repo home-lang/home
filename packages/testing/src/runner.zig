@@ -634,7 +634,7 @@ pub const ION_TEST_SUITES = [_]TestSuite{
     },
     .{
         .name = "http_router",
-        .test_file = "packages/stdlib/tests/http_router_test.zig",
+        .test_file = "packages/basics/tests/http_router_test.zig",
         .estimated_time_ms = 900,
     },
 };

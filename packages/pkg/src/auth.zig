@@ -137,7 +137,9 @@ pub const TokenStore = struct {
         }
 
         // Write JSON
-        const writer = file.writer();
+        var write_buf: [4096]u8 = undefined;
+        var file_writer = file.writer(&write_buf);
+        const writer = &file_writer.interface;
 
         try writer.writeAll("{\n");
 
@@ -147,25 +149,15 @@ pub const TokenStore = struct {
             if (!first) try writer.writeAll(",\n");
             first = false;
 
-            try writer.writeAll("  ");
-            try std.json.encodeJsonString(entry.key_ptr.*, .{}, writer);
-            try writer.writeAll(": {\n");
-
-            try writer.writeAll("    \"token\": ");
-            try std.json.encodeJsonString(entry.value_ptr.token, .{}, writer);
-            try writer.writeAll(",\n");
-
-            try writer.writeAll("    \"registry\": ");
-            try std.json.encodeJsonString(entry.value_ptr.registry, .{}, writer);
-            try writer.writeAll(",\n");
+            try writer.print("  \"{s}\": {{\n", .{entry.key_ptr.*});
+            try writer.print("    \"token\": \"{s}\",\n", .{entry.value_ptr.token});
+            try writer.print("    \"registry\": \"{s}\",\n", .{entry.value_ptr.registry});
 
             try writer.print("    \"created_at\": {d},\n", .{entry.value_ptr.created_at});
             try writer.print("    \"expires_at\": {d}", .{entry.value_ptr.expires_at});
 
             if (entry.value_ptr.username) |username| {
-                try writer.writeAll(",\n    \"username\": ");
-                try std.json.encodeJsonString(username, .{}, writer);
-                try writer.writeAll("\n");
+                try writer.print(",\n    \"username\": \"{s}\"\n", .{username});
             } else {
                 try writer.writeAll("\n");
             }
@@ -225,15 +217,16 @@ pub const TokenStore = struct {
 
     /// List all registries with tokens
     pub fn listRegistries(self: *TokenStore, allocator: std.mem.Allocator) ![][]const u8 {
-        var list = std.ArrayList([]const u8).init(allocator);
-        errdefer list.deinit();
+        const list_obj = try std.ArrayList([]const u8).initCapacity(allocator, self.tokens.count());
+        var list = list_obj;
+        errdefer list.deinit(allocator);
 
         var iter = self.tokens.keyIterator();
         while (iter.next()) |key| {
-            try list.append(try allocator.dupe(u8, key.*));
+            try list.append(allocator, try allocator.dupe(u8, key.*));
         }
 
-        return list.toOwnedSlice();
+        return try list.toOwnedSlice(allocator);
     }
 
     /// Get the full path to the auth config file
@@ -325,24 +318,31 @@ pub const AuthManager = struct {
         }
 
         // Interactive login
-        const stdin = std.io.getStdIn();
-        const stdout = std.io.getStdOut();
+        const stdin = std.fs.File.stdin();
+        const stdout = std.fs.File.stdout();
 
         // Prompt for username if not provided
+        var stdin_buf: [4096]u8 = undefined;
+        var stdin_reader = stdin.reader(&stdin_buf);
+
         const user = if (username) |u| u else blk: {
-            try stdout.writeAll("Username: ");
-            var buf: [256]u8 = undefined;
-            const input = try stdin.reader().readUntilDelimiterOrEof(&buf, '\n') orelse return error.NoInput;
+            _ = try stdout.write("Username: ");
+            const input = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
+                if (err == error.EndOfStream) return error.NoInput;
+                return err;
+            };
             break :blk try self.allocator.dupe(u8, std.mem.trim(u8, input, &std.ascii.whitespace));
         };
         defer if (username == null) self.allocator.free(user);
 
         // Prompt for password/token
-        try stdout.writeAll("Token or Password: ");
+        _ = try stdout.write("Token or Password: ");
 
         // TODO: Hide password input (platform-specific)
-        var buf: [512]u8 = undefined;
-        const password = try stdin.reader().readUntilDelimiterOrEof(&buf, '\n') orelse return error.NoInput;
+        const password = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
+            if (err == error.EndOfStream) return error.NoInput;
+            return err;
+        };
         const password_trimmed = std.mem.trim(u8, password, &std.ascii.whitespace);
 
         // Authenticate with registry

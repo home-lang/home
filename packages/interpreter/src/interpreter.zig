@@ -77,9 +77,9 @@ pub const Interpreter = struct {
     }
 
     pub fn deinit(self: *Interpreter) void {
-        self.global_env.deinit();
         // Arena allocator frees all allocated memory at once
-        // This includes all strings, arrays, and struct fields
+        // This includes all strings, arrays, struct fields, AND the environment's HashMap
+        // We don't need to call global_env.deinit() because the arena owns everything
         self.arena.deinit();
     }
 

@@ -153,15 +153,15 @@ pub fn build(b: *std.Build) void {
     home_module.addImport("interpreter", interpreter_pkg);
     home_module.addImport("codegen", codegen_pkg);
 
-    // Create stdlib modules for tests and examples
+    // Create basics modules for tests and examples
     const http_router_module = b.createModule(.{
-        .root_source_file = b.path("packages/stdlib/src/http_router.zig"),
+        .root_source_file = b.path("packages/basics/src/http_router.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const zyte_module = b.createModule(.{
-        .root_source_file = b.path("packages/stdlib/src/zyte.zig"),
+        .root_source_file = b.path("packages/basics/src/zyte.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
     // HTTP Router tests
     const http_router_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/stdlib/tests/http_router_test.zig"),
+            .root_source_file = b.path("packages/basics/tests/http_router_test.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
     // Zyte tests
     const zyte_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/stdlib/tests/zyte_test.zig"),
+            .root_source_file = b.path("packages/basics/tests/zyte_test.zig"),
             .target = target,
             .optimize = optimize,
         }),
