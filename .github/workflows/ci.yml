@@ -177,3 +177,75 @@ jobs:
           name: home-${{ matrix.platform }}-${{ matrix.arch }}
           path: zig-out/bin/home.exe
           retention-days: 7
+
+  # =========================================================================
+  # Kernel Tests
+  # =========================================================================
+  test-kernel:
+    name: Kernel Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.1'
+
+      - name: Run kernel memory tests
+        run: |
+          cd packages/kernel/tests
+          zig build-exe test_memory.zig --main-pkg-path ../..
+          ./test_memory
+
+      - name: Run kernel paging tests
+        run: |
+          cd packages/kernel/tests
+          zig build-exe test_paging.zig --main-pkg-path ../..
+          ./test_paging
+
+      - name: Run scheduler tests
+        run: |
+          cd packages/kernel/tests
+          zig build-exe test_scheduler.zig --main-pkg-path ../..
+          ./test_scheduler
+
+      - name: Run integration tests
+        run: |
+          cd packages/kernel/tests
+          zig build-exe test_integration.zig --main-pkg-path ../..
+          ./test_integration
+
+  test-filesystem:
+    name: Filesystem Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.1'
+
+      - name: Run filesystem tests
+        run: |
+          cd packages/fs/tests
+          zig build-exe test_filesystems.zig --main-pkg-path ../..
+          ./test_filesystems
+
+  test-network:
+    name: Network Stack Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.1'
+
+      - name: Run network stack tests
+        run: |
+          cd packages/net/tests
+          zig build-exe test_network.zig --main-pkg-path ../..
+          ./test_network

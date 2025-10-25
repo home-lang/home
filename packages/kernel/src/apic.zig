@@ -491,6 +491,185 @@ pub fn getCpuId() u32 {
 }
 
 // ============================================================================
+// TLB Shootdown Support
+// ============================================================================
+
+/// TLB shootdown request
+pub const TlbShootdownRequest = struct {
+    /// Address to invalidate (0 for full flush)
+    address: u64,
+    /// Number of pages to invalidate (0 for single page, -1 for full flush)
+    page_count: u64,
+    /// CPUs that need to flush (bitset)
+    cpu_mask: u64,
+    /// Generation counter for batching
+    generation: u64,
+    /// Completion counter (atomic)
+    completed: atomic.AtomicU32,
+};
+
+/// TLB shootdown manager
+pub const TlbShootdownManager = struct {
+    /// Current generation counter
+    generation: atomic.AtomicU64,
+    /// Pending shootdown requests (per-CPU)
+    pending_requests: [256]?*TlbShootdownRequest,
+    /// Lock for request management
+    lock: sync.Spinlock,
+
+    /// Global shootdown manager
+    var global: TlbShootdownManager = .{
+        .generation = atomic.AtomicU64.init(0),
+        .pending_requests = [_]?*TlbShootdownRequest{null} ** 256,
+        .lock = sync.Spinlock.init(),
+    };
+
+    /// Shootdown IPI vector (must be configured in IDT)
+    pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xFD;
+
+    /// Initialize TLB shootdown support
+    pub fn init() void {
+        // Just ensure static initialization is done
+        _ = global.generation.load(.Monotonic);
+    }
+
+    /// Send TLB shootdown IPI to specific CPUs
+    pub fn shootdown(address: u64, page_count: u64, cpu_mask: u64, allocator: Basics.Allocator) !void {
+        // Don't send IPI to ourselves
+        const current_cpu = getCpuId();
+        const current_mask = @as(u64, 1) << @truncate(current_cpu);
+        const target_mask = cpu_mask & ~current_mask;
+
+        if (target_mask == 0) {
+            // No other CPUs to notify, just flush locally
+            flushLocal(address, page_count);
+            return;
+        }
+
+        // Create shootdown request
+        const request = try allocator.create(TlbShootdownRequest);
+        errdefer allocator.destroy(request);
+
+        const num_cpus = @popCount(target_mask);
+        request.* = .{
+            .address = address,
+            .page_count = page_count,
+            .cpu_mask = target_mask,
+            .generation = global.generation.fetchAdd(1, .Monotonic),
+            .completed = atomic.AtomicU32.init(0),
+        };
+
+        // Store request for each target CPU
+        global.lock.acquire();
+        var cpu: u6 = 0;
+        while (cpu < 64) : (cpu += 1) {
+            if ((target_mask & (@as(u64, 1) << cpu)) != 0) {
+                global.pending_requests[cpu] = request;
+            }
+        }
+        global.lock.release();
+
+        // Send IPI to all target CPUs
+        if (getLocalApic()) |apic| {
+            // Send to each CPU individually
+            cpu = 0;
+            while (cpu < 64) : (cpu += 1) {
+                if ((target_mask & (@as(u64, 1) << cpu)) != 0) {
+                    apic.sendIpi(
+                        cpu,
+                        TLB_SHOOTDOWN_VECTOR,
+                        .Fixed,
+                        .Physical,
+                        true, // assert
+                        false, // edge triggered
+                        .NoShorthand,
+                    );
+                }
+            }
+        }
+
+        // Flush locally
+        flushLocal(address, page_count);
+
+        // Wait for all CPUs to complete
+        const timeout_iterations: u64 = 1_000_000_000; // ~1 second
+        var iterations: u64 = 0;
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if (request.completed.load(.Acquire) >= num_cpus) {
+                break;
+            }
+
+            if (iterations % 1000 == 0) {
+                asm.pause();
+            }
+        }
+
+        // Clean up request
+        allocator.destroy(request);
+    }
+
+    /// Broadcast TLB shootdown to all other CPUs
+    pub fn shootdownAll(address: u64, page_count: u64, allocator: Basics.Allocator) !void {
+        // Send to all CPUs except self
+        const cpu_mask = ~@as(u64, 0); // All CPUs
+        try shootdown(address, page_count, cpu_mask, allocator);
+    }
+
+    /// Handle TLB shootdown IPI (called from interrupt handler)
+    pub fn handleShootdownIpi() void {
+        const current_cpu = getCpuId();
+
+        global.lock.acquire();
+        const request = global.pending_requests[current_cpu];
+        global.pending_requests[current_cpu] = null;
+        global.lock.release();
+
+        if (request) |req| {
+            // Perform TLB flush
+            flushLocal(req.address, req.page_count);
+
+            // Mark as completed
+            _ = req.completed.fetchAdd(1, .Release);
+        }
+
+        // Send EOI
+        sendEoi();
+    }
+
+    /// Flush TLB locally
+    fn flushLocal(address: u64, page_count: u64) void {
+        if (page_count == ~@as(u64, 0) or address == 0) {
+            // Full TLB flush
+            asm.flushTlb();
+        } else if (page_count == 0) {
+            // Single page flush
+            asm.invlpg(address);
+        } else {
+            // Multiple pages
+            var i: u64 = 0;
+            while (i < page_count) : (i += 1) {
+                asm.invlpg(address + (i * memory.PAGE_SIZE));
+            }
+        }
+    }
+
+    /// Batch multiple TLB flushes
+    pub fn batchFlush(addresses: []const u64, cpu_mask: u64, allocator: Basics.Allocator) !void {
+        // For small batches, just send individual flushes
+        if (addresses.len <= 8) {
+            for (addresses) |addr| {
+                try shootdown(addr, 0, cpu_mask, allocator);
+            }
+            return;
+        }
+
+        // For large batches, do a full flush instead
+        try shootdown(0, ~@as(u64, 0), cpu_mask, allocator);
+    }
+};
+
+// ============================================================================
 // Tests
 // ============================================================================
 

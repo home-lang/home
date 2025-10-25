@@ -577,7 +577,234 @@ pub const TLB = struct {
     }
 };
 
+// ============================================================================
+// Copy-on-Write (COW) Support
+// ============================================================================
+
+/// Page reference counter for COW
+pub const PageRefCount = struct {
+    /// Reference count map (physical page -> refcount)
+    /// Using available1 bits in PageFlags for COW marker
+    const COW_BIT: u3 = 0x1; // Bit 0 of available1 marks COW pages
+
+    /// Global reference count table
+    /// In production, this should be a proper hash map
+    /// For now, we use a simplified array-based approach
+    var ref_counts: [4096]atomic.AtomicU32 = [_]atomic.AtomicU32{atomic.AtomicU32.init(0)} ** 4096;
+    var ref_counts_initialized: bool = false;
+
+    pub fn init() void {
+        if (!ref_counts_initialized) {
+            for (&ref_counts) |*count| {
+                count.* = atomic.AtomicU32.init(0);
+            }
+            ref_counts_initialized = true;
+        }
+    }
+
+    /// Get index for physical address
+    fn getIndex(phys_addr: u64) usize {
+        // Simple hash: use page number modulo array size
+        const page_num = phys_addr >> 12;
+        return @intCast(page_num % ref_counts.len);
+    }
+
+    /// Increment reference count
+    pub fn inc(phys_addr: u64) void {
+        const index = getIndex(phys_addr);
+        _ = ref_counts[index].fetchAdd(1, .Monotonic);
+    }
+
+    /// Decrement reference count, return new count
+    pub fn dec(phys_addr: u64) u32 {
+        const index = getIndex(phys_addr);
+        return ref_counts[index].fetchSub(1, .Monotonic) - 1;
+    }
+
+    /// Get reference count
+    pub fn get(phys_addr: u64) u32 {
+        const index = getIndex(phys_addr);
+        return ref_counts[index].load(.Monotonic);
+    }
+
+    /// Mark page entry as COW
+    pub fn markCow(entry: *PageFlags) void {
+        entry.available1 |= COW_BIT;
+    }
+
+    /// Check if page entry is COW
+    pub fn isCow(entry: PageFlags) bool {
+        return (entry.available1 & COW_BIT) != 0;
+    }
+
+    /// Clear COW marker
+    pub fn clearCow(entry: *PageFlags) void {
+        entry.available1 &= ~COW_BIT;
+    }
+};
+
+/// Copy-on-Write page fault handler
+pub const CowHandler = struct {
+    allocator: Basics.Allocator,
+    mapper: *PageMapper,
+
+    pub fn init(allocator: Basics.Allocator, mapper: *PageMapper) CowHandler {
+        PageRefCount.init();
+        return .{
+            .allocator = allocator,
+            .mapper = mapper,
+        };
+    }
+
+    /// Handle COW page fault
+    /// Returns true if fault was handled, false if it's a real fault
+    pub fn handleFault(self: *CowHandler, faulting_addr: u64, was_write: bool) !bool {
+        if (!was_write) {
+            return false; // Not a write fault, not COW
+        }
+
+        // Look up the page table entry
+        const entry = try self.mapper.getEntry(faulting_addr);
+
+        // Check if this is a COW page
+        if (!PageRefCount.isCow(entry.*)) {
+            return false; // Not a COW page, real fault
+        }
+
+        const phys_addr = entry.getAddress();
+        const ref_count = PageRefCount.get(phys_addr);
+
+        if (ref_count <= 1) {
+            // We're the only owner, just mark writable
+            entry.writable = true;
+            PageRefCount.clearCow(entry);
+
+            // Flush TLB for this page
+            asm.invlpg(faulting_addr);
+
+            return true; // Fault handled
+        }
+
+        // Multiple references, need to copy
+        // Allocate new physical page
+        const new_page = try self.allocator.alloc(u8, memory.PAGE_SIZE);
+        const new_phys = @intFromPtr(new_page.ptr);
+
+        // Copy old page content
+        const old_virt: [*]const u8 = @ptrFromInt(@as(usize, @intCast(faulting_addr & ~@as(u64, 0xFFF))));
+        @memcpy(new_page, old_virt[0..memory.PAGE_SIZE]);
+
+        // Decrement old page refcount
+        _ = PageRefCount.dec(phys_addr);
+
+        // Update page table entry
+        entry.setAddress(new_phys);
+        entry.writable = true;
+        PageRefCount.clearCow(entry);
+
+        // Increment refcount for new page
+        PageRefCount.inc(new_phys);
+
+        // Flush TLB
+        asm.invlpg(faulting_addr);
+
+        return true; // Fault handled
+    }
+};
+
+/// Mark all pages in address space as COW for fork
+pub fn markCowForFork(parent_mapper: *PageMapper, child_mapper: *PageMapper) !void {
+    // Walk parent's page tables and mark pages as COW
+    for (parent_mapper.pml4.entries, 0..) |pml4e, pml4_idx| {
+        if (!pml4e.present) continue;
+
+        const pdpt: *PDPT = @ptrFromInt(@as(usize, @intCast(pml4e.getAddress())));
+        for (pdpt.entries, 0..) |pdpte, pdpt_idx| {
+            if (!pdpte.present or pdpte.huge) continue;
+
+            const pd: *PD = @ptrFromInt(@as(usize, @intCast(pdpte.getAddress())));
+            for (pd.entries, 0..) |pde, pd_idx| {
+                if (!pde.present or pde.huge) continue;
+
+                const pt: *PT = @ptrFromInt(@as(usize, @intCast(pde.getAddress())));
+                for (pt.entries, 0..) |*pte, pt_idx| {
+                    if (!pte.present) continue;
+
+                    // Mark as COW if writable
+                    if (pte.writable) {
+                        // Mark parent page as read-only COW
+                        pte.writable = false;
+                        PageRefCount.markCow(pte);
+
+                        // Increment reference count
+                        PageRefCount.inc(pte.getAddress());
+
+                        // Copy same entry to child (read-only, COW)
+                        const child_entry = try child_mapper.getEntryMut(
+                            VirtualAddress.new(
+                                @truncate(pml4_idx),
+                                @truncate(pdpt_idx),
+                                @truncate(pd_idx),
+                                @truncate(pt_idx),
+                                0,
+                            ).toU64(),
+                        );
+                        child_entry.* = pte.*;
+
+                        // Flush TLB for parent (child has new CR3 so no flush needed)
+                        const vaddr = VirtualAddress.new(
+                            @truncate(pml4_idx),
+                            @truncate(pdpt_idx),
+                            @truncate(pd_idx),
+                            @truncate(pt_idx),
+                            0,
+                        );
+                        asm.invlpg(vaddr.toU64());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Get mutable entry (for COW handler)
+fn getEntryMut(self: *PageMapper, virt: u64) !*PageFlags {
+    const vaddr = VirtualAddress.fromU64(virt);
+
+    // Get or create PML4 entry
+    var pml4e = self.pml4.getEntry(vaddr.pml4_index);
+    if (!pml4e.present) {
+        return error.PageNotMapped;
+    }
+
+    // Get PDPT
+    const pdpt: *PDPT = @ptrFromInt(@as(usize, @intCast(pml4e.getAddress())));
+    var pdpte = pdpt.getEntry(vaddr.pdpt_index);
+    if (!pdpte.present) {
+        return error.PageNotMapped;
+    }
+
+    // Get PD
+    const pd: *PD = @ptrFromInt(@as(usize, @intCast(pdpte.getAddress())));
+    var pde = pd.getEntry(vaddr.pd_index);
+    if (!pde.present) {
+        return error.PageNotMapped;
+    }
+
+    // Get PT
+    const pt: *PT = @ptrFromInt(@as(usize, @intCast(pde.getAddress())));
+    return pt.getEntry(vaddr.pt_index);
+}
+
+/// Get read-only entry for lookup
+fn getEntry(self: *PageMapper, virt: u64) !*const PageFlags {
+    return try self.getEntryMut(virt);
+}
+
+// ============================================================================
 // Tests
+// ============================================================================
+
 test "page flags size" {
     try Basics.testing.expectEqual(@as(usize, 8), @sizeOf(PageFlags));
     try Basics.testing.expectEqual(@as(usize, 64), @bitSizeOf(PageFlags));

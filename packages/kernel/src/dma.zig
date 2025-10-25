@@ -419,6 +419,303 @@ pub const CoherentDmaBuffer = struct {
 };
 
 // ============================================================================
+// Bounce Buffers (for devices with DMA address limitations)
+// ============================================================================
+
+/// Bounce buffer for DMA to/from high memory
+pub const BounceBuffer = struct {
+    /// Low memory buffer (accessible by device)
+    low_buffer: DmaBuffer,
+    /// Original high memory address
+    high_address: ?memory.PhysicalAddress,
+    /// Size of transfer
+    size: usize,
+    /// Direction of transfer
+    direction: DmaDirection,
+    /// Allocator
+    allocator: Basics.Allocator,
+
+    /// Allocate a bounce buffer in low memory (< 4GB)
+    pub fn allocate(allocator: Basics.Allocator, size: usize, direction: DmaDirection) !BounceBuffer {
+        // Allocate DMA buffer
+        // TODO: In production, this should specifically allocate from low memory zone (< 4GB)
+        // For now, we assume allocator provides suitable memory
+        const buffer = try DmaBuffer.allocate(allocator, size);
+
+        return BounceBuffer{
+            .low_buffer = buffer,
+            .high_address = null,
+            .size = size,
+            .direction = direction,
+            .allocator = allocator,
+        };
+    }
+
+    /// Free the bounce buffer
+    pub fn free(self: *BounceBuffer) void {
+        self.low_buffer.free();
+    }
+
+    /// Copy data from high memory to bounce buffer (for ToDevice transfers)
+    pub fn copyIn(self: *BounceBuffer, high_memory: []const u8) !void {
+        if (high_memory.len > self.size) return error.BufferTooSmall;
+        const dest = self.low_buffer.asSlice();
+        @memcpy(dest[0..high_memory.len], high_memory);
+        self.low_buffer.flush();
+        self.high_address = @intFromPtr(high_memory.ptr);
+    }
+
+    /// Copy data from bounce buffer to high memory (for FromDevice transfers)
+    pub fn copyOut(self: *BounceBuffer, high_memory: []u8) !void {
+        if (high_memory.len > self.size) return error.BufferTooSmall;
+        self.low_buffer.invalidate();
+        const src = self.low_buffer.asSlice();
+        @memcpy(high_memory, src[0..high_memory.len]);
+    }
+
+    /// Get physical address for device DMA
+    pub fn deviceAddress(self: BounceBuffer) memory.PhysicalAddress {
+        return self.low_buffer.physical;
+    }
+};
+
+/// Bounce buffer pool for frequent small transfers
+pub const BounceBufferPool = struct {
+    /// Pool of bounce buffers
+    pool: DmaPool(4096), // 4KB buffers
+    /// Constraints for this pool
+    constraints: DmaConstraints,
+
+    /// Create bounce buffer pool
+    pub fn init(allocator: Basics.Allocator, count: usize, constraints: DmaConstraints) !BounceBufferPool {
+        const pool = try DmaPool(4096).init(allocator, count);
+        return BounceBufferPool{
+            .pool = pool,
+            .constraints = constraints,
+        };
+    }
+
+    /// Clean up pool
+    pub fn deinit(self: *BounceBufferPool) void {
+        self.pool.deinit();
+    }
+
+    /// Check if address needs bounce buffer
+    pub fn needsBounce(self: BounceBufferPool, addr: u64) bool {
+        return !self.constraints.validAddress(addr);
+    }
+
+    /// Acquire a bounce buffer
+    pub fn acquire(self: *BounceBufferPool) ?*DmaBuffer {
+        return self.pool.acquire();
+    }
+
+    /// Release bounce buffer
+    pub fn release(self: *BounceBufferPool, buffer: *DmaBuffer) void {
+        self.pool.release(buffer);
+    }
+};
+
+// ============================================================================
+// IOMMU Support
+// ============================================================================
+
+/// IOMMU type detected
+pub const IommuType = enum {
+    None,
+    IntelVTd,  // Intel Virtualization Technology for Directed I/O
+    AmdVi,     // AMD I/O Virtualization
+};
+
+/// IOMMU context (global state)
+pub const IommuContext = struct {
+    /// Type of IOMMU present
+    iommu_type: IommuType,
+    /// Whether IOMMU is enabled
+    enabled: bool,
+    /// Base address of IOMMU registers (if present)
+    base_address: ?memory.PhysicalAddress,
+
+    /// Global IOMMU context
+    var global: IommuContext = .{
+        .iommu_type = .None,
+        .enabled = false,
+        .base_address = null,
+    };
+
+    /// Detect IOMMU presence
+    pub fn detect() !void {
+        // Check for Intel VT-d via ACPI DMAR table
+        if (detectIntelVTd()) {
+            global.iommu_type = .IntelVTd;
+            global.enabled = false; // Not initialized yet
+            return;
+        }
+
+        // Check for AMD-Vi via ACPI IVRS table
+        if (detectAmdVi()) {
+            global.iommu_type = .AmdVi;
+            global.enabled = false;
+            return;
+        }
+
+        // No IOMMU found
+        global.iommu_type = .None;
+        global.enabled = false;
+    }
+
+    /// Check if IOMMU is available
+    pub fn isAvailable() bool {
+        return global.iommu_type != .None;
+    }
+
+    /// Check if IOMMU is enabled
+    pub fn isEnabled() bool {
+        return global.enabled;
+    }
+
+    /// Get IOMMU type
+    pub fn getType() IommuType {
+        return global.iommu_type;
+    }
+};
+
+/// Detect Intel VT-d via ACPI
+fn detectIntelVTd() bool {
+    // TODO: Parse ACPI DMAR (DMA Remapping) table
+    // DMAR signature: "DMAR"
+    // This would require ACPI table parsing
+    // For now, return false (stub)
+    return false;
+}
+
+/// Detect AMD-Vi via ACPI
+fn detectAmdVi() bool {
+    // TODO: Parse ACPI IVRS (I/O Virtualization Reporting Structure) table
+    // IVRS signature: "IVRS"
+    // This would require ACPI table parsing
+    // For now, return false (stub)
+    return false;
+}
+
+// ============================================================================
+// IOMMU Page Tables (simplified)
+// ============================================================================
+
+/// IOMMU page table entry
+pub const IommuPageEntry = packed struct {
+    present: bool,
+    writable: bool,
+    readable: bool,
+    reserved: u9 = 0,
+    physical_address: u52, // 4KB aligned physical address
+
+    /// Create entry mapping device address to physical address
+    pub fn map(device_addr: u64, phys_addr: u64, writable: bool) IommuPageEntry {
+        return .{
+            .present = true,
+            .writable = writable,
+            .readable = true,
+            .physical_address = @truncate(phys_addr >> 12),
+        };
+    }
+
+    /// Get physical address from entry
+    pub fn getPhysical(self: IommuPageEntry) u64 {
+        return @as(u64, self.physical_address) << 12;
+    }
+};
+
+/// IOMMU page table (single level, simplified)
+pub const IommuPageTable = struct {
+    /// Page table entries (512 entries for 2MB mapping)
+    entries: [512]IommuPageEntry,
+    /// Allocator
+    allocator: Basics.Allocator,
+
+    /// Create empty page table
+    pub fn init(allocator: Basics.Allocator) !IommuPageTable {
+        return IommuPageTable{
+            .entries = [_]IommuPageEntry{.{
+                .present = false,
+                .writable = false,
+                .readable = false,
+                .physical_address = 0,
+            }} ** 512,
+            .allocator = allocator,
+        };
+    }
+
+    /// Map a device-visible address to physical address
+    pub fn mapPage(self: *IommuPageTable, device_addr: u64, phys_addr: u64, writable: bool) !void {
+        const index = (device_addr >> 12) & 0x1FF; // 9-bit index
+        if (index >= 512) return error.InvalidAddress;
+
+        self.entries[index] = IommuPageEntry.map(device_addr, phys_addr, writable);
+    }
+
+    /// Unmap a device address
+    pub fn unmapPage(self: *IommuPageTable, device_addr: u64) !void {
+        const index = (device_addr >> 12) & 0x1FF;
+        if (index >= 512) return error.InvalidAddress;
+
+        self.entries[index].present = false;
+    }
+
+    /// Lookup physical address for device address
+    pub fn lookup(self: IommuPageTable, device_addr: u64) ?u64 {
+        const index = (device_addr >> 12) & 0x1FF;
+        if (index >= 512) return null;
+
+        const entry = self.entries[index];
+        if (!entry.present) return null;
+
+        return entry.getPhysical() | (device_addr & 0xFFF);
+    }
+};
+
+/// IOMMU domain (per-device address space)
+pub const IommuDomain = struct {
+    /// Root page table
+    root_table: IommuPageTable,
+    /// Device identifier (PCI bus:dev:func)
+    device_id: u16,
+
+    /// Create IOMMU domain for device
+    pub fn create(allocator: Basics.Allocator, device_id: u16) !IommuDomain {
+        const table = try IommuPageTable.init(allocator);
+        return IommuDomain{
+            .root_table = table,
+            .device_id = device_id,
+        };
+    }
+
+    /// Map buffer for device DMA
+    pub fn mapBuffer(self: *IommuDomain, buffer: DmaBuffer, writable: bool) !void {
+        // Map all pages in the buffer
+        const page_count = memory.pageCount(buffer.size);
+        var i: usize = 0;
+        while (i < page_count) : (i += 1) {
+            const offset = i * memory.PAGE_SIZE;
+            const device_addr = buffer.physical + offset;
+            const phys_addr = buffer.physical + offset;
+            try self.root_table.mapPage(device_addr, phys_addr, writable);
+        }
+    }
+
+    /// Unmap buffer
+    pub fn unmapBuffer(self: *IommuDomain, buffer: DmaBuffer) !void {
+        const page_count = memory.pageCount(buffer.size);
+        var i: usize = 0;
+        while (i < page_count) : (i += 1) {
+            const offset = i * memory.PAGE_SIZE;
+            const device_addr = buffer.physical + offset;
+            try self.root_table.unmapPage(device_addr);
+        }
+    }
+};
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -516,4 +813,94 @@ test "coherent DMA buffer" {
     const value_ptr = coherent.as(u32);
     value_ptr.* = 0x12345678;
     try Basics.testing.expectEqual(@as(u32, 0x12345678), value_ptr.*);
+}
+
+test "bounce buffer" {
+    const allocator = Basics.testing.allocator;
+
+    var bounce = try BounceBuffer.allocate(allocator, 1024, .Bidirectional);
+    defer bounce.free();
+
+    try Basics.testing.expectEqual(@as(usize, 1024), bounce.size);
+
+    // Test copyIn
+    const data = "Test data for bounce buffer";
+    var high_mem: [100]u8 = undefined;
+    @memcpy(high_mem[0..data.len], data);
+    try bounce.copyIn(high_mem[0..data.len]);
+
+    // Verify data was copied
+    const low_mem = bounce.low_buffer.asSlice();
+    try Basics.testing.expectEqualSlices(u8, data, low_mem[0..data.len]);
+
+    // Test copyOut
+    var dest: [100]u8 = undefined;
+    try bounce.copyOut(dest[0..data.len]);
+    try Basics.testing.expectEqualSlices(u8, data, dest[0..data.len]);
+}
+
+test "bounce buffer pool" {
+    const allocator = Basics.testing.allocator;
+
+    const constraints = DmaConstraints.dma32();
+    var pool = try BounceBufferPool.init(allocator, 4, constraints);
+    defer pool.deinit();
+
+    // Check that high addresses need bounce buffers
+    try Basics.testing.expect(pool.needsBounce(0x100000000)); // > 4GB
+    try Basics.testing.expect(!pool.needsBounce(0x1000)); // < 4GB
+
+    // Acquire and release
+    const buf = pool.acquire().?;
+    try Basics.testing.expect(buf != null);
+    pool.release(buf);
+}
+
+test "IOMMU detection" {
+    // Just test that detection doesn't crash
+    try IommuContext.detect();
+
+    // Should report no IOMMU (stub implementation)
+    try Basics.testing.expect(!IommuContext.isAvailable());
+    try Basics.testing.expect(!IommuContext.isEnabled());
+    try Basics.testing.expectEqual(IommuType.None, IommuContext.getType());
+}
+
+test "IOMMU page table" {
+    const allocator = Basics.testing.allocator;
+
+    var table = try IommuPageTable.init(allocator);
+
+    // Map a page
+    try table.mapPage(0x1000, 0x5000, true);
+
+    // Lookup should return mapped address
+    const result = table.lookup(0x1000);
+    try Basics.testing.expect(result != null);
+    try Basics.testing.expectEqual(@as(u64, 0x5000), result.?);
+
+    // Unmap
+    try table.unmapPage(0x1000);
+    try Basics.testing.expect(table.lookup(0x1000) == null);
+}
+
+test "IOMMU domain" {
+    const allocator = Basics.testing.allocator;
+
+    var domain = try IommuDomain.create(allocator, 0x0100); // PCI 00:01.0
+
+    // Create a buffer
+    var buffer = try DmaBuffer.allocate(allocator, 4096);
+    defer buffer.free();
+
+    // Map buffer
+    try domain.mapBuffer(buffer, true);
+
+    // Should be able to lookup the mapping
+    const result = domain.root_table.lookup(buffer.physical);
+    try Basics.testing.expect(result != null);
+
+    // Unmap buffer
+    try domain.unmapBuffer(buffer);
+    try Basics.testing.expect(domain.root_table.lookup(buffer.physical) == null);
 }

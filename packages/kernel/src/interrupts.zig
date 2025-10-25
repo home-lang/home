@@ -390,6 +390,20 @@ pub fn pageFaultHandler(frame_with_error: *InterruptFrameWithError) callconv(.In
     const error_code: PageFaultError = @bitCast(frame_with_error.error_code);
     const faulting_address = asm.readCr2();
 
+    // Check if this might be a COW fault
+    if (error_code.protection_violation and error_code.write) {
+        // This could be a COW page fault
+        // In a full implementation, we'd get the current process's COW handler here
+        // For now, we'll just document what should happen:
+
+        // var cow_handler = getCurrentProcess().cow_handler;
+        // if (cow_handler.handleFault(faulting_address, true)) {
+        //     return; // COW fault handled, resume execution
+        // }
+
+        // If COW handler returns false, it's a real protection fault
+    }
+
     Basics.debug.print("EXCEPTION: Page Fault at address 0x{x}\n", .{faulting_address});
     Basics.debug.print("  Error: {}\n", .{error_code});
     Basics.debug.print("{}\n", .{frame_with_error.frame});

@@ -237,18 +237,8 @@ pub const NvmeNamespace = struct {
         cmd.cdw11 = @intCast(lba >> 32);
         cmd.cdw12 = count - 1; // 0-based
 
-        const command_id = self.controller.io_queue.submitCommand(cmd);
-
-        // Poll for completion
-        while (self.controller.io_queue.pollCompletion(command_id)) |completion| {
-            if (completion.isError()) {
-                return error.IoError;
-            }
-            break;
-        } else {
-            // TODO: Better timeout handling
-            return error.Timeout;
-        }
+        // Execute with retry
+        _ = try self.controller.executeCommandWithRetry(self.controller.io_queue, cmd);
 
         // Copy data from DMA buffer
         const src: [*]const u8 = @ptrFromInt(dma_buf.virtual_addr);
@@ -277,17 +267,8 @@ pub const NvmeNamespace = struct {
         cmd.cdw11 = @intCast(lba >> 32);
         cmd.cdw12 = count - 1; // 0-based
 
-        const command_id = self.controller.io_queue.submitCommand(cmd);
-
-        // Poll for completion
-        while (self.controller.io_queue.pollCompletion(command_id)) |completion| {
-            if (completion.isError()) {
-                return error.IoError;
-            }
-            break;
-        } else {
-            return error.Timeout;
-        }
+        // Execute with retry
+        _ = try self.controller.executeCommandWithRetry(self.controller.io_queue, cmd);
     }
 };
 
@@ -302,6 +283,13 @@ pub const NvmeController = struct {
     io_queue: *NvmeQueue,
     namespaces: Basics.ArrayList(*NvmeNamespace),
     allocator: Basics.Allocator,
+    error_count: u32 = 0,
+    last_error: ?anyerror = null,
+
+    // Error handling constants
+    pub const COMMAND_TIMEOUT_MS: u64 = 30_000; // 30 seconds
+    pub const MAX_RETRIES: u8 = 3;
+    pub const ERROR_THRESHOLD: u32 = 10;
 
     pub fn init(allocator: Basics.Allocator, pci_device: *pci.PciDevice) !*NvmeController {
         const controller = try allocator.create(NvmeController);
@@ -354,6 +342,96 @@ pub const NvmeController = struct {
         if ((self.regs.csts & CSTS_CFS) != 0) {
             return error.ControllerFatalStatus;
         }
+
+        // Reset error counter on successful reset
+        self.error_count = 0;
+        self.last_error = null;
+    }
+
+    /// Record an error and potentially trigger controller reset
+    fn recordError(self: *NvmeController, err: anyerror) anyerror {
+        self.error_count += 1;
+        self.last_error = err;
+
+        // If we've hit the error threshold, reset the controller
+        if (self.error_count >= ERROR_THRESHOLD) {
+            // Try to reset the controller
+            self.reset() catch {
+                // Reset failed, can't recover
+                return error.ControllerResetFailed;
+            };
+
+            // Re-initialize after reset
+            self.initializeQueues() catch {
+                return error.InitializationFailed;
+            };
+        }
+
+        return err;
+    }
+
+    /// Wait for command completion with timeout
+    fn waitForCompletion(self: *NvmeController, queue: *NvmeQueue, command_id: u16) !NvmeCompletion {
+        // Approximate 30 seconds worth of iterations
+        const timeout_iterations: u64 = 30_000_000_000;
+        var iterations: u64 = 0;
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if (queue.pollCompletion(command_id)) |completion| {
+                // Check for errors
+                if (completion.isError()) {
+                    const status = completion.getStatus();
+                    // Classify the error
+                    if (status >= 0x200) { // Media errors
+                        return error.MediaError;
+                    } else if (status >= 0x100) { // Command-specific errors
+                        return error.CommandError;
+                    } else { // Generic errors
+                        return error.IoError;
+                    }
+                }
+                return completion;
+            }
+
+            // Small delay to avoid spinning too fast
+            if (iterations % 1000 == 0) {
+                asm volatile ("pause");
+            }
+        }
+
+        return error.CommandTimeout;
+    }
+
+    /// Execute command with retry logic
+    fn executeCommandWithRetry(self: *NvmeController, queue: *NvmeQueue, cmd: NvmeCommand) !NvmeCompletion {
+        var attempt: u8 = 0;
+        var last_err: ?anyerror = null;
+
+        while (attempt < MAX_RETRIES) : (attempt += 1) {
+            // Submit command
+            const command_id = queue.submitCommand(cmd);
+
+            // Wait for completion
+            const result = self.waitForCompletion(queue, command_id);
+
+            if (result) |completion| {
+                // Success! Reset error counter
+                self.error_count = 0;
+                self.last_error = null;
+                return completion;
+            } else |err| {
+                last_err = err;
+
+                // Wait a bit before retry
+                var delay: u32 = 0;
+                while (delay < 10000) : (delay += 1) {
+                    asm volatile ("pause");
+                }
+            }
+        }
+
+        // All retries failed, record the error
+        return self.recordError(last_err orelse error.UnknownError);
     }
 
     fn initializeQueues(self: *NvmeController) !void {

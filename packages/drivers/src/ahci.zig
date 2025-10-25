@@ -206,6 +206,8 @@ pub const AhciPort = struct {
     dma_buffer: dma.DmaBuffer,
     lock: sync.Spinlock,
     allocator: Basics.Allocator,
+    error_count: u32 = 0,  // Track consecutive errors
+    last_error: ?anyerror = null,  // Last error encountered
 
     pub const DeviceType = enum {
         None,
@@ -214,6 +216,11 @@ pub const AhciPort = struct {
         SEMB,
         PM,
     };
+
+    // Error handling constants
+    pub const COMMAND_TIMEOUT_MS: u64 = 30_000; // 30 seconds
+    pub const MAX_RETRIES: u8 = 3;
+    pub const ERROR_THRESHOLD: u32 = 10; // Reset port after 10 consecutive errors
 
     pub fn init(allocator: Basics.Allocator, port_num: u8, port_regs: *volatile HbaPort) !*AhciPort {
         const port = try allocator.create(AhciPort);
@@ -280,6 +287,139 @@ pub const AhciPort = struct {
         };
     }
 
+    /// Reset the port on fatal errors
+    pub fn reset(self: *AhciPort) !void {
+        // Stop the port
+        self.stop();
+
+        // Clear error register
+        self.port_regs.sata_error = 0xFFFFFFFF;
+        self.port_regs.interrupt_status = 0xFFFFFFFF;
+
+        // Perform COMRESET (Communication Reset)
+        // This is a SATA-specific reset sequence
+        const sctl = self.port_regs.sata_control;
+        self.port_regs.sata_control = (sctl & ~0xF) | 0x1; // DET = 1 (Initialize)
+
+        // Wait 1ms for reset
+        // TODO: Use proper timer delay instead of busy wait
+        var delay: u32 = 0;
+        while (delay < 100000) : (delay += 1) {
+            asm volatile ("pause");
+        }
+
+        self.port_regs.sata_control = sctl & ~0xF; // DET = 0 (No action)
+
+        // Wait for device to re-establish link
+        delay = 0;
+        while (delay < 100000) : (delay += 1) {
+            const ssts = self.port_regs.sata_status;
+            if ((ssts & HbaPort.SSTS_DET_MASK) == HbaPort.SSTS_DET_PRESENT) {
+                break;
+            }
+            asm volatile ("pause");
+        }
+
+        // Re-probe device
+        try self.probe();
+
+        // Restart the port
+        try self.start();
+
+        // Reset error counter on successful reset
+        self.error_count = 0;
+        self.last_error = null;
+    }
+
+    /// Wait for command completion with timeout
+    fn waitForCommand(self: *AhciPort, slot: u8) !void {
+        // TODO: Use actual timer instead of iteration count
+        // Approximate 30 seconds at typical CPU speeds
+        const timeout_iterations: u64 = 30_000_000_000; // ~30s worth of iterations
+        var iterations: u64 = 0;
+
+        const slot_bit = @as(u32, 1) << @intCast(slot);
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if ((self.port_regs.command_issue & slot_bit) == 0) {
+                // Command completed successfully
+                return;
+            }
+
+            // Check for errors
+            const is = self.port_regs.interrupt_status;
+            if ((is & 0x40000000) != 0) { // Task file error
+                return error.TaskFileError;
+            }
+            if ((is & 0x20000000) != 0) { // Interface fatal error
+                return error.FatalError;
+            }
+            if ((is & 0x10000000) != 0) { // Interface non-fatal error
+                return error.InterfaceError;
+            }
+
+            // Small delay to avoid spinning too fast
+            if (iterations % 1000 == 0) {
+                asm volatile ("pause");
+            }
+        }
+
+        return error.CommandTimeout;
+    }
+
+    /// Record an error and potentially trigger port reset
+    fn recordError(self: *AhciPort, err: anyerror) anyerror {
+        self.error_count += 1;
+        self.last_error = err;
+
+        // If we've hit the error threshold, reset the port
+        if (self.error_count >= ERROR_THRESHOLD) {
+            // Try to reset the port
+            self.reset() catch {
+                // Reset failed, can't recover
+                return error.PortResetFailed;
+            };
+        }
+
+        return err;
+    }
+
+    /// Execute command with retry logic
+    fn executeWithRetry(self: *AhciPort, slot: u8) !void {
+        var attempt: u8 = 0;
+        var last_err: ?anyerror = null;
+
+        while (attempt < MAX_RETRIES) : (attempt += 1) {
+            // Issue command
+            self.port_regs.command_issue = @as(u32, 1) << @intCast(slot);
+
+            // Wait for completion
+            const result = self.waitForCommand(slot);
+
+            if (result) |_| {
+                // Success! Reset error counter
+                self.error_count = 0;
+                self.last_error = null;
+                return;
+            } else |err| {
+                last_err = err;
+
+                // Clear error status for retry
+                self.port_regs.sata_error = 0xFFFFFFFF;
+                self.port_regs.interrupt_status = 0xFFFFFFFF;
+
+                // Wait a bit before retry
+                var delay: u32 = 0;
+                while (delay < 10000) : (delay += 1) {
+                    asm volatile ("pause");
+                }
+            }
+        }
+
+        // All retries failed, record the error
+        return self.recordError(last_err orelse error.UnknownError);
+    }
+
     pub fn start(self: *AhciPort) !void {
         // Wait for CR to clear
         while ((self.port_regs.command_and_status & HbaPort.CMD_CR) != 0) {}
@@ -340,16 +480,8 @@ pub const AhciPort = struct {
         const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));
         fis.* = FisRegH2D.init(@intFromEnum(AtaCommand.ReadDma), lba, @intCast(count));
 
-        // Issue command
-        self.port_regs.command_issue = @as(u32, 1) << @intCast(slot);
-
-        // Wait for completion
-        while ((self.port_regs.command_issue & (@as(u32, 1) << @intCast(slot))) != 0) {}
-
-        // Check for errors
-        if ((self.port_regs.interrupt_status & 0x40000000) != 0) {
-            return error.ReadError;
-        }
+        // Execute command with retry
+        try self.executeWithRetry(slot);
 
         // Copy from DMA buffer
         try self.dma_buffer.copyTo(buffer[0 .. count * 512]);
@@ -386,16 +518,8 @@ pub const AhciPort = struct {
         const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));
         fis.* = FisRegH2D.init(@intFromEnum(AtaCommand.WriteDma), lba, @intCast(count));
 
-        // Issue command
-        self.port_regs.command_issue = @as(u32, 1) << @intCast(slot);
-
-        // Wait for completion
-        while ((self.port_regs.command_issue & (@as(u32, 1) << @intCast(slot))) != 0) {}
-
-        // Check for errors
-        if ((self.port_regs.interrupt_status & 0x40000000) != 0) {
-            return error.WriteError;
-        }
+        // Execute command with retry
+        try self.executeWithRetry(slot);
     }
 
     fn findCommandSlot(self: *AhciPort) !u8 {

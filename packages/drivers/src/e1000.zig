@@ -127,6 +127,17 @@ pub const E1000Device = struct {
     lock: sync.Spinlock,
     allocator: Basics.Allocator,
 
+    // Error handling
+    link_up: bool = false,
+    error_count: u32 = 0,
+    last_error: ?anyerror = null,
+
+    // Constants
+    pub const TX_TIMEOUT_MS: u64 = 5_000; // 5 seconds for transmit
+    pub const LINK_CHECK_TIMEOUT_MS: u64 = 10_000; // 10 seconds for link up
+    pub const MAX_TX_RETRIES: u8 = 3;
+    pub const ERROR_THRESHOLD: u32 = 20; // Reset after 20 consecutive errors
+
     pub fn init(allocator: Basics.Allocator, pci_device: *pci.PciDevice) !*E1000Device {
         const device = try allocator.create(E1000Device);
         errdefer allocator.destroy(device);
@@ -227,6 +238,59 @@ pub const E1000Device = struct {
         // Disable interrupts
         self.writeReg(E1000Regs.IMC, 0xFFFFFFFF);
         _ = self.readReg(E1000Regs.ICR);
+
+        // Reset error counter
+        self.error_count = 0;
+        self.last_error = null;
+        self.link_up = false;
+    }
+
+    /// Check link status
+    fn checkLinkStatus(self: *E1000Device) bool {
+        const status = self.readReg(E1000Regs.STATUS);
+        // Bit 1 indicates link up
+        return (status & 0x2) != 0;
+    }
+
+    /// Wait for link to come up
+    fn waitForLink(self: *E1000Device) !void {
+        // Approximate 10 seconds worth of iterations
+        const timeout_iterations: u64 = 10_000_000_000;
+        var iterations: u64 = 0;
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if (self.checkLinkStatus()) {
+                self.link_up = true;
+                return;
+            }
+
+            if (iterations % 1000 == 0) {
+                asm volatile ("pause");
+            }
+        }
+
+        return error.LinkTimeout;
+    }
+
+    /// Record an error and potentially reset device
+    fn recordError(self: *E1000Device, err: anyerror) anyerror {
+        self.error_count += 1;
+        self.last_error = err;
+
+        // If we've hit the error threshold, reset the device
+        if (self.error_count >= ERROR_THRESHOLD) {
+            // Try to reset the device
+            self.reset() catch {
+                // Reset failed, can't recover
+                return error.DeviceResetFailed;
+            };
+
+            // Re-initialize after reset
+            self.initRx() catch return error.InitializationFailed;
+            self.initTx() catch return error.InitializationFailed;
+        }
+
+        return err;
     }
 
     fn readMacAddress(self: *E1000Device) !netdev.MacAddress {
@@ -308,29 +372,71 @@ pub const E1000Device = struct {
     }
 
     pub fn transmit(self: *E1000Device, skb: *netdev.PacketBuffer) !void {
+        // Check link status first
+        if (!self.link_up and !self.checkLinkStatus()) {
+            return self.recordError(error.LinkDown);
+        }
+
         self.lock.acquire();
         defer self.lock.release();
 
-        const tail = self.tx_tail.load(.Acquire);
-        const desc = &self.tx_ring[tail % TX_RING_SIZE];
+        var attempt: u8 = 0;
+        var last_err: ?anyerror = null;
 
-        // Wait for descriptor to be available
-        while ((desc.status & TxDescriptor.STATUS_DD) == 0) {}
+        while (attempt < MAX_TX_RETRIES) : (attempt += 1) {
+            const tail = self.tx_tail.load(.Acquire);
+            const desc = &self.tx_ring[tail % TX_RING_SIZE];
 
-        // Copy packet data
-        const data = skb.getData();
-        const tx_buf = &self.tx_buffers[tail % TX_RING_SIZE];
-        try tx_buf.copyFrom(data);
+            // Wait for descriptor to be available with timeout
+            const timeout_iterations: u64 = 5_000_000_000; // ~5 seconds
+            var iterations: u64 = 0;
+            while ((desc.status & TxDescriptor.STATUS_DD) == 0) {
+                iterations += 1;
+                if (iterations >= timeout_iterations) {
+                    last_err = error.TransmitTimeout;
+                    break;
+                }
+                if (iterations % 1000 == 0) {
+                    asm volatile ("pause");
+                }
+            }
 
-        // Setup descriptor
-        desc.length = @intCast(data.len);
-        desc.cmd = TxDescriptor.CMD_EOP | TxDescriptor.CMD_IFCS | TxDescriptor.CMD_RS;
-        desc.status = 0;
+            // If we got a timeout, retry
+            if (last_err) |_| {
+                // Wait a bit before retry
+                var delay: u32 = 0;
+                while (delay < 10000) : (delay += 1) {
+                    asm volatile ("pause");
+                }
+                continue;
+            }
 
-        // Update tail
-        const new_tail = (tail + 1) % TX_RING_SIZE;
-        self.tx_tail.store(new_tail, .Release);
-        self.writeReg(E1000Regs.TDT, new_tail);
+            // Copy packet data
+            const data = skb.getData();
+            const tx_buf = &self.tx_buffers[tail % TX_RING_SIZE];
+            tx_buf.copyFrom(data) catch |err| {
+                last_err = err;
+                continue;
+            };
+
+            // Setup descriptor
+            desc.length = @intCast(data.len);
+            desc.cmd = TxDescriptor.CMD_EOP | TxDescriptor.CMD_IFCS | TxDescriptor.CMD_RS;
+            desc.status = 0;
+
+            // Update tail
+            const new_tail = (tail + 1) % TX_RING_SIZE;
+            self.tx_tail.store(new_tail, .Release);
+            self.writeReg(E1000Regs.TDT, new_tail);
+
+            // Success! Reset error counter
+            self.error_count = 0;
+            self.last_error = null;
+            return;
+        }
+
+        // All retries failed
+        return self.recordError(last_err orelse error.UnknownError);
     }
 
     pub fn receive(self: *E1000Device) void {

@@ -347,6 +347,17 @@ pub const XhciController = struct {
     device_context_array: []?*DeviceContext,
     dcbaa_physical: u64,
 
+    // Error handling
+    error_count: u32 = 0,
+    last_error: ?anyerror = null,
+    device_stall_count: [256]u8 = [_]u8{0} ** 256, // Per-device stall counters
+
+    // Error handling constants
+    pub const TRANSFER_TIMEOUT_MS: u64 = 5_000; // 5 seconds
+    pub const MAX_RETRIES: u8 = 3;
+    pub const ERROR_THRESHOLD: u32 = 10;
+    pub const MAX_STALL_COUNT: u8 = 5; // Re-enumerate after 5 stalls
+
     max_slots: u8,
     max_ports: u8,
 
@@ -541,13 +552,310 @@ pub const XhciController = struct {
         }
     }
 
+    /// Handle STALL condition on endpoint
+    pub fn handleStall(self: *XhciController, slot_id: u8, endpoint_id: u8) !void {
+        // Increment stall counter for this device
+        if (slot_id > 0 and slot_id <= self.device_stall_count.len) {
+            self.device_stall_count[slot_id] += 1;
+
+            // If too many stalls, trigger re-enumeration
+            if (self.device_stall_count[slot_id] >= MAX_STALL_COUNT) {
+                try self.reEnumerateDevice(slot_id);
+                self.device_stall_count[slot_id] = 0;
+                return;
+            }
+        }
+
+        // Send Reset Endpoint command
+        try self.resetEndpoint(slot_id, endpoint_id);
+
+        // Clear STALL on the endpoint
+        try self.clearEndpointStall(slot_id, endpoint_id);
+    }
+
+    /// Reset an endpoint after STALL or error
+    pub fn resetEndpoint(self: *XhciController, slot_id: u8, endpoint_id: u8) !void {
+        // Create Reset Endpoint TRB
+        const trb = Trb.init(
+            .ResetEndpoint,
+            0,
+            0,
+            (@as(u32, slot_id) << 24) | (@as(u32, endpoint_id) << 16),
+        );
+
+        // Enqueue to command ring
+        try self.command_ring.enqueue(trb);
+
+        // Ring doorbell (host controller doorbell = 0)
+        self.doorbell_array[0] = 0;
+
+        // Wait for command completion
+        try self.waitForCommandCompletion(.ResetEndpoint);
+    }
+
+    /// Clear STALL condition on endpoint
+    fn clearEndpointStall(self: *XhciController, slot_id: u8, endpoint_id: u8) !void {
+        // Set TR Dequeue Pointer command to reset the transfer ring
+        const ring_index = (@as(usize, slot_id) - 1) * 31 + endpoint_id;
+        if (ring_index >= self.transfer_rings.items.len) {
+            return error.InvalidEndpoint;
+        }
+
+        const ring = self.transfer_rings.items[ring_index];
+        const dequeue_ptr = ring.physical_addr | 1; // DCS = 1
+
+        const trb = Trb.init(
+            .SetTRDequeue,
+            dequeue_ptr,
+            0,
+            (@as(u32, slot_id) << 24) | (@as(u32, endpoint_id) << 16),
+        );
+
+        try self.command_ring.enqueue(trb);
+        self.doorbell_array[0] = 0;
+
+        try self.waitForCommandCompletion(.SetTRDequeue);
+    }
+
+    /// Re-enumerate device after persistent errors
+    pub fn reEnumerateDevice(self: *XhciController, slot_id: u8) !void {
+        // Disable the device slot
+        try self.disableDevice(slot_id);
+
+        // Find the port number for this device
+        // (In a real implementation, we'd track this mapping)
+        const port_index: u8 = slot_id - 1; // Simplified mapping
+        if (port_index >= self.port_regs.len) {
+            return error.InvalidPort;
+        }
+
+        const port = &self.port_regs[port_index];
+
+        // Check if device is still connected
+        if (!port.isConnected()) {
+            return error.DeviceDisconnected;
+        }
+
+        // Reset the port
+        port.reset();
+
+        // Wait for reset complete
+        var timeout: u32 = 100;
+        while ((port.portsc & XhciPortRegs.PORTSC_PR) != 0 and timeout > 0) : (timeout -= 1) {
+            var delay: u32 = 0;
+            while (delay < 10000) : (delay += 1) {
+                asm volatile ("pause");
+            }
+        }
+
+        if ((port.portsc & XhciPortRegs.PORTSC_PR) != 0) {
+            return error.PortResetTimeout;
+        }
+
+        // Re-enable the slot
+        try self.enableDevice();
+
+        // Reset the device
+        const reset_trb = Trb.init(
+            .ResetDevice,
+            0,
+            0,
+            @as(u32, slot_id) << 24,
+        );
+
+        try self.command_ring.enqueue(reset_trb);
+        self.doorbell_array[0] = 0;
+
+        try self.waitForCommandCompletion(.ResetDevice);
+    }
+
+    /// Disable device slot
+    fn disableDevice(self: *XhciController, slot_id: u8) !void {
+        const trb = Trb.init(
+            .DisableSlot,
+            0,
+            0,
+            @as(u32, slot_id) << 24,
+        );
+
+        try self.command_ring.enqueue(trb);
+        self.doorbell_array[0] = 0;
+
+        try self.waitForCommandCompletion(.DisableSlot);
+
+        // Clear device context
+        if (slot_id > 0 and slot_id <= self.device_context_array.len) {
+            self.device_context_array[slot_id - 1] = null;
+        }
+    }
+
+    /// Enable device slot (for re-enumeration)
+    fn enableDevice(self: *XhciController) !void {
+        const trb = Trb.init(
+            .EnableSlot,
+            0,
+            0,
+            0,
+        );
+
+        try self.command_ring.enqueue(trb);
+        self.doorbell_array[0] = 0;
+
+        try self.waitForCommandCompletion(.EnableSlot);
+    }
+
+    /// Wait for command completion with timeout
+    fn waitForCommandCompletion(self: *XhciController, expected_type: TrbType) !void {
+        // Approximate 5 seconds timeout
+        const timeout_iterations: u64 = 5_000_000_000;
+        var iterations: u64 = 0;
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if (self.event_ring.dequeue()) |event| {
+                const event_type = event.getType();
+
+                if (event_type == .CommandComplete) {
+                    // Check completion code (bits 24-31 of status)
+                    const completion_code = (event.status >> 24) & 0xFF;
+
+                    if (completion_code != 1) { // 1 = Success
+                        // Classify error
+                        return switch (completion_code) {
+                            4 => error.TrbError,
+                            5 => error.StallError,
+                            6 => error.ResourceError,
+                            13 => error.ShortPacket,
+                            else => error.UsbTransferError,
+                        };
+                    }
+
+                    return; // Success
+                }
+
+                // Check if this is the expected completion
+                if (event_type == expected_type) {
+                    return;
+                }
+            }
+
+            // Small delay
+            if (iterations % 1000 == 0) {
+                asm volatile ("pause");
+            }
+        }
+
+        return error.CommandTimeout;
+    }
+
+    /// Record error and potentially reset controller
+    fn recordError(self: *XhciController, err: anyerror) anyerror {
+        self.error_count += 1;
+        self.last_error = err;
+
+        // If we've hit the error threshold, reset the controller
+        if (self.error_count >= ERROR_THRESHOLD) {
+            // Try to reset the controller
+            self.resetController() catch {
+                return error.ControllerResetFailed;
+            };
+
+            self.startController() catch {
+                return error.ControllerStartFailed;
+            };
+        }
+
+        return err;
+    }
+
+    /// Execute URB transfer with retry logic
+    fn executeUrbWithRetry(self: *XhciController, urb: *usb.Urb) !void {
+        var attempt: u8 = 0;
+        var last_err: ?anyerror = null;
+
+        while (attempt < MAX_RETRIES) : (attempt += 1) {
+            // TODO: Build TRB chain and submit to transfer ring
+            // For now, this is a placeholder
+
+            // Simulate transfer
+            const result = self.waitForTransferCompletion(urb);
+
+            if (result) |_| {
+                // Success! Reset error counter
+                self.error_count = 0;
+                self.last_error = null;
+                return;
+            } else |err| {
+                last_err = err;
+
+                // Handle specific errors
+                if (err == error.StallError) {
+                    // Extract slot_id and endpoint_id from URB
+                    // (In real implementation, these would be in URB structure)
+                    const slot_id: u8 = 1; // Placeholder
+                    const endpoint_id: u8 = 1; // Placeholder
+
+                    self.handleStall(slot_id, endpoint_id) catch {
+                        // If STALL handling fails, continue to next retry
+                    };
+                }
+
+                // Wait a bit before retry
+                var delay: u32 = 0;
+                while (delay < 10000) : (delay += 1) {
+                    asm volatile ("pause");
+                }
+            }
+        }
+
+        // All retries failed
+        return self.recordError(last_err orelse error.UnknownError);
+    }
+
+    /// Wait for transfer completion
+    fn waitForTransferCompletion(self: *XhciController, urb: *usb.Urb) !void {
+        _ = urb;
+
+        // Approximate 5 seconds timeout
+        const timeout_iterations: u64 = 5_000_000_000;
+        var iterations: u64 = 0;
+
+        while (iterations < timeout_iterations) : (iterations += 1) {
+            if (self.event_ring.dequeue()) |event| {
+                const event_type = event.getType();
+
+                if (event_type == .TransferEvent) {
+                    // Check completion code
+                    const completion_code = (event.status >> 24) & 0xFF;
+
+                    if (completion_code != 1) { // 1 = Success
+                        return switch (completion_code) {
+                            4 => error.TrbError,
+                            5 => error.StallError,
+                            6 => error.ResourceError,
+                            13 => error.ShortPacket,
+                            else => error.UsbTransferError,
+                        };
+                    }
+
+                    return; // Success
+                }
+            }
+
+            if (iterations % 1000 == 0) {
+                asm volatile ("pause");
+            }
+        }
+
+        return error.TransferTimeout;
+    }
+
     fn submitUrb(controller: *usb.UsbController, urb: *usb.Urb) !void {
         const self: *XhciController = @fieldParentPtr("usb_controller", controller);
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // TODO: Build TRB chain and submit to transfer ring
-        _ = urb;
+        // Execute URB with retry logic
+        try self.executeUrbWithRetry(urb);
     }
 
     fn cancelUrb(controller: *usb.UsbController, urb: *usb.Urb) !void {

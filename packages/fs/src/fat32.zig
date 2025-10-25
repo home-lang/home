@@ -217,6 +217,221 @@ pub const Fat32Fs = struct {
     pub fn isEndOfChain(cluster: u32) bool {
         return cluster >= 0x0FFFFFF8;
     }
+
+    // ========================================================================
+    // Write Support
+    // ========================================================================
+
+    /// Write a cluster to disk
+    pub fn writeCluster(self: *Fat32Fs, cluster: u32, data: []const u8) !void {
+        if (data.len < self.bytes_per_cluster) {
+            return error.BufferTooSmall;
+        }
+
+        const sector = self.clusterToSector(cluster);
+        try self.device.write(sector, self.sectors_per_cluster, data);
+    }
+
+    /// Write a FAT entry
+    pub fn writeFatEntry(self: *Fat32Fs, cluster: u32, value: u32) !void {
+        const fat_offset = cluster * 4;
+        const fat_sector = self.fat_start_sector + (fat_offset / self.boot_sector.bytes_per_sector);
+        const entry_offset = fat_offset % self.boot_sector.bytes_per_sector;
+
+        // Read sector
+        var sector_buffer: [512]u8 = undefined;
+        try self.device.read(fat_sector, 1, &sector_buffer);
+
+        // Modify entry (preserve top 4 bits)
+        const entry_ptr: *u32 = @ptrCast(@alignCast(&sector_buffer[entry_offset]));
+        const masked_value = value & 0x0FFFFFFF;
+        entry_ptr.* = (entry_ptr.* & 0xF0000000) | masked_value;
+
+        // Write back
+        try self.device.write(fat_sector, 1, &sector_buffer);
+
+        // Write to all FAT copies
+        var fat_num: u32 = 1;
+        while (fat_num < self.boot_sector.num_fats) : (fat_num += 1) {
+            const mirror_sector = fat_sector + (fat_num * self.boot_sector.getFatSize());
+            try self.device.write(mirror_sector, 1, &sector_buffer);
+        }
+    }
+
+    /// Allocate a free cluster
+    pub fn allocateCluster(self: *Fat32Fs) !u32 {
+        // Start search from cluster 2 (first valid data cluster)
+        var cluster: u32 = 2;
+        const max_cluster = self.boot_sector.getTotalSectors() / self.sectors_per_cluster;
+
+        while (cluster < max_cluster) : (cluster += 1) {
+            const entry = try self.readFatEntry(cluster);
+            if (entry == 0) {
+                // Found free cluster, mark as end of chain
+                try self.writeFatEntry(cluster, 0x0FFFFFFF);
+                return cluster;
+            }
+        }
+
+        return error.NoSpaceLeft;
+    }
+
+    /// Free a cluster chain starting from given cluster
+    pub fn freeClusterChain(self: *Fat32Fs, start_cluster: u32) !void {
+        var cluster = start_cluster;
+
+        while (!isEndOfChain(cluster)) {
+            const next_cluster = try self.readFatEntry(cluster);
+            try self.writeFatEntry(cluster, 0); // Mark as free
+            cluster = next_cluster;
+        }
+
+        // Free the last cluster in chain
+        try self.writeFatEntry(cluster, 0);
+    }
+
+    /// Link two clusters in the FAT
+    pub fn linkClusters(self: *Fat32Fs, cluster: u32, next_cluster: u32) !void {
+        try self.writeFatEntry(cluster, next_cluster);
+    }
+
+    /// Write data to a file starting at given cluster
+    pub fn writeFile(self: *Fat32Fs, start_cluster: u32, data: []const u8) !u32 {
+        var bytes_written: usize = 0;
+        var current_cluster = start_cluster;
+        var prev_cluster: u32 = 0;
+
+        while (bytes_written < data.len) {
+            // Allocate new cluster if needed
+            if (current_cluster == 0 or isEndOfChain(current_cluster)) {
+                const new_cluster = try self.allocateCluster();
+                if (prev_cluster != 0) {
+                    try self.linkClusters(prev_cluster, new_cluster);
+                }
+                current_cluster = new_cluster;
+            }
+
+            // Write data to cluster
+            const bytes_to_write = Basics.math.min(self.bytes_per_cluster, data.len - bytes_written);
+            var cluster_buffer: [65536]u8 = undefined; // Max cluster size
+
+            // Read existing data if partial write
+            if (bytes_to_write < self.bytes_per_cluster) {
+                try self.readCluster(current_cluster, cluster_buffer[0..self.bytes_per_cluster]);
+            }
+
+            // Copy new data
+            @memcpy(cluster_buffer[0..bytes_to_write], data[bytes_written..][0..bytes_to_write]);
+            try self.writeCluster(current_cluster, cluster_buffer[0..self.bytes_per_cluster]);
+
+            bytes_written += bytes_to_write;
+            prev_cluster = current_cluster;
+
+            // Get next cluster
+            if (bytes_written < data.len) {
+                const next = try self.readFatEntry(current_cluster);
+                if (next == 0 or isEndOfChain(next)) {
+                    current_cluster = 0; // Will allocate on next iteration
+                } else {
+                    current_cluster = next;
+                }
+            }
+        }
+
+        // Mark end of chain
+        if (current_cluster != 0 and !isEndOfChain(current_cluster)) {
+            try self.writeFatEntry(current_cluster, 0x0FFFFFFF);
+        }
+
+        return start_cluster;
+    }
+
+    /// Create a directory entry
+    pub fn createDirEntry(self: *Fat32Fs, dir_cluster: u32, name: []const u8, attributes: u8, first_cluster: u32, size: u32) !void {
+        var cluster = dir_cluster;
+
+        while (!isEndOfChain(cluster)) {
+            var dir_buffer: [65536]u8 = undefined;
+            try self.readCluster(cluster, dir_buffer[0..self.bytes_per_cluster]);
+
+            // Find free entry (first byte == 0x00 or 0xE5)
+            var offset: usize = 0;
+            while (offset < self.bytes_per_cluster) : (offset += 32) {
+                const entry: *Fat32DirEntry = @ptrCast(@alignCast(&dir_buffer[offset]));
+
+                if (entry.name[0] == 0x00 or entry.name[0] == 0xE5) {
+                    // Found free entry, create new one
+                    var short_name: [11]u8 = [_]u8{' '} ** 11;
+                    const copy_len = Basics.math.min(name.len, 11);
+                    @memcpy(short_name[0..copy_len], name[0..copy_len]);
+
+                    entry.* = .{
+                        .name = short_name,
+                        .attributes = attributes,
+                        .reserved = 0,
+                        .creation_time_tenths = 0,
+                        .creation_time = 0,
+                        .creation_date = 0,
+                        .last_access_date = 0,
+                        .first_cluster_high = @intCast(first_cluster >> 16),
+                        .modification_time = 0,
+                        .modification_date = 0,
+                        .first_cluster_low = @intCast(first_cluster & 0xFFFF),
+                        .file_size = size,
+                    };
+
+                    // Write directory cluster back
+                    try self.writeCluster(cluster, dir_buffer[0..self.bytes_per_cluster]);
+                    return;
+                }
+            }
+
+            // Move to next cluster in directory
+            cluster = try self.readFatEntry(cluster);
+        }
+
+        return error.DirectoryFull;
+    }
+
+    /// Delete a directory entry by name
+    pub fn deleteDirEntry(self: *Fat32Fs, dir_cluster: u32, name: []const u8) !void {
+        var cluster = dir_cluster;
+
+        while (!isEndOfChain(cluster)) {
+            var dir_buffer: [65536]u8 = undefined;
+            try self.readCluster(cluster, dir_buffer[0..self.bytes_per_cluster]);
+
+            var offset: usize = 0;
+            while (offset < self.bytes_per_cluster) : (offset += 32) {
+                const entry: *Fat32DirEntry = @ptrCast(@alignCast(&dir_buffer[offset]));
+
+                if (entry.name[0] == 0x00) break; // End of directory
+
+                if (entry.name[0] != 0xE5) {
+                    const entry_name = entry.getShortName();
+                    if (Basics.mem.startsWith(u8, entry_name, name)) {
+                        // Mark as deleted
+                        entry.name[0] = 0xE5;
+
+                        // Write directory cluster back
+                        try self.writeCluster(cluster, dir_buffer[0..self.bytes_per_cluster]);
+
+                        // Free the file's cluster chain
+                        const file_cluster = entry.getFirstCluster();
+                        if (file_cluster != 0) {
+                            try self.freeClusterChain(file_cluster);
+                        }
+
+                        return;
+                    }
+                }
+            }
+
+            cluster = try self.readFatEntry(cluster);
+        }
+
+        return error.FileNotFound;
+    }
 };
 
 // ============================================================================
