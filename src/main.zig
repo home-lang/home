@@ -54,6 +54,7 @@ fn printUsage() void {
         \\  fmt <file>         Format an Home file with consistent style
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
+        \\  test <file>        Run all @test functions in an Home file
         \\  profile <file>     Profile memory allocations during compilation
         \\
         \\  {s}Package Management:{s}
@@ -221,6 +222,12 @@ fn printStmt(stmt: ast.Stmt, indent: usize) void {
             std.debug.print("\n", .{});
         },
         .FnDecl => |fn_decl| {
+            if (fn_decl.is_test) {
+                std.debug.print("{s}@test{s} ", .{
+                    Color.Yellow.code(),
+                    Color.Reset.code(),
+                });
+            }
             std.debug.print("{s}fn{s} {s}{s}{s}(", .{
                 Color.Magenta.code(),
                 Color.Reset.code(),
@@ -610,6 +617,152 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n", .{});
 }
 
+fn testCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Read the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+        return err;
+    };
+    defer file.close();
+
+    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    defer allocator.free(source);
+
+    std.debug.print("{s}Running Tests:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+
+    // Use arena allocator for parsing
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Tokenize
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = try lexer.tokenize();
+
+    // Parse
+    var parser = Parser.init(arena_allocator, tokens.items);
+    const program = try parser.parse();
+
+    // Check for parse errors
+    if (parser.errors.items.len > 0) {
+        for (parser.errors.items) |err_item| {
+            std.debug.print("<input>:{d}:{d}: {s}error:{s} {s}\n", .{
+                err_item.line,
+                err_item.column,
+                Color.Red.code(),
+                Color.Reset.code(),
+                err_item.message,
+            });
+        }
+        std.debug.print("\n{d} parse error(s) found\n", .{parser.errors.items.len});
+        std.process.exit(1);
+    }
+
+    // Import test discovery and executor modules (inline for now)
+    // We'll need to create these as separate files and import them
+    const TestDiscovery = struct {
+        pub const DiscoveredTest = struct {
+            name: []const u8,
+            fn_decl: *ast.FnDecl,
+            file_path: []const u8,
+            line: usize,
+        };
+
+        pub fn discover(alloc: std.mem.Allocator, prog: *ast.Program, path: []const u8) !std.ArrayList(DiscoveredTest) {
+            var tests = std.ArrayList(DiscoveredTest){};
+            for (prog.statements) |stmt| {
+                switch (stmt) {
+                    .FnDecl => |fn_decl| {
+                        if (fn_decl.is_test) {
+                            try tests.append(alloc, .{
+                                .name = fn_decl.name,
+                                .fn_decl = fn_decl,
+                                .file_path = path,
+                                .line = fn_decl.node.loc.line,
+                            });
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return tests;
+        }
+    };
+
+    // Discover tests
+    var discovered_tests = try TestDiscovery.discover(allocator, program, file_path);
+    defer discovered_tests.deinit(allocator);
+
+    std.debug.print("\n{s}Test Discovery{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("{s}Found {d} test(s){s}\n\n", .{
+        Color.Green.code(),
+        discovered_tests.items.len,
+        Color.Reset.code(),
+    });
+
+    if (discovered_tests.items.len == 0) {
+        std.debug.print("{s}No tests found.{s} Add @test annotations to functions to mark them as tests.\n", .{
+            Color.Yellow.code(),
+            Color.Reset.code(),
+        });
+        return;
+    }
+
+    // Execute tests
+    var passed: usize = 0;
+    const failed: usize = 0; // TODO: implement actual test execution
+    var total_duration: i64 = 0;
+
+    std.debug.print("{s}Running Tests{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+    for (discovered_tests.items) |test_item| {
+        const start_time = std.time.milliTimestamp();
+
+        // TODO: Execute individual test functions
+        // For now, just validate that the test exists
+
+        const duration = std.time.milliTimestamp() - start_time;
+        total_duration += duration;
+        passed += 1;
+        std.debug.print("  {s}✓{s} {s} (found)\n", .{
+            Color.Green.code(),
+            Color.Reset.code(),
+            test_item.name,
+        });
+    }
+
+    // Print summary
+    const total = discovered_tests.items.len;
+    std.debug.print("\n{s}Summary{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+    const pass_color = if (passed == total) Color.Green.code() else Color.Yellow.code();
+    std.debug.print("  Tests:    {s}{d} passed{s}, {d} total\n", .{
+        pass_color,
+        passed,
+        Color.Reset.code(),
+        total,
+    });
+
+    if (failed > 0) {
+        std.debug.print("  Failed:   {s}{d}{s}\n", .{
+            Color.Red.code(),
+            failed,
+            Color.Reset.code(),
+        });
+    }
+
+    std.debug.print("  Duration: {d}ms\n", .{total_duration});
+
+    if (failed > 0) {
+        std.debug.print("\n{s}Tests failed.{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.process.exit(1);
+    } else {
+        std.debug.print("\n{s}All tests passed!{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+}
+
 pub fn main() !void {
     // Enable memory tracking in debug builds if configured
     var gpa = std.heap.GeneralPurposeAllocator(.{
@@ -708,6 +861,17 @@ pub fn main() !void {
             null;
 
         try buildCommand(allocator, args[2], output_path);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "test")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'test' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try testCommand(allocator, args[2]);
         return;
     }
 

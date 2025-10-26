@@ -1276,8 +1276,9 @@ pub const FnDecl = struct {
     body: *BlockStmt,
     is_async: bool,
     type_params: []const []const u8, // Generic type parameters e.g. ["T", "U"]
+    is_test: bool = false, // Whether this function is marked with @test
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, loc: SourceLocation) !*FnDecl {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);
         decl.* = .{
             .node = .{ .type = .FnDecl, .loc = loc },
@@ -1287,6 +1288,7 @@ pub const FnDecl = struct {
             .body = body,
             .is_async = is_async,
             .type_params = type_params,
+            .is_test = is_test,
         };
         return decl;
     }

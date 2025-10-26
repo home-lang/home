@@ -1,0 +1,176 @@
+// Comprehensive test example for Home language
+// Demonstrates @test annotation usage with various test scenarios
+
+// ============================================
+// Helper functions (not tests)
+// ============================================
+
+fn add(a: i32, b: i32) -> i32 {
+  return a + b
+}
+
+fn subtract(a: i32, b: i32) -> i32 {
+  return a - b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+  return a * b
+}
+
+fn divide(a: i32, b: i32) -> i32 {
+  return a / b
+}
+
+fn is_even(n: i32) -> bool {
+  return n % 2 == 0
+}
+
+fn factorial(n: i32) -> i32 {
+  if (n <= 1) {
+    return 1
+  }
+  return n * factorial(n - 1)
+}
+
+// ============================================
+// Test functions (with @test annotation)
+// ============================================
+
+@test
+fn test_addition_positive() {
+  let result = add(5, 3)
+  if (result != 8) {
+    panic("Expected 5 + 3 to equal 8")
+  }
+}
+
+@test
+fn test_addition_negative() {
+  let result = add(-5, -3)
+  if (result != -8) {
+    panic("Expected -5 + -3 to equal -8")
+  }
+}
+
+@test
+fn test_addition_zero() {
+  let result = add(0, 0)
+  if (result != 0) {
+    panic("Expected 0 + 0 to equal 0")
+  }
+}
+
+@test
+fn test_subtraction() {
+  let result = subtract(10, 3)
+  if (result != 7) {
+    panic("Expected 10 - 3 to equal 7")
+  }
+}
+
+@test
+fn test_multiplication() {
+  let result = multiply(4, 5)
+  if (result != 20) {
+    panic("Expected 4 * 5 to equal 20")
+  }
+}
+
+@test
+fn test_multiplication_by_zero() {
+  let result = multiply(100, 0)
+  if (result != 0) {
+    panic("Expected 100 * 0 to equal 0")
+  }
+}
+
+@test
+fn test_division() {
+  let result = divide(20, 4)
+  if (result != 5) {
+    panic("Expected 20 / 4 to equal 5")
+  }
+}
+
+@test
+fn test_is_even_true() {
+  let result = is_even(4)
+  if (!result) {
+    panic("Expected 4 to be even")
+  }
+}
+
+@test
+fn test_is_even_false() {
+  let result = is_even(5)
+  if (result) {
+    panic("Expected 5 to be odd")
+  }
+}
+
+@test
+fn test_factorial_base_case() {
+  let result = factorial(0)
+  if (result != 1) {
+    panic("Expected factorial(0) to equal 1")
+  }
+}
+
+@test
+fn test_factorial_recursive() {
+  let result = factorial(5)
+  if (result != 120) {
+    panic("Expected factorial(5) to equal 120")
+  }
+}
+
+@test
+fn test_combined_operations() {
+  // Test: (5 + 3) * 2 - 4 = 12
+  let step1 = add(5, 3)
+  let step2 = multiply(step1, 2)
+  let result = subtract(step2, 4)
+  if (result != 12) {
+    panic("Expected combined operations to equal 12")
+  }
+}
+
+@test
+fn test_chained_arithmetic() {
+  let a = 10
+  let b = 5
+  let c = 2
+
+  let result = divide(multiply(add(a, b), c), 3)
+  if (result != 10) {
+    panic("Expected chained arithmetic to equal 10")
+  }
+}
+
+// ============================================
+// Edge case tests
+// ============================================
+
+@test
+fn test_large_numbers() {
+  let result = add(1000000, 2000000)
+  if (result != 3000000) {
+    panic("Expected large number addition to work correctly")
+  }
+}
+
+@test
+fn test_negative_multiplication() {
+  let result = multiply(-5, 3)
+  if (result != -15) {
+    panic("Expected -5 * 3 to equal -15")
+  }
+}
+
+@test
+fn test_double_negative() {
+  let result = multiply(-5, -3)
+  if (result != 15) {
+    panic("Expected -5 * -3 to equal 15")
+  }
+}

@@ -1,0 +1,51 @@
+// Example showing @test annotation support in Home language
+// Tests can be written at the bottom of .hm and .home files
+
+// Regular helper function (not a test)
+fn add(a: i32, b: i32) -> i32 {
+  return a + b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+  return a * b
+}
+
+// Test functions using @test annotation
+@test
+fn test_addition() {
+  let result = add(2, 3)
+  // In the future, this will integrate with the test framework
+  // For now, it demonstrates that @test is recognized by the parser
+  if (result != 5) {
+    panic("Expected 2 + 3 to equal 5")
+  }
+}
+
+@test
+fn test_multiplication() {
+  let result = multiply(4, 5)
+  if (result != 20) {
+    panic("Expected 4 * 5 to equal 20")
+  }
+}
+
+@test
+fn test_zero_addition() {
+  let result = add(0, 0)
+  if (result != 0) {
+    panic("Expected 0 + 0 to equal 0")
+  }
+}
+
+// This is a regular function, not a test
+fn helper() {
+  // Helper logic here
+}
+
+@test
+fn test_negative_numbers() {
+  let result = add(-5, 3)
+  if (result != -2) {
+    panic("Expected -5 + 3 to equal -2")
+  }
+}

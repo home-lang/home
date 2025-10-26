@@ -1,0 +1,11 @@
+// This file tests error handling for invalid @test usage
+
+// This should work
+@test
+fn valid_test() {
+  let x = 1
+}
+
+// This should produce an error: @test on a non-function
+@test
+let invalid_test = 42

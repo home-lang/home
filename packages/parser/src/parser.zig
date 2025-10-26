@@ -408,20 +408,39 @@ pub const Parser = struct {
     ///
     /// Returns: Statement AST node (declarations are represented as statements)
     fn declaration(self: *Parser) ParseError!ast.Stmt {
+        // Check for @test annotation
+        var is_test = false;
+        if (self.check(.At)) {
+            const next_token = self.peekNext();
+            if (next_token.type == .Identifier and std.mem.eql(u8, next_token.lexeme, "test")) {
+                _ = self.advance(); // consume @
+                _ = self.advance(); // consume test
+                is_test = true;
+            }
+        }
+
+        // If @test was found, only allow function declarations
+        if (is_test) {
+            if (self.match(&.{.Fn})) return self.functionDeclaration(is_test);
+            try self.reportError("@test annotation can only be used with function declarations");
+            return error.UnexpectedToken;
+        }
+
         if (self.match(&.{.Struct})) return self.structDeclaration();
         if (self.match(&.{.Enum})) return self.enumDeclaration();
         if (self.match(&.{.Union})) return self.unionDeclaration();
         if (self.match(&.{.Type})) return self.typeAliasDeclaration();
-        if (self.match(&.{.Fn})) return self.functionDeclaration();
+        if (self.match(&.{.Fn})) return self.functionDeclaration(is_test);
         if (self.match(&.{.Let})) return self.letDeclaration(false);
         if (self.match(&.{.Const})) return self.letDeclaration(true);
+
         return self.statement();
     }
 
     /// Parse a function declaration with optional generics and async support.
     ///
     /// Grammar:
-    ///   fnDecl = 'async'? 'fn' IDENTIFIER typeParams? '(' params? ')' ('->' type)? block
+    ///   fnDecl = '@test'? 'async'? 'fn' IDENTIFIER typeParams? '(' params? ')' ('->' type)? block
     ///   typeParams = '<' IDENTIFIER (',' IDENTIFIER)* '>'
     ///   params = param (',' param)*
     ///   param = IDENTIFIER ':' type
@@ -430,9 +449,10 @@ pub const Parser = struct {
     ///   fn add(x: i32, y: i32) -> i32 { return x + y; }
     ///   async fn fetch(url: string) -> Result { ... }
     ///   fn map<T, U>(arr: [T], f: fn(T) -> U) -> [U] { ... }
+    ///   @test fn test_addition() { ... }
     ///
     /// Returns: Function declaration statement node
-    fn functionDeclaration(self: *Parser) !ast.Stmt {
+    fn functionDeclaration(self: *Parser, is_test: bool) !ast.Stmt {
         // Check for async keyword before function name
         const is_async = self.match(&.{.Async});
 
@@ -502,6 +522,7 @@ pub const Parser = struct {
             body,
             is_async,
             type_params_slice,
+            is_test,
             ast.SourceLocation.fromToken(name_token),
         );
 
