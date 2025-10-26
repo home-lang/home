@@ -42,12 +42,13 @@ const Color = enum {
 
 fn printUsage() void {
     std.debug.print(
-        \\{s}Ion Compiler{s} - The speed of Zig. The safety of Rust. The joy of TypeScript.
+        \\{s}Home Compiler{s} - The speed of Zig. The safety of Rust. The joy of TypeScript.
         \\
         \\{s}Usage:{s}
-        \\  ion <command> [arguments]
+        \\  home <command> [arguments]
         \\
         \\{s}Commands:{s}
+        \\  init [name]        Initialize a new Home project with complete structure
         \\  parse <file>       Tokenize an Home file and display tokens
         \\  ast <file>         Parse an Home file and display the AST
         \\  check <file>       Type check an Home file (fast, no execution)
@@ -58,12 +59,12 @@ fn printUsage() void {
         \\  profile <file>     Profile memory allocations during compilation
         \\
         \\  {s}Package Management:{s}
-        \\  pkg init           Initialize a new Home project with ion.toml
+        \\  pkg init           Initialize a new Home project with home.toml
         \\  pkg add <name>     Add a dependency (registry package)
         \\  pkg add <url>      Add from GitHub (user/repo) or URL
         \\  pkg remove <name>  Remove a dependency
         \\  pkg update         Update all dependencies to latest versions
-        \\  pkg install        Install dependencies from ion.toml
+        \\  pkg install        Install dependencies from home.toml
         \\  pkg tree           Show dependency tree
         \\  pkg run <script>   Run a package script
         \\  pkg scripts        List all available scripts
@@ -74,17 +75,19 @@ fn printUsage() void {
         \\  help               Display this help message
         \\
         \\{s}Examples:{s}
-        \\  ion parse hello.home
-        \\  ion check hello.home
-        \\  ion run hello.home
-        \\  ion build hello.home -o hello
+        \\  home init my-app
+        \\  home parse hello.home
+        \\  home check hello.home
+        \\  home run hello.home
+        \\  home build hello.home -o hello
+        \\  home test src/
         \\
-        \\  ion pkg init
-        \\  ion pkg add http-router@1.0.0
-        \\  ion pkg add ion-lang/zyte
-        \\  ion pkg install
-        \\  ion pkg run dev
-        \\  ion pkg tree
+        \\  home pkg init
+        \\  home pkg add http-router@1.0.0
+        \\  home pkg add home-lang/awesome-lib
+        \\  home pkg install
+        \\  home pkg run dev
+        \\  home pkg tree
         \\
     , .{
         Color.Blue.code(),
@@ -793,6 +796,12 @@ pub fn main() !void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "init")) {
+        const project_name = if (args.len >= 3) args[2] else null;
+        try initCommand(allocator, project_name);
+        return;
+    }
+
     if (std.mem.eql(u8, command, "parse")) {
         if (args.len < 3) {
             std.debug.print("{s}Error:{s} 'parse' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
@@ -977,14 +986,238 @@ fn pkgCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     std.process.exit(1);
 }
 
+fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
+    const name = project_name orelse "my-home-app";
+
+    std.debug.print("{s}Initializing Home project:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), name });
+
+    // Create project directory if name was provided
+    if (project_name != null) {
+        std.fs.cwd().makeDir(name) catch |err| {
+            if (err != error.PathAlreadyExists) {
+                std.debug.print("{s}Error:{s} Failed to create directory '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), name, err });
+                return err;
+            }
+            std.debug.print("{s}Warning:{s} Directory '{s}' already exists, initializing in place\n", .{ Color.Yellow.code(), Color.Reset.code(), name });
+        };
+
+        const dir = try std.fs.cwd().openDir(name, .{});
+        try dir.setAsCwd();
+    }
+
+    // Create directories
+    const dirs = [_][]const u8{ "src", "tests", ".home" };
+    for (dirs) |dir| {
+        std.fs.cwd().makeDir(dir) catch |err| {
+            if (err != error.PathAlreadyExists) {
+                std.debug.print("{s}Error:{s} Failed to create {s}/: {}\n", .{ Color.Red.code(), Color.Reset.code(), dir, err });
+                return err;
+            }
+        };
+    }
+
+    // Create package.jsonc
+    const package_jsonc =
+        \\{{
+        \\  // Home project configuration (JSONC - JSON with Comments)
+        \\  "name": "{s}",
+        \\  "version": "0.1.0",
+        \\  "description": "A new Home project",
+        \\
+        \\  // Dependencies
+        \\  "dependencies": {{
+        \\    // Add your dependencies here
+        \\    // "http": "^2.0.0"
+        \\  }},
+        \\
+        \\  // Development dependencies
+        \\  "devDependencies": {{
+        \\    // "test-framework": "^1.0.0"
+        \\  }},
+        \\
+        \\  // Scripts
+        \\  "scripts": {{
+        \\    "dev": "home run src/main.home",
+        \\    "build": "home build src/main.home -o dist/app",
+        \\    "test": "home test tests/",
+        \\    "format": "home fmt src/"
+        \\  }}
+        \\}}
+        \\
+    ;
+
+    const package_content = try std.fmt.allocPrint(allocator, package_jsonc, .{name});
+    defer allocator.free(package_content);
+
+    {
+        const file = try std.fs.cwd().createFile("package.jsonc", .{});
+        defer file.close();
+        try file.writeAll(package_content);
+        std.debug.print("{s}✓{s} Created package.jsonc\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    // Create src/main.home
+    const main_home =
+        \\// Welcome to Home!
+        \\// This is your main entry point.
+        \\
+        \\fn main() {
+        \\  let message = "Hello from Home!"
+        \\  print(message)
+        \\}
+        \\
+        \\// Run with: home run src/main.home
+        \\
+    ;
+
+    {
+        const file = try std.fs.cwd().createFile("src/main.home", .{});
+        defer file.close();
+        try file.writeAll(main_home);
+        std.debug.print("{s}✓{s} Created src/main.home\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    // Create tests/example.home with @test annotations
+    const test_file =
+        \\// Example test file using @test annotations
+        \\
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\  return a + b
+        \\}
+        \\
+        \\@test
+        \\fn test_addition() {
+        \\  let result = add(2, 3)
+        \\  if (result != 5) {
+        \\    panic("Expected 2 + 3 to equal 5")
+        \\  }
+        \\}
+        \\
+        \\@test
+        \\fn test_zero() {
+        \\  let result = add(0, 0)
+        \\  if (result != 0) {
+        \\    panic("Expected 0 + 0 to equal 0")
+        \\  }
+        \\}
+        \\
+        \\// Run tests with: home test tests/
+        \\
+    ;
+
+    {
+        const file = try std.fs.cwd().createFile("tests/example.home", .{});
+        defer file.close();
+        try file.writeAll(test_file);
+        std.debug.print("{s}✓{s} Created tests/example.home\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    // Create README.md
+    const readme =
+        \\# {s}
+        \\
+        \\A new project built with [Home](https://github.com/home-lang/home).
+        \\
+        \\## Getting Started
+        \\
+        \\```bash
+        \\# Run the project
+        \\home run src/main.home
+        \\
+        \\# Run tests
+        \\home test tests/
+        \\
+        \\# Build for production
+        \\home build src/main.home -o dist/app
+        \\```
+        \\
+        \\## Project Structure
+        \\
+        \\```
+        \\{s}/
+        \\├── src/
+        \\│   └── main.home       # Main entry point
+        \\├── tests/
+        \\│   └── example.home    # Example tests
+        \\├── package.jsonc       # Project configuration
+        \\└── README.md           # This file
+        \\```
+        \\
+        \\## Scripts
+        \\
+        \\- `home run src/main.home` - Run the development server
+        \\- `home build src/main.home -o dist/app` - Build for production
+        \\- `home test tests/` - Run all tests
+        \\- `home fmt src/` - Format source code
+        \\
+        \\## Learn More
+        \\
+        \\- [Home Documentation](https://home-lang.dev/docs)
+        \\- [Home Examples](https://github.com/home-lang/home/tree/main/examples)
+        \\
+    ;
+
+    const readme_content = try std.fmt.allocPrint(allocator, readme, .{ name, name });
+    defer allocator.free(readme_content);
+
+    {
+        const file = try std.fs.cwd().createFile("README.md", .{});
+        defer file.close();
+        try file.writeAll(readme_content);
+        std.debug.print("{s}✓{s} Created README.md\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    // Create .gitignore
+    const gitignore =
+        \\# Zig build artifacts
+        \\zig-cache/
+        \\zig-out/
+        \\.zig-cache/
+        \\
+        \\# Home build artifacts
+        \\.home/
+        \\dist/
+        \\
+        \\# Dependencies
+        \\node_modules/
+        \\
+        \\# OS files
+        \\.DS_Store
+        \\Thumbs.db
+        \\
+        \\# Editor files
+        \\.vscode/
+        \\.idea/
+        \\*.swp
+        \\*.swo
+        \\*~
+        \\
+    ;
+
+    {
+        const file = try std.fs.cwd().createFile(".gitignore", .{});
+        defer file.close();
+        try file.writeAll(gitignore);
+        std.debug.print("{s}✓{s} Created .gitignore\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    std.debug.print("\n{s}Project initialized successfully!{s}\n\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("Next steps:\n", .{});
+    if (project_name != null) {
+        std.debug.print("  cd {s}\n", .{name});
+    }
+    std.debug.print("  home run src/main.home\n", .{});
+    std.debug.print("  home test tests/\n\n", .{});
+}
+
 fn pkgInit(allocator: std.mem.Allocator) !void {
     _ = allocator;
     std.debug.print("{s}Initializing new Home project...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    // Create ion.toml with default content
+    // Create home.toml with default content
     const content =
         \\[package]
-        \\name = "my-ion-project"
+        \\name = "my-home-project"
         \\version = "0.1.0"
         \\authors = []
         \\
@@ -992,32 +1225,32 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\# Add your dependencies here
         \\# Example:
         \\# http-router = "1.0.0"
-        \\# zyte = { git = "https://github.com/ion-lang/zyte" }
+        \\# awesome-lib = { git = "https://github.com/home-lang/awesome-lib" }
         \\# custom-lib = { url = "https://example.com/lib.tar.gz" }
         \\
         \\[scripts]
         \\# Bun-style package scripts
-        \\dev = "ion run src/main.home --watch"
-        \\build = "ion build src/main.home -o dist/app"
-        \\test = "ion test tests/"
-        \\bench = "ion bench bench/"
-        \\format = "ion fmt src/"
+        \\dev = "home run src/main.home --watch"
+        \\build = "home build src/main.home -o dist/app"
+        \\test = "home test tests/"
+        \\bench = "home bench bench/"
+        \\format = "home fmt src/"
         \\
     ;
 
-    const file = try std.fs.cwd().createFile("ion.toml", .{});
+    const file = try std.fs.cwd().createFile("home.toml", .{});
     defer file.close();
     try file.writeAll(content);
 
-    std.debug.print("{s}✓{s} Created ion.toml\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("Edit ion.toml to configure your project\n", .{});
+    std.debug.print("{s}✓{s} Created home.toml\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("Edit home.toml to configure your project\n", .{});
 }
 
 fn pkgAdd(allocator: std.mem.Allocator, spec: []const u8) !void {
     std.debug.print("{s}Adding package:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), spec });
 
     var pm = PackageManager.init(allocator) catch {
-        std.debug.print("{s}Error:{s} No ion.toml found. Run 'ion pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.toml found. Run 'home pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
     defer pm.deinit();
@@ -1053,7 +1286,7 @@ fn pkgRemove(allocator: std.mem.Allocator, name: []const u8) !void {
     std.debug.print("{s}Removing package:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), name });
 
     var pm = PackageManager.init(allocator) catch {
-        std.debug.print("{s}Error:{s} No ion.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
     defer pm.deinit();
@@ -1066,7 +1299,7 @@ fn pkgUpdate(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Updating dependencies...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     var pm = PackageManager.init(allocator) catch {
-        std.debug.print("{s}Error:{s} No ion.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
     defer pm.deinit();
@@ -1079,7 +1312,7 @@ fn pkgInstall(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Installing dependencies...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     var pm = PackageManager.init(allocator) catch {
-        std.debug.print("{s}Error:{s} No ion.toml found. Run 'ion pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.toml found. Run 'home pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
     defer pm.deinit();
@@ -1129,22 +1362,22 @@ fn extractRepoName(repo: []const u8) []const u8 {
 fn pkgTree(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Dependency Tree:{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    // Check for ion.lock
+    // Check for home.lock
     const lock_exists = blk: {
-        std.fs.cwd().access("ion.lock", .{}) catch {
+        std.fs.cwd().access("home.lock", .{}) catch {
             break :blk false;
         };
         break :blk true;
     };
 
     if (!lock_exists) {
-        std.debug.print("{s}Error:{s} No ion.lock found. Run 'ion pkg install' first.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.lock found. Run 'home pkg install' first.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     }
 
-    // Simple tree display (full implementation would parse ion.lock)
-    std.debug.print("\n📦 my-ion-project@0.1.0\n", .{});
-    std.debug.print("└── (Use 'ion pkg install' to generate dependency tree)\n\n", .{});
+    // Simple tree display (full implementation would parse home.lock)
+    std.debug.print("\n📦 my-home-project@0.1.0\n", .{});
+    std.debug.print("└── (Use 'home pkg install' to generate dependency tree)\n\n", .{});
 
     std.debug.print("{s}Tip:{s} Full tree visualization coming soon!\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
@@ -1154,30 +1387,30 @@ fn pkgTree(allocator: std.mem.Allocator) !void {
 fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
     std.debug.print("{s}Running script:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), script_name });
 
-    // Check for ion.toml
+    // Check for home.toml
     const toml_exists = blk: {
-        std.fs.cwd().access("ion.toml", .{}) catch {
+        std.fs.cwd().access("home.toml", .{}) catch {
             break :blk false;
         };
         break :blk true;
     };
 
     if (!toml_exists) {
-        std.debug.print("{s}Error:{s} No ion.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("{s}Error:{s} No home.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     }
 
-    // TODO: Parse ion.toml and look for [scripts] section
+    // TODO: Parse home.toml and look for [scripts] section
     // For now, show common scripts
     if (std.mem.eql(u8, script_name, "dev")) {
-        std.debug.print("🚀 ion run src/main.home --watch\n", .{});
+        std.debug.print("🚀 home run src/main.home --watch\n", .{});
     } else if (std.mem.eql(u8, script_name, "build")) {
-        std.debug.print("🔨 ion build src/main.home -o dist/app\n", .{});
+        std.debug.print("🔨 home build src/main.home -o dist/app\n", .{});
     } else if (std.mem.eql(u8, script_name, "test")) {
-        std.debug.print("🧪 ion test tests/\n", .{});
+        std.debug.print("🧪 home test tests/\n", .{});
     } else {
-        std.debug.print("{s}Error:{s} Script '{s}' not found in ion.toml\n", .{ Color.Red.code(), Color.Reset.code(), script_name });
-        std.debug.print("\nDefine it in ion.toml:\n", .{});
+        std.debug.print("{s}Error:{s} Script '{s}' not found in home.toml\n", .{ Color.Red.code(), Color.Reset.code(), script_name });
+        std.debug.print("\nDefine it in home.toml:\n", .{});
         std.debug.print("[scripts]\n{s} = \"your command here\"\n", .{script_name});
         std.process.exit(1);
     }
@@ -1188,15 +1421,15 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
 fn pkgScripts(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Available scripts:{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    // TODO: Parse ion.toml for actual scripts
+    // TODO: Parse home.toml for actual scripts
     // For now, show example scripts
-    std.debug.print("  {s}dev{s}      ion run src/main.home --watch\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}build{s}    ion build src/main.home -o dist/app\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}test{s}     ion test tests/\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}bench{s}    ion bench bench/\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}format{s}   ion fmt src/\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}dev{s}      home run src/main.home --watch\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}build{s}    home build src/main.home -o dist/app\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}test{s}     home test tests/\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}bench{s}    home bench bench/\n", .{ Color.Green.code(), Color.Reset.code() });
+    std.debug.print("  {s}format{s}   home fmt src/\n", .{ Color.Green.code(), Color.Reset.code() });
 
-    std.debug.print("\n{s}Tip:{s} Define custom scripts in ion.toml [scripts] section\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("\n{s}Tip:{s} Define custom scripts in home.toml [scripts] section\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     _ = allocator;
 }
@@ -1298,7 +1531,7 @@ fn pkgWhoami(allocator: std.mem.Allocator) !void {
 
         if (registries.len == 0) {
             std.debug.print("{s}Not logged in to any registry{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
-            std.debug.print("\nRun {s}ion pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
+            std.debug.print("\nRun {s}home pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
             return;
         }
 
@@ -1327,7 +1560,7 @@ fn pkgWhoami(allocator: std.mem.Allocator) !void {
     if (!default_auth) {
         std.debug.print("{s}Not logged in to default registry{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
         std.debug.print("Registry: {s}\n", .{pm.registry_url});
-        std.debug.print("\nRun {s}ion pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("\nRun {s}home pkg login{s} to authenticate\n", .{ Color.Cyan.code(), Color.Reset.code() });
         return;
     }
 
