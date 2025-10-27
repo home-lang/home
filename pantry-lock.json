@@ -1,0 +1,15 @@
+{
+  "version": "1",
+  "packages": {
+    "ziglang.org@0.15.1": {
+      "name": "ziglang.org",
+      "version": "0.15.1",
+      "resolved": "https://ziglang.org/download/0.15.1/",
+      "integrity": "sha512-...",
+      "source": "registry",
+      "installedAt": "2025-10-26T00:00:00.000Z"
+    }
+  },
+  "lockfileVersion": 1,
+  "generatedAt": "2025-10-26T00:00:00.000Z"
+}

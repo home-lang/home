@@ -1,0 +1,7 @@
+{
+  "name": "home",
+  "version": "0.1.0",
+  "dependencies": {
+    "ziglang.org": "0.15.1"
+  }
+}
