@@ -65,7 +65,7 @@ export class GCProfiler {
     private heapHistory: HeapSnapshot[] = [];
 
     constructor() {
-        this._outputChannel = vscode.window.createOutputChannel('Ion GC Profiler');
+        this._outputChannel = vscode.window.createOutputChannel('Home GC Profiler');
     }
 
     /**
@@ -422,7 +422,7 @@ export class GCProfiler {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Ion GC Profiler Report</title>
+    <title>Home GC Profiler Report</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -464,7 +464,7 @@ export class GCProfiler {
     </style>
 </head>
 <body>
-    <h1>Ion GC Profiler Report</h1>
+    <h1>Home GC Profiler Report</h1>
     <p>Generated: ${new Date().toISOString()}</p>
 
     ${

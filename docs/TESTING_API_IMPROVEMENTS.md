@@ -2,7 +2,7 @@
 
 ## Summary
 
-Enhanced Ion's modern testing framework with **20+ new matchers** and improved API design using the `test.*` namespace pattern.
+Enhanced Home's modern testing framework with **20+ new matchers** and improved API design using the `test.*` namespace pattern.
 
 ---
 
@@ -439,7 +439,7 @@ expect(value).toBeDefined();
 expect(str).toStartWith("hello");
 ```
 
-**Ion (equivalent):**
+**Home (equivalent):**
 ```zig
 try expect.toBeGreaterThan(5);
 try expect.toBeCloseTo(0.3, null);
@@ -456,7 +456,7 @@ expect($value)->toBeBetween(1, 10);
 expect($str)->toStartWith('Hello');
 ```
 
-**Ion (equivalent):**
+**Home (equivalent):**
 ```zig
 try expect.toBePositive();
 try expect.toBeBetween(1, 10);
@@ -472,14 +472,14 @@ expect(value).to be_between(1, 10)
 expect(str).to start_with('Hello')
 ```
 
-**Ion (equivalent):**
+**Home (equivalent):**
 ```zig
 try expect.toBePositive();
 try expect.toBeBetween(1, 10);
 try expect.toStartWith("Hello");
 ```
 
-**Ion matches or exceeds the matcher coverage of popular testing frameworks!**
+**Home matches or exceeds the matcher coverage of popular testing frameworks!**
 
 ---
 

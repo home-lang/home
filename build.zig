@@ -594,6 +594,6 @@ pub fn build(b: *std.Build) void {
         .install_subdir = "docs",
     });
 
-    const docs_step = b.step("docs", "Generate documentation for Ion");
+    const docs_step = b.step("docs", "Generate documentation for Home");
     docs_step.dependOn(&docs_install.step);
 }

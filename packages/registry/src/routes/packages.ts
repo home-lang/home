@@ -298,7 +298,7 @@ async function extractPackageMetadata(filePath: string): Promise<any> {
         name: 'example-package',
         version: '1.0.0',
         description: 'Example package',
-        author: 'Ion Team',
+        author: 'Home Team',
         license: 'MIT',
         keywords: ['example'],
         dependencies: {}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version Validation Script for Ion
+# Version Validation Script for Home
 # Checks that all package versions match the root version
 
 set -euo pipefail

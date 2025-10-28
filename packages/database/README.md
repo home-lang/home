@@ -1,4 +1,4 @@
-# Ion Database Support
+# Home Database Support
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/database/tests/database_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

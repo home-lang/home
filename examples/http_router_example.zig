@@ -12,7 +12,7 @@ pub fn basicRoutingExample(allocator: std.mem.Allocator) !void {
     _ = try server.get("/", struct {
         fn handler(req: *http_router.Request, res: *http_router.Response) !void {
             _ = req;
-            try res.html("<h1>Welcome to Ion!</h1>");
+            try res.html("<h1>Welcome to Home!</h1>");
         }
     }.handler);
 
@@ -199,7 +199,7 @@ pub fn fullWebAppExample(allocator: std.mem.Allocator) !void {
                 \\<!DOCTYPE html>
                 \\<html>
                 \\<head>
-                \\    <title>Ion Web App</title>
+                \\    <title>Home Web App</title>
                 \\    <style>
                 \\        body { font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; }
                 \\        h1 { color: #333; }

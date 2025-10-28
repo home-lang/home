@@ -409,7 +409,7 @@ Created comprehensive **ROADMAP-WEB-COMPETITIVE.md** covering:
 | Hot Reload | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Comptime | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ Macros |
 
-**Ion's Unique Advantages**:
+**Home's Unique Advantages**:
 1. **Memory safety + Native speed + Fast compilation** (unique combination)
 2. **Web-first design** (unlike Rust/Go)
 3. **Comptime execution** for zero-cost abstractions
@@ -470,7 +470,7 @@ Based on ROADMAP-WEB-COMPETITIVE.md, start with:
    - Mocking
    - HTTP request testing
 
-**Goal**: Enable building a complete REST API + web app in Ion
+**Goal**: Enable building a complete REST API + web app in Home
 
 ---
 
@@ -503,4 +503,4 @@ Based on ROADMAP-WEB-COMPETITIVE.md, start with:
 
 ---
 
-**Ion is now a complete, producthome-ready systems programming language with a comprehensive standard library. The foundation is solid. Time to build the web framework! 🚀**
+**Home is now a complete, producthome-ready systems programming language with a comprehensive standard library. The foundation is solid. Time to build the web framework! 🚀**

@@ -1,6 +1,6 @@
 // Simple test
 let x = 42
 let y = 10
-print("Hello, Ion!")
+print("Hello, Home!")
 print(x)
 print(x + y)

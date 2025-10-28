@@ -1,8 +1,8 @@
-# Ion Async Runtime
+# Home Async Runtime
 
 ## Overview
 
-The async package provides async/await functionality and concurrent task execution for Ion. It includes a Future-based async runtime with support for task scheduling and waker mechanisms.
+The async package provides async/await functionality and concurrent task execution for Home. It includes a Future-based async runtime with support for task scheduling and waker mechanisms.
 
 ## Features
 
@@ -71,4 +71,4 @@ zig test packages/async/tests/async_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

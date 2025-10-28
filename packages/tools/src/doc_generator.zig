@@ -263,7 +263,7 @@ pub const DocGenerator = struct {
             \\<head>
             \\  <meta charset="UTF-8">
             \\  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            \\  <title>Ion Documentation</title>
+            \\  <title>Home Documentation</title>
             \\  <style>
             \\    body { font-family: system-ui, -apple-system, sans-serif; max-width: 1200px; margin: 0 auto; padding: 2rem; }
             \\    .item { margin: 2rem 0; padding: 1rem; border-left: 4px solid #0066cc; background: #f5f5f5; }
@@ -273,7 +273,7 @@ pub const DocGenerator = struct {
             \\  </style>
             \\</head>
             \\<body>
-            \\  <h1>Ion Documentation</h1>
+            \\  <h1>Home Documentation</h1>
             \\
         );
 

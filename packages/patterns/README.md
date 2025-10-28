@@ -1,4 +1,4 @@
-# Ion Pattern Matching
+# Home Pattern Matching
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/patterns/tests/patterns_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

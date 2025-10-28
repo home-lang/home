@@ -1,8 +1,7 @@
 const std = @import("std");
 
-/// Command-line argument parsing for Ion
+/// Command-line argument parsing for Home
 /// Provides ergonomic CLI argument and option handling
-
 /// Argument type
 pub const ArgType = enum {
     String,

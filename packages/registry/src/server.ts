@@ -81,7 +81,7 @@ app.get('/health', (req: Request, res: Response) => {
 // Root endpoint
 app.get('/', (req: Request, res: Response) => {
     res.json({
-        name: 'Ion Package Registry',
+        name: 'Home Package Registry',
         version: '1.0.0',
         documentation: '/api/docs',
         endpoints: {
@@ -141,7 +141,7 @@ async function startServer() {
 
         // Start server
         app.listen(PORT, () => {
-            logger.info(`Ion Package Registry running on port ${PORT}`);
+            logger.info(`Home Package Registry running on port ${PORT}`);
             logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
         });
 

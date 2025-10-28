@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// JSON parser and serializer for Ion's standard library.
+/// JSON parser and serializer for Home's standard library.
 ///
 /// Provides parsing from JSON strings to Home Value objects and serialization
 /// back to JSON. Supports both compact and pretty-printed output.
@@ -14,7 +14,7 @@ const std = @import("std");
 /// Example:
 /// ```zig
 /// var json = Json.init(allocator);
-/// const value = try json.parse("{\"name\":\"Ion\",\"version\":1}");
+/// const value = try json.parse("{\"name\":\"Home\",\"version\":1}");
 /// defer value.deinit(allocator);
 /// const pretty = try json.stringifyPretty(value);
 /// defer allocator.free(pretty);
@@ -35,7 +35,7 @@ pub const Json = struct {
 
     /// Parse a JSON string into a Value.
     ///
-    /// Parses the input string as JSON and converts it to Ion's JSON Value
+    /// Parses the input string as JSON and converts it to Home's JSON Value
     /// representation. The returned Value must be freed with deinit().
     ///
     /// Parameters:
@@ -371,7 +371,7 @@ pub const Value = union(enum) {
 /// ```zig
 /// var builder = Builder.init(allocator);
 /// var obj = try builder.object();
-/// try obj.put("name", try builder.string("Ion"));
+/// try obj.put("name", try builder.string("Home"));
 /// try obj.put("count", builder.number(42));
 /// const value = obj.build();
 /// ```

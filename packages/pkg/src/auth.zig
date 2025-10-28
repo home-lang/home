@@ -32,7 +32,7 @@ pub const AuthToken = struct {
 ///
 /// Storage locations:
 /// - Linux/macOS: ~/.home/auth.json (with 0600 permissions)
-/// - Windows: %APPDATA%\Ion\auth.json (with restricted ACLs)
+/// - Windows: %APPDATA%\Home\auth.json (with restricted ACLs)
 pub const TokenStore = struct {
     allocator: std.mem.Allocator,
     tokens: std.StringHashMap(AuthToken),
@@ -40,9 +40,9 @@ pub const TokenStore = struct {
     modified: bool,
 
     /// Default config directory name
-    /// On Windows: "Ion" (goes in APPDATA)
+    /// On Windows: "Home" (goes in APPDATA)
     /// On Unix: ".home" (goes in HOME)
-    const CONFIG_DIR = if (builtin.os.tag == .windows) "Ion" else ".home";
+    const CONFIG_DIR = if (builtin.os.tag == .windows) "Home" else ".home";
     /// Default token file name
     const TOKEN_FILE = "auth.json";
 

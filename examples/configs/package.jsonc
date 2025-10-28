@@ -1,12 +1,12 @@
 {
-  // NPM-compatible package.jsonc for Ion
-  // Perfect for hybrid projects that use both Node.js and Ion
+  // NPM-compatible package.jsonc for Home
+  // Perfect for hybrid projects that use both Node.js and Home
   "name": "@myorg/my-app",
   "version": "2.0.0",
-  "description": "Hybrid Ion/Node.js application",
+  "description": "Hybrid Home/Node.js application",
 
   "dependencies": {
-    // Ion dependencies work alongside npm packages
+    // Home dependencies work alongside npm packages
     "ion-http": "^1.0.0",
     "ion-db": "^2.0.0"
   },

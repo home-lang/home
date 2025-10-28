@@ -1,6 +1,6 @@
 {
-  // Ion project configuration (JSONC - JSON with Comments)
-  // This is the recommended format for Ion projects
+  // Home project configuration (JSONC - JSON with Comments)
+  // This is the recommended format for Home projects
   "name": "my-ion-project",
   "version": "1.0.0",
 

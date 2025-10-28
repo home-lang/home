@@ -1,4 +1,4 @@
-# Ion Macro System
+# Home Macro System
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/macros/tests/macros_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

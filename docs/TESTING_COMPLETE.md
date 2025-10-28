@@ -421,12 +421,12 @@ This is documented in all examples and guides.
 
 | Framework | Matcher Tests | Hook Tests | Mock Tests | Snapshot Tests |
 |-----------|--------------|------------|------------|----------------|
-| **Ion** | ✅ 32 matchers | ✅ All hooks | ✅ Complete | ✅ Complete |
+| **Home** | ✅ 32 matchers | ✅ All hooks | ✅ Complete | ✅ Complete |
 | Jest | ✅ 30+ matchers | ✅ All hooks | ✅ Complete | ✅ Complete |
 | Vitest | ✅ 30+ matchers | ✅ All hooks | ✅ Complete | ✅ Complete |
 | Pytest | ✅ 20+ matchers | ✅ Fixtures | ⚠️ Separate | ⚠️ Separate |
 
-**Ion matches or exceeds test coverage of popular frameworks!**
+**Home matches or exceeds test coverage of popular frameworks!**
 
 ---
 

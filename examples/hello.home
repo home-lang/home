@@ -1,4 +1,4 @@
-// Hello World in Ion
+// Hello World in Home
 fn main() {
-  print("Hello, Ion!")
+  print("Hello, Home!")
 }

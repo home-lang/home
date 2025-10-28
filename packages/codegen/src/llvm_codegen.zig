@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ast = @import("ast");
 
-/// LLVM IR Code Generator for Ion
+/// LLVM IR Code Generator for Home
 ///
 /// This module generates LLVM IR from Home AST, enabling:
 /// - Advanced optimizations (inlining, constant folding, dead code elimination)

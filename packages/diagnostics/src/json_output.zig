@@ -211,7 +211,7 @@ pub const SarifWriter = struct {
         try writer.writeAll("  \"runs\": [{\n");
         try writer.writeAll("    \"tool\": {\n");
         try writer.writeAll("      \"driver\": {\n");
-        try writer.writeAll("        \"name\": \"Ion Compiler\",\n");
+        try writer.writeAll("        \"name\": \"Home Compiler\",\n");
         try writer.writeAll("        \"version\": \"0.1.0\",\n");
         try writer.writeAll("        \"informationUri\": \"https://ion-lang.org\"\n");
         try writer.writeAll("      }\n");

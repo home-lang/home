@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version Sync Script for Ion
+# Version Sync Script for Home
 # Synchronizes version numbers across all package ion.toml files
 
 set -euo pipefail
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_TOML="${ROOT_DIR}/ion.toml"
 
-echo -e "${BLUE}Ion Version Sync Script${NC}"
+echo -e "${BLUE}Home Version Sync Script${NC}"
 echo "========================"
 echo ""
 

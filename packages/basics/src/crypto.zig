@@ -1,8 +1,7 @@
 const std = @import("std");
 
-/// Cryptography utilities for Ion
+/// Cryptography utilities for Home
 /// Provides hashing, encoding, and basic encryption
-
 /// SHA-256 hashing
 pub const SHA256 = struct {
     /// Hash data with SHA-256

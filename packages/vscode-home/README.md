@@ -2,7 +2,7 @@
 
 ## Overview
 
-Visual Studio Code extension for Ion. Provides syntax highlighting, debugging, and profiling.
+Visual Studio Code extension for Home. Provides syntax highlighting, debugging, and profiling.
 
 ## Features
 

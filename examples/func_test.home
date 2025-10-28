@@ -11,4 +11,4 @@ fn greet(name: string) {
 let result = add(10, 32)
 print("10 + 32 =")
 print(result)
-greet("Ion")
+greet("Home")

@@ -1,6 +1,6 @@
-# Setup Ion Action
+# Setup Home Action
 
-GitHub Action to setup the [Ion programming language](https://github.com/ion-lang/ion) in your CI/CD workflows.
+GitHub Action to setup the [Home programming language](https://github.com/ion-lang/ion) in your CI/CD workflows.
 
 ## Usage
 
@@ -49,19 +49,19 @@ GitHub Action to setup the [Ion programming language](https://github.com/ion-lan
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `ion-version` | Version of Ion to install (`latest`, `0.1.0`, `canary`) | No | `latest` |
-| `ion-version-file` | Path to file containing Ion version (e.g., `.ion-version`) | No | - |
-| `cache` | Enable caching of Ion installation (recommended) | No | `true` |
+| `ion-version` | Version of Home to install (`latest`, `0.1.0`, `canary`) | No | `latest` |
+| `ion-version-file` | Path to file containing Home version (e.g., `.ion-version`) | No | - |
+| `cache` | Enable caching of Home installation (recommended) | No | `true` |
 | `scope` | Scope for package registry authentication | No | - |
 
-> **💡 Caching:** The action automatically caches Ion installations using GitHub's `@actions/tool-cache`. Subsequent runs with the same version will skip the download and use the cached version, typically completing in under 5 seconds.
+> **💡 Caching:** The action automatically caches Home installations using GitHub's `@actions/tool-cache`. Subsequent runs with the same version will skip the download and use the cached version, typically completing in under 5 seconds.
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `ion-version` | The installed Ion version |
-| `ion-path` | Path to the Ion installation |
+| `ion-version` | The installed Home version |
+| `ion-path` | Path to the Home installation |
 
 ## Example Workflows
 
@@ -82,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Ion
+      - name: Setup Home
         uses: ion-lang/ion/packages/action@v0.1
         with:
           ion-version: 'latest'
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Ion ${{ matrix.ion-version }}
+      - name: Setup Home ${{ matrix.ion-version }}
         uses: ion-lang/ion/packages/action@v0.1
         with:
           ion-version: ${{ matrix.ion-version }}
@@ -136,7 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Ion
+      - name: Setup Home
         uses: ion-lang/ion/packages/action@v0.1
 
       - name: Build package

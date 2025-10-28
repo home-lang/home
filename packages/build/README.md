@@ -1,4 +1,4 @@
-# Ion Build System
+# Home Build System
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/build/tests/build_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

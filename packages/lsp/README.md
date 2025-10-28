@@ -1,4 +1,4 @@
-# Ion Language Server Protocol
+# Home Language Server Protocol
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/lsp/tests/lsp_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

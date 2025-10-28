@@ -14,7 +14,7 @@ Track architectural and design decisions to maintain consistency and provide his
 **Decided**: 2025-10-21
 
 **Context**:
-Ion aims for "safety without ceremony." Need to decide how much borrowing syntax users must write.
+Home aims for "safety without ceremony." Need to decide how much borrowing syntax users must write.
 
 **Options**:
 

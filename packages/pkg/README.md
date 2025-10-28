@@ -1,4 +1,4 @@
-# Ion Package Manager
+# Home Package Manager
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/pkg/tests/pkg_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

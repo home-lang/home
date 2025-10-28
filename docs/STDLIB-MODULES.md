@@ -1,6 +1,6 @@
 # Home Standard Library Modules
 
-Complete reference for Ion's standard library.
+Complete reference for Home's standard library.
 
 ---
 

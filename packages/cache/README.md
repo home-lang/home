@@ -1,4 +1,4 @@
-# Ion Build Cache
+# Home Build Cache
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/cache/tests/cache_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

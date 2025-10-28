@@ -4,17 +4,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 
-export class IonPackageManager {
+export class HomePackageManager {
     private readonly REGISTRY_URL = 'https://registry.home-lang.org';
     private _outputChannel: vscode.OutputChannel;
 
     constructor() {
-        this._outputChannel = vscode.window.createOutputChannel('Ion Package Manager');
+        this._outputChannel = vscode.window.createOutputChannel('Home Package Manager');
     }
 
     public async searchPackages(): Promise<void> {
         const searchTerm = await vscode.window.showInputBox({
-            prompt: 'Search for Ion packages',
+            prompt: 'Search for Home packages',
             placeHolder: 'Enter package name or keywords'
         });
 
@@ -138,7 +138,7 @@ export class IonPackageManager {
         }
 
         const confirm = await vscode.window.showWarningMessage(
-            'Publish package to Ion registry?',
+            'Publish package to Home registry?',
             'Publish',
             'Cancel'
         );

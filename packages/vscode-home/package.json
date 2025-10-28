@@ -84,12 +84,12 @@
         "ion.debugger.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Ion debugger"
+          "description": "Enable Home debugger"
         },
         "ion.profiler.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Ion profiler"
+          "description": "Enable Home profiler"
         },
         "ion.profiler.autoStart": {
           "type": "boolean",
@@ -119,42 +119,42 @@
         "ion.format.onSave": {
           "type": "boolean",
           "default": true,
-          "description": "Format Ion files on save"
+          "description": "Format Home files on save"
         }
       }
     },
     "commands": [
       {
         "command": "ion.restartServer",
-        "title": "Restart Ion Language Server"
+        "title": "Restart Home Language Server"
       },
       {
         "command": "ion.run",
-        "title": "Run Ion Program"
+        "title": "Run Home Program"
       },
       {
         "command": "ion.build",
-        "title": "Build Ion Program"
+        "title": "Build Home Program"
       },
       {
         "command": "ion.check",
-        "title": "Check Ion Program"
+        "title": "Check Home Program"
       },
       {
         "command": "ion.test",
-        "title": "Run Ion Tests"
+        "title": "Run Home Tests"
       },
       {
         "command": "ion.format",
-        "title": "Format Ion Document"
+        "title": "Format Home Document"
       },
       {
         "command": "ion.profiler.start",
-        "title": "Start Ion Profiler"
+        "title": "Start Home Profiler"
       },
       {
         "command": "ion.profiler.stop",
-        "title": "Stop Ion Profiler"
+        "title": "Stop Home Profiler"
       },
       {
         "command": "ion.profiler.viewReport",
@@ -162,106 +162,106 @@
       },
       {
         "command": "ion.packageManager.search",
-        "title": "Search Ion Packages"
+        "title": "Search Home Packages"
       },
       {
         "command": "ion.packageManager.install",
-        "title": "Install Ion Package"
+        "title": "Install Home Package"
       },
       {
         "command": "ion.cpu.start",
-        "title": "Ion: Start CPU Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Start CPU Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.cpu.stop",
-        "title": "Ion: Stop CPU Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Stop CPU Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.cpu.flamegraph",
-        "title": "Ion: View CPU Flame Graph",
-        "category": "Ion Profiler"
+        "title": "Home: View CPU Flame Graph",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.cpu.exportChrome",
-        "title": "Ion: Export CPU Profile to Chrome DevTools",
-        "category": "Ion Profiler"
+        "title": "Home: Export CPU Profile to Chrome DevTools",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.gc.start",
-        "title": "Ion: Start GC Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Start GC Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.gc.stop",
-        "title": "Ion: Stop GC Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Stop GC Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.gc.report",
-        "title": "Ion: View GC Report",
-        "category": "Ion Profiler"
+        "title": "Home: View GC Report",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.gc.analyzePressure",
-        "title": "Ion: Analyze GC Pressure",
-        "category": "Ion Profiler"
+        "title": "Home: Analyze GC Pressure",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.memory.start",
-        "title": "Ion: Start Memory Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Start Memory Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.memory.stop",
-        "title": "Ion: Stop Memory Profiler",
-        "category": "Ion Profiler"
+        "title": "Home: Stop Memory Profiler",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.memory.snapshot",
-        "title": "Ion: Take Memory Snapshot",
-        "category": "Ion Profiler"
+        "title": "Home: Take Memory Snapshot",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.memory.findLeaks",
-        "title": "Ion: Detect Memory Leaks",
-        "category": "Ion Profiler"
+        "title": "Home: Detect Memory Leaks",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.memory.report",
-        "title": "Ion: View Memory Report",
-        "category": "Ion Profiler"
+        "title": "Home: View Memory Report",
+        "category": "Home Profiler"
       },
       {
         "command": "ion.debug.stepBack",
-        "title": "Ion: Step Back (Time-Travel)",
-        "category": "Ion Debug"
+        "title": "Home: Step Back (Time-Travel)",
+        "category": "Home Debug"
       },
       {
         "command": "ion.debug.stepForward",
-        "title": "Ion: Step Forward (Time-Travel)",
-        "category": "Ion Debug"
+        "title": "Home: Step Forward (Time-Travel)",
+        "category": "Home Debug"
       },
       {
         "command": "ion.debug.showTimeline",
-        "title": "Ion: Show Execution Timeline",
-        "category": "Ion Debug"
+        "title": "Home: Show Execution Timeline",
+        "category": "Home Debug"
       },
       {
         "command": "ion.threads.showAll",
-        "title": "Ion: Show All Threads",
-        "category": "Ion Debug"
+        "title": "Home: Show All Threads",
+        "category": "Home Debug"
       },
       {
         "command": "ion.threads.showDeadlocks",
-        "title": "Ion: Detect Deadlocks",
-        "category": "Ion Debug"
+        "title": "Home: Detect Deadlocks",
+        "category": "Home Debug"
       },
       {
         "command": "ion.threads.showRaces",
-        "title": "Ion: Detect Race Conditions",
-        "category": "Ion Debug"
+        "title": "Home: Detect Race Conditions",
+        "category": "Home Debug"
       }
     ],
     "keybindings": [
@@ -321,7 +321,7 @@
     "debuggers": [
       {
         "type": "home",
-        "label": "Ion Debug",
+        "label": "Home Debug",
         "program": "./out/debugAdapter.js",
         "runtime": "node",
         "configurationAttributes": {
@@ -332,7 +332,7 @@
             "properties": {
               "program": {
                 "type": "string",
-                "description": "Absolute path to the Ion file to debug",
+                "description": "Absolute path to the Home file to debug",
                 "default": "${file}"
               },
               "args": {
@@ -386,30 +386,30 @@
           {
             "type": "home",
             "request": "launch",
-            "name": "Debug Ion File",
+            "name": "Debug Home File",
             "program": "${file}",
             "stopOnEntry": false
           }
         ],
         "configurationSnippets": [
           {
-            "label": "Ion Debug: Launch",
-            "description": "A new configuration for debugging an Ion file",
+            "label": "Home Debug: Launch",
+            "description": "A new configuration for debugging an Home file",
             "body": {
               "type": "home",
               "request": "launch",
-              "name": "Debug Ion File",
+              "name": "Debug Home File",
               "program": "^\"\\${file}\"",
               "stopOnEntry": false
             }
           },
           {
-            "label": "Ion Debug: Launch with Profiler",
-            "description": "Debug an Ion file with profiler enabled",
+            "label": "Home Debug: Launch with Profiler",
+            "description": "Debug an Home file with profiler enabled",
             "body": {
               "type": "home",
               "request": "launch",
-              "name": "Debug Ion File (Profiler)",
+              "name": "Debug Home File (Profiler)",
               "program": "^\"\\${file}\"",
               "stopOnEntry": false,
               "profiler": true

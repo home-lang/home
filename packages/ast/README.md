@@ -1,8 +1,8 @@
-# Ion AST
+# Home AST
 
 ## Overview
 
-Abstract Syntax Tree representation. Defines all AST node types for Ion programs.
+Abstract Syntax Tree representation. Defines all AST node types for Home programs.
 
 ## Features
 
@@ -26,4 +26,4 @@ zig test packages/ast/tests/ast_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

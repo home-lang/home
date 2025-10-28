@@ -5,7 +5,7 @@ import {
 /**
  * Multi-Threaded Debugger
  *
- * Handles debugging of multi-threaded Ion programs.
+ * Handles debugging of multi-threaded Home programs.
  * Tracks thread state, synchronization, deadlocks, and race conditions.
  */
 

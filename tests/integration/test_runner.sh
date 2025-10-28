@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Integration Test Runner for Ion Compiler
+# Integration Test Runner for Home Compiler
 # Tests all new features: ternary, null coalescing, tuples, do-while, switch, try-catch
 
 set -e
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ION_BIN="$SCRIPT_DIR/../../zig-out/bin/ion"
 
 echo "========================================"
-echo "Ion Compiler Integration Test Suite"
+echo "Home Compiler Integration Test Suite"
 echo "Testing New Features (Phases 1-5)"
 echo "========================================"
 echo ""
@@ -50,16 +50,16 @@ run_test() {
     fi
 }
 
-# Check if Ion binary exists
+# Check if Home binary exists
 if [ ! -f "$ION_BIN" ]; then
-    echo -e "${RED}Error: Ion binary not found at $ION_BIN${NC}"
+    echo -e "${RED}Error: Home binary not found at $ION_BIN${NC}"
     echo "Please build the project first:"
     echo "  cd $(dirname $(dirname $SCRIPT_DIR))"
     echo "  zig build"
     exit 1
 fi
 
-echo -e "${BLUE}Using Ion binary:${NC} $ION_BIN"
+echo -e "${BLUE}Using Home binary:${NC} $ION_BIN"
 echo ""
 echo "Running integration tests..."
 echo ""

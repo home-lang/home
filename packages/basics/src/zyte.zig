@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Native Zyte integration for Ion
+/// Native Zyte integration for Home
 /// Zyte is a native Zig cross-platform desktop framework (competitor to Tauri)
 ///
 /// Zyte provides:
@@ -14,32 +14,31 @@ const builtin = @import("builtin");
 /// - IPC bridge for web<->native communication
 ///
 /// This module links directly with Zyte's native Zig implementation
-
 /// Zyte path - looks for Zyte in ~/Code/zyte by default
 const ZYTE_PATH = "/Users/chrisbreuer/Code/zyte/packages/zig";
 
 /// Import Zyte modules if available
 /// In production, these would be actual @cImport or direct Zig imports
 const ZyteWindow = struct {
-        title: []const u8,
-        width: u32,
-        height: u32,
-        html: []const u8,
-        native_handle: ?*anyopaque = null,
+    title: []const u8,
+    width: u32,
+    height: u32,
+    html: []const u8,
+    native_handle: ?*anyopaque = null,
 
-        pub fn init(title: []const u8, width: u32, height: u32, html: []const u8) @This() {
-            return .{
-                .title = title,
-                .width = width,
-                .height = height,
-                .html = html,
-            };
-        }
+    pub fn init(title: []const u8, width: u32, height: u32, html: []const u8) @This() {
+        return .{
+            .title = title,
+            .width = width,
+            .height = height,
+            .html = html,
+        };
+    }
 
-        pub fn show(self: *@This()) !void {
-            std.debug.print("Zyte Window (stub): {s} ({d}x{d})\n", .{ self.title, self.width, self.height });
-        }
-    };
+    pub fn show(self: *@This()) !void {
+        std.debug.print("Zyte Window (stub): {s} ({d}x{d})\n", .{ self.title, self.width, self.height });
+    }
+};
 
 pub const ZyteConfig = struct {
     allocator: std.mem.Allocator,
@@ -60,7 +59,7 @@ pub const ZyteConfig = struct {
     pub fn init(allocator: std.mem.Allocator) ZyteConfig {
         return .{
             .allocator = allocator,
-            .title = "Ion + Zyte App",
+            .title = "Home + Zyte App",
             .width = 1024,
             .height = 768,
             .resizable = true,
@@ -176,8 +175,7 @@ pub const ZyteApp = struct {
             std.debug.print("Loading:    {s}\n", .{url});
             // In real implementation, would load URL content
             break :blk "<html><body><h1>Loading...</h1></body></html>";
-        } else
-            "<html><body><h1>Ion + Zyte</h1></body></html>";
+        } else "<html><body><h1>Home + Zyte</h1></body></html>";
 
         std.debug.print("═══════════════════════════════════\n\n", .{});
 

@@ -86,7 +86,7 @@ pub fn main() !void {
 
 fn printHelp() void {
     std.debug.print(
-        \\Ion Parallel Build System Demo
+        \\Home Parallel Build System Demo
         \\
         \\Demonstrates parallel compilation with work-stealing thread pool.
         \\

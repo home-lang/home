@@ -55,7 +55,7 @@ export class MemoryProfiler {
     private _peakUsage: number = 0;
 
     constructor() {
-        this._outputChannel = vscode.window.createOutputChannel('Ion Memory Profiler');
+        this._outputChannel = vscode.window.createOutputChannel('Home Memory Profiler');
     }
 
     /**
@@ -388,7 +388,7 @@ export class MemoryProfiler {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Ion Memory Profiler Report</title>
+    <title>Home Memory Profiler Report</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -429,7 +429,7 @@ export class MemoryProfiler {
     </style>
 </head>
 <body>
-    <h1>Ion Memory Profiler Report</h1>
+    <h1>Home Memory Profiler Report</h1>
     <p>Generated: ${new Date().toISOString()}</p>
 
     <h2>Summary</h2>

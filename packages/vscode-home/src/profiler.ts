@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 
-export class IonProfiler {
+export class HomeProfiler {
     private _isRunning = false;
     private _process: ChildProcess | undefined;
     private _outputChannel: vscode.OutputChannel;
@@ -11,12 +11,12 @@ export class IonProfiler {
     private _profileData: ProfileData[] = [];
 
     constructor() {
-        this._outputChannel = vscode.window.createOutputChannel('Ion Profiler');
+        this._outputChannel = vscode.window.createOutputChannel('Home Profiler');
         this._statusBarItem = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Right,
             100
         );
-        this._statusBarItem.text = "$(pulse) Ion Profiler";
+        this._statusBarItem.text = "$(pulse) Home Profiler";
         this._statusBarItem.command = 'ion.profiler.viewReport';
     }
 
@@ -30,7 +30,7 @@ export class IonProfiler {
         const filePath = program || editor?.document.uri.fsPath;
 
         if (!filePath) {
-            vscode.window.showErrorMessage('No Ion file to profile');
+            vscode.window.showErrorMessage('No Home file to profile');
             return;
         }
 
@@ -89,7 +89,7 @@ export class IonProfiler {
         }
 
         this._isRunning = false;
-        this._statusBarItem.text = "$(pulse) Ion Profiler";
+        this._statusBarItem.text = "$(pulse) Home Profiler";
         this._statusBarItem.hide();
     }
 
@@ -157,7 +157,7 @@ export class IonProfiler {
         // Create a webview to display the report
         const panel = vscode.window.createWebviewPanel(
             'ionProfiler',
-            'Ion Profiler Report',
+            'Home Profiler Report',
             vscode.ViewColumn.One,
             { enableScripts: true }
         );
@@ -215,7 +215,7 @@ export class IonProfiler {
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Ion Profiler Report</title>
+                <title>Home Profiler Report</title>
                 <style>
                     body {
                         font-family: var(--vscode-font-family);
@@ -265,7 +265,7 @@ export class IonProfiler {
                 </style>
             </head>
             <body>
-                <h1>Ion Profiler Report</h1>
+                <h1>Home Profiler Report</h1>
                 <p><em>Generated: ${reportData.timestamp}</em></p>
 
                 <div class="summary">

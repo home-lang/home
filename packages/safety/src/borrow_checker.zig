@@ -3,7 +3,7 @@ const ast = @import("ast");
 const ownership = @import("../../types/src/ownership.zig");
 const Type = @import("../../types/src/type_system.zig").Type;
 
-/// Full borrow checker implementation for Ion
+/// Full borrow checker implementation for Home
 pub const BorrowChecker = struct {
     allocator: std.mem.Allocator,
     tracker: ownership.OwnershipTracker,
@@ -330,7 +330,7 @@ pub const Lifetime = struct {
 
 /// Reference type tracking
 pub const ReferenceType = enum {
-    Shared,    // &T
-    Mutable,   // &mut T
-    Owned,     // T
+    Shared, // &T
+    Mutable, // &mut T
+    Owned, // T
 };

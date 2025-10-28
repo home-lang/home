@@ -1,6 +1,6 @@
 # Package Manager Improvements - Bun-Inspired Features
 
-This document outlines future improvements to Ion's package manager, taking inspiration from Bun's excellent developer experience.
+This document outlines future improvements to Home's package manager, taking inspiration from Bun's excellent developer experience.
 
 ## 🚀 Performance Improvements
 

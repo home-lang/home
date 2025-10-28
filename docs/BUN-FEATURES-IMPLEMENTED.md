@@ -1,6 +1,6 @@
 # Bun-Inspired Features - Implementation Complete! 🎉
 
-This document summarizes all the Bun-inspired features that have been implemented in Ion's package manager.
+This document summarizes all the Bun-inspired features that have been implemented in Home's package manager.
 
 ## ✅ Completed Features
 
@@ -8,7 +8,7 @@ This document summarizes all the Bun-inspired features that have been implemente
 
 **Status**: ✅ **COMPLETE**
 
-Ion now supports package scripts just like Bun! Define scripts in your `ion.toml`:
+Home now supports package scripts just like Bun! Define scripts in your `ion.toml`:
 
 ```toml
 [scripts]
@@ -354,7 +354,7 @@ See `PACKAGE-MANAGER-IMPROVEMENTS.md` for complete roadmap.
 
 ## 🎉 Summary
 
-Ion's package manager now has **4 major Bun-inspired features fully implemented**:
+Home's package manager now has **4 major Bun-inspired features fully implemented**:
 
 1. ✅ **Package Scripts** - Run custom commands like `ion pkg run dev`
 2. ✅ **Progress UI** - Beautiful progress bars and installation summaries
@@ -373,7 +373,7 @@ Ion's package manager now has **4 major Bun-inspired features fully implemented*
 
 ## 🔗 Resources
 
-- [Ion Package Management Guide](./PACKAGE-MANAGEMENT.md)
+- [Home Package Management Guide](./PACKAGE-MANAGEMENT.md)
 - [Future Improvements Roadmap](./PACKAGE-MANAGER-IMPROVEMENTS.md)
 - [Bun Documentation](https://bun.sh/docs/cli/install)
 - [pnpm Workspaces](https://pnpm.io/workspaces)

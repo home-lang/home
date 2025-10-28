@@ -3,7 +3,7 @@ const ast = @import("ast");
 const parser_mod = @import("parser");
 const lexer_mod = @import("lexer");
 
-/// Language Server Protocol implementation for Ion
+/// Language Server Protocol implementation for Home
 /// Provides IDE features like autocomplete, goto definition, diagnostics
 pub const LanguageServer = struct {
     allocator: std.mem.Allocator,

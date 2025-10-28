@@ -1,11 +1,11 @@
-// HTTP server example in Ion
+// HTTP server example in Home
 import std/http { Server, Response }
 
 fn main() {
   let server = Server.bind(":3000")
 
   server.get("/", fn(req) -> Response {
-    return Response.ok("Hello from Ion!")
+    return Response.ok("Hello from Home!")
   })
 
   server.get("/user/:id", fn(req) -> async Response {

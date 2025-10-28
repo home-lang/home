@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Benchmark Ion vs Zig
+# Benchmark Home vs Zig
 # Compares compilation time and runtime performance
 
 set -e
@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-echo "🏃 Ion vs Zig Benchmark Suite"
+echo "🏃 Home vs Zig Benchmark Suite"
 echo "================================"
 echo ""
 
@@ -185,11 +185,11 @@ echo ""
 
 PROGRAMS=("hello" "fib_recursive" "fib_iterative" "strings" "arrays")
 
-echo "| Program | Ion (ms) | Zig (ms) | Speedup |"
+echo "| Program | Home (ms) | Zig (ms) | Speedup |"
 echo "|---------|----------|----------|---------|"
 
 for prog in "${PROGRAMS[@]}"; do
-    # Ion compilation time
+    # Home compilation time
     ION_TIME=$(hyperfine --warmup 3 --runs 10 \
         "$PROJECT_ROOT/zig-out/bin/ion build $SCRIPT_DIR/programs/${prog}.home -o /tmp/ion_${prog}" \
         --style none --export-json /tmp/ion_bench.json 2>/dev/null | \
@@ -215,7 +215,7 @@ echo "${BLUE}  Runtime Performance Benchmarks${NC}"
 echo "${BLUE}═══════════════════════════════════════${NC}"
 echo ""
 
-echo "| Program | Ion (µs) | Zig (µs) | Ratio |"
+echo "| Program | Home (µs) | Zig (µs) | Ratio |"
 echo "|---------|----------|----------|-------|"
 
 for prog in "${PROGRAMS[@]}"; do
@@ -223,7 +223,7 @@ for prog in "${PROGRAMS[@]}"; do
     "$PROJECT_ROOT/zig-out/bin/ion" build "$SCRIPT_DIR/programs/${prog}.home" -o "/tmp/ion_${prog}" 2>/dev/null || true
     zig build-exe "$SCRIPT_DIR/programs/${prog}.zig" -femit-bin="/tmp/zig_${prog}" -O ReleaseFast 2>/dev/null || true
 
-    # Ion runtime
+    # Home runtime
     if [ -f "/tmp/ion_${prog}" ]; then
         ION_RUNTIME=$(hyperfine --warmup 5 --runs 20 \
             "/tmp/ion_${prog}" \

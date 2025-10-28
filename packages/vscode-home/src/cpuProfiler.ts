@@ -62,7 +62,7 @@ export class CPUProfiler {
     private functionProfiles: Map<string, FunctionProfile> = new Map();
 
     constructor() {
-        this._outputChannel = vscode.window.createOutputChannel('Ion CPU Profiler');
+        this._outputChannel = vscode.window.createOutputChannel('Home CPU Profiler');
     }
 
     /**
@@ -378,7 +378,7 @@ export class CPUProfiler {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Ion CPU Flame Graph</title>
+    <title>Home CPU Flame Graph</title>
     <style>
         body {
             margin: 0;
@@ -415,7 +415,7 @@ export class CPUProfiler {
     </style>
 </head>
 <body>
-    <h1>Ion CPU Flame Graph</h1>
+    <h1>Home CPU Flame Graph</h1>
     <div id="info">Click on a frame to zoom. Ctrl+Click to reset.</div>
     <svg id="flamegraph"></svg>
 

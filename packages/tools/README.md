@@ -1,4 +1,4 @@
-# Ion Development Tools
+# Home Development Tools
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/tools/tests/tools_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

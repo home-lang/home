@@ -1,9 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Process management utilities for Ion
+/// Process management utilities for Home
 /// Provides spawning, execution, and management of child processes
-
 /// Process execution result
 pub const ExecResult = struct {
     stdout: []const u8,

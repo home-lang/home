@@ -1,4 +1,4 @@
-# Ion Task Queue
+# Home Task Queue
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/queue/tests/queue_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

@@ -1,4 +1,4 @@
-# Ion Trait System
+# Home Trait System
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/traits/tests/traits_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

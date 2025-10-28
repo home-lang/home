@@ -310,9 +310,9 @@ Cmd/Ctrl + Shift + P -> "View Profiler Report"
 
 #### Programmatic Usage
 ```typescript
-import { IonProfiler } from './profiler';
+import { HomeProfiler } from './profiler';
 
-const profiler = new IonProfiler();
+const profiler = new HomeProfiler();
 await profiler.start('./my-program.home');
 // ... run program ...
 profiler.stop();

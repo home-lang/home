@@ -8,7 +8,7 @@
 
 ## 🎯 Vision
 
-Ion aims to combine:
+Home aims to combine:
 - **PHP's ease of use** for web development
 - **TypeScript's type safety** and developer experience
 - **Rust's performance** and safety guarantees
@@ -791,7 +791,7 @@ await Mail.to(user.email)
 | **Hot Reload** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Compile-time Validation** | ✅ Comptime | ❌ | ❌ | ❌ | ❌ | ⚠️ Macros |
 
-**Ion's Unique Selling Points**:
+**Home's Unique Selling Points**:
 1. **Safety + Speed**: Only language with memory safety AND native speed AND fast compilation
 2. **Web-First**: Unlike Rust/Go, designed for web development from day one
 3. **Developer Experience**: Hot reload + LSP + fast compilation + helpful errors

@@ -1,4 +1,4 @@
-# Ion Generics
+# Home Generics
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/generics/tests/generics_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

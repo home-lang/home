@@ -1,6 +1,6 @@
 # Home Testing Matchers Reference
 
-Complete reference for all available matchers in Ion's modern testing framework.
+Complete reference for all available matchers in Home's modern testing framework.
 
 ## Table of Contents
 

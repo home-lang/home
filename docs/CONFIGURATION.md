@@ -1,10 +1,10 @@
 # Home Configuration Files
 
-Ion supports multiple configuration file formats for maximum flexibility and compatibility with existing ecosystems.
+Home supports multiple configuration file formats for maximum flexibility and compatibility with existing ecosystems.
 
 ## Supported Formats (Priority Order)
 
-Ion will automatically detect and load configuration from the first file it finds:
+Home will automatically detect and load configuration from the first file it finds:
 
 1. **`ion.jsonc`** ⭐ **Recommended** - JSON with comments
 2. **`ion.json`** - Standard JSON
@@ -92,9 +92,9 @@ We recommend **`ion.jsonc`** for Home projects because:
 }
 ```
 
-### package.jsonc (Hybrid Node.js + Ion)
+### package.jsonc (Hybrid Node.js + Home)
 
-Perfect for projects that use both Node.js and Ion:
+Perfect for projects that use both Node.js and Home:
 
 ```jsonc
 {
@@ -136,7 +136,7 @@ Perfect for projects that use both Node.js and Ion:
 
 ## Semver Ranges
 
-Ion supports standard semantic versioning ranges:
+Home supports standard semantic versioning ranges:
 
 | Range | Meaning | Example |
 |-------|---------|---------|
@@ -162,7 +162,7 @@ Ion supports standard semantic versioning ranges:
 
 ### GitHub Shortcuts
 
-Ion automatically expands `user/repo` to `https://github.com/user/repo.git`:
+Home automatically expands `user/repo` to `https://github.com/user/repo.git`:
 
 ```jsonc
 {
@@ -254,7 +254,7 @@ Simply rename `package.json` to `ion.jsonc` and add comments as needed! Home is 
 
 ## File Detection
 
-Ion checks for config files in this order and uses the first one found:
+Home checks for config files in this order and uses the first one found:
 
 ```
 ion.jsonc       ← Preferred (comments!)
@@ -292,7 +292,7 @@ JSONC is supported out of the box in WebStorm, IntelliJ IDEA, and other JetBrain
 
 ## Why Multiple Formats?
 
-Ion supports multiple configuration formats to:
+Home supports multiple configuration formats to:
 
 1. **Ease migration** - Existing package.json files work out of the box
 2. **Team preferences** - Some teams prefer JSON, others TOML

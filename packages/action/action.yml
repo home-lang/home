@@ -1,22 +1,22 @@
-name: 'Setup Ion'
-description: 'Setup the Ion programming language compiler in your GitHub Actions workflow'
-author: 'Ion Contributors'
+name: 'Setup Home'
+description: 'Setup the Home programming language compiler in your GitHub Actions workflow'
+author: 'Home Contributors'
 branding:
   icon: 'zap'
   color: 'purple'
 
 inputs:
   ion-version:
-    description: 'Version of Ion to install (e.g., "latest", "0.1.0", or "canary")'
+    description: 'Version of Home to install (e.g., "latest", "0.1.0", or "canary")'
     required: false
     default: 'latest'
 
   ion-version-file:
-    description: 'Path to a file containing the Ion version (e.g., ".ion-version")'
+    description: 'Path to a file containing the Home version (e.g., ".ion-version")'
     required: false
 
   cache:
-    description: 'Enable caching of Ion installation'
+    description: 'Enable caching of Home installation'
     required: false
     default: 'true'
 

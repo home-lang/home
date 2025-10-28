@@ -31,13 +31,13 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("\n{s}\n", .{"=" ** 80});
-    std.debug.print("Ion Lexer Benchmarks\n", .{});
+    std.debug.print("Home Lexer Benchmarks\n", .{});
     std.debug.print("{s}\n\n", .{"=" ** 80});
 
     // Benchmark 1: Hello World
     const hello_world =
         \\fn main() {
-        \\  print("Hello, Ion!")
+        \\  print("Hello, Home!")
         \\}
     ;
     try benchmark(allocator, "Hello World (4 LOC)", hello_world, 10000);

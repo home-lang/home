@@ -1,8 +1,8 @@
-# Ion Lexer
+# Home Lexer
 
 ## Overview
 
-Tokenization and lexical analysis for Ion source code. Converts raw source text into a stream of tokens.
+Tokenization and lexical analysis for Home source code. Converts raw source text into a stream of tokens.
 
 ## Features
 
@@ -26,4 +26,4 @@ zig test packages/lexer/tests/lexer_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

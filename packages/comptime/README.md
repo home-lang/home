@@ -1,4 +1,4 @@
-# Ion Compile-Time Evaluation
+# Home Compile-Time Evaluation
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/comptime/tests/comptime_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

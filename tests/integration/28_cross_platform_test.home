@@ -32,7 +32,7 @@ assert(numbers[4] == 5);
 assert(numbers.len() == 5);
 
 // Test 5: String operations (all platforms)
-let message = "Hello, Ion!";
+let message = "Hello, Home!";
 assert(message.len() == 11);
 assert(message.startsWith("Hello"));
 

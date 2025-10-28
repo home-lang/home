@@ -3,7 +3,7 @@ const ast = @import("ast");
 const ownership = @import("ownership.zig");
 const diagnostics = @import("diagnostics");
 
-/// Ion's static type system with support for advanced features.
+/// Home's static type system with support for advanced features.
 ///
 /// The Type union represents all possible types in the Home language, including:
 /// - Primitive types (Int, Float, Bool, String, Void)

@@ -197,7 +197,7 @@ pub const DocGenerator = struct {
             \\<!DOCTYPE html>
             \\<html>
             \\<head>
-            \\  <title>Ion Documentation</title>
+            \\  <title>Home Documentation</title>
             \\  <style>
             \\    body { font-family: system-ui; max-width: 1200px; margin: 0 auto; padding: 20px; }
             \\    h1 { color: #7c3aed; }

@@ -1,4 +1,4 @@
-# Ion Module System
+# Home Module System
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/modules/tests/modules_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

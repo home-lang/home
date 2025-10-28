@@ -2,7 +2,7 @@
 
 ## Overview
 
-Ion now features a Bun/pnpm-style monorepo structure with independent packages that can be developed, tested, and versioned separately while being managed together.
+Home now features a Bun/pnpm-style monorepo structure with independent packages that can be developed, tested, and versioned separately while being managed together.
 
 ## Directory Structure
 
@@ -48,7 +48,7 @@ The root `ion.toml` defines the workspace:
 [package]
 name = "ion"
 version = "0.1.0"
-authors = ["Ion Contributors"]
+authors = ["Home Contributors"]
 
 [workspaces]
 packages = [
@@ -74,7 +74,7 @@ Each package has its own `ion.toml` with:
 [package]
 name = "home-lexer"
 version = "0.1.0"
-authors = ["Ion Contributors"]
+authors = ["Home Contributors"]
 description = "Home Language Lexer - Tokenization and scanning"
 license = "MIT"
 
@@ -91,7 +91,7 @@ test = "zig test src/lexer.zig"
 [package]
 name = "home-parser"
 version = "0.1.0"
-authors = ["Ion Contributors"]
+authors = ["Home Contributors"]
 description = "Home Language Parser - AST generation from tokens"
 license = "MIT"
 
@@ -144,7 +144,7 @@ Each package has a single, well-defined responsibility:
 ### 3. **Reusability**
 - Packages can be used independently
 - Other projects can depend on just the lexer, parser, etc.
-- Easier to create tools that use parts of Ion
+- Easier to create tools that use parts of Home
 
 ### 4. **Better Testing**
 - Unit tests stay within each package
@@ -152,7 +152,7 @@ Each package has a single, well-defined responsibility:
 - Faster feedback loop when testing specific components
 
 ### 5. **Workspace Features**
-Ion's package manager supports workspace operations:
+Home's package manager supports workspace operations:
 ```bash
 # Discover all packages in workspace
 ion pkg tree
@@ -258,7 +258,7 @@ To complete the migration:
 
 ## Workspace Commands
 
-Ion's package manager includes workspace support:
+Home's package manager includes workspace support:
 
 ```bash
 # Initialize workspace

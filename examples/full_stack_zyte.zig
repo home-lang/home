@@ -10,7 +10,6 @@ const zyte = @import("zyte");
 /// 3. IPC bridge for native<->web communication
 /// 4. Hot reload for development
 /// 5. Cross-platform desktop app deployment
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -46,7 +45,7 @@ pub fn main() !void {
 
     // Configure Zyte window
     var config = zyte.ZyteConfig.init(allocator);
-    _ = config.setTitle("Ion Full-Stack App");
+    _ = config.setTitle("Home Full-Stack App");
     _ = config.setSize(1200, 800);
     _ = config.setDarkMode(true);
     _ = config.setHotReload(true);
@@ -83,7 +82,7 @@ fn homeHandler(req: *http_router.Request, res: *http_router.Response) !void {
         \\<head>
         \\    <meta charset="UTF-8">
         \\    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        \\    <title>Ion Full-Stack App</title>
+        \\    <title>Home Full-Stack App</title>
         \\    <style>
         \\        * { margin: 0; padding: 0; box-sizing: border-box; }
         \\        body {
@@ -268,7 +267,7 @@ fn statusHandler(req: *http_router.Request, res: *http_router.Response) !void {
     const status = try std.fmt.allocPrint(res.allocator,
         \\{{
         \\  "status": "ok",
-        \\  "server": "Ion HTTP Server",
+        \\  "server": "Home HTTP Server",
         \\  "frontend": "Zyte Native",
         \\  "timestamp": {d},
         \\  "platform": "{s}"

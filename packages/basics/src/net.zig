@@ -199,7 +199,7 @@ pub const HttpClient = struct {
         defer req_headers.deinit();
 
         try req_headers.append("Host", host);
-        try req_headers.append("User-Agent", "Ion/0.1.0");
+        try req_headers.append("User-Agent", "Home/0.1.0");
         try req_headers.append("Accept", "*/*");
 
         if (headers) |h| {

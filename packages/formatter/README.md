@@ -1,4 +1,4 @@
-# Ion Code Formatter
+# Home Code Formatter
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/formatter/tests/formatter_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

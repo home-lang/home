@@ -1,4 +1,4 @@
-// Async/await in Ion
+// Async/await in Home
 import std/http { get }
 
 fn fetch_user(id: int) -> async Result<User> {

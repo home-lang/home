@@ -1,4 +1,4 @@
-# Ion Code Generator
+# Home Code Generator
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/codegen/tests/codegen_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

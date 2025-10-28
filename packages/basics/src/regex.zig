@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Regular expression engine for Ion
+/// Regular expression engine for Home
 pub const Regex = struct {
     allocator: std.mem.Allocator,
     pattern: []const u8,

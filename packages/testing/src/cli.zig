@@ -60,7 +60,7 @@ pub fn main() !void {
 
     // Print configuration
     if (verbose or benchmark) {
-        std.debug.print("Ion Test Runner\n", .{});
+        std.debug.print("Home Test Runner\n", .{});
         std.debug.print("  Test suites: {d}\n", .{test_runner.ION_TEST_SUITES.len});
         std.debug.print("  Max parallel: {d}\n", .{runner.max_parallel});
         std.debug.print("  Cache: {s}\n", .{if (use_cache) "enabled" else "disabled"});
@@ -92,7 +92,7 @@ pub fn main() !void {
 
 fn printHelp() void {
     std.debug.print(
-        \\Ion Test Runner - Parallel test execution with caching
+        \\Home Test Runner - Parallel test execution with caching
         \\
         \\Usage: ion-test [OPTIONS]
         \\

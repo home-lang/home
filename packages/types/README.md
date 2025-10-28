@@ -1,8 +1,8 @@
-# Ion Type System
+# Home Type System
 
 ## Overview
 
-Type checking and type inference. Implements Ion's static type system.
+Type checking and type inference. Implements Home's static type system.
 
 ## Features
 
@@ -26,4 +26,4 @@ zig test packages/types/tests/types_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

@@ -64,7 +64,7 @@ pub const FieldInfo = struct {
     size: usize,
 };
 
-/// Native x86-64 code generator for Ion.
+/// Native x86-64 code generator for Home.
 ///
 /// Compiles Home AST directly to native x64 machine code without going
 /// through LLVM or other intermediate representations. This provides:

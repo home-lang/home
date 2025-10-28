@@ -8,7 +8,7 @@ import * as os from 'os';
 
 const INSTALL_BASE = 'https://github.com/ion-lang/ion/releases/download';
 
-interface IonVersion {
+interface HomeVersion {
   version: string;
   url: string;
 }
@@ -25,7 +25,7 @@ async function run(): Promise<void> {
 
     const enableCache = core.getInput('cache') === 'true';
 
-    core.info(`Setting up Ion ${ionVersion}...`);
+    core.info(`Setting up Home ${ionVersion}...`);
 
     // Check cache first
     let ionPath: string | undefined;
@@ -33,19 +33,19 @@ async function run(): Promise<void> {
     if (enableCache) {
       ionPath = tc.find('ion', ionVersion);
       if (ionPath) {
-        core.info(`Found Ion ${ionVersion} in cache`);
+        core.info(`Found Home ${ionVersion} in cache`);
         core.addPath(ionPath);
         await verifyInstallation();
         return;
       }
     }
 
-    // Download and install Ion
+    // Download and install Home
     const { url, actualVersion } = await getDownloadUrl(ionVersion);
-    core.info(`Downloading Ion from ${url}`);
+    core.info(`Downloading Home from ${url}`);
 
     const downloadPath = await tc.downloadTool(url);
-    core.info('Extracting Ion...');
+    core.info('Extracting Home...');
 
     let extractedPath: string;
     if (url.endsWith('.tar.gz')) {
@@ -68,7 +68,7 @@ async function run(): Promise<void> {
     // Verify installation
     await verifyInstallation();
 
-    core.info(`✓ Ion ${actualVersion} installed successfully`);
+    core.info(`✓ Home ${actualVersion} installed successfully`);
     core.setOutput('ion-version', actualVersion);
     core.setOutput('ion-path', ionPath);
 
@@ -130,7 +130,7 @@ async function verifyInstallation(): Promise<void> {
   try {
     await exec.exec('ion', ['--version']);
   } catch (error) {
-    throw new Error('Ion installation verification failed');
+    throw new Error('Home installation verification failed');
   }
 }
 

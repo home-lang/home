@@ -1,8 +1,8 @@
-# Ion Interpreter
+# Home Interpreter
 
 ## Overview
 
-Direct AST interpretation. Executes Ion code without compilation.
+Direct AST interpretation. Executes Home code without compilation.
 
 ## Features
 
@@ -26,4 +26,4 @@ zig test packages/interpreter/tests/interpreter_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

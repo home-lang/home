@@ -54,7 +54,7 @@ interface VariableData {
     variablesReference: number;
 }
 
-export class IonDebugSession extends LoggingDebugSession {
+export class HomeDebugSession extends LoggingDebugSession {
     private static THREAD_ID = 1;
 
     private _variableHandles = new Handles<VariableData[]>();
@@ -179,7 +179,7 @@ export class IonDebugSession extends LoggingDebugSession {
             this.sendEvent(new OutputEvent('Profiler enabled\n', 'console'));
         }
 
-        // Start the Ion process
+        // Start the Home process
         const cwd = args.cwd || path.dirname(args.program);
         const ionArgs = ['debug', args.program, ...(args.args || [])];
 
@@ -191,7 +191,7 @@ export class IonDebugSession extends LoggingDebugSession {
         this._ionProcess.stdout?.on('data', (data) => {
             const output = data.toString();
 
-            // Parse debug messages from Ion runtime
+            // Parse debug messages from Home runtime
             this.parseDebugOutput(output);
 
             // Send regular output to console
@@ -221,9 +221,9 @@ export class IonDebugSession extends LoggingDebugSession {
 
         // Stop on entry if requested
         if (args.stopOnEntry) {
-            this.sendEvent(new StoppedEvent('entry', IonDebugSession.THREAD_ID));
+            this.sendEvent(new StoppedEvent('entry', HomeDebugSession.THREAD_ID));
         } else {
-            this.sendEvent(new StoppedEvent('breakpoint', IonDebugSession.THREAD_ID));
+            this.sendEvent(new StoppedEvent('breakpoint', HomeDebugSession.THREAD_ID));
         }
 
         this.sendResponse(response);
@@ -233,7 +233,7 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.AttachResponse,
         args: AttachRequestArguments
     ): Promise<void> {
-        // Attach to an existing Ion process
+        // Attach to an existing Home process
         this.sendEvent(new OutputEvent(`Attaching to process ${args.processId}\n`, 'console'));
 
         // TODO: Implement process attachment logic
@@ -292,7 +292,7 @@ export class IonDebugSession extends LoggingDebugSession {
         // Return a single thread
         response.body = {
             threads: [
-                new Thread(IonDebugSession.THREAD_ID, "Main Thread")
+                new Thread(HomeDebugSession.THREAD_ID, "Main Thread")
             ]
         };
         this.sendResponse(response);
@@ -409,7 +409,7 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.NextResponse,
         args: DebugProtocol.NextArguments
     ): void {
-        this.sendEvent(new StoppedEvent('step', IonDebugSession.THREAD_ID));
+        this.sendEvent(new StoppedEvent('step', HomeDebugSession.THREAD_ID));
         this.sendResponse(response);
     }
 
@@ -417,7 +417,7 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.StepInResponse,
         args: DebugProtocol.StepInArguments
     ): void {
-        this.sendEvent(new StoppedEvent('step', IonDebugSession.THREAD_ID));
+        this.sendEvent(new StoppedEvent('step', HomeDebugSession.THREAD_ID));
         this.sendResponse(response);
     }
 
@@ -425,7 +425,7 @@ export class IonDebugSession extends LoggingDebugSession {
         response: DebugProtocol.StepOutResponse,
         args: DebugProtocol.StepOutArguments
     ): void {
-        this.sendEvent(new StoppedEvent('step', IonDebugSession.THREAD_ID));
+        this.sendEvent(new StoppedEvent('step', HomeDebugSession.THREAD_ID));
         this.sendResponse(response);
     }
 
@@ -501,7 +501,7 @@ export class IonDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * Parse debug output from Ion runtime
+     * Parse debug output from Home runtime
      *
      * Expected format from Zig debugger:
      * [DEBUG] Breakpoint hit at file.home:42
@@ -525,7 +525,7 @@ export class IonDebugSession extends LoggingDebugSession {
                 if (match) {
                     this._debuggerState.currentFile = match[1];
                     this._debuggerState.currentLine = parseInt(match[2], 10);
-                    this.sendEvent(new StoppedEvent('breakpoint', IonDebugSession.THREAD_ID));
+                    this.sendEvent(new StoppedEvent('breakpoint', HomeDebugSession.THREAD_ID));
                 }
             }
             // Parse stack trace
@@ -566,17 +566,17 @@ export class IonDebugSession extends LoggingDebugSession {
             }
             // Parse step completed
             else if (debugMsg.startsWith('Step completed')) {
-                this.sendEvent(new StoppedEvent('step', IonDebugSession.THREAD_ID));
+                this.sendEvent(new StoppedEvent('step', HomeDebugSession.THREAD_ID));
             }
             // Parse program entry
             else if (debugMsg.startsWith('Stopped on entry')) {
-                this.sendEvent(new StoppedEvent('entry', IonDebugSession.THREAD_ID));
+                this.sendEvent(new StoppedEvent('entry', HomeDebugSession.THREAD_ID));
             }
             // Parse exceptions
             else if (debugMsg.startsWith('Exception:')) {
                 const exceptionMsg = debugMsg.substring(10).trim();
                 this.sendEvent(new OutputEvent(`Exception: ${exceptionMsg}\n`, 'stderr'));
-                this.sendEvent(new StoppedEvent('exception', IonDebugSession.THREAD_ID));
+                this.sendEvent(new StoppedEvent('exception', HomeDebugSession.THREAD_ID));
             }
         }
     }
@@ -638,4 +638,4 @@ export class IonDebugSession extends LoggingDebugSession {
 }
 
 // Start the debug adapter
-IonDebugSession.run(IonDebugSession);
+HomeDebugSession.run(HomeDebugSession);

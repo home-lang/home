@@ -1,4 +1,4 @@
-# 🧬 Home
+# The Home Programming Language
 
 > **The speed of Zig. The safety of Rust. The joy of TypeScript.**
 
@@ -52,15 +52,15 @@ Modern systems languages force impossible choices:
 - **TypeScript-inspired syntax** - familiar and clean
 - **Helpful error messages** with fix suggestions
 - **All tools in one binary** - no Makefile, no npm, no cargo
-- **Batteries included** - HTTP, JSON, CLI tools, database access in basics
+- **Batteries included** - Package manager, HTTP, JSON, CLI tools, database access in basics
 
 ---
 
 ## Quick Example
 
 ```home
-import std/http { Server }
-import std/database { Connection }
+import basics/http { Server }
+import basics/database { Connection }
 
 fn main() {
   let server = Server.bind(":3000")
@@ -565,15 +565,15 @@ Home: Generate Flame Graph
 Home: Export Chrome DevTools Profile
 Home: Start Memory Profiler
 Home: Stop Memory Profiler
-Ion: Take Memory Snapshot
+Home: Take Memory Snapshot
 Home: Generate Memory Report
 Home: Start GC Profiler
 Home: Stop GC Profiler
-Ion: Analyze GC Pressure
-Ion: Time-Travel: Step Back
-Ion: Time-Travel: Step Forward
-Ion: Multi-thread: Show Deadlocks
-Ion: Multi-thread: Show Race Conditions
+Home: Analyze GC Pressure
+Home: Time-Travel: Step Back
+Home: Time-Travel: Step Forward
+Home: Multi-thread: Show Deadlocks
+Home: Multi-thread: Show Race Conditions
 ```
 
 ### Keybindings
@@ -789,7 +789,7 @@ struct Result<T, E> {
 ## Performance Goals
 
 ### Compile Time (vs Zig)
-| Benchmark | Ion Target | Zig Baseline |
+| Benchmark | Home Target | Zig Baseline |
 |-----------|------------|-------------|
 | Hello World | <50ms | ~70ms |
 | 1000 LOC | <500ms | ~700ms |
@@ -797,7 +797,7 @@ struct Result<T, E> {
 | Incremental (1 file) | <50ms | ~150ms |
 
 ### Runtime Performance (vs Zig/C)
-| Benchmark | Ion Target | Zig/C |
+| Benchmark | Home Target | Zig/C |
 |-----------|------------|-------|
 | Fibonacci | ±5% | baseline |
 | HTTP throughput | ±5% | baseline |
@@ -873,7 +873,7 @@ A: Yes! The testing framework is fully functional with snapshot testing, mocks, 
 
 ## Comparison
 
-|  | Ion | Zig | Rust | Go | C++ |
+|  | Home | Zig | Rust | Go | C++ |
 |---|-----|-----|------|----|----|
 | Compile speed | ⚡⚡⚡ | ⚡⚡ | ⚡ | ⚡⚡⚡ | ⚡ |
 | Memory safety | ✅ | ⚠️ | ✅ | ❌ GC | ❌ |
@@ -937,7 +937,7 @@ Free for individuals, academia, and private enterprise.
 
 ## Acknowledgments
 
-Ion stands on the shoulders of giants:
+Home stands on the shoulders of giants:
 
 - **Zig**: Comptime philosophy, honest design, and build system inspiration
 - **Rust**: Memory safety model, ownership semantics, and error handling

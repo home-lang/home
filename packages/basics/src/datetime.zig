@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Date and time utilities for Ion
+/// Date and time utilities for Home
 pub const DateTime = struct {
     timestamp: i64, // Unix timestamp in seconds
     nanoseconds: u32, // Nanoseconds component
@@ -239,7 +239,7 @@ pub const Duration = struct {
 
     pub fn toSeconds(self: Duration) f64 {
         return @as(f64, @floatFromInt(self.seconds)) +
-               @as(f64, @floatFromInt(self.nanoseconds)) / @as(f64, std.time.ns_per_s);
+            @as(f64, @floatFromInt(self.nanoseconds)) / @as(f64, std.time.ns_per_s);
     }
 
     pub fn toMilliseconds(self: Duration) i64 {

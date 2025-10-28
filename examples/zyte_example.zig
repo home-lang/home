@@ -13,7 +13,7 @@ pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
         \\<!DOCTYPE html>
         \\<html>
         \\<head>
-        \\    <title>Ion + Zyte</title>
+        \\    <title>Home + Zyte</title>
         \\    <style>
         \\        body {
         \\            font-family: system-ui;
@@ -111,7 +111,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
                 \\<!DOCTYPE html>
                 \\<html>
                 \\<head>
-                \\    <title>Ion + Zyte App</title>
+                \\    <title>Home + Zyte App</title>
                 \\    <style>
                 \\        body { font-family: system-ui; padding: 40px; }
                 \\        .button { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; }
@@ -125,7 +125,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
                 \\    </script>
                 \\</head>
                 \\<body>
-                \\    <h1>Ion Backend + Zyte Frontend</h1>
+                \\    <h1>Home Backend + Zyte Frontend</h1>
                 \\    <button class="button" onclick="fetchData()">Fetch Data from Backend</button>
                 \\    <pre id="result"></pre>
                 \\</body>
@@ -147,7 +147,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
 
     // Create Zyte window pointing to the server
     var config = zyte.ZyteConfig.init(allocator);
-    _ = config.setTitle("Ion + Zyte Full Stack");
+    _ = config.setTitle("Home + Zyte Full Stack");
     _ = config.setSize(1200, 800);
     _ = config.setUrl("http://localhost:8080");
     _ = config.setDevTools(true);
@@ -196,13 +196,13 @@ pub fn systemIntegrationExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 5: System Integration ===\n\n", .{});
 
     // System tray
-    var tray = zyte.SystemTray.init(allocator, "Ion App");
+    var tray = zyte.SystemTray.init(allocator, "Home App");
     _ = tray.setIcon("/path/to/icon.png");
     try tray.show();
 
     // Notification
     const notification = zyte.Notification{
-        .title = "Ion App",
+        .title = "Home App",
         .body = "Your task is complete!",
         .icon = null,
     };
@@ -283,7 +283,7 @@ pub fn todoAppExample(allocator: std.mem.Allocator) !void {
                 \\<!DOCTYPE html>
                 \\<html>
                 \\<head>
-                \\    <title>Ion Todo App</title>
+                \\    <title>Home Todo App</title>
                 \\    <style>
                 \\        body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
                 \\        .todo { padding: 10px; margin: 5px 0; background: #f0f0f0; border-radius: 5px; }
@@ -335,7 +335,7 @@ pub fn todoAppExample(allocator: std.mem.Allocator) !void {
     _ = try server.get("/api/todos", struct {
         fn handler(req: *http_router.Request, res: *http_router.Response) !void {
             _ = req;
-            try res.json("[{\"id\":1,\"text\":\"Learn Ion\"},{\"id\":2,\"text\":\"Build awesome apps\"}]");
+            try res.json("[{\"id\":1,\"text\":\"Learn Home\"},{\"id\":2,\"text\":\"Build awesome apps\"}]");
         }
     }.handler);
 
@@ -349,7 +349,7 @@ pub fn todoAppExample(allocator: std.mem.Allocator) !void {
     std.debug.print("✅ Todo app backend ready on port 3000\n", .{});
 
     // Frontend
-    try zyte.quickStart(allocator, "Ion Todo App", 3000);
+    try zyte.quickStart(allocator, "Home Todo App", 3000);
 }
 
 pub fn main() !void {

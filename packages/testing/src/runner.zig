@@ -572,7 +572,7 @@ pub const TestRunner = struct {
     }
 };
 
-/// Predefined test suites for Ion
+/// Predefined test suites for Home
 pub const ION_TEST_SUITES = [_]TestSuite{
     .{
         .name = "lexer",

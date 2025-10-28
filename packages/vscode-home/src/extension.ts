@@ -5,8 +5,8 @@ import {
     LanguageClientOptions,
     ServerOptions,
 } from 'vscode-languageclient/node';
-import { IonProfiler } from './profiler';
-import { IonPackageManager } from './packageManager';
+import { HomeProfiler } from './profiler';
+import { HomePackageManager } from './packageManager';
 import { CPUProfiler } from './cpuProfiler';
 import { GCProfiler } from './gcProfiler';
 import { MemoryProfiler } from './memoryProfiler';
@@ -14,8 +14,8 @@ import { MultiThreadDebugger } from './multiThreadDebugger';
 import { TimeTravelDebugger } from './timeTravelDebugger';
 
 let client: LanguageClient;
-let profiler: IonProfiler;
-let packageManager: IonPackageManager;
+let profiler: HomeProfiler;
+let packageManager: HomePackageManager;
 let cpuProfiler: CPUProfiler;
 let gcProfiler: GCProfiler;
 let memoryProfiler: MemoryProfiler;
@@ -28,8 +28,8 @@ export function activate(context: vscode.ExtensionContext) {
     extensionContext = context;
 
     // Initialize profiler and package manager
-    profiler = new IonProfiler();
-    packageManager = new IonPackageManager();
+    profiler = new HomeProfiler();
+    packageManager = new HomePackageManager();
 
     // Initialize advanced profilers and debuggers
     cpuProfiler = new CPUProfiler();
@@ -210,7 +210,7 @@ export function activate(context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('ion');
     if (config.get<boolean>('codelens.enabled')) {
         context.subscriptions.push(
-            vscode.languages.registerCodeLensProvider('ion', new IonCodeLensProvider())
+            vscode.languages.registerCodeLensProvider('ion', new HomeCodeLensProvider())
         );
     }
 
@@ -311,7 +311,7 @@ async function restartServer() {
 async function runProgram() {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'ion') {
-        vscode.window.showErrorMessage('No Ion file is active');
+        vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
@@ -321,7 +321,7 @@ async function runProgram() {
     const ionPath = config.get<string>('path') || 'ion';
     const filePath = editor.document.uri.fsPath;
 
-    const terminal = vscode.window.createTerminal('Ion Run');
+    const terminal = vscode.window.createTerminal('Home Run');
     terminal.show();
     terminal.sendText(`${ionPath} run "${filePath}"`);
 }
@@ -329,7 +329,7 @@ async function runProgram() {
 async function buildProgram() {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'ion') {
-        vscode.window.showErrorMessage('No Ion file is active');
+        vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
@@ -340,7 +340,7 @@ async function buildProgram() {
     const filePath = editor.document.uri.fsPath;
     const outputPath = filePath.replace(/\.home$/, '');
 
-    const terminal = vscode.window.createTerminal('Ion Build');
+    const terminal = vscode.window.createTerminal('Home Build');
     terminal.show();
     terminal.sendText(`${ionPath} build "${filePath}" -o "${outputPath}"`);
 }
@@ -348,7 +348,7 @@ async function buildProgram() {
 async function checkProgram() {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'ion') {
-        vscode.window.showErrorMessage('No Ion file is active');
+        vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
@@ -358,7 +358,7 @@ async function checkProgram() {
     const ionPath = config.get<string>('path') || 'ion';
     const filePath = editor.document.uri.fsPath;
 
-    const terminal = vscode.window.createTerminal('Ion Check');
+    const terminal = vscode.window.createTerminal('Home Check');
     terminal.show();
     terminal.sendText(`${ionPath} check "${filePath}"`);
 }
@@ -373,7 +373,7 @@ async function runTests() {
     const config = vscode.workspace.getConfiguration('ion');
     const ionPath = config.get<string>('path') || 'ion';
 
-    const terminal = vscode.window.createTerminal('Ion Tests');
+    const terminal = vscode.window.createTerminal('Home Tests');
     terminal.show();
     terminal.sendText(`cd "${workspaceFolder.uri.fsPath}" && ${ionPath} test`);
 }
@@ -381,7 +381,7 @@ async function runTests() {
 async function formatDocument() {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'ion') {
-        vscode.window.showErrorMessage('No Ion file is active');
+        vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
@@ -437,7 +437,7 @@ async function formatDocumentProvider(document: vscode.TextDocument): Promise<vs
     });
 }
 
-class IonCodeLensProvider implements vscode.CodeLensProvider {
+class HomeCodeLensProvider implements vscode.CodeLensProvider {
     public provideCodeLenses(
         document: vscode.TextDocument,
         token: vscode.CancellationToken

@@ -1,4 +1,4 @@
-# Ion Diagnostics
+# Home Diagnostics
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/diagnostics/tests/diagnostics_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

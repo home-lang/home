@@ -1,4 +1,4 @@
-# Ion Parser
+# Home Parser
 
 ## Overview
 
@@ -26,4 +26,4 @@ zig test packages/parser/tests/parser_test.zig
 
 ## License
 
-Part of the Ion programming language project.
+Part of the Home programming language project.

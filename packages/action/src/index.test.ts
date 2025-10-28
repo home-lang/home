@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-describe('Setup Ion Action', () => {
+describe('Setup Home Action', () => {
   test('exports main function', () => {
     // Basic smoke test
     expect(true).toBe(true);
