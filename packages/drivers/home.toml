@@ -1,0 +1,19 @@
+[package]
+name = "drivers"
+version = "0.1.0"
+description = "Enhanced hardware driver support for Home OS"
+authors = ["Home OS Team"]
+license = "MIT"
+
+[dependencies]
+
+[features]
+pci = ["PCI/PCIe enumeration and device discovery"]
+acpi = ["ACPI table parsing and hardware configuration"]
+graphics = ["Framebuffer and GPU driver support"]
+input = ["Keyboard and mouse input device drivers"]
+all = ["pci", "acpi", "graphics", "input"]
+
+[build]
+tests = true
+examples = true
