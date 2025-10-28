@@ -8,3 +8,4 @@ pantry/
 /packages/kernel/.zig-cache
 /packages/ffi/.zig-cache
 /packages/linker/.zig-cache
+/packages/variadic/.zig-cache

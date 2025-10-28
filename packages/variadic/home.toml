@@ -1,0 +1,14 @@
+[package]
+name = "variadic"
+version = "0.1.0"
+description = "Variadic function support for Home OS - printf, logging, syscall wrappers"
+authors = ["Home Team"]
+license = "MIT"
+
+[dependencies]
+
+[features]
+printf = true
+logging = true
+syscalls = true
+format_validation = true
