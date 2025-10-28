@@ -6,3 +6,4 @@ node_modules
 pantry/
 .freezer
 /packages/kernel/.zig-cache
+/packages/ffi/.zig-cache

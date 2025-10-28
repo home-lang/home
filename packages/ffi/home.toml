@@ -1,0 +1,14 @@
+[package]
+name = "ffi"
+version = "0.1.0"
+description = "FFI/C compatibility layer for Home programming language"
+authors = ["Home Team"]
+license = "MIT"
+
+[dependencies]
+basics = { path = "../basics" }
+
+[features]
+variadic = true
+c_header_gen = true
+runtime_checks = true
