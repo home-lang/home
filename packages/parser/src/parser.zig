@@ -426,6 +426,7 @@ pub const Parser = struct {
             return error.UnexpectedToken;
         }
 
+        if (self.match(&.{.Import})) return self.importDeclaration();
         if (self.match(&.{.Struct})) return self.structDeclaration();
         if (self.match(&.{.Enum})) return self.enumDeclaration();
         if (self.match(&.{.Union})) return self.unionDeclaration();
@@ -701,6 +702,37 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .TypeAliasDecl = type_alias_decl };
+    }
+
+    /// Parse an import declaration
+    /// Syntax: import basics/os/serial
+    fn importDeclaration(self: *Parser) !ast.Stmt {
+        const import_token = self.previous();
+
+        // Parse module path (e.g., basics/os/serial)
+        var path_segments = std.ArrayList([]const u8){};
+        defer path_segments.deinit(self.allocator);
+
+        // First segment
+        const first_token = try self.expect(.Identifier, "Expected module name after 'import'");
+        try path_segments.append(self.allocator, first_token.lexeme);
+
+        // Additional segments separated by '/'
+        while (self.match(&.{.Slash})) {
+            const segment_token = try self.expect(.Identifier, "Expected module name after '/'");
+            try path_segments.append(self.allocator, segment_token.lexeme);
+        }
+
+        const path = try path_segments.toOwnedSlice(self.allocator);
+
+        const decl = try ast.ImportDecl.init(
+            self.allocator,
+            path,
+            null, // TODO: Support { item1, item2 } syntax later
+            ast.SourceLocation.fromToken(import_token),
+        );
+
+        return ast.Stmt{ .ImportDecl = decl };
     }
 
     /// Parse a let/const declaration

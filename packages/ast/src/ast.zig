@@ -46,6 +46,7 @@ pub const NodeType = enum {
     MacroExpr,
 
     // Statements
+    ImportDecl,
     LetDecl,
     ConstDecl,
     FnDecl,
@@ -728,6 +729,7 @@ pub const Expr = union(NodeType) {
     ComptimeExpr: *ComptimeExpr,
     ReflectExpr: *ReflectExpr,
     MacroExpr: *MacroExpr,
+    ImportDecl: void,
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
@@ -786,6 +788,26 @@ pub const Parameter = struct {
     name: []const u8,
     type_name: []const u8,
     loc: SourceLocation,
+};
+
+/// Import declaration
+/// Represents an import statement like: import basics/os/serial
+pub const ImportDecl = struct {
+    node: Node,
+    /// Module path segments (e.g., ["basics", "os", "serial"])
+    path: []const []const u8,
+    /// Optional import list (e.g., { Serial, init })
+    imports: ?[]const []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, path: []const []const u8, imports: ?[]const []const u8, loc: SourceLocation) !*ImportDecl {
+        const decl = try allocator.create(ImportDecl);
+        decl.* = .{
+            .node = .{ .type = .ImportDecl, .loc = loc },
+            .path = path,
+            .imports = imports,
+        };
+        return decl;
+    }
 };
 
 /// Let declaration
@@ -1135,6 +1157,7 @@ pub const Stmt = union(NodeType) {
     MacroExpr: void,
 
     // Statement variants (order must match NodeType enum)
+    ImportDecl: *ImportDecl,
     LetDecl: *LetDecl,
     ConstDecl: void,
     FnDecl: *FnDecl,
@@ -1321,6 +1344,11 @@ pub const Program = struct {
 
     pub fn deinitStmt(stmt: Stmt, allocator: std.mem.Allocator) void {
         switch (stmt) {
+            .ImportDecl => |decl| {
+                allocator.free(decl.path);
+                if (decl.imports) |imports| allocator.free(imports);
+                allocator.destroy(decl);
+            },
             .LetDecl => |decl| {
                 if (decl.value) |val| deinitExpr(val, allocator);
                 allocator.destroy(decl);
