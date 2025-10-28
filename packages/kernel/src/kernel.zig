@@ -47,6 +47,12 @@ pub const serial = @import("serial.zig");
 /// VGA text mode driver
 pub const vga = @import("vga.zig");
 
+/// Multiboot2 bootloader interface
+pub const multiboot2 = @import("multiboot2.zig");
+
+/// Boot entry point and initialization
+pub const boot = @import("boot.zig");
+
 // ============================================================================
 // Device Drivers and Hardware
 // ============================================================================
