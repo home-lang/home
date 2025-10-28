@@ -1,0 +1,16 @@
+[package]
+name = "threading"
+version = "0.1.0"
+description = "Complete threading and synchronization library for Home OS"
+authors = ["Home Team"]
+license = "MIT"
+
+[dependencies]
+basics = { path = "../basics" }
+kernel = { path = "../kernel" }
+
+[features]
+priority_inheritance = true
+cpu_affinity = true
+realtime = true
+debugging = true
