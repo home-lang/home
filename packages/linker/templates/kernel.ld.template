@@ -1,0 +1,61 @@
+/* Simple Kernel Linker Script Template
+ * For kernels loaded at 1MB (0x00100000)
+ * Identity-mapped, no higher-half
+ */
+
+OUTPUT_FORMAT("elf64-x86-64")
+OUTPUT_ARCH(i386:x86-64)
+ENTRY(_start)
+
+MEMORY
+{
+  kernel (rwx) : ORIGIN = 0x0000000000100000, LENGTH = 0x40000000
+}
+
+SECTIONS
+{
+  /* Executable code */
+  .text 0x0000000000100000 : ALIGN(4096)
+  {
+    *(.multiboot*)
+    *(.text .text.*)
+  } > kernel
+
+  /* Read-only data */
+  .rodata : ALIGN(4096)
+  {
+    *(.rodata .rodata.*)
+  } > kernel
+
+  /* Initialized data */
+  .data : ALIGN(4096)
+  {
+    *(.data .data.*)
+  } > kernel
+
+  /* Uninitialized data */
+  .bss : ALIGN(4096)
+  {
+    *(.bss .bss.*)
+    *(COMMON)
+  } > kernel
+
+  /* Symbols */
+  PROVIDE(__kernel_start = ADDR(.text));
+  PROVIDE(__kernel_end = ADDR(.bss) + SIZEOF(.bss));
+  PROVIDE(__text_start = ADDR(.text));
+  PROVIDE(__text_end = ADDR(.text) + SIZEOF(.text));
+  PROVIDE(__rodata_start = ADDR(.rodata));
+  PROVIDE(__rodata_end = ADDR(.rodata) + SIZEOF(.rodata));
+  PROVIDE(__data_start = ADDR(.data));
+  PROVIDE(__data_end = ADDR(.data) + SIZEOF(.data));
+  PROVIDE(__bss_start = ADDR(.bss));
+  PROVIDE(__bss_end = ADDR(.bss) + SIZEOF(.bss));
+}
+
+/DISCARD/ :
+{
+  *(.comment)
+  *(.note*)
+  *(.eh_frame)
+}
