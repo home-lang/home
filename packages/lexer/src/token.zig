@@ -58,6 +58,7 @@ pub const TokenType = enum {
     PipePipe, // ||
     PipeGreater, // |>
     Caret, // ^
+    Tilde, // ~
     LeftShift, // <<
     RightShift, // >>
 
@@ -164,6 +165,7 @@ pub const TokenType = enum {
             .PipePipe => "||",
             .PipeGreater => "|>",
             .Caret => "^",
+            .Tilde => "~",
             .LeftShift => "<<",
             .RightShift => ">>",
             .Identifier => "identifier",

@@ -359,6 +359,12 @@ pub const UnaryOp = enum {
     Neg,
     /// Logical NOT: `!x` (boolean negation)
     Not,
+    /// Bitwise NOT: `~x` (bitwise complement)
+    BitNot,
+    /// Dereference: `*ptr` (load value from pointer)
+    Deref,
+    /// Address-of: `&var` (get address of variable)
+    AddressOf,
 };
 
 /// Unary expression applying an operator to a single operand.
@@ -687,6 +693,11 @@ pub const ReflectExpr = struct {
         TypeInfo, // @typeInfo(Type) - returns type metadata
         FieldName, // @fieldName(Type, index) - returns field name
         FieldType, // @fieldType(Type, "field") - returns field type
+        IntFromPtr, // @intFromPtr(ptr) - convert pointer to integer
+        PtrFromInt, // @ptrFromInt(int) - convert integer to pointer
+        Truncate, // @truncate(value) - truncate to smaller type
+        As, // @as(Type, value) - explicit type cast
+        BitCast, // @bitCast(value) - reinterpret bits as different type
     };
 
     pub fn init(

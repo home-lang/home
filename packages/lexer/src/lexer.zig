@@ -405,6 +405,7 @@ pub const Lexer = struct {
             else
                 self.makeToken(.Pipe),
             '^' => self.makeToken(.Caret),
+            '~' => self.makeToken(.Tilde),
             else => self.makeToken(.Invalid),
         };
     }

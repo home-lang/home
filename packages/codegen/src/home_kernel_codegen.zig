@@ -157,6 +157,18 @@ pub const HomeKernelCodegen = struct {
                 try writer.print("    jmp .L_while_start_{d}\n", .{label_num});
                 try writer.print(".L_while_end_{d}:\n", .{label_num});
             },
+            .ReturnStmt => |return_stmt| {
+                // Generate return statement
+                // If there's a return value, evaluate it (result goes in %rax)
+                if (return_stmt.value) |value| {
+                    try self.generateExpr(writer, value);
+                }
+
+                // Restore stack frame and return
+                try writer.writeAll("    movq %rbp, %rsp\n");
+                try writer.writeAll("    popq %rbp\n");
+                try writer.writeAll("    ret\n");
+            },
             else => {
                 // Unsupported statement type - skip for now
             },
@@ -215,11 +227,24 @@ pub const HomeKernelCodegen = struct {
                         // Evaluate arguments (System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9)
                         const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
 
-                        for (call.args, 0..) |arg, i| {
-                            if (i < arg_regs.len) {
-                                try self.generateExpr(writer, arg);
-                                if (i > 0) {
-                                    try writer.print("    movq %rax, %{s}\n", .{arg_regs[i]});
+                        // To handle multiple arguments correctly, we need to save previous args
+                        // Strategy: evaluate in reverse order and push to stack, then pop into registers
+                        if (call.args.len > 0) {
+                            // Evaluate all arguments and push them to stack in reverse order
+                            var i: usize = call.args.len;
+                            while (i > 0) {
+                                i -= 1;
+                                try self.generateExpr(writer, call.args[i]);
+                                try writer.writeAll("    pushq %rax\n");
+                            }
+
+                            // Pop arguments into registers in correct order
+                            for (0..call.args.len) |reg_idx| {
+                                if (reg_idx < arg_regs.len) {
+                                    try writer.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                                } else {
+                                    // Arguments beyond 6 stay on stack for the call
+                                    break;
                                 }
                             }
                         }

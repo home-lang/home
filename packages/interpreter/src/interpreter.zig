@@ -615,6 +615,14 @@ pub const Interpreter = struct {
                 else => error.TypeMismatch,
             },
             .Not => Value{ .Bool = !operand.isTrue() },
+            .BitNot => switch (operand) {
+                .Int => |i| Value{ .Int = ~i },
+                else => error.TypeMismatch,
+            },
+            .Deref, .AddressOf => {
+                std.debug.print("Pointer operations not yet implemented\n", .{});
+                return error.RuntimeError;
+            },
         };
     }
 

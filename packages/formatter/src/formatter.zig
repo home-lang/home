@@ -247,6 +247,9 @@ pub const Formatter = struct {
         const op_str = switch (op) {
             .Neg => "-",
             .Not => "!",
+            .BitNot => "~",
+            .Deref => "*",
+            .AddressOf => "&",
         };
         try self.output.appendSlice(self.allocator, op_str);
     }

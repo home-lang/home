@@ -1992,6 +1992,11 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "typeInfo")) break :blk .TypeInfo;
                 if (std.mem.eql(u8, name, "fieldName")) break :blk .FieldName;
                 if (std.mem.eql(u8, name, "fieldType")) break :blk .FieldType;
+                if (std.mem.eql(u8, name, "intFromPtr")) break :blk .IntFromPtr;
+                if (std.mem.eql(u8, name, "ptrFromInt")) break :blk .PtrFromInt;
+                if (std.mem.eql(u8, name, "truncate")) break :blk .Truncate;
+                if (std.mem.eql(u8, name, "as")) break :blk .As;
+                if (std.mem.eql(u8, name, "bitCast")) break :blk .BitCast;
 
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
@@ -2175,9 +2180,14 @@ pub const Parser = struct {
         }
 
         // Unary expressions
-        if (self.match(&.{ .Bang, .Minus })) {
+        if (self.match(&.{ .Bang, .Minus, .Tilde })) {
             const op_token = self.previous();
-            const op: ast.UnaryOp = if (op_token.type == .Bang) .Not else .Neg;
+            const op: ast.UnaryOp = switch (op_token.type) {
+                .Bang => .Not,
+                .Minus => .Neg,
+                .Tilde => .BitNot,
+                else => unreachable,
+            };
             const operand = try self.parsePrecedence(.Unary);
 
             const unary_expr = try ast.UnaryExpr.init(
