@@ -5,7 +5,9 @@ const Token = lexer_mod.Token;
 const Parser = @import("parser").Parser;
 const ast = @import("ast");
 const Interpreter = @import("interpreter").Interpreter;
-const NativeCodegen = @import("codegen").NativeCodegen;
+const codegen_mod = @import("codegen");
+const NativeCodegen = codegen_mod.NativeCodegen;
+const HomeKernelCodegen = codegen_mod.HomeKernelCodegen;
 const TypeChecker = @import("types").TypeChecker;
 const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
@@ -489,7 +491,7 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n{s}Success:{s} Program completed\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
-fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8) !void {
+fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8, kernel_mode: bool) !void {
     // Read the file
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
@@ -500,11 +502,15 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
-    std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    if (kernel_mode) {
+        std.debug.print("{s}Building kernel:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    } else {
+        std.debug.print("{s}Building:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    }
 
-    // Initialize IR cache if enabled
+    // Initialize IR cache if enabled (skip for kernel mode)
     var cache: ?IRCache = null;
-    if (build_options.enable_ir_cache) {
+    if (build_options.enable_ir_cache and !kernel_mode) {
         cache = try IRCache.init(allocator, ".home-cache");
         std.debug.print("{s}IR Cache:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
@@ -530,27 +536,62 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
-    // Determine output path
-    const out_path = output_path orelse blk: {
-        // Default: remove .home or .hm extension and use that as output name
-        if (std.mem.endsWith(u8, file_path, ".home")) {
-            break :blk file_path[0 .. file_path.len - 5];
-        } else if (std.mem.endsWith(u8, file_path, ".hm")) {
-            break :blk file_path[0 .. file_path.len - 3];
-        }
-        break :blk "a.out";
-    };
+    if (kernel_mode) {
+        // Kernel mode: generate assembly
+        var out_path_owned: ?[]const u8 = null;
+        defer if (out_path_owned) |p| allocator.free(p);
 
-    // Generate native machine code
-    var codegen = NativeCodegen.init(allocator, program);
-    defer codegen.deinit();
+        const out_path = if (output_path) |p|
+            p
+        else if (std.mem.endsWith(u8, file_path, ".home"))
+            blk: {
+                out_path_owned = try std.fmt.allocPrint(allocator, "{s}.s", .{file_path[0 .. file_path.len - 5]});
+                break :blk out_path_owned.?;
+            }
+        else
+            "kernel.s";
 
-    std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+        std.debug.print("{s}Generating kernel assembly...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
-    try codegen.writeExecutable(out_path);
+        var codegen = HomeKernelCodegen.init(
+            allocator,
+            &parser.symbol_table,
+            &parser.module_resolver,
+        );
+        defer codegen.deinit();
 
-    std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
-    std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+        const asm_code = try codegen.generate(program);
+
+        // Write assembly to file
+        try std.fs.cwd().writeFile(.{
+            .sub_path = out_path,
+            .data = asm_code,
+        });
+
+        std.debug.print("\n{s}Success:{s} Generated kernel assembly: {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
+        std.debug.print("{s}Info:{s} Assemble with: as -o {s}.o {s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path[0 .. out_path.len - 2], out_path });
+    } else {
+        // Normal mode: generate executable
+        const out_path = output_path orelse blk: {
+            // Default: remove .home or .hm extension and use that as output name
+            if (std.mem.endsWith(u8, file_path, ".home")) {
+                break :blk file_path[0 .. file_path.len - 5];
+            } else if (std.mem.endsWith(u8, file_path, ".hm")) {
+                break :blk file_path[0 .. file_path.len - 3];
+            }
+            break :blk "a.out";
+        };
+
+        std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+
+        var codegen = NativeCodegen.init(allocator, program);
+        defer codegen.deinit();
+
+        try codegen.writeExecutable(out_path);
+
+        std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
+        std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+    }
 }
 
 fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
@@ -864,12 +905,21 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        const output_path = if (args.len >= 5 and std.mem.eql(u8, args[3], "-o"))
-            args[4]
-        else
-            null;
+        var output_path: ?[]const u8 = null;
+        var kernel_mode = false;
 
-        try buildCommand(allocator, args[2], output_path);
+        // Parse optional flags: --kernel, -o <output>
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--kernel")) {
+                kernel_mode = true;
+            } else if (std.mem.eql(u8, args[i], "-o") and i + 1 < args.len) {
+                output_path = args[i + 1];
+                i += 1;
+            }
+        }
+
+        try buildCommand(allocator, args[2], output_path, kernel_mode);
         return;
     }
 

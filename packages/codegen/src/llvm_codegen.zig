@@ -602,7 +602,7 @@ pub const OptimizationPasses = struct {
         simplifycfg, // Simplify control flow
         dce, // Dead code elimination
         dse, // Dead store elimination
-        inline, // Function inlining
+        inlining, // Function inlining
         gvn, // Global value numbering
         sccp, // Sparse conditional constant propagation
 

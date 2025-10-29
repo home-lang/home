@@ -44,6 +44,7 @@ pub const NodeType = enum {
     ComptimeExpr,
     ReflectExpr,
     MacroExpr,
+    InlineAsm,
 
     // Statements
     ImportDecl,
@@ -245,6 +246,34 @@ pub const Identifier = struct {
         return .{
             .node = .{ .type = .Identifier, .loc = loc },
             .name = name,
+        };
+    }
+};
+
+/// Inline assembly expression.
+///
+/// Represents raw assembly code that should be emitted directly into
+/// the generated output. Used for low-level operations like CPU instructions,
+/// I/O port access, and other hardware-specific operations in kernel code.
+///
+/// Example: `asm("cli")`, `asm("hlt")`, `asm("outb %al, %dx")`
+pub const InlineAsm = struct {
+    /// Base node metadata
+    node: Node,
+    /// The assembly instruction string (without quotes)
+    instruction: []const u8,
+
+    /// Create a new inline assembly node.
+    ///
+    /// Parameters:
+    ///   - instruction: The assembly instruction string (must remain valid)
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized InlineAsm
+    pub fn init(instruction: []const u8, loc: SourceLocation) InlineAsm {
+        return .{
+            .node = .{ .type = .InlineAsm, .loc = loc },
+            .instruction = instruction,
         };
     }
 };
@@ -729,6 +758,7 @@ pub const Expr = union(NodeType) {
     ComptimeExpr: *ComptimeExpr,
     ReflectExpr: *ReflectExpr,
     MacroExpr: *MacroExpr,
+    InlineAsm: InlineAsm,
     ImportDecl: void,
     LetDecl: void,
     ConstDecl: void,
@@ -1155,6 +1185,7 @@ pub const Stmt = union(NodeType) {
     ComptimeExpr: void,
     ReflectExpr: void,
     MacroExpr: void,
+    InlineAsm: void,
 
     // Statement variants (order must match NodeType enum)
     ImportDecl: *ImportDecl,

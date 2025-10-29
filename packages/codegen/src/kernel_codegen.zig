@@ -378,8 +378,8 @@ pub const CodegenContext = struct {
         }
 
         // Alignment
-        if (attrs.alignment) |align| {
-            try writer.print(".align {d}\n", .{align});
+        if (attrs.alignment) |alignment_val| {
+            try writer.print(".align {d}\n", .{alignment_val});
         }
 
         // Function declaration

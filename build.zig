@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
     const diagnostics_pkg = createPackage(b, "packages/diagnostics/src/diagnostics.zig", target, optimize);
     const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize);
     const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize);
-    const codegen_pkg = createPackage(b, "packages/codegen/src/native_codegen.zig", target, optimize);
+    const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize);
     const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize);
     const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize);
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
@@ -61,6 +61,7 @@ pub fn build(b: *std.Build) void {
     types_pkg.addImport("diagnostics", diagnostics_pkg);
     interpreter_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("ast", ast_pkg);
+    codegen_pkg.addImport("parser", parser_pkg);
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);

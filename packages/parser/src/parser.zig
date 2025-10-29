@@ -6,9 +6,10 @@ const ast = @import("ast");
 const diagnostics = @import("diagnostics");
 const errors = diagnostics.errors;
 const module_resolver = @import("module_resolver.zig");
-const ModuleResolver = module_resolver.ModuleResolver;
+pub const ModuleResolver = module_resolver.ModuleResolver;
 const symbol_table = @import("symbol_table.zig");
-const SymbolTable = symbol_table.SymbolTable;
+pub const SymbolTable = symbol_table.SymbolTable;
+pub const Symbol = symbol_table.Symbol;
 
 /// Error set for parsing operations.
 ///
@@ -882,6 +883,7 @@ pub const Parser = struct {
         if (self.match(&.{.Return})) return self.returnStatement();
         if (self.match(&.{.If})) return self.ifStatement();
         if (self.match(&.{.While})) return self.whileStatement();
+        if (self.match(&.{.Loop})) return self.loopStatement();
         if (self.match(&.{.Do})) return self.doWhileStatement();
         if (self.match(&.{.For})) return self.forStatement();
         if (self.match(&.{.Switch})) return self.switchStatement();
@@ -953,6 +955,29 @@ pub const Parser = struct {
             condition,
             body,
             ast.SourceLocation.fromToken(while_token),
+        );
+
+        return ast.Stmt{ .WhileStmt = stmt };
+    }
+
+    /// Parse a loop statement (infinite loop, desugared to while(true))
+    fn loopStatement(self: *Parser) !ast.Stmt {
+        const loop_token = self.previous();
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        // Create a true boolean literal as the condition
+        const true_lit = try self.allocator.create(ast.Expr);
+        true_lit.* = ast.Expr{
+            .BooleanLiteral = ast.BooleanLiteral.init(true, ast.SourceLocation.fromToken(loop_token)),
+        };
+
+        const stmt = try ast.WhileStmt.init(
+            self.allocator,
+            true_lit,
+            body,
+            ast.SourceLocation.fromToken(loop_token),
         );
 
         return ast.Stmt{ .WhileStmt = stmt };
@@ -1909,6 +1934,21 @@ pub const Parser = struct {
 
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
+        // Inline assembly
+        if (self.match(&.{.Asm})) {
+            const asm_token = self.previous();
+            _ = try self.expect(.LeftParen, "Expected '(' after 'asm'");
+            const str_token = try self.expect(.String, "Expected string literal for assembly instruction");
+            _ = try self.expect(.RightParen, "Expected ')' after assembly instruction");
+
+            // Remove quotes from string literal
+            const instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init(instruction, ast.SourceLocation.fromToken(asm_token)) };
+            return expr;
+        }
+
         // Await expression
         if (self.match(&.{.Await})) {
             const await_token = self.previous();

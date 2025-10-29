@@ -69,6 +69,7 @@ pub const TokenType = enum {
 
     // Keywords
     And,
+    Asm,
     Async,
     Await,
     Break,
@@ -170,6 +171,7 @@ pub const TokenType = enum {
             .Integer => "integer",
             .Float => "float",
             .And => "and",
+            .Asm => "asm",
             .Async => "async",
             .Await => "await",
             .Break => "break",
@@ -285,6 +287,7 @@ pub const Token = struct {
 /// (async, await, match, comptime).
 pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "and", .And },
+    .{ "asm", .Asm },
     .{ "async", .Async },
     .{ "await", .Await },
     .{ "break", .Break },
