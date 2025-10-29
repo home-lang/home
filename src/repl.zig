@@ -212,7 +212,10 @@ pub const Repl = struct {
         defer tokens.deinit(self.allocator);
 
         // Parse
-        var parser = Parser.init(self.allocator, tokens.items);
+        var parser = Parser.init(self.allocator, tokens.items) catch |err| {
+            std.debug.print("{s}Parser initialization error:{s} {}\n\n", .{ Color.Red.code(), Color.Reset.code(), err });
+            return;
+        };
         const program = parser.parse() catch |err| {
             std.debug.print("{s}Parser error:{s} {}\n\n", .{ Color.Red.code(), Color.Reset.code(), err });
             return;

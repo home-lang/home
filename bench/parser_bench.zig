@@ -15,7 +15,7 @@ fn benchmark(comptime name: []const u8, source: []const u8, iterations: usize, a
         var tokens = try lexer.tokenize();
         defer tokens.deinit(allocator);
 
-        var parser = Parser.init(allocator, tokens.items);
+        var parser = try Parser.init(allocator, tokens.items);
         const program = try parser.parse();
         defer program.deinit(allocator);
     }

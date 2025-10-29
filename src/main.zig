@@ -319,7 +319,7 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const tokens = try lexer.tokenize();
 
     // Parse (AST allocated in arena)
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Print header
@@ -360,7 +360,7 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Type check
@@ -425,7 +425,7 @@ fn fmtCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Format
@@ -467,7 +467,7 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Interpret
@@ -527,7 +527,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Determine output path
@@ -585,7 +585,7 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse
     const start_parse = std.time.milliTimestamp();
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
     const parse_time = std.time.milliTimestamp() - start_parse;
 
@@ -643,7 +643,7 @@ fn testCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const tokens = try lexer.tokenize();
 
     // Parse
-    var parser = Parser.init(arena_allocator, tokens.items);
+    var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
     // Check for parse errors

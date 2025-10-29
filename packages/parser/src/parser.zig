@@ -5,6 +5,8 @@ const TokenType = lexer_mod.TokenType;
 const ast = @import("ast");
 const diagnostics = @import("diagnostics");
 const errors = diagnostics.errors;
+const module_resolver = @import("module_resolver.zig");
+const ModuleResolver = module_resolver.ModuleResolver;
 
 /// Error set for parsing operations.
 ///
@@ -148,6 +150,8 @@ pub const Parser = struct {
     error_formatter: errors.ErrorFormatter,
     /// Optional source filename for error reporting
     source_file: ?[]const u8,
+    /// Module resolver for handling imports
+    module_resolver: ModuleResolver,
 
     /// Maximum allowed recursion depth to prevent stack overflow
     const MAX_RECURSION_DEPTH: usize = 256;
@@ -163,7 +167,7 @@ pub const Parser = struct {
     ///   - tokens: Token slice from the lexer (must include EOF token)
     ///
     /// Returns: Initialized Parser ready to parse tokens into AST
-    pub fn init(allocator: std.mem.Allocator, tokens: []const Token) Parser {
+    pub fn init(allocator: std.mem.Allocator, tokens: []const Token) !Parser {
         return .{
             .allocator = allocator,
             .tokens = tokens,
@@ -173,6 +177,7 @@ pub const Parser = struct {
             .recursion_depth = 0,
             .error_formatter = errors.ErrorFormatter.init(allocator),
             .source_file = null,
+            .module_resolver = try ModuleResolver.init(allocator),
         };
     }
 
@@ -186,6 +191,7 @@ pub const Parser = struct {
             self.allocator.free(err_info.message);
         }
         self.errors.deinit(self.allocator);
+        self.module_resolver.deinit();
     }
 
     /// Check if we've reached the end of the token stream.
@@ -705,7 +711,9 @@ pub const Parser = struct {
     }
 
     /// Parse an import declaration
-    /// Syntax: import basics/os/serial
+    /// Syntax:
+    ///   import basics/os/serial              (import everything)
+    ///   import basics/os/serial { init, COM1 }  (selective import)
     fn importDeclaration(self: *Parser) !ast.Stmt {
         const import_token = self.previous();
 
@@ -725,10 +733,75 @@ pub const Parser = struct {
 
         const path = try path_segments.toOwnedSlice(self.allocator);
 
+        // Resolve the module using the module resolver
+        const resolved_module = self.module_resolver.resolve(path) catch |err| {
+            const path_str = try self.pathToString(path);
+            defer self.allocator.free(path_str);
+
+            const err_msg = switch (err) {
+                error.ModuleNotFound => try std.fmt.allocPrint(
+                    self.allocator,
+                    "Module '{s}' not found",
+                    .{path_str},
+                ),
+                error.InvalidModulePath => try std.fmt.allocPrint(
+                    self.allocator,
+                    "Invalid module path '{s}'",
+                    .{path_str},
+                ),
+                error.CircularDependency => try std.fmt.allocPrint(
+                    self.allocator,
+                    "Circular dependency detected for module '{s}'",
+                    .{path_str},
+                ),
+                else => try std.fmt.allocPrint(
+                    self.allocator,
+                    "Failed to resolve module '{s}': {s}",
+                    .{ path_str, @errorName(err) },
+                ),
+            };
+            defer self.allocator.free(err_msg);
+            try self.reportError(err_msg);
+            return error.UnexpectedToken;  // Return a parse error
+        };
+
+        // Log successful resolution (for debugging)
+        // TODO: Remove or make conditional on debug flag
+        std.debug.print("[Parser] Resolved {s} -> {s} (is_zig: {any})\n", .{
+            try self.pathToString(path),
+            resolved_module.file_path,
+            resolved_module.is_zig,
+        });
+
+        // Parse optional selective import list: { item1, item2, ... }
+        var imports: ?[]const []const u8 = null;
+        if (self.match(&.{.LeftBrace})) {
+            var import_list = std.ArrayList([]const u8){};
+            defer import_list.deinit(self.allocator);
+
+            // Parse first import
+            if (!self.check(.RightBrace)) {
+                const first_import = try self.expect(.Identifier, "Expected identifier in import list");
+                try import_list.append(self.allocator, first_import.lexeme);
+
+                // Parse remaining imports
+                while (self.match(&.{.Comma})) {
+                    // Allow trailing comma
+                    if (self.check(.RightBrace)) break;
+
+                    const import_name = try self.expect(.Identifier, "Expected identifier after ','");
+                    try import_list.append(self.allocator, import_name.lexeme);
+                }
+            }
+
+            _ = try self.expect(.RightBrace, "Expected '}' after import list");
+            imports = try import_list.toOwnedSlice(self.allocator);
+        }
+
         const decl = try ast.ImportDecl.init(
             self.allocator,
             path,
-            null, // TODO: Support { item1, item2 } syntax later
+            imports,
             ast.SourceLocation.fromToken(import_token),
         );
 
@@ -2153,5 +2226,16 @@ pub const Parser = struct {
             .Equal => .Assign,
             else => std.debug.panic("Invalid binary operator token: {any}", .{token_type}),
         };
+    }
+
+    /// Convert path segments array to string representation
+    /// Example: ["basics", "os", "serial"] -> "basics/os/serial"
+    fn pathToString(self: *Parser, path: []const []const u8) ![]const u8 {
+        var buf = std.ArrayList(u8){};
+        for (path, 0..) |segment, i| {
+            if (i > 0) try buf.append(self.allocator, '/');
+            try buf.appendSlice(self.allocator, segment);
+        }
+        return buf.toOwnedSlice(self.allocator);
     }
 };
