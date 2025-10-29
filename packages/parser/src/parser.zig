@@ -7,6 +7,8 @@ const diagnostics = @import("diagnostics");
 const errors = diagnostics.errors;
 const module_resolver = @import("module_resolver.zig");
 const ModuleResolver = module_resolver.ModuleResolver;
+const symbol_table = @import("symbol_table.zig");
+const SymbolTable = symbol_table.SymbolTable;
 
 /// Error set for parsing operations.
 ///
@@ -30,6 +32,10 @@ pub const ParseError = error{
     InvalidFloat,
     /// Unknown reflection operation in @comptime expression
     UnknownReflection,
+    /// Module not found during import resolution
+    ModuleNotFound,
+    /// Symbol not found in imported module
+    SymbolNotFound,
 };
 
 /// Operator precedence levels for expression parsing.
@@ -152,6 +158,8 @@ pub const Parser = struct {
     source_file: ?[]const u8,
     /// Module resolver for handling imports
     module_resolver: ModuleResolver,
+    /// Symbol table for tracking imported modules and symbols
+    symbol_table: SymbolTable,
 
     /// Maximum allowed recursion depth to prevent stack overflow
     const MAX_RECURSION_DEPTH: usize = 256;
@@ -178,6 +186,7 @@ pub const Parser = struct {
             .error_formatter = errors.ErrorFormatter.init(allocator),
             .source_file = null,
             .module_resolver = try ModuleResolver.init(allocator),
+            .symbol_table = SymbolTable.init(allocator),
         };
     }
 
@@ -192,6 +201,7 @@ pub const Parser = struct {
         }
         self.errors.deinit(self.allocator);
         self.module_resolver.deinit();
+        self.symbol_table.deinit();
     }
 
     /// Check if we've reached the end of the token stream.
@@ -773,6 +783,17 @@ pub const Parser = struct {
             resolved_module.is_zig,
         });
 
+        // Register the module in the symbol table
+        const module_path_str = try self.pathToString(path);
+        defer self.allocator.free(module_path_str);
+
+        try self.symbol_table.registerModule(path, resolved_module.is_zig, null);
+
+        // If it's a Zig module, populate its known symbols
+        if (resolved_module.is_zig) {
+            try self.symbol_table.populateZigModuleSymbols(module_path_str);
+        }
+
         // Parse optional selective import list: { item1, item2, ... }
         var imports: ?[]const []const u8 = null;
         if (self.match(&.{.LeftBrace})) {
@@ -795,6 +816,23 @@ pub const Parser = struct {
             }
 
             _ = try self.expect(.RightBrace, "Expected '}' after import list");
+
+            // Register selective imports in the symbol table BEFORE transferring ownership
+            const module_path_str_for_selective = try self.pathToString(path);
+            defer self.allocator.free(module_path_str_for_selective);
+
+            for (import_list.items) |symbol_name| {
+                self.symbol_table.registerSelectiveImport(module_path_str_for_selective, symbol_name) catch |err| {
+                    const err_msg = try std.fmt.allocPrint(
+                        self.allocator,
+                        "Symbol '{s}' not found in module '{s}': {s}",
+                        .{ symbol_name, module_path_str_for_selective, @errorName(err) },
+                    );
+                    defer self.allocator.free(err_msg);
+                    try self.reportError(err_msg);
+                };
+            }
+
             imports = try import_list.toOwnedSlice(self.allocator);
         }
 
