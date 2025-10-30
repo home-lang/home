@@ -1,19 +1,19 @@
 const std = @import("std");
-const zyte = @import("zyte");
+const craft = @import("craft");
 const http_router = @import("http_router");
 
-/// Example 1: Basic Zyte window
+/// Example 1: Basic craft window
 pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== Example 1: Basic Zyte Window ===\n\n", .{});
+    std.debug.print("\n=== Example 1: Basic craft Window ===\n\n", .{});
 
-    var config = zyte.ZyteConfig.init(allocator);
-    _ = config.setTitle("My First Home + Zyte App");
+    var config = craft.craftConfig.init(allocator);
+    _ = config.setTitle("My First Home + craft App");
     _ = config.setSize(1024, 768);
     _ = config.setHtml(
         \\<!DOCTYPE html>
         \\<html>
         \\<head>
-        \\    <title>Home + Zyte</title>
+        \\    <title>Home + craft</title>
         \\    <style>
         \\        body {
         \\            font-family: system-ui;
@@ -36,14 +36,14 @@ pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
         \\</head>
         \\<body>
         \\    <div class="container">
-        \\        <h1>Hello from Home + Zyte! 🚀</h1>
+        \\        <h1>Hello from Home + craft! 🚀</h1>
         \\        <p>Cross-platform desktop app built with web technologies</p>
         \\    </div>
         \\</body>
         \\</html>
     );
 
-    var app = try zyte.ZyteApp.init(allocator, config);
+    var app = try craft.craftApp.init(allocator, config);
     defer app.deinit();
 
     try app.run();
@@ -53,7 +53,7 @@ pub fn basicWindowExample(allocator: std.mem.Allocator) !void {
 pub fn framelessWindowExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 2: Frameless Transparent Window ===\n\n", .{});
 
-    var config = zyte.ZyteConfig.init(allocator);
+    var config = craft.craftConfig.init(allocator);
     _ = config.setTitle("Frameless App");
     _ = config.setSize(400, 300);
     _ = config.setFrameless(true);
@@ -88,15 +88,15 @@ pub fn framelessWindowExample(allocator: std.mem.Allocator) !void {
         \\</html>
     );
 
-    var app = try zyte.ZyteApp.init(allocator, config);
+    var app = try craft.craftApp.init(allocator, config);
     defer app.deinit();
 
     try app.run();
 }
 
-/// Example 3: Home HTTP server + Zyte frontend
-pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== Example 3: HTTP Server + Zyte Frontend ===\n\n", .{});
+/// Example 3: Home HTTP server + craft frontend
+pub fn httpServerWithcraftExample(allocator: std.mem.Allocator) !void {
+    std.debug.print("\n=== Example 3: HTTP Server + craft Frontend ===\n\n", .{});
 
     // Setup HTTP server (would run in background thread)
     var server = http_router.HttpServer.init(allocator);
@@ -111,7 +111,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
                 \\<!DOCTYPE html>
                 \\<html>
                 \\<head>
-                \\    <title>Home + Zyte App</title>
+                \\    <title>Home + craft App</title>
                 \\    <style>
                 \\        body { font-family: system-ui; padding: 40px; }
                 \\        .button { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; }
@@ -125,7 +125,7 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
                 \\    </script>
                 \\</head>
                 \\<body>
-                \\    <h1>Home Backend + Zyte Frontend</h1>
+                \\    <h1>Home Backend + craft Frontend</h1>
                 \\    <button class="button" onclick="fetchData()">Fetch Data from Backend</button>
                 \\    <pre id="result"></pre>
                 \\</body>
@@ -143,33 +143,33 @@ pub fn httpServerWithZyteExample(allocator: std.mem.Allocator) !void {
     }.handler);
 
     std.debug.print("✅ HTTP server configured on port 8080\n", .{});
-    std.debug.print("✅ Zyte window will connect to http://localhost:8080\n", .{});
+    std.debug.print("✅ craft window will connect to http://localhost:8080\n", .{});
 
-    // Create Zyte window pointing to the server
-    var config = zyte.ZyteConfig.init(allocator);
-    _ = config.setTitle("Home + Zyte Full Stack");
+    // Create craft window pointing to the server
+    var config = craft.craftConfig.init(allocator);
+    _ = config.setTitle("Home + craft Full Stack");
     _ = config.setSize(1200, 800);
     _ = config.setUrl("http://localhost:8080");
     _ = config.setDevTools(true);
 
-    var app = try zyte.ZyteApp.init(allocator, config);
+    var app = try craft.craftApp.init(allocator, config);
     defer app.deinit();
 
     std.debug.print("\n", .{});
     try app.run();
 }
 
-/// Example 4: Using Zyte components
+/// Example 4: Using craft components
 pub fn componentsExample(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== Example 4: Zyte Components ===\n\n", .{});
+    std.debug.print("\n=== Example 4: craft Components ===\n\n", .{});
 
     // Create UI components
-    const button = zyte.Components.Button{
+    const button = craft.Components.Button{
         .label = "Click Me",
         .onClick = null,
     };
 
-    const input = zyte.Components.Input{
+    const input = craft.Components.Input{
         .placeholder = "Enter your name",
         .value = "",
     };
@@ -180,7 +180,7 @@ pub fn componentsExample(allocator: std.mem.Allocator) !void {
     const input_html = try input.toHtml(allocator);
     defer allocator.free(input_html);
 
-    const container = zyte.Components.Container{
+    const container = craft.Components.Container{
         .children = &[_][]const u8{ button_html, input_html },
     };
 
@@ -196,12 +196,12 @@ pub fn systemIntegrationExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 5: System Integration ===\n\n", .{});
 
     // System tray
-    var tray = zyte.SystemTray.init(allocator, "Home App");
+    var tray = craft.SystemTray.init(allocator, "Home App");
     _ = tray.setIcon("/path/to/icon.png");
     try tray.show();
 
     // Notification
-    const notification = zyte.Notification{
+    const notification = craft.Notification{
         .title = "Home App",
         .body = "Your task is complete!",
         .icon = null,
@@ -209,10 +209,10 @@ pub fn systemIntegrationExample(allocator: std.mem.Allocator) !void {
     try notification.show();
 
     // Dialog
-    try zyte.Dialog.alert("Welcome", "Welcome to Home + Zyte!");
+    try craft.Dialog.alert("Welcome", "Welcome to Home + craft!");
 
     // File picker
-    const file_path = try zyte.Dialog.openFile(allocator, &[_][]const u8{ ".txt", ".md" });
+    const file_path = try craft.Dialog.openFile(allocator, &[_][]const u8{ ".txt", ".md" });
     if (file_path) |path| {
         defer allocator.free(path);
         std.debug.print("Selected file: {s}\n", .{path});
@@ -223,7 +223,7 @@ pub fn systemIntegrationExample(allocator: std.mem.Allocator) !void {
 pub fn ipcExample(allocator: std.mem.Allocator) !void {
     std.debug.print("\n=== Example 6: IPC Communication ===\n\n", .{});
 
-    var config = zyte.ZyteConfig.init(allocator);
+    var config = craft.craftConfig.init(allocator);
     _ = config.setTitle("IPC Example");
     _ = config.setHtml(
         \\<!DOCTYPE html>
@@ -250,7 +250,7 @@ pub fn ipcExample(allocator: std.mem.Allocator) !void {
         \\</html>
     );
 
-    var app = try zyte.ZyteApp.init(allocator, config);
+    var app = try craft.craftApp.init(allocator, config);
     defer app.deinit();
 
     // Setup IPC handlers
@@ -349,7 +349,7 @@ pub fn todoAppExample(allocator: std.mem.Allocator) !void {
     std.debug.print("✅ Todo app backend ready on port 3000\n", .{});
 
     // Frontend
-    try zyte.quickStart(allocator, "Home Todo App", 3000);
+    try craft.quickStart(allocator, "Home Todo App", 3000);
 }
 
 pub fn main() !void {
@@ -358,22 +358,22 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     std.debug.print("\n╔════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Home + Zyte Integration Examples     ║\n", .{});
+    std.debug.print("║   Home + craft Integration Examples     ║\n", .{});
     std.debug.print("╚════════════════════════════════════════╝\n", .{});
 
     try basicWindowExample(allocator);
     try framelessWindowExample(allocator);
-    try httpServerWithZyteExample(allocator);
+    try httpServerWithcraftExample(allocator);
     try componentsExample(allocator);
     try systemIntegrationExample(allocator);
     try ipcExample(allocator);
     try todoAppExample(allocator);
 
-    std.debug.print("\n✅ All Zyte examples completed!\n", .{});
-    std.debug.print("\nTo use Zyte in production:\n", .{});
-    std.debug.print("1. Link against Zyte library: ~/Code/zyte\n", .{});
-    std.debug.print("2. @cImport Zyte headers\n", .{});
-    std.debug.print("3. Call Zyte's init() and window creation functions\n", .{});
+    std.debug.print("\n✅ All craft examples completed!\n", .{});
+    std.debug.print("\nTo use craft in production:\n", .{});
+    std.debug.print("1. Link against craft library: ~/Code/craft\n", .{});
+    std.debug.print("2. @cImport craft headers\n", .{});
+    std.debug.print("3. Call craft's init() and window creation functions\n", .{});
     std.debug.print("4. Build cross-platform: macOS, Linux, Windows, iOS, Android\n", .{});
     std.debug.print("\n", .{});
 }

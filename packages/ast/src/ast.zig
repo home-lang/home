@@ -31,6 +31,17 @@ pub const VariadicCall = variadic_nodes.VariadicCall;
 pub const VariadicInfo = variadic_nodes.VariadicInfo;
 pub const BuiltinVariadic = variadic_nodes.BuiltinVariadic;
 
+// Export parameter-related AST nodes
+pub const parameter_nodes = @import("parameter_nodes.zig");
+pub const EnhancedParameter = parameter_nodes.EnhancedParameter;
+pub const NamedArgument = parameter_nodes.NamedArgument;
+pub const EnhancedCallExpr = parameter_nodes.EnhancedCallExpr;
+pub const ParameterConfig = parameter_nodes.ParameterConfig;
+pub const ArgumentMatch = parameter_nodes.ArgumentMatch;
+pub const ArgumentResolver = parameter_nodes.ArgumentResolver;
+pub const ParameterValidator = parameter_nodes.ParameterValidator;
+pub const BuiltinDefaults = parameter_nodes.BuiltinDefaults;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an

@@ -1,0 +1,461 @@
+// Comprehensive Default and Named Parameters Examples in Home
+
+// ============================================================================
+// Example 1: Basic Default Parameters
+// ============================================================================
+
+fn greet(name: string = "World") -> void {
+    println("Hello, {}!", name)
+}
+
+fn create_user(
+    name: string,
+    age: i32 = 0,
+    active: bool = true
+) -> User {
+    User { name, age, active }
+}
+
+fn test_basic_defaults() -> void {
+    println("=== Basic Default Parameters ===")
+    
+    greet()           // Hello, World!
+    greet("Alice")    // Hello, Alice!
+    
+    let user1 = create_user("Bob")
+    println("User: {} (age: {}, active: {})", user1.name, user1.age, user1.active)
+    
+    let user2 = create_user("Charlie", 25)
+    println("User: {} (age: {}, active: {})", user2.name, user2.age, user2.active)
+    
+    let user3 = create_user("Dave", 30, false)
+    println("User: {} (age: {}, active: {})", user3.name, user3.age, user3.active)
+}
+
+// ============================================================================
+// Example 2: Named Arguments
+// ============================================================================
+
+fn create_rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+    Rect { x, y, width, height }
+}
+
+fn test_named_arguments() -> void {
+    println("\n=== Named Arguments ===")
+    
+    // Positional
+    let r1 = create_rect(10, 20, 100, 50)
+    println("Rect 1: ({}, {}) {}x{}", r1.x, r1.y, r1.width, r1.height)
+    
+    // Named
+    let r2 = create_rect(x: 10, y: 20, width: 100, height: 50)
+    println("Rect 2: ({}, {}) {}x{}", r2.x, r2.y, r2.width, r2.height)
+    
+    // Named in different order
+    let r3 = create_rect(width: 100, height: 50, x: 10, y: 20)
+    println("Rect 3: ({}, {}) {}x{}", r3.x, r3.y, r3.width, r3.height)
+    
+    // Mix positional and named
+    let r4 = create_rect(10, 20, width: 100, height: 50)
+    println("Rect 4: ({}, {}) {}x{}", r4.x, r4.y, r4.width, r4.height)
+}
+
+// ============================================================================
+// Example 3: Defaults with Named Arguments
+// ============================================================================
+
+fn draw_text(
+    text: string,
+    x: i32 = 0,
+    y: i32 = 0,
+    size: i32 = 12,
+    color: Color = Color::Black,
+    bold: bool = false,
+    italic: bool = false
+) -> void {
+    println("Drawing '{}' at ({}, {}) size:{} color:{:?} bold:{} italic:{}",
+            text, x, y, size, color, bold, italic)
+}
+
+fn test_defaults_with_named() -> void {
+    println("\n=== Defaults with Named Arguments ===")
+    
+    // All defaults
+    draw_text("Hello")
+    
+    // Some positional
+    draw_text("World", 100, 200)
+    
+    // Skip middle parameters with named args
+    draw_text("Title", x: 50, y: 10, size: 24, bold: true)
+    
+    // Only specific parameters
+    draw_text("Subtitle", size: 18, italic: true)
+}
+
+// ============================================================================
+// Example 4: Named-Only Parameters
+// ============================================================================
+
+fn connect(
+    host: string,
+    port: i32 = 8080,
+    *,  // Named-only separator
+    timeout: i32 = 30,
+    retries: i32 = 3,
+    ssl: bool = false
+) -> Connection {
+    Connection {
+        host,
+        port,
+        timeout,
+        retries,
+        ssl,
+    }
+}
+
+fn test_named_only() -> void {
+    println("\n=== Named-Only Parameters ===")
+    
+    let conn1 = connect("localhost")
+    println("Connection 1: {}:{} (timeout:{}, ssl:{})",
+            conn1.host, conn1.port, conn1.timeout, conn1.ssl)
+    
+    let conn2 = connect("example.com", 3000)
+    println("Connection 2: {}:{}", conn2.host, conn2.port)
+    
+    let conn3 = connect("secure.example.com", ssl: true, timeout: 60)
+    println("Connection 3: {}:{} (timeout:{}, ssl:{})",
+            conn3.host, conn3.port, conn3.timeout, conn3.ssl)
+    
+    let conn4 = connect("api.example.com", 443, timeout: 120, retries: 5, ssl: true)
+    println("Connection 4: {}:{} (timeout:{}, retries:{}, ssl:{})",
+            conn4.host, conn4.port, conn4.timeout, conn4.retries, conn4.ssl)
+}
+
+// ============================================================================
+// Example 5: Configuration Functions
+// ============================================================================
+
+fn start_server(
+    *,
+    port: i32 = 8080,
+    workers: i32 = 4,
+    max_connections: i32 = 1000,
+    timeout: i32 = 30,
+    debug: bool = false
+) -> Server {
+    println("Starting server:")
+    println("  Port: {}", port)
+    println("  Workers: {}", workers)
+    println("  Max connections: {}", max_connections)
+    println("  Timeout: {}s", timeout)
+    println("  Debug: {}", debug)
+    
+    Server {
+        port,
+        workers,
+        max_connections,
+        timeout,
+        debug,
+    }
+}
+
+fn test_configuration() -> void {
+    println("\n=== Configuration Functions ===")
+    
+    println("Default server:")
+    let server1 = start_server()
+    
+    println("\nDevelopment server:")
+    let server2 = start_server(port: 3000, debug: true)
+    
+    println("\nProduction server:")
+    let server3 = start_server(
+        port: 80,
+        workers: 8,
+        max_connections: 5000,
+        timeout: 60
+    )
+}
+
+// ============================================================================
+// Example 6: Boolean Flags with Named Args
+// ============================================================================
+
+fn copy_file(
+    source: string,
+    dest: string,
+    *,
+    overwrite: bool = false,
+    preserve_metadata: bool = true,
+    follow_symlinks: bool = false,
+    verbose: bool = false
+) -> Result<()> {
+    if verbose {
+        println("Copying {} to {}", source, dest)
+        println("  Overwrite: {}", overwrite)
+        println("  Preserve metadata: {}", preserve_metadata)
+        println("  Follow symlinks: {}", follow_symlinks)
+    }
+    
+    // Actual copy logic...
+    Ok(())
+}
+
+fn test_boolean_flags() -> void {
+    println("\n=== Boolean Flags with Named Args ===")
+    
+    // Clear what each flag does
+    copy_file(
+        "source.txt",
+        "dest.txt",
+        overwrite: true,
+        verbose: true
+    )
+    
+    copy_file(
+        "data.json",
+        "backup.json",
+        preserve_metadata: false,
+        follow_symlinks: true,
+        verbose: true
+    )
+}
+
+// ============================================================================
+// Example 7: HTTP Request Function
+// ============================================================================
+
+fn http_get(
+    url: string,
+    *,
+    timeout: i32 = 30,
+    headers: HashMap<string, string> = HashMap::new(),
+    follow_redirects: bool = true,
+    verify_ssl: bool = true
+) -> Result<Response> {
+    println("GET {}", url)
+    println("  Timeout: {}s", timeout)
+    println("  Headers: {} custom headers", headers.len())
+    println("  Follow redirects: {}", follow_redirects)
+    println("  Verify SSL: {}", verify_ssl)
+    
+    // Actual HTTP request...
+    Ok(Response::new())
+}
+
+fn test_http_requests() -> void {
+    println("\n=== HTTP Request Function ===")
+    
+    // Simple request
+    let response1 = http_get("https://api.example.com/users")
+    
+    // With custom timeout
+    let response2 = http_get(
+        "https://slow-api.example.com/data",
+        timeout: 120
+    )
+    
+    // With custom headers
+    let mut headers = HashMap::new()
+    headers.insert("Authorization", "Bearer token123")
+    headers.insert("Accept", "application/json")
+    
+    let response3 = http_get(
+        "https://api.example.com/private",
+        headers: headers,
+        timeout: 60
+    )
+}
+
+// ============================================================================
+// Example 8: Database Query
+// ============================================================================
+
+fn query<T>(
+    sql: string,
+    *,
+    params: Vec<any> = vec![],
+    timeout: i32 = 30,
+    readonly: bool = false,
+    cache: bool = false
+) -> Result<Vec<T>> {
+    println("Query: {}", sql)
+    println("  Params: {:?}", params)
+    println("  Timeout: {}s", timeout)
+    println("  Readonly: {}", readonly)
+    println("  Cache: {}", cache)
+    
+    // Actual query execution...
+    Ok(vec![])
+}
+
+fn test_database_queries() -> void {
+    println("\n=== Database Queries ===")
+    
+    // Simple query
+    let users1 = query::<User>("SELECT * FROM users")
+    
+    // With parameters
+    let users2 = query::<User>(
+        "SELECT * FROM users WHERE age > ?",
+        params: vec![18]
+    )
+    
+    // Read-only with caching
+    let count = query::<i32>(
+        "SELECT COUNT(*) FROM users",
+        readonly: true,
+        cache: true
+    )
+}
+
+// ============================================================================
+// Example 9: Range Function
+// ============================================================================
+
+fn range(start: i32 = 0, end: i32, step: i32 = 1) -> Range {
+    Range { start, end, step }
+}
+
+fn test_range_function() -> void {
+    println("\n=== Range Function ===")
+    
+    println("range(10):")
+    for i in range(10) {
+        print("{} ", i)
+    }
+    println("")
+    
+    println("range(5, 15):")
+    for i in range(5, 15) {
+        print("{} ", i)
+    }
+    println("")
+    
+    println("range(0, 20, 2):")
+    for i in range(0, 20, 2) {
+        print("{} ", i)
+    }
+    println("")
+    
+    println("range(end: 10, step: 2):")
+    for i in range(end: 10, step: 2) {
+        print("{} ", i)
+    }
+    println("")
+}
+
+// ============================================================================
+// Example 10: Window Creation
+// ============================================================================
+
+fn create_window(
+    title: string,
+    width: i32 = 800,
+    height: i32 = 600,
+    *,
+    resizable: bool = true,
+    fullscreen: bool = false,
+    vsync: bool = true,
+    msaa: i32 = 4
+) -> Window {
+    println("Creating window: '{}'", title)
+    println("  Size: {}x{}", width, height)
+    println("  Resizable: {}", resizable)
+    println("  Fullscreen: {}", fullscreen)
+    println("  VSync: {}", vsync)
+    println("  MSAA: {}x", msaa)
+    
+    Window {
+        title,
+        width,
+        height,
+        resizable,
+        fullscreen,
+        vsync,
+        msaa,
+    }
+}
+
+fn test_window_creation() -> void {
+    println("\n=== Window Creation ===")
+    
+    // Default window
+    let win1 = create_window("My App")
+    
+    // Custom size
+    let win2 = create_window("Game", 1920, 1080)
+    
+    // Fullscreen with specific settings
+    let win3 = create_window(
+        "Fullscreen Game",
+        fullscreen: true,
+        vsync: false,
+        msaa: 8
+    )
+    
+    // Custom size with named parameters
+    let win4 = create_window(
+        "Editor",
+        width: 1280,
+        height: 720,
+        resizable: false
+    )
+}
+
+// ============================================================================
+// Example 11: Logging Function
+// ============================================================================
+
+fn log(
+    message: string,
+    *,
+    level: LogLevel = LogLevel::Info,
+    timestamp: bool = true,
+    color: bool = true,
+    file: string = "app.log"
+) -> void {
+    let prefix = match level {
+        LogLevel::Debug => "[DEBUG]",
+        LogLevel::Info => "[INFO]",
+        LogLevel::Warn => "[WARN]",
+        LogLevel::Error => "[ERROR]",
+    }
+    
+    if timestamp {
+        print("[{}] ", current_time())
+    }
+    
+    println("{} {} (log: {})", prefix, message, file)
+}
+
+fn test_logging() -> void {
+    println("\n=== Logging Function ===")
+    
+    log("Application started")
+    log("Debug information", level: LogLevel::Debug, color: false)
+    log("Warning message", level: LogLevel::Warn)
+    log("Error occurred", level: LogLevel::Error, file: "errors.log")
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_basic_defaults()
+    test_named_arguments()
+    test_defaults_with_named()
+    test_named_only()
+    test_configuration()
+    test_boolean_flags()
+    test_http_requests()
+    test_database_queries()
+    test_range_function()
+    test_window_creation()
+    test_logging()
+    
+    println("\n=== All default and named parameter examples completed! ===")
+}
