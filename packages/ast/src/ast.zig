@@ -23,6 +23,14 @@ pub const ClosureTrait = closure_nodes.ClosureTrait;
 pub const ClosureEnvironment = closure_nodes.ClosureEnvironment;
 pub const ClosureAnalysis = closure_nodes.ClosureAnalysis;
 
+// Export variadic-related AST nodes
+pub const variadic_nodes = @import("variadic_nodes.zig");
+pub const VariadicParam = variadic_nodes.VariadicParam;
+pub const SpreadArg = variadic_nodes.SpreadArg;
+pub const VariadicCall = variadic_nodes.VariadicCall;
+pub const VariadicInfo = variadic_nodes.VariadicInfo;
+pub const BuiltinVariadic = variadic_nodes.BuiltinVariadic;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -1371,8 +1379,9 @@ pub const FnDecl = struct {
     return_type: ?[]const u8,
     body: *BlockStmt,
     is_async: bool,
-    type_params: []const []const u8, // Generic type parameters e.g. ["T", "U"]
-    is_test: bool = false, // Whether this function is marked with @test
+    type_params: []const []const u8,
+    is_test: bool = false,
+    variadic_param: ?VariadicParam = null,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);

@@ -1,0 +1,475 @@
+// Comprehensive Variadic Functions Examples in Home
+
+// ============================================================================
+// Example 1: Basic Variadic Functions
+// ============================================================================
+
+fn sum(...numbers: i32) -> i32 {
+    let mut total = 0
+    for num in numbers {
+        total += num
+    }
+    total
+}
+
+fn test_basic_variadic() -> void {
+    println("=== Basic Variadic Functions ===")
+    
+    println("sum(1, 2, 3) = {}", sum(1, 2, 3))
+    println("sum(10, 20, 30, 40) = {}", sum(10, 20, 30, 40))
+    println("sum() = {}", sum())
+    println("sum(42) = {}", sum(42))
+}
+
+// ============================================================================
+// Example 2: Mixed Parameters
+// ============================================================================
+
+fn greet(greeting: string, ...names: string) -> void {
+    for name in names {
+        println("{}, {}!", greeting, name)
+    }
+}
+
+fn multiply_all(factor: i32, ...numbers: i32) -> Vec<i32> {
+    let mut results = vec![]
+    for num in numbers {
+        results.push(factor * num)
+    }
+    results
+}
+
+fn test_mixed_parameters() -> void {
+    println("\n=== Mixed Parameters ===")
+    
+    greet("Hello", "Alice", "Bob", "Charlie")
+    
+    let doubled = multiply_all(2, 1, 2, 3, 4, 5)
+    println("Doubled: {:?}", doubled)
+    
+    let tripled = multiply_all(3, 10, 20, 30)
+    println("Tripled: {:?}", tripled)
+}
+
+// ============================================================================
+// Example 3: Generic Variadic Functions
+// ============================================================================
+
+fn first_of<T>(...items: T) -> Option<T> 
+where 
+    T: Clone
+{
+    if items.len() > 0 {
+        Some(items[0].clone())
+    } else {
+        None
+    }
+}
+
+fn max<T>(...values: T) -> T
+where
+    T: Ord + Clone
+{
+    assert!(values.len() > 0, "max requires at least one value")
+    
+    let mut maximum = values[0].clone()
+    for value in values[1..] {
+        if value > maximum {
+            maximum = value.clone()
+        }
+    }
+    maximum
+}
+
+fn min<T>(...values: T) -> T
+where
+    T: Ord + Clone
+{
+    assert!(values.len() > 0, "min requires at least one value")
+    
+    let mut minimum = values[0].clone()
+    for value in values[1..] {
+        if value < minimum {
+            minimum = value.clone()
+        }
+    }
+    minimum
+}
+
+fn test_generic_variadic() -> void {
+    println("\n=== Generic Variadic Functions ===")
+    
+    let first_num = first_of(1, 2, 3, 4, 5)
+    println("First number: {:?}", first_num)
+    
+    let first_str = first_of("apple", "banana", "cherry")
+    println("First string: {:?}", first_str)
+    
+    let maximum = max(5, 2, 9, 1, 7)
+    println("Maximum: {}", maximum)
+    
+    let minimum = min(5, 2, 9, 1, 7)
+    println("Minimum: {}", minimum)
+}
+
+// ============================================================================
+// Example 4: Spread Operator
+// ============================================================================
+
+fn test_spread_operator() -> void {
+    println("\n=== Spread Operator ===")
+    
+    let numbers1 = vec![1, 2, 3]
+    let numbers2 = vec![4, 5, 6]
+    
+    // Spread in function calls
+    let total1 = sum(...numbers1)
+    println("sum(...numbers1) = {}", total1)
+    
+    let total2 = sum(...numbers1, ...numbers2)
+    println("sum(...numbers1, ...numbers2) = {}", total2)
+    
+    let total3 = sum(0, ...numbers1, 10, ...numbers2, 20)
+    println("sum(0, ...numbers1, 10, ...numbers2, 20) = {}", total3)
+    
+    // Spread in array literals
+    let combined = [...numbers1, ...numbers2]
+    println("Combined: {:?}", combined)
+    
+    let extended = [0, ...numbers1, 10, ...numbers2, 20]
+    println("Extended: {:?}", extended)
+}
+
+// ============================================================================
+// Example 5: Variadic with Display Trait
+// ============================================================================
+
+fn print_all<T>(...items: T) -> void
+where
+    T: Display
+{
+    for (i, item) in items.iter().enumerate() {
+        println("  [{}]: {}", i, item)
+    }
+}
+
+fn join<T>(...items: T) -> string
+where
+    T: Display
+{
+    items.iter()
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn test_variadic_display() -> void {
+    println("\n=== Variadic with Display ===")
+    
+    println("Numbers:")
+    print_all(1, 2, 3, 4, 5)
+    
+    println("\nStrings:")
+    print_all("apple", "banana", "cherry")
+    
+    let joined = join("one", "two", "three")
+    println("\nJoined: {}", joined)
+}
+
+// ============================================================================
+// Example 6: Logging Utility
+// ============================================================================
+
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+fn log(level: LogLevel, ...messages: any) -> void {
+    let prefix = match level {
+        LogLevel::Debug => "[DEBUG]",
+        LogLevel::Info => "[INFO]",
+        LogLevel::Warn => "[WARN]",
+        LogLevel::Error => "[ERROR]",
+    }
+    
+    print("{} ", prefix)
+    for (i, msg) in messages.iter().enumerate() {
+        if i > 0 {
+            print(" ")
+        }
+        print("{:?}", msg)
+    }
+    println("")
+}
+
+fn test_logging() -> void {
+    println("\n=== Logging Utility ===")
+    
+    log(LogLevel::Info, "Application started")
+    log(LogLevel::Debug, "Processing", 10, "items")
+    log(LogLevel::Warn, "Memory usage:", 85, "%")
+    log(LogLevel::Error, "Connection failed:", "timeout")
+}
+
+// ============================================================================
+// Example 7: Mathematical Operations
+// ============================================================================
+
+fn average(...numbers: f64) -> f64 {
+    if numbers.len() == 0 {
+        return 0.0
+    }
+    numbers.iter().sum::<f64>() / numbers.len() as f64
+}
+
+fn product(...numbers: f64) -> f64 {
+    if numbers.len() == 0 {
+        return 1.0
+    }
+    numbers.iter().product()
+}
+
+fn range(...numbers: f64) -> f64 {
+    if numbers.len() == 0 {
+        return 0.0
+    }
+    let min_val = numbers.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap()
+    let max_val = numbers.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap()
+    max_val - min_val
+}
+
+fn test_math_operations() -> void {
+    println("\n=== Mathematical Operations ===")
+    
+    let avg = average(1.0, 2.0, 3.0, 4.0, 5.0)
+    println("Average: {}", avg)
+    
+    let prod = product(2.0, 3.0, 4.0)
+    println("Product: {}", prod)
+    
+    let rng = range(5.0, 2.0, 9.0, 1.0, 7.0)
+    println("Range: {}", rng)
+}
+
+// ============================================================================
+// Example 8: String Operations
+// ============================================================================
+
+fn concat(...strings: string) -> string {
+    strings.join("")
+}
+
+fn concat_with_separator(separator: string, ...strings: string) -> string {
+    strings.join(separator)
+}
+
+fn longest(...strings: string) -> string {
+    if strings.len() == 0 {
+        return ""
+    }
+    
+    let mut longest = strings[0]
+    for s in strings[1..] {
+        if s.len() > longest.len() {
+            longest = s
+        }
+    }
+    longest
+}
+
+fn test_string_operations() -> void {
+    println("\n=== String Operations ===")
+    
+    let combined = concat("Hello", " ", "World", "!")
+    println("Concatenated: {}", combined)
+    
+    let joined = concat_with_separator(", ", "apple", "banana", "cherry")
+    println("Joined: {}", joined)
+    
+    let long = longest("hi", "hello", "hey", "greetings")
+    println("Longest: {}", long)
+}
+
+// ============================================================================
+// Example 9: Collection Operations
+// ============================================================================
+
+fn merge<T>(...arrays: Vec<T>) -> Vec<T>
+where
+    T: Clone
+{
+    let mut result = vec![]
+    for arr in arrays {
+        result.extend(arr.clone())
+    }
+    result
+}
+
+fn flatten<T>(...items: T) -> Vec<T>
+where
+    T: Clone
+{
+    items.to_vec()
+}
+
+fn unique<T>(...items: T) -> Vec<T>
+where
+    T: Clone + Eq + std::hash::Hash
+{
+    let mut seen = HashSet::new()
+    let mut result = vec![]
+    
+    for item in items {
+        if seen.insert(item.clone()) {
+            result.push(item.clone())
+        }
+    }
+    
+    result
+}
+
+fn test_collection_operations() -> void {
+    println("\n=== Collection Operations ===")
+    
+    let arr1 = vec![1, 2, 3]
+    let arr2 = vec![4, 5, 6]
+    let arr3 = vec![7, 8, 9]
+    
+    let merged = merge(arr1, arr2, arr3)
+    println("Merged: {:?}", merged)
+    
+    let flat = flatten(1, 2, 3, 4, 5)
+    println("Flattened: {:?}", flat)
+    
+    let uniq = unique(1, 2, 2, 3, 3, 3, 4, 4, 4, 4)
+    println("Unique: {:?}", uniq)
+}
+
+// ============================================================================
+// Example 10: Assertion Utilities
+// ============================================================================
+
+fn assert_all_equal<T>(...values: T) -> void
+where
+    T: PartialEq + Debug
+{
+    if values.len() < 2 {
+        return
+    }
+    
+    let first = values[0]
+    for (i, value) in values[1..].iter().enumerate() {
+        if value != first {
+            panic!(
+                "Assertion failed: values[0] != values[{}]\n  left: {:?}\n right: {:?}",
+                i + 1, first, value
+            )
+        }
+    }
+}
+
+fn assert_all_true(...conditions: bool) -> void {
+    for (i, condition) in conditions.iter().enumerate() {
+        if !condition {
+            panic!("Assertion failed: condition[{}] is false", i)
+        }
+    }
+}
+
+fn test_assertions() -> void {
+    println("\n=== Assertion Utilities ===")
+    
+    assert_all_equal(5, 5, 5, 5)
+    println("All values equal: OK")
+    
+    assert_all_true(true, 1 == 1, 2 < 3, "hello".len() > 0)
+    println("All conditions true: OK")
+}
+
+// ============================================================================
+// Example 11: Builder Pattern with Variadic
+// ============================================================================
+
+struct QueryBuilder {
+    table: string,
+    columns: Vec<string>,
+    conditions: Vec<string>,
+}
+
+impl QueryBuilder {
+    fn new(table: string) -> QueryBuilder {
+        QueryBuilder {
+            table,
+            columns: vec![],
+            conditions: vec![],
+        }
+    }
+    
+    fn select(&mut self, ...columns: string) -> &mut QueryBuilder {
+        for col in columns {
+            self.columns.push(col.to_string())
+        }
+        self
+    }
+    
+    fn where_in(&mut self, field: string, ...values: i32) -> &mut QueryBuilder {
+        let vals = values.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+        
+        self.conditions.push(format!("{} IN ({})", field, vals))
+        self
+    }
+    
+    fn build(&self) -> string {
+        let cols = if self.columns.is_empty() {
+            "*".to_string()
+        } else {
+            self.columns.join(", ")
+        }
+        
+        let mut query = format!("SELECT {} FROM {}", cols, self.table)
+        
+        if !self.conditions.is_empty() {
+            query.push_str(" WHERE ")
+            query.push_str(&self.conditions.join(" AND "))
+        }
+        
+        query
+    }
+}
+
+fn test_builder_pattern() -> void {
+    println("\n=== Builder Pattern ===")
+    
+    let query = QueryBuilder::new("users")
+        .select("id", "name", "email")
+        .where_in("id", 1, 2, 3, 4, 5)
+        .build()
+    
+    println("Query: {}", query)
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_basic_variadic()
+    test_mixed_parameters()
+    test_generic_variadic()
+    test_spread_operator()
+    test_variadic_display()
+    test_logging()
+    test_math_operations()
+    test_string_operations()
+    test_collection_operations()
+    test_assertions()
+    test_builder_pattern()
+    
+    println("\n=== All variadic function examples completed! ===")
+}
