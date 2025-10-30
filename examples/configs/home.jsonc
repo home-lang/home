@@ -1,0 +1,59 @@
+{
+  // Home project configuration
+  "name": "my-home-app",
+  "version": "1.0.0",
+  "description": "My awesome Home application",
+
+  // Dependencies
+  "dependencies": {
+    "http": "^2.1.0",
+    "database": "~1.5.0"
+  },
+
+  // Scripts
+  "scripts": {
+    "dev": "home run src/main.home --watch",
+    "build": "home build --release",
+    "test": "home test",
+    "lint": "home lint src/",
+    "lint:fix": "home lint --fix src/",
+    "format": "home fmt src/"
+  },
+
+  // Linter configuration
+  "linter": {
+    "max_line_length": 100,
+    "indent_size": 4,
+    "use_spaces": true,
+    "trailing_comma": true,
+    "semicolons": false,
+    "quote_style": "double",
+    
+    "rules": {
+      // Code quality
+      "no-unused-vars": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "prefer-const": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "no-var": { "enabled": true, "severity": "error", "auto_fix": true },
+      "no-shadow": { "enabled": true, "severity": "warning", "auto_fix": false },
+      "explicit-function-return-type": { "enabled": true, "severity": "warning", "auto_fix": false },
+      "no-magic-numbers": { "enabled": false },
+      "prefer-template": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "no-empty": { "enabled": true, "severity": "warning", "auto_fix": false },
+      "no-unreachable": { "enabled": true, "severity": "error", "auto_fix": false },
+      "no-console": { "enabled": false },
+
+      // Style
+      "indent": { "enabled": true, "severity": "error", "auto_fix": true },
+      "max-line-length": { "enabled": true, "severity": "warning", "auto_fix": false },
+      "no-trailing-spaces": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "no-multiple-empty-lines": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "eol-last": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "no-mixed-spaces-and-tabs": { "enabled": true, "severity": "error", "auto_fix": true },
+      "quotes": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "semi": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "comma-dangle": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "brace-style": { "enabled": true, "severity": "warning", "auto_fix": true },
+      "camelcase": { "enabled": true, "severity": "warning", "auto_fix": false }
+    }
+  }
+}

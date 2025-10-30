@@ -19,6 +19,7 @@ const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
 const AllocationProfiler = profiler_mod.AllocationProfiler;
 const repl = @import("repl.zig");
+const lint_cmd = @import("lint_command.zig");
 
 const Color = enum {
     Reset,
@@ -54,6 +55,8 @@ fn printUsage() void {
         \\  parse <file>       Tokenize an Home file and display tokens
         \\  ast <file>         Parse an Home file and display the AST
         \\  check <file>       Type check an Home file (fast, no execution)
+        \\  lint <file>        Lint an Home file and show diagnostics
+        \\  lint --fix <file>  Lint and auto-fix issues in an Home file
         \\  fmt <file>         Format an Home file with consistent style
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
@@ -873,6 +876,17 @@ pub fn main() !void {
         }
 
         try checkCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "lint")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'lint' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try lint_cmd.lintCommand(allocator, args[2..]);
         return;
     }
 

@@ -14,6 +14,20 @@ pub const Formatter = struct {
         indent_size: usize = 4,
         use_spaces: bool = true,
         max_line_length: usize = 100,
+        trailing_comma: bool = true,
+        quote_style: QuoteStyle = .double,
+        semicolons: bool = false,
+        brace_style: BraceStyle = .same_line,
+    };
+
+    pub const QuoteStyle = enum {
+        single,
+        double,
+    };
+
+    pub const BraceStyle = enum {
+        same_line,
+        next_line,
     };
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Formatter {

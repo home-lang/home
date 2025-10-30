@@ -9,3 +9,5 @@ pantry/
 /packages/ffi/.zig-cache
 /packages/linker/.zig-cache
 /packages/variadic/.zig-cache
+packages/.DS_Store
+/packages/drivers/.zig-cache

@@ -28,3 +28,37 @@ run = "zig build run"
 
 # Development mode with watch
 dev = "zig build run -- run examples/hello.ion"
+
+[linter]
+max_line_length = 120
+indent_size = 4
+use_spaces = true
+trailing_comma = true
+semicolons = false
+quote_style = "double"
+
+[linter.rules]
+# Code quality rules
+no-unused-vars = { enabled = true, severity = "warning", auto_fix = true }
+no-console = { enabled = false }
+prefer-const = { enabled = true, severity = "warning", auto_fix = true }
+no-var = { enabled = true, severity = "error", auto_fix = true }
+no-shadow = { enabled = true, severity = "warning", auto_fix = false }
+explicit-function-return-type = { enabled = true, severity = "warning", auto_fix = false }
+no-magic-numbers = { enabled = false }
+prefer-template = { enabled = true, severity = "warning", auto_fix = true }
+no-empty = { enabled = true, severity = "warning", auto_fix = false }
+no-unreachable = { enabled = true, severity = "error", auto_fix = false }
+
+# Style rules
+indent = { enabled = true, severity = "error", auto_fix = true }
+max-line-length = { enabled = true, severity = "warning", auto_fix = false }
+no-trailing-spaces = { enabled = true, severity = "warning", auto_fix = true }
+no-multiple-empty-lines = { enabled = true, severity = "warning", auto_fix = true }
+eol-last = { enabled = true, severity = "warning", auto_fix = true }
+no-mixed-spaces-and-tabs = { enabled = true, severity = "error", auto_fix = true }
+quotes = { enabled = true, severity = "warning", auto_fix = true }
+semi = { enabled = true, severity = "warning", auto_fix = true }
+comma-dangle = { enabled = true, severity = "warning", auto_fix = true }
+brace-style = { enabled = true, severity = "warning", auto_fix = true }
+camelcase = { enabled = true, severity = "warning", auto_fix = false }
