@@ -65,6 +65,19 @@ pub const ComprehensionDesugarer = comprehension_nodes.ComprehensionDesugarer;
 pub const ComprehensionTypeInference = comprehension_nodes.ComprehensionTypeInference;
 pub const ComprehensionPattern = comprehension_nodes.ComprehensionPattern;
 
+// Export splat/spread nodes
+pub const splat_nodes = @import("splat_nodes.zig");
+pub const SplatExpr = splat_nodes.SplatExpr;
+pub const RestPattern = splat_nodes.RestPattern;
+pub const ArrayDestructuring = splat_nodes.ArrayDestructuring;
+pub const ObjectDestructuring = splat_nodes.ObjectDestructuring;
+pub const SplatParameter = splat_nodes.SplatParameter;
+pub const ArraySplat = splat_nodes.ArraySplat;
+pub const CallWithSplat = splat_nodes.CallWithSplat;
+pub const SplatValidator = splat_nodes.SplatValidator;
+pub const SplatDesugarer = splat_nodes.SplatDesugarer;
+pub const SplatPattern = splat_nodes.SplatPattern;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -118,6 +131,9 @@ pub const NodeType = enum {
     SetComprehension,
     NestedComprehension,
     GeneratorExpr,
+    SplatExpr,
+    ArrayDestructuring,
+    ObjectDestructuring,
 
     // Statements
     ImportDecl,

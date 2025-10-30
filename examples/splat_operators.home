@@ -1,0 +1,489 @@
+// Comprehensive Splat Operators Examples in Home
+
+// ============================================================================
+// Example 1: Array Spread
+// ============================================================================
+
+fn test_array_spread() -> void {
+    println("=== Array Spread ===")
+    
+    let arr1 = [1, 2, 3]
+    let arr2 = [4, 5, 6]
+    
+    // Combine arrays
+    let combined = [...arr1, ...arr2]
+    println("Combined: {:?}", combined)
+    
+    // Mix spread with literals
+    let extended = [0, ...arr1, 10, ...arr2, 20]
+    println("Extended: {:?}", extended)
+    
+    // Copy array
+    let copy = [...arr1]
+    println("Copy: {:?}", copy)
+    
+    // Prepend and append
+    let with_zero = [0, ...arr1]
+    let with_ten = [...arr1, 10]
+    println("With zero: {:?}", with_zero)
+    println("With ten: {:?}", with_ten)
+}
+
+// ============================================================================
+// Example 2: Object Spread
+// ============================================================================
+
+fn test_object_spread() -> void {
+    println("\n=== Object Spread ===")
+    
+    let defaults = {
+        host: "localhost",
+        port: 8080,
+        timeout: 30,
+    }
+    
+    let custom = {
+        port: 3000,
+        debug: true,
+    }
+    
+    // Merge objects
+    let config = { ...defaults, ...custom }
+    println("Config: {:?}", config)
+    
+    // Copy object
+    let copy = { ...defaults }
+    println("Copy: {:?}", copy)
+    
+    // Override specific fields
+    let updated = {
+        ...defaults,
+        port: 9000,
+        ssl: true,
+    }
+    println("Updated: {:?}", updated)
+}
+
+// ============================================================================
+// Example 3: Function Call Spread
+// ============================================================================
+
+fn add(a: i32, b: i32, c: i32) -> i32 {
+    a + b + c
+}
+
+fn sum(...numbers: i32) -> i32 {
+    let mut total = 0
+    for num in numbers {
+        total += num
+    }
+    total
+}
+
+fn test_function_call_spread() -> void {
+    println("\n=== Function Call Spread ===")
+    
+    let numbers = [1, 2, 3]
+    
+    // Spread as arguments
+    let result = add(...numbers)
+    println("add(...numbers) = {}", result)
+    
+    // Multiple spreads
+    let arr1 = [1, 2, 3]
+    let arr2 = [4, 5, 6]
+    let total = sum(...arr1, ...arr2, 7, 8, 9)
+    println("sum with multiple spreads = {}", total)
+    
+    // Mix regular and spread
+    let partial = [2, 3]
+    let result2 = add(1, ...partial)
+    println("add(1, ...partial) = {}", result2)
+}
+
+// ============================================================================
+// Example 4: Rest Parameters
+// ============================================================================
+
+fn greet(greeting: string, ...names: string) -> void {
+    for name in names {
+        println("{}, {}!", greeting, name)
+    }
+}
+
+fn multiply(factor: i32, ...numbers: i32) -> Vec<i32> {
+    let mut results = vec![]
+    for num in numbers {
+        results.push(factor * num)
+    }
+    results
+}
+
+fn test_rest_parameters() -> void {
+    println("\n=== Rest Parameters ===")
+    
+    greet("Hello", "Alice", "Bob", "Charlie")
+    
+    let doubled = multiply(2, 1, 2, 3, 4, 5)
+    println("Doubled: {:?}", doubled)
+    
+    let tripled = multiply(3, 10, 20, 30)
+    println("Tripled: {:?}", tripled)
+}
+
+// ============================================================================
+// Example 5: Array Destructuring with Rest
+// ============================================================================
+
+fn test_array_destructuring() -> void {
+    println("\n=== Array Destructuring with Rest ===")
+    
+    let numbers = [1, 2, 3, 4, 5]
+    
+    // Basic destructuring with rest
+    let [first, second, ...rest] = numbers
+    println("first: {}, second: {}, rest: {:?}", first, second, rest)
+    
+    // Only get first and rest
+    let [head, ...tail] = numbers
+    println("head: {}, tail: {:?}", head, tail)
+    
+    // Ignore elements
+    let [a, _, c, ...remaining] = numbers
+    println("a: {}, c: {}, remaining: {:?}", a, c, remaining)
+    
+    // Swapping values
+    let mut x = 10
+    let mut y = 20
+    [x, y] = [y, x]
+    println("After swap: x={}, y={}", x, y)
+}
+
+// ============================================================================
+// Example 6: Object Destructuring with Rest
+// ============================================================================
+
+fn test_object_destructuring() -> void {
+    println("\n=== Object Destructuring with Rest ===")
+    
+    let user = {
+        name: "Alice",
+        age: 30,
+        email: "alice@example.com",
+        active: true,
+        role: "admin",
+    }
+    
+    // Destructure with rest
+    let { name, age, ...rest } = user
+    println("name: {}, age: {}", name, age)
+    println("rest: {:?}", rest)
+    
+    // Rename fields
+    let config = {
+        host: "localhost",
+        port: 8080,
+        timeout: 30,
+    }
+    
+    let { host: server, port: serverPort, ...options } = config
+    println("server: {}, port: {}", server, serverPort)
+    println("options: {:?}", options)
+}
+
+// ============================================================================
+// Example 7: Merging Configurations
+// ============================================================================
+
+const DEFAULT_CONFIG: Config = {
+    host: "localhost",
+    port: 8080,
+    timeout: 30,
+    retries: 3,
+    debug: false,
+}
+
+fn create_server(custom_config: Config) -> Server {
+    let config = { ...DEFAULT_CONFIG, ...custom_config }
+    println("Server config: {:?}", config)
+    Server::new(config)
+}
+
+fn test_merging_configs() -> void {
+    println("\n=== Merging Configurations ===")
+    
+    let dev_config = {
+        port: 3000,
+        debug: true,
+    }
+    
+    let server = create_server(dev_config)
+    
+    let prod_config = {
+        host: "api.example.com",
+        port: 443,
+        timeout: 60,
+        retries: 5,
+    }
+    
+    let prod_server = create_server(prod_config)
+}
+
+// ============================================================================
+// Example 8: Removing Properties
+// ============================================================================
+
+fn sanitize_user(user: User) -> SafeUser {
+    let { password, secret_key, ...safe_user } = user
+    safe_user
+}
+
+fn test_removing_properties() -> void {
+    println("\n=== Removing Properties ===")
+    
+    let user = {
+        id: 1,
+        name: "Alice",
+        password: "secret123",
+        email: "alice@example.com",
+        secret_key: "xyz789",
+    }
+    
+    let safe = sanitize_user(user)
+    println("Safe user: {:?}", safe)
+    // Only contains: id, name, email
+}
+
+// ============================================================================
+// Example 9: Array Manipulation
+// ============================================================================
+
+fn test_array_manipulation() -> void {
+    println("\n=== Array Manipulation ===")
+    
+    let numbers = [1, 2, 3, 4, 5]
+    
+    // Insert at beginning
+    let with_zero = [0, ...numbers]
+    println("Prepend: {:?}", with_zero)
+    
+    // Insert at end
+    let with_six = [...numbers, 6]
+    println("Append: {:?}", with_six)
+    
+    // Insert in middle
+    let middle_idx = 2
+    let with_middle = [
+        ...numbers[..middle_idx],
+        99,
+        ...numbers[middle_idx..]
+    ]
+    println("Insert middle: {:?}", with_middle)
+    
+    // Remove first element
+    let [_, ...without_first] = numbers
+    println("Without first: {:?}", without_first)
+    
+    // Remove last element
+    let without_last = [...numbers[..numbers.len()-1]]
+    println("Without last: {:?}", without_last)
+}
+
+// ============================================================================
+// Example 10: Flattening Arrays
+// ============================================================================
+
+fn test_flattening() -> void {
+    println("\n=== Flattening Arrays ===")
+    
+    let matrix = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+    ]
+    
+    // Flatten using spread
+    let flat = [...matrix[0], ...matrix[1], ...matrix[2]]
+    println("Flattened: {:?}", flat)
+    
+    // Flatten with reduce
+    let flat2 = matrix.reduce(|acc, row| [...acc, ...row], [])
+    println("Flattened (reduce): {:?}", flat2)
+}
+
+// ============================================================================
+// Example 11: Function Composition
+// ============================================================================
+
+fn compose<T>(...functions: fn(T) -> T) -> fn(T) -> T {
+    return |x| {
+        let mut result = x
+        for func in functions {
+            result = func(result)
+        }
+        result
+    }
+}
+
+fn double(x: i32) -> i32 { x * 2 }
+fn add_ten(x: i32) -> i32 { x + 10 }
+fn square(x: i32) -> i32 { x * x }
+
+fn test_function_composition() -> void {
+    println("\n=== Function Composition ===")
+    
+    let pipeline = compose(double, add_ten, square)
+    let result = pipeline(5)
+    println("compose(double, add_ten, square)(5) = {}", result)
+    // (5 * 2) = 10, (10 + 10) = 20, (20 * 20) = 400
+}
+
+// ============================================================================
+// Example 12: Partial Application
+// ============================================================================
+
+fn partial<F, Args, Rest>(func: F, ...args: Args) -> fn(...Rest) -> Result {
+    return |...rest| func(...args, ...rest)
+}
+
+fn multiply_three(a: i32, b: i32, c: i32) -> i32 {
+    a * b * c
+}
+
+fn test_partial_application() -> void {
+    println("\n=== Partial Application ===")
+    
+    let multiply_by_2_and_3 = partial(multiply_three, 2, 3)
+    let result = multiply_by_2_and_3(4)
+    println("partial(multiply_three, 2, 3)(4) = {}", result)
+    // 2 * 3 * 4 = 24
+}
+
+// ============================================================================
+// Example 13: Collecting Middleware
+// ============================================================================
+
+type Handler = fn(Request) -> Response
+type Middleware = fn(Handler) -> Handler
+
+fn apply_middleware(handler: Handler, ...middleware: Middleware) -> Handler {
+    let mut wrapped = handler
+    for mw in middleware.iter().rev() {
+        wrapped = mw(wrapped)
+    }
+    wrapped
+}
+
+fn logging_middleware(next: Handler) -> Handler {
+    return |req| {
+        println("Request: {:?}", req)
+        let res = next(req)
+        println("Response: {:?}", res)
+        res
+    }
+}
+
+fn auth_middleware(next: Handler) -> Handler {
+    return |req| {
+        if !req.is_authenticated() {
+            return Response::unauthorized()
+        }
+        next(req)
+    }
+}
+
+fn test_middleware() -> void {
+    println("\n=== Middleware ===")
+    
+    let base_handler = |req| Response::ok("Hello")
+    
+    let handler = apply_middleware(
+        base_handler,
+        logging_middleware,
+        auth_middleware
+    )
+    
+    let response = handler(Request::new())
+    println("Final response: {:?}", response)
+}
+
+// ============================================================================
+// Example 14: Nested Destructuring
+// ============================================================================
+
+fn test_nested_destructuring() -> void {
+    println("\n=== Nested Destructuring ===")
+    
+    let person = {
+        name: "Alice",
+        age: 30,
+        address: {
+            street: "123 Main St",
+            city: "Portland",
+            zip: "97201",
+        },
+        contacts: {
+            email: "alice@example.com",
+            phone: "555-1234",
+        },
+    }
+    
+    // Nested destructuring with rest
+    let {
+        name,
+        address: { city, ...addressRest },
+        ...personRest
+    } = person
+    
+    println("name: {}", name)
+    println("city: {}", city)
+    println("addressRest: {:?}", addressRest)
+    println("personRest: {:?}", personRest)
+}
+
+// ============================================================================
+// Example 15: Conditional Spreading
+// ============================================================================
+
+fn test_conditional_spreading() -> void {
+    println("\n=== Conditional Spreading ===")
+    
+    let is_production = true
+    let base_config = { host: "localhost", port: 8080 }
+    
+    let config = {
+        ...base_config,
+        ...(if is_production {
+            { ssl: true, verify: true }
+        } else {
+            {}
+        }),
+        debug: !is_production,
+    }
+    
+    println("Config: {:?}", config)
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_array_spread()
+    test_object_spread()
+    test_function_call_spread()
+    test_rest_parameters()
+    test_array_destructuring()
+    test_object_destructuring()
+    test_merging_configs()
+    test_removing_properties()
+    test_array_manipulation()
+    test_flattening()
+    test_function_composition()
+    test_partial_application()
+    test_middleware()
+    test_nested_destructuring()
+    test_conditional_spreading()
+    
+    println("\n=== All splat operator examples completed! ===")
+}
