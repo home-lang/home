@@ -4,7 +4,6 @@ node_modules
 
 # Home package manager
 pantry/
-.freezer
 /packages/kernel/.zig-cache
 /packages/ffi/.zig-cache
 /packages/linker/.zig-cache
