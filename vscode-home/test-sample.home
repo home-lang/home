@@ -1,0 +1,170 @@
+// Home Language Sample File
+// This file demonstrates syntax highlighting
+
+import basics/os/serial
+
+// Struct definition
+struct Point {
+    x: i32,
+    y: i32
+}
+
+// Enum with variants
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+// Trait definition
+trait Drawable {
+    fn draw(&self) -> void
+    fn bounds(&self) -> (i32, i32)
+}
+
+// Trait implementation
+impl Drawable for Point {
+    fn draw(&self) -> void {
+        print("Drawing point at ({self.x}, {self.y})")
+    }
+
+    fn bounds(&self) -> (i32, i32) {
+        return (self.x, self.y)
+    }
+}
+
+// Generic function with where clause
+fn process<T>(item: T) -> Result<T, string>
+where
+    T: Clone + Debug
+{
+    try {
+        let cloned = item.clone()
+        return Ok(cloned)
+    } catch (e) {
+        return Err("Failed to process")
+    }
+}
+
+// Async function
+async fn fetch_data(url: string) -> Result<string, string> {
+    let response = await http.get(url)
+    if response.status == 200 {
+        return Ok(response.body)
+    } else {
+        return Err("Request failed")
+    }
+}
+
+// Closure examples
+fn main() {
+    // Variable declarations
+    let x = 10
+    let mut y = 20
+    const PI: f64 = 3.14159
+
+    // If-else statement
+    if x > 5 {
+        print("x is greater than 5")
+    } else {
+        print("x is less than or equal to 5")
+    }
+
+    // While loop
+    while y > 0 {
+        print("y = {y}")
+        y = y - 1
+    }
+
+    // For loop
+    let numbers = [1, 2, 3, 4, 5]
+    for num in numbers {
+        print("Number: {num}")
+    }
+
+    // Match expression
+    let result = match x {
+        0 => "zero",
+        1..10 => "small",
+        10..100 => "medium",
+        _ => "large"
+    }
+
+    // Array comprehension
+    let doubled = [n * 2 for n in numbers if n > 2]
+
+    // Closure
+    let add = |a, b| a + b
+    let sum = add(5, 3)
+
+    // Move closure
+    let data = "captured"
+    let consume = move || {
+        print("Consumed: {data}")
+    }
+    consume()
+
+    // Pipe operator
+    let transformed = numbers
+        |> filter(|n| n % 2 == 0)
+        |> map(|n| n * 2)
+        |> sum()
+
+    // Null coalescing
+    let maybe_value: Option<i32> = None
+    let value = maybe_value ?? 42
+
+    // Safe navigation
+    let nested = obj?.property?.method()
+
+    // Try operator
+    let result = risky_operation()?
+
+    // Defer block
+    defer {
+        print("Cleanup code")
+    }
+
+    // Unsafe block
+    unsafe {
+        // Unsafe operations
+        let ptr = &raw x
+    }
+
+    // Comptime evaluation
+    comptime {
+        // Compile-time code
+        const SIZE = @sizeOf(Point)
+    }
+
+    // Switch statement
+    switch x {
+        case 0, 1, 2: {
+            print("Small number")
+        },
+        case 10: {
+            print("Ten")
+        },
+        default: {
+            print("Other")
+        }
+    }
+}
+
+// Test function
+@test fn test_addition() {
+    let result = 2 + 2
+    assert(result == 4, "Addition should work")
+}
+
+@test fn test_point() {
+    let p = Point { x: 10, y: 20 }
+    assert(p.x == 10)
+    assert(p.y == 20)
+}
+
+// Inline assembly
+fn get_timestamp() -> u64 {
+    let result: u64
+    asm("rdtsc")
+    return result
+}

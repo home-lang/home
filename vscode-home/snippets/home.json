@@ -1,0 +1,327 @@
+{
+  "Function Declaration": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) -> ${3:void} {",
+      "\t${4:// body}",
+      "}"
+    ],
+    "description": "Create a function"
+  },
+  "Async Function": {
+    "prefix": "afn",
+    "body": [
+      "async fn ${1:name}(${2:params}) -> ${3:Result<T>} {",
+      "\t${4:// body}",
+      "}"
+    ],
+    "description": "Create an async function"
+  },
+  "Generic Function": {
+    "prefix": "gfn",
+    "body": [
+      "fn ${1:name}<${2:T}>(${3:param}: ${2:T}) -> ${4:T} {",
+      "\t${5:// body}",
+      "}"
+    ],
+    "description": "Create a generic function"
+  },
+  "Function with Where Clause": {
+    "prefix": "fnwhere",
+    "body": [
+      "fn ${1:name}<${2:T}>(${3:param}: ${2:T}) -> ${4:void}",
+      "where",
+      "\t${2:T}: ${5:Clone}",
+      "{",
+      "\t${6:// body}",
+      "}"
+    ],
+    "description": "Create a function with where clause"
+  },
+  "Test Function": {
+    "prefix": "test",
+    "body": [
+      "@test fn ${1:test_name}() {",
+      "\t${2:assert(true)}",
+      "}"
+    ],
+    "description": "Create a test function"
+  },
+  "Main Function": {
+    "prefix": "main",
+    "body": [
+      "fn main() {",
+      "\t${1:// entry point}",
+      "}"
+    ],
+    "description": "Create main entry point"
+  },
+  "Struct Definition": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:field}: ${3:type},",
+      "}"
+    ],
+    "description": "Create a struct"
+  },
+  "Enum Definition": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:Variant1},",
+      "\t${3:Variant2}(${4:type}),",
+      "}"
+    ],
+    "description": "Create an enum"
+  },
+  "Union Definition": {
+    "prefix": "union",
+    "body": [
+      "union ${1:Name} {",
+      "\t${2:Variant1}(${3:type}),",
+      "\t${4:Variant2}(${5:type}),",
+      "}"
+    ],
+    "description": "Create a union"
+  },
+  "Trait Definition": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "\tfn ${2:method}(&self) -> ${3:void}",
+      "}"
+    ],
+    "description": "Create a trait"
+  },
+  "Trait Implementation": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Trait} for ${2:Type} {",
+      "\tfn ${3:method}(&self) -> ${4:void} {",
+      "\t\t${5:// implementation}",
+      "\t}",
+      "}"
+    ],
+    "description": "Implement a trait"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "\t${2:// body}",
+      "}"
+    ],
+    "description": "Create an if statement"
+  },
+  "If-Else Statement": {
+    "prefix": "ife",
+    "body": [
+      "if ${1:condition} {",
+      "\t${2:// true branch}",
+      "} else {",
+      "\t${3:// false branch}",
+      "}"
+    ],
+    "description": "Create an if-else statement"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "\t${2:// body}",
+      "}"
+    ],
+    "description": "Create a while loop"
+  },
+  "For Loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:collection} {",
+      "\t${3:// body}",
+      "}"
+    ],
+    "description": "Create a for loop"
+  },
+  "Infinite Loop": {
+    "prefix": "loop",
+    "body": [
+      "loop {",
+      "\t${1:// body}",
+      "\t${2:break}",
+      "}"
+    ],
+    "description": "Create an infinite loop"
+  },
+  "Do-While Loop": {
+    "prefix": "do",
+    "body": [
+      "do {",
+      "\t${1:// body}",
+      "} while ${2:condition}"
+    ],
+    "description": "Create a do-while loop"
+  },
+  "Match Expression": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:Ok(v)} => ${3:v},",
+      "\t${4:Err(e)} => ${5:e},",
+      "}"
+    ],
+    "description": "Create a match expression"
+  },
+  "Switch Statement": {
+    "prefix": "switch",
+    "body": [
+      "switch ${1:value} {",
+      "\tcase ${2:pattern}: {",
+      "\t\t${3:// body}",
+      "\t},",
+      "\tdefault: {",
+      "\t\t${4:// default}",
+      "\t}",
+      "}"
+    ],
+    "description": "Create a switch statement"
+  },
+  "Try-Catch-Finally": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "\t${1:// risky code}",
+      "} catch (${2:error}) {",
+      "\t${3:// error handling}",
+      "} finally {",
+      "\t${4:// cleanup}",
+      "}"
+    ],
+    "description": "Create try-catch-finally block"
+  },
+  "Variable Declaration": {
+    "prefix": "let",
+    "body": "let ${1:name} = ${2:value}",
+    "description": "Declare a variable"
+  },
+  "Mutable Variable": {
+    "prefix": "letm",
+    "body": "let mut ${1:name} = ${2:value}",
+    "description": "Declare a mutable variable"
+  },
+  "Typed Variable": {
+    "prefix": "lett",
+    "body": "let ${1:name}: ${2:type} = ${3:value}",
+    "description": "Declare a typed variable"
+  },
+  "Constant Declaration": {
+    "prefix": "const",
+    "body": "const ${1:NAME} = ${2:value}",
+    "description": "Declare a constant"
+  },
+  "Import Statement": {
+    "prefix": "import",
+    "body": "import ${1:module}",
+    "description": "Import a module"
+  },
+  "Selective Import": {
+    "prefix": "imports",
+    "body": "import ${1:module} { ${2:items} }",
+    "description": "Import specific items from a module"
+  },
+  "Closure": {
+    "prefix": "closure",
+    "body": "|${1:params}| ${2:expression}",
+    "description": "Create a closure"
+  },
+  "Closure with Block": {
+    "prefix": "closureb",
+    "body": [
+      "|${1:params}| {",
+      "\t${2:// body}",
+      "}"
+    ],
+    "description": "Create a closure with block"
+  },
+  "Move Closure": {
+    "prefix": "move",
+    "body": [
+      "move |${1:params}| {",
+      "\t${2:// body}",
+      "}"
+    ],
+    "description": "Create a move closure"
+  },
+  "Array Comprehension": {
+    "prefix": "comp",
+    "body": "[${1:expression} for ${2:item} in ${3:collection}]",
+    "description": "Create an array comprehension"
+  },
+  "Filtered Comprehension": {
+    "prefix": "compf",
+    "body": "[${1:expression} for ${2:item} in ${3:collection} if ${4:condition}]",
+    "description": "Create a filtered array comprehension"
+  },
+  "Defer Statement": {
+    "prefix": "defer",
+    "body": [
+      "defer {",
+      "\t${1:// cleanup code}",
+      "}"
+    ],
+    "description": "Create a defer block"
+  },
+  "Unsafe Block": {
+    "prefix": "unsafe",
+    "body": [
+      "unsafe {",
+      "\t${1:// unsafe code}",
+      "}"
+    ],
+    "description": "Create an unsafe block"
+  },
+  "Inline Assembly": {
+    "prefix": "asm",
+    "body": "asm(\"${1:assembly code}\")",
+    "description": "Insert inline assembly"
+  },
+  "Comptime Block": {
+    "prefix": "comptime",
+    "body": [
+      "comptime {",
+      "\t${1:// compile-time code}",
+      "}"
+    ],
+    "description": "Create a comptime block"
+  },
+  "Result Type": {
+    "prefix": "result",
+    "body": "Result<${1:T}, ${2:E}>",
+    "description": "Create a Result type"
+  },
+  "Option Type": {
+    "prefix": "option",
+    "body": "Option<${1:T}>",
+    "description": "Create an Option type"
+  },
+  "Println": {
+    "prefix": "print",
+    "body": "print(\"${1:message}\")",
+    "description": "Print to console"
+  },
+  "Println with variable": {
+    "prefix": "printv",
+    "body": "print(\"${1:message}: {${2:var}}\")",
+    "description": "Print with variable interpolation"
+  },
+  "Assert": {
+    "prefix": "assert",
+    "body": "assert(${1:condition})",
+    "description": "Add an assertion"
+  },
+  "Assert with message": {
+    "prefix": "assertm",
+    "body": "assert(${1:condition}, \"${2:message}\")",
+    "description": "Add an assertion with message"
+  }
+}

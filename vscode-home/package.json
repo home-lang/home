@@ -1,0 +1,167 @@
+{
+  "name": "vscode-home",
+  "displayName": "Home Language Support",
+  "description": "Official VS Code extension for the Home programming language - The speed of Zig, the safety of Rust, the joy of TypeScript",
+  "version": "0.1.0",
+  "publisher": "home-lang",
+  "icon": "images/icon.png",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "license": "MIT",
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters",
+    "Snippets"
+  ],
+  "keywords": [
+    "home",
+    "homelang",
+    "zig",
+    "rust",
+    "typescript",
+    "systems programming"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/home-lang/home"
+  },
+  "activationEvents": [
+    "onLanguage:home"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "home",
+        "aliases": [
+          "Home",
+          "home"
+        ],
+        "extensions": [
+          ".home",
+          ".hm"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/icon.png",
+          "dark": "./images/icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "home",
+        "scopeName": "source.home",
+        "path": "./syntaxes/home.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "home",
+        "path": "./snippets/home.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Home Language",
+      "properties": {
+        "home.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Language Server Protocol support"
+        },
+        "home.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Home language server executable (leave empty to auto-detect)"
+        },
+        "home.lsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server"
+        },
+        "home.format.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically format files on save"
+        },
+        "home.build.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically build files on save"
+        },
+        "home.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inlay hints for type information"
+        },
+        "home.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable diagnostic messages"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "home.restartLanguageServer",
+        "title": "Home: Restart Language Server"
+      },
+      {
+        "command": "home.build",
+        "title": "Home: Build Current File"
+      },
+      {
+        "command": "home.run",
+        "title": "Home: Run Current File"
+      },
+      {
+        "command": "home.test",
+        "title": "Home: Run Tests"
+      },
+      {
+        "command": "home.format",
+        "title": "Home: Format Document"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "home",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The Home task to execute (build, run, test, check)"
+          },
+          "file": {
+            "type": "string",
+            "description": "The file to process"
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "bun run build.ts",
+    "watch": "bun run build.ts --watch",
+    "package": "@vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.70.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
