@@ -1,0 +1,416 @@
+// Comprehensive Array Comprehensions Examples in Home
+
+// ============================================================================
+// Example 1: Basic Array Comprehensions
+// ============================================================================
+
+fn test_basic_comprehensions() -> void {
+    println("=== Basic Array Comprehensions ===")
+    
+    let numbers = [1, 2, 3, 4, 5]
+    
+    // Identity comprehension
+    let copy = [x for x in numbers]
+    println("Copy: {:?}", copy)
+    
+    // Simple transformation
+    let doubled = [x * 2 for x in numbers]
+    println("Doubled: {:?}", doubled)
+    
+    // Squares
+    let squares = [x * x for x in numbers]
+    println("Squares: {:?}", squares)
+    
+    // Range-based
+    let range_squares = [x * x for x in 0..10]
+    println("Range squares: {:?}", range_squares)
+}
+
+// ============================================================================
+// Example 2: Filtering with if Clause
+// ============================================================================
+
+fn test_filtering() -> void {
+    println("\n=== Filtering ===")
+    
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    
+    // Filter even numbers
+    let evens = [x for x in numbers if x % 2 == 0]
+    println("Evens: {:?}", evens)
+    
+    // Filter odd numbers
+    let odds = [x for x in numbers if x % 2 != 0]
+    println("Odds: {:?}", odds)
+    
+    // Filter and transform
+    let even_squares = [x * x for x in numbers if x % 2 == 0]
+    println("Even squares: {:?}", even_squares)
+    
+    // Multiple conditions
+    let filtered = [x for x in numbers if x > 3 and x < 8]
+    println("Between 3 and 8: {:?}", filtered)
+}
+
+// ============================================================================
+// Example 3: String Transformations
+// ============================================================================
+
+fn test_string_transformations() -> void {
+    println("\n=== String Transformations ===")
+    
+    let names = ["alice", "bob", "charlie", "dave"]
+    
+    // Uppercase
+    let upper = [name.to_uppercase() for name in names]
+    println("Uppercase: {:?}", upper)
+    
+    // String formatting
+    let greetings = ["Hello, {}!".format(name) for name in names]
+    println("Greetings: {:?}", greetings)
+    
+    // Filter by length
+    let long_names = [name for name in names if name.len() > 3]
+    println("Long names: {:?}", long_names)
+    
+    // Get lengths
+    let lengths = [name.len() for name in names]
+    println("Lengths: {:?}", lengths)
+}
+
+// ============================================================================
+// Example 4: Nested Comprehensions
+// ============================================================================
+
+fn test_nested_comprehensions() -> void {
+    println("\n=== Nested Comprehensions ===")
+    
+    let matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    
+    // Flatten matrix
+    let flat = [x for row in matrix for x in row]
+    println("Flattened: {:?}", flat)
+    
+    // Flatten and filter
+    let filtered = [x for row in matrix for x in row if x % 2 == 0]
+    println("Even values: {:?}", filtered)
+    
+    // Flatten and transform
+    let doubled = [x * 2 for row in matrix for x in row]
+    println("Doubled: {:?}", doubled)
+    
+    // Cartesian product
+    let colors = ["red", "green", "blue"]
+    let sizes = ["S", "M", "L"]
+    let products = [
+        "{}-{}".format(color, size)
+        for color in colors
+        for size in sizes
+    ]
+    println("Products: {:?}", products)
+}
+
+// ============================================================================
+// Example 5: Dictionary Comprehensions
+// ============================================================================
+
+fn test_dict_comprehensions() -> void {
+    println("\n=== Dictionary Comprehensions ===")
+    
+    let numbers = [1, 2, 3, 4, 5]
+    
+    // Number to square mapping
+    let squares = {x: x * x for x in numbers}
+    println("Squares dict: {:?}", squares)
+    
+    // String to length mapping
+    let names = ["alice", "bob", "charlie"]
+    let lengths = {name: name.len() for name in names}
+    println("Name lengths: {:?}", lengths)
+    
+    // With filtering
+    let even_squares = {x: x * x for x in numbers if x % 2 == 0}
+    println("Even squares dict: {:?}", even_squares)
+    
+    // Transform keys and values
+    let data = [("a", 1), ("b", 2), ("c", 3)]
+    let transformed = {
+        k.to_uppercase(): v * 2
+        for (k, v) in data
+    }
+    println("Transformed: {:?}", transformed)
+}
+
+// ============================================================================
+// Example 6: Set Comprehensions
+// ============================================================================
+
+fn test_set_comprehensions() -> void {
+    println("\n=== Set Comprehensions ===")
+    
+    let numbers = [1, 2, 2, 3, 3, 3, 4, 4, 4, 4]
+    
+    // Unique values
+    let unique = {x for x in numbers}
+    println("Unique: {:?}", unique)
+    
+    // Unique squares
+    let unique_squares = {x * x for x in numbers}
+    println("Unique squares: {:?}", unique_squares)
+    
+    // Filter and unique
+    let words = ["apple", "banana", "apricot", "blueberry", "avocado"]
+    let first_letters = {
+        word[0]
+        for word in words
+        if word.starts_with("a")
+    }
+    println("First letters: {:?}", first_letters)
+}
+
+// ============================================================================
+// Example 7: Generator Expressions
+// ============================================================================
+
+fn test_generators() -> void {
+    println("\n=== Generator Expressions ===")
+    
+    // Generator (lazy evaluation)
+    let squares_gen = (x * x for x in 0..1000)
+    
+    // Take first 10
+    let first_10 = squares_gen.take(10).collect()
+    println("First 10 squares: {:?}", first_10)
+    
+    // Sum using generator
+    let sum = (x for x in 1..101).sum()
+    println("Sum 1-100: {}", sum)
+    
+    // Memory efficient filtering
+    let large_evens = (x for x in 0..1000000 if x % 2 == 0).take(5).collect()
+    println("First 5 large evens: {:?}", large_evens)
+}
+
+// ============================================================================
+// Example 8: Data Extraction
+// ============================================================================
+
+struct User {
+    name: string,
+    age: i32,
+    active: bool,
+}
+
+fn test_data_extraction() -> void {
+    println("\n=== Data Extraction ===")
+    
+    let users = vec![
+        User { name: "Alice", age: 30, active: true },
+        User { name: "Bob", age: 25, active: false },
+        User { name: "Charlie", age: 35, active: true },
+        User { name: "Dave", age: 28, active: true },
+    ]
+    
+    // Extract names
+    let names = [user.name for user in users]
+    println("Names: {:?}", names)
+    
+    // Extract ages of active users
+    let active_ages = [user.age for user in users if user.active]
+    println("Active ages: {:?}", active_ages)
+    
+    // Extract names of users over 30
+    let over_30 = [user.name for user in users if user.age > 30]
+    println("Over 30: {:?}", over_30)
+    
+    // Create name-age mapping
+    let age_map = {user.name: user.age for user in users}
+    println("Age map: {:?}", age_map)
+}
+
+// ============================================================================
+// Example 9: Mathematical Operations
+// ============================================================================
+
+fn test_mathematical_operations() -> void {
+    println("\n=== Mathematical Operations ===")
+    
+    // Fibonacci-like sequence
+    let fibs = [
+        if i <= 1 then i else prev[i-1] + prev[i-2]
+        for i in 0..10
+    ]
+    println("Fibonacci: {:?}", fibs)
+    
+    // Prime numbers (simple check)
+    let primes = [
+        x
+        for x in 2..50
+        if all([x % i != 0 for i in 2..x])
+    ]
+    println("Primes: {:?}", primes)
+    
+    // Multiplication table
+    let mult_table = [
+        [i * j for j in 1..11]
+        for i in 1..11
+    ]
+    println("Multiplication table (first row): {:?}", mult_table[0])
+}
+
+// ============================================================================
+// Example 10: String Processing
+// ============================================================================
+
+fn test_string_processing() -> void {
+    println("\n=== String Processing ===")
+    
+    let text = "Hello World"
+    
+    // Character codes
+    let codes = [c.to_code() for c in text]
+    println("Character codes: {:?}", codes)
+    
+    // Uppercase vowels
+    let processed = [
+        if c in "aeiouAEIOU" then c.to_uppercase() else c
+        for c in text
+    ]
+    println("Uppercase vowels: {}", processed.join(""))
+    
+    // Word lengths
+    let sentence = "The quick brown fox jumps"
+    let words = sentence.split(" ")
+    let word_lengths = [word.len() for word in words]
+    println("Word lengths: {:?}", word_lengths)
+}
+
+// ============================================================================
+// Example 11: Matrix Operations
+// ============================================================================
+
+fn test_matrix_operations() -> void {
+    println("\n=== Matrix Operations ===")
+    
+    let matrix = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+    ]
+    
+    // Transpose
+    let transposed = [
+        [row[i] for row in matrix]
+        for i in 0..3
+    ]
+    println("Original: {:?}", matrix)
+    println("Transposed: {:?}", transposed)
+    
+    // Diagonal
+    let diagonal = [matrix[i][i] for i in 0..3]
+    println("Diagonal: {:?}", diagonal)
+    
+    // Row sums
+    let row_sums = [sum(row) for row in matrix]
+    println("Row sums: {:?}", row_sums)
+}
+
+// ============================================================================
+// Example 12: Conditional Expressions
+// ============================================================================
+
+fn test_conditional_expressions() -> void {
+    println("\n=== Conditional Expressions ===")
+    
+    let numbers = 0..10
+    
+    // Even/odd labels
+    let labels = [
+        if x % 2 == 0 then "even" else "odd"
+        for x in numbers
+    ]
+    println("Labels: {:?}", labels)
+    
+    // Categorize by range
+    let categories = [
+        if x < 3 then "small" else if x < 7 then "medium" else "large"
+        for x in numbers
+    ]
+    println("Categories: {:?}", categories)
+    
+    // Sign labels
+    let values = [-5, -2, 0, 3, 7]
+    let signs = [
+        if x > 0 then "positive" else if x < 0 then "negative" else "zero"
+        for x in values
+    ]
+    println("Signs: {:?}", signs)
+}
+
+// ============================================================================
+// Example 13: Complex Data Transformations
+// ============================================================================
+
+fn test_complex_transformations() -> void {
+    println("\n=== Complex Data Transformations ===")
+    
+    let data = [
+        {"name": "Alice", "score": 85, "grade": "B"},
+        {"name": "Bob", "score": 92, "grade": "A"},
+        {"name": "Charlie", "score": 78, "grade": "C"},
+        {"name": "Dave", "score": 95, "grade": "A"},
+    ]
+    
+    // High scorers
+    let high_scorers = [
+        item["name"]
+        for item in data
+        if item["score"] >= 90
+    ]
+    println("High scorers: {:?}", high_scorers)
+    
+    // Grade distribution
+    let grade_counts = {
+        grade: len([item for item in data if item["grade"] == grade])
+        for grade in ["A", "B", "C"]
+    }
+    println("Grade distribution: {:?}", grade_counts)
+    
+    // Name-score mapping
+    let scores = {item["name"]: item["score"] for item in data}
+    println("Scores: {:?}", scores)
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn sum(arr: Vec<i32>) -> i32 {
+    arr.iter().sum()
+}
+
+fn all(arr: Vec<bool>) -> bool {
+    arr.iter().all(|x| x)
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_basic_comprehensions()
+    test_filtering()
+    test_string_transformations()
+    test_nested_comprehensions()
+    test_dict_comprehensions()
+    test_set_comprehensions()
+    test_generators()
+    test_data_extraction()
+    test_mathematical_operations()
+    test_string_processing()
+    test_matrix_operations()
+    test_conditional_expressions()
+    test_complex_transformations()
+    
+    println("\n=== All array comprehension examples completed! ===")
+}

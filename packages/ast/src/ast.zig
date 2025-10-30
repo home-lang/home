@@ -53,6 +53,18 @@ pub const FieldPunning = struct_literal_nodes.FieldPunning;
 pub const StructLiteralPattern = struct_literal_nodes.StructLiteralPattern;
 pub const StructLiteralBuilder = struct_literal_nodes.StructLiteralBuilder;
 
+// Export comprehension nodes
+pub const comprehension_nodes = @import("comprehension_nodes.zig");
+pub const ArrayComprehension = comprehension_nodes.ArrayComprehension;
+pub const DictComprehension = comprehension_nodes.DictComprehension;
+pub const SetComprehension = comprehension_nodes.SetComprehension;
+pub const NestedComprehension = comprehension_nodes.NestedComprehension;
+pub const ComprehensionClause = comprehension_nodes.ComprehensionClause;
+pub const GeneratorExpr = comprehension_nodes.GeneratorExpr;
+pub const ComprehensionDesugarer = comprehension_nodes.ComprehensionDesugarer;
+pub const ComprehensionTypeInference = comprehension_nodes.ComprehensionTypeInference;
+pub const ComprehensionPattern = comprehension_nodes.ComprehensionPattern;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -101,6 +113,11 @@ pub const NodeType = enum {
     StructLiteral,
     TupleStructLiteral,
     AnonymousStruct,
+    ArrayComprehension,
+    DictComprehension,
+    SetComprehension,
+    NestedComprehension,
+    GeneratorExpr,
 
     // Statements
     ImportDecl,
