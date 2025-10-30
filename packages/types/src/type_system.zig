@@ -1,7 +1,10 @@
 const std = @import("std");
 const ast = @import("ast");
-const ownership = @import("ownership.zig");
 const diagnostics = @import("diagnostics");
+const traits_mod = @import("traits");
+const TraitSystem = traits_mod.TraitSystem;
+const trait_checker = @import("trait_checker.zig");
+pub const TraitChecker = trait_checker.TraitChecker;
 
 /// Home's static type system with support for advanced features.
 ///
