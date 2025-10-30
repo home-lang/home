@@ -79,7 +79,7 @@
         "ion.path": {
           "type": "string",
           "default": "home",
-          "description": "Path to ion executable"
+          "description": "Path to home executable"
         },
         "ion.debugger.enabled": {
           "type": "boolean",

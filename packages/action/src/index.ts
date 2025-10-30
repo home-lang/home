@@ -31,7 +31,7 @@ async function run(): Promise<void> {
     let ionPath: string | undefined;
 
     if (enableCache) {
-      ionPath = tc.find('ion', ionVersion);
+      ionPath = tc.find('home', ionVersion);
       if (ionPath) {
         core.info(`Found Home ${ionVersion} in cache`);
         core.addPath(ionPath);
@@ -58,7 +58,7 @@ async function run(): Promise<void> {
 
     // Cache the tool
     if (enableCache) {
-      ionPath = await tc.cacheDir(extractedPath, 'ion', actualVersion);
+      ionPath = await tc.cacheDir(extractedPath, 'home', actualVersion);
     } else {
       ionPath = extractedPath;
     }
@@ -128,7 +128,7 @@ function getArch(): string {
 
 async function verifyInstallation(): Promise<void> {
   try {
-    await exec.exec('ion', ['--version']);
+    await exec.exec('home', ['--version']);
   } catch (error) {
     throw new Error('Home installation verification failed');
   }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const ion = @import("ion");
+const home = @import("ion");
 const Lexer = ion.lexer.Lexer;
 const Parser = ion.parser.Parser;
 const ast = ion.ast;

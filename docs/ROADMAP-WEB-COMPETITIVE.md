@@ -297,19 +297,19 @@ await Mail.to(user.email)
 **Needed**:
 - [ ] Project templates
   ```bash
-  ion new myapp --template=web-api
-  ion new mysite --template=fullstack
+  home new myapp --template=web-api
+  home new mysite --template=fullstack
   ```
 - [ ] Code generators
   ```bash
-  ion make:controller UserController
-  ion make:model User --migration
-  ion make:migration create_users_table
-  ion make:middleware Auth
+  home make:controller UserController
+  home make:model User --migration
+  home make:migration create_users_table
+  home make:middleware Auth
   ```
 - [ ] CRUD scaffolding
   ```bash
-  ion make:resource Post
+  home make:resource Post
   # Generates: model, migration, controller, routes, tests
   ```
 - [ ] OpenAPI spec generation from code

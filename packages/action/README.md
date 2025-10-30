@@ -88,10 +88,10 @@ jobs:
           ion-version: 'latest'
 
       - name: Build project
-        run: ion build
+        run: home build
 
       - name: Run tests
-        run: ion test
+        run: home test
 ```
 
 ### Matrix Testing
@@ -118,7 +118,7 @@ jobs:
           ion-version: ${{ matrix.ion-version }}
 
       - name: Run tests
-        run: ion test
+        run: home test
 ```
 
 ### Package Publishing
@@ -140,10 +140,10 @@ jobs:
         uses: ion-lang/ion/packages/action@v0.1
 
       - name: Build package
-        run: ion build --release
+        run: home build --release
 
       - name: Publish to registry
-        run: ion pkg publish
+        run: home pkg publish
         env:
           ION_TOKEN: ${{ secrets.ION_TOKEN }}
 ```

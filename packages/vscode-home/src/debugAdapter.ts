@@ -183,7 +183,7 @@ export class HomeDebugSession extends LoggingDebugSession {
         const cwd = args.cwd || path.dirname(args.program);
         const ionArgs = ['debug', args.program, ...(args.args || [])];
 
-        this._ionProcess = spawn('ion', ionArgs, {
+        this._ionProcess = spawn('home', ionArgs, {
             cwd,
             stdio: ['ignore', 'pipe', 'pipe']
         });

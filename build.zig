@@ -152,7 +152,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the Home compiler");
     run_step.dependOn(&run_cmd.step);
 
-    // Test suite - use ion module as root
+    // Test suite - use home module as root
     const home_module = b.createModule(.{
         .root_source_file = b.path("src/home.zig"),
         .target = target,
@@ -404,7 +404,7 @@ pub fn build(b: *std.Build) void {
 
     const run_lexer_bench = b.addRunArtifact(lexer_bench);
 
-    // Parser benchmark suite - use ion module
+    // Parser benchmark suite - use home module
     const parser_bench = b.addExecutable(.{
         .name = "parser_bench",
         .root_module = b.createModule(.{

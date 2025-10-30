@@ -34,8 +34,8 @@ export class HomeProfiler {
             return;
         }
 
-        const config = vscode.workspace.getConfiguration('ion');
-        const ionPath = config.get<string>('path') || 'ion';
+        const config = vscode.workspace.getConfiguration('home');
+        const ionPath = config.get<string>('path') || 'home';
 
         this._isRunning = true;
         this._profileData = [];

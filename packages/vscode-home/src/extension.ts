@@ -199,7 +199,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register formatters
     context.subscriptions.push(
-        vscode.languages.registerDocumentFormattingEditProvider('ion', {
+        vscode.languages.registerDocumentFormattingEditProvider('home', {
             provideDocumentFormattingEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
                 return formatDocumentProvider(document);
             }
@@ -207,18 +207,18 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register code lens provider
-    const config = vscode.workspace.getConfiguration('ion');
+    const config = vscode.workspace.getConfiguration('home');
     if (config.get<boolean>('codelens.enabled')) {
         context.subscriptions.push(
-            vscode.languages.registerCodeLensProvider('ion', new HomeCodeLensProvider())
+            vscode.languages.registerCodeLensProvider('home', new HomeCodeLensProvider())
         );
     }
 
     // Format on save
     context.subscriptions.push(
         vscode.workspace.onWillSaveTextDocument(event => {
-            const config = vscode.workspace.getConfiguration('ion');
-            if (config.get<boolean>('format.onSave') && event.document.languageId === 'ion') {
+            const config = vscode.workspace.getConfiguration('home');
+            if (config.get<boolean>('format.onSave') && event.document.languageId === 'home') {
                 event.waitUntil(formatDocumentProvider(event.document));
             }
         })
@@ -264,8 +264,8 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 function startLanguageServer(context: vscode.ExtensionContext) {
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
 
     // Server options - launch the LSP server
     const serverOptions: ServerOptions = {
@@ -278,7 +278,7 @@ function startLanguageServer(context: vscode.ExtensionContext) {
 
     // Client options
     const clientOptions: LanguageClientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'ion' }],
+        documentSelector: [{ scheme: 'file', language: 'home' }],
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.home'),
         },
@@ -310,15 +310,15 @@ async function restartServer() {
 
 async function runProgram() {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'ion') {
+    if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
     await editor.document.save();
 
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
     const filePath = editor.document.uri.fsPath;
 
     const terminal = vscode.window.createTerminal('Home Run');
@@ -328,15 +328,15 @@ async function runProgram() {
 
 async function buildProgram() {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'ion') {
+    if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
     await editor.document.save();
 
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
     const filePath = editor.document.uri.fsPath;
     const outputPath = filePath.replace(/\.home$/, '');
 
@@ -347,15 +347,15 @@ async function buildProgram() {
 
 async function checkProgram() {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'ion') {
+    if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
         return;
     }
 
     await editor.document.save();
 
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
     const filePath = editor.document.uri.fsPath;
 
     const terminal = vscode.window.createTerminal('Home Check');
@@ -370,8 +370,8 @@ async function runTests() {
         return;
     }
 
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
 
     const terminal = vscode.window.createTerminal('Home Tests');
     terminal.show();
@@ -380,7 +380,7 @@ async function runTests() {
 
 async function formatDocument() {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'ion') {
+    if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
         return;
     }
@@ -392,8 +392,8 @@ async function formatDocument() {
 }
 
 async function formatDocumentProvider(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-    const config = vscode.workspace.getConfiguration('ion');
-    const ionPath = config.get<string>('path') || 'ion';
+    const config = vscode.workspace.getConfiguration('home');
+    const ionPath = config.get<string>('path') || 'home';
 
     return new Promise((resolve, reject) => {
         const { spawn } = require('child_process');

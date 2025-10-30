@@ -220,7 +220,7 @@ Add to `.vscode/launch.json`:
 
 ```typescript
 // Home compiler must support debug mode:
-// ion debug program.home
+// home debug program.home
 
 // Debug output format:
 [DEBUG] Breakpoint hit at line 10
@@ -529,7 +529,7 @@ package {
 
 2. **Build package**
    ```bash
-   ion build --release
+   home build --release
    ```
 
 3. **Create tarball**
@@ -540,7 +540,7 @@ package {
 4. **Publish** (via VSCode or CLI)
    ```bash
    # Via CLI
-   ion package publish
+   home package publish
 
    # Via VSCode
    Cmd/Ctrl + Shift + P -> "Publish Package"

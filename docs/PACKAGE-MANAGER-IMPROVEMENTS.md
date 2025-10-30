@@ -371,7 +371,7 @@ Like Bun, auto-install missing packages:
 ```home
 import "http-router"  // Not installed yet
 
-// Home automatically runs: ion pkg add http-router
+// Home automatically runs: home pkg add http-router
 // Then continues execution
 ```
 

@@ -251,7 +251,7 @@ Net gain: $192/month = $2,304/year
 
 ```bash
 # Always develop with native
-alias dev='ion build --backend=native && ion run'
+alias dev='ion build --backend=native && home run'
 
 # Deploy with LLVM
 alias ship='ion build --backend=llvm -O2'
@@ -309,12 +309,12 @@ ion link -o myapp
 **A: Use native for tests, LLVM for releases:**
 ```yaml
 test:
-  ion build --backend=native
-  ion test
+  home build --backend=native
+  home test
 
 release:
-  ion build --backend=llvm -O2
-  ion package
+  home build --backend=llvm -O2
+  home package
 ```
 
 ### Q: Is the performance gain real?

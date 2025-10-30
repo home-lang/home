@@ -88,8 +88,8 @@ export class HomePackageManager {
         this._outputChannel.appendLine(`Installing ${pkgName}${pkgVersion ? `@${pkgVersion}` : ''}...`);
         this._outputChannel.show();
 
-        const config = vscode.workspace.getConfiguration('ion');
-        const ionPath = config.get<string>('path') || 'ion';
+        const config = vscode.workspace.getConfiguration('home');
+        const ionPath = config.get<string>('path') || 'home';
 
         const installArgs = ['package', 'install', pkgName];
         if (pkgVersion && pkgVersion !== 'latest') {
@@ -151,8 +151,8 @@ export class HomePackageManager {
         this._outputChannel.appendLine('Publishing package...');
         this._outputChannel.show();
 
-        const config = vscode.workspace.getConfiguration('ion');
-        const ionPath = config.get<string>('path') || 'ion';
+        const config = vscode.workspace.getConfiguration('home');
+        const ionPath = config.get<string>('path') || 'home';
 
         return new Promise((resolve, reject) => {
             const process = spawn(ionPath, ['package', 'publish'], {
@@ -192,8 +192,8 @@ export class HomePackageManager {
         this._outputChannel.appendLine('Updating packages...');
         this._outputChannel.show();
 
-        const config = vscode.workspace.getConfiguration('ion');
-        const ionPath = config.get<string>('path') || 'ion';
+        const config = vscode.workspace.getConfiguration('home');
+        const ionPath = config.get<string>('path') || 'home';
 
         return new Promise((resolve, reject) => {
             const process = spawn(ionPath, ['package', 'update'], {
