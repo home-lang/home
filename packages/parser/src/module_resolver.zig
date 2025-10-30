@@ -144,6 +144,19 @@ pub const ModuleResolver = struct {
             };
         }
 
+        // Try .hm extension
+        const hm_path = try std.fmt.allocPrint(self.allocator, "{s}.hm", .{path_buf.items});
+        defer self.allocator.free(hm_path);
+
+        if (try self.fileExists(hm_path)) {
+            return ResolvedModule{
+                .path = path_segments,
+                .file_path = try self.allocator.dupe(u8, hm_path),
+                .name = path_segments[path_segments.len - 1],
+                .is_zig = false,
+            };
+        }
+
         return null;
     }
 
@@ -166,6 +179,19 @@ pub const ModuleResolver = struct {
             return ResolvedModule{
                 .path = path_segments,
                 .file_path = try self.allocator.dupe(u8, home_path),
+                .name = path_segments[path_segments.len - 1],
+                .is_zig = false,
+            };
+        }
+
+        // Try .hm extension
+        const hm_path = try std.fmt.allocPrint(self.allocator, "{s}.hm", .{path_buf.items});
+        defer self.allocator.free(hm_path);
+
+        if (try self.fileExists(hm_path)) {
+            return ResolvedModule{
+                .path = path_segments,
+                .file_path = try self.allocator.dupe(u8, hm_path),
                 .name = path_segments[path_segments.len - 1],
                 .is_zig = false,
             };
