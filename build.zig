@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize);
     const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize);
     const linter_pkg = createPackage(b, "packages/linter/src/linter.zig", target, optimize);
+    const traits_pkg = createPackage(b, "packages/traits/src/traits.zig", target, optimize);
     const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize);
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize);
@@ -61,6 +62,8 @@ pub fn build(b: *std.Build) void {
     parser_pkg.addImport("diagnostics", diagnostics_pkg);
     types_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("diagnostics", diagnostics_pkg);
+    types_pkg.addImport("traits", traits_pkg);
+    traits_pkg.addImport("ast", ast_pkg);
     interpreter_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("parser", parser_pkg);
@@ -91,6 +94,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("codegen", codegen_pkg);
     exe.root_module.addImport("formatter", formatter_pkg);
     exe.root_module.addImport("linter", linter_pkg);
+    exe.root_module.addImport("traits", traits_pkg);
     exe.root_module.addImport("diagnostics", diagnostics_pkg);
     exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     exe.root_module.addImport("queue", queue_pkg);

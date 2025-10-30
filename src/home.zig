@@ -9,6 +9,7 @@ const codegen_pkg = @import("codegen");
 const types_pkg = @import("types");
 const linter_pkg = @import("linter");
 const formatter_pkg = @import("formatter");
+const traits_pkg = @import("traits");
 
 pub const lexer = struct {
     pub const Lexer = lexer_pkg.Lexer;
@@ -47,4 +48,13 @@ pub const linter = struct {
 
 pub const formatter = struct {
     pub const Formatter = formatter_pkg.Formatter;
+};
+
+pub const traits = struct {
+    pub const TraitSystem = traits_pkg.TraitSystem;
+    pub const TraitDef = traits_pkg.TraitSystem.TraitDef;
+    pub const TraitImpl = traits_pkg.TraitSystem.TraitImpl;
+    pub const VTable = traits_pkg.TraitSystem.VTable;
+    pub const TraitObject = traits_pkg.TraitSystem.TraitObject;
+    pub const BuiltinTraits = traits_pkg.BuiltinTraits;
 };

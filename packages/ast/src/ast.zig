@@ -1,6 +1,18 @@
 const std = @import("std");
 const Token = @import("lexer").Token;
 
+// Export trait-related AST nodes
+pub const trait_nodes = @import("trait_nodes.zig");
+pub const TraitDecl = trait_nodes.TraitDecl;
+pub const ImplDecl = trait_nodes.ImplDecl;
+pub const TraitMethod = trait_nodes.TraitMethod;
+pub const AssociatedType = trait_nodes.AssociatedType;
+pub const WhereClause = trait_nodes.WhereClause;
+pub const WhereBound = trait_nodes.WhereBound;
+pub const GenericParam = trait_nodes.GenericParam;
+pub const TypeExpr = trait_nodes.TypeExpr;
+pub const FnParam = trait_nodes.FnParam;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -55,6 +67,8 @@ pub const NodeType = enum {
     EnumDecl,
     TypeAliasDecl,
     UnionDecl,
+    TraitDecl,
+    ImplDecl,
     ReturnStmt,
     IfStmt,
     WhileStmt,
@@ -1207,6 +1221,8 @@ pub const Stmt = union(NodeType) {
     EnumDecl: *EnumDecl,
     TypeAliasDecl: *TypeAliasDecl,
     UnionDecl: *UnionDecl,
+    TraitDecl: *TraitDecl,
+    ImplDecl: *ImplDecl,
     ReturnStmt: *ReturnStmt,
     IfStmt: *IfStmt,
     WhileStmt: *WhileStmt,

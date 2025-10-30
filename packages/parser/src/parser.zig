@@ -10,6 +10,7 @@ pub const ModuleResolver = module_resolver.ModuleResolver;
 const symbol_table = @import("symbol_table.zig");
 pub const SymbolTable = symbol_table.SymbolTable;
 pub const Symbol = symbol_table.Symbol;
+const trait_parser = @import("trait_parser.zig");
 
 /// Error set for parsing operations.
 ///
@@ -448,6 +449,8 @@ pub const Parser = struct {
         if (self.match(&.{.Enum})) return self.enumDeclaration();
         if (self.match(&.{.Union})) return self.unionDeclaration();
         if (self.match(&.{.Type})) return self.typeAliasDeclaration();
+        if (self.match(&.{.Trait})) return self.traitDeclaration();
+        if (self.match(&.{.Impl})) return self.implDeclaration();
         if (self.match(&.{.Fn})) return self.functionDeclaration(is_test);
         if (self.match(&.{.Let})) return self.letDeclaration(false);
         if (self.match(&.{.Const})) return self.letDeclaration(true);
@@ -2326,4 +2329,10 @@ pub const Parser = struct {
         }
         return buf.toOwnedSlice(self.allocator);
     }
+    
+    // Trait parsing methods
+    pub const traitDeclaration = trait_parser.parseTraitDeclaration;
+    pub const implDeclaration = trait_parser.parseImplDeclaration;
+    pub const parseWhereClause = trait_parser.parseWhereClause;
+    pub const parseTypeExpr = trait_parser.parseTypeExpr;
 };
