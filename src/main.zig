@@ -55,9 +55,9 @@ fn printUsage() void {
         \\  parse <file>       Tokenize an Home file and display tokens
         \\  ast <file>         Parse an Home file and display the AST
         \\  check <file>       Type check an Home file (fast, no execution)
-        \\  lint <file>        Lint an Home file and show diagnostics
-        \\  lint --fix <file>  Lint and auto-fix issues in an Home file
-        \\  fmt <file>         Format an Home file with consistent style
+        \\  lint <file>        Lint and show diagnostics
+        \\  lint --fix <file>  Lint and auto-fix issues
+        \\  fmt <file>         Format and auto-fix (alias for lint --fix)
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
         \\  test <file>        Run all @test functions in an Home file
@@ -409,46 +409,18 @@ fn getSuggestion(error_message: []const u8) ?[]const u8 {
     return null;
 }
 
-fn fmtCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
-    // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
-        return err;
-    };
-    defer file.close();
+fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+    // fmt is an alias for lint --fix
+    // Build new args array with --fix flag
+    var new_args = std.ArrayList([:0]u8).init(allocator);
+    defer new_args.deinit();
 
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
-    defer allocator.free(source);
+    try new_args.append(try allocator.dupeZ(u8, "--fix"));
+    for (args) |arg| {
+        try new_args.append(arg);
+    }
 
-    // Use arena allocator for AST
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
-    // Tokenize
-    var lexer = Lexer.init(arena_allocator, source);
-    const tokens = try lexer.tokenize();
-
-    // Parse
-    var parser = try Parser.init(arena_allocator, tokens.items);
-    const program = try parser.parse();
-
-    // Format
-    var formatter = Formatter.init(allocator, program);
-    defer formatter.deinit();
-
-    std.debug.print("{s}Formatting:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
-
-    const formatted = try formatter.format(.{});
-    defer allocator.free(formatted);
-
-    // Write back to file
-    const output_file = try std.fs.cwd().createFile(file_path, .{});
-    defer output_file.close();
-
-    try output_file.writeAll(formatted);
-
-    std.debug.print("{s}Success:{s} File formatted ✓\n", .{ Color.Green.code(), Color.Reset.code() });
+    try lint_cmd.lintCommand(allocator, new_args.items);
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
@@ -897,7 +869,7 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        try fmtCommand(allocator, args[2]);
+        try fmtCommand(allocator, args[2..]);
         return;
     }
 

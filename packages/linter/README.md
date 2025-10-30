@@ -15,13 +15,13 @@ A comprehensive, fast linter for the Home programming language with auto-fix cap
 ### CLI
 
 ```bash
-# Lint a file
+# Lint a file and show diagnostics
 home lint src/main.home
 
-# Lint with auto-fix
+# Lint and auto-fix issues
 home lint --fix src/main.home
 
-# Format a file (uses formatter + linter)
+# Format (alias for lint --fix)
 home fmt src/main.home
 ```
 
@@ -391,17 +391,16 @@ The linter is designed for speed:
 ### Basic Usage
 
 ```bash
-# Lint a single file
+# Lint and show issues
 home lint src/main.home
 
-# Lint with auto-fix
+# Lint and auto-fix
 home lint --fix src/main.home
+# or
+home fmt src/main.home
 
 # Lint entire directory
 home lint src/
-
-# Format (lint + format)
-home fmt src/
 ```
 
 ### CI/CD Integration

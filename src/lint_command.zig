@@ -3,6 +3,9 @@ const linter_mod = @import("linter");
 const Linter = linter_mod.Linter;
 const LinterConfig = linter_mod.LinterConfig;
 const LinterConfigLoader = linter_mod.LinterConfigLoader;
+const Formatter = @import("formatter").Formatter;
+const Lexer = @import("lexer").Lexer;
+const Parser = @import("parser").Parser;
 
 const Color = enum {
     Reset,
@@ -56,16 +59,20 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
     const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
-    // Load config from project directory (home.jsonc, home.json, package.jsonc, home.toml, or couch.toml)
+    // Load config from project directory
     var config_loader = LinterConfigLoader.init(allocator);
-    var config = try config_loader.loadConfig(null); // null = current directory
+    var config = try config_loader.loadConfig(null);
     defer config.deinit();
 
     var linter = Linter.init(allocator, config);
     defer linter.deinit();
 
     // Run linter
-    std.debug.print("{s}Linting:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), path });
+    if (fix_mode) {
+        std.debug.print("{s}Linting & Fixing:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), path });
+    } else {
+        std.debug.print("{s}Linting:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), path });
+    }
 
     const diagnostics = try linter.lint(source);
 
@@ -135,19 +142,34 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
     if (fix_mode) {
         std.debug.print("\n{s}Applying auto-fixes...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-        const fixed_source = try linter.autoFix();
-        if (fixed_source.len > 0) {
-            // Write fixed source back to file
-            const out_file = try std.fs.cwd().createFile(path, .{});
-            defer out_file.close();
+        // Auto-fix linting issues
+        const auto_fixed = try linter.autoFix();
+        const fixed_source = if (auto_fixed.len > 0) auto_fixed else source;
+        defer if (auto_fixed.len > 0) allocator.free(auto_fixed);
 
-            try out_file.writeAll(fixed_source);
-            allocator.free(fixed_source);
+        // Format the code
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
 
-            std.debug.print("{s}✓{s} Auto-fixes applied\n", .{ Color.Green.code(), Color.Reset.code() });
-        } else {
-            std.debug.print("{s}No auto-fixable issues found{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
-        }
+        var lexer = Lexer.init(arena_allocator, fixed_source);
+        const tokens = try lexer.tokenize();
+
+        var parser = try Parser.init(arena_allocator, tokens.items);
+        const program = try parser.parse();
+
+        var formatter = Formatter.init(allocator, program);
+        defer formatter.deinit();
+
+        const formatted = try formatter.format(.{});
+        defer allocator.free(formatted);
+
+        // Write back to file
+        const out_file = try std.fs.cwd().createFile(path, .{});
+        defer out_file.close();
+        try out_file.writeAll(formatted);
+
+        std.debug.print("{s}✓{s} Fixed and formatted\n", .{ Color.Green.code(), Color.Reset.code() });
     } else if (errors > 0 or warnings > 0) {
         std.debug.print("\n{s}Tip:{s} Run with {s}--fix{s} to automatically fix issues\n", .{
             Color.Cyan.code(),
