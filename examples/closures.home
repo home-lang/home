@@ -1,0 +1,468 @@
+// Comprehensive Closures Examples in Home
+
+// ============================================================================
+// Example 1: Basic Closure Syntax
+// ============================================================================
+
+fn test_basic_closures() -> void {
+    println("=== Basic Closures ===")
+    
+    // No parameters
+    let greet = || println("Hello, World!")
+    greet()
+    
+    // Single parameter
+    let double = |x| x * 2
+    println("double(5) = {}", double(5))
+    
+    // Multiple parameters
+    let add = |a, b| a + b
+    println("add(3, 4) = {}", add(3, 4))
+    
+    // With block body
+    let complex = |x| {
+        let y = x * 2
+        let z = y + 1
+        z
+    }
+    println("complex(5) = {}", complex(5))
+    
+    // With type annotations
+    let multiply = |a: i32, b: i32| -> i32 {
+        a * b
+    }
+    println("multiply(6, 7) = {}", multiply(6, 7))
+}
+
+// ============================================================================
+// Example 2: Capture by Reference
+// ============================================================================
+
+fn test_capture_by_reference() -> void {
+    println("\n=== Capture by Reference ===")
+    
+    let x = 42
+    let y = 10
+    
+    // Captures x and y by reference
+    let sum = || x + y
+    println("sum() = {}", sum())
+    
+    // x and y are still accessible
+    println("x = {}, y = {}", x, y)
+    
+    // Multiple calls
+    println("sum() = {}", sum())
+    println("sum() = {}", sum())
+}
+
+// ============================================================================
+// Example 3: Capture by Mutable Reference
+// ============================================================================
+
+fn test_capture_by_mut_reference() -> void {
+    println("\n=== Capture by Mutable Reference ===")
+    
+    let mut count = 0
+    
+    let mut increment = || {
+        count += 1
+        println("Count: {}", count)
+    }
+    
+    increment()  // Count: 1
+    increment()  // Count: 2
+    increment()  // Count: 3
+    
+    println("Final count: {}", count)
+}
+
+// ============================================================================
+// Example 4: Move Closures
+// ============================================================================
+
+fn test_move_closures() -> void {
+    println("\n=== Move Closures ===")
+    
+    let data = vec![1, 2, 3, 4, 5]
+    let name = "Numbers"
+    
+    // Move closure takes ownership
+    let consume = move || {
+        println("{}: {:?}", name, data)
+        let sum: i32 = data.iter().sum()
+        println("Sum: {}", sum)
+    }
+    
+    consume()
+    // data and name are no longer accessible here
+}
+
+// ============================================================================
+// Example 5: Returning Closures
+// ============================================================================
+
+fn make_adder(x: i32) -> impl Fn(i32) -> i32 {
+    move |y| x + y
+}
+
+fn make_multiplier(factor: i32) -> impl Fn(i32) -> i32 {
+    move |x| x * factor
+}
+
+fn test_returning_closures() -> void {
+    println("\n=== Returning Closures ===")
+    
+    let add_5 = make_adder(5)
+    let add_10 = make_adder(10)
+    
+    println("add_5(3) = {}", add_5(3))    // 8
+    println("add_10(3) = {}", add_10(3))  // 13
+    
+    let double = make_multiplier(2)
+    let triple = make_multiplier(3)
+    
+    println("double(7) = {}", double(7))  // 14
+    println("triple(7) = {}", triple(7))  // 21
+}
+
+// ============================================================================
+// Example 6: Higher-Order Functions - Map, Filter, Reduce
+// ============================================================================
+
+fn test_map_filter_reduce() -> void {
+    println("\n=== Map, Filter, Reduce ===")
+    
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    
+    // Map - transform each element
+    let doubled = numbers.iter()
+        .map(|x| x * 2)
+        .collect::<Vec<_>>()
+    println("Doubled: {:?}", doubled)
+    
+    // Filter - select elements
+    let evens = numbers.iter()
+        .filter(|x| x % 2 == 0)
+        .collect::<Vec<_>>()
+    println("Evens: {:?}", evens)
+    
+    // Reduce (fold) - combine elements
+    let sum = numbers.iter()
+        .fold(0, |acc, x| acc + x)
+    println("Sum: {}", sum)
+    
+    // Chain operations
+    let result = numbers.iter()
+        .filter(|x| x % 2 == 0)
+        .map(|x| x * x)
+        .fold(0, |acc, x| acc + x)
+    println("Sum of squares of evens: {}", result)
+}
+
+// ============================================================================
+// Example 7: Closure Composition
+// ============================================================================
+
+fn compose<F, G, A, B, C>(f: F, g: G) -> impl Fn(A) -> C
+where
+    F: Fn(B) -> C,
+    G: Fn(A) -> B,
+{
+    move |x| f(g(x))
+}
+
+fn test_composition() -> void {
+    println("\n=== Closure Composition ===")
+    
+    let add_one = |x| x + 1
+    let double = |x| x * 2
+    let square = |x| x * x
+    
+    // Compose: double(add_one(x))
+    let add_then_double = compose(double, add_one)
+    println("add_then_double(5) = {}", add_then_double(5))  // 12
+    
+    // Compose: square(double(x))
+    let double_then_square = compose(square, double)
+    println("double_then_square(5) = {}", double_then_square(5))  // 100
+}
+
+// ============================================================================
+// Example 8: Closures with Structs
+// ============================================================================
+
+struct Counter {
+    count: i32,
+}
+
+impl Counter {
+    fn new() -> Counter {
+        Counter { count: 0 }
+    }
+    
+    fn increment_by<F>(&mut self, f: F) 
+    where 
+        F: Fn(i32) -> i32
+    {
+        self.count = f(self.count)
+    }
+}
+
+fn test_closures_with_structs() -> void {
+    println("\n=== Closures with Structs ===")
+    
+    let mut counter = Counter::new()
+    
+    counter.increment_by(|x| x + 1)
+    println("After +1: {}", counter.count)
+    
+    counter.increment_by(|x| x * 2)
+    println("After *2: {}", counter.count)
+    
+    counter.increment_by(|x| x + 10)
+    println("After +10: {}", counter.count)
+}
+
+// ============================================================================
+// Example 9: Event Handler Pattern
+// ============================================================================
+
+struct Button {
+    label: string,
+    on_click: Option<Box<dyn FnMut()>>,
+}
+
+impl Button {
+    fn new(label: string) -> Button {
+        Button {
+            label,
+            on_click: None,
+        }
+    }
+    
+    fn set_handler<F>(&mut self, handler: F)
+    where
+        F: FnMut() + 'static,
+    {
+        self.on_click = Some(Box::new(handler))
+    }
+    
+    fn click(&mut self) {
+        println("Button '{}' clicked", self.label)
+        if let Some(ref mut handler) = self.on_click {
+            handler()
+        }
+    }
+}
+
+fn test_event_handlers() -> void {
+    println("\n=== Event Handlers ===")
+    
+    let mut count = 0
+    let mut button = Button::new("Counter")
+    
+    button.set_handler(move || {
+        count += 1
+        println("  Handler executed {} times", count)
+    })
+    
+    button.click()
+    button.click()
+    button.click()
+}
+
+// ============================================================================
+// Example 10: Lazy Evaluation
+// ============================================================================
+
+struct Lazy<T, F>
+where
+    F: FnOnce() -> T,
+{
+    init: Option<F>,
+    value: Option<T>,
+}
+
+impl<T, F> Lazy<T, F>
+where
+    F: FnOnce() -> T,
+{
+    fn new(init: F) -> Lazy<T, F> {
+        Lazy {
+            init: Some(init),
+            value: None,
+        }
+    }
+    
+    fn get(&mut self) -> &T {
+        if self.value.is_none() {
+            let init = self.init.take().unwrap()
+            self.value = Some(init())
+        }
+        self.value.as_ref().unwrap()
+    }
+}
+
+fn expensive_computation() -> i32 {
+    println("  Computing expensive value...")
+    // Simulate expensive computation
+    42
+}
+
+fn test_lazy_evaluation() -> void {
+    println("\n=== Lazy Evaluation ===")
+    
+    let mut lazy = Lazy::new(|| {
+        expensive_computation()
+    })
+    
+    println("Lazy value created (not computed yet)")
+    println("Getting value for first time:")
+    let value = lazy.get()
+    println("Value: {}", value)
+    
+    println("Getting value again (cached):")
+    let value2 = lazy.get()
+    println("Value: {}", value2)
+}
+
+// ============================================================================
+// Example 11: Custom Iterator with Closures
+// ============================================================================
+
+struct Transform<I, F> {
+    iter: I,
+    func: F,
+}
+
+impl<I, F, T, U> Iterator for Transform<I, F>
+where
+    I: Iterator<Item = T>,
+    F: FnMut(T) -> U,
+{
+    type Item = U
+    
+    fn next(&mut self) -> Option<U> {
+        self.iter.next().map(|x| (self.func)(x))
+    }
+}
+
+fn test_custom_iterator() -> void {
+    println("\n=== Custom Iterator ===")
+    
+    let numbers = vec![1, 2, 3, 4, 5]
+    let transform = Transform {
+        iter: numbers.into_iter(),
+        func: |x| x * x,
+    }
+    
+    for squared in transform {
+        println("  {}", squared)
+    }
+}
+
+// ============================================================================
+// Example 12: Memoization
+// ============================================================================
+
+struct Memoized<F, T>
+where
+    F: FnMut(T) -> T,
+    T: Clone + Eq + std::hash::Hash,
+{
+    func: F,
+    cache: HashMap<T, T>,
+}
+
+impl<F, T> Memoized<F, T>
+where
+    F: FnMut(T) -> T,
+    T: Clone + Eq + std::hash::Hash,
+{
+    fn new(func: F) -> Memoized<F, T> {
+        Memoized {
+            func,
+            cache: HashMap::new(),
+        }
+    }
+    
+    fn call(&mut self, arg: T) -> T {
+        if let Some(result) = self.cache.get(&arg) {
+            return result.clone()
+        }
+        
+        let result = (self.func)(arg.clone())
+        self.cache.insert(arg, result.clone())
+        result
+    }
+}
+
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn test_memoization() -> void {
+    println("\n=== Memoization ===")
+    
+    let mut fib = Memoized::new(|n: i32| fibonacci(n))
+    
+    println("Computing fib(10)...")
+    let result1 = fib.call(10)
+    println("Result: {}", result1)
+    
+    println("Computing fib(10) again (cached)...")
+    let result2 = fib.call(10)
+    println("Result: {}", result2)
+}
+
+// ============================================================================
+// Example 13: Partial Application
+// ============================================================================
+
+fn partial<F, A, B, C>(f: F, a: A) -> impl Fn(B) -> C
+where
+    F: Fn(A, B) -> C,
+    A: Clone,
+{
+    move |b| f(a.clone(), b)
+}
+
+fn test_partial_application() -> void {
+    println("\n=== Partial Application ===")
+    
+    let add = |a: i32, b: i32| a + b
+    let multiply = |a: i32, b: i32| a * b
+    
+    let add_5 = partial(add, 5)
+    let multiply_3 = partial(multiply, 3)
+    
+    println("add_5(10) = {}", add_5(10))      // 15
+    println("multiply_3(7) = {}", multiply_3(7))  // 21
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_basic_closures()
+    test_capture_by_reference()
+    test_capture_by_mut_reference()
+    test_move_closures()
+    test_returning_closures()
+    test_map_filter_reduce()
+    test_composition()
+    test_closures_with_structs()
+    test_event_handlers()
+    test_lazy_evaluation()
+    test_custom_iterator()
+    test_memoization()
+    test_partial_application()
+    
+    println("\n=== All closure examples completed! ===")
+}

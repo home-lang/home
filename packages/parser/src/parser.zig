@@ -11,6 +11,7 @@ const symbol_table = @import("symbol_table.zig");
 pub const SymbolTable = symbol_table.SymbolTable;
 pub const Symbol = symbol_table.Symbol;
 const trait_parser = @import("trait_parser.zig");
+const closure_parser = @import("closure_parser.zig");
 
 /// Error set for parsing operations.
 ///
@@ -2335,4 +2336,7 @@ pub const Parser = struct {
     pub const implDeclaration = trait_parser.parseImplDeclaration;
     pub const parseWhereClause = trait_parser.parseWhereClause;
     pub const parseTypeExpr = trait_parser.parseTypeExpr;
+    
+    // Closure parsing methods
+    pub const parseClosureExpr = closure_parser.parseClosureExpr;
 };

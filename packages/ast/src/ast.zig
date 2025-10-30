@@ -13,6 +13,16 @@ pub const GenericParam = trait_nodes.GenericParam;
 pub const TypeExpr = trait_nodes.TypeExpr;
 pub const FnParam = trait_nodes.FnParam;
 
+// Export closure-related AST nodes
+pub const closure_nodes = @import("closure_nodes.zig");
+pub const ClosureExpr = closure_nodes.ClosureExpr;
+pub const ClosureParam = closure_nodes.ClosureParam;
+pub const ClosureBody = closure_nodes.ClosureBody;
+pub const Capture = closure_nodes.Capture;
+pub const ClosureTrait = closure_nodes.ClosureTrait;
+pub const ClosureEnvironment = closure_nodes.ClosureEnvironment;
+pub const ClosureAnalysis = closure_nodes.ClosureAnalysis;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -57,6 +67,7 @@ pub const NodeType = enum {
     ReflectExpr,
     MacroExpr,
     InlineAsm,
+    ClosureExpr,
 
     // Statements
     ImportDecl,
@@ -784,6 +795,7 @@ pub const Expr = union(NodeType) {
     ReflectExpr: *ReflectExpr,
     MacroExpr: *MacroExpr,
     InlineAsm: InlineAsm,
+    ClosureExpr: *ClosureExpr,
     ImportDecl: void,
     LetDecl: void,
     ConstDecl: void,
@@ -792,6 +804,8 @@ pub const Expr = union(NodeType) {
     EnumDecl: void,
     TypeAliasDecl: void,
     UnionDecl: void,
+    TraitDecl: void,
+    ImplDecl: void,
     ReturnStmt: void,
     IfStmt: void,
     WhileStmt: void,
@@ -833,6 +847,7 @@ pub const Expr = union(NodeType) {
             .TupleExpr => |expr| expr.node.loc,
             .GenericTypeExpr => |expr| expr.node.loc,
             .AwaitExpr => |expr| expr.node.loc,
+            .ClosureExpr => |expr| expr.node.loc,
             else => std.debug.panic("getLocation called on non-expression variant: {s}", .{@tagName(self)}),
         };
     }
