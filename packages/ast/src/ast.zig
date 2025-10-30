@@ -78,6 +78,17 @@ pub const SplatValidator = splat_nodes.SplatValidator;
 pub const SplatDesugarer = splat_nodes.SplatDesugarer;
 pub const SplatPattern = splat_nodes.SplatPattern;
 
+// Export multiple dispatch nodes
+pub const dispatch_nodes = @import("dispatch_nodes.zig");
+pub const MultiDispatchFn = dispatch_nodes.MultiDispatchFn;
+pub const DispatchParam = dispatch_nodes.DispatchParam;
+pub const DispatchTable = dispatch_nodes.DispatchTable;
+pub const DispatchResolver = dispatch_nodes.DispatchResolver;
+pub const DispatchCall = dispatch_nodes.DispatchCall;
+pub const DispatchAmbiguity = dispatch_nodes.DispatchAmbiguity;
+pub const DispatchValidator = dispatch_nodes.DispatchValidator;
+pub const DispatchPattern = dispatch_nodes.DispatchPattern;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -134,6 +145,7 @@ pub const NodeType = enum {
     SplatExpr,
     ArrayDestructuring,
     ObjectDestructuring,
+    DispatchCall,
 
     // Statements
     ImportDecl,
