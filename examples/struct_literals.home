@@ -1,0 +1,474 @@
+// Comprehensive Struct Literals with Shorthand Examples in Home
+
+// ============================================================================
+// Example 1: Basic Struct Literals
+// ============================================================================
+
+struct User {
+    name: string,
+    age: i32,
+    email: string,
+}
+
+fn test_basic_literals() -> void {
+    println("=== Basic Struct Literals ===")
+    
+    // Explicit initialization
+    let user1 = User {
+        name: "Alice",
+        age: 30,
+        email: "alice@example.com",
+    }
+    println("User 1: {} ({}) - {}", user1.name, user1.age, user1.email)
+    
+    // Fields in different order
+    let user2 = User {
+        email: "bob@example.com",
+        name: "Bob",
+        age: 25,
+    }
+    println("User 2: {} ({}) - {}", user2.name, user2.age, user2.email)
+}
+
+// ============================================================================
+// Example 2: Shorthand Syntax (Field Punning)
+// ============================================================================
+
+fn test_shorthand_syntax() -> void {
+    println("\n=== Shorthand Syntax ===")
+    
+    let name = "Charlie"
+    let age = 35
+    let email = "charlie@example.com"
+    
+    // Shorthand - variable names match field names
+    let user = User { name, age, email }
+    println("User: {} ({}) - {}", user.name, user.age, user.email)
+    
+    // Mixed shorthand and explicit
+    let name2 = "Dave"
+    let email2 = "dave@example.com"
+    
+    let user2 = User {
+        name: name2,
+        age: 28,
+        email: email2,
+    }
+    println("User 2: {} ({}) - {}", user2.name, user2.age, user2.email)
+}
+
+// ============================================================================
+// Example 3: Shorthand in Functions
+// ============================================================================
+
+fn create_user(name: string, age: i32, email: string) -> User {
+    // Shorthand makes this very concise
+    User { name, age, email }
+}
+
+fn test_shorthand_in_functions() -> void {
+    println("\n=== Shorthand in Functions ===")
+    
+    let user = create_user("Eve", 40, "eve@example.com")
+    println("Created user: {} ({}) - {}", user.name, user.age, user.email)
+}
+
+// ============================================================================
+// Example 4: Struct Update Syntax
+// ============================================================================
+
+fn test_struct_update() -> void {
+    println("\n=== Struct Update Syntax ===")
+    
+    let user1 = User {
+        name: "Alice",
+        age: 30,
+        email: "alice@example.com",
+    }
+    
+    // Update one field, copy the rest
+    let user2 = User {
+        age: 31,
+        ..user1
+    }
+    println("Updated user: {} ({}) - {}", user2.name, user2.age, user2.email)
+    
+    // Update multiple fields
+    let user3 = User {
+        name: "Alice Smith",
+        email: "alice.smith@example.com",
+        ..user1
+    }
+    println("Updated user: {} ({}) - {}", user3.name, user3.age, user3.email)
+}
+
+// ============================================================================
+// Example 5: Anonymous Structs
+// ============================================================================
+
+fn get_point() -> .{ x: i32, y: i32 } {
+    .{ x: 10, y: 20 }
+}
+
+fn draw_at(pos: .{ x: i32, y: i32 }) -> void {
+    println("Drawing at ({}, {})", pos.x, pos.y)
+}
+
+fn test_anonymous_structs() -> void {
+    println("\n=== Anonymous Structs ===")
+    
+    let point = .{ x: 100, y: 200 }
+    println("Point: ({}, {})", point.x, point.y)
+    
+    draw_at(.{ x: 50, y: 75 })
+    
+    let returned = get_point()
+    println("Returned point: ({}, {})", returned.x, returned.y)
+    
+    // Shorthand in anonymous structs
+    let x = 30
+    let y = 40
+    let point2 = .{ x, y }
+    println("Point 2: ({}, {})", point2.x, point2.y)
+}
+
+// ============================================================================
+// Example 6: Tuple Structs
+// ============================================================================
+
+struct Point(i32, i32)
+struct Color(u8, u8, u8)
+
+fn test_tuple_structs() -> void {
+    println("\n=== Tuple Structs ===")
+    
+    let point = Point(10, 20)
+    println("Point: ({}, {})", point.0, point.1)
+    
+    let color = Color(255, 128, 0)
+    println("Color: RGB({}, {}, {})", color.0, color.1, color.2)
+}
+
+// ============================================================================
+// Example 7: Nested Structs
+// ============================================================================
+
+struct Address {
+    street: string,
+    city: string,
+    zip: string,
+}
+
+struct Person {
+    name: string,
+    age: i32,
+    address: Address,
+}
+
+fn test_nested_structs() -> void {
+    println("\n=== Nested Structs ===")
+    
+    // Nested initialization
+    let person = Person {
+        name: "Alice",
+        age: 30,
+        address: Address {
+            street: "123 Main St",
+            city: "Springfield",
+            zip: "12345",
+        },
+    }
+    println("Person: {}, {} years old", person.name, person.age)
+    println("  Address: {}, {}, {}", 
+            person.address.street, person.address.city, person.address.zip)
+    
+    // Shorthand in nested structs
+    let name = "Bob"
+    let age = 25
+    let street = "456 Oak Ave"
+    let city = "Portland"
+    let zip = "97201"
+    
+    let person2 = Person {
+        name,
+        age,
+        address: Address { street, city, zip },
+    }
+    println("Person 2: {}, {} years old", person2.name, person2.age)
+    println("  Address: {}, {}, {}", 
+            person2.address.street, person2.address.city, person2.address.zip)
+}
+
+// ============================================================================
+// Example 8: Configuration Objects
+// ============================================================================
+
+struct ServerConfig {
+    host: string,
+    port: i32,
+    timeout: i32,
+    max_connections: i32,
+    debug: bool,
+}
+
+const DEFAULT_CONFIG: ServerConfig = ServerConfig {
+    host: "localhost",
+    port: 8080,
+    timeout: 30,
+    max_connections: 1000,
+    debug: false,
+}
+
+fn test_configuration() -> void {
+    println("\n=== Configuration Objects ===")
+    
+    // Use defaults
+    let config1 = DEFAULT_CONFIG
+    println("Default config: {}:{}", config1.host, config1.port)
+    
+    // Override specific fields
+    let dev_config = ServerConfig {
+        port: 3000,
+        debug: true,
+        ..DEFAULT_CONFIG
+    }
+    println("Dev config: {}:{} (debug: {})", 
+            dev_config.host, dev_config.port, dev_config.debug)
+    
+    // Production config
+    let prod_config = ServerConfig {
+        host: "api.example.com",
+        port: 443,
+        timeout: 60,
+        max_connections: 5000,
+        ..DEFAULT_CONFIG
+    }
+    println("Prod config: {}:{} (max_conn: {})", 
+            prod_config.host, prod_config.port, prod_config.max_connections)
+}
+
+// ============================================================================
+// Example 9: Builder Pattern Alternative
+// ============================================================================
+
+struct HttpRequest {
+    method: string,
+    url: string,
+    headers: HashMap<string, string>,
+    body: Option<string>,
+    timeout: i32,
+}
+
+impl HttpRequest {
+    fn default() -> HttpRequest {
+        HttpRequest {
+            method: "GET",
+            url: "",
+            headers: HashMap::new(),
+            body: None,
+            timeout: 30,
+        }
+    }
+}
+
+fn test_builder_alternative() -> void {
+    println("\n=== Builder Pattern Alternative ===")
+    
+    let url = "https://api.example.com/users"
+    let method = "POST"
+    
+    let request = HttpRequest {
+        method,
+        url,
+        body: Some("{\"name\": \"Alice\"}"),
+        ..HttpRequest::default()
+    }
+    
+    println("Request: {} {}", request.method, request.url)
+    println("  Timeout: {}s", request.timeout)
+}
+
+// ============================================================================
+// Example 10: Database Records
+// ============================================================================
+
+struct DbRecord {
+    id: i64,
+    created_at: i64,
+    updated_at: i64,
+    data: string,
+}
+
+fn create_record(data: string) -> DbRecord {
+    let now = current_timestamp()
+    
+    DbRecord {
+        id: generate_id(),
+        created_at: now,
+        updated_at: now,
+        data,
+    }
+}
+
+fn update_record(record: DbRecord, data: string) -> DbRecord {
+    DbRecord {
+        data,
+        updated_at: current_timestamp(),
+        ..record
+    }
+}
+
+fn test_database_records() -> void {
+    println("\n=== Database Records ===")
+    
+    let record = create_record("Initial data")
+    println("Created record #{}", record.id)
+    println("  Data: {}", record.data)
+    
+    let updated = update_record(record, "Updated data")
+    println("Updated record #{}", updated.id)
+    println("  Data: {}", updated.data)
+    println("  Updated at: {}", updated.updated_at)
+}
+
+// ============================================================================
+// Example 11: Color Manipulation
+// ============================================================================
+
+struct Rgba {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+const RED: Rgba = Rgba { r: 255, g: 0, b: 0, a: 255 }
+const GREEN: Rgba = Rgba { r: 0, g: 255, b: 0, a: 255 }
+const BLUE: Rgba = Rgba { r: 0, g: 0, b: 255, a: 255 }
+
+fn with_alpha(color: Rgba, alpha: u8) -> Rgba {
+    Rgba {
+        a: alpha,
+        ..color
+    }
+}
+
+fn test_color_manipulation() -> void {
+    println("\n=== Color Manipulation ===")
+    
+    println("Red: RGB({}, {}, {})", RED.r, RED.g, RED.b)
+    
+    let semi_transparent_red = with_alpha(RED, 128)
+    println("Semi-transparent red: RGBA({}, {}, {}, {})", 
+            semi_transparent_red.r, semi_transparent_red.g, 
+            semi_transparent_red.b, semi_transparent_red.a)
+    
+    let custom_color = Rgba {
+        r: 100,
+        g: 150,
+        b: 200,
+        a: 255,
+    }
+    println("Custom color: RGBA({}, {}, {}, {})", 
+            custom_color.r, custom_color.g, custom_color.b, custom_color.a)
+}
+
+// ============================================================================
+// Example 12: Event Handling
+// ============================================================================
+
+enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+struct ClickEvent {
+    x: i32,
+    y: i32,
+    button: MouseButton,
+    timestamp: i64,
+}
+
+fn handle_click(x: i32, y: i32, button: MouseButton) -> void {
+    let event = ClickEvent {
+        x,
+        y,
+        button,
+        timestamp: current_timestamp(),
+    }
+    
+    println("Click event at ({}, {}) - button: {:?}", 
+            event.x, event.y, event.button)
+}
+
+fn test_event_handling() -> void {
+    println("\n=== Event Handling ===")
+    
+    handle_click(100, 200, MouseButton::Left)
+    handle_click(50, 75, MouseButton::Right)
+}
+
+// ============================================================================
+// Example 13: Test Data Creation
+// ============================================================================
+
+fn create_test_user(name: string) -> User {
+    let email = format!("{}@test.com", name.to_lowercase())
+    
+    User {
+        name,
+        age: 25,
+        email,
+    }
+}
+
+fn test_test_data() -> void {
+    println("\n=== Test Data Creation ===")
+    
+    let users = vec![
+        create_test_user("Alice"),
+        create_test_user("Bob"),
+        create_test_user("Charlie"),
+    ]
+    
+    for user in users {
+        println("Test user: {} - {}", user.name, user.email)
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn current_timestamp() -> i64 {
+    // Placeholder
+    1234567890
+}
+
+fn generate_id() -> i64 {
+    // Placeholder
+    42
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> void {
+    test_basic_literals()
+    test_shorthand_syntax()
+    test_shorthand_in_functions()
+    test_struct_update()
+    test_anonymous_structs()
+    test_tuple_structs()
+    test_nested_structs()
+    test_configuration()
+    test_builder_alternative()
+    test_database_records()
+    test_color_manipulation()
+    test_event_handling()
+    test_test_data()
+    
+    println("\n=== All struct literal examples completed! ===")
+}

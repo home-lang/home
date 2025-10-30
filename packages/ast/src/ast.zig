@@ -42,6 +42,17 @@ pub const ArgumentResolver = parameter_nodes.ArgumentResolver;
 pub const ParameterValidator = parameter_nodes.ParameterValidator;
 pub const BuiltinDefaults = parameter_nodes.BuiltinDefaults;
 
+// Export struct literal nodes
+pub const struct_literal_nodes = @import("struct_literal_nodes.zig");
+pub const StructLiteralExpr = struct_literal_nodes.StructLiteralExpr;
+pub const FieldInit = struct_literal_nodes.FieldInit;
+pub const StructUpdate = struct_literal_nodes.StructUpdate;
+pub const TupleStructLiteral = struct_literal_nodes.TupleStructLiteral;
+pub const AnonymousStruct = struct_literal_nodes.AnonymousStruct;
+pub const FieldPunning = struct_literal_nodes.FieldPunning;
+pub const StructLiteralPattern = struct_literal_nodes.StructLiteralPattern;
+pub const StructLiteralBuilder = struct_literal_nodes.StructLiteralBuilder;
+
 /// Enumeration of all Abstract Syntax Tree node types in Home.
 ///
 /// This enum categorizes every kind of AST node that can appear in an
@@ -87,6 +98,9 @@ pub const NodeType = enum {
     MacroExpr,
     InlineAsm,
     ClosureExpr,
+    StructLiteral,
+    TupleStructLiteral,
+    AnonymousStruct,
 
     // Statements
     ImportDecl,
