@@ -57,4 +57,5 @@ pub const traits = struct {
     pub const VTable = traits_pkg.TraitSystem.VTable;
     pub const TraitObject = traits_pkg.TraitSystem.TraitObject;
     pub const BuiltinTraits = traits_pkg.BuiltinTraits;
+    pub const OperatorTraits = traits_pkg.OperatorTraits;
 };

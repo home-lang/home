@@ -1,6 +1,33 @@
 const std = @import("std");
 const ast = @import("ast");
 
+// Export operator overloading traits
+pub const operator_traits = @import("operator_traits.zig");
+pub const OperatorTraits = struct {
+    pub const Add = operator_traits.Add;
+    pub const Sub = operator_traits.Sub;
+    pub const Mul = operator_traits.Mul;
+    pub const Div = operator_traits.Div;
+    pub const Rem = operator_traits.Rem;
+    pub const Neg = operator_traits.Neg;
+    pub const Not = operator_traits.Not;
+    pub const BitAnd = operator_traits.BitAnd;
+    pub const BitOr = operator_traits.BitOr;
+    pub const BitXor = operator_traits.BitXor;
+    pub const Shl = operator_traits.Shl;
+    pub const Shr = operator_traits.Shr;
+    pub const AddAssign = operator_traits.AddAssign;
+    pub const SubAssign = operator_traits.SubAssign;
+    pub const MulAssign = operator_traits.MulAssign;
+    pub const DivAssign = operator_traits.DivAssign;
+    pub const RemAssign = operator_traits.RemAssign;
+    pub const Index = operator_traits.Index;
+    pub const IndexMut = operator_traits.IndexMut;
+    pub const Deref = operator_traits.Deref;
+    pub const DerefMut = operator_traits.DerefMut;
+    pub const OperatorTraitMap = operator_traits.OperatorTraitMap;
+};
+
 /// Trait system for Home (similar to Rust traits / TypeScript interfaces)
 /// Provides polymorphism, code reuse, and abstraction
 pub const TraitSystem = struct {
