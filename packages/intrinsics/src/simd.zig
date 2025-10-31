@@ -268,3 +268,177 @@ test "fused multiply-add" {
     try testing.expectEqual(@as(f32, 13.0), result[2]);
     try testing.expectEqual(@as(f32, 21.0), result[3]);
 }
+
+// Advanced SIMD operations
+pub const AdvancedOps = struct {
+    /// Horizontal sum with explicit reduction
+    pub fn horizontalSum(comptime len: comptime_int, comptime T: type, vec: Vector(len, T)) T {
+        var result = vec[0];
+        comptime var i = 1;
+        inline while (i < len) : (i += 1) {
+            result += vec[i];
+        }
+        return result;
+    }
+
+    /// Matrix-vector multiply (4x4 matrix * 4-element vector)
+    pub fn matrixVectorMul4(matrix: [4]Vec4f32, vec: Vec4f32) Vec4f32 {
+        const row0 = Operations.dot(4, f32, matrix[0], vec);
+        const row1 = Operations.dot(4, f32, matrix[1], vec);
+        const row2 = Operations.dot(4, f32, matrix[2], vec);
+        const row3 = Operations.dot(4, f32, matrix[3], vec);
+        return Vec4f32{ row0, row1, row2, row3 };
+    }
+
+    /// Cross product for 3D vectors (stored in Vec4 with w=0)
+    pub fn cross3(a: Vec4f32, b: Vec4f32) Vec4f32 {
+        return Vec4f32{
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+            0.0,
+        };
+    }
+
+    /// Linear interpolation
+    pub fn lerp(comptime len: comptime_int, a: Vector(len, f32), b: Vector(len, f32), t: f32) Vector(len, f32) {
+        const t_vec = Operations.splat(len, f32, t);
+        const one_minus_t = Operations.splat(len, f32, 1.0 - t);
+        return a * one_minus_t + b * t_vec;
+    }
+
+    /// Clamp vector values between min and max
+    pub fn clamp(comptime len: comptime_int, comptime T: type, vec: Vector(len, T), min_val: T, max_val: T) Vector(len, T) {
+        const min_vec = Operations.splat(len, T, min_val);
+        const max_vec = Operations.splat(len, T, max_val);
+        return Operations.min(len, T, Operations.max(len, T, vec, min_vec), max_vec);
+    }
+
+    /// Sum of absolute differences
+    pub fn sad(comptime len: comptime_int, a: Vector(len, i32), b: Vector(len, i32)) i32 {
+        const diff = a - b;
+        const abs_diff = Operations.abs(len, i32, diff);
+        return Operations.reduce(len, i32, abs_diff);
+    }
+
+    /// Population count (count set bits) for each element
+    pub fn popcount(comptime len: comptime_int, vec: Vector(len, u32)) Vector(len, u32) {
+        var result: Vector(len, u32) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @popCount(vec[i]);
+        }
+        return result;
+    }
+
+    /// Reverse bits in each element
+    pub fn bitReverse(comptime len: comptime_int, vec: Vector(len, u32)) Vector(len, u32) {
+        var result: Vector(len, u32) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @bitReverse(vec[i]);
+        }
+        return result;
+    }
+
+    /// Count leading zeros for each element
+    pub fn clz(comptime len: comptime_int, vec: Vector(len, u32)) Vector(len, u32) {
+        var result: Vector(len, u32) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @clz(vec[i]);
+        }
+        return result;
+    }
+
+    /// Count trailing zeros for each element
+    pub fn ctz(comptime len: comptime_int, vec: Vector(len, u32)) Vector(len, u32) {
+        var result: Vector(len, u32) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @ctz(vec[i]);
+        }
+        return result;
+    }
+
+    /// Byte swap for endian conversion
+    pub fn byteSwap(comptime len: comptime_int, vec: Vector(len, u32)) Vector(len, u32) {
+        var result: Vector(len, u32) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @byteSwap(vec[i]);
+        }
+        return result;
+    }
+
+    /// Saturating add
+    pub fn addSaturate(comptime len: comptime_int, a: Vector(len, u8), b: Vector(len, u8)) Vector(len, u8) {
+        var result: Vector(len, u8) = undefined;
+        inline for (0..len) |i| {
+            const sum: u16 = @as(u16, a[i]) + @as(u16, b[i]);
+            result[i] = if (sum > 255) 255 else @truncate(sum);
+        }
+        return result;
+    }
+
+    /// Saturating subtract
+    pub fn subSaturate(comptime len: comptime_int, a: Vector(len, u8), b: Vector(len, u8)) Vector(len, u8) {
+        var result: Vector(len, u8) = undefined;
+        inline for (0..len) |i| {
+            result[i] = if (a[i] > b[i]) a[i] - b[i] else 0;
+        }
+        return result;
+    }
+
+    /// Average (a + b + 1) / 2
+    pub fn average(comptime len: comptime_int, a: Vector(len, u8), b: Vector(len, u8)) Vector(len, u8) {
+        var result: Vector(len, u8) = undefined;
+        inline for (0..len) |i| {
+            result[i] = @truncate((@as(u16, a[i]) + @as(u16, b[i]) + 1) / 2);
+        }
+        return result;
+    }
+};
+
+test "advanced horizontal sum" {
+    const testing = std.testing;
+
+    const vec = Vec4i32{ 1, 2, 3, 4 };
+    const sum = AdvancedOps.horizontalSum(4, i32, vec);
+
+    try testing.expectEqual(@as(i32, 10), sum);
+}
+
+test "cross product" {
+    const testing = std.testing;
+
+    const a = Vec4f32{ 1.0, 0.0, 0.0, 0.0 };
+    const b = Vec4f32{ 0.0, 1.0, 0.0, 0.0 };
+    const result = AdvancedOps.cross3(a, b);
+
+    try testing.expectEqual(@as(f32, 0.0), result[0]);
+    try testing.expectEqual(@as(f32, 0.0), result[1]);
+    try testing.expectEqual(@as(f32, 1.0), result[2]);
+}
+
+test "vector clamp" {
+    const testing = std.testing;
+
+    const vec = Vec4f32{ -1.0, 0.5, 1.5, 2.0 };
+    const result = AdvancedOps.clamp(4, f32, vec, 0.0, 1.0);
+
+    try testing.expectEqual(@as(f32, 0.0), result[0]);
+    try testing.expectEqual(@as(f32, 0.5), result[1]);
+    try testing.expectEqual(@as(f32, 1.0), result[2]);
+    try testing.expectEqual(@as(f32, 1.0), result[3]);
+}
+
+test "saturating operations" {
+    const testing = std.testing;
+
+    const a = @Vector(4, u8){ 250, 100, 50, 10 };
+    const b = @Vector(4, u8){ 10, 50, 100, 250 };
+
+    const add_result = AdvancedOps.addSaturate(4, a, b);
+    try testing.expectEqual(@as(u8, 255), add_result[0]); // 250+10 saturates to 255
+    try testing.expectEqual(@as(u8, 150), add_result[1]);
+
+    const sub_result = AdvancedOps.subSaturate(4, a, b);
+    try testing.expectEqual(@as(u8, 240), sub_result[0]); // 250-10
+    try testing.expectEqual(@as(u8, 0), sub_result[3]); // 10-250 saturates to 0
+}

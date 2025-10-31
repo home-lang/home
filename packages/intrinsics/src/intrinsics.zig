@@ -14,6 +14,9 @@ pub const crypto = @import("crypto.zig");
 pub const bmi = @import("bmi.zig");
 pub const float = @import("float.zig");
 pub const system = @import("system.zig");
+pub const x86_simd = @import("x86_simd.zig");
+pub const performance = @import("performance_counters.zig");
+pub const arm64 = @import("arm64.zig");
 
 // Re-export commonly used types
 pub const AtomicValue = atomic.AtomicValue;
@@ -39,4 +42,7 @@ test "intrinsics module imports" {
     _ = bmi;
     _ = float;
     _ = system;
+    _ = x86_simd;
+    _ = performance;
+    _ = arm64;
 }

@@ -45,12 +45,12 @@ pub const PoolManager = struct {
 
     pub fn initWithConfigs(parent: std.mem.Allocator, configs: []const PoolConfig) !PoolManager {
         var pools = try std.ArrayList(ManagedPool).initCapacity(parent, configs.len);
-        errdefer pools.deinit();
+        errdefer pools.deinit(parent);
 
         // Create pools for each size class
         for (configs) |config| {
             const pool = try Pool.init(parent, config.block_size, config.initial_count);
-            try pools.append(.{
+            try pools.append(parent, .{
                 .pool = pool,
                 .config = config,
                 .active_allocations = 0,
@@ -75,7 +75,7 @@ pub const PoolManager = struct {
         for (self.pools.items) |*managed| {
             managed.pool.deinit();
         }
-        self.pools.deinit();
+        self.pools.deinit(self.parent_allocator);
     }
 
     pub fn allocator(self: *PoolManager) std.mem.Allocator {
@@ -100,7 +100,7 @@ pub const PoolManager = struct {
             const managed = &self.pools.items[index];
 
             // Try to allocate from pool
-            const result = managed.pool.allocator().rawAlloc(len, ptr_align.toByteUnits(), @returnAddress());
+            const result = managed.pool.allocator().rawAlloc(len, ptr_align, @returnAddress());
             if (result) |ptr| {
                 managed.active_allocations += 1;
                 self.stats.recordAlloc(len);
@@ -115,7 +115,7 @@ pub const PoolManager = struct {
         }
 
         // Use parent allocator for large allocations or when pools are exhausted
-        const result = self.parent_allocator.rawAlloc(len, ptr_align.toByteUnits(), ret_addr) orelse return null;
+        const result = self.parent_allocator.rawAlloc(len, ptr_align, ret_addr) orelse return null;
         self.stats.recordAlloc(len);
         return result;
     }
@@ -133,7 +133,7 @@ pub const PoolManager = struct {
         }
 
         // Try parent allocator resize
-        return self.parent_allocator.rawResize(buf, buf_align.toByteUnits(), new_len, ret_addr);
+        return self.parent_allocator.rawResize(buf, buf_align, new_len, ret_addr);
     }
 
     fn free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
@@ -142,12 +142,12 @@ pub const PoolManager = struct {
         // Check if allocation came from a pool
         if (self.findPoolForPointer(buf.ptr)) |index| {
             const managed = &self.pools.items[index];
-            managed.pool.allocator().rawFree(buf, buf_align.toByteUnits(), ret_addr);
+            managed.pool.allocator().rawFree(buf, buf_align, ret_addr);
             managed.active_allocations -= 1;
             self.stats.recordFree(buf.len);
         } else {
             // Free from parent allocator
-            self.parent_allocator.rawFree(buf, buf_align.toByteUnits(), ret_addr);
+            self.parent_allocator.rawFree(buf, buf_align, ret_addr);
             self.stats.recordFree(buf.len);
         }
     }
@@ -207,8 +207,8 @@ pub const PoolManager = struct {
     };
 
     pub fn getUtilization(self: *const PoolManager) !std.ArrayList(PoolUtilization) {
-        var result = std.ArrayList(PoolUtilization).init(self.parent_allocator);
-        errdefer result.deinit();
+        var result = try std.ArrayList(PoolUtilization).initCapacity(self.parent_allocator, self.pools.items.len);
+        errdefer result.deinit(self.parent_allocator);
 
         for (self.pools.items) |managed| {
             const utilization: f64 = if (managed.pool.block_count > 0)
@@ -216,7 +216,7 @@ pub const PoolManager = struct {
             else
                 0.0;
 
-            try result.append(.{
+            try result.append(self.parent_allocator, .{
                 .block_size = managed.pool.block_size,
                 .total_blocks = managed.pool.block_count,
                 .active_allocations = managed.active_allocations,
@@ -280,8 +280,8 @@ test "pool manager utilization tracking" {
     const alloc2 = try allocator.alloc(u8, 32);
     _ = alloc2;
 
-    const utilization = try manager.getUtilization();
-    defer utilization.deinit();
+    var utilization = try manager.getUtilization();
+    defer utilization.deinit(testing.allocator);
 
     // Check that we have utilization data
     try testing.expect(utilization.items.len > 0);
