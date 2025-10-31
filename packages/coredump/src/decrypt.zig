@@ -213,7 +213,7 @@ test "encrypt and decrypt roundtrip" {
     defer key.deinit();
 
     const original = "crash dump data with sensitive info";
-    var metadata = try coredump.DumpMetadata.init(9999, "crasher", 6);
+    const metadata = try coredump.DumpMetadata.init(9999, "crasher", 6);
 
     var encrypted = try encrypt.encryptDump(testing.allocator, original, metadata, &key);
     defer encrypted.deinit();
@@ -234,7 +234,7 @@ test "decrypt with wrong key" {
     defer key2.deinit();
 
     const data = "secret data";
-    var metadata = try coredump.DumpMetadata.init(1, "test", 11);
+    const metadata = try coredump.DumpMetadata.init(1, "test", 11);
 
     var encrypted = try encrypt.encryptDump(testing.allocator, data, metadata, &key1);
     defer encrypted.deinit();
@@ -249,12 +249,12 @@ test "decrypt with keyring" {
     var keyring = keys.KeyRing.init(testing.allocator);
     defer keyring.deinit();
 
-    var key = try keys.EncryptionKey.generate(testing.allocator, .aes_256_gcm);
+    const key = try keys.EncryptionKey.generate(testing.allocator, .aes_256_gcm);
     const key_id = key.key_id;
     try keyring.addKey(key);
 
     const data = "dump data";
-    var metadata = try coredump.DumpMetadata.init(100, "app", 9);
+    const metadata = try coredump.DumpMetadata.init(100, "app", 9);
 
     var encrypted = try encrypt.encryptDump(testing.allocator, data, metadata, keyring.findKey(&key_id).?);
     defer encrypted.deinit();

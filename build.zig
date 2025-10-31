@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     const mac_pkg = createPackage(b, "packages/mac/src/mac.zig", target, optimize);
     const tpm_pkg = createPackage(b, "packages/tpm/src/tpm.zig", target, optimize);
     const modsign_pkg = createPackage(b, "packages/modsign/src/modsign.zig", target, optimize);
+    const coredump_pkg = createPackage(b, "packages/coredump/src/coredump.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -435,6 +436,11 @@ pub fn build(b: *std.Build) void {
     const modsign_tests = b.addTest(.{ .root_module = modsign_pkg });
     const run_modsign_tests = b.addRunArtifact(modsign_tests);
     test_step.dependOn(&run_modsign_tests.step);
+
+    // Coredump tests
+    const coredump_tests = b.addTest(.{ .root_module = coredump_pkg });
+    const run_coredump_tests = b.addRunArtifact(coredump_tests);
+    test_step.dependOn(&run_coredump_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1

@@ -199,7 +199,7 @@ test "encrypt and decrypt dump" {
     defer key.deinit();
 
     const dump_data = "sensitive crash data here";
-    var metadata = try coredump.DumpMetadata.init(1234, "testproc", 11);
+    const metadata = try coredump.DumpMetadata.init(1234, "testproc", 11);
 
     var encrypted = try encryptDump(testing.allocator, dump_data, metadata, &key);
     defer encrypted.deinit();

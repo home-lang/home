@@ -222,7 +222,7 @@ test "process snapshot" {
     var snapshot = ProcessSnapshot.init(testing.allocator, 1234);
     defer snapshot.deinit();
 
-    var region = try MemoryRegion.init(testing.allocator, .heap, 0x1000, 0x2000, 0x6);
+    const region = try MemoryRegion.init(testing.allocator, .heap, 0x1000, 0x2000, 0x6);
     try snapshot.addRegion(region);
 
     try testing.expectEqual(@as(usize, 0x1000), snapshot.totalSize());

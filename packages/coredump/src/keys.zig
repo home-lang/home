@@ -293,7 +293,7 @@ test "keyring operations" {
     var keyring = KeyRing.init(testing.allocator);
     defer keyring.deinit();
 
-    var key1 = try EncryptionKey.generate(testing.allocator, .aes_256_gcm);
+    const key1 = try EncryptionKey.generate(testing.allocator, .aes_256_gcm);
     const key1_id = key1.key_id;
 
     try keyring.addKey(key1);
@@ -309,7 +309,7 @@ test "key rotation" {
     var keyring = KeyRing.init(testing.allocator);
     defer keyring.deinit();
 
-    var key1 = try EncryptionKey.generate(testing.allocator, .aes_256_gcm);
+    const key1 = try EncryptionKey.generate(testing.allocator, .aes_256_gcm);
     const key1_id = key1.key_id;
     try keyring.addKey(key1);
 
