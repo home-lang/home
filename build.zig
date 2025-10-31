@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
     const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize);
     const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize);
     const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize);
+    const signal_pkg = createPackage(b, "packages/signal/src/signal.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -382,6 +383,13 @@ pub fn build(b: *std.Build) void {
 
     const run_syscall_tests = b.addRunArtifact(syscall_tests);
 
+    // Signal tests
+    const signal_tests = b.addTest(.{
+        .root_module = signal_pkg,
+    });
+
+    const run_signal_tests = b.addRunArtifact(signal_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
@@ -402,6 +410,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_math_tests.step);
     test_step.dependOn(&run_env_tests.step);
     test_step.dependOn(&run_syscall_tests.step);
+    test_step.dependOn(&run_signal_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
