@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
     const drivers_pkg = createPackage(b, "packages/drivers/src/main.zig", target, optimize);
     const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize);
     const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize);
+    const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -501,6 +502,11 @@ pub fn build(b: *std.Build) void {
     const inline_tests = b.addTest(.{ .root_module = inline_pkg });
     const run_inline_tests = b.addRunArtifact(inline_tests);
     test_step.dependOn(&run_inline_tests.step);
+
+    // Register allocation tests
+    const regalloc_tests = b.addTest(.{ .root_module = regalloc_pkg });
+    const run_regalloc_tests = b.addRunArtifact(regalloc_tests);
+    test_step.dependOn(&run_regalloc_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1

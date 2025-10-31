@@ -11,3 +11,4 @@ pantry/
 packages/.DS_Store
 /packages/drivers/.zig-cache
 /packages/inline/.zig-cache
+/packages/regalloc/.zig-cache

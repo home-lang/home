@@ -1,0 +1,5 @@
+[package]
+name = "regalloc"
+version = "0.1.0"
+description = "Register allocation hints and manual optimization"
+authors = ["Home Language Team"]
