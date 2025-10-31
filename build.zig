@@ -55,6 +55,7 @@ pub fn build(b: *std.Build) void {
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize);
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize);
+    const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -341,6 +342,13 @@ pub fn build(b: *std.Build) void {
 
     const run_memory_tests = b.addRunArtifact(memory_tests);
 
+    // Intrinsics tests
+    const intrinsics_tests = b.addTest(.{
+        .root_module = intrinsics_pkg,
+    });
+
+    const run_intrinsics_tests = b.addRunArtifact(intrinsics_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
@@ -356,6 +364,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_database_tests.step);
     test_step.dependOn(&run_threading_tests.step);
     test_step.dependOn(&run_memory_tests.step);
+    test_step.dependOn(&run_intrinsics_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
