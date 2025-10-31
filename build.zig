@@ -69,6 +69,9 @@ pub fn build(b: *std.Build) void {
     const usb_pkg = createPackage(b, "packages/usb/src/usb.zig", target, optimize);
     const iommu_pkg = createPackage(b, "packages/iommu/src/iommu.zig", target, optimize);
     const timing_pkg = createPackage(b, "packages/timing/src/timing.zig", target, optimize);
+    const bootloader_pkg = createPackage(b, "packages/bootloader/src/bootloader.zig", target, optimize);
+    const ipv6_pkg = createPackage(b, "packages/ipv6/src/ipv6.zig", target, optimize);
+    const dtb_pkg = createPackage(b, "packages/dtb/src/main.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -465,6 +468,21 @@ pub fn build(b: *std.Build) void {
     const timing_tests = b.addTest(.{ .root_module = timing_pkg });
     const run_timing_tests = b.addRunArtifact(timing_tests);
     test_step.dependOn(&run_timing_tests.step);
+
+    // Bootloader tests
+    const bootloader_tests = b.addTest(.{ .root_module = bootloader_pkg });
+    const run_bootloader_tests = b.addRunArtifact(bootloader_tests);
+    test_step.dependOn(&run_bootloader_tests.step);
+
+    // IPv6 networking tests
+    const ipv6_tests = b.addTest(.{ .root_module = ipv6_pkg });
+    const run_ipv6_tests = b.addRunArtifact(ipv6_tests);
+    test_step.dependOn(&run_ipv6_tests.step);
+
+    // Device Tree Binary tests
+    const dtb_tests = b.addTest(.{ .root_module = dtb_pkg });
+    const run_dtb_tests = b.addRunArtifact(dtb_tests);
+    test_step.dependOn(&run_dtb_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
