@@ -59,7 +59,7 @@ pub const Time = struct {
     }
 
     pub fn format(
-        self: Time,
+        self: *const Time,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,

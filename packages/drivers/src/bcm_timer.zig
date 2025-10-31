@@ -1,20 +1,20 @@
 // Home Programming Language - BCM2835/BCM2711 System Timer Driver
 // For Raspberry Pi 3/4
 
-const Basics = @import("basics");
+const std = @import("std");
 
 // ============================================================================
 // BCM System Timer Registers
 // ============================================================================
 
 pub const SystemTimerRegs = extern struct {
-    control_status: volatile u32, // Control/Status
-    counter_lo: volatile u32, // Counter lower 32 bits
-    counter_hi: volatile u32, // Counter upper 32 bits
-    compare0: volatile u32, // Compare 0
-    compare1: volatile u32, // Compare 1
-    compare2: volatile u32, // Compare 2
-    compare3: volatile u32, // Compare 3
+    control_status: u32, // Control/Status
+    counter_lo: u32, // Counter lower 32 bits
+    counter_hi: u32, // Counter upper 32 bits
+    compare0: u32, // Compare 0
+    compare1: u32, // Compare 1
+    compare2: u32, // Compare 2
+    compare3: u32, // Compare 3
 };
 
 // System Timer base addresses
@@ -136,7 +136,7 @@ pub const SystemTimer = struct {
         // Read high, then low, then high again to ensure consistency
         var hi1 = self.regs.counter_hi;
         var lo = self.regs.counter_lo;
-        var hi2 = self.regs.counter_hi;
+        const hi2 = self.regs.counter_hi;
 
         // If high changed, re-read low
         if (hi1 != hi2) {
@@ -374,17 +374,17 @@ pub const PerfCounter = struct {
 // ============================================================================
 
 test "System timer register layout" {
-    try Basics.testing.expectEqual(@as(usize, 28), @sizeOf(SystemTimerRegs));
-    try Basics.testing.expectEqual(@as(usize, 0), @offsetOf(SystemTimerRegs, "control_status"));
-    try Basics.testing.expectEqual(@as(usize, 4), @offsetOf(SystemTimerRegs, "counter_lo"));
+    try std.testing.expectEqual(@as(usize, 28), @sizeOf(SystemTimerRegs));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(SystemTimerRegs, "control_status"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(SystemTimerRegs, "counter_lo"));
 }
 
 test "ARM timer frequency" {
     const freq = ArmTimer.getFrequency();
-    try Basics.testing.expect(freq > 0);
+    try std.testing.expect(freq > 0);
 }
 
 test "Timer addresses" {
-    try Basics.testing.expectEqual(@as(u64, 0x3F003000), BCM2835_TIMER_BASE);
-    try Basics.testing.expectEqual(@as(u64, 0xFE003000), BCM2711_TIMER_BASE);
+    try std.testing.expectEqual(@as(u64, 0x3F003000), BCM2835_TIMER_BASE);
+    try std.testing.expectEqual(@as(u64, 0xFE003000), BCM2711_TIMER_BASE);
 }

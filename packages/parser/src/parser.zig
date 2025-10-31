@@ -210,7 +210,7 @@ pub const Parser = struct {
     /// Check if we've reached the end of the token stream.
     ///
     /// Returns: true if current token is EOF, false otherwise
-    fn isAtEnd(self: *Parser) bool {
+    pub fn isAtEnd(self: *Parser) bool {
         return self.peek().type == .Eof;
     }
 
@@ -236,7 +236,7 @@ pub const Parser = struct {
     /// Get the most recently consumed token.
     ///
     /// Returns: The token just before the current position
-    fn previous(self: *Parser) Token {
+    pub fn previous(self: *Parser) Token {
         return self.tokens[self.current - 1];
     }
 
@@ -254,7 +254,7 @@ pub const Parser = struct {
     ///   - token_type: The type to check for
     ///
     /// Returns: true if current token matches, false otherwise
-    fn check(self: *Parser, token_type: TokenType) bool {
+    pub fn check(self: *Parser, token_type: TokenType) bool {
         if (self.isAtEnd()) return false;
         return self.peek().type == token_type;
     }
@@ -269,7 +269,7 @@ pub const Parser = struct {
     ///   - types: Slice of token types to check against
     ///
     /// Returns: true and advances if match found, false otherwise
-    fn match(self: *Parser, types: []const TokenType) bool {
+    pub fn match(self: *Parser, types: []const TokenType) bool {
         for (types) |t| {
             if (self.check(t)) {
                 _ = self.advance();
@@ -291,7 +291,7 @@ pub const Parser = struct {
     ///
     /// Returns: The expected token if found
     /// Errors: UnexpectedToken if current token doesn't match
-    fn expect(self: *Parser, token_type: TokenType, message: []const u8) ParseError!Token {
+    pub fn expect(self: *Parser, token_type: TokenType, message: []const u8) ParseError!Token {
         if (self.check(token_type)) return self.advance();
         try self.reportError(message);
         return error.UnexpectedToken;

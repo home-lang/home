@@ -1,16 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
-const home = @import("ion");
-const Lexer = ion.lexer.Lexer;
-const Parser = ion.parser.Parser;
-const ast = ion.ast;
+const home = @import("home");
+const Lexer = home.lexer.Lexer;
+const Parser = home.parser.Parser;
+const ast = home.ast;
 
 fn parseSource(allocator: std.mem.Allocator, source: []const u8) !*ast.Program {
     var lexer = Lexer.init(allocator, source);
     var tokens = try lexer.tokenize();
     defer tokens.deinit(allocator);
 
-    var parser = Parser.init(allocator, tokens.items);
+    var parser = try Parser.init(allocator, tokens.items);
     defer parser.deinit();
 
     return try parser.parse();

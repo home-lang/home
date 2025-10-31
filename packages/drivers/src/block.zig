@@ -1,7 +1,7 @@
 // Home Programming Language - Block Device Layer
 // Generic block device abstraction for storage devices
 
-const Basics = @import("basics");
+const std = @import("std");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
 const dma = @import("dma.zig");
@@ -45,7 +45,7 @@ pub const BlockRequest = struct {
     sector: u64,
     count: u32,
     buffer: []u8,
-    callback: ?*const fn (*BlockRequest, error: ?anyerror) void,
+    callback: ?*const fn (*BlockRequest, err: ?anyerror) void,
     user_data: ?*anyopaque,
     next: ?*BlockRequest,
     prev: ?*BlockRequest,
@@ -108,7 +108,7 @@ pub const RequestQueue = struct {
         }
         self.tail = request;
 
-        _ = self.count.fetchAdd(1, .Release);
+        _ = self.count.fetchAdd(1, .release);
     }
 
     pub fn dequeue(self: *RequestQueue) ?*BlockRequest {
@@ -127,7 +127,7 @@ pub const RequestQueue = struct {
         request.next = null;
         request.prev = null;
 
-        _ = self.count.fetchSub(1, .Release);
+        _ = self.count.fetchSub(1, .release);
         return request;
     }
 
@@ -140,7 +140,7 @@ pub const RequestQueue = struct {
     }
 
     pub fn len(self: *const RequestQueue) usize {
-        return self.count.load(.Acquire);
+        return self.count.load(.acquire);
     }
 };
 
@@ -188,7 +188,7 @@ pub const BlockDevice = struct {
         ops: BlockDeviceOps,
     ) BlockDevice {
         var device_name: [32]u8 = undefined;
-        const len = Basics.math.min(name.len, 31);
+        const len = std.math.min(name.len, 31);
         @memcpy(device_name[0..len], name[0..len]);
 
         return .{
@@ -229,8 +229,8 @@ pub const BlockDevice = struct {
             return error.BufferTooSmall;
         }
 
-        _ = self.read_requests.fetchAdd(1, .Monotonic);
-        _ = self.read_sectors.fetchAdd(count, .Monotonic);
+        _ = self.read_requests.fetchAdd(1, .monotonic);
+        _ = self.read_sectors.fetchAdd(count, .monotonic);
 
         try self.ops.read(self, sector, count, buffer);
     }
@@ -249,8 +249,8 @@ pub const BlockDevice = struct {
             return error.BufferTooSmall;
         }
 
-        _ = self.write_requests.fetchAdd(1, .Monotonic);
-        _ = self.write_sectors.fetchAdd(count, .Monotonic);
+        _ = self.write_requests.fetchAdd(1, .monotonic);
+        _ = self.write_sectors.fetchAdd(count, .monotonic);
 
         try self.ops.write(self, sector, count, buffer);
     }
@@ -287,12 +287,12 @@ pub const BlockDevice = struct {
 
     /// Increment reference count
     pub fn acquire(self: *BlockDevice) void {
-        _ = self.refcount.fetchAdd(1, .Monotonic);
+        _ = self.refcount.fetchAdd(1, .monotonic);
     }
 
     /// Decrement reference count
     pub fn release(self: *BlockDevice) void {
-        const old = self.refcount.fetchSub(1, .Release);
+        const old = self.refcount.fetchSub(1, .release);
         if (old == 1) {
             // Last reference - can cleanup
             // TODO: Call device cleanup
@@ -302,18 +302,18 @@ pub const BlockDevice = struct {
     /// Get device statistics
     pub fn getStats(self: *const BlockDevice) DeviceStats {
         return .{
-            .read_requests = self.read_requests.load(.Monotonic),
-            .write_requests = self.write_requests.load(.Monotonic),
-            .read_sectors = self.read_sectors.load(.Monotonic),
-            .write_sectors = self.write_sectors.load(.Monotonic),
-            .errors = self.errors.load(.Monotonic),
+            .read_requests = self.read_requests.load(.monotonic),
+            .write_requests = self.write_requests.load(.monotonic),
+            .read_sectors = self.read_sectors.load(.monotonic),
+            .write_sectors = self.write_sectors.load(.monotonic),
+            .errors = self.errors.load(.monotonic),
         };
     }
 
     pub fn format(
-        self: BlockDevice,
+        self: *const BlockDevice,
         comptime fmt: []const u8,
-        options: Basics.fmt.FormatOptions,
+        options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
         _ = fmt;
@@ -425,7 +425,7 @@ pub fn registerDevice(device: *BlockDevice) !u32 {
     registry_lock.acquire();
     defer registry_lock.release();
 
-    const count = device_count.load(.Acquire);
+    const count = device_count.load(.acquire);
     if (count >= MAX_BLOCK_DEVICES) {
         return error.TooManyDevices;
     }
@@ -434,7 +434,7 @@ pub fn registerDevice(device: *BlockDevice) !u32 {
         if (slot.* == null) {
             slot.* = device;
             device.acquire();
-            _ = device_count.fetchAdd(1, .Release);
+            _ = device_count.fetchAdd(1, .release);
             return @intCast(i);
         }
     }
@@ -452,7 +452,7 @@ pub fn unregisterDevice(device_id: u32) void {
     if (block_devices[device_id]) |device| {
         device.release();
         block_devices[device_id] = null;
-        _ = device_count.fetchSub(1, .Release);
+        _ = device_count.fetchSub(1, .release);
     }
 }
 
@@ -464,7 +464,7 @@ pub fn getDevice(device_id: u32) ?*BlockDevice {
 
 /// Get device count
 pub fn getDeviceCount() usize {
-    return device_count.load(.Acquire);
+    return device_count.load(.acquire);
 }
 
 // ============================================================================
@@ -475,13 +475,13 @@ test "block request" {
     var buffer: [512]u8 = undefined;
     const req = BlockRequest.init(.Read, 0, 1, &buffer);
 
-    try Basics.testing.expectEqual(BlockRequestType.Read, req.request_type);
-    try Basics.testing.expectEqual(@as(u64, 0), req.sector);
-    try Basics.testing.expectEqual(@as(u32, 1), req.count);
+    try std.testing.expectEqual(BlockRequestType.Read, req.request_type);
+    try std.testing.expectEqual(@as(u64, 0), req.sector);
+    try std.testing.expectEqual(@as(u32, 1), req.count);
 }
 
 test "request queue" {
-    const allocator = Basics.testing.allocator;
+    const allocator = std.testing.allocator;
 
     var buffer1: [512]u8 = undefined;
     var buffer2: [512]u8 = undefined;
@@ -490,21 +490,21 @@ test "request queue" {
     var req2 = BlockRequest.init(.Write, 1, 1, &buffer2);
 
     var queue = RequestQueue.init();
-    try Basics.testing.expect(queue.isEmpty());
+    try std.testing.expect(queue.isEmpty());
 
     queue.enqueue(&req1);
-    try Basics.testing.expectEqual(@as(usize, 1), queue.len());
+    try std.testing.expectEqual(@as(usize, 1), queue.len());
 
     queue.enqueue(&req2);
-    try Basics.testing.expectEqual(@as(usize, 2), queue.len());
+    try std.testing.expectEqual(@as(usize, 2), queue.len());
 
     const first = queue.dequeue().?;
-    try Basics.testing.expectEqual(&req1, first);
+    try std.testing.expectEqual(&req1, first);
 
     const second = queue.dequeue().?;
-    try Basics.testing.expectEqual(&req2, second);
+    try std.testing.expectEqual(&req2, second);
 
-    try Basics.testing.expect(queue.isEmpty());
+    try std.testing.expect(queue.isEmpty());
 
     _ = allocator;
 }

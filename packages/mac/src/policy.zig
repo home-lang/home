@@ -88,7 +88,7 @@ pub const Policy = struct {
         const policy = try allocator.create(Policy);
         policy.* = .{
             .allocator = allocator,
-            .rules = std.ArrayList(Rule){},
+            .rules = .{},
             .default_decision = .deny,
         };
         return policy;
@@ -290,8 +290,10 @@ pub const PolicyBuilder = struct {
         object: []const u8,
         operation: Operation,
     ) !*PolicyBuilder {
-        const subj = try SecurityContext.parse(self.allocator, subject);
-        const obj = try SecurityContext.parse(self.allocator, object);
+        var subj = try SecurityContext.parse(self.allocator, subject);
+        defer subj.deinit(self.allocator);
+        var obj = try SecurityContext.parse(self.allocator, object);
+        defer obj.deinit(self.allocator);
 
         try self.policy.addRule(.{
             .subject = subj,
@@ -310,8 +312,10 @@ pub const PolicyBuilder = struct {
         object: []const u8,
         operation: Operation,
     ) !*PolicyBuilder {
-        const subj = try SecurityContext.parse(self.allocator, subject);
-        const obj = try SecurityContext.parse(self.allocator, object);
+        var subj = try SecurityContext.parse(self.allocator, subject);
+        defer subj.deinit(self.allocator);
+        var obj = try SecurityContext.parse(self.allocator, object);
+        defer obj.deinit(self.allocator);
 
         try self.policy.addRule(.{
             .subject = subj,
@@ -354,8 +358,10 @@ test "policy evaluation" {
     var policy = try Policy.init(testing.allocator);
     defer policy.deinit();
 
-    const subject = try SecurityContext.create(testing.allocator, "user_u", "user_r", "user_t", "s0");
-    const object = try SecurityContext.create(testing.allocator, "system_u", "object_r", "file_t", "s0");
+    var subject = try SecurityContext.create(testing.allocator, "user_u", "user_r", "user_t", "s0");
+    defer subject.deinit(testing.allocator);
+    var object = try SecurityContext.create(testing.allocator, "system_u", "object_r", "file_t", "s0");
+    defer object.deinit(testing.allocator);
 
     try policy.addRule(.{
         .subject = subject,

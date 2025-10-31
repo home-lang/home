@@ -1,7 +1,7 @@
 // Home Programming Language - NVMe Driver
 // NVM Express driver for modern SSDs
 
-const Basics = @import("basics");
+const std = @import("std");
 const pci = @import("pci.zig");
 const dma = @import("dma.zig");
 const sync = @import("sync.zig");
@@ -72,10 +72,10 @@ pub const NvmeCommand = extern struct {
     cdw15: u32,
 
     pub fn init(opcode: u8, nsid: u32) NvmeCommand {
-        return Basics.mem.zeroes(NvmeCommand){
-            .opcode = opcode,
-            .nsid = nsid,
-        };
+        var cmd = std.mem.zeroes(NvmeCommand);
+        cmd.opcode = opcode;
+        cmd.nsid = nsid;
+        return cmd;
     }
 };
 
@@ -109,10 +109,10 @@ pub const NvmeQueue = struct {
     queue_id: u16,
     phase: u8,
     lock: sync.Spinlock,
-    allocator: Basics.Allocator,
+    allocator: std.mem.Allocator,
 
     pub fn init(
-        allocator: Basics.Allocator,
+        allocator: std.mem.Allocator,
         doorbell_base: u64,
         queue_id: u16,
         queue_depth: u16,
@@ -281,8 +281,8 @@ pub const NvmeController = struct {
     regs: *volatile NvmeRegs,
     admin_queue: *NvmeQueue,
     io_queue: *NvmeQueue,
-    namespaces: Basics.ArrayList(*NvmeNamespace),
-    allocator: Basics.Allocator,
+    namespaces: std.ArrayList(*NvmeNamespace),
+    allocator: std.mem.Allocator,
     error_count: u32 = 0,
     last_error: ?anyerror = null,
 
@@ -291,7 +291,7 @@ pub const NvmeController = struct {
     pub const MAX_RETRIES: u8 = 3;
     pub const ERROR_THRESHOLD: u32 = 10;
 
-    pub fn init(allocator: Basics.Allocator, pci_device: *pci.PciDevice) !*NvmeController {
+    pub fn init(allocator: std.mem.Allocator, pci_device: *pci.PciDevice) !*NvmeController {
         const controller = try allocator.create(NvmeController);
         errdefer allocator.destroy(controller);
 
@@ -307,7 +307,7 @@ pub const NvmeController = struct {
             .regs = regs,
             .admin_queue = undefined,
             .io_queue = undefined,
-            .namespaces = Basics.ArrayList(*NvmeNamespace).init(allocator),
+            .namespaces = std.ArrayList(*NvmeNamespace).init(allocator),
             .allocator = allocator,
         };
 
@@ -371,7 +371,7 @@ pub const NvmeController = struct {
     }
 
     /// Wait for command completion with timeout
-    fn waitForCompletion(self: *NvmeController, queue: *NvmeQueue, command_id: u16) !NvmeCompletion {
+    fn waitForCompletion(_: *NvmeController, queue: *NvmeQueue, command_id: u16) !NvmeCompletion {
         // Approximate 30 seconds worth of iterations
         const timeout_iterations: u64 = 30_000_000_000;
         var iterations: u64 = 0;
@@ -436,7 +436,7 @@ pub const NvmeController = struct {
 
     fn initializeQueues(self: *NvmeController) !void {
         const queue_depth: u16 = 64;
-        const doorbell_stride = @as(u64, (self.regs.cap >> 32) & 0xF);
+        _ = @as(u64, (self.regs.cap >> 32) & 0xF);
         const doorbell_base = @intFromPtr(self.regs) + 0x1000;
 
         // Create admin queue
@@ -554,7 +554,7 @@ const NvmeBlockDevice = struct {
     }
 };
 
-pub fn registerBlockDevice(allocator: Basics.Allocator, ns: *NvmeNamespace) !*block.BlockDevice {
+pub fn registerBlockDevice(allocator: std.mem.Allocator, ns: *NvmeNamespace) !*block.BlockDevice {
     const nvme_dev = try allocator.create(NvmeBlockDevice);
     nvme_dev.* = .{ .namespace = ns };
 
@@ -579,12 +579,12 @@ pub fn registerBlockDevice(allocator: Basics.Allocator, ns: *NvmeNamespace) !*bl
 
 test "nvme command structure" {
     const cmd = NvmeCommand.init(IO_READ, 1);
-    try Basics.testing.expectEqual(IO_READ, cmd.opcode);
-    try Basics.testing.expectEqual(@as(u32, 1), cmd.nsid);
+    try std.testing.expectEqual(IO_READ, cmd.opcode);
+    try std.testing.expectEqual(@as(u32, 1), cmd.nsid);
 }
 
 test "nvme completion status" {
     var completion: NvmeCompletion = undefined;
     completion.status = 0x0000; // Success
-    try Basics.testing.expect(!completion.isError());
+    try std.testing.expect(!completion.isError());
 }

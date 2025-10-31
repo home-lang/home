@@ -1,7 +1,7 @@
 // Home Programming Language - Intel e1000 Network Driver
 // Driver for Intel 82540/82545/82574 NICs (widely used in VMs)
 
-const Basics = @import("basics");
+const std = @import("std");
 const pci = @import("pci.zig");
 const netdev = @import("netdev.zig");
 const dma = @import("dma.zig");
@@ -125,7 +125,7 @@ pub const E1000Device = struct {
     tx_tail: atomic.AtomicU32,
 
     lock: sync.Spinlock,
-    allocator: Basics.Allocator,
+    allocator: std.mem.Allocator,
 
     // Error handling
     link_up: bool = false,
@@ -138,7 +138,7 @@ pub const E1000Device = struct {
     pub const MAX_TX_RETRIES: u8 = 3;
     pub const ERROR_THRESHOLD: u32 = 20; // Reset after 20 consecutive errors
 
-    pub fn init(allocator: Basics.Allocator, pci_device: *pci.PciDevice) !*E1000Device {
+    pub fn init(allocator: std.mem.Allocator, pci_device: *pci.PciDevice) !*E1000Device {
         const device = try allocator.create(E1000Device);
         errdefer allocator.destroy(device);
 
@@ -507,6 +507,6 @@ const e1000_ops = netdev.NetDeviceOps{
 // ============================================================================
 
 test "e1000 structures" {
-    try Basics.testing.expectEqual(@as(usize, 16), @sizeOf(RxDescriptor));
-    try Basics.testing.expectEqual(@as(usize, 16), @sizeOf(TxDescriptor));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(RxDescriptor));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(TxDescriptor));
 }

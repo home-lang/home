@@ -1,40 +1,40 @@
 // Home Programming Language - BCM2835/BCM2711 GPIO Driver
 // For Raspberry Pi 3/4
 
-const Basics = @import("basics");
+const std = @import("std");
 
 // ============================================================================
 // BCM GPIO Register Layout
 // ============================================================================
 
 pub const GpioRegs = extern struct {
-    gpfsel: [6]volatile u32, // Function select
+    gpfsel: [6]u32, // Function select
     reserved1: u32,
-    gpset: [2]volatile u32, // Pin output set
+    gpset: [2]u32, // Pin output set
     reserved2: u32,
-    gpclr: [2]volatile u32, // Pin output clear
+    gpclr: [2]u32, // Pin output clear
     reserved3: u32,
-    gplev: [2]volatile u32, // Pin level
+    gplev: [2]u32, // Pin level
     reserved4: u32,
-    gpeds: [2]volatile u32, // Event detect status
+    gpeds: [2]u32, // Event detect status
     reserved5: u32,
-    gpren: [2]volatile u32, // Rising edge detect enable
+    gpren: [2]u32, // Rising edge detect enable
     reserved6: u32,
-    gpfen: [2]volatile u32, // Falling edge detect enable
+    gpfen: [2]u32, // Falling edge detect enable
     reserved7: u32,
-    gphen: [2]volatile u32, // High detect enable
+    gphen: [2]u32, // High detect enable
     reserved8: u32,
-    gplen: [2]volatile u32, // Low detect enable
+    gplen: [2]u32, // Low detect enable
     reserved9: u32,
-    gparen: [2]volatile u32, // Async rising edge detect
+    gparen: [2]u32, // Async rising edge detect
     reserved10: u32,
-    gpafen: [2]volatile u32, // Async falling edge detect
+    gpafen: [2]u32, // Async falling edge detect
     reserved11: u32,
-    gppud: volatile u32, // Pull-up/down enable (BCM2835)
-    gppudclk: [2]volatile u32, // Pull-up/down clock (BCM2835)
+    gppud: u32, // Pull-up/down enable (BCM2835)
+    gppudclk: [2]u32, // Pull-up/down clock (BCM2835)
     reserved12: [4]u32,
     // BCM2711 (RPi 4) has different pull-up/down registers at offset 0xE4
-    gpio_pup_pdn_cntrl: [4]volatile u32, // Pull-up/down control (BCM2711)
+    gpio_pup_pdn_cntrl: [4]u32, // Pull-up/down control (BCM2711)
 };
 
 // GPIO base addresses
@@ -284,16 +284,16 @@ fn busyWait(cycles: u32) void {
 // ============================================================================
 
 test "GPIO register size" {
-    try Basics.testing.expectEqual(@as(usize, 0xF4), @sizeOf(GpioRegs));
+    try std.testing.expectEqual(@as(usize, 0xF4), @sizeOf(GpioRegs));
 }
 
 test "GPIO function encoding" {
-    try Basics.testing.expectEqual(@as(u3, 0b000), @intFromEnum(GpioFunction.Input));
-    try Basics.testing.expectEqual(@as(u3, 0b001), @intFromEnum(GpioFunction.Output));
-    try Basics.testing.expectEqual(@as(u3, 0b100), @intFromEnum(GpioFunction.Alt0));
+    try std.testing.expectEqual(@as(u3, 0b000), @intFromEnum(GpioFunction.Input));
+    try std.testing.expectEqual(@as(u3, 0b001), @intFromEnum(GpioFunction.Output));
+    try std.testing.expectEqual(@as(u3, 0b100), @intFromEnum(GpioFunction.Alt0));
 }
 
 test "GPIO pin constants" {
-    try Basics.testing.expectEqual(@as(u8, 14), RaspberryPiPins.UART0_TX);
-    try Basics.testing.expectEqual(@as(u8, 15), RaspberryPiPins.UART0_RX);
+    try std.testing.expectEqual(@as(u8, 14), RaspberryPiPins.UART0_TX);
+    try std.testing.expectEqual(@as(u8, 15), RaspberryPiPins.UART0_RX);
 }

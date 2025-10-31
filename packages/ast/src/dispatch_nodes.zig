@@ -307,7 +307,7 @@ pub const DispatchValidator = struct {
     ) !void {
         // Check if any two variants have overlapping signatures
         for (variants, 0..) |v1, i| {
-            for (variants[i + 1 ..], i + 1..) |v2, _| {
+            for (variants[i + 1 ..]) |v2| {
                 if (signaturesOverlap(v1.params, v2.params)) {
                     if (v1.specificity == v2.specificity) {
                         return error.AmbiguousDispatch;

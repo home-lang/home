@@ -1,7 +1,7 @@
 // Home Programming Language - Device Tree Blob (DTB) Parser
 // For Raspberry Pi and other ARM systems
 
-const Basics = @import("basics");
+const std = @import("std");
 
 // ============================================================================
 // DTB Header
@@ -57,7 +57,7 @@ pub const DTBNode = struct {
 
     pub fn findProperty(self: *const DTBNode, name: []const u8) ?*const DTBProperty {
         for (self.properties) |*prop| {
-            if (Basics.mem.eql(u8, prop.name, name)) {
+            if (std.mem.eql(u8, prop.name, name)) {
                 return prop;
             }
         }
@@ -66,7 +66,7 @@ pub const DTBNode = struct {
 
     pub fn findChild(self: *const DTBNode, name: []const u8) ?*const DTBNode {
         for (self.children) |*child| {
-            if (Basics.mem.eql(u8, child.name, name)) {
+            if (std.mem.eql(u8, child.name, name)) {
                 return child;
             }
         }
@@ -152,7 +152,7 @@ pub const DTBProperty = struct {
         // Compatible property can be multiple null-terminated strings
         var offset: usize = 0;
         while (offset < self.value.len) {
-            const remaining = self.value[offset..];
+            _ = self.value[offset..];
 
             // Find next null terminator
             var end = offset;
@@ -161,7 +161,7 @@ pub const DTBProperty = struct {
             }
 
             const str = self.value[offset..end];
-            if (Basics.mem.eql(u8, str, compat)) {
+            if (std.mem.eql(u8, str, compat)) {
                 return true;
             }
 
@@ -179,9 +179,9 @@ pub const DTBParser = struct {
     data: []const u8,
     header: *const DTBHeader,
     strings: []const u8,
-    allocator: Basics.mem.Allocator,
+    allocator: std.mem.Allocator,
 
-    pub fn init(dtb_addr: u64, allocator: Basics.mem.Allocator) !DTBParser {
+    pub fn init(dtb_addr: u64, allocator: std.mem.Allocator) !DTBParser {
         const header: *const DTBHeader = @ptrFromInt(dtb_addr);
 
         // Verify magic
@@ -241,8 +241,8 @@ pub const DTBParser = struct {
         // Align to 4 bytes
         offset.* = alignForward(offset.*, 4);
 
-        var properties = Basics.ArrayList(DTBProperty).init(self.allocator);
-        var children = Basics.ArrayList(DTBNode).init(self.allocator);
+        var properties = std.ArrayList(DTBProperty).init(self.allocator);
+        var children = std.ArrayList(DTBNode).init(self.allocator);
 
         // Parse properties and child nodes
         while (true) {
@@ -322,7 +322,7 @@ pub const DTBParser = struct {
     }
 
     /// Find node by path (e.g., "/soc/gpio@7e200000")
-    pub fn findNodeByPath(self: *DTBParser, root: *const DTBNode, path: []const u8) ?*const DTBNode {
+    pub fn findNodeByPath(_: *DTBParser, root: *const DTBNode, path: []const u8) ?*const DTBNode {
         if (path.len == 0 or path[0] != '/') return null;
 
         var current = root;
@@ -345,7 +345,7 @@ pub const DTBParser = struct {
     }
 
     /// Find all nodes with a specific compatible string
-    pub fn findCompatibleNodes(self: *DTBParser, root: *const DTBNode, compat: []const u8, results: *Basics.ArrayList(*const DTBNode)) !void {
+    pub fn findCompatibleNodes(self: *DTBParser, root: *const DTBNode, compat: []const u8, results: *std.ArrayList(*const DTBNode)) !void {
         // Check if this node matches
         if (root.findProperty("compatible")) |prop| {
             if (prop.isCompatible(compat)) {
@@ -384,7 +384,7 @@ pub fn parseReg(prop: *const DTBProperty, address_cells: u32, size_cells: u32) !
     const entry_size = (address_cells + size_cells) * 4;
     const count = prop.value.len / entry_size;
 
-    var entries = try Basics.heap.page_allocator.alloc(RegEntry, count);
+    var entries = try std.heap.page_allocator.alloc(RegEntry, count);
 
     var i: usize = 0;
     while (i < count) : (i += 1) {
@@ -424,7 +424,7 @@ pub const RegEntry = struct {
 // ============================================================================
 
 /// Get memory nodes
-pub fn getMemoryInfo(parser: *DTBParser, root: *const DTBNode) ![]RegEntry {
+pub fn getMemoryInfo(_: *DTBParser, root: *const DTBNode) ![]RegEntry {
     const memory = root.findChild("memory") orelse return error.NoMemoryNode;
 
     const reg_prop = memory.findProperty("reg") orelse return error.NoRegProperty;
@@ -451,10 +451,10 @@ pub fn getBootArgs(root: *const DTBNode) ?[]const u8 {
 pub fn getCPUNodes(parser: *DTBParser, root: *const DTBNode) ![]const *const DTBNode {
     const cpus = root.findChild("cpus") orelse return error.NoCPUsNode;
 
-    var cpu_list = Basics.ArrayList(*const DTBNode).init(parser.allocator);
+    var cpu_list = std.ArrayList(*const DTBNode).init(parser.allocator);
 
     for (cpus.children) |*child| {
-        if (Basics.mem.startsWith(u8, child.name, "cpu@")) {
+        if (std.mem.startsWith(u8, child.name, "cpu@")) {
             try cpu_list.append(child);
         }
     }
@@ -467,25 +467,25 @@ pub fn getCPUNodes(parser: *DTBParser, root: *const DTBNode) ![]const *const DTB
 // ============================================================================
 
 test "DTB header size" {
-    try Basics.testing.expectEqual(@as(usize, 40), @sizeOf(DTBHeader));
+    try std.testing.expectEqual(@as(usize, 40), @sizeOf(DTBHeader));
 }
 
 test "DTB magic value" {
-    try Basics.testing.expectEqual(@as(u32, 0xD00DFEED), DTB_MAGIC);
+    try std.testing.expectEqual(@as(u32, 0xD00DFEED), DTB_MAGIC);
 }
 
 test "Memory reserve entry size" {
-    try Basics.testing.expectEqual(@as(usize, 16), @sizeOf(MemReserveEntry));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(MemReserveEntry));
 }
 
 test "Big endian conversion" {
     const bytes = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
     const value = bigEndianToHost(u32, &bytes);
-    try Basics.testing.expectEqual(@as(u32, 0x12345678), value);
+    try std.testing.expectEqual(@as(u32, 0x12345678), value);
 }
 
 test "Align forward" {
-    try Basics.testing.expectEqual(@as(u32, 4), alignForward(1, 4));
-    try Basics.testing.expectEqual(@as(u32, 8), alignForward(5, 4));
-    try Basics.testing.expectEqual(@as(u32, 12), alignForward(12, 4));
+    try std.testing.expectEqual(@as(u32, 4), alignForward(1, 4));
+    try std.testing.expectEqual(@as(u32, 8), alignForward(5, 4));
+    try std.testing.expectEqual(@as(u32, 12), alignForward(12, 4));
 }

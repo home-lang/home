@@ -33,9 +33,9 @@ pub fn build(b: *std.Build) void {
     });
 
     // Build options for conditional compilation
-    const enable_zyte = b.option(bool, "zyte", "Enable Zyte integration") orelse false;
-    const zyte_path = b.option([]const u8, "zyte-path", "Path to Zyte library") orelse
-        "../zyte/packages/zig";
+    const enable_craft = b.option(bool, "craft", "Enable Craft integration") orelse false;
+    const craft_path = b.option([]const u8, "craft-path", "Path to Craft library") orelse
+        "../craft/packages/zig";
 
     // Debugging and diagnostics
     const debug_logging = b.option(bool, "debug-log", "Enable verbose debug logging") orelse false;
@@ -143,7 +143,7 @@ pub fn build(b: *std.Build) void {
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_zyte", enable_zyte);
+    build_options.addOption(bool, "enable_craft", enable_craft);
     build_options.addOption(bool, "debug_logging", debug_logging);
     build_options.addOption(bool, "memory_tracking", memory_tracking);
     build_options.addOption(bool, "enable_ir_cache", enable_ir_cache);
@@ -154,14 +154,14 @@ pub fn build(b: *std.Build) void {
     // Add build options to executable
     exe.root_module.addImport("build_options", build_options.createModule());
 
-    // Link Zyte if enabled
-    if (enable_zyte) {
-        std.debug.print("✅ Zyte integration enabled\n", .{});
-        std.debug.print("   Path: {s}\n", .{zyte_path});
+    // Link Craft if enabled
+    if (enable_craft) {
+        std.debug.print("✅ Craft integration enabled\n", .{});
+        std.debug.print("   Path: {s}\n", .{craft_path});
 
-        // Add Zyte include path
-        const zyte_src_path = b.fmt("{s}/src", .{zyte_path});
-        exe.addIncludePath(b.path(zyte_src_path));
+        // Add Craft include path
+        const craft_src_path = b.fmt("{s}/src", .{craft_path});
+        exe.addIncludePath(b.path(craft_src_path));
 
         // Link system libraries based on platform
         switch (target.result.os.tag) {
@@ -214,12 +214,12 @@ pub fn build(b: *std.Build) void {
     });
     http_router_module.addImport("zig-test-framework", zig_test_framework);
 
-    const zyte_module = b.createModule(.{
-        .root_source_file = b.path("packages/basics/src/zyte.zig"),
+    const craft_module = b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/craft.zig"),
         .target = target,
         .optimize = optimize,
     });
-    zyte_module.addImport("zig-test-framework", zig_test_framework);
+    craft_module.addImport("zig-test-framework", zig_test_framework);
 
     // Lexer tests
     const lexer_tests = b.addTest(.{
@@ -241,7 +241,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    parser_tests.root_module.addImport("ion", home_module);
+    parser_tests.root_module.addImport("home", home_module);
+    parser_tests.root_module.addImport("zig-test-framework", zig_test_framework);
 
     const run_parser_tests = b.addRunArtifact(parser_tests);
 
@@ -254,20 +255,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     http_router_tests.root_module.addImport("http_router", http_router_module);
+    http_router_tests.root_module.addImport("zig-test-framework", zig_test_framework);
 
     const run_http_router_tests = b.addRunArtifact(http_router_tests);
 
-    // Zyte tests
-    const zyte_tests = b.addTest(.{
+    // Craft tests
+    const craft_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/basics/tests/zyte_test.zig"),
+            .root_source_file = b.path("packages/basics/tests/craft_test.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    zyte_tests.root_module.addImport("zyte", zyte_module);
+    craft_tests.root_module.addImport("craft", craft_module);
+    craft_tests.root_module.addImport("zig-test-framework", zig_test_framework);
 
-    const run_zyte_tests = b.addRunArtifact(zyte_tests);
+    const run_craft_tests = b.addRunArtifact(craft_tests);
 
     // Package Manager tests
     const package_manager_tests = b.addTest(.{
@@ -442,7 +445,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
     test_step.dependOn(&run_http_router_tests.step);
-    test_step.dependOn(&run_zyte_tests.step);
+    test_step.dependOn(&run_craft_tests.step);
     test_step.dependOn(&run_package_manager_tests.step);
     test_step.dependOn(&run_queue_tests.step);
     test_step.dependOn(&run_ast_tests.step);
@@ -673,38 +676,38 @@ pub fn build(b: *std.Build) void {
     const http_router_example_step = b.step("example-router", "Run HTTP router example");
     http_router_example_step.dependOn(&run_http_router_example.step);
 
-    // Zyte Example
-    const zyte_example = b.addExecutable(.{
-        .name = "zyte_example",
+    // Craft Example
+    const craft_example = b.addExecutable(.{
+        .name = "craft_example",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/zyte_example.zig"),
+            .root_source_file = b.path("examples/craft_example.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    zyte_example.root_module.addImport("zyte", zyte_module);
-    zyte_example.root_module.addImport("http_router", http_router_module);
-    b.installArtifact(zyte_example);
+    craft_example.root_module.addImport("craft", craft_module);
+    craft_example.root_module.addImport("http_router", http_router_module);
+    b.installArtifact(craft_example);
 
-    const run_zyte_example = b.addRunArtifact(zyte_example);
-    const zyte_example_step = b.step("example-zyte", "Run Zyte integration example");
-    zyte_example_step.dependOn(&run_zyte_example.step);
+    const run_craft_example = b.addRunArtifact(craft_example);
+    const craft_example_step = b.step("example-craft", "Run Craft integration example");
+    craft_example_step.dependOn(&run_craft_example.step);
 
-    // Full-Stack Example (HTTP + Zyte)
+    // Full-Stack Example (HTTP + Craft)
     const fullstack_example = b.addExecutable(.{
         .name = "fullstack_example",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/full_stack_zyte.zig"),
+            .root_source_file = b.path("examples/full_stack_craft.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
     fullstack_example.root_module.addImport("http_router", http_router_module);
-    fullstack_example.root_module.addImport("zyte", zyte_module);
+    fullstack_example.root_module.addImport("craft", craft_module);
     b.installArtifact(fullstack_example);
 
     const run_fullstack_example = b.addRunArtifact(fullstack_example);
-    const fullstack_example_step = b.step("example-fullstack", "Run full-stack example (HTTP + Zyte)");
+    const fullstack_example_step = b.step("example-fullstack", "Run full-stack example (HTTP + Craft)");
     fullstack_example_step.dependOn(&run_fullstack_example.step);
 
     // Queue Example
@@ -744,7 +747,7 @@ pub fn build(b: *std.Build) void {
     // Run all examples
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&run_http_router_example.step);
-    examples_step.dependOn(&run_zyte_example.step);
+    examples_step.dependOn(&run_craft_example.step);
     examples_step.dependOn(&run_fullstack_example.step);
     examples_step.dependOn(&run_queue_example.step);
     examples_step.dependOn(&run_database_example.step);

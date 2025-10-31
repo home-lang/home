@@ -88,7 +88,7 @@ pub const RSDP = packed struct {
 // SDT Header (System Description Table)
 // ============================================================================
 
-pub const SDTHeader = packed struct {
+pub const SDTHeader = extern struct {
     signature: [4]u8,
     length: u32,
     revision: u8,

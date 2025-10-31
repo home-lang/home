@@ -139,7 +139,7 @@ pub const PCIDevice = struct {
     bars: [6]u32,
 
     pub fn format(
-        self: PCIDevice,
+        self: *const PCIDevice,
         comptime fmt: []const u8,
         options: std.fmt.FormatOptions,
         writer: anytype,

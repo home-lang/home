@@ -1,7 +1,7 @@
 // Home Programming Language - Framebuffer Driver
 // Linear framebuffer graphics output
 
-const Basics = @import("basics");
+const std = @import("std");
 const sync = @import("sync.zig");
 
 // ============================================================================
@@ -122,8 +122,8 @@ pub const Framebuffer = struct {
 
     /// Draw a rectangle
     pub fn drawRect(self: *Framebuffer, x: u32, y: u32, w: u32, h: u32, color: Color) void {
-        const x2 = Basics.math.min(x + w, self.width);
-        const y2 = Basics.math.min(y + h, self.height);
+        const x2 = std.math.min(x + w, self.width);
+        const y2 = std.math.min(y + h, self.height);
 
         for (y..y2) |py| {
             for (x..x2) |px| {
@@ -142,8 +142,8 @@ pub const Framebuffer = struct {
         var x = x0;
         var y = y0;
 
-        const dx = Basics.math.absInt(x1 - x0) catch 0;
-        const dy = Basics.math.absInt(y1 - y0) catch 0;
+        const dx = std.math.absInt(x1 - x0) catch 0;
+        const dy = std.math.absInt(y1 - y0) catch 0;
 
         const sx: i32 = if (x0 < x1) 1 else -1;
         const sy: i32 = if (y0 < y1) 1 else -1;
@@ -230,8 +230,8 @@ pub const Framebuffer = struct {
         if (x >= self.width or y >= self.height) return;
 
         const bytes_per_pixel = self.bpp / 8;
-        const max_w = Basics.math.min(w, self.width - x);
-        const max_h = Basics.math.min(h, self.height - y);
+        const max_w = std.math.min(w, self.width - x);
+        const max_h = std.math.min(h, self.height - y);
 
         self.lock.acquire();
         defer self.lock.release();
@@ -283,11 +283,11 @@ pub fn get() ?*Framebuffer {
 // ============================================================================
 
 test "color values" {
-    try Basics.testing.expectEqual(@as(u8, 255), Color.WHITE.r);
-    try Basics.testing.expectEqual(@as(u8, 255), Color.WHITE.g);
-    try Basics.testing.expectEqual(@as(u8, 255), Color.WHITE.b);
+    try std.testing.expectEqual(@as(u8, 255), Color.WHITE.r);
+    try std.testing.expectEqual(@as(u8, 255), Color.WHITE.g);
+    try std.testing.expectEqual(@as(u8, 255), Color.WHITE.b);
 
-    try Basics.testing.expectEqual(@as(u8, 0), Color.BLACK.r);
-    try Basics.testing.expectEqual(@as(u8, 0), Color.BLACK.g);
-    try Basics.testing.expectEqual(@as(u8, 0), Color.BLACK.b);
+    try std.testing.expectEqual(@as(u8, 0), Color.BLACK.r);
+    try std.testing.expectEqual(@as(u8, 0), Color.BLACK.g);
+    try std.testing.expectEqual(@as(u8, 0), Color.BLACK.b);
 }

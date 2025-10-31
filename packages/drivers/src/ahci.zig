@@ -1,7 +1,7 @@
 // Home Programming Language - AHCI Driver
 // Advanced Host Controller Interface for SATA storage
 
-const Basics = @import("basics");
+const std = @import("std");
 const pci = @import("pci.zig");
 const block = @import("block.zig");
 const dma = @import("dma.zig");
@@ -205,7 +205,7 @@ pub const AhciPort = struct {
     fis_base: []align(256) u8,
     dma_buffer: dma.DmaBuffer,
     lock: sync.Spinlock,
-    allocator: Basics.Allocator,
+    allocator: std.mem.Allocator,
     error_count: u32 = 0,  // Track consecutive errors
     last_error: ?anyerror = null,  // Last error encountered
 
@@ -222,7 +222,7 @@ pub const AhciPort = struct {
     pub const MAX_RETRIES: u8 = 3;
     pub const ERROR_THRESHOLD: u32 = 10; // Reset port after 10 consecutive errors
 
-    pub fn init(allocator: Basics.Allocator, port_num: u8, port_regs: *volatile HbaPort) !*AhciPort {
+    pub fn init(allocator: std.mem.Allocator, port_num: u8, port_regs: *volatile HbaPort) !*AhciPort {
         const port = try allocator.create(AhciPort);
         errdefer allocator.destroy(port);
 
@@ -542,9 +542,9 @@ pub const AhciController = struct {
     abar: *volatile HbaMemory,
     ports: [32]?*AhciPort,
     port_count: u8,
-    allocator: Basics.Allocator,
+    allocator: std.mem.Allocator,
 
-    pub fn init(allocator: Basics.Allocator, pci_device: *pci.PciDevice) !*AhciController {
+    pub fn init(allocator: std.mem.Allocator, pci_device: *pci.PciDevice) !*AhciController {
         const controller = try allocator.create(AhciController);
         errdefer allocator.destroy(controller);
 
@@ -632,11 +632,11 @@ const ahci_ops = block.BlockDeviceOps{
     .ioctl = null,
 };
 
-pub fn createBlockDevice(allocator: Basics.Allocator, port: *AhciPort) !*block.BlockDevice {
+pub fn createBlockDevice(allocator: std.mem.Allocator, port: *AhciPort) !*block.BlockDevice {
     const device = try allocator.create(block.BlockDevice);
 
     var name_buf: [32]u8 = undefined;
-    const name = try Basics.fmt.bufPrint(&name_buf, "sd{c}", .{@as(u8, 'a') + port.port_num});
+    const name = try std.fmt.bufPrint(&name_buf, "sd{c}", .{@as(u8, 'a') + port.port_num});
 
     device.* = block.BlockDevice.init(
         name,
@@ -655,6 +655,6 @@ pub fn createBlockDevice(allocator: Basics.Allocator, port: *AhciPort) !*block.B
 // ============================================================================
 
 test "AHCI structures" {
-    try Basics.testing.expectEqual(@as(usize, 0x100), @sizeOf(HbaPort));
-    try Basics.testing.expectEqual(@as(usize, 20), @sizeOf(FisRegH2D));
+    try std.testing.expectEqual(@as(usize, 0x100), @sizeOf(HbaPort));
+    try std.testing.expectEqual(@as(usize, 20), @sizeOf(FisRegH2D));
 }

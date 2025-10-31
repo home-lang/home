@@ -268,7 +268,7 @@ pub const TraitChecker = struct {
     fn checkCircularInheritance(
         self: *TraitChecker,
         trait_name: []const u8,
-        super_traits: []const []const u8,
+        _: []const []const u8,
     ) !void {
         var visited = std.StringHashMap(void).init(self.allocator);
         defer visited.deinit();
@@ -306,7 +306,7 @@ pub const TraitChecker = struct {
 
     /// Check a trait method for validity
     fn checkTraitMethod(
-        self: *TraitChecker,
+        _: *TraitChecker,
         trait_name: []const u8,
         method: ast.TraitMethod,
     ) !void {

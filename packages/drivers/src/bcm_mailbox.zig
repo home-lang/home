@@ -1,20 +1,20 @@
 // Home Programming Language - BCM2835/BCM2711 VideoCore Mailbox Driver
 // For Raspberry Pi 3/4 - Communication with GPU/firmware
 
-const Basics = @import("basics");
+const std = @import("std");
 
 // ============================================================================
 // Mailbox Register Layout
 // ============================================================================
 
 pub const MailboxRegs = extern struct {
-    read: volatile u32, // 0x00 - Read register
+    read: u32, // 0x00 - Read register
     _reserved1: [3]u32, // 0x04-0x0C
-    peek: volatile u32, // 0x10 - Peek register
-    sender: volatile u32, // 0x14 - Sender ID
-    status: volatile u32, // 0x18 - Status register
-    config: volatile u32, // 0x1C - Configuration register
-    write: volatile u32, // 0x20 - Write register
+    peek: u32, // 0x10 - Peek register
+    sender: u32, // 0x14 - Sender ID
+    status: u32, // 0x18 - Status register
+    config: u32, // 0x1C - Configuration register
+    write: u32, // 0x20 - Write register
 };
 
 // Mailbox base addresses
@@ -458,7 +458,7 @@ pub const PropertyInterface = struct {
         tag.request_response = 0;
         offset += @sizeOf(PropertyTagHeader);
 
-        var depth_ptr: *u32 = @ptrCast(@alignCast(&buffer[offset]));
+        const depth_ptr: *u32 = @ptrCast(@alignCast(&buffer[offset]));
         depth_ptr.* = depth;
         offset += 4;
 
@@ -469,7 +469,7 @@ pub const PropertyInterface = struct {
         tag.request_response = 0;
         offset += @sizeOf(PropertyTagHeader);
 
-        var alignment_ptr: *u32 = @ptrCast(@alignCast(&buffer[offset]));
+        const alignment_ptr: *u32 = @ptrCast(@alignCast(&buffer[offset]));
         alignment_ptr.* = 16; // 16-byte alignment
         offset += 4;
 
@@ -518,17 +518,17 @@ pub fn initRaspberryPi4() MailboxDriver {
 // ============================================================================
 
 test "Mailbox register layout" {
-    try Basics.testing.expectEqual(@as(usize, 0x00), @offsetOf(MailboxRegs, "read"));
-    try Basics.testing.expectEqual(@as(usize, 0x18), @offsetOf(MailboxRegs, "status"));
-    try Basics.testing.expectEqual(@as(usize, 0x20), @offsetOf(MailboxRegs, "write"));
+    try std.testing.expectEqual(@as(usize, 0x00), @offsetOf(MailboxRegs, "read"));
+    try std.testing.expectEqual(@as(usize, 0x18), @offsetOf(MailboxRegs, "status"));
+    try std.testing.expectEqual(@as(usize, 0x20), @offsetOf(MailboxRegs, "write"));
 }
 
 test "Mailbox addresses" {
-    try Basics.testing.expectEqual(@as(u64, 0x3F00B880), BCM2835_MAILBOX_BASE);
-    try Basics.testing.expectEqual(@as(u64, 0xFE00B880), BCM2711_MAILBOX_BASE);
+    try std.testing.expectEqual(@as(u64, 0x3F00B880), BCM2835_MAILBOX_BASE);
+    try std.testing.expectEqual(@as(u64, 0xFE00B880), BCM2711_MAILBOX_BASE);
 }
 
 test "Property message alignment" {
-    try Basics.testing.expectEqual(@as(usize, 8), @sizeOf(PropertyMessageHeader));
-    try Basics.testing.expectEqual(@as(usize, 12), @sizeOf(PropertyTagHeader));
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(PropertyMessageHeader));
+    try std.testing.expectEqual(@as(usize, 12), @sizeOf(PropertyTagHeader));
 }

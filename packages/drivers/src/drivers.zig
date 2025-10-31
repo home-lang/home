@@ -91,13 +91,9 @@ pub const Driver = struct {
         patch: u16,
 
         pub fn format(
-            self: Version,
-            comptime fmt: []const u8,
-            options: std.fmt.FormatOptions,
+            self: *const Version,
             writer: anytype,
         ) !void {
-            _ = fmt;
-            _ = options;
             try writer.print("{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
         }
     };
@@ -157,14 +153,14 @@ pub const DriverRegistry = struct {
 
     pub fn init(allocator: std.mem.Allocator) DriverRegistry {
         return .{
-            .drivers = std.ArrayList(*Driver).init(allocator),
+            .drivers = .{},
             .allocator = allocator,
             .mutex = .{},
         };
     }
 
     pub fn deinit(self: *DriverRegistry) void {
-        self.drivers.deinit();
+        self.drivers.deinit(self.allocator);
     }
 
     pub fn register(self: *DriverRegistry, driver: *Driver) !void {
@@ -178,7 +174,7 @@ pub const DriverRegistry = struct {
             }
         }
 
-        try self.drivers.append(driver);
+        try self.drivers.append(self.allocator, driver);
         try driver.init();
     }
 
@@ -257,7 +253,7 @@ test "driver version formatting" {
     const version = Driver.Version{ .major = 1, .minor = 2, .patch = 3 };
 
     var buf: [32]u8 = undefined;
-    const str = try std.fmt.bufPrint(&buf, "{}", .{version});
+    const str = try std.fmt.bufPrint(&buf, "{f}", .{version});
     try testing.expect(std.mem.eql(u8, "1.2.3", str));
 }
 
