@@ -11,7 +11,6 @@
 // - Header generation
 
 const std = @import("std");
-const Basics = @import("basics");
 
 // ============================================================================
 // Core FFI Types
@@ -19,6 +18,7 @@ const Basics = @import("basics");
 
 // Note: C types (c_char, c_int, c_long, etc.) are primitives in Zig
 // We provide additional type aliases for convenience
+pub const size_t = usize;
 pub const ssize_t = isize;
 pub const ptrdiff_t = isize;
 pub const wchar_t = u32;
@@ -44,17 +44,17 @@ pub const CallingConvention = enum {
     pub fn toZig(self: CallingConvention) std.builtin.CallingConvention {
         return switch (self) {
             .C => .c,
-            .Stdcall => .stdcall,
-            .Fastcall => .fastcall,
-            .Vectorcall => .vectorcall,
-            .Thiscall => .thiscall,
-            .AAPCS => .aapcs,
-            .SysV => .sysv,
-            .Win64 => .win64,
+            .Stdcall => .c, // Map to C for compatibility
+            .Fastcall => .c,
+            .Vectorcall => .c,
+            .Thiscall => .c,
+            .AAPCS => .c,
+            .SysV => .c,
+            .Win64 => .c,
             .Inline => .@"inline",
             .Naked => .naked,
-            .Interrupt => .interrupt,
-            .Signal => .signal,
+            .Interrupt => .c, // Map to C for compatibility
+            .Signal => .c,
         };
     }
 };
@@ -86,7 +86,7 @@ pub fn ExternFn(comptime return_type: type, comptime params: []const type) type 
 
 pub const CString = struct {
     /// Convert Home string to null-terminated C string
-    pub fn fromHome(allocator: Basics.Allocator, home_str: []const u8) ![:0]const u8 {
+    pub fn fromHome(allocator: std.mem.Allocator, home_str: []const u8) ![:0]const u8 {
         const c_str = try allocator.allocSentinel(u8, home_str.len, 0);
         @memcpy(c_str, home_str);
         return c_str;
@@ -120,7 +120,7 @@ pub const CString = struct {
     }
 
     /// Concatenate C strings
-    pub fn concat(allocator: Basics.Allocator, a: [*:0]const u8, b: [*:0]const u8) ![:0]u8 {
+    pub fn concat(allocator: std.mem.Allocator, a: [*:0]const u8, b: [*:0]const u8) ![:0]u8 {
         const len_a = len(a);
         const len_b = len(b);
         const result = try allocator.allocSentinel(u8, len_a + len_b, 0);
@@ -293,9 +293,9 @@ pub const CStdLib = struct {
     // Conversion functions
     pub extern "c" fn atoi(s: [*:0]const u8) c_int;
     pub extern "c" fn atol(s: [*:0]const u8) c_long;
-    pub extern "c" fn atof(s: [*:0]const u8) c_double;
+    pub extern "c" fn atof(s: [*:0]const u8) f64;
     pub extern "c" fn strtol(s: [*:0]const u8, endptr: ?*[*:0]u8, base: c_int) c_long;
-    pub extern "c" fn strtod(s: [*:0]const u8, endptr: ?*[*:0]u8) c_double;
+    pub extern "c" fn strtod(s: [*:0]const u8, endptr: ?*[*:0]u8) f64;
 
     // Process control
     pub extern "c" fn exit(status: c_int) noreturn;
@@ -303,11 +303,11 @@ pub const CStdLib = struct {
     pub extern "c" fn atexit(func: *const fn () callconv(.C) void) c_int;
 
     // Math functions
-    pub extern "c" fn sqrt(x: c_double) c_double;
-    pub extern "c" fn pow(x: c_double, y: c_double) c_double;
-    pub extern "c" fn sin(x: c_double) c_double;
-    pub extern "c" fn cos(x: c_double) c_double;
-    pub extern "c" fn tan(x: c_double) c_double;
+    pub extern "c" fn sqrt(x: f64) f64;
+    pub extern "c" fn pow(x: f64, y: f64) f64;
+    pub extern "c" fn sin(x: f64) f64;
+    pub extern "c" fn cos(x: f64) f64;
+    pub extern "c" fn tan(x: f64) f64;
 };
 
 // ============================================================================
@@ -363,7 +363,6 @@ pub fn Callback(comptime return_type: type, comptime params: []const type) type 
         }
 
         pub fn toCFunction(self: @This()) *const anyopaque {
-            _ = self;
             return self.ptr;
         }
     };
@@ -397,31 +396,32 @@ pub fn checkResult(result: c_int) !void {
 // ============================================================================
 
 pub const CAllocator = struct {
-    pub fn allocator() Basics.Allocator {
+    pub fn allocator() std.mem.Allocator {
         return .{
             .ptr = undefined,
             .vtable = &vtable,
         };
     }
 
-    const vtable = Basics.Allocator.VTable{
+    const vtable = std.mem.Allocator.VTable{
         .alloc = alloc,
         .resize = resize,
         .free = free,
+        .remap = std.mem.Allocator.noRemap,
     };
 
-    fn alloc(_: *anyopaque, len: usize, _: u8, _: usize) ?[*]u8 {
+    fn alloc(_: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
         const ptr = CStdLib.malloc(len) orelse return null;
         return @ptrCast(ptr);
     }
 
-    fn resize(_: *anyopaque, buf: []u8, _: u8, new_len: usize, _: usize) bool {
+    fn resize(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
         const new_ptr = CStdLib.realloc(buf.ptr, new_len) orelse return false;
         _ = new_ptr;
         return true;
     }
 
-    fn free(_: *anyopaque, buf: []u8, _: u8, _: usize) void {
+    fn free(_: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
         CStdLib.free(buf.ptr);
     }
 };
