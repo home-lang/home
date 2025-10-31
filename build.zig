@@ -65,6 +65,8 @@ pub fn build(b: *std.Build) void {
     const tpm_pkg = createPackage(b, "packages/tpm/src/tpm.zig", target, optimize);
     const modsign_pkg = createPackage(b, "packages/modsign/src/modsign.zig", target, optimize);
     const coredump_pkg = createPackage(b, "packages/coredump/src/coredump.zig", target, optimize);
+    const syslog_pkg = createPackage(b, "packages/syslog/src/syslog.zig", target, optimize);
+    const usb_pkg = createPackage(b, "packages/usb/src/usb.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -441,6 +443,16 @@ pub fn build(b: *std.Build) void {
     const coredump_tests = b.addTest(.{ .root_module = coredump_pkg });
     const run_coredump_tests = b.addRunArtifact(coredump_tests);
     test_step.dependOn(&run_coredump_tests.step);
+
+    // Syslog tests
+    const syslog_tests = b.addTest(.{ .root_module = syslog_pkg });
+    const run_syslog_tests = b.addRunArtifact(syslog_tests);
+    test_step.dependOn(&run_syslog_tests.step);
+
+    // USB security tests
+    const usb_tests = b.addTest(.{ .root_module = usb_pkg });
+    const run_usb_tests = b.addRunArtifact(usb_tests);
+    test_step.dependOn(&run_usb_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1

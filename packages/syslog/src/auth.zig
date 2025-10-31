@@ -146,7 +146,7 @@ pub const LogChain = struct {
     }
 
     pub fn verifyChain(
-        self: *LogChain,
+        _: *const LogChain,
         logs: []const AuthenticatedLog,
         key: *const AuthKey,
     ) !bool {
@@ -251,8 +251,8 @@ test "log chain" {
     );
     defer msg2.deinit();
 
-    var auth1 = try chain.addLog(&msg1, &key);
-    var auth2 = try chain.addLog(&msg2, &key);
+    const auth1 = try chain.addLog(&msg1, &key);
+    const auth2 = try chain.addLog(&msg2, &key);
 
     try testing.expectEqual(@as(u64, 0), auth1.sequence);
     try testing.expectEqual(@as(u64, 1), auth2.sequence);

@@ -73,15 +73,12 @@ pub const RemoteClient = struct {
         // If authentication enabled, add HMAC
         if (self.auth_key) |*key| {
             const seq = self.sequence.fetchAdd(1, .monotonic);
-            var auth_log = try auth.authenticateLog(message, key, seq);
+            const auth_log = try auth.authenticateLog(message, key, seq);
 
             // In production, would send authenticated log over TLS
             _ = auth_log;
-        } else {
-            // Send unauthenticated log
-            // In production, would send over TLS
-            _ = formatted;
         }
+        // In production, would send formatted message over TLS
     }
 
     pub fn sendBatch(self: *RemoteClient, messages: []const syslog.LogMessage) !void {
