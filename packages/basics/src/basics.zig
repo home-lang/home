@@ -109,6 +109,32 @@ pub const time = struct {
     pub const nanoTimestamp = std.time.nanoTimestamp;
     pub const sleep = std.time.sleep;
     pub const Timer = std.time.Timer;
+
+    /// High-precision time structure
+    pub const TimeSpec = struct {
+        seconds: i64,
+        nanoseconds: i64,
+
+        pub fn now() TimeSpec {
+            const ns = std.time.nanoTimestamp();
+            return .{
+                .seconds = @divFloor(ns, std.time.ns_per_s),
+                .nanoseconds = @mod(ns, std.time.ns_per_s),
+            };
+        }
+
+        pub fn toNanoseconds(self: TimeSpec) i128 {
+            return @as(i128, self.seconds) * std.time.ns_per_s + self.nanoseconds;
+        }
+
+        pub fn toMilliseconds(self: TimeSpec) i64 {
+            return @divFloor(self.toNanoseconds(), std.time.ns_per_ms);
+        }
+
+        pub fn toSeconds(self: TimeSpec) i64 {
+            return self.seconds;
+        }
+    };
 };
 
 // Threading
@@ -378,6 +404,9 @@ pub const net_util = @import("net.zig");
 
 /// Cryptography utilities
 pub const crypto_util = @import("crypto.zig");
+
+/// Memory utilities (mmap, mprotect, mlock)
+pub const memory_util = @import("memory.zig");
 
 // Tests
 test "Basics module imports" {
