@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
     const syslog_pkg = createPackage(b, "packages/syslog/src/syslog.zig", target, optimize);
     const usb_pkg = createPackage(b, "packages/usb/src/usb.zig", target, optimize);
     const iommu_pkg = createPackage(b, "packages/iommu/src/iommu.zig", target, optimize);
+    const timing_pkg = createPackage(b, "packages/timing/src/timing.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -459,6 +460,11 @@ pub fn build(b: *std.Build) void {
     const iommu_tests = b.addTest(.{ .root_module = iommu_pkg });
     const run_iommu_tests = b.addRunArtifact(iommu_tests);
     test_step.dependOn(&run_iommu_tests.step);
+
+    // Timing attack mitigation tests
+    const timing_tests = b.addTest(.{ .root_module = timing_pkg });
+    const run_timing_tests = b.addRunArtifact(timing_tests);
+    test_step.dependOn(&run_timing_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
