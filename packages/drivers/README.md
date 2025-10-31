@@ -1,16 +1,52 @@
 # Home OS Enhanced Driver Support
 
-Comprehensive hardware driver system for Home Operating System with PCI/PCIe enumeration, ACPI parsing, graphics support, and input device drivers.
+Comprehensive hardware driver system for Home Operating System with extensive device support across x86_64 and ARM64 platforms.
 
 ## Features
 
+### Core Infrastructure
 - ✅ **PCI/PCIe Enumeration** - Full PCI bus scanning and device discovery
 - ✅ **ACPI Parser** - ACPI table parsing for hardware configuration
-- ✅ **Graphics Drivers** - Framebuffer and VGA text mode support
-- ✅ **Input Devices** - PS/2 keyboard and mouse drivers
+- ✅ **Device Tree** - ARM device tree parsing and hardware discovery
 - ✅ **Driver Framework** - Unified driver interface with registry
 - ✅ **Event System** - Input event queue and handling
-- ✅ **Multiple Architectures** - x86/x86_64 support
+
+### Serial & Console
+- ✅ **UART 16550** - Standard PC serial port (x86_64)
+- ✅ **UART PL011** - ARM UART for serial console (ARM64)
+
+### Storage
+- ✅ **NVMe** - High-performance PCIe SSD driver
+- ✅ **AHCI** - SATA/AHCI controller for HDDs and SSDs
+- ✅ **Block Device Abstraction** - Unified block device interface
+
+### Network
+- ✅ **Intel E1000** - Intel Gigabit Ethernet driver
+- ✅ **VirtIO-Net** - Paravirtualized network device
+- ✅ **Network Stack Integration** - Packet send/receive with queuing
+
+### Graphics
+- ✅ **Framebuffer** - Direct framebuffer access with drawing primitives
+- ✅ **VGA Text Mode** - 80x25 text console
+
+### Input
+- ✅ **PS/2 Keyboard** - Scancode translation and event generation
+- ✅ **PS/2 Mouse** - Packet-based mouse input
+- ✅ **Input Event Queue** - Unified input event handling
+
+### Time
+- ✅ **RTC (CMOS)** - Real-time clock for x86_64
+- ✅ **RTC (PL031)** - ARM PL031 RTC for ARM64
+- ✅ **BCM Timer** - Broadcom timer for Raspberry Pi
+
+### Platform-Specific
+- ✅ **Broadcom GPIO** - GPIO control for Raspberry Pi
+- ✅ **Broadcom Mailbox** - VideoCore communication for Raspberry Pi
+- ✅ **Broadcom Timer** - System timer for Raspberry Pi
+
+### Architecture Support
+- ✅ **x86_64** - Full support for Intel/AMD platforms
+- ✅ **ARM64** - Full support for ARM platforms
 
 ## Quick Start
 

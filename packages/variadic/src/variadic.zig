@@ -196,8 +196,32 @@ pub fn getArg(comptime T: type, args: anytype, index: usize) ?T {
 
     inline for (fields, 0..) |field, i| {
         if (i == index) {
+            const value = @field(args, field.name);
+            // Try exact type match first
             if (field.type == T) {
-                return @field(args, field.name);
+                return value;
+            }
+            // Special case: allow string literals to coerce to []const u8
+            if (T == []const u8) {
+                const field_info = @typeInfo(field.type);
+                if (field_info == .pointer) {
+                    const ptr_info = field_info.pointer;
+                    // String literal: *const [N:0]u8
+                    if (ptr_info.size == .one) {
+                        const child_info = @typeInfo(ptr_info.child);
+                        if (child_info == .array) {
+                            const arr_info = child_info.array;
+                            // Check if it's a u8 array (sentinel is in pointer, not array in 0.15.1)
+                            if (arr_info.child == u8) {
+                                return @as([]const u8, value);
+                            }
+                        }
+                    }
+                    // C string or many-pointer
+                    if ((ptr_info.size == .c or ptr_info.size == .many) and ptr_info.child == u8) {
+                        return std.mem.span(value);
+                    }
+                }
             }
             return null;
         }

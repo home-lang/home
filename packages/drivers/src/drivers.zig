@@ -7,10 +7,37 @@ const std = @import("std");
 // Public API Exports
 // ============================================================================
 
+// Core drivers
 pub const pci = @import("pci.zig");
 pub const acpi = @import("acpi.zig");
 pub const graphics = @import("graphics.zig");
 pub const input = @import("input.zig");
+
+// Serial/console
+pub const uart = @import("uart.zig");
+
+// Storage
+pub const nvme = @import("nvme.zig");
+pub const ahci = @import("ahci.zig");
+pub const block = @import("block.zig");
+
+// Network
+pub const e1000 = @import("e1000.zig");
+pub const virtio_net = @import("virtio_net.zig");
+
+// Framebuffer
+pub const framebuffer = @import("framebuffer.zig");
+
+// Time
+pub const rtc = @import("rtc.zig");
+
+// Device Tree / Platform
+pub const dtb_parser = @import("dtb_parser.zig");
+
+// Broadcom (Raspberry Pi)
+pub const bcm_gpio = @import("bcm_gpio.zig");
+pub const bcm_mailbox = @import("bcm_mailbox.zig");
+pub const bcm_timer = @import("bcm_timer.zig");
 
 // ============================================================================
 // Driver Core Types

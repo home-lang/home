@@ -137,10 +137,28 @@ fn validateTypeMatch(comptime T: type, spec: u8) FormatError!void {
             }
         },
         's' => {
-            // String
+            // String - accepts []const u8, []u8, [*:0]const u8, *const [N:0]u8, etc.
             if (type_info == .pointer) {
                 const ptr_info = type_info.pointer;
-                if (ptr_info.child != u8 and ptr_info.child != i8) {
+                // Direct pointer to u8/i8 (many, slice, C)
+                if (ptr_info.child == u8 or ptr_info.child == i8) {
+                    // Valid string type
+                } else {
+                    // Check for pointer to array of u8 (string literals)
+                    const child_info = @typeInfo(ptr_info.child);
+                    if (child_info == .array) {
+                        const arr_info = child_info.array;
+                        if (arr_info.child != u8 and arr_info.child != i8) {
+                            return FormatError.MismatchedTypes;
+                        }
+                    } else {
+                        return FormatError.MismatchedTypes;
+                    }
+                }
+            } else if (type_info == .array) {
+                // Direct array of u8
+                const arr_info = type_info.array;
+                if (arr_info.child != u8 and arr_info.child != i8) {
                     return FormatError.MismatchedTypes;
                 }
             } else {

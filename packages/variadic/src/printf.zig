@@ -232,11 +232,27 @@ fn writeFormatted(writer: anytype, arg: anytype, spec: variadic.FormatSpec) !usi
                 if (ptr_info.size == .slice) {
                     try writer.writeAll(arg);
                     bytes_written = arg.len;
-                } else {
+                } else if (ptr_info.size == .many or ptr_info.size == .c) {
                     const str = std.mem.span(arg);
                     try writer.writeAll(str);
                     bytes_written = str.len;
+                } else if (ptr_info.size == .one) {
+                    // Handle *const [N:0]u8 (string literals)
+                    const child_info = @typeInfo(ptr_info.child);
+                    if (child_info == .array) {
+                        const str: []const u8 = arg;
+                        try writer.writeAll(str);
+                        bytes_written = str.len;
+                    } else if (ptr_info.child == u8) {
+                        try writer.writeByte(arg.*);
+                        bytes_written = 1;
+                    }
                 }
+            } else if (@typeInfo(T) == .array) {
+                // Handle [N:0]u8 directly
+                const str: []const u8 = &arg;
+                try writer.writeAll(str);
+                bytes_written = arg.len;
             }
         },
         .Pointer => {

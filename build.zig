@@ -72,6 +72,9 @@ pub fn build(b: *std.Build) void {
     const bootloader_pkg = createPackage(b, "packages/bootloader/src/bootloader.zig", target, optimize);
     const ipv6_pkg = createPackage(b, "packages/ipv6/src/ipv6.zig", target, optimize);
     const dtb_pkg = createPackage(b, "packages/dtb/src/main.zig", target, optimize);
+    const drivers_pkg = createPackage(b, "packages/drivers/src/main.zig", target, optimize);
+    const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize);
+    const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -483,6 +486,21 @@ pub fn build(b: *std.Build) void {
     const dtb_tests = b.addTest(.{ .root_module = dtb_pkg });
     const run_dtb_tests = b.addRunArtifact(dtb_tests);
     test_step.dependOn(&run_dtb_tests.step);
+
+    // Hardware drivers tests
+    const drivers_tests = b.addTest(.{ .root_module = drivers_pkg });
+    const run_drivers_tests = b.addRunArtifact(drivers_tests);
+    test_step.dependOn(&run_drivers_tests.step);
+
+    // Variadic functions tests
+    const variadic_tests = b.addTest(.{ .root_module = variadic_pkg });
+    const run_variadic_tests = b.addRunArtifact(variadic_tests);
+    test_step.dependOn(&run_variadic_tests.step);
+
+    // Inline functions tests
+    const inline_tests = b.addTest(.{ .root_module = inline_pkg });
+    const run_inline_tests = b.addRunArtifact(inline_tests);
+    test_step.dependOn(&run_inline_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
