@@ -1,22 +1,36 @@
 const std = @import("std");
 
-/// Helper function to create a package module with less boilerplate
+/// Helper function to create a package module with zig-test-framework imported
 fn createPackage(
     b: *std.Build,
     path: []const u8,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    test_framework: *std.Build.Module,
 ) *std.Build.Module {
-    return b.createModule(.{
+    const module = b.createModule(.{
         .root_source_file = b.path(path),
         .target = target,
         .optimize = optimize,
     });
+    // Add zig-test-framework to every package
+    module.addImport("zig-test-framework", test_framework);
+    return module;
 }
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // ========================================================================
+    // Workspace-Level Dependencies
+    // ========================================================================
+
+    // Add zig-test-framework as a workspace-wide module
+    // Available to all packages for testing and coverage
+    const zig_test_framework = b.createModule(.{
+        .root_source_file = .{ .cwd_relative = "/Users/chrisbreuer/Code/zig-test-framework/src/lib.zig" },
+    });
 
     // Build options for conditional compilation
     const enable_zyte = b.option(bool, "zyte", "Enable Zyte integration") orelse false;
@@ -37,47 +51,47 @@ pub fn build(b: *std.Build) void {
     // Profiling
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
 
-    // Create package modules using helper function
-    const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize);
-    const ast_pkg = createPackage(b, "packages/ast/src/ast.zig", target, optimize);
-    const parser_pkg = createPackage(b, "packages/parser/src/parser.zig", target, optimize);
-    const diagnostics_pkg = createPackage(b, "packages/diagnostics/src/diagnostics.zig", target, optimize);
-    const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize);
-    const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize);
-    const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize);
-    const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize);
-    const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize);
-    const linter_pkg = createPackage(b, "packages/linter/src/linter.zig", target, optimize);
-    const traits_pkg = createPackage(b, "packages/traits/src/traits.zig", target, optimize);
-    const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize);
-    const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
-    const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize);
-    const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize);
-    const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize);
-    const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize);
-    const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize);
-    const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize);
-    const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize);
-    const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize);
-    const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize);
-    const signal_pkg = createPackage(b, "packages/signal/src/signal.zig", target, optimize);
-    const mac_pkg = createPackage(b, "packages/mac/src/mac.zig", target, optimize);
-    const tpm_pkg = createPackage(b, "packages/tpm/src/tpm.zig", target, optimize);
-    const modsign_pkg = createPackage(b, "packages/modsign/src/modsign.zig", target, optimize);
-    const coredump_pkg = createPackage(b, "packages/coredump/src/coredump.zig", target, optimize);
-    const syslog_pkg = createPackage(b, "packages/syslog/src/syslog.zig", target, optimize);
-    const usb_pkg = createPackage(b, "packages/usb/src/usb.zig", target, optimize);
-    const iommu_pkg = createPackage(b, "packages/iommu/src/iommu.zig", target, optimize);
-    const timing_pkg = createPackage(b, "packages/timing/src/timing.zig", target, optimize);
-    const bootloader_pkg = createPackage(b, "packages/bootloader/src/bootloader.zig", target, optimize);
-    const ipv6_pkg = createPackage(b, "packages/ipv6/src/ipv6.zig", target, optimize);
-    const dtb_pkg = createPackage(b, "packages/dtb/src/main.zig", target, optimize);
-    const drivers_pkg = createPackage(b, "packages/drivers/src/main.zig", target, optimize);
-    const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize);
-    const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize);
-    const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize);
-    const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize);
-    const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize);
+    // Create package modules using helper function (with zig-test-framework)
+    const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize, zig_test_framework);
+    const ast_pkg = createPackage(b, "packages/ast/src/ast.zig", target, optimize, zig_test_framework);
+    const parser_pkg = createPackage(b, "packages/parser/src/parser.zig", target, optimize, zig_test_framework);
+    const diagnostics_pkg = createPackage(b, "packages/diagnostics/src/diagnostics.zig", target, optimize, zig_test_framework);
+    const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize, zig_test_framework);
+    const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize, zig_test_framework);
+    const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
+    const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
+    const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize, zig_test_framework);
+    const linter_pkg = createPackage(b, "packages/linter/src/linter.zig", target, optimize, zig_test_framework);
+    const traits_pkg = createPackage(b, "packages/traits/src/traits.zig", target, optimize, zig_test_framework);
+    const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize, zig_test_framework);
+    const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
+    const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
+    const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
+    const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
+    const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
+    const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize, zig_test_framework);
+    const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize, zig_test_framework);
+    const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize, zig_test_framework);
+    const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize, zig_test_framework);
+    const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize, zig_test_framework);
+    const signal_pkg = createPackage(b, "packages/signal/src/signal.zig", target, optimize, zig_test_framework);
+    const mac_pkg = createPackage(b, "packages/mac/src/mac.zig", target, optimize, zig_test_framework);
+    const tpm_pkg = createPackage(b, "packages/tpm/src/tpm.zig", target, optimize, zig_test_framework);
+    const modsign_pkg = createPackage(b, "packages/modsign/src/modsign.zig", target, optimize, zig_test_framework);
+    const coredump_pkg = createPackage(b, "packages/coredump/src/coredump.zig", target, optimize, zig_test_framework);
+    const syslog_pkg = createPackage(b, "packages/syslog/src/syslog.zig", target, optimize, zig_test_framework);
+    const usb_pkg = createPackage(b, "packages/usb/src/usb.zig", target, optimize, zig_test_framework);
+    const iommu_pkg = createPackage(b, "packages/iommu/src/iommu.zig", target, optimize, zig_test_framework);
+    const timing_pkg = createPackage(b, "packages/timing/src/timing.zig", target, optimize, zig_test_framework);
+    const bootloader_pkg = createPackage(b, "packages/bootloader/src/bootloader.zig", target, optimize, zig_test_framework);
+    const ipv6_pkg = createPackage(b, "packages/ipv6/src/ipv6.zig", target, optimize, zig_test_framework);
+    const dtb_pkg = createPackage(b, "packages/dtb/src/main.zig", target, optimize, zig_test_framework);
+    const drivers_pkg = createPackage(b, "packages/drivers/src/main.zig", target, optimize, zig_test_framework);
+    const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize, zig_test_framework);
+    const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize, zig_test_framework);
+    const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize, zig_test_framework);
+    const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize, zig_test_framework);
+    const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -184,6 +198,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    home_module.addImport("zig-test-framework", zig_test_framework);
     home_module.addImport("lexer", lexer_pkg);
     home_module.addImport("ast", ast_pkg);
     home_module.addImport("parser", parser_pkg);
@@ -197,12 +212,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    http_router_module.addImport("zig-test-framework", zig_test_framework);
 
     const zyte_module = b.createModule(.{
         .root_source_file = b.path("packages/basics/src/zyte.zig"),
         .target = target,
         .optimize = optimize,
     });
+    zyte_module.addImport("zig-test-framework", zig_test_framework);
 
     // Lexer tests
     const lexer_tests = b.addTest(.{
@@ -519,6 +536,36 @@ pub fn build(b: *std.Build) void {
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
     const run_volatile_tests = b.addRunArtifact(volatile_tests);
     test_step.dependOn(&run_volatile_tests.step);
+
+    // Test zig-test-framework integration
+    const framework_integration_mod = b.createModule(.{
+        .root_source_file = b.path("packages/build/test_framework_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    framework_integration_mod.addImport("zig-test-framework", zig_test_framework);
+
+    const framework_integration_tests = b.addTest(.{ .root_module = framework_integration_mod });
+    const run_framework_integration_tests = b.addRunArtifact(framework_integration_tests);
+
+    const framework_test_step = b.step("test-framework", "Test zig-test-framework integration");
+    framework_test_step.dependOn(&run_framework_integration_tests.step);
+
+    // Coverage test runner executable
+    const coverage_runner = b.addExecutable(.{
+        .name = "coverage-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/build/test_with_coverage.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    coverage_runner.root_module.addImport("zig-test-framework", zig_test_framework);
+    b.installArtifact(coverage_runner);
+
+    const run_coverage_runner = b.addRunArtifact(coverage_runner);
+    const coverage_step = b.step("coverage", "Run coverage test runner");
+    coverage_step.dependOn(&run_coverage_runner.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1

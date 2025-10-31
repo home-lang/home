@@ -152,14 +152,14 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
                     type_expr = try self.allocator.create(ast.TypeExpr);
                     type_expr.* = .{ .Reference = .{ .is_mut = is_mut, .inner = inner } };
                 } else {
-                    const name_token = try self.expect(.Identifier, "Expected parameter name");
-                    param_name = try self.allocator.dupe(u8, name_token.lexeme);
+                    const param_name_token = try self.expect(.Identifier, "Expected parameter name");
+                    param_name = try self.allocator.dupe(u8, param_name_token.lexeme);
                     _ = try self.expect(.Colon, "Expected ':' after parameter name");
                     type_expr = try self.parseTypeExpr();
                 }
             } else {
-                const name_token = try self.expect(.Identifier, "Expected parameter name");
-                param_name = try self.allocator.dupe(u8, name_token.lexeme);
+                const param_name_token = try self.expect(.Identifier, "Expected parameter name");
+                param_name = try self.allocator.dupe(u8, param_name_token.lexeme);
                 _ = try self.expect(.Colon, "Expected ':' after parameter name");
                 type_expr = try self.parseTypeExpr();
             }

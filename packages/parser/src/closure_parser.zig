@@ -231,7 +231,7 @@ pub const ClosureAnalyzer = struct {
     
     fn findReferences(
         self: *ClosureAnalyzer,
-        refs: *std.StringHashMap(void),
+        _: *std.StringHashMap(void),
         body: ast.ClosureBody,
     ) !void {
         _ = self;

@@ -15,3 +15,5 @@ packages/.DS_Store
 /packages/platform/.zig-cache
 /packages/volatile/.zig-cache
 /packages/intrinsics/.zig-cache
+/packages/build/.zig-cache
+/packages/build/.test-cache

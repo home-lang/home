@@ -104,7 +104,7 @@ pub const ParameterConfig = struct {
     named_only_params: []const []const u8,
     has_variadic: bool,
 
-    pub fn init(allocator: std.mem.Allocator) ParameterConfig {
+    pub fn init(_: std.mem.Allocator) ParameterConfig {
         return .{
             .required_params = &[_][]const u8{},
             .optional_params = &[_][]const u8{},

@@ -150,8 +150,7 @@ pub const ParallelBuilder = struct {
         const cache_path = cache_dir orelse ".home-cache";
         const version = compiler_version orelse "0.1.0";
 
-        var cache = try ir_cache.IRCache.init(allocator, cache_path);
-        try cache.setCompilerVersion(version);
+        const cache = try ir_cache.IRCache.init(allocator, cache_path, false);
 
         return .{
             .allocator = allocator,

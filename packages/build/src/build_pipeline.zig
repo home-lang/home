@@ -187,7 +187,7 @@ pub const BuildPipeline = struct {
             );
             defer self.allocator.free(ir_path);
 
-            var module = try lto.IrModule.init(
+            const module = try lto.IrModule.init(
                 self.allocator,
                 module_name,
                 ir_path,

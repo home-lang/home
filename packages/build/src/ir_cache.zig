@@ -376,7 +376,8 @@ pub const IRCache = struct {
         const file = try fs.cwd().openFile(self.metadata_file, .{});
         defer file.close();
 
-        _ = try file.readToEndAlloc(self.allocator, 100 * 1024 * 1024);
+        const data = try file.readToEndAlloc(self.allocator, 100 * 1024 * 1024);
+        defer self.allocator.free(data);
         // TODO: Parse JSON metadata
         // For now, just note that we attempted to load
     }
