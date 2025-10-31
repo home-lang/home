@@ -1,0 +1,45 @@
+# Source files
+src/**
+build.ts
+tsconfig.json
+
+# Development files
+.vscode/**
+.vscode-test/**
+.gitignore
+.yarnrc
+.editorconfig
+.npmignore
+eslintrc.json
+tslint.json
+vsc-extension-quickstart.md
+
+# Node modules (keep only what's needed)
+node_modules/**
+!node_modules/vscode-languageclient/**
+!node_modules/vscode-debugadapter/**
+!node_modules/vscode-debugprotocol/**
+
+# Test files
+test/**
+tests/**
+**/*.test.js
+**/*.test.ts
+**/*.spec.js
+**/*.spec.ts
+coverage/**
+
+# Documentation (keep only essential)
+**/*.md
+!README.md
+!CHANGELOG.md
+
+# Misc
+.DS_Store
+*.vsix
+**/*.map
+.github/**
+
+# Parent directories - critical to exclude
+../
+../../

@@ -48,7 +48,20 @@
       {
         "language": "home",
         "scopeName": "source.home",
-        "path": "./syntaxes/ion.tmLanguage.json"
+        "path": "./syntaxes/home.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "home",
+        "path": "./snippets/home.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Home Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/home-dark-theme.json"
       }
     ],
     "configuration": {
@@ -423,10 +436,11 @@
     "onLanguage:ion"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "vscode:prepublish": "bun run compile",
+    "compile": "bun run build.ts",
+    "watch": "bun run build.ts --watch",
+    "lint": "eslint src --ext ts",
+    "package": "@vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

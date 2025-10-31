@@ -943,7 +943,7 @@ Home stands on the shoulders of giants:
 - **Rust**: Memory safety model, ownership semantics, and error handling
 - **TypeScript**: Developer experience, syntax ergonomics, and tooling standards
 - **Bun**: Speed-first mentality, all-in-one tooling, and package management
-- **Laravel**: Expressive APIs, queue system design, and developer joy
+- **Stacks.js**: Expressive APIs, queue system design, and developer joy
 - **SQLite**: Embedded database excellence and reliability
 
 Thank you to the language design community for paving the way.

@@ -12,6 +12,11 @@ import { GCProfiler } from './gcProfiler';
 import { MemoryProfiler } from './memoryProfiler';
 import { MultiThreadDebugger } from './multiThreadDebugger';
 import { TimeTravelDebugger } from './timeTravelDebugger';
+import { HomeSemanticTokensProvider, legend } from './semanticTokens';
+import { HomeCodeActionsProvider } from './codeActions';
+import { HomeInlayHintsProvider } from './inlayHints';
+import { HomeCodeLensProvider as AdvancedCodeLensProvider } from './codeLens';
+import { registerWorkspaceProviders } from './workspaceSymbols';
 
 let client: LanguageClient;
 let profiler: HomeProfiler;
@@ -206,13 +211,49 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Register code lens provider
+    // Register semantic tokens provider
+    context.subscriptions.push(
+        vscode.languages.registerDocumentSemanticTokensProvider(
+            { language: 'home' },
+            new HomeSemanticTokensProvider(),
+            legend
+        )
+    );
+
+    // Register code actions provider
+    context.subscriptions.push(
+        vscode.languages.registerCodeActionsProvider(
+            { language: 'home' },
+            new HomeCodeActionsProvider(),
+            {
+                providedCodeActionKinds: HomeCodeActionsProvider.providedCodeActionKinds
+            }
+        )
+    );
+
+    // Register inlay hints provider
     const config = vscode.workspace.getConfiguration('home');
-    if (config.get<boolean>('codelens.enabled')) {
+    if (config.get<boolean>('inlayHints.enabled', true)) {
         context.subscriptions.push(
-            vscode.languages.registerCodeLensProvider('home', new HomeCodeLensProvider())
+            vscode.languages.registerInlayHintsProvider(
+                { language: 'home' },
+                new HomeInlayHintsProvider()
+            )
         );
     }
+
+    // Register advanced code lens provider
+    if (config.get<boolean>('codelens.enabled')) {
+        context.subscriptions.push(
+            vscode.languages.registerCodeLensProvider(
+                { language: 'home' },
+                new AdvancedCodeLensProvider()
+            )
+        );
+    }
+
+    // Register workspace symbols and rename providers
+    registerWorkspaceProviders(context);
 
     // Format on save
     context.subscriptions.push(
@@ -437,53 +478,3 @@ async function formatDocumentProvider(document: vscode.TextDocument): Promise<vs
     });
 }
 
-class HomeCodeLensProvider implements vscode.CodeLensProvider {
-    public provideCodeLenses(
-        document: vscode.TextDocument,
-        token: vscode.CancellationToken
-    ): vscode.CodeLens[] | Thenable<vscode.CodeLens[]> {
-        const codeLenses: vscode.CodeLens[] = [];
-        const text = document.getText();
-
-        // Add "Run" code lens for main function
-        const mainMatch = text.match(/fn\s+main\s*\(/);
-        if (mainMatch && mainMatch.index !== undefined) {
-            const position = document.positionAt(mainMatch.index);
-            const range = new vscode.Range(position, position);
-
-            codeLenses.push(
-                new vscode.CodeLens(range, {
-                    title: '▶ Run',
-                    command: 'ion.run',
-                    arguments: []
-                })
-            );
-
-            codeLenses.push(
-                new vscode.CodeLens(range, {
-                    title: '🐛 Debug',
-                    command: 'workbench.action.debug.start',
-                    arguments: []
-                })
-            );
-        }
-
-        // Add "Run Test" code lens for test functions
-        const testRegex = /fn\s+test_\w+\s*\(/g;
-        let match;
-        while ((match = testRegex.exec(text)) !== null) {
-            const position = document.positionAt(match.index);
-            const range = new vscode.Range(position, position);
-
-            codeLenses.push(
-                new vscode.CodeLens(range, {
-                    title: '▶ Run Test',
-                    command: 'ion.test',
-                    arguments: []
-                })
-            );
-        }
-
-        return codeLenses;
-    }
-}

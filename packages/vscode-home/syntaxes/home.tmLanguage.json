@@ -1,12 +1,16 @@
 {
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Home",
   "scopeName": "source.home",
-  "fileTypes": ["ion"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#attributes" },
     { "include": "#keywords" },
+    { "include": "#storage-types" },
+    { "include": "#storage-modifiers" },
     { "include": "#strings" },
     { "include": "#numbers" },
+    { "include": "#constants" },
     { "include": "#functions" },
     { "include": "#types" },
     { "include": "#operators" },
@@ -17,36 +21,85 @@
       "patterns": [
         {
           "name": "comment.line.double-slash.home",
-          "match": "//.*$"
+          "begin": "//",
+          "end": "$"
         },
         {
           "name": "comment.block.home",
           "begin": "/\\*",
-          "end": "\\*/"
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#comments"
+            }
+          ]
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "name": "meta.attribute.home",
+          "match": "@(test|TypeOf|sizeOf|alignOf|offsetOf|typeInfo|fieldName|fieldType|intFromPtr|ptrFromInt|truncate|as|bitCast)\\b",
+          "captures": {
+            "0": { "name": "entity.name.function.decorator.home" }
+          }
         }
       ]
     },
     "keywords": {
       "patterns": [
         {
-          "name": "keyword.control.home",
-          "match": "\\b(if|else|for|while|loop|break|continue|return|match|async|await|trait|impl)\\b"
+          "name": "keyword.control.flow.home",
+          "match": "\\b(if|else|while|loop|do|for|in|break|continue|return|match|switch|case|default)\\b"
         },
         {
-          "name": "keyword.declaration.home",
-          "match": "\\b(let|mut|fn|struct|enum|type|const|static|use|pub|mod|comptime|macro)\\b"
+          "name": "keyword.control.trycatch.home",
+          "match": "\\b(try|catch|finally)\\b"
+        },
+        {
+          "name": "keyword.control.async.home",
+          "match": "\\b(async|await)\\b"
+        },
+        {
+          "name": "keyword.control.import.home",
+          "match": "\\b(import)\\b"
         },
         {
           "name": "keyword.other.home",
-          "match": "\\b(as|in|where|unsafe|move|ref)\\b"
+          "match": "\\b(comptime|defer|unsafe|asm|where|move)\\b"
         },
+        {
+          "name": "variable.language.self.home",
+          "match": "\\b(self|Self)\\b"
+        },
+        {
+          "name": "constant.language.boolean.home",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "storage-types": {
+      "patterns": [
+        {
+          "name": "storage.type.home",
+          "match": "\\b(fn|struct|enum|union|type|trait|impl|dyn)\\b"
+        },
+        {
+          "name": "storage.type.numeric.home",
+          "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|isize|usize)\\b"
+        },
+        {
+          "name": "storage.type.primitive.home",
+          "match": "\\b(int|uint|float|double|bool|string|char|void)\\b"
+        }
+      ]
+    },
+    "storage-modifiers": {
+      "patterns": [
         {
           "name": "storage.modifier.home",
-          "match": "\\b(pub|mut|const|async)\\b"
-        },
-        {
-          "name": "constant.language.home",
-          "match": "\\b(true|false|null|None|Some|Ok|Err)\\b"
+          "match": "\\b(let|const|mut|pub|priv)\\b"
         }
       ]
     },
@@ -59,7 +112,11 @@
           "patterns": [
             {
               "name": "constant.character.escape.home",
-              "match": "\\\\(n|r|t|\\\\|\"|'|0|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]+\\})"
+              "match": "\\\\(n|t|r|\\\"|\\\\|\\'|0|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\})"
+            },
+            {
+              "name": "invalid.illegal.unknown-escape.home",
+              "match": "\\\\."
             }
           ]
         },
@@ -70,7 +127,7 @@
           "patterns": [
             {
               "name": "constant.character.escape.home",
-              "match": "\\\\(n|r|t|\\\\|\"|'|0|x[0-9a-fA-F]{2})"
+              "match": "\\\\(n|t|r|\\\"|\\\\|\\'|0|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\})"
             }
           ]
         }
@@ -79,8 +136,12 @@
     "numbers": {
       "patterns": [
         {
+          "name": "constant.numeric.float.home",
+          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
           "name": "constant.numeric.hex.home",
-          "match": "\\b0x[0-9a-fA-F_]+\\b"
+          "match": "\\b0x[0-9A-Fa-f_]+\\b"
         },
         {
           "name": "constant.numeric.binary.home",
@@ -91,36 +152,183 @@
           "match": "\\b0o[0-7_]+\\b"
         },
         {
-          "name": "constant.numeric.float.home",
-          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?\\b"
-        },
-        {
           "name": "constant.numeric.integer.home",
-          "match": "\\b[0-9][0-9_]*\\b"
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.home",
+          "match": "\\b(true|false|null|undefined|None|Some|Ok|Err)\\b"
         }
       ]
     },
     "functions": {
       "patterns": [
         {
-          "name": "entity.name.function.home",
-          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()"
+          "name": "meta.function.home",
+          "begin": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.function.home" },
+            "2": { "name": "entity.name.function.home" }
+          },
+          "end": "(?<=\\})|(?=;)",
+          "patterns": [
+            { "include": "#generic-parameters" },
+            { "include": "#function-parameters" },
+            { "include": "#return-type" },
+            { "include": "#where-clause" },
+            { "include": "$self" }
+          ]
         },
         {
-          "name": "support.function.builtin.home",
-          "match": "\\b(print|println|assert|panic|todo|unimplemented)\\b"
+          "name": "meta.function.call.home",
+          "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.home" }
+          }
+        }
+      ]
+    },
+    "generic-parameters": {
+      "patterns": [
+        {
+          "name": "meta.generic.home",
+          "begin": "<",
+          "end": ">",
+          "patterns": [
+            {
+              "name": "entity.name.type.parameter.home",
+              "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+            },
+            { "include": "#keywords" },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "function-parameters": {
+      "patterns": [
+        {
+          "name": "meta.function.parameters.home",
+          "begin": "\\(",
+          "end": "\\)",
+          "patterns": [
+            {
+              "name": "variable.parameter.home",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*:"
+            },
+            { "include": "#storage-types" },
+            { "include": "#types" },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "return-type": {
+      "patterns": [
+        {
+          "name": "meta.function.return-type.home",
+          "begin": "->",
+          "end": "(?=\\{|where)",
+          "beginCaptures": {
+            "0": { "name": "keyword.operator.arrow.home" }
+          },
+          "patterns": [
+            { "include": "#storage-types" },
+            { "include": "#types" },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "where-clause": {
+      "patterns": [
+        {
+          "name": "meta.where-clause.home",
+          "begin": "\\b(where)\\b",
+          "beginCaptures": {
+            "1": { "name": "keyword.other.where.home" }
+          },
+          "end": "(?=\\{)",
+          "patterns": [
+            { "include": "#types" },
+            { "include": "#keywords" },
+            { "include": "$self" }
+          ]
         }
       ]
     },
     "types": {
       "patterns": [
         {
-          "name": "storage.type.primitive.home",
-          "match": "\\b(int|float|bool|string|void|u8|u16|u32|u64|i8|i16|i32|i64|f32|f64|usize|isize)\\b"
+          "name": "meta.struct.home",
+          "begin": "\\b(struct)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.struct.home" },
+            "2": { "name": "entity.name.type.struct.home" }
+          },
+          "end": "(?<=\\})|(?=;)",
+          "patterns": [
+            { "include": "#generic-parameters" },
+            { "include": "$self" }
+          ]
         },
         {
-          "name": "storage.type.generic.home",
-          "match": "\\b(Vec|HashMap|Result|Option|Box|Rc|Arc)\\b"
+          "name": "meta.enum.home",
+          "begin": "\\b(enum)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.enum.home" },
+            "2": { "name": "entity.name.type.enum.home" }
+          },
+          "end": "(?<=\\})|(?=;)",
+          "patterns": [
+            { "include": "#generic-parameters" },
+            { "include": "$self" }
+          ]
+        },
+        {
+          "name": "meta.union.home",
+          "begin": "\\b(union)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.union.home" },
+            "2": { "name": "entity.name.type.union.home" }
+          },
+          "end": "(?<=\\})|(?=;)",
+          "patterns": [
+            { "include": "$self" }
+          ]
+        },
+        {
+          "name": "meta.trait.home",
+          "begin": "\\b(trait)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.trait.home" },
+            "2": { "name": "entity.name.type.trait.home" }
+          },
+          "end": "(?<=\\})|(?=;)",
+          "patterns": [
+            { "include": "#generic-parameters" },
+            { "include": "$self" }
+          ]
+        },
+        {
+          "name": "meta.impl.home",
+          "begin": "\\b(impl)\\b",
+          "beginCaptures": {
+            "1": { "name": "storage.type.impl.home" }
+          },
+          "end": "(?<=\\})",
+          "patterns": [
+            {
+              "match": "\\b(for)\\b",
+              "name": "keyword.other.for.home"
+            },
+            { "include": "#types" },
+            { "include": "$self" }
+          ]
         },
         {
           "name": "entity.name.type.home",
@@ -131,57 +339,61 @@
     "operators": {
       "patterns": [
         {
-          "name": "keyword.operator.arithmetic.home",
-          "match": "[+\\-*/%]"
+          "name": "keyword.operator.arrow.home",
+          "match": "->"
         },
         {
-          "name": "keyword.operator.comparison.home",
-          "match": "(==|!=|<|>|<=|>=)"
-        },
-        {
-          "name": "keyword.operator.logical.home",
-          "match": "(&&|\\|\\||!)"
-        },
-        {
-          "name": "keyword.operator.bitwise.home",
-          "match": "(&|\\||\\^|<<|>>)"
-        },
-        {
-          "name": "keyword.operator.assignment.home",
-          "match": "(=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=)"
+          "name": "keyword.operator.pipe.home",
+          "match": "\\|>"
         },
         {
           "name": "keyword.operator.range.home",
-          "match": "(\\.\\.|\\.\\.\\.)"
+          "match": "\\.\\.|\\.\\.="
         },
         {
-          "name": "keyword.operator.access.home",
-          "match": "(\\.|::)"
+          "name": "keyword.operator.spread.home",
+          "match": "\\.\\.\\."
         },
         {
-          "name": "keyword.operator.borrow.home",
-          "match": "&(mut\\s+)?"
+          "name": "keyword.operator.safe-navigation.home",
+          "match": "\\?\\."
         },
         {
-          "name": "keyword.operator.question.home",
+          "name": "keyword.operator.null-coalesce.home",
+          "match": "\\?\\?"
+        },
+        {
+          "name": "keyword.operator.try.home",
           "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.comparison.home",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.home",
+          "match": "&&|\\|\\||!|\\band\\b|\\bor\\b"
+        },
+        {
+          "name": "keyword.operator.bitwise.home",
+          "match": "&|\\||\\^|~|<<|>>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.home",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.assignment.home",
+          "match": "=|\\+=|-=|\\*=|/=|%="
+        },
+        {
+          "name": "keyword.operator.member.home",
+          "match": "\\."
         }
       ]
     },
     "punctuation": {
       "patterns": [
-        {
-          "name": "punctuation.section.braces.home",
-          "match": "[{}]"
-        },
-        {
-          "name": "punctuation.section.brackets.home",
-          "match": "[\\[\\]]"
-        },
-        {
-          "name": "punctuation.section.parens.home",
-          "match": "[()]"
-        },
         {
           "name": "punctuation.separator.comma.home",
           "match": ","
@@ -193,6 +405,18 @@
         {
           "name": "punctuation.separator.colon.home",
           "match": ":"
+        },
+        {
+          "name": "punctuation.brackets.round.home",
+          "match": "\\(|\\)"
+        },
+        {
+          "name": "punctuation.brackets.curly.home",
+          "match": "\\{|\\}"
+        },
+        {
+          "name": "punctuation.brackets.square.home",
+          "match": "\\[|\\]"
         }
       ]
     }
