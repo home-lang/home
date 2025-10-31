@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const ir_cache = @import("ir_cache.zig");
 
 /// Build task representing a single compilation unit
 pub const BuildTask = struct {
@@ -10,6 +11,8 @@ pub const BuildTask = struct {
     start_time: i64 = 0,
     end_time: i64 = 0,
     worker_id: ?usize = null,
+    cache_hit: bool = false,
+    cache_key: ?ir_cache.CacheHash = null,
 
     pub const TaskStatus = enum {
         Pending,
@@ -123,10 +126,15 @@ pub const ParallelBuilder = struct {
     stats: BuildStats,
     verbose: bool = false,
     benchmark: bool = false,
+    ir_cache: ir_cache.IRCache,
+    cache_dir: []const u8,
+    compiler_version: []const u8,
 
     pub fn init(
         allocator: std.mem.Allocator,
         num_threads: ?usize,
+        cache_dir: ?[]const u8,
+        compiler_version: ?[]const u8,
     ) !ParallelBuilder {
         const threads = num_threads orelse @max(1, std.Thread.getCpuCount() catch 4);
 
@@ -137,6 +145,13 @@ pub const ParallelBuilder = struct {
 
         const worker_util = try allocator.alloc(f64, threads);
         @memset(worker_util, 0.0);
+
+        // Initialize IR cache
+        const cache_path = cache_dir orelse ".home-cache";
+        const version = compiler_version orelse "0.1.0";
+
+        var cache = try ir_cache.IRCache.init(allocator, cache_path);
+        try cache.setCompilerVersion(version);
 
         return .{
             .allocator = allocator,
@@ -152,6 +167,9 @@ pub const ParallelBuilder = struct {
                 .parallel_speedup = 1.0,
                 .worker_utilization = worker_util,
             },
+            .ir_cache = cache,
+            .cache_dir = try allocator.dupe(u8, cache_path),
+            .compiler_version = try allocator.dupe(u8, version),
         };
     }
 
@@ -173,6 +191,9 @@ pub const ParallelBuilder = struct {
         self.allocator.free(self.work_deques);
 
         self.stats.deinit(self.allocator);
+        self.ir_cache.deinit();
+        self.allocator.free(self.cache_dir);
+        self.allocator.free(self.compiler_version);
     }
 
     /// Add a build task
@@ -406,16 +427,7 @@ pub const ParallelBuilder = struct {
             std.debug.print("  [Worker {d}] Compiling {s}...\n", .{ task.worker_id orelse 0, task.module_name });
         }
 
-        // Simulate compilation work
-        // In a real implementation, this would:
-        // 1. Check IR cache
-        // 2. Lex and parse source file
-        // 3. Type check
-        // 4. Generate IR
-        // 5. Optimize
-        // 6. Generate machine code
-        // 7. Cache result
-
+        // Read source file
         const file = std.fs.cwd().openFile(task.file_path, .{}) catch |err| {
             if (self.verbose) {
                 std.debug.print("    [31m✗ Failed to open file: {any}[0m\n", .{err});
@@ -436,8 +448,92 @@ pub const ParallelBuilder = struct {
         };
         defer self.allocator.free(source);
 
-        // Simulate work (remove in real implementation)
+        // Get source file modification time
+        const stat = file.stat() catch |err| {
+            if (self.verbose) {
+                std.debug.print("    [31m✗ Failed to stat file: {any}[0m\n", .{err});
+            }
+            task.status = .Failed;
+            task.end_time = std.time.milliTimestamp();
+            return err;
+        };
+
+        // Collect dependency hashes for cache key
+        var dep_hashes = std.ArrayList(ir_cache.CacheHash).init(self.allocator);
+        defer dep_hashes.deinit();
+
+        for (task.dependencies) |dep_name| {
+            // Find dependency task to get its cache key
+            for (self.tasks.items) |dep_task| {
+                if (std.mem.eql(u8, dep_task.module_name, dep_name)) {
+                    if (dep_task.cache_key) |key| {
+                        try dep_hashes.append(key);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Generate cache key
+        const cache_key = ir_cache.generateCacheKey(
+            source,
+            dep_hashes.items,
+            self.compiler_version,
+            "", // compile flags (empty for now)
+        );
+        task.cache_key = cache_key;
+
+        // Check cache
+        if (self.ir_cache.get(cache_key)) |entry| {
+            // Cache hit - verify mtime hasn't changed
+            if (entry.source_mtime == stat.mtime) {
+                if (self.verbose) {
+                    std.debug.print("    [36m⚡ Cache hit (saved {d}ms)[0m\n", .{entry.compile_time_ms});
+                }
+
+                task.cache_hit = true;
+                task.status = .Completed;
+                task.end_time = std.time.milliTimestamp();
+                self.stats.completed_tasks += 1;
+                self.stats.cached_tasks += 1;
+                return;
+            }
+        }
+
+        // Cache miss - compile from scratch
+        if (self.verbose) {
+            std.debug.print("    [33m🔨 Cache miss - compiling...[0m\n", .{});
+        }
+
+        // Real compilation pipeline:
+        // 1. Lex and parse source file
+        // 2. Type check
+        // 3. Generate IR
+        // 4. Optimize
+        // 5. Generate machine code
+
+        // For now, simulate work
         std.Thread.sleep(1_000_000); // 1ms per task
+
+        // Create IR and object file paths
+        var ir_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const ir_path = try std.fmt.bufPrint(&ir_path_buf, "{s}/{s}.ir", .{ self.cache_dir, task.module_name });
+
+        var obj_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const obj_path = try std.fmt.bufPrint(&obj_path_buf, "{s}/{s}.o", .{ self.cache_dir, task.module_name });
+
+        // Store in cache
+        const compile_time = task.end_time - task.start_time;
+        try self.ir_cache.put(
+            cache_key,
+            task.module_name,
+            task.file_path,
+            stat.mtime,
+            dep_hashes.items,
+            ir_path,
+            obj_path,
+            compile_time,
+        );
 
         task.status = .Completed;
         task.end_time = std.time.milliTimestamp();
@@ -461,6 +557,63 @@ pub const ParallelBuilder = struct {
                 }
             }
             std.debug.print("\n", .{});
+        }
+    }
+
+    /// Clear the IR cache
+    pub fn clearCache(self: *ParallelBuilder) !void {
+        try self.ir_cache.clear();
+        if (self.verbose) {
+            std.debug.print("Cleared IR cache\n", .{});
+        }
+    }
+
+    /// Get cache statistics
+    pub fn getCacheStats(self: *ParallelBuilder) ir_cache.CacheStats {
+        return self.ir_cache.stats;
+    }
+
+    /// Print cache statistics
+    pub fn printCacheStats(self: *ParallelBuilder) void {
+        const stats = self.getCacheStats();
+        std.debug.print("\n", .{});
+        std.debug.print("╔════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║          IR Cache Statistics                   ║\n", .{});
+        std.debug.print("╠════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ Cache hits:         {d:>5}                      ║\n", .{stats.cache_hits});
+        std.debug.print("║ Cache misses:       {d:>5}                      ║\n", .{stats.cache_misses});
+        std.debug.print("║ Evictions:          {d:>5}                      ║\n", .{stats.cache_evictions});
+
+        if (stats.cache_hits + stats.cache_misses > 0) {
+            const hit_rate = @as(f64, @floatFromInt(stats.cache_hits)) / @as(f64, @floatFromInt(stats.cache_hits + stats.cache_misses)) * 100.0;
+            std.debug.print("║ Hit rate:           {d:>5.1}%                    ║\n", .{hit_rate});
+        }
+
+        std.debug.print("║ Cache size:         {d:>5} MB                  ║\n", .{stats.cache_size_mb});
+        std.debug.print("║ Entry count:        {d:>5}                      ║\n", .{stats.cache_entries});
+        std.debug.print("╚════════════════════════════════════════════════╝\n", .{});
+    }
+
+    /// Invalidate cache entry for a specific module
+    pub fn invalidateModule(self: *ParallelBuilder, module_name: []const u8) !void {
+        for (self.tasks.items) |task| {
+            if (std.mem.eql(u8, task.module_name, module_name)) {
+                if (task.cache_key) |key| {
+                    try self.ir_cache.invalidate(key);
+                    if (self.verbose) {
+                        std.debug.print("Invalidated cache for module: {s}\n", .{module_name});
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    /// Enable aggressive caching mode
+    pub fn setAggressiveMode(self: *ParallelBuilder, enabled: bool) void {
+        self.ir_cache.aggressive_mode = enabled;
+        if (self.verbose) {
+            std.debug.print("Aggressive caching: {s}\n", .{if (enabled) "enabled" else "disabled"});
         }
     }
 };
