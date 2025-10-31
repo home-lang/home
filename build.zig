@@ -58,6 +58,8 @@ pub fn build(b: *std.Build) void {
     const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize);
     const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize);
     const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize);
+    const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize);
+    const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -366,6 +368,20 @@ pub fn build(b: *std.Build) void {
 
     const run_math_tests = b.addRunArtifact(math_tests);
 
+    // Env tests
+    const env_tests = b.addTest(.{
+        .root_module = env_pkg,
+    });
+
+    const run_env_tests = b.addRunArtifact(env_tests);
+
+    // Syscall tests
+    const syscall_tests = b.addTest(.{
+        .root_module = syscall_pkg,
+    });
+
+    const run_syscall_tests = b.addRunArtifact(syscall_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
@@ -384,6 +400,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_intrinsics_tests.step);
     test_step.dependOn(&run_ffi_tests.step);
     test_step.dependOn(&run_math_tests.step);
+    test_step.dependOn(&run_env_tests.step);
+    test_step.dependOn(&run_syscall_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
