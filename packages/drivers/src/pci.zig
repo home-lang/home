@@ -379,8 +379,17 @@ test "PCI address encoding" {
     const addr = PCIAddress.encode(0, 0, 0, 0);
     try testing.expectEqual(@as(u32, 0x80000000), addr);
 
+    // Test: bus=1, device=2, function=3, register=0x10
+    // Expected encoding (little-endian packed struct):
+    // Bits 0-7: register = 0x10
+    // Bits 8-10: function = 3 (011)
+    // Bits 11-15: device = 2 (00010)
+    // Bits 16-23: bus = 1
+    // Bits 24-30: reserved = 0
+    // Bit 31: enable = 1
+    // Result: 0x80011310 (bits 8-15 = 00010_011 = 0x13)
     const addr2 = PCIAddress.encode(1, 2, 3, 0x10);
-    const expected: u32 = 0x80010B10;
+    const expected: u32 = 0x80011310;
     try testing.expectEqual(expected, addr2);
 }
 

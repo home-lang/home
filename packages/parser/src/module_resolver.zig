@@ -35,6 +35,7 @@ pub const ModuleResolver = struct {
     pub fn init(allocator: std.mem.Allocator) !ModuleResolver {
         // Auto-detect Home packages directory
         const home_root = try getHomeRoot(allocator);
+        defer allocator.free(home_root);
 
         var packages_path = std.ArrayList(u8){};
         try packages_path.appendSlice(allocator, home_root);

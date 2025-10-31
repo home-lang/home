@@ -13,9 +13,83 @@ const builtin = @import("builtin");
 /// - Hot reload with state preservation
 /// - IPC bridge for web<->native communication
 ///
-/// This module links directly with Craft's native Zig implementation
-/// Craft path - looks for Craft in ~/Code/craft by default
-const CRAFT_PATH = "/Users/chrisbreuer/Code/craft/packages/zig";
+/// This module uses Pantry to resolve Craft's path dynamically
+/// Craft is installed via: pantry install craft
+///
+/// Path resolution:
+/// 1. Check .freezer lockfile for craft package
+/// 2. Resolve to ~/.local/share/launchpad/global/packages/craft/{version}
+/// 3. Use packages/zig subpath for Zig bindings
+
+/// Resolve Craft path from pantry
+/// Resolution order:
+/// 1. ./pantry_modules/craft/{version}/packages/zig (local install)
+/// 2. ~/.local/share/pantry/global/packages/craft/{version} (global install)
+/// 3. ~/Code/craft/packages/zig (development fallback)
+fn resolveCraftPath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
+
+    // Try current directory first (for local pantry_modules)
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.fs.cwd().realpath(".", &buf) catch {
+        // If we can't get cwd, skip to global check
+        return tryGlobalOrFallback(allocator, home);
+    };
+
+    // Check ./pantry_modules/craft/{version}/packages/zig
+    const local_craft_base = try std.fs.path.join(allocator, &.{ cwd, "pantry_modules", "craft" });
+    defer allocator.free(local_craft_base);
+
+    if (std.fs.openDirAbsolute(local_craft_base, .{ .iterate = true })) |*dir| {
+        defer dir.close();
+        var iter = dir.iterate();
+        if (try iter.next()) |entry| {
+            if (entry.kind == .directory) {
+                return try std.fs.path.join(allocator, &.{
+                    local_craft_base,
+                    entry.name,
+                    "packages",
+                    "zig",
+                });
+            }
+        }
+    } else |_| {}
+
+    // Not in local modules, try global/fallback
+    return tryGlobalOrFallback(allocator, home);
+}
+
+fn tryGlobalOrFallback(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+    // Check ~/.local/share/pantry/global/packages/craft/{version}
+    const global_craft_base = try std.fs.path.join(allocator, &.{
+        home,
+        ".local",
+        "share",
+        "pantry",
+        "global",
+        "packages",
+        "craft",
+    });
+    defer allocator.free(global_craft_base);
+
+    if (std.fs.openDirAbsolute(global_craft_base, .{ .iterate = true })) |*dir| {
+        defer dir.close();
+        var iter = dir.iterate();
+        if (try iter.next()) |entry| {
+            if (entry.kind == .directory) {
+                return try std.fs.path.join(allocator, &.{
+                    global_craft_base,
+                    entry.name,
+                    "packages",
+                    "zig",
+                });
+            }
+        }
+    } else |_| {}
+
+    // Fall back to ~/Code/craft/packages/zig for development
+    return try std.fs.path.join(allocator, &.{ home, "Code", "craft", "packages", "zig" });
+}
 
 /// Import Craft modules if available
 /// In production, these would be actual @cImport or direct Zig imports

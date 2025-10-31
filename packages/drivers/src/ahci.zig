@@ -655,6 +655,8 @@ pub fn createBlockDevice(allocator: std.mem.Allocator, port: *AhciPort) !*block.
 // ============================================================================
 
 test "AHCI structures" {
-    try std.testing.expectEqual(@as(usize, 0x100), @sizeOf(HbaPort));
+    // HbaPort should be 128 bytes (0x80) according to AHCI spec
+    // 17 u32 fields + 11 u32 reserved + 4 u32 vendor = 32 u32 = 128 bytes
+    try std.testing.expectEqual(@as(usize, 0x80), @sizeOf(HbaPort));
     try std.testing.expectEqual(@as(usize, 20), @sizeOf(FisRegH2D));
 }

@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
     const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize, zig_test_framework);
     const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
+    const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -539,6 +540,11 @@ pub fn build(b: *std.Build) void {
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
     const run_volatile_tests = b.addRunArtifact(volatile_tests);
     test_step.dependOn(&run_volatile_tests.step);
+
+    // Pantry tests
+    const pantry_tests = b.addTest(.{ .root_module = pantry_pkg });
+    const run_pantry_tests = b.addRunArtifact(pantry_tests);
+    test_step.dependOn(&run_pantry_tests.step);
 
     // Test zig-test-framework integration
     const framework_integration_mod = b.createModule(.{

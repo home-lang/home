@@ -243,7 +243,7 @@ pub const Parser = struct {
     /// Consume and return the current token, advancing to the next.
     ///
     /// Returns: The token that was current before advancing
-    fn advance(self: *Parser) Token {
+    pub fn advance(self: *Parser) Token {
         if (!self.isAtEnd()) self.current += 1;
         return self.previous();
     }
@@ -474,7 +474,7 @@ pub const Parser = struct {
     ///   @test fn test_addition() { ... }
     ///
     /// Returns: Function declaration statement node
-    fn functionDeclaration(self: *Parser, is_test: bool) !ast.Stmt {
+    pub fn functionDeclaration(self: *Parser, is_test: bool) !ast.Stmt {
         // Check for async keyword before function name
         const is_async = self.match(&.{.Async});
 
@@ -1463,7 +1463,7 @@ pub const Parser = struct {
     }
 
     /// Parse a block statement
-    fn blockStatement(self: *Parser) !*ast.BlockStmt {
+    pub fn blockStatement(self: *Parser) !*ast.BlockStmt {
         // Expect the opening brace (or use previous if already consumed)
         const start_token = if (self.previous().type == .LeftBrace)
             self.previous()

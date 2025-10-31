@@ -29,10 +29,12 @@ pub const AtomicCounter = struct {
         return self.value.fetchSub(val, ordering);
     }
 
+    /// Increment counter and return the old value (before increment)
     pub fn increment(self: *AtomicCounter) u64 {
         return self.fetchAdd(1, .seq_cst);
     }
 
+    /// Decrement counter and return the old value (before decrement)
     pub fn decrement(self: *AtomicCounter) u64 {
         return self.fetchSub(1, .seq_cst);
     }
@@ -186,12 +188,14 @@ pub fn AtomicPtr(comptime T: type) type {
 test "atomic counter operations" {
     var counter = AtomicCounter.init(0);
 
-    try std.testing.expectEqual(@as(u64, 1), counter.increment());
-    try std.testing.expectEqual(@as(u64, 2), counter.increment());
-    try std.testing.expectEqual(@as(u64, 2), counter.load(.seq_cst));
+    // increment() returns the old value before incrementing
+    try std.testing.expectEqual(@as(u64, 0), counter.increment()); // 0 -> 1, returns 0
+    try std.testing.expectEqual(@as(u64, 1), counter.increment()); // 1 -> 2, returns 1
+    try std.testing.expectEqual(@as(u64, 2), counter.load(.seq_cst)); // now at 2
 
-    try std.testing.expectEqual(@as(u64, 2), counter.decrement());
-    try std.testing.expectEqual(@as(u64, 1), counter.load(.seq_cst));
+    // decrement() returns the old value before decrementing
+    try std.testing.expectEqual(@as(u64, 2), counter.decrement()); // 2 -> 1, returns 2
+    try std.testing.expectEqual(@as(u64, 1), counter.load(.seq_cst)); // now at 1
 }
 
 test "atomic flag operations" {

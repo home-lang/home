@@ -35,6 +35,7 @@ pub const GpioRegs = extern struct {
     reserved12: [4]u32,
     // BCM2711 (RPi 4) has different pull-up/down registers at offset 0xE4
     gpio_pup_pdn_cntrl: [4]u32, // Pull-up/down control (BCM2711)
+    reserved13: [13]u32, // Padding to reach 0xF4 total size
 };
 
 // GPIO base addresses

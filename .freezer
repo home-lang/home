@@ -1,54 +1,47 @@
 {
-  "version": 1,
+  "version": "1",
+  "lockfileVersion": 1,
+  "generatedAt": "2025-10-31T00:00:00.000Z",
   "packages": {
+    "craft@0.1.0": {
+      "name": "craft",
+      "version": "0.1.0",
+      "resolved": "/Users/chrisbreuer/Code/craft",
+      "integrity": "",
+      "source": "path",
+      "installedAt": "2025-10-31T00:00:00.000Z"
+    },
     "home-http@1.2.0": {
       "name": "home-http",
       "version": "1.2.0",
       "resolved": "https://packages.home-lang.org/home-http/1.2.0.tar.gz",
       "integrity": "sha256-abc123def456...",
-      "source": {
-        "type": "registry",
-        "url": "https://packages.home-lang.org"
-      },
-      "dependencies": {
-        "home-types": "0.1.0"
-      }
+      "source": "registry",
+      "installedAt": "2025-10-31T00:00:00.000Z"
     },
     "home-database@2.0.1": {
       "name": "home-database",
       "version": "2.0.1",
       "resolved": "https://packages.home-lang.org/home-database/2.0.1.tar.gz",
       "integrity": "sha256-xyz789uvw012...",
-      "source": {
-        "type": "registry",
-        "url": "https://packages.home-lang.org"
-      },
-      "dependencies": {}
+      "source": "registry",
+      "installedAt": "2025-10-31T00:00:00.000Z"
     },
     "my-custom-lib@0.5.0": {
       "name": "my-custom-lib",
       "version": "0.5.0",
       "resolved": "https://github.com/user/my-custom-lib.git",
       "integrity": "sha256-git789abc123...",
-      "source": {
-        "type": "git",
-        "url": "https://github.com/user/my-custom-lib.git",
-        "commit": "a1b2c3d4e5f6789012345678901234567890abcd"
-      },
-      "dependencies": {
-        "home-http": "1.2.0"
-      }
+      "source": "git",
+      "installedAt": "2025-10-31T00:00:00.000Z"
     },
     "local-pkg@1.0.0": {
       "name": "local-pkg",
       "version": "1.0.0",
       "resolved": "../local-packages/local-pkg",
       "integrity": "",
-      "source": {
-        "type": "path",
-        "path": "../local-packages/local-pkg"
-      },
-      "dependencies": {}
+      "source": "path",
+      "installedAt": "2025-10-31T00:00:00.000Z"
     }
   }
 }

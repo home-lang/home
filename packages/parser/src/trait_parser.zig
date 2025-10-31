@@ -188,8 +188,7 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
         
         if (self.check(.LeftBrace)) {
             has_default = true;
-            const block = try self.block();
-            default_body = block.BlockStmt;
+            default_body = try self.blockStatement();
         } else {
             _ = try self.expect(.Semicolon, "Expected ';' after method signature");
         }
@@ -366,7 +365,7 @@ pub fn parseWhereClause(self: *Parser) !*ast.WhereClause {
 }
 
 /// Parse a type expression
-fn parseTypeExpr(self: *Parser) !*ast.TypeExpr {
+pub fn parseTypeExpr(self: *Parser) !*ast.TypeExpr {
     const type_expr = try self.allocator.create(ast.TypeExpr);
     
     // Handle dyn Trait (trait object)
