@@ -2,7 +2,7 @@
 // COM port driver for kernel debugging and early console
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 // ============================================================================
 // Serial Port Constants

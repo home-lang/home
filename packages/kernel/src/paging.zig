@@ -2,7 +2,7 @@
 // Type-safe page table management for virtual memory
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 const memory = @import("memory.zig");
 const atomic = @import("atomic.zig");
 

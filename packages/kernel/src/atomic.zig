@@ -2,7 +2,7 @@
 // Type-safe atomic operations and memory ordering for OS development
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 // ============================================================================
 // Memory Ordering

@@ -2,7 +2,7 @@
 // Type-safe locks and synchronization for OS development
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 const atomic = @import("atomic.zig");
 
 // ============================================================================

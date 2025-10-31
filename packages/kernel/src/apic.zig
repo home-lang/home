@@ -2,7 +2,7 @@
 // Local APIC and x2APIC support for modern interrupt handling
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 const memory = @import("memory.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");

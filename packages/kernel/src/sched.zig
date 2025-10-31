@@ -6,7 +6,7 @@ const thread_mod = @import("thread.zig");
 const cpu_context = @import("cpu_context.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 const Thread = thread_mod.Thread;
 const ThreadState = thread_mod.ThreadState;

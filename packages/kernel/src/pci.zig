@@ -2,7 +2,7 @@
 // PCI (Peripheral Component Interconnect) device discovery and configuration
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 const memory = @import("memory.zig");
 
 // ============================================================================

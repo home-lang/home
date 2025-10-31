@@ -154,7 +154,7 @@ pub fn isAligned(addr: usize) bool {
 }
 
 /// Get number of pages needed for size
-pub fn pageCou​nt(size: usize) usize {
+pub fn pageCount(size: usize) usize {
     return (size + PAGE_SIZE - 1) / PAGE_SIZE;
 }
 

@@ -95,7 +95,7 @@ pub const RFlags = packed struct(u64) {
     iopl: u2,                 // 12-13: I/O privilege level
     nested_task: bool,        // 14: Nested task
     reserved4: u1 = 0,        // 15: Reserved
-    resume: bool,             // 16: Resume flag
+    resume_flag: bool,        // 16: Resume flag
     virtual_8086: bool,       // 17: Virtual 8086 mode
     alignment_check: bool,    // 18: Alignment check
     virtual_interrupt: bool,  // 19: Virtual interrupt flag

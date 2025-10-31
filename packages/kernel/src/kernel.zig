@@ -15,7 +15,7 @@ const Basics = @import("basics");
 // ============================================================================
 
 /// Assembly operations and CPU control
-pub const asm = @import("asm.zig");
+pub const assembly = @import("asm.zig");
 
 /// Memory management primitives
 pub const memory = @import("memory.zig");
@@ -69,6 +69,18 @@ pub const dma = @import("dma.zig");
 
 /// Process management
 pub const process = @import("process.zig");
+
+/// Process forking with copy-on-write
+pub const fork = @import("fork.zig");
+
+/// Process execution and program loading
+pub const exec = @import("exec.zig");
+
+/// Complete ELF loader with memory mapping
+pub const elf_loader = @import("elf_loader.zig");
+
+/// Copy-on-Write implementation
+pub const cow = @import("cow.zig");
 
 /// Thread management
 pub const thread = @import("thread.zig");

@@ -8,7 +8,7 @@ const gdt = @import("gdt.zig");
 const memory = @import("memory.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 // ============================================================================
 // Per-CPU Data Structure

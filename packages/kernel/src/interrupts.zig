@@ -2,7 +2,7 @@
 // Type-safe interrupt and exception management for OS development
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 // ============================================================================
 // IDT (Interrupt Descriptor Table) Structure

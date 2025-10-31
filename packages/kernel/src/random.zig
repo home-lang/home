@@ -245,7 +245,7 @@ pub fn getAslrBase(base: u64, max_offset: u64, alignment: u64) u64 {
 
 /// Add user-provided entropy to the pool
 /// This allows userspace to contribute randomness from hardware sources
-pub fn addEntropy(data: []const u8) void {
+pub fn addUserEntropy(data: []const u8) void {
     entropy_pool_lock.acquire();
     defer entropy_pool_lock.release();
 
