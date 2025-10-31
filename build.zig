@@ -53,6 +53,8 @@ pub fn build(b: *std.Build) void {
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize);
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize);
+    const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize);
+    const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -74,6 +76,7 @@ pub fn build(b: *std.Build) void {
     linter_pkg.addImport("lexer", lexer_pkg);
     linter_pkg.addImport("parser", parser_pkg);
     linter_pkg.addImport("config", config_pkg);
+    memory_pkg.addImport("threading", threading_pkg);
 
     // Main executable
     const exe = b.addExecutable(.{
@@ -324,6 +327,20 @@ pub fn build(b: *std.Build) void {
 
     const run_database_tests = b.addRunArtifact(database_tests);
 
+    // Threading tests
+    const threading_tests = b.addTest(.{
+        .root_module = threading_pkg,
+    });
+
+    const run_threading_tests = b.addRunArtifact(threading_tests);
+
+    // Memory allocator tests
+    const memory_tests = b.addTest(.{
+        .root_module = memory_pkg,
+    });
+
+    const run_memory_tests = b.addRunArtifact(memory_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
@@ -337,6 +354,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_formatter_tests.step);
     test_step.dependOn(&run_codegen_tests.step);
     test_step.dependOn(&run_database_tests.step);
+    test_step.dependOn(&run_threading_tests.step);
+    test_step.dependOn(&run_memory_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
