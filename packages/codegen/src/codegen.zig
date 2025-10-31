@@ -9,6 +9,8 @@ pub const wasm = @import("wasm.zig");
 pub const arm64 = @import("arm64.zig");
 pub const x64 = @import("x64.zig");
 pub const elf = @import("elf.zig");
+pub const optimizer = @import("optimizer.zig");
+pub const regalloc = @import("regalloc.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;
@@ -16,3 +18,7 @@ pub const HomeKernelCodegen = home_kernel_codegen.HomeKernelCodegen;
 pub const LLVMCodegen = llvm_codegen.LLVMCodegen;
 pub const WasmCodegen = wasm.WasmCodegen;
 pub const CodegenError = native_codegen.CodegenError;
+pub const Optimizer = optimizer.Optimizer;
+pub const OptLevel = optimizer.OptLevel;
+pub const GraphColoringAllocator = regalloc.GraphColoringAllocator;
+pub const RegisterAllocation = regalloc.RegisterAllocation;
