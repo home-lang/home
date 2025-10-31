@@ -1,0 +1,7 @@
+[package]
+name = "intrinsics"
+version = "0.1.0"
+description = "Hardware intrinsics and low-level operations for Home Programming Language"
+license = "MIT"
+
+[dependencies]

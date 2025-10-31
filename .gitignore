@@ -12,3 +12,6 @@ packages/.DS_Store
 /packages/drivers/.zig-cache
 /packages/inline/.zig-cache
 /packages/regalloc/.zig-cache
+/packages/platform/.zig-cache
+/packages/volatile/.zig-cache
+/packages/intrinsics/.zig-cache

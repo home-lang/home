@@ -1,0 +1,5 @@
+[package]
+name = "volatile"
+version = "0.1.0"
+description = "Volatile operations and MMIO safety for hardware drivers"
+authors = ["Home Language Team"]

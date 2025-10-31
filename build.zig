@@ -76,6 +76,8 @@ pub fn build(b: *std.Build) void {
     const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize);
     const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize);
     const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize);
+    const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize);
+    const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -507,6 +509,16 @@ pub fn build(b: *std.Build) void {
     const regalloc_tests = b.addTest(.{ .root_module = regalloc_pkg });
     const run_regalloc_tests = b.addRunArtifact(regalloc_tests);
     test_step.dependOn(&run_regalloc_tests.step);
+
+    // Platform-specific code blocks tests
+    const platform_tests = b.addTest(.{ .root_module = platform_pkg });
+    const run_platform_tests = b.addRunArtifact(platform_tests);
+    test_step.dependOn(&run_platform_tests.step);
+
+    // Volatile operations tests
+    const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
+    const run_volatile_tests = b.addRunArtifact(volatile_tests);
+    test_step.dependOn(&run_volatile_tests.step);
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1

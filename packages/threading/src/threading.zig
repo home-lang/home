@@ -30,6 +30,9 @@ pub const Barrier = @import("barrier.zig").Barrier;
 pub const Once = @import("once.zig").Once;
 pub const TLS = @import("tls.zig");
 
+// Advanced synchronization primitives
+pub const sync = @import("sync.zig");
+
 // Scheduling
 pub const SchedPolicy = @import("sched.zig").SchedPolicy;
 pub const SchedParam = @import("sched.zig").SchedParam;

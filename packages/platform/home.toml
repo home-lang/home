@@ -1,0 +1,5 @@
+[package]
+name = "platform"
+version = "0.1.0"
+description = "Platform-specific code blocks for x86, ARM, RISC-V, and OS differences"
+authors = ["Home Language Team"]
