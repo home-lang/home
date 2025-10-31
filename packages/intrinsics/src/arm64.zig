@@ -37,7 +37,7 @@ pub const SysReg = struct {
 
     /// Current Exception Level (EL0-EL3)
     pub fn currentEL() u2 {
-        if (!comptime isARM64()) return 0;
+        if (comptime !isARM64()) return 0;
         const val = read("CurrentEL");
         return @truncate((val >> 2) & 0x3);
     }
@@ -175,7 +175,7 @@ pub const Cache = struct {
         asm volatile ("dc cvac, %[addr]"
             :
             : [addr] "r" (addr),
-            : "memory"
+            : .{ .memory = true }
         );
     }
 
@@ -185,7 +185,7 @@ pub const Cache = struct {
         asm volatile ("dc civac, %[addr]"
             :
             : [addr] "r" (addr),
-            : "memory"
+            : .{ .memory = true }
         );
     }
 
@@ -195,18 +195,14 @@ pub const Cache = struct {
         asm volatile ("dc ivac, %[addr]"
             :
             : [addr] "r" (addr),
-            : "memory"
+            : .{ .memory = true }
         );
     }
 
     /// Instruction Cache Invalidate All
     pub fn invalidateICache() void {
         if (!comptime isARM64()) return;
-        asm volatile ("ic iallu"
-            :
-            :
-            : "memory"
-        );
+        asm volatile ("ic iallu" ::: .{ .memory = true });
         isb();
     }
 
@@ -216,7 +212,7 @@ pub const Cache = struct {
         asm volatile ("ic ivau, %[addr]"
             :
             : [addr] "r" (addr),
-            : "memory"
+            : .{ .memory = true }
         );
         isb();
     }
@@ -227,7 +223,7 @@ pub const Cache = struct {
         asm volatile ("dc zva, %[addr]"
             :
             : [addr] "r" (addr),
-            : "memory"
+            : .{ .memory = true }
         );
     }
 
@@ -237,7 +233,7 @@ pub const Cache = struct {
 
         // This is a simplified version
         // In production, you'd walk the cache levels
-        asm volatile ("dc cisw, xzr" ::: "memory");
+        asm volatile ("dc cisw, xzr" ::: .{ .memory = true });
         dsb();
     }
 
@@ -245,7 +241,7 @@ pub const Cache = struct {
     pub fn invalidateDCacheAll() void {
         if (!comptime isARM64()) return;
 
-        asm volatile ("dc isw, xzr" ::: "memory");
+        asm volatile ("dc isw, xzr" ::: .{ .memory = true });
         dsb();
     }
 
@@ -253,7 +249,7 @@ pub const Cache = struct {
     pub fn cleanInvalidateDCacheAll() void {
         if (!comptime isARM64()) return;
 
-        asm volatile ("dc cisw, xzr" ::: "memory");
+        asm volatile ("dc cisw, xzr" ::: .{ .memory = true });
         dsb();
     }
 };
@@ -263,7 +259,7 @@ pub const TLB = struct {
     /// Invalidate entire TLB
     pub fn invalidateAll() void {
         if (!comptime isARM64()) return;
-        asm volatile ("tlbi vmalle1" ::: "memory");
+        asm volatile ("tlbi vmalle1" ::: .{ .memory = true });
         dsb();
         isb();
     }
@@ -274,7 +270,7 @@ pub const TLB = struct {
         asm volatile ("tlbi vae1, %[addr]"
             :
             : [addr] "r" (addr >> 12),
-            : "memory"
+            : .{ .memory = true }
         );
         dsb();
         isb();
@@ -286,7 +282,7 @@ pub const TLB = struct {
         asm volatile ("tlbi aside1, %[asid]"
             :
             : [asid] "r" (@as(u64, asid) << 48),
-            : "memory"
+            : .{ .memory = true }
         );
         dsb();
         isb();
@@ -299,7 +295,7 @@ pub const TLB = struct {
         asm volatile ("tlbi vae1is, %[val]"
             :
             : [val] "r" (val),
-            : "memory"
+            : .{ .memory = true }
         );
         dsb();
         isb();
@@ -308,7 +304,7 @@ pub const TLB = struct {
     /// Invalidate all TLBs in inner shareable domain
     pub fn invalidateAllIS() void {
         if (!comptime isARM64()) return;
-        asm volatile ("tlbi vmalle1is" ::: "memory");
+        asm volatile ("tlbi vmalle1is" ::: .{ .memory = true });
         dsb();
         isb();
     }
@@ -317,17 +313,17 @@ pub const TLB = struct {
 /// Barrier Operations
 pub inline fn dsb() void {
     if (!comptime isARM64()) return;
-    asm volatile ("dsb sy" ::: "memory");
+    asm volatile ("dsb sy" ::: .{ .memory = true });
 }
 
 pub inline fn dmb() void {
     if (!comptime isARM64()) return;
-    asm volatile ("dmb sy" ::: "memory");
+    asm volatile ("dmb sy" ::: .{ .memory = true });
 }
 
 pub inline fn isb() void {
     if (!comptime isARM64()) return;
-    asm volatile ("isb" ::: "memory");
+    asm volatile ("isb" ::: .{ .memory = true });
 }
 
 /// Enhanced Performance Monitoring Unit (PMU)
@@ -553,72 +549,90 @@ pub const NEON = struct {
 };
 
 // Tests
+// NOTE: ARM64 tests can only run on ARM64 hardware.
+// On x86, these tests will be skipped at runtime but may still attempt
+// to execute ARM instructions due to compiler optimizations.
+// The functions themselves are safe to use due to compile-time checks.
+
 test "sysreg current EL" {
-    if (!comptime isARM64()) return error.SkipZigTest;
+    // Skip test entirely on non-ARM64 platforms
+    if (comptime !isARM64()) return error.SkipZigTest;
 
-    const el = SysReg.currentEL();
-    const testing = std.testing;
+    if (comptime isARM64()) {
+        const el = SysReg.currentEL();
+        const testing = std.testing;
 
-    // Should be in EL0, EL1, or EL2 in normal operation
-    try testing.expect(el <= 2);
+        // Should be in EL0, EL1, or EL2 in normal operation
+        try testing.expect(el <= 2);
+    } else {
+        return error.SkipZigTest;
+    }
 }
 
 test "cache operations" {
-    if (!comptime isARM64()) return error.SkipZigTest;
+    if (comptime isARM64()) {
+        var data: [64]u8 align(64) = undefined;
+        const addr = @intFromPtr(&data);
 
-    var data: [64]u8 align(64) = undefined;
-    const addr = @intFromPtr(&data);
-
-    // These should not crash
-    Cache.cleanDCacheVA(addr);
-    Cache.invalidateDCacheVA(addr);
-    dsb();
+        // These should not crash
+        Cache.cleanDCacheVA(addr);
+        Cache.invalidateDCacheVA(addr);
+        dsb();
+    } else {
+        return error.SkipZigTest;
+    }
 }
 
 test "tlb operations" {
-    if (!comptime isARM64()) return error.SkipZigTest;
-
-    // TLB operations require elevated privileges
-    // Just test that they compile and don't crash in user mode
-    const addr: u64 = 0x1000;
-    TLB.invalidateVA(addr);
+    if (comptime isARM64()) {
+        // TLB operations require elevated privileges
+        // Just test that they compile and don't crash in user mode
+        const addr: u64 = 0x1000;
+        TLB.invalidateVA(addr);
+    } else {
+        return error.SkipZigTest;
+    }
 }
 
 test "pmu cycle counter" {
-    if (!comptime isARM64()) return error.SkipZigTest;
+    if (comptime isARM64()) {
+        // May fail in user mode without proper permissions
+        // PMU.init() might not work, but readCycles should return 0 if unavailable
+        const cycles1 = PMU.readCycles();
 
-    // May fail in user mode without proper permissions
-    // PMU.init() might not work, but readCycles should return 0 if unavailable
-    const cycles1 = PMU.readCycles();
+        // Do some work
+        var sum: u64 = 0;
+        for (0..1000) |i| {
+            sum += i;
+        }
 
-    // Do some work
-    var sum: u64 = 0;
-    for (0..1000) |i| {
-        sum += i;
+        const cycles2 = PMU.readCycles();
+
+        const testing = std.testing;
+        // If PMU is available, cycles should increase
+        if (cycles1 > 0 or cycles2 > 0) {
+            try testing.expect(cycles2 >= cycles1);
+        }
+        try testing.expect(sum > 0);
+    } else {
+        return error.SkipZigTest;
     }
-
-    const cycles2 = PMU.readCycles();
-
-    const testing = std.testing;
-    // If PMU is available, cycles should increase
-    if (cycles1 > 0 or cycles2 > 0) {
-        try testing.expect(cycles2 >= cycles1);
-    }
-    try testing.expect(sum > 0);
 }
 
 test "neon basic operations" {
-    if (!comptime isARM64()) return error.SkipZigTest;
+    if (comptime isARM64()) {
+        const a = NEON.v4f32{ 1.0, 2.0, 3.0, 4.0 };
+        const b = NEON.v4f32{ 5.0, 6.0, 7.0, 8.0 };
+        const c = NEON.v4f32{ 1.0, 1.0, 1.0, 1.0 };
 
-    const a = NEON.v4f32{ 1.0, 2.0, 3.0, 4.0 };
-    const b = NEON.v4f32{ 5.0, 6.0, 7.0, 8.0 };
-    const c = NEON.v4f32{ 1.0, 1.0, 1.0, 1.0 };
+        const result = NEON.fmaF32(a, b, c);
 
-    const result = NEON.fmaF32(a, b, c);
-
-    const testing = std.testing;
-    try testing.expectEqual(@as(f32, 6.0), result[0]); // 1*5+1
-    try testing.expectEqual(@as(f32, 13.0), result[1]); // 2*6+1
-    try testing.expectEqual(@as(f32, 22.0), result[2]); // 3*7+1
-    try testing.expectEqual(@as(f32, 33.0), result[3]); // 4*8+1
+        const testing = std.testing;
+        try testing.expectEqual(@as(f32, 6.0), result[0]); // 1*5+1
+        try testing.expectEqual(@as(f32, 13.0), result[1]); // 2*6+1
+        try testing.expectEqual(@as(f32, 22.0), result[2]); // 3*7+1
+        try testing.expectEqual(@as(f32, 33.0), result[3]); // 4*8+1
+    } else {
+        return error.SkipZigTest;
+    }
 }

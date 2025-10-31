@@ -39,6 +39,12 @@ pub const bcm_gpio = @import("bcm_gpio.zig");
 pub const bcm_mailbox = @import("bcm_mailbox.zig");
 pub const bcm_timer = @import("bcm_timer.zig");
 
+// Hardware Abstraction Layer
+pub const hal = @import("hal.zig");
+
+// PCI/PCIe Configuration Space
+pub const pci_config = @import("pci_config.zig");
+
 // ============================================================================
 // Driver Core Types
 // ============================================================================

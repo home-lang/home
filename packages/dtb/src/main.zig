@@ -3,6 +3,7 @@
 
 const dtb_module = @import("dtb.zig");
 const address_module = @import("address.zig");
+const compiler_module = @import("compiler.zig");
 
 // Core types
 pub const DeviceTree = dtb_module.DeviceTree;
@@ -23,6 +24,12 @@ pub const getPhysicalAddress = address_module.getPhysicalAddress;
 pub const Memory = address_module.Memory;
 pub const InterruptSpecifier = address_module.InterruptSpecifier;
 pub const parseInterrupts = address_module.parseInterrupts;
+
+// Device Tree Compiler
+pub const Compiler = compiler_module.Compiler;
+pub const Lexer = compiler_module.Lexer;
+pub const TokenType = compiler_module.TokenType;
+pub const compileToDTB = compiler_module.compileToDTB;
 
 test {
     @import("std").testing.refAllDecls(@This());
