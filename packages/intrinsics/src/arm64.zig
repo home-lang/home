@@ -16,7 +16,7 @@ fn isARM64() bool {
 pub const SysReg = struct {
     /// Read system register
     pub inline fn read(comptime reg_name: []const u8) u64 {
-        if (!comptime isARM64()) @compileError("ARM64 system registers only available on AArch64");
+        if (comptime !isARM64()) @compileError("ARM64 system registers only available on AArch64");
 
         var value: u64 = undefined;
         asm volatile ("mrs %[value], " ++ reg_name
@@ -27,7 +27,7 @@ pub const SysReg = struct {
 
     /// Write system register
     pub inline fn write(comptime reg_name: []const u8, value: u64) void {
-        if (!comptime isARM64()) @compileError("ARM64 system registers only available on AArch64");
+        if (comptime !isARM64()) @compileError("ARM64 system registers only available on AArch64");
 
         asm volatile ("msr " ++ reg_name ++ ", %[value]"
             :
@@ -44,7 +44,7 @@ pub const SysReg = struct {
 
     /// Stack Pointer Selection
     pub fn getSP() u64 {
-        if (!comptime isARM64()) return 0;
+        if (comptime !isARM64()) return 0;
         var sp: u64 = undefined;
         asm volatile ("mov %[sp], sp"
             : [sp] "=r" (sp),
@@ -550,89 +550,85 @@ pub const NEON = struct {
 
 // Tests
 // NOTE: ARM64 tests can only run on ARM64 hardware.
-// On x86, these tests will be skipped at runtime but may still attempt
-// to execute ARM instructions due to compiler optimizations.
-// The functions themselves are safe to use due to compile-time checks.
+// On x86, these tests will properly skip to avoid executing ARM instructions.
+
+test "arm64 module loads" {
+    // This test just ensures the module compiles correctly
+    const testing = std.testing;
+    try testing.expect(true);
+}
 
 test "sysreg current EL" {
-    // Skip test entirely on non-ARM64 platforms
-    if (comptime !isARM64()) return error.SkipZigTest;
+    // Skip on non-ARM64 - must check at comptime to prevent ARM code emission
+    const is_arm64 = comptime builtin.cpu.arch == .aarch64;
+    if (!is_arm64) return error.SkipZigTest;
 
-    if (comptime isARM64()) {
+    // Only compile this code on ARM64
+    if (is_arm64) {
         const el = SysReg.currentEL();
         const testing = std.testing;
 
         // Should be in EL0, EL1, or EL2 in normal operation
         try testing.expect(el <= 2);
-    } else {
-        return error.SkipZigTest;
     }
 }
 
 test "cache operations" {
-    if (comptime isARM64()) {
-        var data: [64]u8 align(64) = undefined;
-        const addr = @intFromPtr(&data);
+    if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
 
-        // These should not crash
-        Cache.cleanDCacheVA(addr);
-        Cache.invalidateDCacheVA(addr);
-        dsb();
-    } else {
-        return error.SkipZigTest;
-    }
+    var data: [64]u8 align(64) = undefined;
+    const addr = @intFromPtr(&data);
+
+    // These should not crash
+    Cache.cleanDCacheVA(addr);
+    Cache.invalidateDCacheVA(addr);
+    dsb();
 }
 
 test "tlb operations" {
-    if (comptime isARM64()) {
-        // TLB operations require elevated privileges
-        // Just test that they compile and don't crash in user mode
-        const addr: u64 = 0x1000;
-        TLB.invalidateVA(addr);
-    } else {
-        return error.SkipZigTest;
-    }
+    if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
+
+    // TLB operations require elevated privileges
+    // Just test that they compile and don't crash in user mode
+    const addr: u64 = 0x1000;
+    TLB.invalidateVA(addr);
 }
 
 test "pmu cycle counter" {
-    if (comptime isARM64()) {
-        // May fail in user mode without proper permissions
-        // PMU.init() might not work, but readCycles should return 0 if unavailable
-        const cycles1 = PMU.readCycles();
+    if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
 
-        // Do some work
-        var sum: u64 = 0;
-        for (0..1000) |i| {
-            sum += i;
-        }
+    // May fail in user mode without proper permissions
+    // PMU.init() might not work, but readCycles should return 0 if unavailable
+    const cycles1 = PMU.readCycles();
 
-        const cycles2 = PMU.readCycles();
-
-        const testing = std.testing;
-        // If PMU is available, cycles should increase
-        if (cycles1 > 0 or cycles2 > 0) {
-            try testing.expect(cycles2 >= cycles1);
-        }
-        try testing.expect(sum > 0);
-    } else {
-        return error.SkipZigTest;
+    // Do some work
+    var sum: u64 = 0;
+    for (0..1000) |i| {
+        sum += i;
     }
+
+    const cycles2 = PMU.readCycles();
+
+    const testing = std.testing;
+    // If PMU is available, cycles should increase
+    if (cycles1 > 0 or cycles2 > 0) {
+        try testing.expect(cycles2 >= cycles1);
+    }
+    try testing.expect(sum > 0);
 }
 
 test "neon basic operations" {
-    if (comptime isARM64()) {
-        const a = NEON.v4f32{ 1.0, 2.0, 3.0, 4.0 };
-        const b = NEON.v4f32{ 5.0, 6.0, 7.0, 8.0 };
-        const c = NEON.v4f32{ 1.0, 1.0, 1.0, 1.0 };
+    if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
 
-        const result = NEON.fmaF32(a, b, c);
+    const a = NEON.v4f32{ 1.0, 2.0, 3.0, 4.0 };
+    const b = NEON.v4f32{ 5.0, 6.0, 7.0, 8.0 };
+    const c = NEON.v4f32{ 1.0, 1.0, 1.0, 1.0 };
 
-        const testing = std.testing;
-        try testing.expectEqual(@as(f32, 6.0), result[0]); // 1*5+1
-        try testing.expectEqual(@as(f32, 13.0), result[1]); // 2*6+1
-        try testing.expectEqual(@as(f32, 22.0), result[2]); // 3*7+1
-        try testing.expectEqual(@as(f32, 33.0), result[3]); // 4*8+1
-    } else {
-        return error.SkipZigTest;
-    }
+    const result = NEON.fmaF32(a, b, c);
+
+    const testing = std.testing;
+    try testing.expectEqual(@as(f32, 6.0), result[0]); // 1*5+1
+    try testing.expectEqual(@as(f32, 13.0), result[1]); // 2*6+1
+    try testing.expectEqual(@as(f32, 22.0), result[2]); // 3*7+1
+    try testing.expectEqual(@as(f32, 33.0), result[3]); // 4*8+1
 }

@@ -422,7 +422,7 @@ pub fn compileToDTB(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
 
     // Serialize to DTB format
     // This is a simplified version - full implementation would serialize properly
-    var output = std.ArrayList(u8).try_init(allocator);
+    var output = std.ArrayList(u8){};
     errdefer output.deinit(allocator);
 
     // Write FDT header
