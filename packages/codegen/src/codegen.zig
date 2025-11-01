@@ -11,6 +11,11 @@ pub const x64 = @import("x64.zig");
 pub const elf = @import("elf.zig");
 pub const optimizer = @import("optimizer.zig");
 pub const regalloc = @import("regalloc.zig");
+pub const instruction_selection = @import("instruction_selection.zig");
+pub const loop_optimizer = @import("loop_optimizer.zig");
+pub const inliner = @import("inliner.zig");
+pub const instruction_scheduler = @import("instruction_scheduler.zig");
+pub const vectorizer = @import("vectorizer.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;
@@ -22,3 +27,8 @@ pub const Optimizer = optimizer.Optimizer;
 pub const OptLevel = optimizer.OptLevel;
 pub const GraphColoringAllocator = regalloc.GraphColoringAllocator;
 pub const RegisterAllocation = regalloc.RegisterAllocation;
+pub const InstructionSelector = instruction_selection.InstructionSelector;
+pub const LoopUnroller = loop_optimizer.LoopUnroller;
+pub const FunctionInliner = inliner.FunctionInliner;
+pub const InstructionScheduler = instruction_scheduler.InstructionScheduler;
+pub const Vectorizer = vectorizer.Vectorizer;
