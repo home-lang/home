@@ -61,19 +61,24 @@
 - [ ] Better error messages (in progress)
 
 ## Phase 3: Advanced Features (v0.3)
-- [ ] Closures with inferred move
-- [ ] Trait system completion
-  - [ ] Associated type bounds
-  - [ ] Default trait implementations
-  - [ ] Trait objects (dyn)
-- [ ] Async/await completion
-  - [ ] Async runtime
-  - [ ] Error propagation in async
-  - [ ] Async trait methods
-- [ ] Compile-time evaluation
-  - [ ] Comptime interpreter
-  - [ ] Comptime control flow
-  - [ ] Integration with type system
+- [x] Closures with inferred move
+  - [x] Closure expressions with |params| syntax
+  - [x] Move semantics support
+  - [x] Capture analysis
+- [x] Trait system completion
+  - [x] Associated type bounds
+  - [x] Default trait implementations
+  - [x] Trait objects with VTable dispatch
+  - [x] Operator traits
+- [x] Async/await completion
+  - [x] Async runtime with Future/Poll
+  - [x] Task executor
+  - [x] Waker system
+- [x] Compile-time evaluation
+  - [x] Comptime interpreter
+  - [x] Comptime control flow
+  - [x] Integration with type system
+  - [x] Reflection support
 
 ## Phase 4: Optimization & Tooling (v0.4)
 - [ ] Language Server Protocol (LSP)
