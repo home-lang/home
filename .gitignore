@@ -17,3 +17,4 @@ packages/.DS_Store
 /packages/intrinsics/.zig-cache
 /packages/build/.zig-cache
 /packages/build/.test-cache
+/pantry_modules
