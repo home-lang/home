@@ -56,8 +56,8 @@ pub const middleware = struct {
     pub const RateLimiter = @import("middleware.zig").RateLimiter;
 };
 
-// Server (to be implemented)
-// pub const HttpServer = @import("server.zig").HttpServer;
+// Server
+pub const Server = @import("server.zig").Server;
 
 test {
     std.testing.refAllDecls(@This());

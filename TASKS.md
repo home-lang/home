@@ -105,8 +105,9 @@
 - [x] HTTP request struct
 - [x] HTTP response struct
 - [x] Router with pattern matching
-- [ ] Middleware system
-- [ ] HTTP server implementation
-- [ ] PostgreSQL driver
-- [ ] Basic ORM
-- [ ] Testing framework
+- [x] Middleware system (Laravel-inspired)
+- [x] HTTP server implementation
+- [x] PostgreSQL driver (with connection pooling)
+- [x] Query Builder (fluent SQL API)
+- [x] Basic ORM (Eloquent-inspired with relationships)
+- [x] Testing framework (comprehensive with coverage)
