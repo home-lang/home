@@ -73,6 +73,7 @@ pub const TokenType = enum {
 
     // Keywords
     And,
+    As,
     Asm,
     Async,
     Await,
@@ -101,6 +102,7 @@ pub const TokenType = enum {
     Match,
     Mut,
     Or,
+    Pub,
     Return,
     SelfType,
     SelfValue,
@@ -184,6 +186,7 @@ pub const TokenType = enum {
             .Integer => "integer",
             .Float => "float",
             .And => "and",
+            .As => "as",
             .Asm => "asm",
             .Async => "async",
             .Await => "await",
@@ -212,6 +215,7 @@ pub const TokenType = enum {
             .Match => "match",
             .Mut => "mut",
             .Or => "or",
+            .Pub => "pub",
             .Return => "return",
             .SelfType => "Self",
             .SelfValue => "self",
@@ -305,6 +309,7 @@ pub const Token = struct {
 /// (async, await, match, comptime).
 pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "and", .And },
+    .{ "as", .As },
     .{ "asm", .Asm },
     .{ "async", .Async },
     .{ "await", .Await },
@@ -333,6 +338,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "match", .Match },
     .{ "mut", .Mut },
     .{ "or", .Or },
+    .{ "pub", .Pub },
     .{ "return", .Return },
     .{ "Self", .SelfType },
     .{ "self", .SelfValue },

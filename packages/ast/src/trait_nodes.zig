@@ -16,6 +16,7 @@ pub const TraitDecl = struct {
     methods: []const TraitMethod,
     associated_types: []const AssociatedType,
     where_clause: ?*WhereClause,
+    is_public: bool = false,
 
     pub fn init(
         name: []const u8,

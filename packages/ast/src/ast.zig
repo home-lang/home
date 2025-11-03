@@ -1,6 +1,12 @@
 const std = @import("std");
 const Token = @import("lexer").Token;
 
+// Export attribute-related AST nodes
+pub const attribute_nodes = @import("attribute_nodes.zig");
+pub const Attribute = attribute_nodes.Attribute;
+pub const AttributeList = attribute_nodes.AttributeList;
+pub const AttributeName = attribute_nodes.AttributeName;
+
 // Export trait-related AST nodes
 pub const trait_nodes = @import("trait_nodes.zig");
 pub const TraitDecl = trait_nodes.TraitDecl;
@@ -108,6 +114,7 @@ pub const NodeType = enum {
     InterpolatedString,
     BooleanLiteral,
     ArrayLiteral,
+    MapLiteral,
 
     // Identifiers
     Identifier,
@@ -118,6 +125,7 @@ pub const NodeType = enum {
     AssignmentExpr,
     CallExpr,
     TryExpr,
+    TypeCastExpr,
     IndexExpr,
     MemberExpr,
     RangeExpr,
@@ -593,6 +601,48 @@ pub const ArrayLiteral = struct {
     }
 };
 
+/// Map/Dictionary literal entry
+pub const MapEntry = struct {
+    key: *Expr,
+    value: *Expr,
+};
+
+/// Map/Dictionary literal expression.
+///
+/// Represents a dictionary/map literal with key-value pairs.
+///
+/// Example: `{"key": "value", "foo": 123}`
+pub const MapLiteral = struct {
+    node: Node,
+    entries: []const MapEntry,
+
+    pub fn init(allocator: std.mem.Allocator, entries: []const MapEntry, loc: SourceLocation) !*MapLiteral {
+        const expr = try allocator.create(MapLiteral);
+        expr.* = .{
+            .node = .{ .type = .MapLiteral, .loc = loc },
+            .entries = entries,
+        };
+        return expr;
+    }
+};
+
+/// Type cast expression (value as Type)
+pub const TypeCastExpr = struct {
+    node: Node,
+    value: *Expr,
+    target_type: []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, target_type: []const u8, loc: SourceLocation) !*TypeCastExpr {
+        const expr = try allocator.create(TypeCastExpr);
+        expr.* = .{
+            .node = .{ .type = .TypeCastExpr, .loc = loc },
+            .value = value,
+            .target_type = target_type,
+        };
+        return expr;
+    }
+};
+
 /// Index expression (array[index])
 pub const IndexExpr = struct {
     node: Node,
@@ -886,12 +936,14 @@ pub const Expr = union(NodeType) {
     InterpolatedString: *InterpolatedString,
     BooleanLiteral: BooleanLiteral,
     ArrayLiteral: *ArrayLiteral,
+    MapLiteral: *MapLiteral,
     Identifier: Identifier,
     BinaryExpr: *BinaryExpr,
     UnaryExpr: *UnaryExpr,
     AssignmentExpr: *AssignmentExpr,
     CallExpr: *CallExpr,
     TryExpr: *TryExpr,
+    TypeCastExpr: *TypeCastExpr,
     IndexExpr: *IndexExpr,
     MemberExpr: *MemberExpr,
     RangeExpr: *RangeExpr,
@@ -1012,6 +1064,7 @@ pub const LetDecl = struct {
     type_name: ?[]const u8,
     value: ?*Expr,
     is_mutable: bool,
+    is_public: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, type_name: ?[]const u8, value: ?*Expr, is_mutable: bool, loc: SourceLocation) !*LetDecl {
         const decl = try allocator.create(LetDecl);
@@ -1330,12 +1383,14 @@ pub const Stmt = union(NodeType) {
     InterpolatedString: void,
     BooleanLiteral: void,
     ArrayLiteral: void,
+    MapLiteral: void,
     Identifier: void,
     BinaryExpr: void,
     UnaryExpr: void,
     AssignmentExpr: void,
     CallExpr: void,
     TryExpr: void,
+    TypeCastExpr: void,
     IndexExpr: void,
     MemberExpr: void,
     RangeExpr: void,
@@ -1422,6 +1477,8 @@ pub const StructDecl = struct {
     name: []const u8,
     fields: []const StructField,
     type_params: []const []const u8, // Generic type parameters e.g. ["T", "E"]
+    is_public: bool = false,
+    attributes: []const Attribute = &.{},
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);
@@ -1450,6 +1507,8 @@ pub const EnumDecl = struct {
     node: Node,
     name: []const u8,
     variants: []const EnumVariant,
+    is_public: bool = false,
+    attributes: []const Attribute = &.{},
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, variants: []const EnumVariant, loc: SourceLocation) !*EnumDecl {
         const decl = try allocator.create(EnumDecl);
@@ -1473,6 +1532,8 @@ pub const UnionDecl = struct {
     node: Node,
     name: []const u8,
     variants: []const UnionVariant,
+    is_public: bool = false,
+    attributes: []const Attribute = &.{},
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, variants: []const UnionVariant, loc: SourceLocation) !*UnionDecl {
         const decl = try allocator.create(UnionDecl);
@@ -1490,6 +1551,8 @@ pub const TypeAliasDecl = struct {
     node: Node,
     name: []const u8,
     target_type: []const u8,
+    is_public: bool = false,
+    attributes: []const Attribute = &.{},
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, target_type: []const u8, loc: SourceLocation) !*TypeAliasDecl {
         const decl = try allocator.create(TypeAliasDecl);
@@ -1512,7 +1575,9 @@ pub const FnDecl = struct {
     is_async: bool,
     type_params: []const []const u8,
     is_test: bool = false,
+    is_public: bool = false,
     variadic_param: ?VariadicParam = null,
+    attributes: []const Attribute = &.{}, // Attributes attached to this function
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);

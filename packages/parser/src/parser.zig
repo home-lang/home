@@ -63,8 +63,9 @@ const Precedence = enum(u8) {
     BitAnd = 8,         // &
     Equality = 9,       // == !=
     Comparison = 10,    // < > <= >=
-    Range = 11,         // .. ..=
-    Pipe = 12,          // |>
+    TypeCast = 11,      // as
+    Range = 12,         // .. ..=
+    Pipe = 13,          // |>
     Shift = 13,         // << >>
     Term = 14,          // + -
     Factor = 15,        // * / %
@@ -94,6 +95,7 @@ const Precedence = enum(u8) {
             .Ampersand => .BitAnd,
             .EqualEqual, .BangEqual => .Equality,
             .Less, .LessEqual, .Greater, .GreaterEqual => .Comparison,
+            .As => .TypeCast,
             .DotDot, .DotDotEqual => .Range,
             .LeftShift, .RightShift => .Shift,
             .Plus, .Minus => .Term,
@@ -459,6 +461,37 @@ pub const Parser = struct {
         return ast.Program.init(self.allocator, try statements.toOwnedSlice(self.allocator));
     }
 
+    /// Parse attributes (@test, @inline, @deprecated, etc.)
+    fn parseAttributes(self: *Parser) ![]const ast.Attribute {
+        var attrs = std.ArrayList(ast.Attribute){ .items = &.{}, .capacity = 0 };
+        defer attrs.deinit(self.allocator);
+
+        while (self.match(&.{.At})) {
+            const name_token = try self.expect(.Identifier, "Expected attribute name after '@'");
+            const name = name_token.lexeme;
+
+            var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+            defer args.deinit(self.allocator);
+
+            // Parse optional arguments: @attribute(arg1, arg2)
+            if (self.match(&.{.LeftParen})) {
+                if (!self.check(.RightParen)) {
+                    while (true) {
+                        const arg = try self.expression();
+                        try args.append(self.allocator, arg);
+                        if (!self.match(&.{.Comma})) break;
+                    }
+                }
+                _ = try self.expect(.RightParen, "Expected ')' after attribute arguments");
+            }
+
+            const attr = ast.Attribute.init(name, try args.toOwnedSlice(self.allocator));
+            try attrs.append(self.allocator, attr);
+        }
+
+        return try attrs.toOwnedSlice(self.allocator);
+    }
+
     /// Parse a top-level declaration or statement.
     ///
     /// Declarations include functions, structs, enums, unions, type aliases,
@@ -471,34 +504,88 @@ pub const Parser = struct {
     ///
     /// Returns: Statement AST node (declarations are represented as statements)
     fn declaration(self: *Parser) ParseError!ast.Stmt {
-        // Check for @test annotation
+        // Parse any attributes first
+        const attributes = try self.parseAttributes();
+
+        // Check for pub modifier
+        const is_pub = self.match(&.{.Pub});
+
+        // Check if @test attribute exists for backward compatibility
         var is_test = false;
-        if (self.check(.At)) {
-            const next_token = self.peekNext();
-            if (next_token.type == .Identifier and std.mem.eql(u8, next_token.lexeme, "test")) {
-                _ = self.advance(); // consume @
-                _ = self.advance(); // consume test
+        for (attributes) |attr| {
+            if (ast.Attribute.isNamed(attr, "test")) {
                 is_test = true;
+                break;
             }
         }
 
-        // If @test was found, only allow function declarations
-        if (is_test) {
-            if (self.match(&.{.Fn})) return self.functionDeclaration(is_test);
-            try self.reportError("@test annotation can only be used with function declarations");
+        if (self.match(&.{.Import})) return self.importDeclaration();
+
+        if (self.match(&.{.Struct})) {
+            var stmt = try self.structDeclaration();
+            if (is_pub) stmt.StructDecl.is_public = true;
+            stmt.StructDecl.attributes = attributes;
+            return stmt;
+        }
+
+        if (self.match(&.{.Enum})) {
+            var stmt = try self.enumDeclaration();
+            if (is_pub) stmt.EnumDecl.is_public = true;
+            stmt.EnumDecl.attributes = attributes;
+            return stmt;
+        }
+
+        if (self.match(&.{.Union})) {
+            var stmt = try self.unionDeclaration();
+            if (is_pub) stmt.UnionDecl.is_public = true;
+            stmt.UnionDecl.attributes = attributes;
+            return stmt;
+        }
+
+        if (self.match(&.{.Type})) {
+            var stmt = try self.typeAliasDeclaration();
+            if (is_pub) stmt.TypeDecl.is_public = true;
+            stmt.TypeDecl.attributes = attributes;
+            return stmt;
+        }
+
+        if (self.match(&.{.Trait})) {
+            var stmt = try self.traitDeclaration();
+            if (is_pub) stmt.TraitDecl.is_public = true;
+            return stmt;
+        }
+
+        if (self.match(&.{.Impl})) return self.implDeclaration();
+
+        if (self.match(&.{.Fn})) {
+            var stmt = try self.functionDeclaration(is_test);
+            if (is_pub) stmt.FnDecl.is_public = true;
+            stmt.FnDecl.attributes = attributes;
+            return stmt;
+        }
+
+        if (self.match(&.{.Let})) {
+            var stmt = try self.letDeclaration(false);
+            if (is_pub) stmt.LetDecl.is_public = true;
+            return stmt;
+        }
+
+        if (self.match(&.{.Const})) {
+            var stmt = try self.letDeclaration(true);
+            if (is_pub) stmt.LetDecl.is_public = true;
+            return stmt;
+        }
+
+        // If attributes were provided but no valid declaration follows, error
+        if (attributes.len > 0) {
+            try self.reportError("Attributes can only be used with declarations");
             return error.UnexpectedToken;
         }
 
-        if (self.match(&.{.Import})) return self.importDeclaration();
-        if (self.match(&.{.Struct})) return self.structDeclaration();
-        if (self.match(&.{.Enum})) return self.enumDeclaration();
-        if (self.match(&.{.Union})) return self.unionDeclaration();
-        if (self.match(&.{.Type})) return self.typeAliasDeclaration();
-        if (self.match(&.{.Trait})) return self.traitDeclaration();
-        if (self.match(&.{.Impl})) return self.implDeclaration();
-        if (self.match(&.{.Fn})) return self.functionDeclaration(is_test);
-        if (self.match(&.{.Let})) return self.letDeclaration(false);
-        if (self.match(&.{.Const})) return self.letDeclaration(true);
+        if (is_pub) {
+            try self.reportError("pub can only be used with declarations");
+            return error.UnexpectedToken;
+        }
 
         return self.statement();
     }
@@ -1621,6 +1708,8 @@ pub const Parser = struct {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .Ampersand, .Pipe, .Caret, .LeftShift, .RightShift })) {
                 expr = try self.binary(expr);
+            } else if (self.match(&.{.As})) {
+                expr = try self.typeCast(expr);
             } else if (self.match(&.{ .DotDot, .DotDotEqual })) {
                 expr = try self.rangeExpr(expr);
             } else if (self.match(&.{.PipeGreater})) {
@@ -1690,6 +1779,26 @@ pub const Parser = struct {
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .RangeExpr = range_expr };
+        return result;
+    }
+
+    /// Parse a type cast expression (e.g., value as i32)
+    fn typeCast(self: *Parser, value: *ast.Expr) !*ast.Expr {
+        const as_token = self.previous();
+
+        // Expect a type identifier after 'as'
+        const type_token = try self.expect(.Identifier, "Expected type name after 'as'");
+        const target_type = type_token.lexeme;
+
+        const type_cast_expr = try ast.TypeCastExpr.init(
+            self.allocator,
+            value,
+            target_type,
+            ast.SourceLocation.fromToken(as_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TypeCastExpr = type_cast_expr };
         return result;
     }
 
@@ -2265,6 +2374,49 @@ pub const Parser = struct {
 
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{ .UnaryExpr = unary_expr };
+            return expr;
+        }
+
+        // Map/Dictionary literals
+        if (self.match(&.{.LeftBrace})) {
+            const brace_token = self.previous();
+
+            // Empty map {}
+            if (self.check(.RightBrace)) {
+                _ = self.advance();
+                const map_literal = try ast.MapLiteral.init(
+                    self.allocator,
+                    &.{},
+                    ast.SourceLocation.fromToken(brace_token),
+                );
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .MapLiteral = map_literal };
+                return expr;
+            }
+
+            var entries = std.ArrayList(ast.MapEntry){ .items = &.{}, .capacity = 0 };
+            defer entries.deinit(self.allocator);
+
+            while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                const key = try self.expression();
+                _ = try self.expect(.Colon, "Expected ':' after map key");
+                const value = try self.expression();
+
+                try entries.append(self.allocator, .{ .key = key, .value = value });
+
+                if (!self.match(&.{.Comma})) break;
+            }
+
+            _ = try self.expect(.RightBrace, "Expected '}' after map entries");
+
+            const map_literal = try ast.MapLiteral.init(
+                self.allocator,
+                try entries.toOwnedSlice(self.allocator),
+                ast.SourceLocation.fromToken(brace_token),
+            );
+
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .MapLiteral = map_literal };
             return expr;
         }
 
