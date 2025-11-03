@@ -70,7 +70,19 @@ Home is a modern systems programming language with:
 "value: \x41"           // Hex escape (\xNN)
 "emoji: \u{1F600}"      // Unicode escape (\u{NNNN})
 
-// Supported escapes: \n \t \r \" \\ \' \0
+// Supported escapes: \n \t \r \" \\ \' \0 \{
+
+// String interpolation
+"Hello {name}!"                    // Simple interpolation
+"Result: {x + 1}"                  // Expression interpolation
+"Full name: {first} {last}"        // Multiple interpolations
+"Nested: {foo({bar})}"             // Nested braces in expressions
+"Escaped: \{not interpolated}"     // Escaped brace (literal)
+
+// Raw strings (no escape processing)
+r"C:\path\to\file"                 // Raw string
+r#"String with "quotes""#          // Raw string with # delimiter
+r##"Can contain # in text"##       // Multiple # for flexibility
 ```
 
 #### Boolean Literals
