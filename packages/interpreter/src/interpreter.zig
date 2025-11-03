@@ -14,6 +14,8 @@ pub const InterpreterError = error{
     InvalidArguments,
     InvalidOperation,
     Return, // Used for control flow
+    Break, // Used for break statements
+    Continue, // Used for continue statements
 } || std.mem.Allocator.Error;
 
 /// Home language interpreter
@@ -160,6 +162,8 @@ pub const Interpreter = struct {
                     for (while_stmt.body.statements) |body_stmt| {
                         self.executeStatement(body_stmt, env) catch |err| {
                             if (err == error.Return) return err;
+                            if (err == error.Break) break;
+                            if (err == error.Continue) break; // Continue to next iteration
                             return err;
                         };
                     }
@@ -183,6 +187,15 @@ pub const Interpreter = struct {
                     const max = iterable_value.Int;
                     var i: i64 = 0;
                     while (i < max) : (i += 1) {
+                        // If there's an index variable (enumerate syntax), define it
+                        if (for_stmt.index) |index_var| {
+                            if (i == 0) {
+                                try loop_env.define(index_var, Value{ .Int = i });
+                            } else {
+                                try loop_env.set(index_var, Value{ .Int = i });
+                            }
+                        }
+
                         // Define the iterator variable in loop scope on first iteration, update on subsequent
                         if (i == 0) {
                             try loop_env.define(for_stmt.iterator, Value{ .Int = i });
@@ -190,12 +203,19 @@ pub const Interpreter = struct {
                             try loop_env.set(for_stmt.iterator, Value{ .Int = i });
                         }
 
+                        var broke = false;
                         for (for_stmt.body.statements) |body_stmt| {
                             self.executeStatement(body_stmt, &loop_env) catch |err| {
                                 if (err == error.Return) return err;
+                                if (err == error.Break) {
+                                    broke = true;
+                                    break;
+                                }
+                                if (err == error.Continue) break; // Continue to next iteration
                                 return err;
                             };
                         }
+                        if (broke) break;
                     }
                 }
             },
@@ -224,12 +244,19 @@ pub const Interpreter = struct {
                 // Execute body first
                 while (true) {
                     // Execute body
+                    var broke = false;
                     for (do_while.body.statements) |body_stmt| {
                         self.executeStatement(body_stmt, env) catch |err| {
                             if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                broke = true;
+                                break;
+                            }
+                            if (err == error.Continue) break; // Continue to next iteration
                             return err;
                         };
                     }
+                    if (broke) break;
 
                     // Then check condition
                     const condition = try self.evaluateExpression(do_while.condition, env);
@@ -332,6 +359,16 @@ pub const Interpreter = struct {
                 // Union declarations are type-level constructs
                 // They don't execute any runtime code
                 // Type checking handles this
+            },
+            .BreakStmt => |break_stmt| {
+                // TODO: Handle labeled breaks
+                _ = break_stmt.label;
+                return error.Break;
+            },
+            .ContinueStmt => |continue_stmt| {
+                // TODO: Handle labeled continues
+                _ = continue_stmt.label;
+                return error.Continue;
             },
             else => {
                 std.debug.print("Unimplemented statement type\n", .{});

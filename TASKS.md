@@ -55,9 +55,21 @@
 
 ## Phase 2: Ergonomics & Developer Experience (v0.2)
 - [x] Import aliasing (import path/to/module as Alias)
+  - [x] AST support (ImportDecl.alias)
+  - [x] Parser support
+  - [x] Symbol table integration
 - [x] Pattern binding with @ (pattern @ identifier)
+  - [x] AST support (Pattern.As)
+  - [x] Parser support in match expressions
 - [x] For loop with index (for i, item in items)
+  - [x] AST support (ForStmt.index)
+  - [x] Parser support for enumerate syntax
+  - [x] Interpreter support
 - [x] Labeled break/continue (break 'label, continue 'label)
+  - [x] AST nodes (BreakStmt, ContinueStmt)
+  - [x] Lexer support (Break, Continue tokens)
+  - [x] Parser support with label parsing
+  - [x] Interpreter support with control flow
 - [ ] Better error messages (in progress)
 
 ## Phase 3: Advanced Features (v0.3)
@@ -81,21 +93,27 @@
   - [x] Reflection support
 
 ## Phase 4: Optimization & Tooling (v0.4)
-- [ ] Language Server Protocol (LSP)
-  - [ ] Auto-completion
-  - [ ] Go to definition
-  - [ ] Find references
-  - [ ] Hover information
-  - [ ] Code actions
-- [ ] Formatter
-  - [ ] Consistent code formatting
-  - [ ] Configurable style
-  - [ ] Editor integration
-- [ ] Optimizations
-  - [ ] Constant propagation
-  - [ ] Dead code elimination
-  - [ ] Inline small functions
-  - [ ] Loop unrolling
+- [x] Language Server Protocol (LSP)
+  - [x] Auto-completion
+  - [x] Go to definition
+  - [x] Find references
+  - [x] Hover information
+  - [x] Code actions
+  - [x] Document symbols
+  - [x] Semantic tokens
+  - [x] Rename support
+- [x] Formatter
+  - [x] Consistent code formatting
+  - [x] Configurable style (indent, quotes, braces, semicolons)
+  - [x] AST-based formatting
+- [x] Optimizations
+  - [x] Constant propagation
+  - [x] Dead code elimination
+  - [x] Function inlining
+  - [x] Loop optimization
+  - [x] Instruction scheduling
+  - [x] Register allocation
+  - [x] Vectorization
 
 ## Phase 5: Stabilization (v1.0)
 - [ ] Comprehensive testing

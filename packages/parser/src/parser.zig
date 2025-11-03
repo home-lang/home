@@ -1036,6 +1036,8 @@ pub const Parser = struct {
         if (self.match(&.{.Match})) return self.matchStatement();
         if (self.match(&.{.Try})) return self.tryStatement();
         if (self.match(&.{.Defer})) return self.deferStatement();
+        if (self.match(&.{.Break})) return self.breakStatement();
+        if (self.match(&.{.Continue})) return self.continueStatement();
         if (self.match(&.{.LeftBrace})) {
             const block = try self.blockStatement();
             return ast.Stmt{ .BlockStmt = block };
@@ -1633,6 +1635,54 @@ pub const Parser = struct {
         try self.optionalSemicolon();
 
         return ast.Stmt{ .DeferStmt = stmt };
+    }
+
+    /// Parse a break statement
+    /// Syntax: break or break 'label
+    fn breakStatement(self: *Parser) !ast.Stmt {
+        const break_token = self.previous();
+
+        // Check for optional label (starting with ')
+        var label: ?[]const u8 = null;
+        if (self.check(.Identifier) and self.peek().lexeme.len > 0 and self.peek().lexeme[0] == '\'') {
+            const label_token = self.advance();
+            label = label_token.lexeme[1..]; // Strip the leading '
+        }
+
+        const stmt = try ast.BreakStmt.init(
+            self.allocator,
+            label,
+            ast.SourceLocation.fromToken(break_token),
+        );
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
+        return ast.Stmt{ .BreakStmt = stmt };
+    }
+
+    /// Parse a continue statement
+    /// Syntax: continue or continue 'label
+    fn continueStatement(self: *Parser) !ast.Stmt {
+        const continue_token = self.previous();
+
+        // Check for optional label (starting with ')
+        var label: ?[]const u8 = null;
+        if (self.check(.Identifier) and self.peek().lexeme.len > 0 and self.peek().lexeme[0] == '\'') {
+            const label_token = self.advance();
+            label = label_token.lexeme[1..]; // Strip the leading '
+        }
+
+        const stmt = try ast.ContinueStmt.init(
+            self.allocator,
+            label,
+            ast.SourceLocation.fromToken(continue_token),
+        );
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
+        return ast.Stmt{ .ContinueStmt = stmt };
     }
 
     /// Parse a block statement
