@@ -380,9 +380,47 @@ pub const Interpreter = struct {
     fn evaluateExpression(self: *Interpreter, expr: *const ast.Expr, env: *Environment) InterpreterError!Value {
         switch (expr.*) {
             .IntegerLiteral => |lit| {
+                // Check bounds if a type suffix is specified
+                if (lit.type_suffix) |suffix| {
+                    if (std.mem.eql(u8, suffix, "i8")) {
+                        if (lit.value < std.math.minInt(i8) or lit.value > std.math.maxInt(i8)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "i16")) {
+                        if (lit.value < std.math.minInt(i16) or lit.value > std.math.maxInt(i16)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "i32")) {
+                        if (lit.value < std.math.minInt(i32) or lit.value > std.math.maxInt(i32)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "i64")) {
+                        // i64 is the native type, always valid
+                    } else if (std.mem.eql(u8, suffix, "u8")) {
+                        if (lit.value < 0 or lit.value > std.math.maxInt(u8)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "u16")) {
+                        if (lit.value < 0 or lit.value > std.math.maxInt(u16)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "u32")) {
+                        if (lit.value < 0 or lit.value > std.math.maxInt(u32)) {
+                            return error.RuntimeError;
+                        }
+                    } else if (std.mem.eql(u8, suffix, "u64")) {
+                        if (lit.value < 0) {
+                            return error.RuntimeError;
+                        }
+                    }
+                    // i128 and u128 are larger than our i64 value type, so we can't fully validate them
+                }
                 return Value{ .Int = lit.value };
             },
             .FloatLiteral => |lit| {
+                // Type suffix validation for floats (f32, f64)
+                // f64 is the native type, f32 would need range checking but we keep it simple
+                _ = lit.type_suffix; // Acknowledge but don't validate for now
                 return Value{ .Float = lit.value };
             },
             .StringLiteral => |lit| {

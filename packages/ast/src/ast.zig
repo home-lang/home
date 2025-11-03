@@ -240,6 +240,8 @@ pub const IntegerLiteral = struct {
     node: Node,
     /// The integer value
     value: i64,
+    /// Optional type suffix (e.g., "i32", "u64")
+    type_suffix: ?[]const u8 = null,
 
     /// Create a new integer literal node.
     ///
@@ -252,6 +254,23 @@ pub const IntegerLiteral = struct {
         return .{
             .node = .{ .type = .IntegerLiteral, .loc = loc },
             .value = value,
+            .type_suffix = null,
+        };
+    }
+
+    /// Create a new integer literal node with a type suffix.
+    ///
+    /// Parameters:
+    ///   - value: The integer value
+    ///   - type_suffix: The type suffix (e.g., "i32", "u64")
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized IntegerLiteral with type suffix
+    pub fn initWithType(value: i64, type_suffix: ?[]const u8, loc: SourceLocation) IntegerLiteral {
+        return .{
+            .node = .{ .type = .IntegerLiteral, .loc = loc },
+            .value = value,
+            .type_suffix = type_suffix,
         };
     }
 };
@@ -267,6 +286,8 @@ pub const FloatLiteral = struct {
     node: Node,
     /// The floating-point value
     value: f64,
+    /// Optional type suffix (e.g., "f32", "f64")
+    type_suffix: ?[]const u8 = null,
 
     /// Create a new float literal node.
     ///
@@ -279,6 +300,23 @@ pub const FloatLiteral = struct {
         return .{
             .node = .{ .type = .FloatLiteral, .loc = loc },
             .value = value,
+            .type_suffix = null,
+        };
+    }
+
+    /// Create a new float literal node with a type suffix.
+    ///
+    /// Parameters:
+    ///   - value: The floating-point value
+    ///   - type_suffix: The type suffix (e.g., "f32", "f64")
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized FloatLiteral with type suffix
+    pub fn initWithType(value: f64, type_suffix: ?[]const u8, loc: SourceLocation) FloatLiteral {
+        return .{
+            .node = .{ .type = .FloatLiteral, .loc = loc },
+            .value = value,
+            .type_suffix = type_suffix,
         };
     }
 };
@@ -999,6 +1037,8 @@ pub const Expr = union(NodeType) {
     DeferStmt: void,
     BlockStmt: void,
     ExprStmt: void,
+    BreakStmt: void,
+    ContinueStmt: void,
     Program: void,
 
     pub fn getLocation(self: Expr) SourceLocation {

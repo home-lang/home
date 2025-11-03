@@ -2324,16 +2324,59 @@ pub const Parser = struct {
         // Integer literals
         if (self.match(&.{.Integer})) {
             const token = self.previous();
-            const value = std.fmt.parseInt(i64, token.lexeme, 10) catch |err| {
+
+            // Check for type suffix (i8, i16, i32, i64, i128, u8, u16, u32, u64, u128)
+            var type_suffix: ?[]const u8 = null;
+            var lexeme = token.lexeme;
+
+            // Find where the type suffix starts (if any)
+            for (lexeme, 0..) |c, i| {
+                if ((c == 'i' or c == 'u') and i > 0) {
+                    // Check if this looks like a type suffix
+                    const remaining = lexeme[i..];
+                    if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
+                        type_suffix = remaining;
+                        lexeme = lexeme[0..i];
+                        break;
+                    }
+                }
+            }
+
+            // Remove underscores for parsing
+            var clean_lexeme = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer clean_lexeme.deinit(self.allocator);
+            for (lexeme) |c| {
+                if (c != '_') {
+                    try clean_lexeme.append(self.allocator, c);
+                }
+            }
+
+            // Determine the base (binary, hex, octal, decimal)
+            const clean = clean_lexeme.items;
+            const base: u8 = if (clean.len > 2 and clean[0] == '0')
+                switch (clean[1]) {
+                    'b', 'B' => 2,
+                    'x', 'X' => 16,
+                    'o', 'O' => 8,
+                    else => 10,
+                }
+            else
+                10;
+
+            // Skip prefix for non-decimal bases
+            const parse_str = if (base != 10) clean[2..] else clean;
+
+            const value = std.fmt.parseInt(i64, parse_str, base) catch |err| {
                 if (err == error.Overflow) {
                     try self.reportError("Integer literal is too large (exceeds i64 range)");
                     return error.IntegerOverflow;
                 }
                 return err;
             };
+
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .IntegerLiteral = ast.IntegerLiteral.init(value, ast.SourceLocation.fromToken(token)),
+                .IntegerLiteral = ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
             };
             return expr;
         }
@@ -2341,21 +2384,50 @@ pub const Parser = struct {
         // Float literals
         if (self.match(&.{.Float})) {
             const token = self.previous();
-            const value = std.fmt.parseFloat(f64, token.lexeme) catch |err| {
+
+            // Check for type suffix (f32, f64)
+            var type_suffix: ?[]const u8 = null;
+            var lexeme = token.lexeme;
+
+            // Find where the type suffix starts (if any)
+            for (lexeme, 0..) |c, i| {
+                if (c == 'f' and i > 0) {
+                    // Check if this looks like a type suffix
+                    const remaining = lexeme[i..];
+                    if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
+                        type_suffix = remaining;
+                        lexeme = lexeme[0..i];
+                        break;
+                    }
+                }
+            }
+
+            // Remove underscores for parsing
+            var clean_lexeme = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer clean_lexeme.deinit(self.allocator);
+            for (lexeme) |c| {
+                if (c != '_') {
+                    try clean_lexeme.append(self.allocator, c);
+                }
+            }
+
+            const value = std.fmt.parseFloat(f64, clean_lexeme.items) catch |err| {
                 if (err == error.InvalidCharacter) {
                     try self.reportError("Invalid float literal format");
                     return error.InvalidFloat;
                 }
                 return err;
             };
+
             // Check for infinity (overflow)
             if (std.math.isInf(value)) {
                 try self.reportError("Float literal is too large (exceeds f64 range)");
                 return error.FloatOverflow;
             }
+
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .FloatLiteral = ast.FloatLiteral.init(value, ast.SourceLocation.fromToken(token)),
+                .FloatLiteral = ast.FloatLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
             };
             return expr;
         }

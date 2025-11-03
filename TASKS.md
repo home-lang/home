@@ -39,7 +39,12 @@
 - [x] Add octal literal support (0o)
 - [x] Add underscore support (1_000)
 - [x] Add tests
-- [ ] Add type suffixes (42i32) - deferred
+- [x] Add type suffixes (42i32)
+  - [x] Lexer support for type suffix detection
+  - [x] AST IntegerLiteral/FloatLiteral with type_suffix field
+  - [x] Parser support for extracting type suffixes
+  - [x] Interpreter bounds checking for typed literals
+  - [x] Tests for type suffixes
 
 ## Phase 0.5: Raw Strings
 - [x] Implement r"string" syntax

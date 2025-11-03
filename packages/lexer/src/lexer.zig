@@ -496,6 +496,37 @@ pub const Lexer = struct {
         return self.makeToken(.Invalid);
     }
 
+    /// Check for and consume type suffix (i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64)
+    fn parseTypeSuffix(self: *Lexer) void {
+        // Check for type suffix starting with 'i', 'u', or 'f'
+        const first = self.peek();
+        if (first != 'i' and first != 'u' and first != 'f') return;
+
+        // Look ahead to see if this looks like a type suffix (letter + digit)
+        if (self.current + 1 >= self.source.len) return;
+        const second = self.source[self.current + 1];
+        if (!std.ascii.isDigit(second)) return;
+
+        const saved_pos = self.current;
+        const saved_col = self.column;
+
+        _ = self.advance(); // consume 'i', 'u', or 'f'
+
+        // Parse the size: 8, 16, 32, 64, 128
+        var has_digits = false;
+        while (std.ascii.isDigit(self.peek())) {
+            has_digits = true;
+            _ = self.advance();
+        }
+
+        // If we didn't find valid digits, or the next char is alphanumeric (part of identifier),
+        // this isn't a type suffix - restore position
+        if (!has_digits or std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_') {
+            self.current = saved_pos;
+            self.column = saved_col;
+        }
+    }
+
     /// Lex a numeric literal (integer or float).
     ///
     /// Supports:
@@ -504,6 +535,7 @@ pub const Lexer = struct {
     /// - Hexadecimal: 0xFF
     /// - Octal: 0o755
     /// - Underscores for readability: 1_000_000
+    /// - Type suffixes: 42i32, 100u64, 3.14f32
     ///
     /// Returns: Integer or Float token
     fn number(self: *Lexer) Token {
@@ -540,8 +572,14 @@ pub const Lexer = struct {
                 _ = self.advance();
             }
 
+            // Check for float type suffix (f32, f64)
+            self.parseTypeSuffix();
+
             return self.makeToken(.Float);
         }
+
+        // Check for integer type suffix
+        self.parseTypeSuffix();
 
         return self.makeToken(.Integer);
     }
@@ -565,6 +603,9 @@ pub const Lexer = struct {
             return self.makeToken(.Invalid);
         }
 
+        // Check for integer type suffix
+        self.parseTypeSuffix();
+
         return self.makeToken(.Integer);
     }
 
@@ -574,11 +615,25 @@ pub const Lexer = struct {
         _ = self.advance(); // 'x' or 'X'
 
         var has_digits = false;
-        while (std.ascii.isHex(self.peek()) or self.peek() == '_') {
-            if (self.peek() == '_') {
+        while (true) {
+            const c = self.peek();
+            if (c == '_') {
                 _ = self.advance();
                 continue;
             }
+
+            if (!std.ascii.isHex(c)) break;
+
+            // Check if this might be a type suffix BEFORE consuming the char
+            // (i,u,f are valid hex digits but might start a type suffix)
+            if ((c == 'i' or c == 'u' or c == 'f') and self.current + 1 < self.source.len) {
+                const next = self.source[self.current + 1];
+                if (std.ascii.isDigit(next)) {
+                    // This is likely a type suffix, stop parsing hex digits
+                    break;
+                }
+            }
+
             has_digits = true;
             _ = self.advance();
         }
@@ -586,6 +641,9 @@ pub const Lexer = struct {
         if (!has_digits) {
             return self.makeToken(.Invalid);
         }
+
+        // Check for integer type suffix
+        self.parseTypeSuffix();
 
         return self.makeToken(.Integer);
     }
@@ -608,6 +666,9 @@ pub const Lexer = struct {
         if (!has_digits) {
             return self.makeToken(.Invalid);
         }
+
+        // Check for integer type suffix
+        self.parseTypeSuffix();
 
         return self.makeToken(.Integer);
     }
@@ -784,8 +845,8 @@ test "lexer: single tokens" {
 test "lexer: operators" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "+ += - -= -> * *= / /= == != < <= > >=");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.Plus, tokens.items[0].type);
     try testing.expectEqual(TokenType.PlusEqual, tokens.items[1].type);
@@ -799,8 +860,8 @@ test "lexer: operators" {
 test "lexer: integers" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "123 456 0");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.Integer, tokens.items[0].type);
     try testing.expectEqualStrings("123", tokens.items[0].lexeme);
@@ -811,8 +872,8 @@ test "lexer: integers" {
 test "lexer: floats" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "3.14 0.5 99.99");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.Float, tokens.items[0].type);
     try testing.expectEqualStrings("3.14", tokens.items[0].lexeme);
@@ -823,8 +884,8 @@ test "lexer: floats" {
 test "lexer: strings" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "\"hello\" \"world\"");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.String, tokens.items[0].type);
     try testing.expectEqualStrings("\"hello\"", tokens.items[0].lexeme);
@@ -835,8 +896,8 @@ test "lexer: strings" {
 test "lexer: identifiers" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "foo bar _test variable123");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.Identifier, tokens.items[0].type);
     try testing.expectEqualStrings("foo", tokens.items[0].lexeme);
@@ -847,8 +908,8 @@ test "lexer: identifiers" {
 test "lexer: keywords" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "fn let const if else return");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.Fn, tokens.items[0].type);
     try testing.expectEqual(TokenType.Let, tokens.items[1].type);
@@ -861,12 +922,44 @@ test "lexer: keywords" {
 test "lexer: comments" {
     const testing = std.testing;
     var lexer = Lexer.init(testing.allocator, "foo // this is a comment\nbar");
-    const tokens = try lexer.tokenize();
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 3), tokens.items.len); // foo, bar, EOF
     try testing.expectEqual(TokenType.Identifier, tokens.items[0].type);
     try testing.expectEqualStrings("foo", tokens.items[0].lexeme);
     try testing.expectEqual(TokenType.Identifier, tokens.items[1].type);
     try testing.expectEqualStrings("bar", tokens.items[1].lexeme);
+}
+
+test "lexer: integer type suffixes" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "42i32 100u64 0xFFu8 0b1010i16");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.Integer, tokens.items[0].type);
+    try testing.expectEqualStrings("42i32", tokens.items[0].lexeme);
+
+    try testing.expectEqual(TokenType.Integer, tokens.items[1].type);
+    try testing.expectEqualStrings("100u64", tokens.items[1].lexeme);
+
+    try testing.expectEqual(TokenType.Integer, tokens.items[2].type);
+    try testing.expectEqualStrings("0xFFu8", tokens.items[2].lexeme);
+
+    try testing.expectEqual(TokenType.Integer, tokens.items[3].type);
+    try testing.expectEqualStrings("0b1010i16", tokens.items[3].lexeme);
+}
+
+test "lexer: float type suffixes" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "3.14f32 2.5f64");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.Float, tokens.items[0].type);
+    try testing.expectEqualStrings("3.14f32", tokens.items[0].lexeme);
+
+    try testing.expectEqual(TokenType.Float, tokens.items[1].type);
+    try testing.expectEqualStrings("2.5f64", tokens.items[1].lexeme);
 }

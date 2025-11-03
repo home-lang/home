@@ -88,6 +88,6 @@ pub const AttributeName = struct {
     pub const cold = "cold";
     pub const hot = "hot";
     pub const align_name = "align";
-    pub const packed = "packed";
+    pub const packed_name = "packed";
     pub const extern_name = "extern";
 };
