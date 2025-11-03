@@ -65,13 +65,13 @@ const Precedence = enum(u8) {
     Comparison = 10,    // < > <= >=
     TypeCast = 11,      // as
     Range = 12,         // .. ..=
-    Pipe = 13,          // |>
-    Shift = 13,         // << >>
-    Term = 14,          // + -
-    Factor = 15,        // * / %
-    Unary = 16,         // ! - ...
-    Call = 17,          // . () [] ?.
-    Primary = 18,
+    Pipe = 13,          // |> (function pipeline)
+    Shift = 14,         // << >> (bitwise shifts)
+    Term = 15,          // + -
+    Factor = 16,        // * / %
+    Unary = 17,         // ! - ...
+    Call = 18,          // . () [] ?.
+    Primary = 19,
 
     /// Get the precedence level for a given token type.
     ///
