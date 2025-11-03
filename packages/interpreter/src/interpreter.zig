@@ -352,6 +352,29 @@ pub const Interpreter = struct {
                 // Don't copy string literals - they live in the source
                 return Value{ .String = lit.value };
             },
+            .InterpolatedString => |interp| {
+                // Evaluate all expressions and concatenate with string parts
+                var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                defer result.deinit(self.arena.allocator());
+
+                // Add first part
+                try result.appendSlice(self.arena.allocator(), interp.parts[0]);
+
+                // Interleave expressions and remaining parts
+                for (interp.expressions, 0..) |interp_expr, i| {
+                    const val = try self.evaluateExpression(&interp_expr, env);
+                    const str = try self.valueToString(val);
+                    try result.appendSlice(self.arena.allocator(), str);
+
+                    // Add next part if it exists
+                    if (i + 1 < interp.parts.len) {
+                        try result.appendSlice(self.arena.allocator(), interp.parts[i + 1]);
+                    }
+                }
+
+                const owned = try self.arena.allocator().dupe(u8, result.items);
+                return Value{ .String = owned };
+            },
             .BooleanLiteral => |lit| {
                 return Value{ .Bool = lit.value };
             },
@@ -956,5 +979,42 @@ pub const Interpreter = struct {
             },
             else => return error.TypeMismatch,
         }
+    }
+
+    /// Convert a Value to its string representation for interpolation
+    fn valueToString(self: *Interpreter, value: Value) InterpreterError![]const u8 {
+        return switch (value) {
+            .Int => |i| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                break :blk str;
+            },
+            .Float => |f| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{f});
+                break :blk str;
+            },
+            .Bool => |b| if (b) "true" else "false",
+            .String => |s| s,
+            .Array => blk: {
+                var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                defer buf.deinit(self.arena.allocator());
+                try buf.appendSlice(self.arena.allocator(), "[");
+                for (value.Array, 0..) |elem, i| {
+                    if (i > 0) try buf.appendSlice(self.arena.allocator(), ", ");
+                    const elem_str = try self.valueToString(elem);
+                    try buf.appendSlice(self.arena.allocator(), elem_str);
+                }
+                try buf.appendSlice(self.arena.allocator(), "]");
+                break :blk try self.arena.allocator().dupe(u8, buf.items);
+            },
+            .Struct => |s| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "<{s} instance>", .{s.type_name});
+                break :blk str;
+            },
+            .Function => |f| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "<fn {s}>", .{f.name});
+                break :blk str;
+            },
+            .Void => "void",
+        };
     }
 };

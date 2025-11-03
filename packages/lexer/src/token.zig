@@ -65,6 +65,9 @@ pub const TokenType = enum {
     // Literals
     Identifier,
     String,
+    StringInterpolationStart, // "text{
+    StringInterpolationMid,   // }text{
+    StringInterpolationEnd,   // }text"
     Integer,
     Float,
 
@@ -175,6 +178,9 @@ pub const TokenType = enum {
             .RightShift => ">>",
             .Identifier => "identifier",
             .String => "string",
+            .StringInterpolationStart => "string_interpolation_start",
+            .StringInterpolationMid => "string_interpolation_mid",
+            .StringInterpolationEnd => "string_interpolation_end",
             .Integer => "integer",
             .Float => "float",
             .And => "and",

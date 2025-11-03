@@ -2168,6 +2168,11 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Interpolated string literals
+        if (self.check(.StringInterpolationStart)) {
+            return try self.interpolatedString();
+        }
+
         // String literals
         if (self.match(&.{.String})) {
             const token = self.previous();
@@ -2348,6 +2353,65 @@ pub const Parser = struct {
 
         std.debug.print("Parse error at line {d}: Unexpected token '{s}'\n", .{ self.peek().line, self.peek().lexeme });
         return error.UnexpectedToken;
+    }
+
+    /// Parse interpolated string literal
+    ///
+    /// Interpolated strings use the syntax: "text {expr} more text {expr2}"
+    /// The lexer produces: StringInterpolationStart, expr, StringInterpolationMid, expr, StringInterpolationEnd
+    ///
+    /// Returns: InterpolatedString expression
+    fn interpolatedString(self: *Parser) ParseError!*ast.Expr {
+        const start_token = try self.expect(.StringInterpolationStart, "Expected string interpolation start");
+        const start_loc = ast.SourceLocation.fromToken(start_token);
+
+        var parts_list = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+        defer parts_list.deinit(self.allocator);
+
+        var exprs_list = std.ArrayList(ast.Expr){ .items = &.{}, .capacity = 0 };
+        defer exprs_list.deinit(self.allocator);
+
+        // Add first part (text before first {)
+        const first_part = start_token.lexeme[1 .. start_token.lexeme.len - 1]; // Remove " and {
+        try parts_list.append(self.allocator, first_part);
+
+        // Parse expressions and middle parts
+        while (true) {
+            // Parse the expression inside {}
+            const expr = try self.expression();
+            try exprs_list.append(self.allocator, expr.*);
+
+            // Check what comes next
+            if (self.match(&.{.StringInterpolationMid})) {
+                // More interpolation coming
+                const mid_token = self.previous();
+                const mid_part = mid_token.lexeme[1 .. mid_token.lexeme.len - 1]; // Remove } and {
+                try parts_list.append(self.allocator, mid_part);
+            } else if (self.match(&.{.StringInterpolationEnd})) {
+                // End of interpolation
+                const end_token = self.previous();
+                const end_part = end_token.lexeme[1 .. end_token.lexeme.len - 1]; // Remove } and "
+                try parts_list.append(self.allocator, end_part);
+                break;
+            } else {
+                try self.reportError("Expected '}' in interpolated string");
+                return error.UnexpectedToken;
+            }
+        }
+
+        // Create InterpolatedString node
+        const parts = try self.allocator.alloc([]const u8, parts_list.items.len);
+        @memcpy(parts, parts_list.items);
+
+        const exprs = try self.allocator.alloc(ast.Expr, exprs_list.items.len);
+        @memcpy(exprs, exprs_list.items);
+
+        const interp_string = try self.allocator.create(ast.InterpolatedString);
+        interp_string.* = ast.InterpolatedString.init(parts, exprs, start_loc);
+
+        const expr = try self.allocator.create(ast.Expr);
+        expr.* = ast.Expr{ .InterpolatedString = interp_string };
+        return expr;
     }
 
     /// Convert token type to binary operator

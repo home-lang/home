@@ -38,6 +38,10 @@ pub const Lexer = struct {
     start_column: usize,
     /// Memory allocator for token list
     allocator: std.mem.Allocator,
+    /// Track if we're inside an interpolated string
+    in_interpolation: bool,
+    /// Track brace depth inside interpolation expressions
+    interpolation_brace_depth: usize,
 
     /// Initialize a new lexer for Home source code
     ///
@@ -58,6 +62,8 @@ pub const Lexer = struct {
             .column = 1,
             .start_column = 1,
             .allocator = allocator,
+            .in_interpolation = false,
+            .interpolation_brace_depth = 0,
         };
     }
 
@@ -185,22 +191,55 @@ pub const Lexer = struct {
         }
     }
 
-    /// Lex a string literal with escape sequence support.
+    /// Lex a string literal with escape sequence support and interpolation.
     ///
-    /// Scans a double-quoted string literal, handling escape sequences:
-    /// - Simple escapes: \n \t \r \" \\ \' \0
+    /// Scans a double-quoted string literal, handling:
+    /// - Escape sequences: \n \t \r \" \\ \' \0
     /// - Hex escapes: \xNN (two hex digits)
     /// - Unicode escapes: \u{NNNN} (1-6 hex digits in braces)
+    /// - Interpolation: {expression} for embedding expressions
     ///
-    /// Strings can span multiple lines. Unterminated strings or invalid
-    /// escape sequences produce Invalid tokens.
+    /// String interpolation produces three token types:
+    /// - StringInterpolationStart: "text{ (for the first part)
+    /// - StringInterpolationMid: }text{ (for middle parts)
+    /// - StringInterpolationEnd: }text" (for the final part)
     ///
-    /// Returns: String token (including quotes) or Invalid token on error
+    /// Returns: String token or interpolation token, or Invalid token on error
     fn string(self: *Lexer) Token {
-        // Skip opening quote
+        var has_interpolation = false;
+
+        // First pass: scan to detect if string has interpolation
+        var temp_pos = self.current;
+        while (temp_pos < self.source.len) {
+            const c = self.source[temp_pos];
+            if (c == '"') break;
+            if (c == '\\') {
+                temp_pos += 1;
+                if (temp_pos < self.source.len) {
+                    temp_pos += 1;
+                }
+                continue;
+            }
+            if (c == '{') {
+                has_interpolation = true;
+                break;
+            }
+            temp_pos += 1;
+        }
+
+        // If no interpolation, use simple string parsing
+        if (!has_interpolation) {
+            return self.simpleString();
+        }
+
+        // Handle interpolated string
+        return self.interpolatedString();
+    }
+
+    /// Lex a simple string without interpolation
+    fn simpleString(self: *Lexer) Token {
         while (self.peek() != '"' and !self.isAtEnd()) {
             if (self.peek() == '\\') {
-                // Handle escape sequences
                 _ = self.advance(); // consume backslash
                 if (self.isAtEnd()) {
                     return self.makeToken(.Invalid);
@@ -208,12 +247,10 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0' => {
-                        // Valid escape sequences: \n \t \r \" \\ \' \0
+                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
                         _ = self.advance();
                     },
                     'x' => {
-                        // Hex escape: \xNN
                         _ = self.advance();
                         if (!std.ascii.isHex(self.peek())) {
                             return self.makeToken(.Invalid);
@@ -225,7 +262,6 @@ pub const Lexer = struct {
                         _ = self.advance();
                     },
                     'u' => {
-                        // Unicode escape: \u{NNNN}
                         _ = self.advance();
                         if (self.peek() != '{') {
                             return self.makeToken(.Invalid);
@@ -243,7 +279,6 @@ pub const Lexer = struct {
                         _ = self.advance();
                     },
                     else => {
-                        // Invalid escape sequence
                         return self.makeToken(.Invalid);
                     },
                 }
@@ -260,10 +295,153 @@ pub const Lexer = struct {
             return self.makeToken(.Invalid);
         }
 
-        // Consume closing quote
-        _ = self.advance();
-
+        _ = self.advance(); // closing quote
         return self.makeToken(.String);
+    }
+
+    /// Lex an interpolated string part
+    fn interpolatedString(self: *Lexer) Token {
+        // Scan until we hit { or "
+        while (self.peek() != '{' and self.peek() != '"' and !self.isAtEnd()) {
+            if (self.peek() == '\\') {
+                _ = self.advance(); // consume backslash
+                if (self.isAtEnd()) {
+                    return self.makeToken(.Invalid);
+                }
+
+                const escape_char = self.peek();
+                switch (escape_char) {
+                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                        _ = self.advance();
+                    },
+                    'x' => {
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                    },
+                    'u' => {
+                        _ = self.advance();
+                        if (self.peek() != '{') {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+
+                        var hex_count: usize = 0;
+                        while (std.ascii.isHex(self.peek()) and hex_count < 6) : (hex_count += 1) {
+                            _ = self.advance();
+                        }
+
+                        if (hex_count == 0 or self.peek() != '}') {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                    },
+                    else => {
+                        return self.makeToken(.Invalid);
+                    },
+                }
+            } else {
+                if (self.peek() == '\n') {
+                    self.line += 1;
+                    self.column = 0;
+                }
+                _ = self.advance();
+            }
+        }
+
+        if (self.isAtEnd()) {
+            return self.makeToken(.Invalid);
+        }
+
+        if (self.peek() == '{') {
+            _ = self.advance(); // consume {
+            self.in_interpolation = true;
+            self.interpolation_brace_depth = 1;
+            return self.makeToken(.StringInterpolationStart);
+        } else {
+            // Must be closing "
+            _ = self.advance();
+            return self.makeToken(.String);
+        }
+    }
+
+    /// Continue scanning an interpolated string after an expression
+    fn continueInterpolatedString(self: *Lexer) Token {
+        // We're at the } that closes the interpolation expression
+        // Scan until next { or closing "
+        while (self.peek() != '{' and self.peek() != '"' and !self.isAtEnd()) {
+            if (self.peek() == '\\') {
+                _ = self.advance();
+                if (self.isAtEnd()) {
+                    return self.makeToken(.Invalid);
+                }
+
+                const escape_char = self.peek();
+                switch (escape_char) {
+                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                        _ = self.advance();
+                    },
+                    'x' => {
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                    },
+                    'u' => {
+                        _ = self.advance();
+                        if (self.peek() != '{') {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+
+                        var hex_count: usize = 0;
+                        while (std.ascii.isHex(self.peek()) and hex_count < 6) : (hex_count += 1) {
+                            _ = self.advance();
+                        }
+
+                        if (hex_count == 0 or self.peek() != '}') {
+                            return self.makeToken(.Invalid);
+                        }
+                        _ = self.advance();
+                    },
+                    else => {
+                        return self.makeToken(.Invalid);
+                    },
+                }
+            } else {
+                if (self.peek() == '\n') {
+                    self.line += 1;
+                    self.column = 0;
+                }
+                _ = self.advance();
+            }
+        }
+
+        if (self.isAtEnd()) {
+            return self.makeToken(.Invalid);
+        }
+
+        if (self.peek() == '{') {
+            _ = self.advance();
+            self.interpolation_brace_depth = 1;
+            return self.makeToken(.StringInterpolationMid);
+        } else {
+            // Closing "
+            _ = self.advance();
+            self.in_interpolation = false;
+            return self.makeToken(.StringInterpolationEnd);
+        }
     }
 
     /// Lex a raw string literal (r"..." or r#"..."#).
@@ -504,8 +682,22 @@ pub const Lexer = struct {
         return switch (c) {
             '(' => self.makeToken(.LeftParen),
             ')' => self.makeToken(.RightParen),
-            '{' => self.makeToken(.LeftBrace),
-            '}' => self.makeToken(.RightBrace),
+            '{' => blk: {
+                if (self.in_interpolation) {
+                    self.interpolation_brace_depth += 1;
+                }
+                break :blk self.makeToken(.LeftBrace);
+            },
+            '}' => blk: {
+                if (self.in_interpolation) {
+                    self.interpolation_brace_depth -= 1;
+                    if (self.interpolation_brace_depth == 0) {
+                        // End of interpolation expression, continue string
+                        return self.continueInterpolatedString();
+                    }
+                }
+                break :blk self.makeToken(.RightBrace);
+            },
             '[' => self.makeToken(.LeftBracket),
             ']' => self.makeToken(.RightBracket),
             ',' => self.makeToken(.Comma),

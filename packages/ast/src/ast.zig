@@ -105,6 +105,7 @@ pub const NodeType = enum {
     IntegerLiteral,
     FloatLiteral,
     StringLiteral,
+    InterpolatedString,
     BooleanLiteral,
     ArrayLiteral,
 
@@ -296,6 +297,39 @@ pub const StringLiteral = struct {
         return .{
             .node = .{ .type = .StringLiteral, .loc = loc },
             .value = value,
+        };
+    }
+};
+
+/// Interpolated string expression.
+///
+/// Represents a string with embedded expressions using {} syntax.
+/// The lexer produces StringInterpolationStart, StringInterpolationMid,
+/// and StringInterpolationEnd tokens which the parser combines into
+/// this AST node containing alternating string parts and expressions.
+///
+/// Example: `"Hello {name}!"` -> parts=["Hello ", "!"], exprs=[name_expr]
+pub const InterpolatedString = struct {
+    /// Base node metadata
+    node: Node,
+    /// String parts (literal text between expressions)
+    parts: [][]const u8,
+    /// Expressions to interpolate
+    expressions: []Expr,
+
+    /// Create a new interpolated string node.
+    ///
+    /// Parameters:
+    ///   - parts: Array of string literal parts
+    ///   - expressions: Array of expressions to interpolate
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized InterpolatedString
+    pub fn init(parts: [][]const u8, expressions: []Expr, loc: SourceLocation) InterpolatedString {
+        return .{
+            .node = .{ .type = .InterpolatedString, .loc = loc },
+            .parts = parts,
+            .expressions = expressions,
         };
     }
 };
@@ -849,6 +883,7 @@ pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
     FloatLiteral: FloatLiteral,
     StringLiteral: StringLiteral,
+    InterpolatedString: *InterpolatedString,
     BooleanLiteral: BooleanLiteral,
     ArrayLiteral: *ArrayLiteral,
     Identifier: Identifier,
@@ -1292,6 +1327,7 @@ pub const Stmt = union(NodeType) {
     IntegerLiteral: void,
     FloatLiteral: void,
     StringLiteral: void,
+    InterpolatedString: void,
     BooleanLiteral: void,
     ArrayLiteral: void,
     Identifier: void,
