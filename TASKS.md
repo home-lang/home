@@ -54,11 +54,11 @@
 - [x] Attributes system
 
 ## Phase 2: Ergonomics & Developer Experience (v0.2)
-- [ ] Import aliasing
-- [ ] Pattern binding with @
-- [ ] For loop with index (enumerate)
-- [ ] Labeled break/continue
-- [ ] Better error messages
+- [x] Import aliasing (import path/to/module as Alias)
+- [x] Pattern binding with @ (pattern @ identifier)
+- [x] For loop with index (for i, item in items)
+- [x] Labeled break/continue (break 'label, continue 'label)
+- [ ] Better error messages (in progress)
 
 ## Phase 3: Advanced Features (v0.3)
 - [ ] Closures with inferred move

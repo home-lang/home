@@ -181,6 +181,8 @@ pub const NodeType = enum {
     DeferStmt,
     BlockStmt,
     ExprStmt,
+    BreakStmt,
+    ContinueStmt,
 
     // Program
     Program,
@@ -1039,19 +1041,23 @@ pub const Parameter = struct {
 
 /// Import declaration
 /// Represents an import statement like: import basics/os/serial
+/// Supports aliasing: import basics/os/serial as Serial
 pub const ImportDecl = struct {
     node: Node,
     /// Module path segments (e.g., ["basics", "os", "serial"])
     path: []const []const u8,
     /// Optional import list (e.g., { Serial, init })
     imports: ?[]const []const u8,
+    /// Optional alias for the module (e.g., "as Serial")
+    alias: ?[]const u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, path: []const []const u8, imports: ?[]const []const u8, loc: SourceLocation) !*ImportDecl {
+    pub fn init(allocator: std.mem.Allocator, path: []const []const u8, imports: ?[]const []const u8, alias: ?[]const u8, loc: SourceLocation) !*ImportDecl {
         const decl = try allocator.create(ImportDecl);
         decl.* = .{
             .node = .{ .type = .ImportDecl, .loc = loc },
             .path = path,
             .imports = imports,
+            .alias = alias,
         };
         return decl;
     }
@@ -1136,14 +1142,17 @@ pub const ForStmt = struct {
     iterator: []const u8,
     iterable: *Expr,
     body: *BlockStmt,
+    /// Optional index variable for enumerate (e.g., for i, item in items)
+    index: ?[]const u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, iterator: []const u8, iterable: *Expr, body: *BlockStmt, loc: SourceLocation) !*ForStmt {
+    pub fn init(allocator: std.mem.Allocator, iterator: []const u8, iterable: *Expr, body: *BlockStmt, index: ?[]const u8, loc: SourceLocation) !*ForStmt {
         const stmt = try allocator.create(ForStmt);
         stmt.* = .{
             .node = .{ .type = .ForStmt, .loc = loc },
             .iterator = iterator,
             .iterable = iterable,
             .body = body,
+            .index = index,
         };
         return stmt;
     }
@@ -1316,6 +1325,14 @@ pub const Pattern = union(enum) {
     // Or pattern: A | B | C
     Or: []const *Pattern,
 
+    // As pattern: pattern @ identifier
+    // Binds the matched value to a name while also matching the pattern
+    // Example: Some(x) @ result => use both x and result
+    As: struct {
+        pattern: *Pattern,
+        identifier: []const u8,
+    },
+
     pub const FieldPattern = struct {
         name: []const u8,
         pattern: *Pattern,
@@ -1369,6 +1386,38 @@ pub const DeferStmt = struct {
         stmt.* = .{
             .node = .{ .type = .DeferStmt, .loc = loc },
             .body = body,
+        };
+        return stmt;
+    }
+};
+
+/// Break statement with optional label
+/// Examples: break, break 'outer_loop
+pub const BreakStmt = struct {
+    node: Node,
+    label: ?[]const u8 = null,
+
+    pub fn init(allocator: std.mem.Allocator, label: ?[]const u8, loc: SourceLocation) !*BreakStmt {
+        const stmt = try allocator.create(BreakStmt);
+        stmt.* = .{
+            .node = .{ .type = .BreakStmt, .loc = loc },
+            .label = label,
+        };
+        return stmt;
+    }
+};
+
+/// Continue statement with optional label
+/// Examples: continue, continue 'outer_loop
+pub const ContinueStmt = struct {
+    node: Node,
+    label: ?[]const u8 = null,
+
+    pub fn init(allocator: std.mem.Allocator, label: ?[]const u8, loc: SourceLocation) !*ContinueStmt {
+        const stmt = try allocator.create(ContinueStmt);
+        stmt.* = .{
+            .node = .{ .type = .ContinueStmt, .loc = loc },
+            .label = label,
         };
         return stmt;
     }
@@ -1446,6 +1495,8 @@ pub const Stmt = union(NodeType) {
     DeferStmt: *DeferStmt,
     BlockStmt: *BlockStmt,
     ExprStmt: *Expr,
+    BreakStmt: *BreakStmt,
+    ContinueStmt: *ContinueStmt,
     Program: void,
 };
 

@@ -972,10 +972,18 @@ pub const Parser = struct {
             imports = try import_list.toOwnedSlice(self.allocator);
         }
 
+        // Parse optional alias: import path/to/module as Alias
+        var alias: ?[]const u8 = null;
+        if (self.match(&.{.As})) {
+            const alias_token = try self.expect(.Identifier, "Expected identifier after 'as'");
+            alias = alias_token.lexeme;
+        }
+
         const decl = try ast.ImportDecl.init(
             self.allocator,
             path,
             imports,
+            alias,
             ast.SourceLocation.fromToken(import_token),
         );
 
@@ -1128,8 +1136,19 @@ pub const Parser = struct {
     fn forStatement(self: *Parser) !ast.Stmt {
         const for_token = self.previous();
 
-        const iterator_token = try self.expect(.Identifier, "Expected iterator variable name");
-        const iterator = iterator_token.lexeme;
+        const first_token = try self.expect(.Identifier, "Expected iterator variable name");
+        const first_name = first_token.lexeme;
+
+        // Check for enumerate syntax: for index, item in items
+        var index: ?[]const u8 = null;
+        var iterator: []const u8 = first_name;
+
+        if (self.match(&.{.Comma})) {
+            // First identifier is the index, second is the iterator
+            index = first_name;
+            const iterator_token = try self.expect(.Identifier, "Expected iterator variable name after ','");
+            iterator = iterator_token.lexeme;
+        }
 
         _ = try self.expect(.In, "Expected 'in' after iterator variable");
 
@@ -1144,6 +1163,7 @@ pub const Parser = struct {
             iterator,
             iterable,
             body,
+            index,
             ast.SourceLocation.fromToken(for_token),
         );
 
@@ -1276,7 +1296,20 @@ pub const Parser = struct {
         // Parse match arms
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             // Parse pattern
-            const pattern = try self.parsePattern();
+            var pattern = try self.parsePattern();
+
+            // Check for @ binding: pattern @ identifier
+            if (self.match(&.{.At})) {
+                const bind_token = try self.expect(.Identifier, "Expected identifier after '@'");
+                const as_pattern = try self.allocator.create(ast.Pattern);
+                as_pattern.* = ast.Pattern{
+                    .As = .{
+                        .pattern = pattern,
+                        .identifier = bind_token.lexeme,
+                    },
+                };
+                pattern = as_pattern;
+            }
 
             // Parse optional guard (if expression)
             var guard: ?*ast.Expr = null;
