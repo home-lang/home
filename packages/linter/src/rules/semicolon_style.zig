@@ -20,9 +20,6 @@ pub const SemicolonStyle = struct {
     };
 
     pub const Config = struct {
-        /// Style for semicolon usage
-        style: Style = .optional,
-
         pub const Style = enum {
             /// Semicolons are optional
             optional,
@@ -39,6 +36,8 @@ pub const SemicolonStyle = struct {
             }
         };
 
+        /// Style for semicolon usage
+        style: Style = .optional,
         /// Whether to allow multiple statements on one line with semicolons
         allow_single_line_multiple: bool = true,
     };

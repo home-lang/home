@@ -33,10 +33,24 @@ pub const TraitChecker = trait_checker.TraitChecker;
 /// - `&T` - Immutable reference (Reference)
 /// - `&mut T` - Mutable reference (MutableReference)
 pub const Type = union(enum) {
-    /// 32 or 64-bit signed integer (platform dependent)
+    /// Default integer type (alias for I64)
     Int,
-    /// 64-bit IEEE 754 floating-point number
+    /// Specific integer types
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    /// Default float type (alias for F64)
     Float,
+    /// Specific float types
+    F32,
+    F64,
     /// Boolean true/false value
     Bool,
     /// UTF-8 encoded string
@@ -221,6 +235,25 @@ pub const Type = union(enum) {
     ///   - other: Second type to compare
     ///
     /// Returns: true if types are equivalent, false otherwise
+    /// Resolve default types to their concrete types.
+    ///
+    /// Int resolves to I64, Float resolves to F64
+    pub fn resolveDefault(self: Type) Type {
+        return switch (self) {
+            .Int => .I64,
+            .Float => .F64,
+            else => self,
+        };
+    }
+
+    /// Check if this is a default/alias type that needs resolution.
+    pub fn isDefaultType(self: Type) bool {
+        return switch (self) {
+            .Int, .Float => true,
+            else => false,
+        };
+    }
+
     pub fn equals(self: Type, other: Type) bool {
         const self_tag = @as(std.meta.Tag(Type), self);
         const other_tag = @as(std.meta.Tag(Type), other);
@@ -229,7 +262,10 @@ pub const Type = union(enum) {
         }
 
         return switch (self) {
-            .Int, .Float, .Bool, .String, .Void => true,
+            .Int, .I8, .I16, .I32, .I64, .I128,
+            .U8, .U16, .U32, .U64, .U128,
+            .Float, .F32, .F64,
+            .Bool, .String, .Void => true,
             .Array => |a1| {
                 const a2 = other.Array;
                 return a1.element_type.equals(a2.element_type.*);
@@ -292,7 +328,19 @@ pub const Type = union(enum) {
         _ = options;
         switch (self) {
             .Int => try writer.writeAll("int"),
+            .I8 => try writer.writeAll("i8"),
+            .I16 => try writer.writeAll("i16"),
+            .I32 => try writer.writeAll("i32"),
+            .I64 => try writer.writeAll("i64"),
+            .I128 => try writer.writeAll("i128"),
+            .U8 => try writer.writeAll("u8"),
+            .U16 => try writer.writeAll("u16"),
+            .U32 => try writer.writeAll("u32"),
+            .U64 => try writer.writeAll("u64"),
+            .U128 => try writer.writeAll("u128"),
             .Float => try writer.writeAll("float"),
+            .F32 => try writer.writeAll("f32"),
+            .F64 => try writer.writeAll("f64"),
             .Bool => try writer.writeAll("bool"),
             .String => try writer.writeAll("string"),
             .Void => try writer.writeAll("void"),

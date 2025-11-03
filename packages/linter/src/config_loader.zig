@@ -109,7 +109,6 @@ pub const LinterConfigLoader = struct {
 
     fn parseTomlConfig(self: *LinterConfigLoader, content: []const u8) !LinterConfig {
         _ = content;
-        _ = self;
         // Simplified - use default config for now
         // Full TOML parsing would go here
         return try linter_mod.createDefaultConfig(self.allocator);

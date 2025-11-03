@@ -266,6 +266,58 @@ pub const Lexer = struct {
         return self.makeToken(.String);
     }
 
+    /// Lex a raw string literal (r"..." or r#"..."#).
+    ///
+    /// Raw strings don't process escape sequences. The 'r' prefix has already
+    /// been consumed. Supports r"string" and r#"string"# (with any number of #).
+    ///
+    /// Returns: String token (raw strings use same token type)
+    fn rawString(self: *Lexer) Token {
+        // Count '#' characters
+        var hash_count: usize = 0;
+        while (self.peek() == '#') : (hash_count += 1) {
+            _ = self.advance();
+        }
+
+        // Expect opening quote
+        if (self.peek() != '"') {
+            return self.makeToken(.Invalid);
+        }
+        _ = self.advance(); // consume opening "
+
+        // Scan until closing quote + matching #'s
+        while (!self.isAtEnd()) {
+            if (self.peek() == '"') {
+                // Check if followed by correct number of #'s
+                var found_hashes: usize = 0;
+                var temp_pos = self.current + 1;
+
+                while (temp_pos < self.source.len and self.source[temp_pos] == '#') {
+                    found_hashes += 1;
+                    temp_pos += 1;
+                }
+
+                if (found_hashes == hash_count) {
+                    // Found closing delimiter
+                    _ = self.advance(); // consume closing "
+                    for (0..hash_count) |_| {
+                        _ = self.advance(); // consume #'s
+                    }
+                    return self.makeToken(.String);
+                }
+            }
+
+            if (self.peek() == '\n') {
+                self.line += 1;
+                self.column = 0;
+            }
+            _ = self.advance();
+        }
+
+        // Unterminated raw string
+        return self.makeToken(.Invalid);
+    }
+
     /// Lex a numeric literal (integer or float).
     ///
     /// Supports:

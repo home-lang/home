@@ -88,7 +88,7 @@ pub const ConfigLoader = struct {
 
     /// Strip single-line and multi-line comments from JSON
     fn stripJsonComments(self: *ConfigLoader, content: []const u8) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = try std.ArrayList(u8).initCapacity(self.allocator, content.len);
         errdefer result.deinit();
 
         var i: usize = 0;
@@ -100,7 +100,7 @@ pub const ConfigLoader = struct {
 
             // Handle string state
             if (in_string) {
-                try result.append(char);
+                result.appendAssumeCapacity(char);
                 if (escape_next) {
                     escape_next = false;
                 } else if (char == '\\') {
@@ -115,7 +115,7 @@ pub const ConfigLoader = struct {
             // Track when we enter a string
             if (char == '"') {
                 in_string = true;
-                try result.append(char);
+                result.appendAssumeCapacity(char);
                 i += 1;
                 continue;
             }
@@ -125,7 +125,7 @@ pub const ConfigLoader = struct {
                 // Skip until end of line
                 while (i < content.len and content[i] != '\n') : (i += 1) {}
                 if (i < content.len) {
-                    try result.append('\n');
+                    result.appendAssumeCapacity('\n');
                     i += 1;
                 }
                 continue;
@@ -144,7 +144,7 @@ pub const ConfigLoader = struct {
                 continue;
             }
 
-            try result.append(char);
+            result.appendAssumeCapacity(char);
             i += 1;
         }
 

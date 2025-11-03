@@ -118,7 +118,7 @@ pub const Linter = struct {
         var parser = Parser.init(self.allocator, source);
         defer parser.deinit();
 
-        const program = parser.parseProgram() catch |err| {
+        const program = parser.parseProgram() catch {
             // If parsing fails, return syntax errors
             return self.diagnostics.items;
         };
