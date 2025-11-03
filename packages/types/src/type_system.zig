@@ -33,6 +33,8 @@ pub const TraitChecker = trait_checker.TraitChecker;
 /// - `&T` - Immutable reference (Reference)
 /// - `&mut T` - Mutable reference (MutableReference)
 pub const Type = union(enum) {
+    /// Type variable for type inference (e.g., 'a, 'b)
+    TypeVar: TypeVarInfo,
     /// Default integer type (alias for I64)
     Int,
     /// Specific integer types
@@ -79,6 +81,14 @@ pub const Type = union(enum) {
     Reference: *const Type,
     /// Mutable borrowed reference: &mut T
     MutableReference: *const Type,
+
+    /// Type variable information for type inference
+    pub const TypeVarInfo = struct {
+        /// Unique identifier for this type variable
+        id: usize,
+        /// Optional name for debugging (e.g., "T", "a")
+        name: ?[]const u8,
+    };
 
     /// Homogeneous array type.
     ///

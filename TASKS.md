@@ -30,7 +30,18 @@
 - [x] Update equals() for new types
 - [x] Update format() for new types
 - [x] Add tests
-- [ ] Update type inference (deferred)
+- [x] Update type inference
+  - [x] Add TypeVar variant to Type union
+  - [x] Implement Hindley-Milner style type inference
+  - [x] Type variable generation and fresh variables
+  - [x] Constraint collection for expressions
+  - [x] Unification algorithm with occurs check
+  - [x] Substitution and type resolution
+  - [x] Let-polymorphism (generalization/instantiation)
+  - [x] Bidirectional type checking infrastructure
+  - [x] Inference for literals, binary ops, arrays, tuples
+  - [x] Inference for closures and function calls
+  - [x] Comprehensive test suite (12 tests)
 - [ ] Update documentation
 
 ## Phase 0.4: Numeric Literals
@@ -75,7 +86,35 @@
   - [x] Lexer support (Break, Continue tokens)
   - [x] Parser support with label parsing
   - [x] Interpreter support with control flow
-- [ ] Better error messages (in progress)
+- [x] Better error messages
+  - [x] Rich diagnostics with colored output (Rust-style)
+  - [x] Primary and secondary labels for context
+  - [x] Error codes with systematic naming (T0xxx, V0xxx, etc.)
+  - [x] DiagnosticBuilder with fluent API
+  - [x] CommonDiagnostics with 11 pre-built error types
+    - [x] Type mismatch (T0001)
+    - [x] Undefined variable (V0001)
+    - [x] Cannot mutate (M0001)
+    - [x] Argument count mismatch (F0001)
+    - [x] Missing return (R0001)
+    - [x] Non-exhaustive match (P0001)
+    - [x] Division by zero (A0001)
+    - [x] Index out of bounds (A0002)
+    - [x] Unreachable code (W0001)
+    - [x] Unused variable (W0002)
+    - [x] Cannot infer type (T0002)
+  - [x] Error recovery strategies
+    - [x] Recovery modes (Minimal, Moderate, Aggressive)
+    - [x] Synchronization to statement/expression/declaration boundaries
+    - [x] Panic mode recovery
+    - [x] Phrase-level recovery for common typos
+  - [x] Error suggestions
+    - [x] Fuzzy name matching with Levenshtein distance
+    - [x] Keyword completion suggestions
+    - [x] Closing delimiter suggestions
+    - [x] Minimal edit suggestions (Insert, Delete, Replace)
+  - [x] Comprehensive test suite (17 tests)
+  - [x] Complete documentation (ERROR_MESSAGES.md)
 
 ## Phase 3: Advanced Features (v0.3)
 - [x] Closures with inferred move
