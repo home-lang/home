@@ -277,7 +277,7 @@ test "parser: for statement" {
 }
 
 test "parser: block statement" {
-    const program = try parseSource(testing.allocator, "{ let x = 1 let y = 2 }");
+    const program = try parseSource(testing.allocator, "{ let x = 1; let y = 2 }");
     defer program.deinit(testing.allocator);
 
     const stmt = program.statements[0];

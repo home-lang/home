@@ -489,7 +489,47 @@ pub const Linter = struct {
         if (!config.enabled) return;
 
         _ = program;
-        // Check semicolon usage
+
+        // Tokenize source to check semicolon usage
+        var lex = @import("lexer").Lexer.init(self.allocator, self.source);
+        defer lex.deinit();
+
+        const tokens = lex.tokenize() catch return;
+        defer self.allocator.free(tokens);
+
+        // Check for unnecessary/missing semicolons based on style
+        const style: @import("rules/semicolon_style.zig").SemicolonStyle.Config.Style =
+            if (self.config.semicolons) .always else .optional;
+
+        var rule = @import("rules/semicolon_style.zig").SemicolonStyle.init(.{
+            .style = style,
+        });
+
+        const errors = rule.check(self.allocator, tokens) catch return;
+        defer {
+            for (errors) |*err| {
+                err.deinit(self.allocator);
+            }
+            self.allocator.free(errors);
+        }
+
+        // Convert semicolon errors to linter diagnostics
+        for (errors) |err| {
+            try self.diagnostics.append(.{
+                .rule_id = rule_id,
+                .severity = switch (err.severity) {
+                    .Error => .error_,
+                    .Warning => .warning,
+                    .Info => .info,
+                },
+                .message = try self.allocator.dupe(u8, err.message),
+                .line = err.line,
+                .column = err.column,
+                .end_line = err.line,
+                .end_column = err.column + 1,
+                .fix = null,
+            });
+        }
     }
 
     fn checkTrailingComma(self: *Linter, program: *ast.Program) !void {

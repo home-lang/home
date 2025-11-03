@@ -268,33 +268,115 @@ pub const Lexer = struct {
 
     /// Lex a numeric literal (integer or float).
     ///
-    /// Scans a sequence of digits, optionally followed by a decimal point
-    /// and fractional part. Scientific notation (e.g., 1e10) is not yet
-    /// supported. The decimal point must be followed by at least one digit
-    /// to be recognized as a float (otherwise it's a separate Dot token).
-    ///
-    /// Examples:
-    /// - "123" -> Integer
-    /// - "3.14" -> Float
-    /// - "0.5" -> Float
-    /// - "42." (without trailing digit) -> Integer followed by Dot
+    /// Supports:
+    /// - Decimal: 123, 3.14
+    /// - Binary: 0b1010
+    /// - Hexadecimal: 0xFF
+    /// - Octal: 0o755
+    /// - Underscores for readability: 1_000_000
     ///
     /// Returns: Integer or Float token
     fn number(self: *Lexer) Token {
-        while (std.ascii.isDigit(self.peek())) {
+        // Check for base prefix (binary, hex, octal)
+        if (self.peek() == '0') {
+            const next = self.peekNext();
+            if (next == 'b' or next == 'B') {
+                return self.binaryNumber();
+            } else if (next == 'x' or next == 'X') {
+                return self.hexNumber();
+            } else if (next == 'o' or next == 'O') {
+                return self.octalNumber();
+            }
+        }
+
+        // Decimal number (with optional underscores)
+        while (std.ascii.isDigit(self.peek()) or self.peek() == '_') {
+            if (self.peek() == '_') {
+                _ = self.advance(); // Skip underscore
+                continue;
+            }
             _ = self.advance();
         }
 
         // Check for decimal point
         if (self.peek() == '.' and std.ascii.isDigit(self.peekNext())) {
-            // Consume the '.'
-            _ = self.advance();
+            _ = self.advance(); // Consume '.'
 
-            while (std.ascii.isDigit(self.peek())) {
+            while (std.ascii.isDigit(self.peek()) or self.peek() == '_') {
+                if (self.peek() == '_') {
+                    _ = self.advance();
+                    continue;
+                }
                 _ = self.advance();
             }
 
             return self.makeToken(.Float);
+        }
+
+        return self.makeToken(.Integer);
+    }
+
+    /// Lex a binary number literal (0b prefix).
+    fn binaryNumber(self: *Lexer) Token {
+        _ = self.advance(); // '0'
+        _ = self.advance(); // 'b' or 'B'
+
+        var has_digits = false;
+        while (self.peek() == '0' or self.peek() == '1' or self.peek() == '_') {
+            if (self.peek() == '_') {
+                _ = self.advance();
+                continue;
+            }
+            has_digits = true;
+            _ = self.advance();
+        }
+
+        if (!has_digits) {
+            return self.makeToken(.Invalid);
+        }
+
+        return self.makeToken(.Integer);
+    }
+
+    /// Lex a hexadecimal number literal (0x prefix).
+    fn hexNumber(self: *Lexer) Token {
+        _ = self.advance(); // '0'
+        _ = self.advance(); // 'x' or 'X'
+
+        var has_digits = false;
+        while (std.ascii.isHex(self.peek()) or self.peek() == '_') {
+            if (self.peek() == '_') {
+                _ = self.advance();
+                continue;
+            }
+            has_digits = true;
+            _ = self.advance();
+        }
+
+        if (!has_digits) {
+            return self.makeToken(.Invalid);
+        }
+
+        return self.makeToken(.Integer);
+    }
+
+    /// Lex an octal number literal (0o prefix).
+    fn octalNumber(self: *Lexer) Token {
+        _ = self.advance(); // '0'
+        _ = self.advance(); // 'o' or 'O'
+
+        var has_digits = false;
+        while (self.peek() >= '0' and self.peek() <= '7' or self.peek() == '_') {
+            if (self.peek() == '_') {
+                _ = self.advance();
+                continue;
+            }
+            has_digits = true;
+            _ = self.advance();
+        }
+
+        if (!has_digits) {
+            return self.makeToken(.Invalid);
         }
 
         return self.makeToken(.Integer);
@@ -349,6 +431,10 @@ pub const Lexer = struct {
 
         // Identifiers and keywords
         if (std.ascii.isAlphabetic(c) or c == '_') {
+            // Check for raw string prefix 'r'
+            if (c == 'r' and (self.peek() == '"' or self.peek() == '#')) {
+                return self.rawString();
+            }
             return self.identifier();
         }
 

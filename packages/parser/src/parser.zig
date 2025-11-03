@@ -214,6 +214,50 @@ pub const Parser = struct {
         return self.peek().type == .Eof;
     }
 
+    /// Check if the current token is on a new line compared to the previous token.
+    ///
+    /// Used to implement optional semicolons - statements can be separated by
+    /// newlines instead of semicolons.
+    ///
+    /// Returns: true if current token is on a different line than previous
+    fn isAtNewLine(self: *Parser) bool {
+        if (self.current == 0) return false;
+        const current_line = self.peek().line;
+        const prev_line = self.previous().line;
+        return current_line > prev_line;
+    }
+
+    /// Consume an optional semicolon.
+    ///
+    /// Semicolons are optional in Home if:
+    /// - The statement ends with a newline
+    /// - Before a closing brace
+    /// - At end of file
+    ///
+    /// Semicolons are required when:
+    /// - Multiple statements on the same line
+    ///
+    /// Errors: UnexpectedToken if semicolon is required but missing
+    fn optionalSemicolon(self: *Parser) ParseError!void {
+        // If there's a semicolon, consume it
+        if (self.check(.Semicolon)) {
+            _ = self.advance();
+            return;
+        }
+
+        // Otherwise, semicolon is optional if:
+        // 1. At a newline boundary
+        // 2. Before closing brace
+        // 3. At end of file
+        if (self.isAtNewLine() or self.check(.RightBrace) or self.isAtEnd()) {
+            return;
+        }
+
+        // If none of the above, semicolon is required (multiple statements on same line)
+        try self.reportError("Expected semicolon or newline between statements");
+        return error.UnexpectedToken;
+    }
+
     /// Get current token without advancing the parser.
     ///
     /// Returns: The token at the current position
@@ -879,6 +923,9 @@ pub const Parser = struct {
             ast.SourceLocation.fromToken(name_token),
         );
 
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
         return ast.Stmt{ .LetDecl = decl };
     }
 
@@ -915,6 +962,9 @@ pub const Parser = struct {
             value,
             ast.SourceLocation.fromToken(return_token),
         );
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
 
         return ast.Stmt{ .ReturnStmt = stmt };
     }
@@ -1459,6 +1509,9 @@ pub const Parser = struct {
             ast.SourceLocation.fromToken(defer_token),
         );
 
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
         return ast.Stmt{ .DeferStmt = stmt };
     }
 
@@ -1515,6 +1568,10 @@ pub const Parser = struct {
     /// Parse an expression statement
     fn expressionStatement(self: *Parser) !ast.Stmt {
         const expr = try self.expression();
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
         return ast.Stmt{ .ExprStmt = expr };
     }
 
