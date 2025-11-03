@@ -36,9 +36,25 @@ pub const Response = @import("response.zig").Response;
 pub const CookieOptions = @import("response.zig").CookieOptions;
 pub const SameSite = @import("response.zig").SameSite;
 
-// Router (to be implemented)
-// pub const Router = @import("router.zig").Router;
-// pub const Route = @import("router.zig").Route;
+// Router
+pub const Router = @import("router.zig").Router;
+pub const Route = @import("router.zig").Route;
+pub const Handler = @import("router.zig").Handler;
+
+// Middleware
+pub const Middleware = @import("middleware.zig").Middleware;
+pub const MiddlewareHandler = @import("middleware.zig").MiddlewareHandler;
+pub const MiddlewareStack = @import("middleware.zig").Stack;
+pub const MiddlewareGroup = @import("middleware.zig").MiddlewareGroup;
+
+// Built-in middleware
+pub const middleware = struct {
+    pub const cors = @import("middleware.zig").corsMiddleware;
+    pub const logger = @import("middleware.zig").loggerMiddleware;
+    pub const auth = @import("middleware.zig").authMiddleware;
+    pub const jsonParser = @import("middleware.zig").jsonParserMiddleware;
+    pub const RateLimiter = @import("middleware.zig").RateLimiter;
+};
 
 // Server (to be implemented)
 // pub const HttpServer = @import("server.zig").HttpServer;
