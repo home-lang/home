@@ -1367,3 +1367,375 @@ test "Collection: fromJson" {
     try testing.expectEqual(@as(i32, 30), col.get(2).?);
     try testing.expectEqual(@as(i32, 50), col.get(4).?);
 }
+
+// ==================== Additional Structural Transformation Tests ====================
+
+test "Collection: collapse" {
+    const arr1 = [_]i32{ 1, 2 };
+    const arr2 = [_]i32{ 3, 4 };
+    const arr3 = [_]i32{ 5, 6 };
+    const nested = [_][]const i32{ &arr1, &arr2, &arr3 };
+
+    var col = try Collection([]const i32).fromSlice(testing.allocator, &nested);
+    defer col.deinit();
+
+    var collapsed = try col.collapse(i32);
+    defer collapsed.deinit();
+
+    try testing.expectEqual(@as(usize, 6), collapsed.count());
+    try testing.expectEqual(@as(i32, 1), collapsed.get(0).?);
+    try testing.expectEqual(@as(i32, 6), collapsed.get(5).?);
+}
+
+test "Collection: sliding" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Sliding window size 3, step 2
+    var windows = try col.sliding(3, 2);
+    defer windows.deinit();
+
+    try testing.expectEqual(@as(usize, 2), windows.count());
+
+    const win1 = windows.get(0).?;
+    try testing.expectEqual(@as(usize, 3), win1.len);
+    try testing.expectEqual(@as(i32, 1), win1[0]);
+    try testing.expectEqual(@as(i32, 3), win1[2]);
+
+    const win2 = windows.get(1).?;
+    try testing.expectEqual(@as(i32, 3), win2[0]);
+    try testing.expectEqual(@as(i32, 5), win2[2]);
+}
+
+// ==================== Advanced Sorting Tests ====================
+
+test "Collection: sortBy" {
+    const items = [_]i32{ 5, 1, 4, 2, 3 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Sort by absolute value
+    col.sortBy(i32, struct {
+        fn call(n: i32) i32 {
+            return if (n < 0) -n else n;
+        }
+    }.call);
+
+    try testing.expectEqual(@as(i32, 1), col.get(0).?);
+    try testing.expectEqual(@as(i32, 2), col.get(1).?);
+    try testing.expectEqual(@as(i32, 5), col.get(4).?);
+}
+
+test "Collection: sortByDesc" {
+    const items = [_]i32{ 5, 1, 4, 2, 3 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    col.sortByDesc(i32, struct {
+        fn call(n: i32) i32 {
+            return n;
+        }
+    }.call);
+
+    try testing.expectEqual(@as(i32, 5), col.get(0).?);
+    try testing.expectEqual(@as(i32, 4), col.get(1).?);
+    try testing.expectEqual(@as(i32, 1), col.get(4).?);
+}
+
+// ==================== Aggregation Tests ====================
+
+test "Collection: minMax" {
+    const items = [_]i32{ 5, 1, 9, 3, 7 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const result = col.minMax();
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i32, 1), result.?.min);
+    try testing.expectEqual(@as(i32, 9), result.?.max);
+
+    // Test empty collection
+    var empty_col = Collection(i32).init(testing.allocator);
+    defer empty_col.deinit();
+    try testing.expect(empty_col.minMax() == null);
+}
+
+// ==================== Utility Method Tests ====================
+
+test "Collection: has and hasAny" {
+    const items = [_]i32{ 1, 2, 3, 4, 5 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    try testing.expect(col.has(0));
+    try testing.expect(col.has(4));
+    try testing.expect(!col.has(5));
+    try testing.expect(!col.has(10));
+
+    const indices1 = [_]usize{ 10, 20, 30 };
+    try testing.expect(!col.hasAny(&indices1));
+
+    const indices2 = [_]usize{ 10, 2, 30 };
+    try testing.expect(col.hasAny(&indices2));
+}
+
+test "Collection: pipeThrough" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+
+    const fn1: *const fn (col: *const Collection(i32)) anyerror!void = &struct {
+        fn call(_: *const Collection(i32)) !void {
+            // First callback
+        }
+    }.call;
+
+    const fn2: *const fn (col: *const Collection(i32)) anyerror!void = &struct {
+        fn call(_: *const Collection(i32)) !void {
+            // Second callback
+        }
+    }.call;
+
+    const callbacks = [_]*const fn (col: *const Collection(i32)) anyerror!void{ fn1, fn2 };
+
+    _ = try col.pipeThrough(&callbacks);
+    try testing.expectEqual(@as(usize, 1), col.count());
+}
+
+// ==================== Integration Tests: Method Chaining ====================
+
+test "Integration: complex filter-map-reduce chain" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Filter evens, map to squares, reduce to sum
+    var filtered = try col.filter(struct {
+        fn call(n: i32) bool {
+            return @mod(n, 2) == 0;
+        }
+    }.call);
+    defer filtered.deinit();
+
+    var mapped = try filtered.map(i32, struct {
+        fn call(n: i32) i32 {
+            return n * n;
+        }
+    }.call);
+    defer mapped.deinit();
+
+    const sum = mapped.reduce(i32, 0, struct {
+        fn call(acc: i32, n: i32) i32 {
+            return acc + n;
+        }
+    }.call);
+
+    // 2^2 + 4^2 + 6^2 + 8^2 + 10^2 = 4 + 16 + 36 + 64 + 100 = 220
+    try testing.expectEqual(@as(i32, 220), sum);
+}
+
+test "Integration: filter-sort-take-pluck chain" {
+    const items = [_]i32{ 15, 3, 9, 1, 22, 7, 18, 5, 12, 30 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Filter items > 10, sort, take first 3
+    var filtered = try col.filter(struct {
+        fn call(n: i32) bool {
+            return n > 10;
+        }
+    }.call);
+    defer filtered.deinit();
+
+    filtered.sort();
+
+    var top3 = try filtered.take(3);
+    defer top3.deinit();
+
+    try testing.expectEqual(@as(usize, 3), top3.count());
+    try testing.expectEqual(@as(i32, 12), top3.get(0).?);
+    try testing.expectEqual(@as(i32, 15), top3.get(1).?);
+    try testing.expectEqual(@as(i32, 18), top3.get(2).?);
+}
+
+test "Integration: chunk-map-sum chain" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Chunk into pairs
+    var chunks = try col.chunk(2);
+    defer chunks.deinit();
+
+    // Manually compute sums from each chunk (slice)
+    var sums = Collection(i32).init(testing.allocator);
+    defer sums.deinit();
+
+    for (chunks.all()) |chunk_slice| {
+        var sum: i32 = 0;
+        for (chunk_slice) |n| {
+            sum += n;
+        }
+        try sums.push(sum);
+    }
+
+    // Chunks: [1,2], [3,4], [5,6] -> Sums: [3, 7, 11]
+    try testing.expectEqual(@as(usize, 3), sums.count());
+    try testing.expectEqual(@as(i32, 3), sums.get(0).?);
+    try testing.expectEqual(@as(i32, 7), sums.get(1).?);
+    try testing.expectEqual(@as(i32, 11), sums.get(2).?);
+}
+
+test "Integration: whereIn-unique-sortDesc chain" {
+    const items = [_]i32{ 5, 2, 8, 2, 9, 5, 3, 8, 7, 1 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const allowed = [_]i32{ 2, 5, 8, 9, 12 };
+    var filtered = try col.whereIn(&allowed);
+    defer filtered.deinit();
+
+    var unique_items = try filtered.unique();
+    defer unique_items.deinit();
+
+    unique_items.sortDesc();
+
+    try testing.expectEqual(@as(usize, 4), unique_items.count());
+    try testing.expectEqual(@as(i32, 9), unique_items.get(0).?);
+    try testing.expectEqual(@as(i32, 8), unique_items.get(1).?);
+    try testing.expectEqual(@as(i32, 5), unique_items.get(2).?);
+    try testing.expectEqual(@as(i32, 2), unique_items.get(3).?);
+}
+
+test "Integration: partition-map-merge chain" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Partition into evens and odds
+    var result = try col.partition(struct {
+        fn call(n: i32) bool {
+            return @mod(n, 2) == 0;
+        }
+    }.call);
+    defer result.pass.deinit();
+    defer result.fail.deinit();
+
+    // Map evens to *2, odds to *3
+    var evens_doubled = try result.pass.map(i32, struct {
+        fn call(n: i32) i32 {
+            return n * 2;
+        }
+    }.call);
+    defer evens_doubled.deinit();
+
+    var odds_tripled = try result.fail.map(i32, struct {
+        fn call(n: i32) i32 {
+            return n * 3;
+        }
+    }.call);
+    defer odds_tripled.deinit();
+
+    // Merge back
+    var merged = try evens_doubled.merge(&odds_tripled);
+    defer merged.deinit();
+
+    try testing.expectEqual(@as(usize, 10), merged.count());
+    // Contains both doubled evens and tripled odds
+    try testing.expect(merged.contains(4));   // 2 * 2
+    try testing.expect(merged.contains(3));   // 1 * 3
+    try testing.expect(merged.contains(20));  // 10 * 2
+    try testing.expect(merged.contains(27));  // 9 * 3
+}
+
+test "Integration: groupBy-aggregate chain" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Group by remainder when divided by 3 (using u8 instead of string)
+    var grouped = try col.groupBy(u8, struct {
+        fn call(n: i32) u8 {
+            return @intCast(@mod(n, 3));
+        }
+    }.call);
+    defer {
+        var it = grouped.valueIterator();
+        while (it.next()) |group| {
+            group.deinit();
+        }
+        grouped.deinit();
+    }
+
+    // Check group 0 (3, 6, 9)
+    if (grouped.get(0)) |zero_group| {
+        try testing.expectEqual(@as(usize, 3), zero_group.count());
+        const sum = zero_group.sum();
+        try testing.expectEqual(@as(i32, 18), sum); // 3 + 6 + 9 = 18
+    }
+
+    // Check group 1 (1, 4, 7, 10)
+    if (grouped.get(1)) |one_group| {
+        try testing.expectEqual(@as(usize, 4), one_group.count());
+        const avg = one_group.avg();
+        try testing.expectEqual(@as(f64, 5.5), avg); // (1+4+7+10)/4 = 5.5
+    }
+}
+
+test "Integration: sliding-filter-flatMap chain" {
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Create sliding windows of size 3
+    var windows = try col.sliding(3, 1);
+    defer windows.deinit();
+
+    // Filter windows where sum > 10
+    var filtered_windows = try windows.filter(struct {
+        fn call(window: []const i32) bool {
+            var sum: i32 = 0;
+            for (window) |n| sum += n;
+            return sum > 10;
+        }
+    }.call);
+    defer filtered_windows.deinit();
+
+    // Count should be windows with sum > 10
+    // [1,2,3]=6, [2,3,4]=9, [3,4,5]=12✓, [4,5,6]=15✓, [5,6,7]=18✓, [6,7,8]=21✓
+    try testing.expectEqual(@as(usize, 4), filtered_windows.count());
+}
+
+test "Integration: real-world data pipeline" {
+    // Simulate processing user scores
+    const scores = [_]i32{ 45, 67, 89, 92, 78, 85, 91, 73, 88, 95, 82, 76, 90, 68, 84 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &scores);
+    defer col.deinit();
+
+    // 1. Filter passing scores (>= 70)
+    var passing = try col.filter(struct {
+        fn call(score: i32) bool {
+            return score >= 70;
+        }
+    }.call);
+    defer passing.deinit();
+
+    // 2. Sort descending
+    passing.sortDesc();
+
+    // 3. Take top 5
+    var top5 = try passing.take(5);
+    defer top5.deinit();
+
+    // 4. Calculate statistics
+    const avg = top5.avg();
+    const min_val = top5.min();
+    const max_val = top5.max();
+
+    try testing.expectEqual(@as(usize, 5), top5.count());
+    try testing.expectEqual(@as(i32, 95), max_val.?);
+    try testing.expectEqual(@as(i32, 89), min_val.?); // Top 5: 95, 92, 91, 90, 89
+    try testing.expect(avg > 90.0 and avg < 92.0); // Average of top 5 = 91.4
+}

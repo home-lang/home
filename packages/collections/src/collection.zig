@@ -321,6 +321,27 @@ pub fn Collection(comptime T: type) type {
             return callback(self);
         }
 
+        /// Pipe collection through multiple functions (accepts array of function pointers)
+        pub fn pipeThrough(self: *const Self, callbacks: []const *const fn (col: *const Self) anyerror!void) !*const Self {
+            for (callbacks) |callback| {
+                try callback(self);
+            }
+            return self;
+        }
+
+        /// Check if collection has an item at given index
+        pub fn has(self: *const Self, index: usize) bool {
+            return index < self.count();
+        }
+
+        /// Check if collection has any of the given indices
+        pub fn hasAny(self: *const Self, indices: []const usize) bool {
+            for (indices) |index| {
+                if (self.has(index)) return true;
+            }
+            return false;
+        }
+
         /// Dump collection contents (debugging)
         pub fn dump(self: *const Self) void {
             std.debug.print("Collection({s}) [{d} items]:\n", .{ @typeName(T), self.count() });
@@ -379,6 +400,24 @@ pub fn Collection(comptime T: type) type {
             }
         }
 
+        /// Sort by callback result (ascending)
+        pub fn sortBy(self: *Self, comptime U: type, comptime callback: fn (item: T) U) void {
+            std.mem.sort(T, self.items.items, {}, struct {
+                fn lessThan(_: void, a: T, b: T) bool {
+                    return callback(a) < callback(b);
+                }
+            }.lessThan);
+        }
+
+        /// Sort by callback result (descending)
+        pub fn sortByDesc(self: *Self, comptime U: type, comptime callback: fn (item: T) U) void {
+            std.mem.sort(T, self.items.items, {}, struct {
+                fn lessThan(_: void, a: T, b: T) bool {
+                    return callback(a) > callback(b);
+                }
+            }.lessThan);
+        }
+
         // ==================== Aggregation Methods ====================
 
         /// Sum all numeric values (requires T to support addition)
@@ -415,6 +454,21 @@ pub fn Collection(comptime T: type) type {
                 if (item > maximum) maximum = item;
             }
             return maximum;
+        }
+
+        /// Find both min and max in one pass
+        pub fn minMax(self: *const Self) ?struct { min: T, max: T } {
+            if (self.isEmpty()) return null;
+
+            var minimum = self.items.items[0];
+            var maximum = self.items.items[0];
+
+            for (self.items.items[1..]) |item| {
+                if (item < minimum) minimum = item;
+                if (item > maximum) maximum = item;
+            }
+
+            return .{ .min = minimum, .max = maximum };
         }
 
         /// Find mode (most frequently occurring value)
@@ -492,6 +546,26 @@ pub fn Collection(comptime T: type) type {
 
             for (self.items.items) |nested_items| {
                 try result.items.appendSlice(nested_items);
+            }
+
+            return result;
+        }
+
+        /// Collapse a collection of collections into a single flat collection (alias for flatten)
+        pub fn collapse(self: *const Self, comptime U: type) !Collection(U) {
+            return try self.flatten(U);
+        }
+
+        /// Create sliding windows with a custom step
+        pub fn sliding(self: *const Self, size: usize, step: usize) !Collection([]const T) {
+            var result = Collection([]const T).init(self.allocator);
+
+            if (size == 0 or size > self.count() or step == 0) return result;
+
+            var i: usize = 0;
+            while (i + size <= self.count()) : (i += step) {
+                const window = self.items.items[i .. i + size];
+                try result.push(window);
             }
 
             return result;
