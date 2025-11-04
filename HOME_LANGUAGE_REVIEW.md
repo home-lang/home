@@ -413,7 +413,7 @@ where
 ```home
 import basics/os/serial                    // Import module
 import basics/os/serial { init, COM1 }     // Selective import
-import std/http { get, post }              // Multiple imports
+import basics/http { get, post }              // Multiple imports
 ```
 
 ---
@@ -1939,8 +1939,8 @@ let rc = Rc::new(value)     // Reference counting?
 
 ```home
 // Import with selective imports
-import std/io { print, println }
-import std/collections { Vec, HashMap }
+import basics/io { print, println }
+import basics/collections { Vec, HashMap }
 
 // Type alias
 type UserId = u64

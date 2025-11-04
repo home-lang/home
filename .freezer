@@ -1,16 +1,16 @@
 {
   "version": "1.0.0",
   "lockfileVersion": 1,
-  "generatedAt": "1762201707",
+  "generatedAt": "1762228544",
   "packages": {
-    "zig@^0.15.1": {
-      "name": "zig",
-      "version": "^0.15.1",
+    "bun@1.3.1": {
+      "name": "bun",
+      "version": "1.3.1",
       "source": "pkgx"
     },
-    "bun@^1.3.0": {
-      "name": "bun",
-      "version": "^1.3.0",
+    "zig@0.15.2": {
+      "name": "zig",
+      "version": "0.15.2",
       "source": "pkgx"
     }
   }
