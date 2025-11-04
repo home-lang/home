@@ -82,23 +82,30 @@ fn executeTest(
 ) !TestExecutionResult {
     const start_time = std.time.milliTimestamp();
 
-    // Validate test function
-    test_discovery.validateTestFunction(test_item.fn_decl) catch |err| {
-        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-        const error_msg = try std.fmt.allocPrint(
-            allocator,
-            "Invalid test function: {s}",
-            .{@errorName(err)},
-        );
-        return .{
-            .name = test_item.name,
-            .success = false,
-            .duration_ms = duration,
-            .error_message = error_msg,
-            .file_path = test_item.file_path,
-            .line = test_item.line,
-        };
-    };
+    // Validate test function if it's a FnDecl
+    switch (test_item.decl) {
+        .fn_decl => |fn_decl| {
+            test_discovery.validateTestFunction(fn_decl) catch |err| {
+                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+                const error_msg = try std.fmt.allocPrint(
+                    allocator,
+                    "Invalid test function: {s}",
+                    .{@errorName(err)},
+                );
+                return .{
+                    .name = test_item.name,
+                    .success = false,
+                    .duration_ms = duration,
+                    .error_message = error_msg,
+                    .file_path = test_item.file_path,
+                    .line = test_item.line,
+                };
+            };
+        },
+        .it_decl => {
+            // it() tests don't need validation
+        },
+    }
 
     // Create interpreter instance
     var interpreter = Interpreter.init(allocator);
@@ -122,36 +129,61 @@ fn executeTest(
         };
     };
 
-    // Call the test function
-    const call_expr = try ast.CallExpr.init(
-        allocator,
-        try createIdentifierExpr(allocator, test_item.name),
-        &.{},
-        test_item.fn_decl.node.loc,
-    );
-    defer allocator.destroy(call_expr);
+    // Execute the test based on its type
+    switch (test_item.decl) {
+        .fn_decl => |fn_decl| {
+            // Call the test function
+            const call_expr = try ast.CallExpr.init(
+                allocator,
+                try createIdentifierExpr(allocator, test_item.name),
+                &.{},
+                fn_decl.node.loc,
+            );
+            defer allocator.destroy(call_expr);
 
-    const expr = try allocator.create(ast.Expr);
-    defer allocator.destroy(expr);
-    expr.* = .{ .CallExpr = call_expr };
+            const expr = try allocator.create(ast.Expr);
+            defer allocator.destroy(expr);
+            expr.* = .{ .CallExpr = call_expr };
 
-    // Execute the test
-    _ = interpreter.visitExpr(expr) catch |err| {
-        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-        const error_msg = try std.fmt.allocPrint(
-            allocator,
-            "Test failed: {s}",
-            .{@errorName(err)},
-        );
-        return .{
-            .name = test_item.name,
-            .success = false,
-            .duration_ms = duration,
-            .error_message = error_msg,
-            .file_path = test_item.file_path,
-            .line = test_item.line,
-        };
-    };
+            // Execute the test
+            _ = interpreter.visitExpr(expr) catch |err| {
+                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+                const error_msg = try std.fmt.allocPrint(
+                    allocator,
+                    "Test failed: {s}",
+                    .{@errorName(err)},
+                );
+                return .{
+                    .name = test_item.name,
+                    .success = false,
+                    .duration_ms = duration,
+                    .error_message = error_msg,
+                    .file_path = test_item.file_path,
+                    .line = test_item.line,
+                };
+            };
+        },
+        .it_decl => |it_decl| {
+            // Execute the it() test block directly
+            const block_stmt = ast.Stmt{ .BlockStmt = it_decl.body };
+            interpreter.visitStmt(block_stmt) catch |err| {
+                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+                const error_msg = try std.fmt.allocPrint(
+                    allocator,
+                    "Test failed: {s}",
+                    .{@errorName(err)},
+                );
+                return .{
+                    .name = test_item.name,
+                    .success = false,
+                    .duration_ms = duration,
+                    .error_message = error_msg,
+                    .file_path = test_item.file_path,
+                    .line = test_item.line,
+                };
+            };
+        },
+    }
 
     const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
     return .{

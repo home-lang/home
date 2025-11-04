@@ -1,10 +1,16 @@
 const std = @import("std");
 const ast = @import("ast");
 
+/// Test declaration type
+pub const TestDeclType = union(enum) {
+    fn_decl: *ast.FnDecl,
+    it_decl: *ast.ItTestDecl,
+};
+
 /// Discovered test function information
 pub const DiscoveredTest = struct {
     name: []const u8,
-    fn_decl: *ast.FnDecl,
+    decl: TestDeclType,
     file_path: []const u8,
     line: u32,
 
@@ -71,11 +77,31 @@ fn discoverTestsInStatement(
 
                 try result.addTest(.{
                     .name = name_copy,
-                    .fn_decl = fn_decl,
+                    .decl = .{ .fn_decl = fn_decl },
                     .file_path = file_path_copy,
                     .line = fn_decl.node.loc.line,
                 });
             }
+        },
+        .ItTestDecl => |it_decl| {
+            // Strip quotes from description to use as test name
+            var name = it_decl.description;
+            if (name.len >= 2 and name[0] == '"' and name[name.len - 1] == '"') {
+                name = name[1 .. name.len - 1];
+            }
+
+            const name_copy = try allocator.dupe(u8, name);
+            errdefer allocator.free(name_copy);
+
+            const file_path_copy = try allocator.dupe(u8, file_path);
+            errdefer allocator.free(file_path_copy);
+
+            try result.addTest(.{
+                .name = name_copy,
+                .decl = .{ .it_decl = it_decl },
+                .file_path = file_path_copy,
+                .line = it_decl.node.loc.line,
+            });
         },
         // Could extend to discover tests in other contexts if needed
         else => {},

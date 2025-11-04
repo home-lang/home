@@ -1,0 +1,87 @@
+// Example demonstrating the new it('description') test syntax
+// This shows how to write inline tests similar to JavaScript testing frameworks
+
+// Helper functions for testing
+fn add(a: i32, b: i32) -> i32 {
+  return a + b
+}
+
+fn subtract(a: i32, b: i32) -> i32 {
+  return a - b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+  return a * b
+}
+
+fn is_even(n: i32) -> bool {
+  return n % 2 == 0
+}
+
+// Inline tests using it('description') syntax
+it('can add two positive numbers') {
+  let result = add(5, 3)
+  if (result != 8) {
+    panic("Expected 5 + 3 to equal 8")
+  }
+}
+
+it('can add negative numbers') {
+  let result = add(-5, -3)
+  if (result != -8) {
+    panic("Expected -5 + -3 to equal -8")
+  }
+}
+
+it('can subtract numbers') {
+  let result = subtract(10, 3)
+  if (result != 7) {
+    panic("Expected 10 - 3 to equal 7")
+  }
+}
+
+it('can multiply numbers') {
+  let result = multiply(4, 5)
+  if (result != 20) {
+    panic("Expected 4 * 5 to equal 20")
+  }
+}
+
+it('can check if number is even') {
+  let result = is_even(4)
+  if (!result) {
+    panic("Expected 4 to be even")
+  }
+}
+
+it('can check if number is odd') {
+  let result = is_even(5)
+  if (result) {
+    panic("Expected 5 to be odd")
+  }
+}
+
+it('handles zero correctly in addition') {
+  let result = add(0, 0)
+  if (result != 0) {
+    panic("Expected 0 + 0 to equal 0")
+  }
+}
+
+it('handles multiplication by zero') {
+  let result = multiply(100, 0)
+  if (result != 0) {
+    panic("Expected 100 * 0 to equal 0")
+  }
+}
+
+// You can also mix with traditional @test functions
+@test
+fn test_combined_operations() {
+  let step1 = add(5, 3)
+  let step2 = multiply(step1, 2)
+  let result = subtract(step2, 4)
+  if (result != 12) {
+    panic("Expected combined operations to equal 12")
+  }
+}

@@ -576,6 +576,11 @@ pub const Parser = struct {
             return stmt;
         }
 
+        // Check for it('description') { body } test syntax
+        if (self.match(&.{.It})) {
+            return try self.itTestDeclaration();
+        }
+
         // If attributes were provided but no valid declaration follows, error
         if (attributes.len > 0) {
             try self.reportError("Attributes can only be used with declarations");
@@ -680,6 +685,41 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .FnDecl = fn_decl };
+    }
+
+    /// Parse an inline test declaration: it('description') { body }
+    ///
+    /// Grammar:
+    ///   itTest = 'it' '(' STRING ')' block
+    ///
+    /// Example:
+    ///   it('can add two numbers') { ... }
+    ///
+    /// Returns: ItTestDecl statement node
+    fn itTestDeclaration(self: *Parser) ParseError!ast.Stmt {
+        const it_token = self.previous();
+
+        // Expect opening parenthesis
+        _ = try self.expect(.LeftParen, "Expected '(' after 'it'");
+
+        // Expect string description
+        const description_token = try self.expect(.String, "Expected test description string");
+        const description = description_token.lexeme;
+
+        // Expect closing parenthesis
+        _ = try self.expect(.RightParen, "Expected ')' after test description");
+
+        // Parse the test body block
+        const body = try self.block();
+
+        const it_decl = try ast.ItTestDecl.init(
+            self.allocator,
+            description,
+            body,
+            ast.SourceLocation.fromToken(it_token),
+        );
+
+        return ast.Stmt{ .ItTestDecl = it_decl };
     }
 
     /// Parse a struct declaration

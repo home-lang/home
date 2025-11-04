@@ -161,6 +161,7 @@ pub const NodeType = enum {
     LetDecl,
     ConstDecl,
     FnDecl,
+    ItTestDecl,
     StructDecl,
     EnumDecl,
     TypeAliasDecl,
@@ -1017,6 +1018,7 @@ pub const Expr = union(NodeType) {
     LetDecl: void,
     ConstDecl: void,
     FnDecl: void,
+    ItTestDecl: void,
     StructDecl: void,
     EnumDecl: void,
     TypeAliasDecl: void,
@@ -1515,6 +1517,7 @@ pub const Stmt = union(NodeType) {
     LetDecl: *LetDecl,
     ConstDecl: void,
     FnDecl: *FnDecl,
+    ItTestDecl: *ItTestDecl,
     StructDecl: *StructDecl,
     EnumDecl: *EnumDecl,
     TypeAliasDecl: *TypeAliasDecl,
@@ -1690,6 +1693,24 @@ pub const FnDecl = struct {
     }
 };
 
+/// Inline test declaration using it('description') syntax
+/// Example: it('can add two numbers') { ... }
+pub const ItTestDecl = struct {
+    node: Node,
+    description: []const u8,
+    body: *BlockStmt,
+
+    pub fn init(allocator: std.mem.Allocator, description: []const u8, body: *BlockStmt, loc: SourceLocation) !*ItTestDecl {
+        const decl = try allocator.create(ItTestDecl);
+        decl.* = .{
+            .node = .{ .type = .ItTestDecl, .loc = loc },
+            .description = description,
+            .body = body,
+        };
+        return decl;
+    }
+};
+
 /// Program (top-level)
 pub const Program = struct {
     statements: []const Stmt,
@@ -1724,6 +1745,10 @@ pub const Program = struct {
             },
             .FnDecl => |decl| {
                 allocator.free(decl.params);
+                deinitBlockStmt(decl.body, allocator);
+                allocator.destroy(decl);
+            },
+            .ItTestDecl => |decl| {
                 deinitBlockStmt(decl.body, allocator);
                 allocator.destroy(decl);
             },
