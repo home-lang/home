@@ -4,11 +4,11 @@ A fluent, Laravel-inspired Collections API for the Home programming language, pr
 
 ## Features
 
-✅ **90+ Collection Methods** implemented
+✅ **100+ Collection Methods** implemented
 ✅ **Generic Type Support** - Works with any type `Collection(T)`
 ✅ **Method Chaining** - Fluent interface for readable transformations
 ✅ **Zero-Cost Abstractions** - Compiles to efficient code
-✅ **58 Comprehensive Tests** - Full test coverage
+✅ **75 Comprehensive Tests** - Full test coverage
 ✅ **Memory Safe** - Proper allocator management
 
 ## Installation
@@ -386,6 +386,101 @@ col.dump();
 _ = col.dd(); // dump and return for chaining
 ```
 
+### Combination Methods
+
+```zig
+// Merge collections (concatenate)
+var merged = try col1.merge(&col2);
+
+// Union (unique items from both)
+var union_result = try col1.unionWith(&col2);
+
+// Intersection (items in both)
+var intersection = try col1.intersect(&col2);
+
+// Difference (items in first but not second)
+var diff = try col1.diff(&col2);
+
+// Symmetric difference (items in either but not both)
+var sym_diff = try col1.symmetricDiff(&col2);
+```
+
+### Conditional Methods
+
+```zig
+// Execute when condition is true
+_ = try col.when(should_process, struct {
+    fn call(c: *Collection(i32)) !void {
+        try c.push(42);
+    }
+}.call);
+
+// Execute when condition is false
+_ = try col.unless(is_empty, struct {
+    fn call(c: *Collection(i32)) !void {
+        c.clear();
+    }
+}.call);
+
+// Execute one of two callbacks based on condition
+_ = try col.whenElse(
+    has_items,
+    on_true_callback,
+    on_false_callback,
+);
+```
+
+### Higher-Order Methods
+
+```zig
+// FlatMap - map and flatten in one operation
+var flattened = try col.flatMap(i32, callback);
+
+// Map with index
+var indexed = try col.mapWithIndex(i32, struct {
+    fn call(item: i32, idx: usize) i32 {
+        return item + @intCast(idx);
+    }
+}.call);
+
+// Map to dictionary
+const KVPair = Collection(i32).KeyValuePair(i32, i32);
+var dict = try col.mapToDictionary(i32, i32, struct {
+    fn call(n: i32) KVPair {
+        return .{ .key = n, .value = n * 2 };
+    }
+}.call);
+
+// Map and spread
+const result = try col.mapSpread(i32, struct {
+    fn call(items: []const i32) i32 {
+        var sum: i32 = 0;
+        for (items) |n| sum += n;
+        return sum;
+    }
+}.call);
+```
+
+### Conversion Methods
+
+```zig
+// Convert to JSON
+const json = try col.toJson(allocator);
+defer allocator.free(json);
+
+// Convert to pretty JSON
+const pretty = try col.toJsonPretty(allocator);
+defer allocator.free(pretty);
+
+// Create from JSON
+var from_json = try Collection(i32).fromJson(allocator, "[1,2,3]");
+defer from_json.deinit();
+
+// Convert to owned slice
+const slice = try col.toOwnedSlice();
+defer allocator.free(slice);
+```
+
 ## Examples
 
 ### Data Transformation Pipeline
@@ -470,7 +565,7 @@ cd packages/collections
 zig build test
 ```
 
-Current status: **58/58 tests passing** ✅
+Current status: **75/75 tests passing** ✅
 
 ## Implementation Status
 

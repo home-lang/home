@@ -988,3 +988,382 @@ test "Collection: pluck" {
     try testing.expectEqual(@as(i32, 25), ages.get(1).?);
     try testing.expectEqual(@as(i32, 35), ages.get(2).?);
 }
+
+// ==================== Combination Tests ====================
+
+test "Collection: merge" {
+    const items1 = [_]i32{ 1, 2, 3 };
+    const items2 = [_]i32{ 4, 5, 6 };
+
+    var col1 = try Collection(i32).fromSlice(testing.allocator, &items1);
+    defer col1.deinit();
+
+    var col2 = try Collection(i32).fromSlice(testing.allocator, &items2);
+    defer col2.deinit();
+
+    var merged = try col1.merge(&col2);
+    defer merged.deinit();
+
+    try testing.expectEqual(@as(usize, 6), merged.count());
+    try testing.expectEqual(@as(i32, 1), merged.get(0).?);
+    try testing.expectEqual(@as(i32, 3), merged.get(2).?);
+    try testing.expectEqual(@as(i32, 4), merged.get(3).?);
+    try testing.expectEqual(@as(i32, 6), merged.get(5).?);
+}
+
+test "Collection: unionWith" {
+    const items1 = [_]i32{ 1, 2, 3, 4 };
+    const items2 = [_]i32{ 3, 4, 5, 6 };
+
+    var col1 = try Collection(i32).fromSlice(testing.allocator, &items1);
+    defer col1.deinit();
+
+    var col2 = try Collection(i32).fromSlice(testing.allocator, &items2);
+    defer col2.deinit();
+
+    var union_result = try col1.unionWith(&col2);
+    defer union_result.deinit();
+
+    try testing.expectEqual(@as(usize, 6), union_result.count());
+    try testing.expect(union_result.contains(1));
+    try testing.expect(union_result.contains(2));
+    try testing.expect(union_result.contains(3));
+    try testing.expect(union_result.contains(4));
+    try testing.expect(union_result.contains(5));
+    try testing.expect(union_result.contains(6));
+}
+
+test "Collection: intersect" {
+    const items1 = [_]i32{ 1, 2, 3, 4, 5 };
+    const items2 = [_]i32{ 3, 4, 5, 6, 7 };
+
+    var col1 = try Collection(i32).fromSlice(testing.allocator, &items1);
+    defer col1.deinit();
+
+    var col2 = try Collection(i32).fromSlice(testing.allocator, &items2);
+    defer col2.deinit();
+
+    var intersection = try col1.intersect(&col2);
+    defer intersection.deinit();
+
+    try testing.expectEqual(@as(usize, 3), intersection.count());
+    try testing.expect(intersection.contains(3));
+    try testing.expect(intersection.contains(4));
+    try testing.expect(intersection.contains(5));
+    try testing.expect(!intersection.contains(1));
+    try testing.expect(!intersection.contains(7));
+}
+
+test "Collection: diff" {
+    const items1 = [_]i32{ 1, 2, 3, 4, 5 };
+    const items2 = [_]i32{ 3, 4, 5, 6, 7 };
+
+    var col1 = try Collection(i32).fromSlice(testing.allocator, &items1);
+    defer col1.deinit();
+
+    var col2 = try Collection(i32).fromSlice(testing.allocator, &items2);
+    defer col2.deinit();
+
+    var difference = try col1.diff(&col2);
+    defer difference.deinit();
+
+    try testing.expectEqual(@as(usize, 2), difference.count());
+    try testing.expect(difference.contains(1));
+    try testing.expect(difference.contains(2));
+    try testing.expect(!difference.contains(3));
+    try testing.expect(!difference.contains(6));
+}
+
+test "Collection: symmetricDiff" {
+    const items1 = [_]i32{ 1, 2, 3, 4 };
+    const items2 = [_]i32{ 3, 4, 5, 6 };
+
+    var col1 = try Collection(i32).fromSlice(testing.allocator, &items1);
+    defer col1.deinit();
+
+    var col2 = try Collection(i32).fromSlice(testing.allocator, &items2);
+    defer col2.deinit();
+
+    var sym_diff = try col1.symmetricDiff(&col2);
+    defer sym_diff.deinit();
+
+    try testing.expectEqual(@as(usize, 4), sym_diff.count());
+    try testing.expect(sym_diff.contains(1));
+    try testing.expect(sym_diff.contains(2));
+    try testing.expect(sym_diff.contains(5));
+    try testing.expect(sym_diff.contains(6));
+    try testing.expect(!sym_diff.contains(3));
+    try testing.expect(!sym_diff.contains(4));
+}
+
+// ==================== Mode Test ====================
+
+test "Collection: mode" {
+    const items = [_]i32{ 1, 2, 2, 3, 3, 3, 4, 4, 4, 4, 5 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const mode_value = col.mode();
+    try testing.expectEqual(@as(i32, 4), mode_value.?);
+
+    // Test with all unique values
+    const unique_items = [_]i32{ 1, 2, 3, 4, 5 };
+    var unique_col = try Collection(i32).fromSlice(testing.allocator, &unique_items);
+    defer unique_col.deinit();
+
+    const unique_mode = unique_col.mode();
+    try testing.expect(unique_mode != null); // Should return one of the values
+
+    // Test empty collection
+    var empty_col = Collection(i32).init(testing.allocator);
+    defer empty_col.deinit();
+
+    try testing.expect(empty_col.mode() == null);
+}
+
+// ==================== Conditional Method Tests ====================
+
+test "Collection: when" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+
+    // When condition is true, callback should execute
+    _ = try col.when(true, struct {
+        fn call(c: *Collection(i32)) !void {
+            try c.push(3);
+        }
+    }.call);
+
+    try testing.expectEqual(@as(usize, 3), col.count());
+    try testing.expectEqual(@as(i32, 3), col.last().?);
+
+    // When condition is false, callback should NOT execute
+    _ = try col.when(false, struct {
+        fn call(c: *Collection(i32)) !void {
+            try c.push(4);
+        }
+    }.call);
+
+    try testing.expectEqual(@as(usize, 3), col.count());
+}
+
+test "Collection: unless" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+
+    // Unless condition is false, callback should execute
+    _ = try col.unless(false, struct {
+        fn call(c: *Collection(i32)) !void {
+            try c.push(3);
+        }
+    }.call);
+
+    try testing.expectEqual(@as(usize, 3), col.count());
+    try testing.expectEqual(@as(i32, 3), col.last().?);
+
+    // Unless condition is true, callback should NOT execute
+    _ = try col.unless(true, struct {
+        fn call(c: *Collection(i32)) !void {
+            try c.push(4);
+        }
+    }.call);
+
+    try testing.expectEqual(@as(usize, 3), col.count());
+}
+
+test "Collection: whenElse" {
+    var col1 = Collection(i32).init(testing.allocator);
+    defer col1.deinit();
+
+    try col1.push(1);
+
+    // When true, execute true callback
+    _ = try col1.whenElse(
+        true,
+        struct {
+            fn call(c: *Collection(i32)) !void {
+                try c.push(2);
+            }
+        }.call,
+        struct {
+            fn call(c: *Collection(i32)) !void {
+                try c.push(99);
+            }
+        }.call,
+    );
+
+    try testing.expectEqual(@as(usize, 2), col1.count());
+    try testing.expectEqual(@as(i32, 2), col1.last().?);
+
+    var col2 = Collection(i32).init(testing.allocator);
+    defer col2.deinit();
+
+    try col2.push(1);
+
+    // When false, execute false callback
+    _ = try col2.whenElse(
+        false,
+        struct {
+            fn call(c: *Collection(i32)) !void {
+                try c.push(2);
+            }
+        }.call,
+        struct {
+            fn call(c: *Collection(i32)) !void {
+                try c.push(99);
+            }
+        }.call,
+    );
+
+    try testing.expectEqual(@as(usize, 2), col2.count());
+    try testing.expectEqual(@as(i32, 99), col2.last().?);
+}
+
+// ==================== Higher-Order Method Tests ====================
+
+test "Collection: flatMap" {
+    const items = [_]i32{ 1, 2, 3 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // FlatMap each number to [n, n*2] using static arrays
+    var result = try col.flatMap(i32, struct {
+        const a1 = [_]i32{ 1, 2 };
+        const a2 = [_]i32{ 2, 4 };
+        const a3 = [_]i32{ 3, 6 };
+
+        fn call(n: i32) []const i32 {
+            return switch (n) {
+                1 => &a1,
+                2 => &a2,
+                3 => &a3,
+                else => &[_]i32{},
+            };
+        }
+    }.call);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 6), result.count());
+    try testing.expectEqual(@as(i32, 1), result.get(0).?);
+    try testing.expectEqual(@as(i32, 2), result.get(1).?);
+    try testing.expectEqual(@as(i32, 2), result.get(2).?);
+    try testing.expectEqual(@as(i32, 4), result.get(3).?);
+    try testing.expectEqual(@as(i32, 3), result.get(4).?);
+    try testing.expectEqual(@as(i32, 6), result.get(5).?);
+}
+
+test "Collection: mapWithIndex" {
+    const items = [_]i32{ 10, 20, 30 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Map each value + its index
+    var result = try col.mapWithIndex(i32, struct {
+        fn call(n: i32, idx: usize) i32 {
+            return n + @as(i32, @intCast(idx));
+        }
+    }.call);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.count());
+    try testing.expectEqual(@as(i32, 10), result.get(0).?); // 10 + 0
+    try testing.expectEqual(@as(i32, 21), result.get(1).?); // 20 + 1
+    try testing.expectEqual(@as(i32, 32), result.get(2).?); // 30 + 2
+}
+
+test "Collection: mapToDictionary" {
+    const items = [_]i32{ 1, 2, 3, 4, 5 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const KVPair = Collection(i32).KeyValuePair(i32, i32);
+
+    // Map to dictionary where key=value, value=value*2
+    var dict = try col.mapToDictionary(i32, i32, struct {
+        fn call(n: i32) KVPair {
+            return .{ .key = n, .value = n * 2 };
+        }
+    }.call);
+    defer dict.deinit();
+
+    try testing.expectEqual(@as(i32, 2), dict.get(1).?);
+    try testing.expectEqual(@as(i32, 4), dict.get(2).?);
+    try testing.expectEqual(@as(i32, 10), dict.get(5).?);
+}
+
+test "Collection: mapSpread" {
+    const items = [_]i32{ 1, 2, 3, 4, 5 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    // Spread all items to a sum function
+    const result = try col.mapSpread(i32, struct {
+        fn call(nums: []const i32) i32 {
+            var sum: i32 = 0;
+            for (nums) |n| sum += n;
+            return sum;
+        }
+    }.call);
+
+    try testing.expectEqual(@as(i32, 15), result);
+}
+
+// ==================== Conversion Method Tests ====================
+
+test "Collection: toOwnedSlice" {
+    var col = Collection(i32).init(testing.allocator);
+    // Note: we don't defer col.deinit() because toOwnedSlice takes ownership
+
+    try col.push(1);
+    try col.push(2);
+    try col.push(3);
+
+    const owned = try col.toOwnedSlice();
+    defer testing.allocator.free(owned);
+
+    try testing.expectEqual(@as(usize, 3), owned.len);
+    try testing.expectEqual(@as(i32, 1), owned[0]);
+    try testing.expectEqual(@as(i32, 2), owned[1]);
+    try testing.expectEqual(@as(i32, 3), owned[2]);
+}
+
+test "Collection: toJson" {
+    const items = [_]i32{ 1, 2, 3, 4, 5 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const json = try col.toJson(testing.allocator);
+    defer testing.allocator.free(json);
+
+    try testing.expectEqualStrings("[1,2,3,4,5]", json);
+}
+
+test "Collection: toJsonPretty" {
+    const items = [_]i32{ 1, 2, 3 };
+    var col = try Collection(i32).fromSlice(testing.allocator, &items);
+    defer col.deinit();
+
+    const json = try col.toJsonPretty(testing.allocator);
+    defer testing.allocator.free(json);
+
+    // Should contain newlines and indentation
+    try testing.expect(std.mem.indexOf(u8, json, "\n") != null);
+}
+
+test "Collection: fromJson" {
+    const json_str = "[10,20,30,40,50]";
+
+    var col = try Collection(i32).fromJson(testing.allocator, json_str);
+    defer col.deinit();
+
+    try testing.expectEqual(@as(usize, 5), col.count());
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 30), col.get(2).?);
+    try testing.expectEqual(@as(i32, 50), col.get(4).?);
+}

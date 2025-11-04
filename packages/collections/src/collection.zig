@@ -417,6 +417,38 @@ pub fn Collection(comptime T: type) type {
             return maximum;
         }
 
+        /// Find mode (most frequently occurring value)
+        pub fn mode(self: *const Self) ?T {
+            if (self.isEmpty()) return null;
+
+            var freq_map = std.AutoHashMap(T, usize).init(self.allocator);
+            defer freq_map.deinit();
+
+            // Count frequencies
+            for (self.items.items) |item| {
+                const entry = freq_map.getOrPut(item) catch return null;
+                if (entry.found_existing) {
+                    entry.value_ptr.* += 1;
+                } else {
+                    entry.value_ptr.* = 1;
+                }
+            }
+
+            // Find item with maximum frequency
+            var max_count: usize = 0;
+            var mode_value: ?T = null;
+
+            var it = freq_map.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* > max_count) {
+                    max_count = entry.value_ptr.*;
+                    mode_value = entry.key_ptr.*;
+                }
+            }
+
+            return mode_value;
+        }
+
         /// Find median value (requires T to be orderable)
         pub fn median(self: *const Self) ?T {
             if (self.isEmpty()) return null;
@@ -956,6 +988,145 @@ pub fn Collection(comptime T: type) type {
             }
 
             return result;
+        }
+
+        // ==================== Conditional Methods ====================
+
+        /// Execute callback when condition is true, return self for chaining
+        pub fn when(self: *Self, condition: bool, callback: fn (col: *Self) anyerror!void) !*Self {
+            if (condition) {
+                try callback(self);
+            }
+            return self;
+        }
+
+        /// Execute callback when condition is false, return self for chaining
+        pub fn unless(self: *Self, condition: bool, callback: fn (col: *Self) anyerror!void) !*Self {
+            if (!condition) {
+                try callback(self);
+            }
+            return self;
+        }
+
+        /// Execute one of two callbacks based on condition
+        pub fn whenElse(
+            self: *Self,
+            condition: bool,
+            true_callback: fn (col: *Self) anyerror!void,
+            false_callback: fn (col: *Self) anyerror!void,
+        ) !*Self {
+            if (condition) {
+                try true_callback(self);
+            } else {
+                try false_callback(self);
+            }
+            return self;
+        }
+
+        // ==================== Higher-Order Methods ====================
+
+        /// Map and flatten in one operation
+        pub fn flatMap(self: *const Self, comptime U: type, callback: fn (item: T) []const U) !Collection(U) {
+            var result = Collection(U).init(self.allocator);
+
+            for (self.items.items) |item| {
+                const mapped = callback(item);
+                try result.items.appendSlice(mapped);
+            }
+
+            return result;
+        }
+
+        /// Map with index information
+        pub fn mapWithIndex(self: *const Self, comptime U: type, callback: fn (item: T, index: usize) U) !Collection(U) {
+            var result = Collection(U).init(self.allocator);
+            try result.items.ensureTotalCapacity(self.count());
+
+            for (self.items.items, 0..) |item, index| {
+                try result.push(callback(item, index));
+            }
+
+            return result;
+        }
+
+        /// Key-Value pair for mapToDictionary
+        pub fn KeyValuePair(comptime K: type, comptime V: type) type {
+            return struct {
+                key: K,
+                value: V,
+            };
+        }
+
+        /// Map to dictionary/hashmap with custom keys and values
+        pub fn mapToDictionary(
+            self: *const Self,
+            comptime K: type,
+            comptime V: type,
+            callback: fn (item: T) KeyValuePair(K, V),
+        ) !std.AutoHashMap(K, V) {
+            var result = std.AutoHashMap(K, V).init(self.allocator);
+            errdefer result.deinit();
+
+            for (self.items.items) |item| {
+                const pair = callback(item);
+                try result.put(pair.key, pair.value);
+            }
+
+            return result;
+        }
+
+        /// Map and spread results (like mapSpread in Laravel)
+        pub fn mapSpread(
+            self: *const Self,
+            comptime U: type,
+            callback: fn (items: []const T) U,
+        ) !U {
+            return callback(self.items.items);
+        }
+
+        // ==================== Conversion Methods ====================
+
+        /// Convert collection to JSON string (requires T to support formatting)
+        /// For simple number types, uses fmt to create JSON-compatible output
+        pub fn toJson(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
+            var string = std.array_list.AlignedManaged(u8, null).init(allocator);
+            errdefer string.deinit();
+
+            const writer = string.writer();
+            try writer.writeByte('[');
+
+            for (self.items.items, 0..) |item, i| {
+                if (i > 0) try writer.writeByte(',');
+                try writer.print("{any}", .{item});
+            }
+
+            try writer.writeByte(']');
+            return try string.toOwnedSlice();
+        }
+
+        /// Convert collection to pretty JSON string
+        pub fn toJsonPretty(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
+            var string = std.array_list.AlignedManaged(u8, null).init(allocator);
+            errdefer string.deinit();
+
+            const writer = string.writer();
+            try writer.writeAll("[\n");
+
+            for (self.items.items, 0..) |item, i| {
+                if (i > 0) try writer.writeAll(",\n");
+                try writer.print("  {any}", .{item});
+            }
+
+            try writer.writeAll("\n]");
+            return try string.toOwnedSlice();
+        }
+
+        /// Create collection from JSON string (basic implementation for numeric types)
+        pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !Self {
+            const parsed = try std.json.parseFromSlice([]T, allocator, json_str, .{});
+            defer parsed.deinit();
+
+            return try Self.fromSlice(allocator, parsed.value);
         }
     };
 }
