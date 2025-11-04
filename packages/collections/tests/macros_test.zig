@@ -251,3 +251,408 @@ test "Real-world: Percentage calculation macro" {
     try testing.expectEqual(@as(i32, 37), col.get(1).?); // 75/200 * 100 = 37%
     try testing.expectEqual(@as(i32, 50), col.get(2).?); // 100/200 * 100 = 50%
 }
+
+// ==================== Additional Numeric Macros Tests ====================
+
+test "Built-in macro: decrement" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(10);
+    try col.push(15);
+
+    const decrement_fn = macros_module.decrementMacro(i32);
+    _ = col.macro(decrement_fn);
+
+    try testing.expectEqual(@as(i32, 4), col.get(0).?);
+    try testing.expectEqual(@as(i32, 9), col.get(1).?);
+    try testing.expectEqual(@as(i32, 14), col.get(2).?);
+}
+
+test "Built-in macro: halve (integer)" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(20);
+    try col.push(30);
+
+    const halve_fn = macros_module.halveMacro(i32);
+    _ = col.macro(halve_fn);
+
+    try testing.expectEqual(@as(i32, 5), col.get(0).?);
+    try testing.expectEqual(@as(i32, 10), col.get(1).?);
+    try testing.expectEqual(@as(i32, 15), col.get(2).?);
+}
+
+test "Built-in macro: halve (float)" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10.0);
+    try col.push(20.5);
+    try col.push(30.0);
+
+    const halve_fn = macros_module.halveMacro(f64);
+    _ = col.macro(halve_fn);
+
+    try testing.expectEqual(@as(f64, 5.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 10.25), col.get(1).?);
+    try testing.expectEqual(@as(f64, 15.0), col.get(2).?);
+}
+
+test "Built-in macro: triple" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(2);
+    try col.push(3);
+    try col.push(4);
+
+    const triple_fn = macros_module.tripleMacro(i32);
+    _ = col.macro(triple_fn);
+
+    try testing.expectEqual(@as(i32, 6), col.get(0).?);
+    try testing.expectEqual(@as(i32, 9), col.get(1).?);
+    try testing.expectEqual(@as(i32, 12), col.get(2).?);
+}
+
+test "Built-in macro: abs" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(-5);
+    try col.push(10);
+    try col.push(-15);
+    try col.push(0);
+
+    const abs_fn = macros_module.absMacro(i32);
+    _ = col.macro(abs_fn);
+
+    try testing.expectEqual(@as(i32, 5), col.get(0).?);
+    try testing.expectEqual(@as(i32, 10), col.get(1).?);
+    try testing.expectEqual(@as(i32, 15), col.get(2).?);
+    try testing.expectEqual(@as(i32, 0), col.get(3).?);
+}
+
+test "Built-in macro: cube" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(2);
+    try col.push(3);
+    try col.push(4);
+
+    const cube_fn = macros_module.cubeMacro(i32);
+    _ = col.macro(cube_fn);
+
+    try testing.expectEqual(@as(i32, 8), col.get(0).?);
+    try testing.expectEqual(@as(i32, 27), col.get(1).?);
+    try testing.expectEqual(@as(i32, 64), col.get(2).?);
+}
+
+test "Built-in macro: multiplyBy" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(2);
+    try col.push(3);
+    try col.push(4);
+
+    const multiply_fn = macros_module.multiplyByMacro(i32, 5);
+    _ = col.macro(multiply_fn);
+
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 15), col.get(1).?);
+    try testing.expectEqual(@as(i32, 20), col.get(2).?);
+}
+
+test "Built-in macro: add" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+    try col.push(3);
+
+    const add_fn = macros_module.addMacro(i32, 10);
+    _ = col.macro(add_fn);
+
+    try testing.expectEqual(@as(i32, 11), col.get(0).?);
+    try testing.expectEqual(@as(i32, 12), col.get(1).?);
+    try testing.expectEqual(@as(i32, 13), col.get(2).?);
+}
+
+test "Built-in macro: subtract" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(20);
+    try col.push(30);
+    try col.push(40);
+
+    const subtract_fn = macros_module.subtractMacro(i32, 5);
+    _ = col.macro(subtract_fn);
+
+    try testing.expectEqual(@as(i32, 15), col.get(0).?);
+    try testing.expectEqual(@as(i32, 25), col.get(1).?);
+    try testing.expectEqual(@as(i32, 35), col.get(2).?);
+}
+
+test "Built-in macro: divideBy" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(20);
+    try col.push(30);
+
+    const divide_fn = macros_module.divideByMacro(i32, 2);
+    _ = col.macro(divide_fn);
+
+    try testing.expectEqual(@as(i32, 5), col.get(0).?);
+    try testing.expectEqual(@as(i32, 10), col.get(1).?);
+    try testing.expectEqual(@as(i32, 15), col.get(2).?);
+}
+
+test "Built-in macro: modulo" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(11);
+    try col.push(12);
+    try col.push(13);
+
+    const modulo_fn = macros_module.moduloMacro(i32, 3);
+    _ = col.macro(modulo_fn);
+
+    try testing.expectEqual(@as(i32, 1), col.get(0).?);
+    try testing.expectEqual(@as(i32, 2), col.get(1).?);
+    try testing.expectEqual(@as(i32, 0), col.get(2).?);
+    try testing.expectEqual(@as(i32, 1), col.get(3).?);
+}
+
+// ==================== Clamping Macros Tests ====================
+
+test "Built-in macro: clampMax" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(15);
+    try col.push(25);
+
+    const clamp_fn = macros_module.clampMaxMacro(i32, 20);
+    _ = col.macro(clamp_fn);
+
+    try testing.expectEqual(@as(i32, 5), col.get(0).?);
+    try testing.expectEqual(@as(i32, 15), col.get(1).?);
+    try testing.expectEqual(@as(i32, 20), col.get(2).?);
+}
+
+test "Built-in macro: clampMin" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(15);
+    try col.push(25);
+
+    const clamp_fn = macros_module.clampMinMacro(i32, 10);
+    _ = col.macro(clamp_fn);
+
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 15), col.get(1).?);
+    try testing.expectEqual(@as(i32, 25), col.get(2).?);
+}
+
+test "Built-in macro: clampRange" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(15);
+    try col.push(25);
+    try col.push(35);
+
+    const clamp_fn = macros_module.clampRangeMacro(i32, 10, 30);
+    _ = col.macro(clamp_fn);
+
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 15), col.get(1).?);
+    try testing.expectEqual(@as(i32, 25), col.get(2).?);
+    try testing.expectEqual(@as(i32, 30), col.get(3).?);
+}
+
+// ==================== Rounding Macros Tests ====================
+
+test "Built-in macro: round" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.4);
+    try col.push(1.5);
+    try col.push(2.6);
+
+    const round_fn = macros_module.roundMacro(f64);
+    _ = col.macro(round_fn);
+
+    try testing.expectEqual(@as(f64, 1.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 2.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(2).?);
+}
+
+test "Built-in macro: floor" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.9);
+    try col.push(2.1);
+    try col.push(3.8);
+
+    const floor_fn = macros_module.floorMacro(f64);
+    _ = col.macro(floor_fn);
+
+    try testing.expectEqual(@as(f64, 1.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 2.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(2).?);
+}
+
+test "Built-in macro: ceil" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.1);
+    try col.push(2.9);
+    try col.push(3.0);
+
+    const ceil_fn = macros_module.ceilMacro(f64);
+    _ = col.macro(ceil_fn);
+
+    try testing.expectEqual(@as(f64, 2.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(2).?);
+}
+
+test "Built-in macro: trunc" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.9);
+    try col.push(-2.9);
+    try col.push(3.5);
+
+    const trunc_fn = macros_module.truncMacro(f64);
+    _ = col.macro(trunc_fn);
+
+    try testing.expectEqual(@as(f64, 1.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, -2.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(2).?);
+}
+
+// ==================== Boolean Macros Tests ====================
+
+test "Built-in macro: not" {
+    var col = Collection(bool).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(true);
+    try col.push(false);
+    try col.push(true);
+
+    const not_fn = macros_module.notMacro(bool);
+    _ = col.macro(not_fn);
+
+    try testing.expectEqual(false, col.get(0).?);
+    try testing.expectEqual(true, col.get(1).?);
+    try testing.expectEqual(false, col.get(2).?);
+}
+
+// ==================== Power & Root Macros Tests ====================
+
+test "Built-in macro: sqrt" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(4.0);
+    try col.push(9.0);
+    try col.push(16.0);
+
+    const sqrt_fn = macros_module.sqrtMacro(f64);
+    _ = col.macro(sqrt_fn);
+
+    try testing.expectEqual(@as(f64, 2.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 3.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 4.0), col.get(2).?);
+}
+
+test "Built-in macro: pow" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(2.0);
+    try col.push(3.0);
+    try col.push(4.0);
+
+    const pow_fn = macros_module.powMacro(f64, 3.0);
+    _ = col.macro(pow_fn);
+
+    try testing.expectEqual(@as(f64, 8.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 27.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 64.0), col.get(2).?);
+}
+
+// ==================== Normalization Macros Tests ====================
+
+test "Built-in macro: normalize" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(50.0);
+    try col.push(100.0);
+
+    const normalize_fn = macros_module.normalizeMacro(f64, 0.0, 100.0);
+    _ = col.macro(normalize_fn);
+
+    try testing.expectEqual(@as(f64, 0.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 0.5), col.get(1).?);
+    try testing.expectEqual(@as(f64, 1.0), col.get(2).?);
+}
+
+test "Built-in macro: denormalize" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(0.5);
+    try col.push(1.0);
+
+    const denormalize_fn = macros_module.denormalizeMacro(f64, 0.0, 100.0);
+    _ = col.macro(denormalize_fn);
+
+    try testing.expectEqual(@as(f64, 0.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 50.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 100.0), col.get(2).?);
+}
+
+// ==================== Advanced Chained Macros ====================
+
+test "Advanced chain: double -> increment -> clamp" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(10);
+    try col.push(20);
+
+    _ = col.macro(macros_module.doubleMacro(i32))
+        .macro(macros_module.incrementMacro(i32))
+        .macro(macros_module.clampMaxMacro(i32, 25));
+
+    try testing.expectEqual(@as(i32, 11), col.get(0).?); // 5 * 2 + 1 = 11
+    try testing.expectEqual(@as(i32, 21), col.get(1).?); // 10 * 2 + 1 = 21
+    try testing.expectEqual(@as(i32, 25), col.get(2).?); // 20 * 2 + 1 = 41, clamped to 25
+}

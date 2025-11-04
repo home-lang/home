@@ -17,6 +17,12 @@ pub const traits = @import("traits.zig");
 pub const Collectible = traits.Collectible;
 pub const Comparable = traits.Comparable;
 pub const Aggregatable = traits.Aggregatable;
+pub const Hashable = traits.Hashable;
+pub const Displayable = traits.Displayable;
+pub const Equatable = traits.Equatable;
+pub const Cloneable = traits.Cloneable;
+pub const Serializable = traits.Serializable;
+pub const Iterable = traits.Iterable;
 
 // Export macros
 pub const macros = @import("macros.zig");

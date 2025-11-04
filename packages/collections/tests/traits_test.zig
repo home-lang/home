@@ -285,3 +285,327 @@ test "Custom type satisfies all traits" {
     const sum = traits.Aggregatable(Score).add(s1, s2);
     try testing.expectEqual(@as(i32, 150), sum.points);
 }
+
+// ==================== Additional Traits Tests ====================
+
+// ==================== Hashable Trait Tests ====================
+
+test "Hashable: integer types" {
+    const IntHashable = traits.Hashable(i32);
+    IntHashable.verify();
+
+    try testing.expect(IntHashable.has_natural_hash);
+
+    const hash1 = IntHashable.hash(42);
+    const hash2 = IntHashable.hash(42);
+    const hash3 = IntHashable.hash(43);
+
+    try testing.expectEqual(hash1, hash2);
+    try testing.expect(hash1 != hash3);
+}
+
+test "Hashable: boolean types" {
+    const BoolHashable = traits.Hashable(bool);
+    BoolHashable.verify();
+
+    try testing.expect(BoolHashable.has_natural_hash);
+
+    const hash_true = BoolHashable.hash(true);
+    const hash_false = BoolHashable.hash(false);
+
+    try testing.expect(hash_true != hash_false);
+    try testing.expectEqual(@as(u64, 1), hash_true);
+    try testing.expectEqual(@as(u64, 0), hash_false);
+}
+
+test "Hashable: custom struct with hash" {
+    const Point = struct {
+        x: i32,
+        y: i32,
+
+        pub fn hash(self: @This()) u64 {
+            const x_hash = @as(u64, @bitCast(@as(i64, self.x)));
+            const y_hash = @as(u64, @bitCast(@as(i64, self.y)));
+            return x_hash ^ y_hash;
+        }
+    };
+
+    const PointHashable = traits.Hashable(Point);
+    PointHashable.verify();
+
+    try testing.expect(PointHashable.has_hash);
+
+    const p1 = Point{ .x = 10, .y = 20 };
+    const p2 = Point{ .x = 10, .y = 20 };
+    const p3 = Point{ .x = 15, .y = 25 };
+
+    try testing.expectEqual(PointHashable.hash(p1), PointHashable.hash(p2));
+    try testing.expect(PointHashable.hash(p1) != PointHashable.hash(p3));
+}
+
+test "isHashable helper" {
+    try testing.expect(traits.isHashable(i32));
+    try testing.expect(traits.isHashable(f64));
+    try testing.expect(traits.isHashable(bool));
+}
+
+// ==================== Displayable Trait Tests ====================
+
+test "Displayable: primitive types" {
+    const IntDisplayable = traits.Displayable(i32);
+    IntDisplayable.verify();
+
+    try testing.expect(IntDisplayable.is_primitive);
+
+    const FloatDisplayable = traits.Displayable(f64);
+    FloatDisplayable.verify();
+
+    try testing.expect(FloatDisplayable.is_primitive);
+
+    const BoolDisplayable = traits.Displayable(bool);
+    BoolDisplayable.verify();
+
+    try testing.expect(BoolDisplayable.is_primitive);
+}
+
+test "isDisplayable helper" {
+    try testing.expect(traits.isDisplayable(i32));
+    try testing.expect(traits.isDisplayable(f64));
+    try testing.expect(traits.isDisplayable(bool));
+}
+
+// ==================== Equatable Trait Tests ====================
+
+test "Equatable: integer types" {
+    const IntEquatable = traits.Equatable(i32);
+    IntEquatable.verify();
+
+    try testing.expect(IntEquatable.has_natural_equality);
+
+    try testing.expect(IntEquatable.eql(42, 42));
+    try testing.expect(!IntEquatable.eql(42, 43));
+
+    try testing.expect(!IntEquatable.notEql(42, 42));
+    try testing.expect(IntEquatable.notEql(42, 43));
+}
+
+test "Equatable: custom struct with eql" {
+    const Person = struct {
+        age: i32,
+        name: []const u8,
+
+        pub fn eql(self: @This(), other: @This()) bool {
+            return self.age == other.age and std.mem.eql(u8, self.name, other.name);
+        }
+    };
+
+    const PersonEquatable = traits.Equatable(Person);
+    PersonEquatable.verify();
+
+    try testing.expect(PersonEquatable.has_eql);
+
+    const alice1 = Person{ .age = 30, .name = "Alice" };
+    const alice2 = Person{ .age = 30, .name = "Alice" };
+    const bob = Person{ .age = 25, .name = "Bob" };
+
+    try testing.expect(PersonEquatable.eql(alice1, alice2));
+    try testing.expect(!PersonEquatable.eql(alice1, bob));
+    try testing.expect(PersonEquatable.notEql(alice1, bob));
+}
+
+test "isEquatable helper" {
+    try testing.expect(traits.isEquatable(i32));
+    try testing.expect(traits.isEquatable(f64));
+    try testing.expect(traits.isEquatable(bool));
+}
+
+// ==================== Cloneable Trait Tests ====================
+
+test "Cloneable: primitive types" {
+    const IntCloneable = traits.Cloneable(i32);
+    IntCloneable.verify();
+
+    try testing.expect(IntCloneable.is_copyable);
+
+    const FloatCloneable = traits.Cloneable(f64);
+    FloatCloneable.verify();
+
+    try testing.expect(FloatCloneable.is_copyable);
+}
+
+test "Cloneable: simple struct" {
+    const Point = struct {
+        x: i32,
+        y: i32,
+    };
+
+    const PointCloneable = traits.Cloneable(Point);
+    PointCloneable.verify();
+
+    try testing.expect(PointCloneable.is_copyable);
+}
+
+test "Cloneable: struct with clone method" {
+    const Buffer = struct {
+        data: []u8,
+
+        pub fn deinit(self: *@This()) void {
+            _ = self;
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            const new_data = try allocator.dupe(u8, self.data);
+            return .{ .data = new_data };
+        }
+    };
+
+    const BufferCloneable = traits.Cloneable(Buffer);
+    BufferCloneable.verify();
+
+    try testing.expect(BufferCloneable.has_clone);
+    try testing.expect(!BufferCloneable.is_copyable); // Has deinit, so not copyable
+}
+
+test "isCloneable helper" {
+    try testing.expect(traits.isCloneable(i32));
+    try testing.expect(traits.isCloneable(f64));
+    try testing.expect(traits.isCloneable(bool));
+}
+
+// ==================== Serializable Trait Tests ====================
+
+test "Serializable: primitive types" {
+    const IntSerializable = traits.Serializable(i32);
+    IntSerializable.verify();
+
+    try testing.expect(IntSerializable.is_primitive);
+
+    const FloatSerializable = traits.Serializable(f64);
+    FloatSerializable.verify();
+
+    try testing.expect(FloatSerializable.is_primitive);
+
+    const BoolSerializable = traits.Serializable(bool);
+    BoolSerializable.verify();
+
+    try testing.expect(BoolSerializable.is_primitive);
+}
+
+test "isSerializable helper" {
+    try testing.expect(traits.isSerializable(i32));
+    try testing.expect(traits.isSerializable(f64));
+    try testing.expect(traits.isSerializable(bool));
+}
+
+// ==================== Iterable Trait Tests ====================
+
+test "Iterable: slice types" {
+    const SliceIterable = traits.Iterable([]const i32);
+    SliceIterable.verify();
+
+    try testing.expect(SliceIterable.is_array);
+}
+
+test "Iterable: array types" {
+    const ArrayIterable = traits.Iterable([5]i32);
+    ArrayIterable.verify();
+
+    try testing.expect(ArrayIterable.is_array);
+}
+
+test "Iterable: struct with iterator" {
+    const Range = struct {
+        start: i32,
+        end: i32,
+
+        pub const Iterator = struct {
+            current: i32,
+            end: i32,
+
+            pub fn next(self: *@This()) ?i32 {
+                if (self.current >= self.end) return null;
+                const val = self.current;
+                self.current += 1;
+                return val;
+            }
+        };
+
+        pub fn iterator(self: @This()) Iterator {
+            return .{ .current = self.start, .end = self.end };
+        }
+    };
+
+    const RangeIterable = traits.Iterable(Range);
+    RangeIterable.verify();
+
+    try testing.expect(RangeIterable.has_iterator);
+}
+
+test "isIterable helper" {
+    try testing.expect(traits.isIterable([]const i32));
+    try testing.expect(traits.isIterable([5]i32));
+}
+
+// ==================== Multiple New Traits Tests ====================
+
+test "Type satisfies multiple new traits" {
+    const IntHashable = traits.Hashable(i32);
+    const IntDisplayable = traits.Displayable(i32);
+    const IntEquatable = traits.Equatable(i32);
+    const IntCloneable = traits.Cloneable(i32);
+    const IntSerializable = traits.Serializable(i32);
+
+    IntHashable.verify();
+    IntDisplayable.verify();
+    IntEquatable.verify();
+    IntCloneable.verify();
+    IntSerializable.verify();
+
+    try testing.expect(traits.isHashable(i32));
+    try testing.expect(traits.isDisplayable(i32));
+    try testing.expect(traits.isEquatable(i32));
+    try testing.expect(traits.isCloneable(i32));
+    try testing.expect(traits.isSerializable(i32));
+}
+
+test "Custom type with all traits" {
+    const CompleteType = struct {
+        value: i32,
+
+        pub fn hash(self: @This()) u64 {
+            return @as(u64, @bitCast(@as(i64, self.value)));
+        }
+
+        pub fn eql(self: @This(), other: @This()) bool {
+            return self.value == other.value;
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
+            _ = allocator;
+            return self;
+        }
+
+        pub fn compare(self: @This(), other: @This()) std.math.Order {
+            return std.math.order(self.value, other.value);
+        }
+    };
+
+    traits.Hashable(CompleteType).verify();
+    traits.Equatable(CompleteType).verify();
+    traits.Cloneable(CompleteType).verify();
+    traits.Comparable(CompleteType).verify();
+
+    const ct1 = CompleteType{ .value = 42 };
+    const ct2 = CompleteType{ .value = 42 };
+    const ct3 = CompleteType{ .value = 10 };
+
+    const hash1 = traits.Hashable(CompleteType).hash(ct1);
+    const hash2 = traits.Hashable(CompleteType).hash(ct2);
+    try testing.expectEqual(hash1, hash2);
+
+    try testing.expect(traits.Equatable(CompleteType).eql(ct1, ct2));
+    try testing.expect(!traits.Equatable(CompleteType).eql(ct1, ct3));
+
+    try testing.expect(traits.Comparable(CompleteType).compare(ct1, ct2) == .eq);
+    try testing.expect(traits.Comparable(CompleteType).compare(ct1, ct3) == .gt);
+}
