@@ -185,6 +185,11 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Create 'hm' symlink as shorthand for 'home'
+    const install_hm_symlink = b.addInstallBinFile(exe.getEmittedBin(), "hm");
+    install_hm_symlink.step.dependOn(&exe.step);
+    b.getInstallStep().dependOn(&install_hm_symlink.step);
+
     // Run command
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

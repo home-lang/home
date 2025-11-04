@@ -60,7 +60,7 @@ fn printUsage() void {
         \\  fmt <file>         Format and auto-fix (alias for lint --fix)
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
-        \\  test <file>        Run all @test functions in an Home file
+        \\  test / t [opts]    Run tests (use --help for more options)
         \\  profile <file>     Profile memory allocations during compilation
         \\
         \\  {s}Package Management:{s}
@@ -636,7 +636,163 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n", .{});
 }
 
-fn testCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+fn printTestUsage() void {
+    std.debug.print(
+        \\{s}Home Test Runner{s}
+        \\
+        \\{s}Usage:{s}
+        \\  home test [options] [path]
+        \\  home t [options] [path]         (shorthand)
+        \\
+        \\{s}Options:{s}
+        \\  -d, --discover [path]   Discover test files (*.test.home, *.test.hm)
+        \\  -v, --verbose           Show detailed test output
+        \\  -h, --help              Show this help message
+        \\
+        \\{s}Examples:{s}
+        \\  home test                       Run all tests in current directory
+        \\  home test src/math.test.home    Run specific test file
+        \\  home t --discover               Discover all test files
+        \\  home t -d tests/                Discover tests in tests/ directory
+        \\  home test src/ -v               Run tests with verbose output
+        \\
+        \\{s}Test File Patterns:{s}
+        \\  *.test.home                     Full extension test files
+        \\  *.test.hm                       Short extension test files
+        \\
+        \\{s}Test Syntaxes Supported:{s}
+        \\  @test fn test_name() {{ }}        Traditional annotation
+        \\  it('description') {{ }}            JavaScript/Jest-style
+        \\  @it "description" {{ }}            Attribute-based
+        \\
+    , .{
+        Color.Blue.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
+        Color.Reset.code(),
+    });
+}
+
+fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !void {
+    std.debug.print("{s}Discovering tests in:{s} {s}\n\n", .{
+        Color.Blue.code(),
+        Color.Reset.code(),
+        search_path
+    });
+
+    // Walk the directory and find test files
+    var test_files = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (test_files.items) |file| {
+            allocator.free(file);
+        }
+        test_files.deinit();
+    }
+
+    try discoverTestFiles(allocator, search_path, &test_files);
+
+    if (test_files.items.len == 0) {
+        std.debug.print("{s}No test files found matching patterns:{s} *.test.home, *.test.hm\n", .{
+            Color.Yellow.code(),
+            Color.Reset.code(),
+        });
+        return;
+    }
+
+    std.debug.print("{s}Found {d} test file(s):{s}\n\n", .{
+        Color.Green.code(),
+        test_files.items.len,
+        Color.Reset.code(),
+    });
+
+    for (test_files.items, 0..) |file, i| {
+        std.debug.print("  {d}. {s}{s}{s}\n", .{
+            i + 1,
+            Color.Cyan.code(),
+            file,
+            Color.Reset.code(),
+        });
+    }
+    std.debug.print("\n", .{});
+}
+
+fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_files: *std.ArrayList([]const u8)) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("{s}Error:{s} Directory not found: {s}\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                dir_path,
+            });
+        }
+        return err;
+    };
+    defer dir.close();
+
+    var iter = dir.iterate();
+
+    while (try iter.next()) |entry| {
+        switch (entry.kind) {
+            .file => {
+                if (isTestFile(entry.name)) {
+                    const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+                    try test_files.append(full_path);
+                }
+            },
+            .directory => {
+                // Skip common non-test directories
+                if (shouldSkipDirectory(entry.name)) {
+                    continue;
+                }
+
+                const subdir_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+                defer allocator.free(subdir_path);
+
+                try discoverTestFiles(allocator, subdir_path, test_files);
+            },
+            else => {},
+        }
+    }
+}
+
+fn isTestFile(filename: []const u8) bool {
+    return std.mem.endsWith(u8, filename, ".test.home") or
+           std.mem.endsWith(u8, filename, ".test.hm");
+}
+
+fn shouldSkipDirectory(dirname: []const u8) bool {
+    const skip_dirs = [_][]const u8{
+        "node_modules", ".git", ".zig-cache", "zig-out", ".home",
+        "target", "build", "dist", ".vscode", ".idea",
+    };
+
+    for (skip_dirs) |skip_dir| {
+        if (std.mem.eql(u8, dirname, skip_dir)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    if (args.len == 0) {
+        std.debug.print("{s}Error:{s} 'test' command requires a file path\n\n", .{
+            Color.Red.code(),
+            Color.Reset.code()
+        });
+        printTestUsage();
+        std.process.exit(1);
+    }
+
+    const file_path = args[0];
     // Read the file
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
@@ -909,14 +1065,30 @@ pub fn main() !void {
         return;
     }
 
-    if (std.mem.eql(u8, command, "test")) {
+    if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "t")) {
+        // Handle test subcommands
         if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'test' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
-            printUsage();
-            std.process.exit(1);
+            // No arguments - show test help
+            printTestUsage();
+            return;
         }
 
-        try testCommand(allocator, args[2]);
+        // Check for subcommands
+        const subcmd = args[2];
+
+        if (std.mem.eql(u8, subcmd, "--help") or std.mem.eql(u8, subcmd, "-h")) {
+            printTestUsage();
+            return;
+        }
+
+        if (std.mem.eql(u8, subcmd, "--discover") or std.mem.eql(u8, subcmd, "-d")) {
+            const search_path = if (args.len > 3) args[3] else ".";
+            try testDiscoverCommand(allocator, search_path);
+            return;
+        }
+
+        // Otherwise treat as file path
+        try testCommand(allocator, args[2..]);
         return;
     }
 
