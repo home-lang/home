@@ -408,6 +408,18 @@ pub const crypto_util = @import("crypto.zig");
 /// Memory utilities (mmap, mprotect, mlock)
 pub const memory_util = @import("memory.zig");
 
+/// Collections - Fluent, Laravel-inspired API for data manipulation
+pub const collections = @import("collections.zig");
+pub const Collection = collections.Collection;
+pub const LazyCollection = collections.LazyCollection;
+
+// Collection builder helpers (can use directly from Basics)
+pub const range = collections.range;
+pub const times = collections.times;
+pub const wrap = collections.wrap;
+pub const empty = collections.empty;
+pub const lazy = collections.lazy;
+
 // Tests
 test "Basics module imports" {
     const allocator = testing.allocator;
@@ -454,4 +466,69 @@ test "Result type" {
 
     try testing.expectEqual(@as(i32, 42), success.unwrap());
     try testing.expectEqual(@as(i32, 0), failure.unwrapOr(0));
+}
+
+test "Collections integration" {
+    const allocator = testing.allocator;
+
+    // Test Collection
+    var col = Collection(i32).init(allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+    try col.push(3);
+
+    try testing.expectEqual(@as(usize, 3), col.count());
+    try testing.expectEqual(@as(i32, 6), col.sum());
+
+    // Test filtering and mapping
+    var evens = try col.filter(struct {
+        fn call(n: i32) bool {
+            return @mod(n, 2) == 0;
+        }
+    }.call);
+    defer evens.deinit();
+
+    try testing.expectEqual(@as(usize, 1), evens.count());
+    try testing.expectEqual(@as(i32, 2), evens.first().?);
+
+    // Test LazyCollection
+    const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    const filter_fn = struct {
+        fn call(n: i32) bool {
+            return @mod(n, 2) == 0;
+        }
+    }.call;
+
+    const lzy = LazyCollection(i32).fromSlice(allocator, &items);
+    var result = try lzy.filter(&filter_fn).take(3);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.count());
+    try testing.expectEqual(@as(i32, 2), result.get(0).?);
+    try testing.expectEqual(@as(i32, 4), result.get(1).?);
+    try testing.expectEqual(@as(i32, 6), result.get(2).?);
+}
+
+test "Collection builder functions" {
+    const allocator = testing.allocator;
+
+    // Test range
+    var nums = try range(allocator, 1, 5);
+    defer nums.deinit();
+    try testing.expectEqual(@as(usize, 5), nums.count());
+    try testing.expectEqual(@as(i32, 1), nums.first().?);
+    try testing.expectEqual(@as(i32, 5), nums.last().?);
+
+    // Test wrap
+    var wrapped = try wrap(i32, allocator, 42);
+    defer wrapped.deinit();
+    try testing.expectEqual(@as(usize, 1), wrapped.count());
+    try testing.expectEqual(@as(i32, 42), wrapped.first().?);
+
+    // Test empty
+    var empty_col = empty(i32, allocator);
+    defer empty_col.deinit();
+    try testing.expect(empty_col.isEmpty());
 }

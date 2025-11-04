@@ -1202,25 +1202,6 @@ pub fn Collection(comptime T: type) type {
 
             return try Self.fromSlice(allocator, parsed.value);
         }
-
-        // ==================== Macro System ====================
-
-        /// Apply a custom transformation function to all items
-        /// This allows users to define custom operations on collection items
-        pub fn macro(self: *Self, transform_fn: fn (item: *T) void) *Self {
-            for (self.items.items) |*item| {
-                transform_fn(item);
-            }
-            return self;
-        }
-
-        /// Apply a custom transformation with error handling
-        pub fn macroFallible(self: *Self, transform_fn: fn (item: *T) anyerror!void) !*Self {
-            for (self.items.items) |*item| {
-                try transform_fn(item);
-            }
-            return self;
-        }
     };
 }
 
