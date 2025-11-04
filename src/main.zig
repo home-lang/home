@@ -955,6 +955,46 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
+    // Check if called as 'homecheck' - automatically run test mode
+    const program_name = std.fs.path.basename(args[0]);
+    if (std.mem.eql(u8, program_name, "homecheck")) {
+        // Rebuild args to inject 'test' command
+        var test_args = std.ArrayList([:0]u8).init(allocator);
+        defer test_args.deinit();
+
+        try test_args.append(args[0]); // Program name
+        try test_args.append(try allocator.dupeZ(u8, "test")); // Inject 'test' command
+
+        // Add remaining args (skip program name)
+        if (args.len > 1) {
+            for (args[1..]) |arg| {
+                try test_args.append(arg);
+            }
+        } else {
+            // No args provided - show help
+            printTestUsage();
+            return;
+        }
+
+        // Handle test subcommands
+        const subcmd = args[1];
+
+        if (std.mem.eql(u8, subcmd, "--help") or std.mem.eql(u8, subcmd, "-h")) {
+            printTestUsage();
+            return;
+        }
+
+        if (std.mem.eql(u8, subcmd, "--discover") or std.mem.eql(u8, subcmd, "-d")) {
+            const search_path = if (args.len > 2) args[2] else ".";
+            try testDiscoverCommand(allocator, search_path);
+            return;
+        }
+
+        // Otherwise treat as file path
+        try testCommand(allocator, args[1..]);
+        return;
+    }
+
     // If no arguments provided, start REPL
     if (args.len < 2) {
         try repl.start(allocator);

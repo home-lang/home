@@ -190,6 +190,11 @@ pub fn build(b: *std.Build) void {
     install_hm_symlink.step.dependOn(&exe.step);
     b.getInstallStep().dependOn(&install_hm_symlink.step);
 
+    // Create 'homecheck' alias for testing (runs 'home test' automatically)
+    const install_homecheck_symlink = b.addInstallBinFile(exe.getEmittedBin(), "homecheck");
+    install_homecheck_symlink.step.dependOn(&exe.step);
+    b.getInstallStep().dependOn(&install_homecheck_symlink.step);
+
     // Run command
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
