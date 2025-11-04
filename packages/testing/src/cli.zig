@@ -1,5 +1,6 @@
 const std = @import("std");
 const test_runner = @import("runner.zig");
+const test_file_discovery = @import("test_file_discovery.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -13,6 +14,8 @@ pub fn main() !void {
     var benchmark = false;
     var max_parallel: ?usize = null;
     var use_cache = true;
+    var discover_tests = false;
+    var discovery_path: ?[]const u8 = null;
 
     // Parse command line arguments
     var i: usize = 1;
@@ -32,6 +35,12 @@ pub fn main() !void {
             }
             i += 1;
             max_parallel = try std.fmt.parseInt(usize, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--discover") or std.mem.eql(u8, arg, "-d")) {
+            discover_tests = true;
+            if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
+                i += 1;
+                discovery_path = args[i];
+            }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp();
             return;
@@ -42,10 +51,33 @@ pub fn main() !void {
         }
     }
 
+    // Handle test file discovery mode
+    if (discover_tests) {
+        const search_path = discovery_path orelse ".";
+
+        var discovery = test_file_discovery.TestFileDiscovery.init(allocator);
+        defer discovery.deinit();
+
+        try discovery.discoverInDirectory(search_path);
+
+        const stdout = std.io.getStdOut().writer();
+        try test_file_discovery.printDiscoveredFiles(&discovery, stdout);
+
+        if (discovery.test_files.items.len == 0) {
+            std.debug.print("No test files found matching patterns: *.test.home, *.test.hm\n", .{});
+            return;
+        }
+
+        // TODO: Run discovered tests
+        std.debug.print("Test execution for discovered files will be implemented soon.\n", .{});
+        std.debug.print("For now, you can run individual test files manually.\n", .{});
+        return;
+    }
+
     // Create test runner
     var runner = try test_runner.TestRunner.init(
         allocator,
-        &test_runner.ION_TEST_SUITES,
+        &test_runner.HOME_TEST_SUITES,
         max_parallel,
     );
     defer runner.deinit();
@@ -61,7 +93,7 @@ pub fn main() !void {
     // Print configuration
     if (verbose or benchmark) {
         std.debug.print("Home Test Runner\n", .{});
-        std.debug.print("  Test suites: {d}\n", .{test_runner.ION_TEST_SUITES.len});
+        std.debug.print("  Test suites: {d}\n", .{test_runner.HOME_TEST_SUITES.len});
         std.debug.print("  Max parallel: {d}\n", .{runner.max_parallel});
         std.debug.print("  Cache: {s}\n", .{if (use_cache) "enabled" else "disabled"});
         std.debug.print("  Verbose: {s}\n", .{if (verbose) "yes" else "no"});
@@ -94,20 +126,23 @@ fn printHelp() void {
     std.debug.print(
         \\Home Test Runner - Parallel test execution with caching
         \\
-        \\Usage: ion-test [OPTIONS]
+        \\Usage: home-test [OPTIONS]
         \\
         \\Options:
         \\  -v, --verbose      Print detailed test execution info
         \\  -b, --benchmark    Print detailed benchmark results
         \\  -j, --parallel N   Set maximum parallel test jobs (default: CPU count - 1)
+        \\  -d, --discover [PATH]  Discover test files (*.test.home, *.test.hm)
         \\  --no-cache         Disable test result caching
         \\  -h, --help         Show this help message
         \\
         \\Examples:
-        \\  ion-test                    # Run all tests with defaults
-        \\  ion-test -v -b              # Verbose mode with benchmarks
-        \\  ion-test -j 4               # Use 4 parallel jobs
-        \\  ion-test --no-cache         # Run all tests without cache
+        \\  home-test                    # Run all tests with defaults
+        \\  home-test -v -b              # Verbose mode with benchmarks
+        \\  home-test -j 4               # Use 4 parallel jobs
+        \\  home-test --no-cache         # Run all tests without cache
+        \\  home-test --discover         # Discover test files in current directory
+        \\  home-test --discover tests   # Discover test files in 'tests' directory
         \\
     , .{});
 }

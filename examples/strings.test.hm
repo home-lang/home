@@ -1,0 +1,50 @@
+// Example test file: strings.test.hm
+// Demonstrates the .test.hm file extension (shortened version)
+
+fn concat(a: string, b: string) -> string {
+  return a + b
+}
+
+fn length(s: string) -> i32 {
+  return s.len()
+}
+
+// Using all three test syntaxes
+
+@test
+fn test_string_concat() {
+  let result = concat("Hello", "World")
+  if (result != "HelloWorld") {
+    panic("Expected concatenation to work")
+  }
+}
+
+it('can measure string length') {
+  let result = length("Hello")
+  if (result != 5) {
+    panic("Expected length of 'Hello' to be 5")
+  }
+}
+
+@it "can handle empty strings"
+{
+  let result = concat("", "")
+  if (result != "") {
+    panic("Expected empty string concatenation")
+  }
+}
+
+it('can concat with spaces') {
+  let result = concat("Hello ", "World")
+  if (result != "Hello World") {
+    panic("Expected 'Hello World'")
+  }
+}
+
+@it "empty string has zero length"
+{
+  let result = length("")
+  if (result != 0) {
+    panic("Expected empty string length to be 0")
+  }
+}

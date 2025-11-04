@@ -1,0 +1,95 @@
+// Example test file: math.test.home
+// This file demonstrates the new test file discovery feature
+// Files matching *.test.home or *.test.hm are automatically discovered
+
+// Helper functions
+fn add(a: i32, b: i32) -> i32 {
+  return a + b
+}
+
+fn subtract(a: i32, b: i32) -> i32 {
+  return a - b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+  return a * b
+}
+
+fn divide(a: i32, b: i32) -> i32 {
+  return a / b
+}
+
+// Test Syntax 1: Traditional @test annotation
+@test
+fn test_addition() {
+  let result = add(5, 3)
+  if (result != 8) {
+    panic("Expected 5 + 3 to equal 8")
+  }
+}
+
+// Test Syntax 2: Inline it('description') syntax (JavaScript/Jest-style)
+it('can subtract two numbers') {
+  let result = subtract(10, 3)
+  if (result != 7) {
+    panic("Expected 10 - 3 to equal 7")
+  }
+}
+
+// Test Syntax 3: @it "description" attribute followed by block
+@it "can multiply numbers"
+{
+  let result = multiply(4, 5)
+  if (result != 20) {
+    panic("Expected 4 * 5 to equal 20")
+  }
+}
+
+// More inline tests
+it('can divide numbers') {
+  let result = divide(20, 4)
+  if (result != 5) {
+    panic("Expected 20 / 4 to equal 5")
+  }
+}
+
+it('handles zero in addition') {
+  let result = add(0, 0)
+  if (result != 0) {
+    panic("Expected 0 + 0 to equal 0")
+  }
+}
+
+@it "handles negative numbers"
+{
+  let result = add(-5, -3)
+  if (result != -8) {
+    panic("Expected -5 + -3 to equal -8")
+  }
+}
+
+// You can mix all three styles in the same file!
+@test
+fn test_multiplication_by_zero() {
+  let result = multiply(100, 0)
+  if (result != 0) {
+    panic("Expected 100 * 0 to equal 0")
+  }
+}
+
+it('can handle large numbers') {
+  let result = add(1000000, 2000000)
+  if (result != 3000000) {
+    panic("Expected large number addition to work")
+  }
+}
+
+@it "can chain operations"
+{
+  let step1 = add(5, 3)
+  let step2 = multiply(step1, 2)
+  let result = subtract(step2, 4)
+  if (result != 12) {
+    panic("Expected chained operations to equal 12")
+  }
+}

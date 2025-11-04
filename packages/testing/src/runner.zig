@@ -573,7 +573,7 @@ pub const TestRunner = struct {
 };
 
 /// Predefined test suites for Home
-pub const ION_TEST_SUITES = [_]TestSuite{
+pub const HOME_TEST_SUITES = [_]TestSuite{
     .{
         .name = "lexer",
         .test_file = "packages/lexer/tests/lexer_test.zig",
