@@ -656,3 +656,131 @@ test "Advanced chain: double -> increment -> clamp" {
     try testing.expectEqual(@as(i32, 21), col.get(1).?); // 10 * 2 + 1 = 21
     try testing.expectEqual(@as(i32, 25), col.get(2).?); // 20 * 2 + 1 = 41, clamped to 25
 }
+
+// ==================== Statistical Macros Tests ====================
+
+test "Built-in macro: zScore" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10.0);
+    try col.push(20.0);
+    try col.push(30.0);
+
+    // Mean = 20.0, StdDev = 10.0
+    const zscore_fn = macros_module.zScoreMacro(f64, 20.0, 10.0);
+    _ = col.macro(zscore_fn);
+
+    try testing.expectEqual(@as(f64, -1.0), col.get(0).?);
+    try testing.expectEqual(@as(f64, 0.0), col.get(1).?);
+    try testing.expectEqual(@as(f64, 1.0), col.get(2).?);
+}
+
+test "Built-in macro: log" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.0);
+    try col.push(2.718281828459045); // e
+
+    const log_fn = macros_module.logMacro(f64);
+    _ = col.macro(log_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), col.get(1).?, 0.0001);
+}
+
+test "Built-in macro: log10" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1.0);
+    try col.push(10.0);
+    try col.push(100.0);
+
+    const log10_fn = macros_module.log10Macro(f64);
+    _ = col.macro(log10_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), col.get(1).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 2.0), col.get(2).?, 0.0001);
+}
+
+test "Built-in macro: exp" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(1.0);
+
+    const exp_fn = macros_module.expMacro(f64);
+    _ = col.macro(exp_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 1.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 2.718281828459045), col.get(1).?, 0.0001);
+}
+
+test "Built-in macro: sigmoid" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(1.0);
+    try col.push(-1.0);
+
+    const sigmoid_fn = macros_module.sigmoidMacro(f64);
+    _ = col.macro(sigmoid_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.5), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 0.7310585786300049), col.get(1).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 0.2689414213699951), col.get(2).?, 0.0001);
+}
+
+test "Built-in macro: tanh" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(1.0);
+    try col.push(-1.0);
+
+    const tanh_fn = macros_module.tanhMacro(f64);
+    _ = col.macro(tanh_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 0.7615941559557649), col.get(1).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, -0.7615941559557649), col.get(2).?, 0.0001);
+}
+
+test "Built-in macro: scaleToRange" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(50.0);
+    try col.push(100.0);
+
+    // Scale from [0, 100] to [0, 10]
+    const scale_fn = macros_module.scaleToRangeMacro(f64, 0.0, 100.0, 0.0, 10.0);
+    _ = col.macro(scale_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 5.0), col.get(1).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 10.0), col.get(2).?, 0.0001);
+}
+
+test "Built-in macro: percentileRank" {
+    var col = Collection(f64).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(0.0);
+    try col.push(50.0);
+    try col.push(100.0);
+
+    const percentile_fn = macros_module.percentileRankMacro(f64, 0.0, 100.0);
+    _ = col.macro(percentile_fn);
+
+    try testing.expectApproxEqAbs(@as(f64, 0.0), col.get(0).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 50.0), col.get(1).?, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 100.0), col.get(2).?, 0.0001);
+}

@@ -564,8 +564,8 @@ pub fn Collection(comptime T: type) type {
 
             var i: usize = 0;
             while (i + size <= self.count()) : (i += step) {
-                const window = self.items.items[i .. i + size];
-                try result.push(window);
+                const window_slice = self.items.items[i .. i + size];
+                try result.push(window_slice);
             }
 
             return result;
@@ -579,8 +579,8 @@ pub fn Collection(comptime T: type) type {
 
             var i: usize = 0;
             while (i <= self.count() - size) : (i += 1) {
-                const window = self.items.items[i .. i + size];
-                try result.push(window);
+                const window_slice = self.items.items[i .. i + size];
+                try result.push(window_slice);
             }
 
             return result;
@@ -1201,6 +1201,312 @@ pub fn Collection(comptime T: type) type {
             defer parsed.deinit();
 
             return try Self.fromSlice(allocator, parsed.value);
+        }
+
+        // ==================== Validation Helpers ====================
+
+        /// Validation error types
+        pub const ValidationError = error{
+            ValidationFailed,
+            InvalidItem,
+        };
+
+        /// Result of validation
+        pub const ValidationResult = struct {
+            const IndexArrayList = std.array_list.AlignedManaged(usize, null);
+
+            valid: bool,
+            invalid_indices: IndexArrayList,
+
+            pub fn deinit(self: *ValidationResult) void {
+                self.invalid_indices.deinit();
+            }
+        };
+
+        /// Validate all items against a predicate
+        /// Returns validation result with indices of invalid items
+        pub fn validate(self: *Self, predicate: fn (T) bool) !ValidationResult {
+            const IndexArrayList = std.array_list.AlignedManaged(usize, null);
+            var invalid_indices = IndexArrayList.init(self.allocator);
+
+            for (self.items.items, 0..) |item, i| {
+                if (!predicate(item)) {
+                    try invalid_indices.append(i);
+                }
+            }
+
+            return ValidationResult{
+                .valid = invalid_indices.items.len == 0,
+                .invalid_indices = invalid_indices,
+            };
+        }
+
+        /// Assert that all items satisfy a predicate
+        /// Returns error if any item fails
+        pub fn assert(self: *Self, predicate: fn (T) bool) !void {
+            for (self.items.items) |item| {
+                if (!predicate(item)) {
+                    return ValidationError.ValidationFailed;
+                }
+            }
+        }
+
+        /// Ensure invariant holds for all items
+        /// Throws error with context on first failure
+        pub fn ensure(self: *Self, predicate: fn (T) bool, comptime message: []const u8) !void {
+            for (self.items.items, 0..) |item, i| {
+                if (!predicate(item)) {
+                    std.debug.print("Ensure failed at index {d}: {s}\n", .{ i, message });
+                    return ValidationError.ValidationFailed;
+                }
+            }
+        }
+
+        /// Sanitize items using a transformation function
+        /// Modifies items in place to ensure validity
+        pub fn sanitize(self: *Self, transform_fn: fn (*T) void) *Self {
+            for (self.items.items) |*item| {
+                transform_fn(item);
+            }
+            return self;
+        }
+
+        /// Sanitize with fallible transformation
+        pub fn sanitizeFallible(self: *Self, transform_fn: fn (*T) anyerror!void) !*Self {
+            for (self.items.items) |*item| {
+                try transform_fn(item);
+            }
+            return self;
+        }
+
+        // ==================== Windowing & Batching ====================
+
+        /// Process items in batches of specified size
+        /// Calls callback for each batch
+        pub fn batch(self: *Self, batch_size: usize, callback: fn (batch: []const T) anyerror!void) !void {
+            if (batch_size == 0) return error.InvalidBatchSize;
+
+            var i: usize = 0;
+            while (i < self.items.items.len) {
+                const end = @min(i + batch_size, self.items.items.len);
+                const batch_slice = self.items.items[i..end];
+                try callback(batch_slice);
+                i = end;
+            }
+        }
+
+        /// Apply sliding window function over items
+        /// Window slides one element at a time
+        pub fn window(self: *Self, window_size: usize, callback: fn (window: []const T) anyerror!void) !void {
+            if (window_size == 0) return error.InvalidWindowSize;
+            if (window_size > self.items.items.len) return;
+
+            var i: usize = 0;
+            while (i + window_size <= self.items.items.len) : (i += 1) {
+                const window_slice = self.items.items[i .. i + window_size];
+                try callback(window_slice);
+            }
+        }
+
+        /// Take every nth item (throttle)
+        pub fn throttle(self: *Self, n: usize) !Self {
+            if (n == 0) return error.InvalidThrottleValue;
+
+            var result = Self.init(self.allocator);
+            var i: usize = 0;
+            while (i < self.items.items.len) : (i += n) {
+                try result.push(self.items.items[i]);
+            }
+            return result;
+        }
+
+        /// Remove consecutive duplicates (debounce)
+        pub fn debounce(self: *Self, comptime equal_fn: fn (T, T) bool) !Self {
+            var result = Self.init(self.allocator);
+
+            if (self.items.items.len == 0) return result;
+
+            try result.push(self.items.items[0]);
+
+            for (self.items.items[1..]) |item| {
+                const last_item = result.items.items[result.items.items.len - 1];
+                if (!equal_fn(last_item, item)) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Remove consecutive duplicates (default equality)
+        pub fn debounceDefault(self: *Self) !Self {
+            return try self.debounce(struct {
+                fn equal(a: T, b: T) bool {
+                    return a == b;
+                }
+            }.equal);
+        }
+
+        // ==================== Diff & Patch ====================
+
+        pub const DiffOperation = enum {
+            Add,
+            Remove,
+            Keep,
+        };
+
+        pub const DiffChange = struct {
+            operation: DiffOperation,
+            index: usize,
+            value: T,
+        };
+
+        pub const Diff = struct {
+            const ChangesList = std.array_list.AlignedManaged(DiffChange, null);
+
+            changes: ChangesList,
+            allocator: Allocator,
+
+            pub fn deinit(self: *Diff) void {
+                self.changes.deinit();
+            }
+        };
+
+        /// Compute diff between this collection and another
+        /// Returns additions and deletions needed to transform self into other
+        pub fn diffChanges(self: *const Self, other: *const Self, comptime equal_fn: fn (T, T) bool) !Diff {
+            var change_list = Diff.ChangesList.init(self.allocator);
+
+            // Simple diff: find items in other but not in self (additions)
+            // and items in self but not in other (deletions)
+
+            // Mark deletions
+            for (self.items.items, 0..) |item, i| {
+                var found = false;
+                for (other.items.items) |other_item| {
+                    if (equal_fn(item, other_item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try change_list.append(.{
+                        .operation = .Remove,
+                        .index = i,
+                        .value = item,
+                    });
+                }
+            }
+
+            // Mark additions
+            for (other.items.items, 0..) |item, i| {
+                var found = false;
+                for (self.items.items) |self_item| {
+                    if (equal_fn(item, self_item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try change_list.append(.{
+                        .operation = .Add,
+                        .index = i,
+                        .value = item,
+                    });
+                }
+            }
+
+            return Diff{
+                .changes = change_list,
+                .allocator = self.allocator,
+            };
+        }
+
+        /// Compute diff with default equality
+        pub fn diffChangesDefault(self: *const Self, other: *const Self) !Diff {
+            return try self.diffChanges(other, struct {
+                fn equal(a: T, b: T) bool {
+                    return a == b;
+                }
+            }.equal);
+        }
+
+        /// Apply a diff to this collection
+        pub fn patch(self: *Self, diff_result: *const Diff) !void {
+            // Apply removals first
+            for (diff_result.changes.items) |change| {
+                if (change.operation == .Remove) {
+                    // Find and remove the item
+                    var i: usize = 0;
+                    while (i < self.items.items.len) {
+                        if (std.meta.eql(self.items.items[i], change.value)) {
+                            _ = self.items.orderedRemove(i);
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+
+            // Then apply additions
+            for (diff_result.changes.items) |change| {
+                if (change.operation == .Add) {
+                    try self.push(change.value);
+                }
+            }
+        }
+
+        pub const ChangesResult = struct {
+            additions: Self,
+            deletions: Self,
+        };
+
+        /// Get list of changes between two collections
+        pub fn changes(self: *const Self, other: *const Self, comptime equal_fn: fn (T, T) bool) !ChangesResult {
+            var additions = Self.init(self.allocator);
+            var deletions = Self.init(self.allocator);
+
+            // Find additions (in other but not in self)
+            for (other.items.items) |item| {
+                var found = false;
+                for (self.items.items) |self_item| {
+                    if (equal_fn(item, self_item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try additions.push(item);
+                }
+            }
+
+            // Find deletions (in self but not in other)
+            for (self.items.items) |item| {
+                var found = false;
+                for (other.items.items) |other_item| {
+                    if (equal_fn(item, other_item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try deletions.push(item);
+                }
+            }
+
+            return .{
+                .additions = additions,
+                .deletions = deletions,
+            };
+        }
+
+        /// Get changes with default equality
+        pub fn changesDefault(self: *const Self, other: *const Self) !ChangesResult {
+            return try self.changes(other, struct {
+                fn equal(a: T, b: T) bool {
+                    return a == b;
+                }
+            }.equal);
         }
 
         // ==================== Macro System ====================

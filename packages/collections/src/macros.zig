@@ -305,3 +305,98 @@ pub fn denormalizeMacro(comptime T: type, comptime min_val: T, comptime max_val:
         }
     }.call;
 }
+
+// ==================== Statistical Macros ====================
+
+/// Built-in macro: Calculate z-score (standardization)
+pub fn zScoreMacro(comptime T: type, comptime mean: T, comptime std_dev: T) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            const info = @typeInfo(T);
+            if (info == .float) {
+                item.* = (item.* - mean) / std_dev;
+            } else {
+                // For integers, scale to preserve precision
+                item.* = @divTrunc((item.* - mean) * 100, std_dev);
+            }
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply log transformation
+pub fn logMacro(comptime T: type) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            item.* = @log(item.*);
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply log10 transformation
+pub fn log10Macro(comptime T: type) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            item.* = @log10(item.*);
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply exponential transformation
+pub fn expMacro(comptime T: type) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            item.* = @exp(item.*);
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply sigmoid transformation
+pub fn sigmoidMacro(comptime T: type) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            item.* = 1.0 / (1.0 + @exp(-item.*));
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply tanh transformation
+pub fn tanhMacro(comptime T: type) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            item.* = std.math.tanh(item.*);
+        }
+    }.call;
+}
+
+/// Built-in macro: Scale to range (min-max scaling)
+pub fn scaleToRangeMacro(comptime T: type, comptime old_min: T, comptime old_max: T, comptime new_min: T, comptime new_max: T) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            const info = @typeInfo(T);
+            if (info == .float) {
+                const normalized = (item.* - old_min) / (old_max - old_min);
+                item.* = normalized * (new_max - new_min) + new_min;
+            } else {
+                // Integer version with precision preservation
+                const old_range = old_max - old_min;
+                const new_range = new_max - new_min;
+                const normalized = @divTrunc((item.* - old_min) * 1000, old_range);
+                item.* = @divTrunc(normalized * new_range, 1000) + new_min;
+            }
+        }
+    }.call;
+}
+
+/// Built-in macro: Apply percentile rank transformation
+pub fn percentileRankMacro(comptime T: type, comptime min_val: T, comptime max_val: T) fn (item: *T) void {
+    return struct {
+        fn call(item: *T) void {
+            const info = @typeInfo(T);
+            if (info == .float) {
+                item.* = ((item.* - min_val) / (max_val - min_val)) * 100.0;
+            } else {
+                item.* = @divTrunc((item.* - min_val) * 100, (max_val - min_val));
+            }
+        }
+    }.call;
+}

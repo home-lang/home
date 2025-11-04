@@ -1739,3 +1739,428 @@ test "Integration: real-world data pipeline" {
     try testing.expectEqual(@as(i32, 89), min_val.?); // Top 5: 95, 92, 91, 90, 89
     try testing.expect(avg > 90.0 and avg < 92.0); // Average of top 5 = 91.4
 }
+
+// ==================== Validation Helpers Tests ====================
+
+test "Validation: validate with all valid items" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(20);
+    try col.push(30);
+
+    var result = try col.validate(struct {
+        fn call(n: i32) bool {
+            return n > 0;
+        }
+    }.call);
+    defer result.deinit();
+
+    try testing.expect(result.valid);
+    try testing.expectEqual(@as(usize, 0), result.invalid_indices.items.len);
+}
+
+test "Validation: validate with some invalid items" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(-5);
+    try col.push(30);
+    try col.push(-2);
+
+    var result = try col.validate(struct {
+        fn call(n: i32) bool {
+            return n > 0;
+        }
+    }.call);
+    defer result.deinit();
+
+    try testing.expect(!result.valid);
+    try testing.expectEqual(@as(usize, 2), result.invalid_indices.items.len);
+    try testing.expectEqual(@as(usize, 1), result.invalid_indices.items[0]);
+    try testing.expectEqual(@as(usize, 3), result.invalid_indices.items[1]);
+}
+
+test "Validation: assert success" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(20);
+    try col.push(30);
+
+    try col.assert(struct {
+        fn call(n: i32) bool {
+            return n > 0;
+        }
+    }.call);
+}
+
+test "Validation: assert failure" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(-5);
+    try col.push(30);
+
+    const result = col.assert(struct {
+        fn call(n: i32) bool {
+            return n > 0;
+        }
+    }.call);
+
+    try testing.expectError(Collection(i32).ValidationError.ValidationFailed, result);
+}
+
+test "Validation: ensure success" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(20);
+    try col.push(30);
+
+    try col.ensure(struct {
+        fn call(n: i32) bool {
+            return n >= 10;
+        }
+    }.call, "All items must be >= 10");
+}
+
+test "Validation: ensure failure" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(5);
+    try col.push(30);
+
+    const result = col.ensure(struct {
+        fn call(n: i32) bool {
+            return n >= 10;
+        }
+    }.call, "All items must be >= 10");
+
+    try testing.expectError(Collection(i32).ValidationError.ValidationFailed, result);
+}
+
+test "Validation: sanitize items" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(10);
+    try col.push(-5);
+    try col.push(30);
+    try col.push(-2);
+
+    // Sanitize by making all values positive
+    _ = col.sanitize(struct {
+        fn call(item: *i32) void {
+            if (item.* < 0) {
+                item.* = -item.*;
+            }
+        }
+    }.call);
+
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 5), col.get(1).?);
+    try testing.expectEqual(@as(i32, 30), col.get(2).?);
+    try testing.expectEqual(@as(i32, 2), col.get(3).?);
+}
+
+test "Validation: sanitize with clamping" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(5);
+    try col.push(15);
+    try col.push(25);
+    try col.push(35);
+
+    // Clamp values to [10, 30]
+    _ = col.sanitize(struct {
+        fn call(item: *i32) void {
+            if (item.* < 10) item.* = 10;
+            if (item.* > 30) item.* = 30;
+        }
+    }.call);
+
+    try testing.expectEqual(@as(i32, 10), col.get(0).?);
+    try testing.expectEqual(@as(i32, 15), col.get(1).?);
+    try testing.expectEqual(@as(i32, 25), col.get(2).?);
+    try testing.expectEqual(@as(i32, 30), col.get(3).?);
+}
+
+// ==================== Windowing & Batching Tests ====================
+
+test "Windowing: batch processing" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+    try col.push(3);
+    try col.push(4);
+    try col.push(5);
+    try col.push(6);
+    try col.push(7);
+
+    // Collect batch sizes
+    var batch_sizes = Collection(usize).init(testing.allocator);
+    defer batch_sizes.deinit();
+
+    const Ctx = struct {
+        var sizes: *Collection(usize) = undefined;
+    };
+    Ctx.sizes = &batch_sizes;
+
+    try col.batch(3, struct {
+        fn callback(batch: []const i32) !void {
+            try Ctx.sizes.push(batch.len);
+        }
+    }.callback);
+
+    // Should have 3 batches: [1,2,3], [4,5,6], [7]
+    try testing.expectEqual(@as(usize, 3), batch_sizes.count());
+    try testing.expectEqual(@as(usize, 3), batch_sizes.get(0).?);
+    try testing.expectEqual(@as(usize, 3), batch_sizes.get(1).?);
+    try testing.expectEqual(@as(usize, 1), batch_sizes.get(2).?);
+}
+
+test "Windowing: batch with callback" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    for (0..10) |i| {
+        try col.push(@intCast(i));
+    }
+
+    // Process in batches of 3
+    var batch_sums = Collection(i32).init(testing.allocator);
+    defer batch_sums.deinit();
+
+    const Ctx2 = struct {
+        var sums: *Collection(i32) = undefined;
+    };
+    Ctx2.sums = &batch_sums;
+
+    try col.batch(3, struct {
+        fn callback(batch: []const i32) !void {
+            var sum: i32 = 0;
+            for (batch) |item| sum += item;
+            try Ctx2.sums.push(sum);
+        }
+    }.callback);
+
+    // Batches: [0,1,2]=3, [3,4,5]=12, [6,7,8]=21, [9]=9
+    try testing.expectEqual(@as(usize, 4), batch_sums.count());
+}
+
+test "Windowing: sliding window" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(2);
+    try col.push(3);
+    try col.push(4);
+    try col.push(5);
+
+    var window_count: usize = 0;
+    var last_window_sum: i32 = 0;
+
+    const Ctx3 = struct {
+        var count: *usize = undefined;
+        var last_sum: *i32 = undefined;
+    };
+    Ctx3.count = &window_count;
+    Ctx3.last_sum = &last_window_sum;
+
+    try col.window(3, struct {
+        fn callback(w: []const i32) !void {
+            Ctx3.count.* += 1;
+            var sum: i32 = 0;
+            for (w) |item| sum += item;
+            Ctx3.last_sum.* = sum;
+        }
+    }.callback);
+
+    // Windows: [1,2,3], [2,3,4], [3,4,5]
+    try testing.expectEqual(@as(usize, 3), window_count);
+    try testing.expectEqual(@as(i32, 12), last_window_sum); // Last window: 3+4+5=12
+}
+
+test "Windowing: throttle every nth" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    for (0..10) |i| {
+        try col.push(@intCast(i));
+    }
+
+    var throttled = try col.throttle(3);
+    defer throttled.deinit();
+
+    // Should take indices 0, 3, 6, 9
+    try testing.expectEqual(@as(usize, 4), throttled.count());
+    try testing.expectEqual(@as(i32, 0), throttled.get(0).?);
+    try testing.expectEqual(@as(i32, 3), throttled.get(1).?);
+    try testing.expectEqual(@as(i32, 6), throttled.get(2).?);
+    try testing.expectEqual(@as(i32, 9), throttled.get(3).?);
+}
+
+test "Windowing: debounce removes consecutive duplicates" {
+    var col = Collection(i32).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(1);
+    try col.push(1);
+    try col.push(2);
+    try col.push(2);
+    try col.push(2);
+    try col.push(3);
+    try col.push(1);
+    try col.push(1);
+
+    var debounced = try col.debounceDefault();
+    defer debounced.deinit();
+
+    // Should be: 1, 2, 3, 1
+    try testing.expectEqual(@as(usize, 4), debounced.count());
+    try testing.expectEqual(@as(i32, 1), debounced.get(0).?);
+    try testing.expectEqual(@as(i32, 2), debounced.get(1).?);
+    try testing.expectEqual(@as(i32, 3), debounced.get(2).?);
+    try testing.expectEqual(@as(i32, 1), debounced.get(3).?);
+}
+
+test "Windowing: debounce with custom equality" {
+    const Point = struct {
+        x: i32,
+        y: i32,
+    };
+
+    var col = Collection(Point).init(testing.allocator);
+    defer col.deinit();
+
+    try col.push(.{ .x = 1, .y = 1 });
+    try col.push(.{ .x = 1, .y = 2 }); // Different y, but same x
+    try col.push(.{ .x = 2, .y = 1 });
+    try col.push(.{ .x = 2, .y = 2 });
+
+    // Debounce based on x coordinate only
+    var debounced = try col.debounce(struct {
+        fn equal(a: Point, b: Point) bool {
+            return a.x == b.x;
+        }
+    }.equal);
+    defer debounced.deinit();
+
+    // Should keep: (1,1), (2,1)
+    try testing.expectEqual(@as(usize, 2), debounced.count());
+    try testing.expectEqual(@as(i32, 1), debounced.get(0).?.x);
+    try testing.expectEqual(@as(i32, 2), debounced.get(1).?.x);
+}
+
+// ==================== Diff & Patch Tests ====================
+
+test "Diff: compute diff between collections" {
+    var col1 = Collection(i32).init(testing.allocator);
+    defer col1.deinit();
+    var col2 = Collection(i32).init(testing.allocator);
+    defer col2.deinit();
+
+    try col1.push(1);
+    try col1.push(2);
+    try col1.push(3);
+
+    try col2.push(2);
+    try col2.push(3);
+    try col2.push(4);
+
+    var diff_result = try col1.diffChangesDefault(&col2);
+    defer diff_result.deinit();
+
+    // Should have 1 deletion (1) and 1 addition (4)
+    try testing.expectEqual(@as(usize, 2), diff_result.changes.items.len);
+}
+
+test "Diff: changes between collections" {
+    var col1 = Collection(i32).init(testing.allocator);
+    defer col1.deinit();
+    var col2 = Collection(i32).init(testing.allocator);
+    defer col2.deinit();
+
+    try col1.push(1);
+    try col1.push(2);
+    try col1.push(3);
+
+    try col2.push(2);
+    try col2.push(3);
+    try col2.push(4);
+    try col2.push(5);
+
+    var result = try col1.changesDefault(&col2);
+    defer result.additions.deinit();
+    defer result.deletions.deinit();
+
+    // Additions: 4, 5
+    try testing.expectEqual(@as(usize, 2), result.additions.count());
+    try testing.expect(result.additions.contains(4));
+    try testing.expect(result.additions.contains(5));
+
+    // Deletions: 1
+    try testing.expectEqual(@as(usize, 1), result.deletions.count());
+    try testing.expect(result.deletions.contains(1));
+}
+
+test "Diff: patch collection" {
+    var col1 = Collection(i32).init(testing.allocator);
+    defer col1.deinit();
+    var col2 = Collection(i32).init(testing.allocator);
+    defer col2.deinit();
+
+    try col1.push(1);
+    try col1.push(2);
+    try col1.push(3);
+
+    try col2.push(2);
+    try col2.push(3);
+    try col2.push(4);
+
+    var diff_result = try col1.diffChangesDefault(&col2);
+    defer diff_result.deinit();
+
+    try col1.patch(&diff_result);
+
+    // After patching, col1 should contain: 2, 3, 4
+    try testing.expectEqual(@as(usize, 3), col1.count());
+    try testing.expect(col1.contains(2));
+    try testing.expect(col1.contains(3));
+    try testing.expect(col1.contains(4));
+    try testing.expect(!col1.contains(1));
+}
+
+test "Diff: no changes when collections are equal" {
+    var col1 = Collection(i32).init(testing.allocator);
+    defer col1.deinit();
+    var col2 = Collection(i32).init(testing.allocator);
+    defer col2.deinit();
+
+    try col1.push(1);
+    try col1.push(2);
+    try col1.push(3);
+
+    try col2.push(1);
+    try col2.push(2);
+    try col2.push(3);
+
+    var result = try col1.changesDefault(&col2);
+    defer result.additions.deinit();
+    defer result.deletions.deinit();
+
+    try testing.expectEqual(@as(usize, 0), result.additions.count());
+    try testing.expectEqual(@as(usize, 0), result.deletions.count());
+}

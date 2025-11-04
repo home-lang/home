@@ -1,26 +1,30 @@
-# Home Collections API v1.0.0
+# Home Collections
 
-A comprehensive, Laravel-inspired collections library for the Home programming language. Provides a fluent, expressive interface for working with arrays of data with **ALL phases complete**.
+A comprehensive, Laravel-inspired collections library for the Home programming language. Provides a fluent, expressive interface for working with arrays of data with **ALL phases complete + advanced features!**
 
-**All 12 Phases Completed + Performance Enhancements!**
-
-- ✅ 115+ collection methods
+- ✅ 125+ collection methods
 - ✅ Lazy evaluation system
-- ✅ **30+ built-in macros** (NEW!)
-- ✅ **10 compile-time traits** (NEW!)
+- ✅ **38+ built-in macros** (including statistical transforms!)
+- ✅ **10 compile-time traits**
 - ✅ Standard library integration
-- ✅ **200+ tests passing** (NEW!)
+- ✅ **Validation helpers** (NEW!)
+- ✅ **Windowing & batching** (NEW!)
+- ✅ **Diff/patch functionality** (NEW!)
+- ✅ **220+ tests passing**
 - ✅ Comprehensive documentation & examples
 - ✅ Performance optimizations
 
 ## Features
 
-- **115+ Methods**: Complete Laravel Collections API implementation
+- **125+ Methods**: Complete Laravel Collections API implementation + advanced features
 - **Type-Safe**: Full compile-time type checking with Zig's generics
 - **Lazy Evaluation**: Deferred execution for efficient processing of large datasets (20-50x faster!)
 - **Method Chaining**: Fluent interface for readable data transformations
-- **Custom Macros**: Extend collections with your own transformation functions
-- **Trait System**: Compile-time guarantees (Collectible, Comparable, Aggregatable)
+- **Custom Macros**: Extend collections with your own transformation functions (38+ built-in!)
+- **Trait System**: Compile-time guarantees (Collectible, Comparable, Aggregatable, Hashable, etc.)
+- **Validation Helpers**: validate(), assert(), ensure(), sanitize() for data integrity
+- **Windowing & Batching**: batch(), window(), throttle(), debounce() for stream processing
+- **Diff/Patch**: Compare and synchronize collections with diffChanges(), patch(), changes()
 - **Zero Dependencies**: Built entirely on Zig's standard library
 - **Memory Safe**: RAII pattern with proper allocator management
 
@@ -221,6 +225,36 @@ clone()         // Clone collection
 all()           // Get all items as slice
 ```
 
+### Validation Methods (5 methods) **NEW!**
+
+```zig
+validate(fn)         // Validate items, return indices of invalid items
+assert(fn)           // Assert all items satisfy predicate (throws on failure)
+ensure(fn, msg)      // Ensure invariant holds with custom error message
+sanitize(fn)         // Transform items in-place to ensure validity
+sanitizeFallible(fn) // Sanitize with error handling
+```
+
+### Windowing & Batching Methods (4 methods) **NEW!**
+
+```zig
+batch(size, fn)     // Process items in fixed-size batches
+window(size, fn)    // Apply sliding window with callback
+throttle(n)         // Take every nth item
+debounce(fn)        // Remove consecutive duplicates
+debounceDefault()   // Debounce with default equality
+```
+
+### Diff & Patch Methods (5 methods) **NEW!**
+
+```zig
+diffChanges(other, fn)     // Compute diff between collections
+diffChangesDefault(other)  // Diff with default equality
+patch(diff)                // Apply diff to collection
+changes(other, fn)         // Get additions/deletions between collections
+changesDefault(other)      // Changes with default equality
+```
+
 ## Lazy Collections
 
 Lazy collections defer execution until results are needed, enabling **20-50x performance improvements** for operations that don't need all results:
@@ -288,6 +322,87 @@ const stats = .{
 std.debug.print("Average: {d:.2}\n", .{stats.avg});
 ```
 
+### Validation & Sanitization **NEW!**
+
+```zig
+var data = try collections.collect(i32, &[_]i32{ -5, 10, 15, -2, 20 }, allocator);
+defer data.deinit();
+
+// Validate all positive
+var result = try data.validate(struct {
+    fn call(n: i32) bool {
+        return n > 0;
+    }
+}.call);
+defer result.deinit();
+
+std.debug.print("Valid: {}, Invalid indices: {any}\n", .{ result.valid, result.invalid_indices.items });
+
+// Sanitize by making all positive
+_ = data.sanitize(struct {
+    fn call(item: *i32) void {
+        if (item.* < 0) item.* = -item.*;
+    }
+}.call);
+```
+
+### Windowing & Batching **NEW!**
+
+```zig
+var numbers = try collections.collect(i32, &[_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, allocator);
+defer numbers.deinit();
+
+// Process in batches of 3
+try numbers.batch(3, struct {
+    fn call(batch: []const i32) !void {
+        var sum: i32 = 0;
+        for (batch) |item| sum += item;
+        std.debug.print("Batch sum: {d}\n", .{sum});
+    }
+}.call);
+
+// Sliding window of size 3
+try numbers.window(3, struct {
+    fn call(window: []const i32) !void {
+        std.debug.print("Window: {any}\n", .{window});
+    }
+}.call);
+
+// Throttle: take every 3rd item
+var throttled = try numbers.throttle(3);
+defer throttled.deinit();
+// Result: [1, 4, 7, 10]
+
+// Debounce: remove consecutive duplicates
+var data2 = try collections.collect(i32, &[_]i32{ 1, 1, 2, 2, 2, 3, 1, 1 }, allocator);
+defer data2.deinit();
+var unique = try data2.debounceDefault();
+defer unique.deinit();
+// Result: [1, 2, 3, 1]
+```
+
+### Diff & Patch **NEW!**
+
+```zig
+var col1 = try collections.collect(i32, &[_]i32{ 1, 2, 3 }, allocator);
+defer col1.deinit();
+var col2 = try collections.collect(i32, &[_]i32{ 2, 3, 4, 5 }, allocator);
+defer col2.deinit();
+
+// Get additions and deletions
+var result = try col1.changesDefault(&col2);
+defer result.additions.deinit();
+defer result.deletions.deinit();
+// Additions: [4, 5]
+// Deletions: [1]
+
+// Compute and apply diff
+var diff = try col1.diffChangesDefault(&col2);
+defer diff.deinit();
+try col1.patch(&diff);
+// col1 now contains: [2, 3, 4, 5]
+```
+
 ### Custom Macro Pipeline
 
 ```zig
@@ -323,13 +438,11 @@ zig build run-advanced
 zig build test
 ```
 
-**Test Coverage: 200+ tests passing**
-- 90 Collection tests
+**Test Coverage: 220+ tests passing**
+- 100 Collection tests (includes new validation, windowing, diff/patch tests)
 - 7 LazyCollection tests
-- 12 Original macro tests
-- 20 Original trait tests
-- 38 New macro tests (additional macros)
-- 30 New trait tests (additional traits)
+- 58 Macro tests (original + new statistical macros)
+- 50 Trait tests (original + additional traits)
 
 ## Performance
 
@@ -461,28 +574,22 @@ macros.denormalizeMacro(T, min, max)  // Denormalize from 0-1
 macros.notMacro(T)             // Negate boolean
 ```
 
+**Statistical Transforms (floats):** **NEW!**
+```zig
+macros.zScoreMacro(T, mean, stddev)          // Z-score standardization
+macros.logMacro(T)                           // Natural logarithm
+macros.log10Macro(T)                         // Base-10 logarithm
+macros.expMacro(T)                           // Exponential (e^x)
+macros.sigmoidMacro(T)                       // Sigmoid activation function
+macros.tanhMacro(T)                          // Hyperbolic tangent
+macros.scaleToRangeMacro(T, old_min, old_max, new_min, new_max)  // Scale to new range
+macros.percentileRankMacro(T, min, max)      // Percentile ranking (0-100)
+```
+
 **Custom:**
 ```zig
 macros.transformMacro(T, fn)   // Custom transform
 ```
-
-## Implementation Status
-
-**✅ ALL PHASES COMPLETE - v1.0.0**
-
-### Completed Features
-
-- ✅ **Phase 1-2**: Foundation & Core Methods (map, filter, reduce)
-- ✅ **Phase 3**: Transformation Methods (chunk, flatten, groupBy)
-- ✅ **Phase 4**: Sorting & Ordering (sort, reverse, shuffle)
-- ✅ **Phase 5**: Filtering & Searching (unique, skip, take, whereIn)
-- ✅ **Phase 6**: Aggregation Methods (sum, avg, median, mode, min, max)
-- ✅ **Phase 7**: Utility Methods (tap, pipe, join, conversion)
-- ✅ **Phase 8**: Lazy Collections (deferred execution, short-circuit)
-- ✅ **Phase 9**: Advanced Features (flatMap, mapWithKeys, **macros**)
-- ✅ **Phase 10**: Type System Integration (**traits system**)
-- ✅ **Phase 11**: Testing & Documentation (129+ tests, examples)
-- ✅ **Phase 12**: Standard Library Integration (**lib.zig module**)
 
 ## Project Structure
 
@@ -519,6 +626,7 @@ MIT License - Same as Home programming language
 ## Credits
 
 Inspired by:
+
 - [Laravel Collections](https://laravel.com/docs/collections) - API design
 - [Ruby Enumerable](https://ruby-doc.org/core/Enumerable.html) - Method naming
 - [Rust Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) - Lazy evaluation
