@@ -93,6 +93,7 @@ pub fn build(b: *std.Build) void {
     const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
+    const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
 
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
@@ -141,6 +142,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("queue", queue_pkg);
     exe.root_module.addImport("database", database_pkg);
     exe.root_module.addImport("ir_cache", cache_pkg);
+    exe.root_module.addImport("collections", collections_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -782,6 +784,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     debug_exe.root_module.addImport("queue", queue_pkg);
     debug_exe.root_module.addImport("database", database_pkg);
+    debug_exe.root_module.addImport("collections", collections_pkg);
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
     const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
@@ -807,6 +810,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_safe_exe.root_module.addImport("queue", queue_pkg);
     release_safe_exe.root_module.addImport("database", database_pkg);
+    release_safe_exe.root_module.addImport("collections", collections_pkg);
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
     const release_safe_step = b.step("release-safe", "Build Home compiler in ReleaseSafe mode (optimized with safety)");
@@ -832,6 +836,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_small_exe.root_module.addImport("queue", queue_pkg);
     release_small_exe.root_module.addImport("database", database_pkg);
+    release_small_exe.root_module.addImport("collections", collections_pkg);
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
     const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");

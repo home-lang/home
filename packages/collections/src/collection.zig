@@ -19,9 +19,10 @@ const Allocator = std.mem.Allocator;
 pub fn Collection(comptime T: type) type {
     return struct {
         const Self = @This();
+        const ArrayList = std.array_list.AlignedManaged(T, null);
 
         /// Internal storage for collection items
-        items: std.ArrayList(T),
+        items: ArrayList,
 
         /// Allocator used for memory management
         allocator: Allocator,
@@ -29,21 +30,21 @@ pub fn Collection(comptime T: type) type {
         /// Initialize an empty collection
         pub fn init(allocator: Allocator) Self {
             return .{
-                .items = std.ArrayList(T).init(allocator),
+                .items = ArrayList.init(allocator),
                 .allocator = allocator,
             };
         }
 
         /// Initialize collection from existing array
-        pub fn fromSlice(allocator: Allocator, slice: []const T) !Self {
+        pub fn fromSlice(allocator: Allocator, items_slice: []const T) !Self {
             var self = Self.init(allocator);
-            try self.items.appendSlice(allocator, slice);
+            try self.items.appendSlice(items_slice);
             return self;
         }
 
         /// Initialize collection with initial capacity
         pub fn withCapacity(allocator: Allocator, capacity: usize) !Self {
-            var items = try std.ArrayList(T).initCapacity(allocator, capacity);
+            const items = try ArrayList.initCapacity(allocator, capacity);
             return .{
                 .items = items,
                 .allocator = allocator,
@@ -72,7 +73,7 @@ pub fn Collection(comptime T: type) type {
 
         /// Add an item to the end of the collection
         pub fn push(self: *Self, item: T) !void {
-            try self.items.append(self.allocator, item);
+            try self.items.append(item);
         }
 
         /// Remove and return the last item
@@ -140,7 +141,7 @@ pub fn Collection(comptime T: type) type {
         /// Clone the collection (deep copy)
         pub fn clone(self: *const Self) !Self {
             var new_collection = Self.init(self.allocator);
-            try new_collection.items.appendSlice(self.allocator, self.items.items);
+            try new_collection.items.appendSlice(self.items.items);
             return new_collection;
         }
 
@@ -175,7 +176,7 @@ pub fn Collection(comptime T: type) type {
         /// Map collection to new type
         pub fn map(self: *const Self, comptime U: type, callback: fn (item: T) U) !Collection(U) {
             var result = Collection(U).init(self.allocator);
-            try result.items.ensureTotalCapacity(self.allocator, self.count());
+            try result.items.ensureTotalCapacity(self.count());
 
             for (self.items.items) |item| {
                 try result.push(callback(item));
@@ -280,14 +281,14 @@ pub fn Collection(comptime T: type) type {
         /// Concatenate with another collection
         pub fn concat(self: *const Self, other: *const Self) !Self {
             var result = try self.clone();
-            try result.items.appendSlice(result.allocator, other.items.items);
+            try result.items.appendSlice(other.items.items);
             return result;
         }
 
         /// Get unique items (requires items to be comparable)
         pub fn unique(self: *const Self) !Self {
             var result = Self.init(self.allocator);
-            var seen = std.ArrayList(T).init(self.allocator);
+            var seen = ArrayList.init(self.allocator);
             defer seen.deinit();
 
             for (self.items.items) |item| {
@@ -300,7 +301,7 @@ pub fn Collection(comptime T: type) type {
                 }
                 if (!found) {
                     try result.push(item);
-                    try seen.append(self.allocator, item);
+                    try seen.append(item);
                 }
             }
 
@@ -332,6 +333,629 @@ pub fn Collection(comptime T: type) type {
         pub fn dd(self: *const Self) *const Self {
             self.dump();
             return self;
+        }
+
+        // ==================== Sorting Methods ====================
+
+        /// Sort collection in ascending order (requires T to be orderable)
+        pub fn sort(self: *Self) void {
+            std.mem.sort(T, self.items.items, {}, struct {
+                fn lessThan(_: void, a: T, b: T) bool {
+                    return a < b;
+                }
+            }.lessThan);
+        }
+
+        /// Sort collection in descending order
+        pub fn sortDesc(self: *Self) void {
+            std.mem.sort(T, self.items.items, {}, struct {
+                fn lessThan(_: void, a: T, b: T) bool {
+                    return a > b;
+                }
+            }.lessThan);
+        }
+
+        /// Create a sorted copy (ascending)
+        pub fn sorted(self: *const Self) !Self {
+            var result = try self.clone();
+            result.sort();
+            return result;
+        }
+
+        /// Create a sorted copy (descending)
+        pub fn sortedDesc(self: *const Self) !Self {
+            var result = try self.clone();
+            result.sortDesc();
+            return result;
+        }
+
+        /// Shuffle collection in place (random order)
+        pub fn shuffle(self: *Self, random: std.Random) void {
+            if (self.count() <= 1) return;
+            var i: usize = self.count() - 1;
+            while (i > 0) : (i -= 1) {
+                const j = random.intRangeLessThan(usize, 0, i + 1);
+                std.mem.swap(T, &self.items.items[i], &self.items.items[j]);
+            }
+        }
+
+        // ==================== Aggregation Methods ====================
+
+        /// Sum all numeric values (requires T to support addition)
+        pub fn sum(self: *const Self) T {
+            var total: T = 0;
+            for (self.items.items) |item| {
+                total += item;
+            }
+            return total;
+        }
+
+        /// Calculate average of numeric values (returns f64)
+        pub fn avg(self: *const Self) f64 {
+            if (self.isEmpty()) return 0.0;
+            const total = self.sum();
+            return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(self.count()));
+        }
+
+        /// Find minimum value (requires T to be orderable)
+        pub fn min(self: *const Self) ?T {
+            if (self.isEmpty()) return null;
+            var minimum = self.items.items[0];
+            for (self.items.items[1..]) |item| {
+                if (item < minimum) minimum = item;
+            }
+            return minimum;
+        }
+
+        /// Find maximum value (requires T to be orderable)
+        pub fn max(self: *const Self) ?T {
+            if (self.isEmpty()) return null;
+            var maximum = self.items.items[0];
+            for (self.items.items[1..]) |item| {
+                if (item > maximum) maximum = item;
+            }
+            return maximum;
+        }
+
+        /// Find median value (requires T to be orderable)
+        pub fn median(self: *const Self) ?T {
+            if (self.isEmpty()) return null;
+
+            // Create sorted copy
+            const sorted_items = self.allocator.alloc(T, self.count()) catch return null;
+            defer self.allocator.free(sorted_items);
+
+            @memcpy(sorted_items, self.items.items);
+            std.mem.sort(T, sorted_items, {}, struct {
+                fn lessThan(_: void, a: T, b: T) bool {
+                    return a < b;
+                }
+            }.lessThan);
+
+            const mid = self.count() / 2;
+            if (self.count() % 2 == 0) {
+                // Even count - average of two middle values
+                return @divTrunc(sorted_items[mid - 1] + sorted_items[mid], 2);
+            } else {
+                // Odd count - middle value
+                return sorted_items[mid];
+            }
+        }
+
+        /// Product of all values
+        pub fn product(self: *const Self) T {
+            if (self.isEmpty()) return 0;
+            var result: T = 1;
+            for (self.items.items) |item| {
+                result *= item;
+            }
+            return result;
+        }
+
+        // ==================== Additional Transform Methods ====================
+
+        /// Flatten a collection of collections into a single collection
+        pub fn flatten(self: *const Self, comptime U: type) !Collection(U) {
+            var result = Collection(U).init(self.allocator);
+
+            for (self.items.items) |nested_items| {
+                try result.items.appendSlice(nested_items);
+            }
+
+            return result;
+        }
+
+        /// Create pairs of adjacent elements ([1,2,3,4] -> [(1,2), (2,3), (3,4)])
+        pub fn windows(self: *const Self, size: usize) !Collection([]const T) {
+            var result = Collection([]const T).init(self.allocator);
+
+            if (size == 0 or size > self.count()) return result;
+
+            var i: usize = 0;
+            while (i <= self.count() - size) : (i += 1) {
+                const window = self.items.items[i .. i + size];
+                try result.push(window);
+            }
+
+            return result;
+        }
+
+        /// Partition collection into two based on predicate [passing, failing]
+        pub fn partition(self: *const Self, predicate: fn (item: T) bool) !struct { pass: Self, fail: Self } {
+            var pass = Self.init(self.allocator);
+            var fail = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (predicate(item)) {
+                    try pass.push(item);
+                } else {
+                    try fail.push(item);
+                }
+            }
+
+            return .{ .pass = pass, .fail = fail };
+        }
+
+        /// Zip two collections together into tuples
+        pub fn zip(self: *const Self, comptime U: type, other: *const Collection(U)) !Collection(struct { T, U }) {
+            const Tuple = struct { T, U };
+            var result = Collection(Tuple).init(self.allocator);
+
+            const len = @min(self.count(), other.count());
+            for (0..len) |i| {
+                try result.push(.{ self.items.items[i], other.items.items[i] });
+            }
+
+            return result;
+        }
+
+        /// Split collection into groups of specified size
+        pub fn splitInto(self: *const Self, groups: usize) !Collection([]const T) {
+            if (groups == 0) return Collection([]const T).init(self.allocator);
+
+            const items_per_group = (self.count() + groups - 1) / groups; // Ceiling division
+            return self.chunk(items_per_group);
+        }
+
+        // ==================== String Methods ====================
+
+        /// Join collection into string with delimiter (for collections of strings/numbers)
+        pub fn join(self: *const Self, allocator: Allocator, delimiter: []const u8) ![]u8 {
+            if (self.isEmpty()) return allocator.dupe(u8, "");
+
+            var result = std.array_list.AlignedManaged(u8, null).init(allocator);
+            errdefer result.deinit();
+
+            for (self.items.items, 0..) |item, i| {
+                if (i > 0) {
+                    try result.appendSlice(delimiter);
+                }
+
+                // Convert item to string
+                const str = try std.fmt.allocPrint(allocator, "{any}", .{item});
+                defer allocator.free(str);
+                try result.appendSlice(str);
+            }
+
+            return result.toOwnedSlice();
+        }
+
+        /// Alias for join
+        pub fn implode(self: *const Self, allocator: Allocator, delimiter: []const u8) ![]u8 {
+            return self.join(allocator, delimiter);
+        }
+
+        // ==================== Advanced Query Methods ====================
+
+        /// Take items while predicate is true
+        pub fn takeWhile(self: *const Self, predicate: fn (item: T) bool) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (!predicate(item)) break;
+                try result.push(item);
+            }
+
+            return result;
+        }
+
+        /// Take items until predicate is true
+        pub fn takeUntil(self: *const Self, predicate: fn (item: T) bool) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (predicate(item)) break;
+                try result.push(item);
+            }
+
+            return result;
+        }
+
+        /// Skip items while predicate is true
+        pub fn skipWhile(self: *const Self, predicate: fn (item: T) bool) !Self {
+            var result = Self.init(self.allocator);
+            var skipping = true;
+
+            for (self.items.items) |item| {
+                if (skipping and predicate(item)) continue;
+                skipping = false;
+                try result.push(item);
+            }
+
+            return result;
+        }
+
+        /// Skip items until predicate is true
+        pub fn skipUntil(self: *const Self, predicate: fn (item: T) bool) !Self {
+            var result = Self.init(self.allocator);
+            var skipping = true;
+
+            for (self.items.items) |item| {
+                if (skipping and !predicate(item)) continue;
+                skipping = false;
+                try result.push(item);
+            }
+
+            return result;
+        }
+
+        /// Count items matching predicate
+        pub fn countBy(self: *const Self, predicate: fn (item: T) bool) usize {
+            var total: usize = 0;
+            for (self.items.items) |item| {
+                if (predicate(item)) total += 1;
+            }
+            return total;
+        }
+
+        /// Get items at specified indices
+        pub fn only(self: *const Self, indices: []const usize) !Self {
+            var result = Self.init(self.allocator);
+
+            for (indices) |idx| {
+                if (idx < self.count()) {
+                    try result.push(self.items.items[idx]);
+                }
+            }
+
+            return result;
+        }
+
+        /// Get all items except at specified indices
+        pub fn except(self: *const Self, indices: []const usize) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items, 0..) |item, i| {
+                var should_skip = false;
+                for (indices) |idx| {
+                    if (i == idx) {
+                        should_skip = true;
+                        break;
+                    }
+                }
+                if (!should_skip) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Get first n items or last n items if negative
+        pub fn slice(self: *const Self, start: isize, end: isize) !Self {
+            const count_i = @as(isize, @intCast(self.count()));
+
+            var actual_start = start;
+            var actual_end = end;
+
+            // Handle negative indices
+            if (actual_start < 0) actual_start = count_i + actual_start;
+            if (actual_end < 0) actual_end = count_i + actual_end;
+
+            // Clamp to valid range
+            actual_start = @max(0, @min(actual_start, count_i));
+            actual_end = @max(0, @min(actual_end, count_i));
+
+            if (actual_start >= actual_end) return Self.init(self.allocator);
+
+            const start_idx = @as(usize, @intCast(actual_start));
+            const end_idx = @as(usize, @intCast(actual_end));
+
+            return Self.fromSlice(self.allocator, self.items.items[start_idx..end_idx]);
+        }
+
+        /// Prepend item to beginning
+        pub fn prepend(self: *Self, item: T) !void {
+            try self.items.insert(0, item);
+        }
+
+        /// Get and remove first item
+        pub fn shift(self: *Self) ?T {
+            if (self.isEmpty()) return null;
+            return self.items.orderedRemove(0);
+        }
+
+        /// Add item to beginning
+        pub fn unshift(self: *Self, item: T) !void {
+            try self.prepend(item);
+        }
+
+        /// Get nth item (1-indexed, supports negative for from end)
+        pub fn nth(self: *const Self, n: isize) ?T {
+            if (n == 0) return null;
+
+            if (n > 0) {
+                const idx = @as(usize, @intCast(n - 1));
+                return self.get(idx);
+            } else {
+                const count_i = @as(isize, @intCast(self.count()));
+                const idx = @as(usize, @intCast(count_i + n));
+                return self.get(idx);
+            }
+        }
+
+        /// Check if collection has duplicate values
+        pub fn hasDuplicates(self: *const Self) bool {
+            if (self.count() <= 1) return false;
+
+            for (self.items.items, 0..) |item, i| {
+                for (self.items.items[i + 1 ..]) |other| {
+                    if (std.meta.eql(item, other)) return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// Get duplicates only
+        pub fn duplicates(self: *const Self) !Self {
+            var result = Self.init(self.allocator);
+            var seen = ArrayList.init(self.allocator);
+            defer seen.deinit();
+            var added = ArrayList.init(self.allocator);
+            defer added.deinit();
+
+            for (self.items.items) |item| {
+                var found_in_seen = false;
+                for (seen.items) |seen_item| {
+                    if (std.meta.eql(item, seen_item)) {
+                        found_in_seen = true;
+                        break;
+                    }
+                }
+
+                if (found_in_seen) {
+                    // Check if not already added
+                    var already_added = false;
+                    for (added.items) |added_item| {
+                        if (std.meta.eql(item, added_item)) {
+                            already_added = true;
+                            break;
+                        }
+                    }
+                    if (!already_added) {
+                        try result.push(item);
+                        try added.append(item);
+                    }
+                } else {
+                    try seen.append(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Repeat collection n times
+        pub fn repeat(self: *const Self, n: usize) !Self {
+            var result = Self.init(self.allocator);
+            try result.items.ensureTotalCapacity(self.count() * n);
+
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                try result.items.appendSlice(self.items.items);
+            }
+
+            return result;
+        }
+
+        /// Pad collection to specified length with value
+        pub fn pad(self: *const Self, length: usize, value: T) !Self {
+            if (self.count() >= length) return try self.clone();
+
+            var result = try self.clone();
+            const need = length - self.count();
+
+            var i: usize = 0;
+            while (i < need) : (i += 1) {
+                try result.push(value);
+            }
+
+            return result;
+        }
+
+        // ==================== Where Clause Methods ====================
+
+        /// Filter items that are in the provided values
+        pub fn whereIn(self: *const Self, values: []const T) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                for (values) |value| {
+                    if (item == value) {
+                        try result.push(item);
+                        break;
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        /// Filter items that are NOT in the provided values
+        pub fn whereNotIn(self: *const Self, values: []const T) !Self {
+            var result = Self.init(self.allocator);
+
+            outer: for (self.items.items) |item| {
+                for (values) |value| {
+                    if (item == value) {
+                        continue :outer;
+                    }
+                }
+                try result.push(item);
+            }
+
+            return result;
+        }
+
+        /// Filter items between min and max (inclusive)
+        pub fn whereBetween(self: *const Self, min_val: T, max_val: T) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (item >= min_val and item <= max_val) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Filter items NOT between min and max
+        pub fn whereNotBetween(self: *const Self, min_val: T, max_val: T) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (item < min_val or item > max_val) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        // ==================== Grouping Methods ====================
+
+        /// Count occurrences of each unique value (returns frequency map)
+        pub fn frequencies(self: *const Self) !std.AutoHashMap(T, usize) {
+            var counts = std.AutoHashMap(T, usize).init(self.allocator);
+            errdefer counts.deinit();
+
+            for (self.items.items) |item| {
+                const entry = try counts.getOrPut(item);
+                if (entry.found_existing) {
+                    entry.value_ptr.* += 1;
+                } else {
+                    entry.value_ptr.* = 1;
+                }
+            }
+
+            return counts;
+        }
+
+        /// Group items by a callback result
+        pub fn groupBy(self: *const Self, comptime K: type, callback: fn (item: T) K) !std.AutoHashMap(K, Self) {
+            var groups = std.AutoHashMap(K, Self).init(self.allocator);
+            errdefer {
+                var it = groups.valueIterator();
+                while (it.next()) |group| {
+                    group.deinit();
+                }
+                groups.deinit();
+            }
+
+            for (self.items.items) |item| {
+                const key = callback(item);
+                const entry = try groups.getOrPut(key);
+
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = Self.init(self.allocator);
+                }
+
+                try entry.value_ptr.push(item);
+            }
+
+            return groups;
+        }
+
+        // ==================== Extraction Methods ====================
+
+        /// Extract a single field from each item (like pluck in Laravel)
+        /// Use a callback to extract the desired field
+        pub fn pluck(self: *const Self, comptime U: type, extractor: fn (item: T) U) !Collection(U) {
+            return try self.map(U, extractor);
+        }
+
+        // ==================== Combination Methods ====================
+
+        /// Merge another collection into this one (appends all items)
+        pub fn merge(self: *const Self, other: *const Self) !Self {
+            var result = Self.init(self.allocator);
+            try result.items.ensureTotalCapacity(self.count() + other.count());
+
+            try result.items.appendSlice(self.items.items);
+            try result.items.appendSlice(other.items.items);
+
+            return result;
+        }
+
+        /// Union of two collections (unique items from both)
+        pub fn unionWith(self: *const Self, other: *const Self) !Self {
+            var result = try self.clone();
+
+            for (other.items.items) |item| {
+                if (!result.contains(item)) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Intersection of two collections (items present in both)
+        pub fn intersect(self: *const Self, other: *const Self) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (other.contains(item) and !result.contains(item)) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Difference (items in this collection but not in other)
+        pub fn diff(self: *const Self, other: *const Self) !Self {
+            var result = Self.init(self.allocator);
+
+            for (self.items.items) |item| {
+                if (!other.contains(item)) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
+        }
+
+        /// Symmetric difference (items in either collection but not both)
+        pub fn symmetricDiff(self: *const Self, other: *const Self) !Self {
+            var result = Self.init(self.allocator);
+
+            // Items in self but not in other
+            for (self.items.items) |item| {
+                if (!other.contains(item)) {
+                    try result.push(item);
+                }
+            }
+
+            // Items in other but not in self
+            for (other.items.items) |item| {
+                if (!self.contains(item)) {
+                    try result.push(item);
+                }
+            }
+
+            return result;
         }
     };
 }
@@ -365,7 +989,7 @@ pub fn range(allocator: Allocator, start: i64, end: i64) !Collection(i64) {
 /// Create a collection by repeating a callback n times
 pub fn times(comptime T: type, allocator: Allocator, n: usize, callback: fn (index: usize) T) !Collection(T) {
     var result = Collection(T).init(allocator);
-    try result.items.ensureTotalCapacity(allocator, n);
+    try result.items.ensureTotalCapacity(n);
 
     var i: usize = 0;
     while (i < n) : (i += 1) {
