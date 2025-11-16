@@ -47,7 +47,7 @@ do {
 assert(count5 == 100);
 
 // Test 6: Do-while in function
-fn countUntil(limit: int) -> int {
+fn countUntil(limit: int): int {
     let count = 0;
     do {
         count = count + 1;
@@ -104,7 +104,7 @@ do {
 assert(comp == 128);
 
 // Test 12: Do-while calling functions
-fn increment(n: int) -> int {
+fn increment(n: int): int {
     return n + 1;
 }
 

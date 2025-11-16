@@ -42,13 +42,13 @@ let complex = |x| {
 
 ```home
 // Parameter types
-let add: fn(i32, i32) -> i32 = |a: i32, b: i32| a + b
+let add: fn(i32, i32): i32 = |a: i32, b: i32| a + b
 
 // Return type
-let double = |x: i32| -> i32 { x * 2 }
+let double = |x: i32|: i32 { x * 2 }
 
 // Full annotation
-let multiply = |a: f64, b: f64| -> f64 {
+let multiply = |a: f64, b: f64|: f64 {
     a * b
 }
 ```
@@ -116,12 +116,12 @@ Can be called multiple times, captures by reference.
 ```home
 trait Fn<Args> {
     type Output
-    fn call(&self, args: Args) -> Self::Output
+    fn call(&self, args: Args): Self::Output
 }
 
 // Example
 let x = 10
-let add_x: impl Fn(i32) -> i32 = |y| x + y
+let add_x: impl Fn(i32): i32 = |y| x + y
 println("{}", add_x(5))  // 15
 println("{}", add_x(10)) // 20
 ```
@@ -132,7 +132,7 @@ Can be called multiple times, captures by mutable reference.
 
 ```home
 trait FnMut<Args>: Fn<Args> {
-    fn call_mut(&mut self, args: Args) -> Self::Output
+    fn call_mut(&mut self, args: Args): Self::Output
 }
 
 // Example
@@ -152,7 +152,7 @@ Can be called only once, takes ownership of captures.
 ```home
 trait FnOnce<Args> {
     type Output
-    fn call_once(self, args: Args) -> Self::Output
+    fn call_once(self, args: Args): Self::Output
 }
 
 // Example
@@ -175,14 +175,14 @@ let numbers = vec![1, 2, 3, 4, 5]
 let doubled = numbers.map(|x| x * 2)
 
 // Explicit types when needed
-let parse: fn(&str) -> Result<i32, Error> = |s| {
+let parse: fn(&str): Result<i32, Error> = |s| {
     s.parse()
 }
 
 // Generic closures
-fn apply<F>(f: F, x: i32) -> i32 
+fn apply<F>(f: F, x: i32): i32 
 where 
-    F: Fn(i32) -> i32
+    F: Fn(i32): i32
 {
     f(x)
 }
@@ -195,7 +195,7 @@ let result = apply(|x| x + 1, 5)  // 6
 Use `move` to transfer ownership of captured variables:
 
 ```home
-fn create_closure() -> impl Fn() -> i32 {
+fn create_closure(): impl Fn(): i32 {
     let x = 42
     move || x  // x is moved into closure
 }
@@ -226,7 +226,7 @@ Closures can be returned using trait objects or `impl Trait`:
 ### Using impl Trait
 
 ```home
-fn make_adder(x: i32) -> impl Fn(i32) -> i32 {
+fn make_adder(x: i32): impl Fn(i32): i32 {
     move |y| x + y
 }
 
@@ -237,7 +237,7 @@ println("{}", add_5(10))  // 15
 ### Using Box<dyn Fn>
 
 ```home
-fn make_closure(choice: bool) -> Box<dyn Fn(i32) -> i32> {
+fn make_closure(choice: bool): Box<dyn Fn(i32): i32> {
     if choice {
         Box::new(|x| x * 2)
     } else {
@@ -276,19 +276,19 @@ let sum = numbers.iter()
 ### Custom Higher-Order Functions
 
 ```home
-fn apply_twice<F>(f: F, x: i32) -> i32 
+fn apply_twice<F>(f: F, x: i32): i32 
 where 
-    F: Fn(i32) -> i32
+    F: Fn(i32): i32
 {
     f(f(x))
 }
 
 let result = apply_twice(|x| x + 1, 5)  // 7
 
-fn compose<F, G, A, B, C>(f: F, g: G) -> impl Fn(A) -> C
+fn compose<F, G, A, B, C>(f: F, g: G): impl Fn(A): C
 where
-    F: Fn(B) -> C,
-    G: Fn(A) -> B,
+    F: Fn(B): C,
+    G: Fn(A): B,
 {
     move |x| f(g(x))
 }
@@ -311,9 +311,9 @@ let fetch = async || {
 }
 
 // Using async closures
-async fn process_data<F, Fut>(f: F) -> Result<()>
+async fn process_data<F, Fut>(f: F): Result<()>
 where
-    F: Fn() -> Fut,
+    F: Fn(): Fut,
     Fut: Future<Output = Result<Data>>,
 {
     let data = f().await?
@@ -348,7 +348,7 @@ let consume = move || println("{:?}", x)
 numbers.map(|x| x * 2)
 
 // Unnecessary - explicit types
-numbers.map(|x: i32| -> i32 { x * 2 })
+numbers.map(|x: i32|: i32 { x * 2 })
 ```
 
 ### 3. Keep Closures Small
@@ -406,7 +406,7 @@ Current limitations of Home closures:
 
 ```home
 // Recursive function instead of recursive closure
-fn factorial(n: i32) -> i32 {
+fn factorial(n: i32): i32 {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 
@@ -426,7 +426,7 @@ struct Button {
 }
 
 impl Button {
-    fn new<F>(handler: F) -> Button 
+    fn new<F>(handler: F): Button 
     where 
         F: FnMut() + 'static
     {
@@ -455,7 +455,7 @@ button.click()  // Clicked 2 times
 ```home
 struct Lazy<T, F>
 where
-    F: FnOnce() -> T,
+    F: FnOnce(): T,
 {
     init: Option<F>,
     value: Option<T>,
@@ -463,16 +463,16 @@ where
 
 impl<T, F> Lazy<T, F>
 where
-    F: FnOnce() -> T,
+    F: FnOnce(): T,
 {
-    fn new(init: F) -> Lazy<T, F> {
+    fn new(init: F): Lazy<T, F> {
         Lazy {
             init: Some(init),
             value: None,
         }
     }
     
-    fn get(&mut self) -> &T {
+    fn get(&mut self): &T {
         if self.value.is_none() {
             let init = self.init.take().unwrap()
             self.value = Some(init())
@@ -496,23 +496,23 @@ let value2 = lazy.get() // Uses cached value
 
 ```home
 struct QueryBuilder {
-    filters: Vec<Box<dyn Fn(&Record) -> bool>>,
+    filters: Vec<Box<dyn Fn(&Record): bool>>,
 }
 
 impl QueryBuilder {
-    fn new() -> QueryBuilder {
+    fn new(): QueryBuilder {
         QueryBuilder { filters: vec![] }
     }
     
-    fn filter<F>(mut self, f: F) -> QueryBuilder
+    fn filter<F>(mut self, f: F): QueryBuilder
     where
-        F: Fn(&Record) -> bool + 'static,
+        F: Fn(&Record): bool + 'static,
     {
         self.filters.push(Box::new(f))
         self
     }
     
-    fn execute(&self, records: &[Record]) -> Vec<&Record> {
+    fn execute(&self, records: &[Record]): Vec<&Record> {
         records.iter()
             .filter(|r| self.filters.iter().all(|f| f(r)))
             .collect()

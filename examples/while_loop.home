@@ -1,5 +1,5 @@
 // While loop example
-fn main() -> int {
+fn main(): int {
     let mut count = 0
 
     while count < 5 {

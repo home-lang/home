@@ -47,7 +47,7 @@ switch doubled {
 }
 
 // Switch in function
-fn getDayName(day: int) -> string {
+fn getDayName(day: int): string {
     switch day {
         case 1: {
             return "Monday";

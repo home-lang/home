@@ -52,9 +52,9 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     
     _ = try self.expect(.Pipe, "Expected '|' after closure parameters");
     
-    // Optional return type
+    // Optional return type (TypeScript-style with colon)
     var return_type: ?*ast.closure_nodes.TypeExpr = null;
-    if (self.match(&.{.Arrow})) {
+    if (self.match(&.{.Colon})) {
         return_type = try self.parseClosureTypeExpr();
     }
     
@@ -118,9 +118,9 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
         }
         
         _ = try self.expect(.RightParen, "Expected ')' after function parameters");
-        
+
         var return_type: ?*ast.closure_nodes.TypeExpr = null;
-        if (self.match(&.{.Arrow})) {
+        if (self.match(&.{.Colon})) {
             return_type = try self.parseClosureTypeExpr();
         }
         

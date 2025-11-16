@@ -2,7 +2,7 @@
 type UserId = int
 type Username = string
 
-fn main() -> int {
+fn main(): int {
     let id: UserId = 42
     let name: Username = "Alice"
     return id

@@ -37,7 +37,6 @@ pub const TokenType = enum {
     PlusEqual, // +=
     Minus, // -
     MinusEqual, // -=
-    Arrow, // ->
     Star, // *
     StarEqual, // *=
     Slash, // /
@@ -155,7 +154,6 @@ pub const TokenType = enum {
             .PlusEqual => "+=",
             .Minus => "-",
             .MinusEqual => "-=",
-            .Arrow => "->",
             .Star => "*",
             .StarEqual => "*=",
             .Slash => "/",

@@ -129,14 +129,14 @@ Disallow magic numbers (use named constants instead).
 
 ```home
 // ❌ Bad
-fn calculateArea(radius: f64) -> f64 {
+fn calculateArea(radius: f64): f64 {
   return 3.14159 * radius * radius
 }
 
 // ✅ Good
 const PI = 3.14159
 
-fn calculateArea(radius: f64) -> f64 {
+fn calculateArea(radius: f64): f64 {
   return PI * radius * radius
 }
 ```
@@ -151,7 +151,7 @@ fn add(a: i32, b: i32) {
 }
 
 // ✅ Good
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32): i32 {
   return a + b
 }
 ```
@@ -161,13 +161,13 @@ Disallow unreachable code after return/throw.
 
 ```home
 // ❌ Bad
-fn example() -> i32 {
+fn example(): i32 {
   return 42
   print("This will never run")
 }
 
 // ✅ Good
-fn example() -> i32 {
+fn example(): i32 {
   print("This will run")
   return 42
 }

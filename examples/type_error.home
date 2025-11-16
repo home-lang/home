@@ -2,7 +2,7 @@
 let x: int = 5
 let y: int = "hello"  // Type mismatch
 
-fn add(a: int, b: int) -> int {
+fn add(a: int, b: int): int {
     return a + b
 }
 

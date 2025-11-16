@@ -71,7 +71,7 @@ pub const TypeScheme = struct {
 };
 ```
 
-Example: The identity function `fn id(x) = x` has type scheme `∀a. a -> a`.
+Example: The identity function `fn id(x) = x` has type scheme `∀a. a: a`.
 
 ### Constraints
 
@@ -144,11 +144,11 @@ let triple = (1, true, 3.14) // (Int, Bool, Float)
 ### Functions and Closures
 
 ```home
-// Identity function: ∀a. a -> a
+// Identity function: ∀a. a: a
 fn id(x) = x
 
 // Closure with inferred types
-let add = |x, y| x + y       // fn(Int, Int) -> Int
+let add = |x, y| x + y       // fn(Int, Int): Int
 
 // Polymorphic usage
 let n = id(42)               // Int
@@ -160,7 +160,7 @@ let s = id("hello")          // String
 ```home
 fn double(x) = x * 2
 
-let result = double(21)      // Infers: fn(Int) -> Int, result is Int
+let result = double(21)      // Infers: fn(Int): Int, result is Int
 ```
 
 ### Index Operations
@@ -184,7 +184,7 @@ The unification algorithm finds a substitution that makes two types equal:
 unify(Int, Int) = ∅                      // Success: same type
 unify('a, Int) = {'a → Int}              // Bind type variable
 unify([Int], [Float]) = Error            // Mismatch
-unify(fn(Int) -> Bool, fn(Int) -> Bool) = ∅  // Success
+unify(fn(Int): Bool, fn(Int): Bool) = ∅  // Success
 unify('a, ['a]) = Error                  // Occurs check failure
 ```
 
@@ -204,7 +204,7 @@ Let-polymorphism allows polymorphic functions to be used at multiple types:
 ```home
 fn identity(x) = x
 
-// identity is generalized to: ∀a. a -> a
+// identity is generalized to: ∀a. a: a
 let n: Int = identity(42)
 let s: String = identity("hello")
 let b: Bool = identity(true)
@@ -269,10 +269,10 @@ fn apply(f, x) = f(x)
 ```
 
 **Constraints generated**:
-- `f = 'a -> 'b` (function type)
+- `f = 'a: 'b` (function type)
 - `x = 'a` (parameter type)
 - `f(x) = 'b` (return type)
-- Final type: `∀a b. (a -> b, a) -> b`
+- Final type: `∀a b. (a: b, a): b`
 
 ### Example 4: Higher-Order Functions
 
@@ -286,7 +286,7 @@ fn map(f, arr) = {
 }
 ```
 
-**Inferred type**: `∀a b. (fn(a) -> b, [a]) -> [b]`
+**Inferred type**: `∀a b. (fn(a): b, [a]): [b]`
 
 ## Performance Considerations
 

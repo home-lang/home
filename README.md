@@ -70,12 +70,12 @@ fn main() {
     return "Hello from Home!"
   })
 
-  server.get("/users", fn(req) -> async Response {
+  server.get("/users", fn(req): async Response {
     let users = await db.query("SELECT * FROM users")
     return Response.json(users)
   })
 
-  server.get("/user/:id", fn(req) -> async Response {
+  server.get("/user/:id", fn(req): async Response {
     let user = await fetch_user(db, req.param("id"))
     return Response.json(user)
   })
@@ -84,7 +84,7 @@ fn main() {
   server.listen()
 }
 
-fn fetch_user(db: &Connection, id: string) -> async Result<User> {
+fn fetch_user(db: &Connection, id: string): async Result<User> {
   let stmt = db.prepare("SELECT * FROM users WHERE id = ?")
   stmt.bind(1, id)
   return stmt.execute().first()
@@ -669,7 +669,7 @@ consume(data)
 
 ### Error Handling
 ```home
-fn read_config() -> Result<Config> {
+fn read_config(): Result<Config> {
   let file = fs.read_file("config.home")?  // ? propagates errors
   let config = json.parse(file)?
   return Ok(config)
@@ -686,7 +686,7 @@ let config = read_config().unwrap_or(Config.default())
 
 ### Async/Await
 ```home
-fn fetch_users() -> async []User {
+fn fetch_users(): async []User {
   let tasks = [
     http.get("/users/1"),
     http.get("/users/2"),
@@ -696,7 +696,7 @@ fn fetch_users() -> async []User {
 }
 
 // Concurrent database queries
-fn get_dashboard_data() -> async Dashboard {
+fn get_dashboard_data(): async Dashboard {
   let [users, posts, stats] = await Promise.all([
     db.query("SELECT * FROM users"),
     db.query("SELECT * FROM posts"),
@@ -710,7 +710,7 @@ fn get_dashboard_data() -> async Dashboard {
 ### Comptime Magic
 ```home
 // Run at compile time
-comptime fn generate_routes() -> []Route {
+comptime fn generate_routes(): []Route {
   return fs.glob("routes/**/*.home")
     .map(|path| Route.from_path(path))
 }
@@ -756,7 +756,7 @@ match response {
 
 ### Generics
 ```home
-fn map<T, U>(items: []T, f: fn(T) -> U) -> []U {
+fn map<T, U>(items: []T, f: fn(T): U): []U {
   let result = []U.init(items.len)
   for (item, i in items) {
     result[i] = f(item)
@@ -770,14 +770,14 @@ struct Result<T, E> {
     Err(E)
   }
 
-  fn unwrap(self) -> T {
+  fn unwrap(self): T {
     match self.value {
       Ok(v) => return v,
       Err(e) => panic("Called unwrap on Err: {e}")
     }
   }
 
-  fn unwrap_or(self, default: T) -> T {
+  fn unwrap_or(self, default: T): T {
     match self.value {
       Ok(v) => return v,
       Err(_) => return default

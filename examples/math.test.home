@@ -3,19 +3,19 @@
 // Files matching *.test.home or *.test.hm are automatically discovered
 
 // Helper functions
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32): i32 {
   return a + b
 }
 
-fn subtract(a: i32, b: i32) -> i32 {
+fn subtract(a: i32, b: i32): i32 {
   return a - b
 }
 
-fn multiply(a: i32, b: i32) -> i32 {
+fn multiply(a: i32, b: i32): i32 {
   return a * b
 }
 
-fn divide(a: i32, b: i32) -> i32 {
+fn divide(a: i32, b: i32): i32 {
   return a / b
 }
 

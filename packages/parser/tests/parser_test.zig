@@ -288,7 +288,7 @@ test "parser: block statement" {
 }
 
 test "parser: function declaration" {
-    const program = try parseSource(testing.allocator, "fn add(a: int, b: int) -> int { return a + b }");
+    const program = try parseSource(testing.allocator, "fn add(a: int, b: int): int { return a + b }");
     defer program.deinit(testing.allocator);
 
     const stmt = program.statements[0];

@@ -4,19 +4,19 @@
 // Example 1: Basic Multiple Dispatch
 // ============================================================================
 
-fn process(data: string) -> string {
+fn process(data: string): string {
     "Processing string: " + data
 }
 
-fn process(data: i32) -> string {
+fn process(data: i32): string {
     "Processing integer: " + data.to_string()
 }
 
-fn process(data: f64) -> string {
+fn process(data: f64): string {
     "Processing float: " + data.to_string()
 }
 
-fn test_basic_dispatch() -> void {
+fn test_basic_dispatch(): void {
     println("=== Basic Multiple Dispatch ===")
     
     println(process("hello"))
@@ -28,23 +28,23 @@ fn test_basic_dispatch() -> void {
 // Example 2: Multiple Parameters
 // ============================================================================
 
-fn combine(a: string, b: string) -> string {
+fn combine(a: string, b: string): string {
     a + b
 }
 
-fn combine(a: string, b: i32) -> string {
+fn combine(a: string, b: i32): string {
     a + b.to_string()
 }
 
-fn combine(a: i32, b: string) -> string {
+fn combine(a: i32, b: string): string {
     a.to_string() + b
 }
 
-fn combine(a: i32, b: i32) -> i32 {
+fn combine(a: i32, b: i32): i32 {
     a + b
 }
 
-fn test_multiple_parameters() -> void {
+fn test_multiple_parameters(): void {
     println("\n=== Multiple Parameters ===")
     
     println("combine('hello', 'world') = {}", combine("hello", "world"))
@@ -75,14 +75,14 @@ struct Point {
     y: f64,
 }
 
-fn collides(a: Circle, b: Circle) -> bool {
+fn collides(a: Circle, b: Circle): bool {
     let dx = a.x - b.x
     let dy = a.y - b.y
     let distance = (dx * dx + dy * dy).sqrt()
     distance < (a.radius + b.radius)
 }
 
-fn collides(a: Circle, b: Rectangle) -> bool {
+fn collides(a: Circle, b: Rectangle): bool {
     // Find closest point on rectangle to circle center
     let closest_x = a.x.clamp(b.x, b.x + b.width)
     let closest_y = a.y.clamp(b.y, b.y + b.height)
@@ -94,25 +94,25 @@ fn collides(a: Circle, b: Rectangle) -> bool {
     distance < a.radius
 }
 
-fn collides(a: Rectangle, b: Circle) -> bool {
+fn collides(a: Rectangle, b: Circle): bool {
     collides(b, a)  // Symmetric - reuse Circle-Rectangle
 }
 
-fn collides(a: Rectangle, b: Rectangle) -> bool {
+fn collides(a: Rectangle, b: Rectangle): bool {
     a.x < b.x + b.width &&
     a.x + a.width > b.x &&
     a.y < b.y + b.height &&
     a.y + a.height > b.y
 }
 
-fn collides(a: Point, b: Circle) -> bool {
+fn collides(a: Point, b: Circle): bool {
     let dx = a.x - b.x
     let dy = a.y - b.y
     let distance = (dx * dx + dy * dy).sqrt()
     distance < b.radius
 }
 
-fn test_collision_detection() -> void {
+fn test_collision_detection(): void {
     println("\n=== Collision Detection ===")
     
     let c1 = Circle { x: 0.0, y: 0.0, radius: 5.0 }
@@ -142,35 +142,35 @@ struct Vector {
 
 type Scalar = f64;
 
-fn multiply(a: Matrix, b: Matrix) -> Matrix {
+fn multiply(a: Matrix, b: Matrix): Matrix {
     // Matrix-matrix multiplication
     println("Matrix × Matrix")
     // Implementation...
     a
 }
 
-fn multiply(a: Matrix, b: Vector) -> Vector {
+fn multiply(a: Matrix, b: Vector): Vector {
     // Matrix-vector multiplication
     println("Matrix × Vector")
     // Implementation...
     b
 }
 
-fn multiply(a: Matrix, b: Scalar) -> Matrix {
+fn multiply(a: Matrix, b: Scalar): Matrix {
     // Scalar multiplication
     println("Matrix × Scalar")
     // Implementation...
     a
 }
 
-fn multiply(a: Vector, b: Vector) -> Scalar {
+fn multiply(a: Vector, b: Vector): Scalar {
     // Dot product
     println("Vector · Vector (dot product)")
     // Implementation...
     0.0
 }
 
-fn test_mathematical_operations() -> void {
+fn test_mathematical_operations(): void {
     println("\n=== Mathematical Operations ===")
     
     let m = Matrix { rows: 3, cols: 3, data: vec![1.0; 9] }
@@ -205,27 +205,27 @@ enum Format {
     Binary,
 }
 
-fn serialize(data: User, format: Format::JSON) -> string {
+fn serialize(data: User, format: Format::JSON): string {
     format!("{{\"name\":\"{}\",\"age\":{},\"email\":\"{}\"}}", 
             data.name, data.age, data.email)
 }
 
-fn serialize(data: User, format: Format::XML) -> string {
+fn serialize(data: User, format: Format::XML): string {
     format!("<user><name>{}</name><age>{}</age><email>{}</email></user>",
             data.name, data.age, data.email)
 }
 
-fn serialize(data: Post, format: Format::JSON) -> string {
+fn serialize(data: Post, format: Format::JSON): string {
     format!("{{\"title\":\"{}\",\"content\":\"{}\",\"author\":\"{}\"}}",
             data.title, data.content, data.author)
 }
 
-fn serialize(data: Post, format: Format::XML) -> string {
+fn serialize(data: Post, format: Format::XML): string {
     format!("<post><title>{}</title><content>{}</content><author>{}</author></post>",
             data.title, data.content, data.author)
 }
 
-fn test_serialization() -> void {
+fn test_serialization(): void {
     println("\n=== Serialization ===")
     
     let user = User {
@@ -269,28 +269,28 @@ struct Canvas {
     height: i32,
 }
 
-fn handle(event: Event::MouseClick, target: Button) -> void {
+fn handle(event: Event::MouseClick, target: Button): void {
     println("Button '{}' clicked at ({}, {})", 
             target.label, event.x, event.y)
 }
 
-fn handle(event: Event::MouseClick, target: TextInput) -> void {
+fn handle(event: Event::MouseClick, target: TextInput): void {
     println("TextInput focused at ({}, {})", event.x, event.y)
 }
 
-fn handle(event: Event::KeyPress, target: TextInput) -> void {
+fn handle(event: Event::KeyPress, target: TextInput): void {
     println("TextInput received key: {}", event.key)
 }
 
-fn handle(event: Event::KeyPress, target: Canvas) -> void {
+fn handle(event: Event::KeyPress, target: Canvas): void {
     println("Canvas shortcut: {}", event.key)
 }
 
-fn handle(event: Event::Scroll, target: Canvas) -> void {
+fn handle(event: Event::Scroll, target: Canvas): void {
     println("Canvas scrolled by: {}", event.delta)
 }
 
-fn test_event_handling() -> void {
+fn test_event_handling(): void {
     println("\n=== Event Handling ===")
     
     let button = Button { label: "Submit" }
@@ -318,27 +318,27 @@ enum Connection {
     HTTP2,
 }
 
-fn connect(client: HTTP1Client, server: HTTP1Server) -> Connection {
+fn connect(client: HTTP1Client, server: HTTP1Server): Connection {
     println("HTTP/1.1 connection established")
     Connection::HTTP1
 }
 
-fn connect(client: HTTP2Client, server: HTTP2Server) -> Connection {
+fn connect(client: HTTP2Client, server: HTTP2Server): Connection {
     println("HTTP/2 connection established")
     Connection::HTTP2
 }
 
-fn connect(client: HTTP2Client, server: HTTP1Server) -> Connection {
+fn connect(client: HTTP2Client, server: HTTP1Server): Connection {
     println("Downgrading to HTTP/1.1")
     Connection::HTTP1
 }
 
-fn connect(client: HTTP1Client, server: HTTP2Server) -> Connection {
+fn connect(client: HTTP1Client, server: HTTP2Server): Connection {
     println("Upgrading to HTTP/2")
     Connection::HTTP2
 }
 
-fn test_protocol_negotiation() -> void {
+fn test_protocol_negotiation(): void {
     println("\n=== Protocol Negotiation ===")
     
     let h1_client = HTTP1Client;
@@ -356,27 +356,27 @@ fn test_protocol_negotiation() -> void {
 // Example 8: Type Conversion
 // ============================================================================
 
-fn convert(from: string, to: Type::Int) -> i32 {
+fn convert(from: string, to: Type::Int): i32 {
     from.parse().unwrap_or(0)
 }
 
-fn convert(from: string, to: Type::Float) -> f64 {
+fn convert(from: string, to: Type::Float): f64 {
     from.parse().unwrap_or(0.0)
 }
 
-fn convert(from: i32, to: Type::String) -> string {
+fn convert(from: i32, to: Type::String): string {
     from.to_string()
 }
 
-fn convert(from: f64, to: Type::String) -> string {
+fn convert(from: f64, to: Type::String): string {
     from.to_string()
 }
 
-fn convert(from: i32, to: Type::Float) -> f64 {
+fn convert(from: i32, to: Type::Float): f64 {
     from as f64
 }
 
-fn convert(from: f64, to: Type::Int) -> i32 {
+fn convert(from: f64, to: Type::Int): i32 {
     from as i32
 }
 
@@ -386,7 +386,7 @@ enum Type {
     String,
 }
 
-fn test_type_conversion() -> void {
+fn test_type_conversion(): void {
     println("\n=== Type Conversion ===")
     
     println("'42' to int: {}", convert("42", Type::Int))
@@ -401,20 +401,20 @@ fn test_type_conversion() -> void {
 // Example 9: Distance Calculations
 // ============================================================================
 
-fn distance(a: Point, b: Point) -> f64 {
+fn distance(a: Point, b: Point): f64 {
     let dx = a.x - b.x
     let dy = a.y - b.y
     (dx * dx + dy * dy).sqrt()
 }
 
-fn distance(p: Point, c: Circle) -> f64 {
+fn distance(p: Point, c: Circle): f64 {
     let dx = p.x - c.x
     let dy = p.y - c.y
     let dist = (dx * dx + dy * dy).sqrt()
     (dist - c.radius).max(0.0)
 }
 
-fn distance(p: Point, r: Rectangle) -> f64 {
+fn distance(p: Point, r: Rectangle): f64 {
     let closest_x = p.x.clamp(r.x, r.x + r.width)
     let closest_y = p.y.clamp(r.y, r.y + r.height)
     let dx = p.x - closest_x
@@ -422,7 +422,7 @@ fn distance(p: Point, r: Rectangle) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn test_distance_calculations() -> void {
+fn test_distance_calculations(): void {
     println("\n=== Distance Calculations ===")
     
     let p1 = Point { x: 0.0, y: 0.0 }
@@ -445,27 +445,27 @@ enum RenderTarget {
     SVG,
 }
 
-fn render(shape: Circle, target: RenderTarget::Screen) -> void {
+fn render(shape: Circle, target: RenderTarget::Screen): void {
     println("Drawing circle on screen at ({}, {}) radius {}",
             shape.x, shape.y, shape.radius)
 }
 
-fn render(shape: Circle, target: RenderTarget::SVG) -> void {
+fn render(shape: Circle, target: RenderTarget::SVG): void {
     println("<circle cx=\"{}\" cy=\"{}\" r=\"{}\" />",
             shape.x, shape.y, shape.radius)
 }
 
-fn render(shape: Rectangle, target: RenderTarget::Screen) -> void {
+fn render(shape: Rectangle, target: RenderTarget::Screen): void {
     println("Drawing rectangle on screen at ({}, {}) size {}x{}",
             shape.x, shape.y, shape.width, shape.height)
 }
 
-fn render(shape: Rectangle, target: RenderTarget::SVG) -> void {
+fn render(shape: Rectangle, target: RenderTarget::SVG): void {
     println("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" />",
             shape.x, shape.y, shape.width, shape.height)
 }
 
-fn test_rendering() -> void {
+fn test_rendering(): void {
     println("\n=== Rendering System ===")
     
     let circle = Circle { x: 50.0, y: 50.0, radius: 25.0 }
@@ -481,7 +481,7 @@ fn test_rendering() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     test_basic_dispatch()
     test_multiple_parameters()
     test_collision_detection()

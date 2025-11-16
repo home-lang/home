@@ -278,7 +278,7 @@ defer result.deinit();
 
 ```
 Dataset: 1,000,000 items
-Operation: filter -> map -> take(10)
+Operation: filter: map: take(10)
 
 Eager:  287ms  (processes all 1M items)
 Lazy:   12ms   (processes ~20 items, short-circuits)

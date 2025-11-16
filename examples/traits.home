@@ -5,8 +5,8 @@
 // ============================================================================
 
 trait Animal {
-    fn make_sound(&self) -> string
-    fn get_name(&self) -> string
+    fn make_sound(&self): string
+    fn get_name(&self): string
 }
 
 struct Dog {
@@ -18,26 +18,26 @@ struct Cat {
 }
 
 impl Animal for Dog {
-    fn make_sound(&self) -> string {
+    fn make_sound(&self): string {
         "Woof!"
     }
     
-    fn get_name(&self) -> string {
+    fn get_name(&self): string {
         self.name
     }
 }
 
 impl Animal for Cat {
-    fn make_sound(&self) -> string {
+    fn make_sound(&self): string {
         "Meow!"
     }
     
-    fn get_name(&self) -> string {
+    fn get_name(&self): string {
         self.name
     }
 }
 
-fn test_basic_traits() -> void {
+fn test_basic_traits(): void {
     let dog = Dog { name: "Buddy" }
     let cat = Cat { name: "Whiskers" }
     
@@ -52,7 +52,7 @@ fn test_basic_traits() -> void {
 trait Iterator {
     type Item
     
-    fn next(&mut self) -> Option<Self::Item>
+    fn next(&mut self): Option<Self::Item>
 }
 
 struct Counter {
@@ -63,7 +63,7 @@ struct Counter {
 impl Iterator for Counter {
     type Item = u32
     
-    fn next(&mut self) -> Option<u32> {
+    fn next(&mut self): Option<u32> {
         if self.count < self.max {
             self.count += 1
             Some(self.count)
@@ -73,7 +73,7 @@ impl Iterator for Counter {
     }
 }
 
-fn test_associated_types() -> void {
+fn test_associated_types(): void {
     let mut counter = Counter { count: 0, max: 5 }
     
     while let Some(num) = counter.next() {
@@ -86,10 +86,10 @@ fn test_associated_types() -> void {
 // ============================================================================
 
 trait Summary {
-    fn summarize_author(&self) -> string
+    fn summarize_author(&self): string
     
     // Default implementation
-    fn summarize(&self) -> string {
+    fn summarize(&self): string {
         "Read more from " + self.summarize_author() + "..."
     }
 }
@@ -106,24 +106,24 @@ struct Tweet {
 }
 
 impl Summary for Article {
-    fn summarize_author(&self) -> string {
+    fn summarize_author(&self): string {
         self.author
     }
     
     // Override default
-    fn summarize(&self) -> string {
+    fn summarize(&self): string {
         self.title + " by " + self.author
     }
 }
 
 impl Summary for Tweet {
-    fn summarize_author(&self) -> string {
+    fn summarize_author(&self): string {
         "@" + self.username
     }
     // Uses default implementation
 }
 
-fn test_default_implementations() -> void {
+fn test_default_implementations(): void {
     let article = Article {
         author: "Alice",
         title: "Traits in Home",
@@ -144,15 +144,15 @@ fn test_default_implementations() -> void {
 // ============================================================================
 
 trait Shape {
-    fn area(&self) -> f64
+    fn area(&self): f64
 }
 
 trait Colored {
-    fn color(&self) -> string
+    fn color(&self): string
 }
 
 trait ColoredShape: Shape + Colored {
-    fn describe(&self) -> string {
+    fn describe(&self): string {
         "A " + self.color() + " shape with area " + self.area().to_string()
     }
 }
@@ -163,20 +163,20 @@ struct ColoredCircle {
 }
 
 impl Shape for ColoredCircle {
-    fn area(&self) -> f64 {
+    fn area(&self): f64 {
         3.14159 * self.radius * self.radius
     }
 }
 
 impl Colored for ColoredCircle {
-    fn color(&self) -> string {
+    fn color(&self): string {
         self.color
     }
 }
 
 impl ColoredShape for ColoredCircle {}
 
-fn test_trait_inheritance() -> void {
+fn test_trait_inheritance(): void {
     let circle = ColoredCircle {
         radius: 5.0,
         color: "red",
@@ -191,7 +191,7 @@ fn test_trait_inheritance() -> void {
 
 trait Add<Rhs = Self> {
     type Output
-    fn add(self, rhs: Rhs) -> Self::Output
+    fn add(self, rhs: Rhs): Self::Output
 }
 
 struct Point {
@@ -203,7 +203,7 @@ struct Point {
 impl Add for Point {
     type Output = Point
     
-    fn add(self, rhs: Point) -> Point {
+    fn add(self, rhs: Point): Point {
         Point {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -215,7 +215,7 @@ impl Add for Point {
 impl Add<f64> for Point {
     type Output = Point
     
-    fn add(self, scalar: f64) -> Point {
+    fn add(self, scalar: f64): Point {
         Point {
             x: self.x + scalar,
             y: self.y + scalar,
@@ -223,7 +223,7 @@ impl Add<f64> for Point {
     }
 }
 
-fn test_generic_traits() -> void {
+fn test_generic_traits(): void {
     let p1 = Point { x: 1.0, y: 2.0 }
     let p2 = Point { x: 3.0, y: 4.0 }
     
@@ -238,11 +238,11 @@ fn test_generic_traits() -> void {
 // Example 6: Trait Bounds on Functions
 // ============================================================================
 
-fn print_summary<T: Summary>(item: &T) -> void {
+fn print_summary<T: Summary>(item: &T): void {
     println("Summary: {}", item.summarize())
 }
 
-fn print_multiple<T: Summary + Display>(item: &T) -> void {
+fn print_multiple<T: Summary + Display>(item: &T): void {
     println("Display: {}", item)
     println("Summary: {}", item.summarize())
 }
@@ -251,7 +251,7 @@ fn print_multiple<T: Summary + Display>(item: &T) -> void {
 // Example 7: Where Clauses
 // ============================================================================
 
-fn complex_function<T, U>(t: T, u: U) -> void
+fn complex_function<T, U>(t: T, u: U): void
 where
     T: Clone + Debug,
     U: Clone + Debug
@@ -264,7 +264,7 @@ where
 }
 
 // Where clause with associated types
-fn process_iterator<I>(mut iter: I) -> void
+fn process_iterator<I>(mut iter: I): void
 where
     I: Iterator,
     I::Item: Display
@@ -279,7 +279,7 @@ where
 // ============================================================================
 
 trait Drawable {
-    fn draw(&self) -> void
+    fn draw(&self): void
 }
 
 struct Circle {
@@ -296,25 +296,25 @@ struct Rectangle {
 }
 
 impl Drawable for Circle {
-    fn draw(&self) -> void {
+    fn draw(&self): void {
         println("Drawing circle at ({}, {}) with radius {}", self.x, self.y, self.radius)
     }
 }
 
 impl Drawable for Rectangle {
-    fn draw(&self) -> void {
+    fn draw(&self): void {
         println("Drawing rectangle at ({}, {}) with size {}x{}", 
                 self.x, self.y, self.width, self.height)
     }
 }
 
-fn render_all(shapes: &[dyn Drawable]) -> void {
+fn render_all(shapes: &[dyn Drawable]): void {
     for shape in shapes {
         shape.draw()
     }
 }
 
-fn test_trait_objects() -> void {
+fn test_trait_objects(): void {
     let shapes: Vec<dyn Drawable> = vec![
         Circle { x: 0.0, y: 0.0, radius: 5.0 },
         Rectangle { x: 10.0, y: 10.0, width: 20.0, height: 15.0 },
@@ -330,7 +330,7 @@ fn test_trait_objects() -> void {
 
 trait Builder {
     type Output
-    fn build(self) -> Self::Output
+    fn build(self): Self::Output
 }
 
 struct UserBuilder {
@@ -340,7 +340,7 @@ struct UserBuilder {
 }
 
 impl UserBuilder {
-    fn new() -> UserBuilder {
+    fn new(): UserBuilder {
         UserBuilder {
             name: None,
             email: None,
@@ -348,17 +348,17 @@ impl UserBuilder {
         }
     }
     
-    fn name(mut self, name: string) -> UserBuilder {
+    fn name(mut self, name: string): UserBuilder {
         self.name = Some(name)
         self
     }
     
-    fn email(mut self, email: string) -> UserBuilder {
+    fn email(mut self, email: string): UserBuilder {
         self.email = Some(email)
         self
     }
     
-    fn age(mut self, age: u32) -> UserBuilder {
+    fn age(mut self, age: u32): UserBuilder {
         self.age = Some(age)
         self
     }
@@ -373,7 +373,7 @@ struct User {
 impl Builder for UserBuilder {
     type Output = Result<User, string>
     
-    fn build(self) -> Result<User, string> {
+    fn build(self): Result<User, string> {
         let name = self.name.ok_or("Name is required")?
         let email = self.email.ok_or("Email is required")?
         let age = self.age.unwrap_or(0)
@@ -382,7 +382,7 @@ impl Builder for UserBuilder {
     }
 }
 
-fn test_builder_pattern() -> void {
+fn test_builder_pattern(): void {
     let user = UserBuilder::new()
         .name("Alice")
         .email("alice@example.com")
@@ -398,10 +398,10 @@ fn test_builder_pattern() -> void {
 // ============================================================================
 
 trait Repository<T> {
-    fn find_by_id(&self, id: u64) -> Option<T>
-    fn save(&mut self, entity: T) -> Result<(), string>
-    fn delete(&mut self, id: u64) -> Result<(), string>
-    fn find_all(&self) -> Vec<T>
+    fn find_by_id(&self, id: u64): Option<T>
+    fn save(&mut self, entity: T): Result<(), string>
+    fn delete(&mut self, id: u64): Result<(), string>
+    fn find_all(&self): Vec<T>
 }
 
 struct InMemoryRepository<T> {
@@ -410,7 +410,7 @@ struct InMemoryRepository<T> {
 }
 
 impl<T: Clone> InMemoryRepository<T> {
-    fn new() -> InMemoryRepository<T> {
+    fn new(): InMemoryRepository<T> {
         InMemoryRepository {
             data: HashMap::new(),
             next_id: 1,
@@ -419,24 +419,24 @@ impl<T: Clone> InMemoryRepository<T> {
 }
 
 impl<T: Clone> Repository<T> for InMemoryRepository<T> {
-    fn find_by_id(&self, id: u64) -> Option<T> {
+    fn find_by_id(&self, id: u64): Option<T> {
         self.data.get(&id).cloned()
     }
     
-    fn save(&mut self, entity: T) -> Result<(), string> {
+    fn save(&mut self, entity: T): Result<(), string> {
         let id = self.next_id
         self.next_id += 1
         self.data.insert(id, entity)
         Ok(())
     }
     
-    fn delete(&mut self, id: u64) -> Result<(), string> {
+    fn delete(&mut self, id: u64): Result<(), string> {
         self.data.remove(&id)
             .map(|_| ())
             .ok_or("Entity not found")
     }
     
-    fn find_all(&self) -> Vec<T> {
+    fn find_all(&self): Vec<T> {
         self.data.values().cloned().collect()
     }
 }
@@ -446,16 +446,16 @@ impl<T: Clone> Repository<T> for InMemoryRepository<T> {
 // ============================================================================
 
 trait From<T> {
-    fn from(value: T) -> Self
+    fn from(value: T): Self
 }
 
 trait Into<T> {
-    fn into(self) -> T
+    fn into(self): T
 }
 
 // Blanket implementation: Into is automatically implemented for types that implement From
 impl<T, U> Into<U> for T where U: From<T> {
-    fn into(self) -> U {
+    fn into(self): U {
         U::from(self)
     }
 }
@@ -464,18 +464,18 @@ struct Celsius(f64)
 struct Fahrenheit(f64)
 
 impl From<Fahrenheit> for Celsius {
-    fn from(f: Fahrenheit) -> Celsius {
+    fn from(f: Fahrenheit): Celsius {
         Celsius((f.0 - 32.0) * 5.0 / 9.0)
     }
 }
 
 impl From<Celsius> for Fahrenheit {
-    fn from(c: Celsius) -> Fahrenheit {
+    fn from(c: Celsius): Fahrenheit {
         Fahrenheit(c.0 * 9.0 / 5.0 + 32.0)
     }
 }
 
-fn test_conversion_traits() -> void {
+fn test_conversion_traits(): void {
     let f = Fahrenheit(98.6)
     let c: Celsius = f.into()  // Uses Into trait
     
@@ -490,7 +490,7 @@ fn test_conversion_traits() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     println("=== Basic Traits ===")
     test_basic_traits()
     

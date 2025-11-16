@@ -4,7 +4,7 @@
 // Example 1: Basic Closure Syntax
 // ============================================================================
 
-fn test_basic_closures() -> void {
+fn test_basic_closures(): void {
     println("=== Basic Closures ===")
     
     // No parameters
@@ -28,7 +28,7 @@ fn test_basic_closures() -> void {
     println("complex(5) = {}", complex(5))
     
     // With type annotations
-    let multiply = |a: i32, b: i32| -> i32 {
+    let multiply = |a: i32, b: i32|: i32 {
         a * b
     }
     println("multiply(6, 7) = {}", multiply(6, 7))
@@ -38,7 +38,7 @@ fn test_basic_closures() -> void {
 // Example 2: Capture by Reference
 // ============================================================================
 
-fn test_capture_by_reference() -> void {
+fn test_capture_by_reference(): void {
     println("\n=== Capture by Reference ===")
     
     let x = 42
@@ -60,7 +60,7 @@ fn test_capture_by_reference() -> void {
 // Example 3: Capture by Mutable Reference
 // ============================================================================
 
-fn test_capture_by_mut_reference() -> void {
+fn test_capture_by_mut_reference(): void {
     println("\n=== Capture by Mutable Reference ===")
     
     let mut count = 0
@@ -81,7 +81,7 @@ fn test_capture_by_mut_reference() -> void {
 // Example 4: Move Closures
 // ============================================================================
 
-fn test_move_closures() -> void {
+fn test_move_closures(): void {
     println("\n=== Move Closures ===")
     
     let data = vec![1, 2, 3, 4, 5]
@@ -102,15 +102,15 @@ fn test_move_closures() -> void {
 // Example 5: Returning Closures
 // ============================================================================
 
-fn make_adder(x: i32) -> impl Fn(i32) -> i32 {
+fn make_adder(x: i32): impl Fn(i32): i32 {
     move |y| x + y
 }
 
-fn make_multiplier(factor: i32) -> impl Fn(i32) -> i32 {
+fn make_multiplier(factor: i32): impl Fn(i32): i32 {
     move |x| x * factor
 }
 
-fn test_returning_closures() -> void {
+fn test_returning_closures(): void {
     println("\n=== Returning Closures ===")
     
     let add_5 = make_adder(5)
@@ -130,7 +130,7 @@ fn test_returning_closures() -> void {
 // Example 6: Higher-Order Functions - Map, Filter, Reduce
 // ============================================================================
 
-fn test_map_filter_reduce() -> void {
+fn test_map_filter_reduce(): void {
     println("\n=== Map, Filter, Reduce ===")
     
     let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -164,15 +164,15 @@ fn test_map_filter_reduce() -> void {
 // Example 7: Closure Composition
 // ============================================================================
 
-fn compose<F, G, A, B, C>(f: F, g: G) -> impl Fn(A) -> C
+fn compose<F, G, A, B, C>(f: F, g: G): impl Fn(A): C
 where
-    F: Fn(B) -> C,
-    G: Fn(A) -> B,
+    F: Fn(B): C,
+    G: Fn(A): B,
 {
     move |x| f(g(x))
 }
 
-fn test_composition() -> void {
+fn test_composition(): void {
     println("\n=== Closure Composition ===")
     
     let add_one = |x| x + 1
@@ -197,19 +197,19 @@ struct Counter {
 }
 
 impl Counter {
-    fn new() -> Counter {
+    fn new(): Counter {
         Counter { count: 0 }
     }
     
     fn increment_by<F>(&mut self, f: F) 
     where 
-        F: Fn(i32) -> i32
+        F: Fn(i32): i32
     {
         self.count = f(self.count)
     }
 }
 
-fn test_closures_with_structs() -> void {
+fn test_closures_with_structs(): void {
     println("\n=== Closures with Structs ===")
     
     let mut counter = Counter::new()
@@ -234,7 +234,7 @@ struct Button {
 }
 
 impl Button {
-    fn new(label: string) -> Button {
+    fn new(label: string): Button {
         Button {
             label,
             on_click: None,
@@ -256,7 +256,7 @@ impl Button {
     }
 }
 
-fn test_event_handlers() -> void {
+fn test_event_handlers(): void {
     println("\n=== Event Handlers ===")
     
     let mut count = 0
@@ -278,7 +278,7 @@ fn test_event_handlers() -> void {
 
 struct Lazy<T, F>
 where
-    F: FnOnce() -> T,
+    F: FnOnce(): T,
 {
     init: Option<F>,
     value: Option<T>,
@@ -286,16 +286,16 @@ where
 
 impl<T, F> Lazy<T, F>
 where
-    F: FnOnce() -> T,
+    F: FnOnce(): T,
 {
-    fn new(init: F) -> Lazy<T, F> {
+    fn new(init: F): Lazy<T, F> {
         Lazy {
             init: Some(init),
             value: None,
         }
     }
     
-    fn get(&mut self) -> &T {
+    fn get(&mut self): &T {
         if self.value.is_none() {
             let init = self.init.take().unwrap()
             self.value = Some(init())
@@ -304,13 +304,13 @@ where
     }
 }
 
-fn expensive_computation() -> i32 {
+fn expensive_computation(): i32 {
     println("  Computing expensive value...")
     // Simulate expensive computation
     42
 }
 
-fn test_lazy_evaluation() -> void {
+fn test_lazy_evaluation(): void {
     println("\n=== Lazy Evaluation ===")
     
     let mut lazy = Lazy::new(|| {
@@ -322,7 +322,7 @@ fn test_lazy_evaluation() -> void {
     let value = lazy.get()
     println("Value: {}", value)
     
-    println("Getting value again (cached):")
+    println("Getting value again (cached): ")
     let value2 = lazy.get()
     println("Value: {}", value2)
 }
@@ -339,16 +339,16 @@ struct Transform<I, F> {
 impl<I, F, T, U> Iterator for Transform<I, F>
 where
     I: Iterator<Item = T>,
-    F: FnMut(T) -> U,
+    F: FnMut(T): U,
 {
     type Item = U
     
-    fn next(&mut self) -> Option<U> {
+    fn next(&mut self): Option<U> {
         self.iter.next().map(|x| (self.func)(x))
     }
 }
 
-fn test_custom_iterator() -> void {
+fn test_custom_iterator(): void {
     println("\n=== Custom Iterator ===")
     
     let numbers = vec![1, 2, 3, 4, 5]
@@ -368,7 +368,7 @@ fn test_custom_iterator() -> void {
 
 struct Memoized<F, T>
 where
-    F: FnMut(T) -> T,
+    F: FnMut(T): T,
     T: Clone + Eq + std::hash::Hash,
 {
     func: F,
@@ -377,17 +377,17 @@ where
 
 impl<F, T> Memoized<F, T>
 where
-    F: FnMut(T) -> T,
+    F: FnMut(T): T,
     T: Clone + Eq + std::hash::Hash,
 {
-    fn new(func: F) -> Memoized<F, T> {
+    fn new(func: F): Memoized<F, T> {
         Memoized {
             func,
             cache: HashMap::new(),
         }
     }
     
-    fn call(&mut self, arg: T) -> T {
+    fn call(&mut self, arg: T): T {
         if let Some(result) = self.cache.get(&arg) {
             return result.clone()
         }
@@ -398,7 +398,7 @@ where
     }
 }
 
-fn fibonacci(n: i32) -> i32 {
+fn fibonacci(n: i32): i32 {
     if n <= 1 {
         n
     } else {
@@ -406,7 +406,7 @@ fn fibonacci(n: i32) -> i32 {
     }
 }
 
-fn test_memoization() -> void {
+fn test_memoization(): void {
     println("\n=== Memoization ===")
     
     let mut fib = Memoized::new(|n: i32| fibonacci(n))
@@ -424,15 +424,15 @@ fn test_memoization() -> void {
 // Example 13: Partial Application
 // ============================================================================
 
-fn partial<F, A, B, C>(f: F, a: A) -> impl Fn(B) -> C
+fn partial<F, A, B, C>(f: F, a: A): impl Fn(B): C
 where
-    F: Fn(A, B) -> C,
+    F: Fn(A, B): C,
     A: Clone,
 {
     move |b| f(a.clone(), b)
 }
 
-fn test_partial_application() -> void {
+fn test_partial_application(): void {
     println("\n=== Partial Application ===")
     
     let add = |a: i32, b: i32| a + b
@@ -449,7 +449,7 @@ fn test_partial_application() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     test_basic_closures()
     test_capture_by_reference()
     test_capture_by_mut_reference()

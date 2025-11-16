@@ -20,7 +20,7 @@ Home aims for "safety without ceremony." Need to decide how much borrowing synta
 
 **A) Fully Explicit (Rust-style)**:
 ```home
-fn process(data: &string) -> usize {  // & required
+fn process(data: &string): usize {  // & required
   return data.len()
 }
 
@@ -33,7 +33,7 @@ fn modify(data: &mut string) {  // &mut required
 
 **B) Fully Implicit (Inferred)**:
 ```home
-fn process(data: string) -> usize {  // compiler infers &string
+fn process(data: string): usize {  // compiler infers &string
   return data.len()
 }
 
@@ -88,7 +88,7 @@ Need consistent syntax for generic types that's familiar but distinct.
 
 **A) Angle Brackets (Rust/TypeScript/C++)**:
 ```home
-fn identity<T>(value: T) -> T { value }
+fn identity<T>(value: T): T { value }
 let list: Vec<int> = Vec.new()
 let map: Map<string, User> = Map.new()
 ```
@@ -97,7 +97,7 @@ let map: Map<string, User> = Map.new()
 
 **B) Parentheses (Zig-style)**:
 ```home
-fn identity(comptime T: type)(value: T) -> T { value }
+fn identity(comptime T: type)(value: T): T { value }
 let list: Vec(int) = Vec.new()
 let map: Map(string, User) = Map.new()
 ```
@@ -106,7 +106,7 @@ let map: Map(string, User) = Map.new()
 
 **C) Square Brackets**:
 ```home
-fn identity[T](value: T) -> T { value }
+fn identity[T](value: T): T { value }
 let list: Vec[int] = Vec.new()
 let map: Map[string, User] = Map.new()
 ```
@@ -115,8 +115,8 @@ let map: Map[string, User] = Map.new()
 
 **D) Hybrid (Square for types, parens for bounds)**:
 ```home
-fn identity[T](value: T) -> T { value }
-fn bounded[T: Trait](value: T) -> T { value }
+fn identity[T](value: T): T { value }
+fn bounded[T: Trait](value: T): T { value }
 let list: Vec[int] = Vec.new()
 ```
 *Pros*: Clear separation, no parsing ambiguity  
@@ -128,7 +128,7 @@ let list: Vec[int] = Vec.new()
 
 **Implementation**:
 ```home
-fn identity(comptime T: type)(value: T) -> T { value }
+fn identity(comptime T: type)(value: T): T { value }
 let list: Vec(int) = Vec.new()
 let map: Map(string, User) = Map.new()
 ```
@@ -147,7 +147,7 @@ Need to decide Result type API and default error type.
 
 **A) Explicit Error Type (Rust-style)**:
 ```home
-fn read_file(path: string) -> Result<string, IOError> {
+fn read_file(path: string): Result<string, IOError> {
   // ...
 }
 ```
@@ -156,7 +156,7 @@ fn read_file(path: string) -> Result<string, IOError> {
 
 **B) Default Error Type**:
 ```home
-fn read_file(path: string) -> Result<string> {  // Error type implicit
+fn read_file(path: string): Result<string> {  // Error type implicit
   // returns Result<string, Error>
 }
 ```
@@ -165,7 +165,7 @@ fn read_file(path: string) -> Result<string> {  // Error type implicit
 
 **C) Multiple Return Values (Go-style)**:
 ```home
-fn read_file(path: string) -> (string, error) {
+fn read_file(path: string): (string, error) {
   // ...
 }
 ```
@@ -179,10 +179,10 @@ fn read_file(path: string) -> (string, error) {
 **Implementation**:
 ```home
 // Default error type
-fn read_file(path: string) -> Result(string) { }
+fn read_file(path: string): Result(string) { }
 
 // Explicit when needed
-fn parse(input: string) -> Result(Config, ParseError) { }
+fn parse(input: string): Result(Config, ParseError) { }
 ```
 
 ---

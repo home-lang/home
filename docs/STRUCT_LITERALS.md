@@ -87,7 +87,7 @@ let user = User {
 
 ```home
 // Before shorthand
-fn create_user(name: string, age: i32, email: string) -> User {
+fn create_user(name: string, age: i32, email: string): User {
     User {
         name: name,
         age: age,
@@ -96,7 +96,7 @@ fn create_user(name: string, age: i32, email: string) -> User {
 }
 
 // With shorthand
-fn create_user(name: string, age: i32, email: string) -> User {
+fn create_user(name: string, age: i32, email: string): User {
     User { name, age, email }
 }
 ```
@@ -155,7 +155,7 @@ Create structs without defining a type:
 let point = .{ x: 10, y: 20 }
 
 // Type is inferred
-fn draw_at(pos: .{ x: i32, y: i32 }) -> void {
+fn draw_at(pos: .{ x: i32, y: i32 }): void {
     println("Drawing at ({}, {})", pos.x, pos.y)
 }
 
@@ -165,7 +165,7 @@ draw_at(.{ x: 100, y: 200 })
 ### Return Anonymous Structs
 
 ```home
-fn get_bounds() -> .{ min: i32, max: i32 } {
+fn get_bounds(): .{ min: i32, max: i32 } {
     .{ min: 0, max: 100 }
 }
 
@@ -275,12 +275,12 @@ let person2 = Person {
 
 ```home
 // Good - concise
-fn create_user(name: string, age: i32, email: string) -> User {
+fn create_user(name: string, age: i32, email: string): User {
     User { name, age, email }
 }
 
 // Avoid - repetitive
-fn create_user(name: string, age: i32, email: string) -> User {
+fn create_user(name: string, age: i32, email: string): User {
     User {
         name: name,
         age: age,
@@ -335,7 +335,7 @@ let dev_config = Config {
 
 ```home
 // Good - simple return value
-fn get_stats() -> .{ count: i32, average: f64 } {
+fn get_stats(): .{ count: i32, average: f64 } {
     .{ count: 100, average: 75.5 }
 }
 
@@ -345,7 +345,7 @@ struct Stats {
     average: f64,
 }
 
-fn get_stats() -> Stats {
+fn get_stats(): Stats {
     Stats { count: 100, average: 75.5 }
 }
 ```
@@ -423,7 +423,7 @@ fn test_user_creation() {
 ### Response Objects
 
 ```home
-fn handle_request(req: Request) -> Response {
+fn handle_request(req: Request): Response {
     let status = 200
     let body = "OK"
     
@@ -479,7 +479,7 @@ struct Profile {
     verified: bool,
 }
 
-fn create_profile(username: string, display_name: string) -> Profile {
+fn create_profile(username: string, display_name: string): Profile {
     Profile {
         username,
         display_name,
@@ -490,7 +490,7 @@ fn create_profile(username: string, display_name: string) -> Profile {
 }
 
 // Update profile
-fn verify_profile(profile: Profile) -> Profile {
+fn verify_profile(profile: Profile): Profile {
     Profile {
         verified: true,
         ..profile
@@ -508,7 +508,7 @@ struct DbRecord {
     data: string,
 }
 
-fn create_record(data: string) -> DbRecord {
+fn create_record(data: string): DbRecord {
     let now = DateTime::now()
     
     DbRecord {
@@ -519,7 +519,7 @@ fn create_record(data: string) -> DbRecord {
     }
 }
 
-fn update_record(record: DbRecord, data: string) -> DbRecord {
+fn update_record(record: DbRecord, data: string): DbRecord {
     DbRecord {
         data,
         updated_at: DateTime::now(),
@@ -542,7 +542,7 @@ const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 }
 const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 }
 const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 }
 
-fn with_alpha(color: Color, alpha: u8) -> Color {
+fn with_alpha(color: Color, alpha: u8): Color {
     Color {
         a: alpha,
         ..color
@@ -563,7 +563,7 @@ struct ClickEvent {
     timestamp: i64,
 }
 
-fn handle_click(x: i32, y: i32, button: MouseButton) -> void {
+fn handle_click(x: i32, y: i32, button: MouseButton): void {
     let event = ClickEvent {
         x,
         y,

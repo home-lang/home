@@ -4,7 +4,7 @@
 // Example 1: Array Spread
 // ============================================================================
 
-fn test_array_spread() -> void {
+fn test_array_spread(): void {
     println("=== Array Spread ===")
     
     let arr1 = [1, 2, 3]
@@ -33,7 +33,7 @@ fn test_array_spread() -> void {
 // Example 2: Object Spread
 // ============================================================================
 
-fn test_object_spread() -> void {
+fn test_object_spread(): void {
     println("\n=== Object Spread ===")
     
     let defaults = {
@@ -68,11 +68,11 @@ fn test_object_spread() -> void {
 // Example 3: Function Call Spread
 // ============================================================================
 
-fn add(a: i32, b: i32, c: i32) -> i32 {
+fn add(a: i32, b: i32, c: i32): i32 {
     a + b + c
 }
 
-fn sum(...numbers: i32) -> i32 {
+fn sum(...numbers: i32): i32 {
     let mut total = 0
     for num in numbers {
         total += num
@@ -80,7 +80,7 @@ fn sum(...numbers: i32) -> i32 {
     total
 }
 
-fn test_function_call_spread() -> void {
+fn test_function_call_spread(): void {
     println("\n=== Function Call Spread ===")
     
     let numbers = [1, 2, 3]
@@ -105,13 +105,13 @@ fn test_function_call_spread() -> void {
 // Example 4: Rest Parameters
 // ============================================================================
 
-fn greet(greeting: string, ...names: string) -> void {
+fn greet(greeting: string, ...names: string): void {
     for name in names {
         println("{}, {}!", greeting, name)
     }
 }
 
-fn multiply(factor: i32, ...numbers: i32) -> Vec<i32> {
+fn multiply(factor: i32, ...numbers: i32): Vec<i32> {
     let mut results = vec![]
     for num in numbers {
         results.push(factor * num)
@@ -119,7 +119,7 @@ fn multiply(factor: i32, ...numbers: i32) -> Vec<i32> {
     results
 }
 
-fn test_rest_parameters() -> void {
+fn test_rest_parameters(): void {
     println("\n=== Rest Parameters ===")
     
     greet("Hello", "Alice", "Bob", "Charlie")
@@ -135,7 +135,7 @@ fn test_rest_parameters() -> void {
 // Example 5: Array Destructuring with Rest
 // ============================================================================
 
-fn test_array_destructuring() -> void {
+fn test_array_destructuring(): void {
     println("\n=== Array Destructuring with Rest ===")
     
     let numbers = [1, 2, 3, 4, 5]
@@ -163,7 +163,7 @@ fn test_array_destructuring() -> void {
 // Example 6: Object Destructuring with Rest
 // ============================================================================
 
-fn test_object_destructuring() -> void {
+fn test_object_destructuring(): void {
     println("\n=== Object Destructuring with Rest ===")
     
     let user = {
@@ -203,13 +203,13 @@ const DEFAULT_CONFIG: Config = {
     debug: false,
 }
 
-fn create_server(custom_config: Config) -> Server {
+fn create_server(custom_config: Config): Server {
     let config = { ...DEFAULT_CONFIG, ...custom_config }
     println("Server config: {:?}", config)
     Server::new(config)
 }
 
-fn test_merging_configs() -> void {
+fn test_merging_configs(): void {
     println("\n=== Merging Configurations ===")
     
     let dev_config = {
@@ -233,12 +233,12 @@ fn test_merging_configs() -> void {
 // Example 8: Removing Properties
 // ============================================================================
 
-fn sanitize_user(user: User) -> SafeUser {
+fn sanitize_user(user: User): SafeUser {
     let { password, secret_key, ...safe_user } = user
     safe_user
 }
 
-fn test_removing_properties() -> void {
+fn test_removing_properties(): void {
     println("\n=== Removing Properties ===")
     
     let user = {
@@ -258,7 +258,7 @@ fn test_removing_properties() -> void {
 // Example 9: Array Manipulation
 // ============================================================================
 
-fn test_array_manipulation() -> void {
+fn test_array_manipulation(): void {
     println("\n=== Array Manipulation ===")
     
     let numbers = [1, 2, 3, 4, 5]
@@ -293,7 +293,7 @@ fn test_array_manipulation() -> void {
 // Example 10: Flattening Arrays
 // ============================================================================
 
-fn test_flattening() -> void {
+fn test_flattening(): void {
     println("\n=== Flattening Arrays ===")
     
     let matrix = [
@@ -308,14 +308,14 @@ fn test_flattening() -> void {
     
     // Flatten with reduce
     let flat2 = matrix.reduce(|acc, row| [...acc, ...row], [])
-    println("Flattened (reduce): {:?}", flat2)
+    println("Flattened (reduce):  {:?}", flat2)
 }
 
 // ============================================================================
 // Example 11: Function Composition
 // ============================================================================
 
-fn compose<T>(...functions: fn(T) -> T) -> fn(T) -> T {
+fn compose<T>(...functions: fn(T): T): fn(T): T {
     return |x| {
         let mut result = x
         for func in functions {
@@ -325,11 +325,11 @@ fn compose<T>(...functions: fn(T) -> T) -> fn(T) -> T {
     }
 }
 
-fn double(x: i32) -> i32 { x * 2 }
-fn add_ten(x: i32) -> i32 { x + 10 }
-fn square(x: i32) -> i32 { x * x }
+fn double(x: i32): i32 { x * 2 }
+fn add_ten(x: i32): i32 { x + 10 }
+fn square(x: i32): i32 { x * x }
 
-fn test_function_composition() -> void {
+fn test_function_composition(): void {
     println("\n=== Function Composition ===")
     
     let pipeline = compose(double, add_ten, square)
@@ -342,15 +342,15 @@ fn test_function_composition() -> void {
 // Example 12: Partial Application
 // ============================================================================
 
-fn partial<F, Args, Rest>(func: F, ...args: Args) -> fn(...Rest) -> Result {
+fn partial<F, Args, Rest>(func: F, ...args: Args): fn(...Rest): Result {
     return |...rest| func(...args, ...rest)
 }
 
-fn multiply_three(a: i32, b: i32, c: i32) -> i32 {
+fn multiply_three(a: i32, b: i32, c: i32): i32 {
     a * b * c
 }
 
-fn test_partial_application() -> void {
+fn test_partial_application(): void {
     println("\n=== Partial Application ===")
     
     let multiply_by_2_and_3 = partial(multiply_three, 2, 3)
@@ -363,10 +363,10 @@ fn test_partial_application() -> void {
 // Example 13: Collecting Middleware
 // ============================================================================
 
-type Handler = fn(Request) -> Response
-type Middleware = fn(Handler) -> Handler
+type Handler = fn(Request): Response
+type Middleware = fn(Handler): Handler
 
-fn apply_middleware(handler: Handler, ...middleware: Middleware) -> Handler {
+fn apply_middleware(handler: Handler, ...middleware: Middleware): Handler {
     let mut wrapped = handler
     for mw in middleware.iter().rev() {
         wrapped = mw(wrapped)
@@ -374,7 +374,7 @@ fn apply_middleware(handler: Handler, ...middleware: Middleware) -> Handler {
     wrapped
 }
 
-fn logging_middleware(next: Handler) -> Handler {
+fn logging_middleware(next: Handler): Handler {
     return |req| {
         println("Request: {:?}", req)
         let res = next(req)
@@ -383,7 +383,7 @@ fn logging_middleware(next: Handler) -> Handler {
     }
 }
 
-fn auth_middleware(next: Handler) -> Handler {
+fn auth_middleware(next: Handler): Handler {
     return |req| {
         if !req.is_authenticated() {
             return Response::unauthorized()
@@ -392,7 +392,7 @@ fn auth_middleware(next: Handler) -> Handler {
     }
 }
 
-fn test_middleware() -> void {
+fn test_middleware(): void {
     println("\n=== Middleware ===")
     
     let base_handler = |req| Response::ok("Hello")
@@ -411,7 +411,7 @@ fn test_middleware() -> void {
 // Example 14: Nested Destructuring
 // ============================================================================
 
-fn test_nested_destructuring() -> void {
+fn test_nested_destructuring(): void {
     println("\n=== Nested Destructuring ===")
     
     let person = {
@@ -445,7 +445,7 @@ fn test_nested_destructuring() -> void {
 // Example 15: Conditional Spreading
 // ============================================================================
 
-fn test_conditional_spreading() -> void {
+fn test_conditional_spreading(): void {
     println("\n=== Conditional Spreading ===")
     
     let is_production = true
@@ -468,7 +468,7 @@ fn test_conditional_spreading() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     test_array_spread()
     test_object_spread()
     test_function_call_spread()

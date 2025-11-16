@@ -18,11 +18,11 @@ let score = 75;
 let grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : "D";
 
 // Test 4: Ternary with function calls
-fn double(n: int) -> int {
+fn double(n: int): int {
     return n * 2;
 }
 
-fn triple(n: int) -> int {
+fn triple(n: int): int {
     return n * 3;
 }
 
@@ -31,7 +31,7 @@ let transformed = val > 3 ? double(val) : triple(val);
 assert(transformed == 10);
 
 // Test 5: Ternary in return statement
-fn abs(n: int) -> int {
+fn abs(n: int): int {
     return n >= 0 ? n : -n;
 }
 

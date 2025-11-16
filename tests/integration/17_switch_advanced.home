@@ -78,7 +78,7 @@ switch outer {
 assert(nested == 12);
 
 // Test 6: Switch in function
-fn categorize(num: int) -> int {
+fn categorize(num: int): int {
     let category = 0;
     switch num {
         case 0, 1, 2: {

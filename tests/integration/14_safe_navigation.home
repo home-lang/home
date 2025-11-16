@@ -30,7 +30,7 @@ let combined = (o1?.val ?? 5) + (o2?.val ?? 10);
 assert(combined == 15);
 
 // Test 7: Safe navigation in function parameter
-fn processValue(obj: int) -> int {
+fn processValue(obj: int): int {
     return obj?.data ?? 0;
 }
 

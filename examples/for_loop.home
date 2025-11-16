@@ -1,5 +1,5 @@
 // For loop example
-fn main() -> int {
+fn main(): int {
     let mut sum = 0
     for i in 10 {
         sum = sum + i

@@ -1,5 +1,5 @@
 // Integer overflow example (should fail parsing)
-fn main() -> int {
+fn main(): int {
     // i64 max is 9223372036854775807
     let x = 99999999999999999999999999999999999
     return 0

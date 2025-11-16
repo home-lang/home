@@ -1,12 +1,12 @@
 // Async/await in Home
 import std/http { get }
 
-fn fetch_user(id: int) -> async Result<User> {
+fn fetch_user(id: int): async Result<User> {
   let response = await http.get("/api/users/{id}")
   return await response.json()
 }
 
-fn main() -> async {
+fn main(): async {
   let user = await fetch_user(1)
   match user {
     Ok(u) => print("User: {u.name}"),

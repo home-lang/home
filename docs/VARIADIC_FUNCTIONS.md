@@ -18,7 +18,7 @@ Variadic functions accept a variable number of arguments, enabling flexible APIs
 
 ```home
 // Variadic parameter with ...T syntax
-fn sum(numbers: ...i32) -> i32 {
+fn sum(numbers: ...i32): i32 {
     let total = 0
     for num in numbers {
         total += num
@@ -36,7 +36,7 @@ let result3 = sum()               // 0
 
 ```home
 // Regular parameters followed by variadic
-fn format(template: string, ...args: any) -> string {
+fn format(template: string, ...args: any): string {
     // Format string with arguments
     template.format(args)
 }
@@ -50,14 +50,14 @@ let msg = format("Hello, {}! You have {} messages", "Alice", 5)
 
 ```home
 // Type-safe variadic parameter
-fn print_all(...items: string) -> void {
+fn print_all(...items: string): void {
     for item in items {
         println(item)
     }
 }
 
 // Generic variadic parameter
-fn max<T: Ord>(...values: T) -> T {
+fn max<T: Ord>(...values: T): T {
     let mut maximum = values[0]
     for value in values[1..] {
         if value > maximum {
@@ -73,7 +73,7 @@ fn max<T: Ord>(...values: T) -> T {
 Variadic parameters are treated as slices within the function body:
 
 ```home
-fn describe(...items: string) -> void {
+fn describe(...items: string): void {
     println("Received {} items", items.len())
     
     for (i, item) in items.iter().enumerate() {
@@ -120,7 +120,7 @@ let extended = [0, ...arr1, 10]       // [0, 1, 2, 3, 10]
 
 ```home
 // All variadic arguments must be same type
-fn add_numbers(...nums: i32) -> i32 {
+fn add_numbers(...nums: i32): i32 {
     nums.iter().sum()
 }
 
@@ -132,7 +132,7 @@ add_numbers(1, 2.5, 3)    // Error: expected i32, found f64
 
 ```home
 // Generic with trait bounds
-fn print_all<T: Display>(...items: T) -> void {
+fn print_all<T: Display>(...items: T): void {
     for item in items {
         println("{}", item)
     }
@@ -146,7 +146,7 @@ print_all("a", "b", "c")     // OK - string implements Display
 
 ```home
 // Accept any type (less safe)
-fn log(...items: any) -> void {
+fn log(...items: any): void {
     for item in items {
         println("{:?}", item)
     }
@@ -199,7 +199,7 @@ let max_str = max("apple", "zebra", "banana")  // "zebra"
 
 ```home
 // Generic variadic function
-fn first_of<T>(...items: T) -> Option<T> {
+fn first_of<T>(...items: T): Option<T> {
     if items.len() > 0 {
         Some(items[0])
     } else {
@@ -217,10 +217,10 @@ let none = first_of::<i32>()       // None
 ```home
 // Multiple generics with variadic
 fn zip_with<T, U, R>(
-    func: fn(T, U) -> R,
+    func: fn(T, U): R,
     ts: ...T,
     us: ...U
-) -> Vec<R> {
+): Vec<R> {
     let mut results = vec![]
     let len = min(ts.len(), us.len())
     
@@ -267,11 +267,11 @@ struct QueryBuilder {
 }
 
 impl QueryBuilder {
-    fn new() -> QueryBuilder {
+    fn new(): QueryBuilder {
         QueryBuilder { conditions: vec![] }
     }
     
-    fn where_in(&mut self, field: string, ...values: any) -> &mut QueryBuilder {
+    fn where_in(&mut self, field: string, ...values: any): &mut QueryBuilder {
         let vals = values.iter()
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
@@ -291,7 +291,7 @@ let query = QueryBuilder::new()
 
 ```home
 // Process variadic arguments recursively
-fn process_all<T>(...items: T) -> void
+fn process_all<T>(...items: T): void
 where
     T: Display
 {
@@ -310,12 +310,12 @@ where
 
 ```home
 // Good - type safe
-fn sum_numbers(...nums: i32) -> i32 {
+fn sum_numbers(...nums: i32): i32 {
     nums.iter().sum()
 }
 
 // Avoid - too permissive
-fn sum_anything(...items: any) -> any {
+fn sum_anything(...items: any): any {
     // Type safety lost
 }
 ```
@@ -335,7 +335,7 @@ fn sum_anything(...items: any) -> any {
 /// ```
 /// let avg = average(1, 2, 3, 4, 5)  // 3
 /// ```
-fn average(...numbers: f64) -> f64 {
+fn average(...numbers: f64): f64 {
     if numbers.len() == 0 {
         return 0.0
     }
@@ -347,7 +347,7 @@ fn average(...numbers: f64) -> f64 {
 
 ```home
 // Require at least one argument
-fn max<T: Ord>(first: T, ...rest: T) -> T {
+fn max<T: Ord>(first: T, ...rest: T): T {
     let mut maximum = first
     for value in rest {
         if value > maximum {
@@ -375,12 +375,12 @@ let all_numbers = first_batch.concat(second_batch).concat(third_batch)
 
 ```home
 // Good - simple variadic
-fn concat(...strings: string) -> string {
+fn concat(...strings: string): string {
     strings.join("")
 }
 
 // Avoid - too complex
-fn complex(...items: any) -> Result<any, Error> {
+fn complex(...items: any): Result<any, Error> {
     // Too much type checking and branching
 }
 ```
@@ -395,13 +395,13 @@ fn complex(...items: any) -> Result<any, Error> {
 
 ```home
 // OK
-fn func(a: i32, b: string, ...rest: i32) -> void { }
+fn func(a: i32, b: string, ...rest: i32): void { }
 
 // Error - variadic not last
-fn func(...rest: i32, a: i32) -> void { }
+fn func(...rest: i32, a: i32): void { }
 
 // Error - multiple variadic
-fn func(...nums: i32, ...strs: string) -> void { }
+fn func(...nums: i32, ...strs: string): void { }
 ```
 
 ## Examples
@@ -416,7 +416,7 @@ enum LogLevel {
     Error,
 }
 
-fn log(level: LogLevel, ...messages: any) -> void {
+fn log(level: LogLevel, ...messages: any): void {
     let prefix = match level {
         LogLevel::Debug => "[DEBUG]",
         LogLevel::Info => "[INFO]",
@@ -441,11 +441,11 @@ log(LogLevel::Error, "Failed to connect:", error_msg)
 ### SQL Query Builder
 
 ```home
-fn select(...columns: string) -> QueryBuilder {
+fn select(...columns: string): QueryBuilder {
     QueryBuilder::new().select(columns)
 }
 
-fn where_clause(field: string, op: string, ...values: any) -> Condition {
+fn where_clause(field: string, op: string, ...values: any): Condition {
     Condition::new(field, op, values)
 }
 
@@ -459,7 +459,7 @@ let query = select("id", "name", "email")
 ### Test Assertions
 
 ```home
-fn assert_all_equal<T: PartialEq + Debug>(...values: T) -> void {
+fn assert_all_equal<T: PartialEq + Debug>(...values: T): void {
     if values.len() < 2 {
         return
     }

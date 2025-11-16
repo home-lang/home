@@ -679,9 +679,9 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightParen, "Expected ')' after parameters");
 
-        // Parse return type
+        // Parse return type (TypeScript-style with colon)
         var return_type: ?[]const u8 = null;
-        if (self.match(&.{.Arrow})) {
+        if (self.match(&.{.Colon})) {
             const ret_token = try self.expect(.Identifier, "Expected return type");
             return_type = ret_token.lexeme;
         }

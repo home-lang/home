@@ -113,7 +113,7 @@ let config = {
 ### Spreading Arguments
 
 ```home
-fn add(a: i32, b: i32, c: i32) -> i32 {
+fn add(a: i32, b: i32, c: i32): i32 {
     a + b + c
 }
 
@@ -127,7 +127,7 @@ let sum = add(...numbers)
 ### Mix Spread with Regular Arguments
 
 ```home
-fn greet(greeting: string, ...names: string) -> void {
+fn greet(greeting: string, ...names: string): void {
     for name in names {
         println("{}, {}!", greeting, name)
     }
@@ -143,7 +143,7 @@ greet("Hello", ...people, "Charlie")
 ### Multiple Spreads
 
 ```home
-fn sum(...numbers: i32) -> i32 {
+fn sum(...numbers: i32): i32 {
     numbers.iter().sum()
 }
 
@@ -161,7 +161,7 @@ let total = sum(...arr1, ...arr2, 7, 8, 9)
 
 ```home
 // Rest parameter collects remaining arguments
-fn sum(first: i32, ...rest: i32) -> i32 {
+fn sum(first: i32, ...rest: i32): i32 {
     let total = first
     for num in rest {
         total += num
@@ -175,7 +175,7 @@ sum(1, 2, 3, 4, 5)  // first=1, rest=[2,3,4,5]
 ### With Named Parameters
 
 ```home
-fn log(level: string, message: string, ...details: any) -> void {
+fn log(level: string, message: string, ...details: any): void {
     println("[{}] {}", level, message)
     for detail in details {
         println("  {:?}", detail)
@@ -340,10 +340,10 @@ let deep_copy = {
 
 ```home
 // Good
-fn func(a: i32, b: i32, ...rest: i32) -> void { }
+fn func(a: i32, b: i32, ...rest: i32): void { }
 
 // Error - rest must be last
-fn func(a: i32, ...rest: i32, b: i32) -> void { }
+fn func(a: i32, ...rest: i32, b: i32): void { }
 ```
 
 ### 4. Limit Spread Depth
@@ -380,7 +380,7 @@ const DEFAULT_CONFIG = {
     retries: 3,
 }
 
-fn create_client(config: Config) -> Client {
+fn create_client(config: Config): Client {
     let final_config = { ...DEFAULT_CONFIG, ...config }
     Client::new(final_config)
 }
@@ -404,7 +404,7 @@ let { password, ...safe_user } = user
 ### Function Composition
 
 ```home
-fn compose<T>(...functions: fn(T) -> T) -> fn(T) -> T {
+fn compose<T>(...functions: fn(T): T): fn(T): T {
     return |x| {
         let result = x
         for func in functions {
@@ -420,9 +420,9 @@ let pipeline = compose(trim, lowercase, remove_spaces)
 ### Partial Application
 
 ```home
-fn partial<F, Args, Rest>(func: F, ...args: Args) -> fn(...Rest) -> Result
+fn partial<F, Args, Rest>(func: F, ...args: Args): fn(...Rest): Result
 where
-    F: Fn(Args, Rest) -> Result
+    F: Fn(Args, Rest): Result
 {
     return |...rest| func(...args, ...rest)
 }
@@ -435,7 +435,7 @@ let result = add_5_and_10(3)  // 18
 ### Collecting Middleware
 
 ```home
-fn apply_middleware(handler: Handler, ...middleware: Middleware) -> Handler {
+fn apply_middleware(handler: Handler, ...middleware: Middleware): Handler {
     let mut wrapped = handler
     for mw in middleware.reverse() {
         wrapped = mw(wrapped)
@@ -498,7 +498,7 @@ let modified = {
 ### Function Arguments
 
 ```home
-fn create_user(name: string, age: i32, ...options: UserOption) -> User {
+fn create_user(name: string, age: i32, ...options: UserOption): User {
     let mut user = User { name, age }
     
     for option in options {

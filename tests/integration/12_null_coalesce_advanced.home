@@ -21,7 +21,7 @@ let value = a ?? b ?? c ?? d;
 assert(value == 100);
 
 // Test 4: Null coalescing with function calls
-fn maybeGetValue(flag: int) -> int {
+fn maybeGetValue(flag: int): int {
     return flag;
 }
 

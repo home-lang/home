@@ -12,7 +12,7 @@ let val3 = 42;
 let result2 = val1 ?? val2 ?? val3;
 
 // Null coalescing with expressions
-fn getValue(hasValue: bool) -> int {
+fn getValue(hasValue: bool): int {
     return hasValue ? 100 : 0;
 }
 

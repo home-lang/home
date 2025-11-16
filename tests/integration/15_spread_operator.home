@@ -37,7 +37,7 @@ let part3 = (3,);
 let threeway = (...part1, ...part2, ...part3);
 
 // Test 9: Spread in function call context
-fn sum(a: int, b: int, c: int) -> int {
+fn sum(a: int, b: int, c: int): int {
     return a + b + c;
 }
 

@@ -780,7 +780,7 @@ pub const Lexer = struct {
                 self.makeToken(.Question),
             '@' => self.makeToken(.At),
             '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
-            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
+            '-' => if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
             '*' => if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
             '/' => if (self.match('=')) self.makeToken(.SlashEqual) else self.makeToken(.Slash),
             '%' => if (self.match('=')) self.makeToken(.PercentEqual) else self.makeToken(.Percent),
@@ -844,7 +844,7 @@ test "lexer: single tokens" {
 
 test "lexer: operators" {
     const testing = std.testing;
-    var lexer = Lexer.init(testing.allocator, "+ += - -= -> * *= / /= == != < <= > >=");
+    var lexer = Lexer.init(testing.allocator, "+ += - -= * *= / /= == != < <= > >=");
     var tokens = try lexer.tokenize();
     defer tokens.deinit(testing.allocator);
 
@@ -852,9 +852,8 @@ test "lexer: operators" {
     try testing.expectEqual(TokenType.PlusEqual, tokens.items[1].type);
     try testing.expectEqual(TokenType.Minus, tokens.items[2].type);
     try testing.expectEqual(TokenType.MinusEqual, tokens.items[3].type);
-    try testing.expectEqual(TokenType.Arrow, tokens.items[4].type);
-    try testing.expectEqual(TokenType.Star, tokens.items[5].type);
-    try testing.expectEqual(TokenType.StarEqual, tokens.items[6].type);
+    try testing.expectEqual(TokenType.Star, tokens.items[4].type);
+    try testing.expectEqual(TokenType.StarEqual, tokens.items[5].type);
 }
 
 test "lexer: integers" {

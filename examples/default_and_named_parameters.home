@@ -4,7 +4,7 @@
 // Example 1: Basic Default Parameters
 // ============================================================================
 
-fn greet(name: string = "World") -> void {
+fn greet(name: string = "World"): void {
     println("Hello, {}!", name)
 }
 
@@ -12,11 +12,11 @@ fn create_user(
     name: string,
     age: i32 = 0,
     active: bool = true
-) -> User {
+): User {
     User { name, age, active }
 }
 
-fn test_basic_defaults() -> void {
+fn test_basic_defaults(): void {
     println("=== Basic Default Parameters ===")
     
     greet()           // Hello, World!
@@ -36,11 +36,11 @@ fn test_basic_defaults() -> void {
 // Example 2: Named Arguments
 // ============================================================================
 
-fn create_rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+fn create_rect(x: i32, y: i32, width: i32, height: i32): Rect {
     Rect { x, y, width, height }
 }
 
-fn test_named_arguments() -> void {
+fn test_named_arguments(): void {
     println("\n=== Named Arguments ===")
     
     // Positional
@@ -72,12 +72,12 @@ fn draw_text(
     color: Color = Color::Black,
     bold: bool = false,
     italic: bool = false
-) -> void {
+): void {
     println("Drawing '{}' at ({}, {}) size:{} color:{:?} bold:{} italic:{}",
             text, x, y, size, color, bold, italic)
 }
 
-fn test_defaults_with_named() -> void {
+fn test_defaults_with_named(): void {
     println("\n=== Defaults with Named Arguments ===")
     
     // All defaults
@@ -104,7 +104,7 @@ fn connect(
     timeout: i32 = 30,
     retries: i32 = 3,
     ssl: bool = false
-) -> Connection {
+): Connection {
     Connection {
         host,
         port,
@@ -114,7 +114,7 @@ fn connect(
     }
 }
 
-fn test_named_only() -> void {
+fn test_named_only(): void {
     println("\n=== Named-Only Parameters ===")
     
     let conn1 = connect("localhost")
@@ -144,7 +144,7 @@ fn start_server(
     max_connections: i32 = 1000,
     timeout: i32 = 30,
     debug: bool = false
-) -> Server {
+): Server {
     println("Starting server:")
     println("  Port: {}", port)
     println("  Workers: {}", workers)
@@ -161,7 +161,7 @@ fn start_server(
     }
 }
 
-fn test_configuration() -> void {
+fn test_configuration(): void {
     println("\n=== Configuration Functions ===")
     
     println("Default server:")
@@ -191,7 +191,7 @@ fn copy_file(
     preserve_metadata: bool = true,
     follow_symlinks: bool = false,
     verbose: bool = false
-) -> Result<()> {
+): Result<()> {
     if verbose {
         println("Copying {} to {}", source, dest)
         println("  Overwrite: {}", overwrite)
@@ -203,7 +203,7 @@ fn copy_file(
     Ok(())
 }
 
-fn test_boolean_flags() -> void {
+fn test_boolean_flags(): void {
     println("\n=== Boolean Flags with Named Args ===")
     
     // Clear what each flag does
@@ -234,7 +234,7 @@ fn http_get(
     headers: HashMap<string, string> = HashMap::new(),
     follow_redirects: bool = true,
     verify_ssl: bool = true
-) -> Result<Response> {
+): Result<Response> {
     println("GET {}", url)
     println("  Timeout: {}s", timeout)
     println("  Headers: {} custom headers", headers.len())
@@ -245,7 +245,7 @@ fn http_get(
     Ok(Response::new())
 }
 
-fn test_http_requests() -> void {
+fn test_http_requests(): void {
     println("\n=== HTTP Request Function ===")
     
     // Simple request
@@ -280,7 +280,7 @@ fn query<T>(
     timeout: i32 = 30,
     readonly: bool = false,
     cache: bool = false
-) -> Result<Vec<T>> {
+): Result<Vec<T>> {
     println("Query: {}", sql)
     println("  Params: {:?}", params)
     println("  Timeout: {}s", timeout)
@@ -291,7 +291,7 @@ fn query<T>(
     Ok(vec![])
 }
 
-fn test_database_queries() -> void {
+fn test_database_queries(): void {
     println("\n=== Database Queries ===")
     
     // Simple query
@@ -315,32 +315,32 @@ fn test_database_queries() -> void {
 // Example 9: Range Function
 // ============================================================================
 
-fn range(start: i32 = 0, end: i32, step: i32 = 1) -> Range {
+fn range(start: i32 = 0, end: i32, step: i32 = 1): Range {
     Range { start, end, step }
 }
 
-fn test_range_function() -> void {
+fn test_range_function(): void {
     println("\n=== Range Function ===")
     
-    println("range(10):")
+    println("range(10): ")
     for i in range(10) {
         print("{} ", i)
     }
     println("")
     
-    println("range(5, 15):")
+    println("range(5, 15): ")
     for i in range(5, 15) {
         print("{} ", i)
     }
     println("")
     
-    println("range(0, 20, 2):")
+    println("range(0, 20, 2): ")
     for i in range(0, 20, 2) {
         print("{} ", i)
     }
     println("")
     
-    println("range(end: 10, step: 2):")
+    println("range(end: 10, step: 2): ")
     for i in range(end: 10, step: 2) {
         print("{} ", i)
     }
@@ -360,7 +360,7 @@ fn create_window(
     fullscreen: bool = false,
     vsync: bool = true,
     msaa: i32 = 4
-) -> Window {
+): Window {
     println("Creating window: '{}'", title)
     println("  Size: {}x{}", width, height)
     println("  Resizable: {}", resizable)
@@ -379,7 +379,7 @@ fn create_window(
     }
 }
 
-fn test_window_creation() -> void {
+fn test_window_creation(): void {
     println("\n=== Window Creation ===")
     
     // Default window
@@ -416,7 +416,7 @@ fn log(
     timestamp: bool = true,
     color: bool = true,
     file: string = "app.log"
-) -> void {
+): void {
     let prefix = match level {
         LogLevel::Debug => "[DEBUG]",
         LogLevel::Info => "[INFO]",
@@ -431,7 +431,7 @@ fn log(
     println("{} {} (log: {})", prefix, message, file)
 }
 
-fn test_logging() -> void {
+fn test_logging(): void {
     println("\n=== Logging Function ===")
     
     log("Application started")
@@ -444,7 +444,7 @@ fn test_logging() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     test_basic_defaults()
     test_named_arguments()
     test_defaults_with_named()

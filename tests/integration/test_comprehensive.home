@@ -31,7 +31,7 @@ try {
 }
 
 // Test 4: Function using multiple features
-fn processValue(val: int) -> int {
+fn processValue(val: int): int {
     let result = 0;
 
     // Use ternary
@@ -61,7 +61,7 @@ let finalResult = processValue(-5);
 assert(finalResult > 0);
 
 // Test 5: Complex control flow
-fn fibonacci(n: int) -> int {
+fn fibonacci(n: int): int {
     // Use ternary for base case
     return n <= 1 ? n : fibonacci(n - 1) + fibonacci(n - 2);
 }

@@ -20,7 +20,7 @@ In traditional OOP, method selection is based only on the receiver (first argume
 ```home
 // Single dispatch - only 'self' type matters
 impl Shape {
-    fn collides_with(self, other: Shape) -> bool {
+    fn collides_with(self, other: Shape): bool {
         // Must manually check 'other' type
         match other {
             Circle(c) => self.collides_with_circle(c),
@@ -37,18 +37,18 @@ With multiple dispatch, selection is based on **all** argument types:
 
 ```home
 // Multiple dispatch - both types matter
-fn collides(a: Circle, b: Circle) -> bool {
+fn collides(a: Circle, b: Circle): bool {
     // Circle-Circle specific logic
     let distance = sqrt((a.x - b.x)^2 + (a.y - b.y)^2)
     distance < (a.radius + b.radius)
 }
 
-fn collides(a: Circle, b: Rectangle) -> bool {
+fn collides(a: Circle, b: Rectangle): bool {
     // Circle-Rectangle specific logic
     // ...
 }
 
-fn collides(a: Rectangle, b: Rectangle) -> bool {
+fn collides(a: Rectangle, b: Rectangle): bool {
     // Rectangle-Rectangle specific logic
     // ...
 }
@@ -67,15 +67,15 @@ collides(rect, circle)  // Calls Rectangle-Circle version (if defined)
 
 ```home
 // Define multiple variants of the same function
-fn process(data: String) -> Result {
+fn process(data: String): Result {
     // Handle string
 }
 
-fn process(data: i32) -> Result {
+fn process(data: i32): Result {
     // Handle integer
 }
 
-fn process(data: Vec<u8>) -> Result {
+fn process(data: Vec<u8>): Result {
     // Handle byte array
 }
 
@@ -88,19 +88,19 @@ process(vec![1,2,3]) // Vec version
 ### Multiple Parameters
 
 ```home
-fn combine(a: String, b: String) -> String {
+fn combine(a: String, b: String): String {
     a + b
 }
 
-fn combine(a: String, b: i32) -> String {
+fn combine(a: String, b: i32): String {
     a + b.to_string()
 }
 
-fn combine(a: i32, b: String) -> String {
+fn combine(a: i32, b: String): String {
     a.to_string() + b
 }
 
-fn combine(a: i32, b: i32) -> i32 {
+fn combine(a: i32, b: i32): i32 {
     a + b
 }
 
@@ -116,7 +116,7 @@ combine(5, 10)             // 15
 ### Exact Match
 
 ```home
-fn greet(name: String) -> void {
+fn greet(name: String): void {
     println("Hello, {}!", name)
 }
 
@@ -134,15 +134,15 @@ trait Mammal: Animal { }
 struct Dog;
 impl Mammal for Dog { }
 
-fn describe(a: Animal) -> String {
+fn describe(a: Animal): String {
     "An animal"
 }
 
-fn describe(m: Mammal) -> String {
+fn describe(m: Mammal): String {
     "A mammal"
 }
 
-fn describe(d: Dog) -> String {
+fn describe(d: Dog): String {
     "A dog"
 }
 
@@ -159,8 +159,8 @@ describe(animal)  // Calls Animal version
 ### Ambiguity Detection
 
 ```home
-fn process(a: i32, b: f64) -> void { }
-fn process(a: f64, b: i32) -> void { }
+fn process(a: i32, b: f64): void { }
+fn process(a: f64, b: i32): void { }
 
 // Error: Ambiguous!
 process(1.0, 2.0)  // Could match either after coercion
@@ -176,10 +176,10 @@ Dispatch resolution follows these rules (in order):
 4. **Generic without constraints** - Least specific
 
 ```home
-fn handle(x: Circle) -> void { }           // Specificity: 100
-fn handle(x: impl Shape) -> void { }       // Specificity: 50
-fn handle<T: Display>(x: T) -> void { }    // Specificity: 25
-fn handle<T>(x: T) -> void { }             // Specificity: 10
+fn handle(x: Circle): void { }           // Specificity: 100
+fn handle(x: impl Shape): void { }       // Specificity: 50
+fn handle<T: Display>(x: T): void { }    // Specificity: 25
+fn handle<T>(x: T): void { }             // Specificity: 10
 
 let circle = Circle { ... };
 handle(circle)  // Calls Circle version (most specific)
@@ -191,24 +191,24 @@ handle(circle)  // Calls Circle version (most specific)
 
 ```home
 // Game physics
-fn collide(a: Sphere, b: Sphere) -> Collision {
+fn collide(a: Sphere, b: Sphere): Collision {
     // Sphere-sphere collision
 }
 
-fn collide(a: Sphere, b: Box) -> Collision {
+fn collide(a: Sphere, b: Box): Collision {
     // Sphere-box collision
 }
 
-fn collide(a: Sphere, b: Plane) -> Collision {
+fn collide(a: Sphere, b: Plane): Collision {
     // Sphere-plane collision
 }
 
-fn collide(a: Box, b: Box) -> Collision {
+fn collide(a: Box, b: Box): Collision {
     // Box-box collision
 }
 
 // Symmetric operations
-fn collide(a: Box, b: Sphere) -> Collision {
+fn collide(a: Box, b: Sphere): Collision {
     collide(b, a)  // Reuse Sphere-Box
 }
 
@@ -226,19 +226,19 @@ for entity1 in entities {
 
 ```home
 // Matrix library
-fn multiply(a: Matrix, b: Matrix) -> Matrix {
+fn multiply(a: Matrix, b: Matrix): Matrix {
     // Matrix-matrix multiplication
 }
 
-fn multiply(a: Matrix, b: Vector) -> Vector {
+fn multiply(a: Matrix, b: Vector): Vector {
     // Matrix-vector multiplication
 }
 
-fn multiply(a: Matrix, b: Scalar) -> Matrix {
+fn multiply(a: Matrix, b: Scalar): Matrix {
     // Scalar multiplication
 }
 
-fn multiply(a: Vector, b: Vector) -> Scalar {
+fn multiply(a: Vector, b: Vector): Scalar {
     // Dot product
 }
 
@@ -251,19 +251,19 @@ let result = multiply(m, v)  // Returns Vector
 ### 3. Serialization
 
 ```home
-fn serialize(data: User, format: JSON) -> String {
+fn serialize(data: User, format: JSON): String {
     // User to JSON
 }
 
-fn serialize(data: User, format: XML) -> String {
+fn serialize(data: User, format: XML): String {
     // User to XML
 }
 
-fn serialize(data: Post, format: JSON) -> String {
+fn serialize(data: Post, format: JSON): String {
     // Post to JSON
 }
 
-fn serialize(data: Post, format: Binary) -> Vec<u8> {
+fn serialize(data: Post, format: Binary): Vec<u8> {
     // Post to binary
 }
 
@@ -275,22 +275,22 @@ let xml = serialize(post, XML);
 ### 4. Event Handling
 
 ```home
-fn handle(event: MouseClick, target: Button) -> void {
+fn handle(event: MouseClick, target: Button): void {
     // Button click
     target.on_click()
 }
 
-fn handle(event: MouseClick, target: TextInput) -> void {
+fn handle(event: MouseClick, target: TextInput): void {
     // Text input click (focus)
     target.focus()
 }
 
-fn handle(event: KeyPress, target: TextInput) -> void {
+fn handle(event: KeyPress, target: TextInput): void {
     // Text input key press
     target.insert_char(event.char)
 }
 
-fn handle(event: KeyPress, target: Canvas) -> void {
+fn handle(event: KeyPress, target: Canvas): void {
     // Canvas key press (shortcuts)
     if event.key == "Ctrl+S" {
         target.save()
@@ -309,19 +309,19 @@ for event in events {
 
 ```home
 // AST traversal
-fn visit(visitor: TypeChecker, node: FunctionDecl) -> void {
+fn visit(visitor: TypeChecker, node: FunctionDecl): void {
     // Type check function
 }
 
-fn visit(visitor: TypeChecker, node: VariableDecl) -> void {
+fn visit(visitor: TypeChecker, node: VariableDecl): void {
     // Type check variable
 }
 
-fn visit(visitor: CodeGenerator, node: FunctionDecl) -> void {
+fn visit(visitor: CodeGenerator, node: FunctionDecl): void {
     // Generate code for function
 }
 
-fn visit(visitor: CodeGenerator, node: VariableDecl) -> void {
+fn visit(visitor: CodeGenerator, node: VariableDecl): void {
     // Generate code for variable
 }
 
@@ -338,19 +338,19 @@ for node in ast {
 ### 6. Protocol Negotiation
 
 ```home
-fn connect(client: HTTP1Client, server: HTTP1Server) -> Connection {
+fn connect(client: HTTP1Client, server: HTTP1Server): Connection {
     // HTTP/1.1 connection
 }
 
-fn connect(client: HTTP2Client, server: HTTP2Server) -> Connection {
+fn connect(client: HTTP2Client, server: HTTP2Server): Connection {
     // HTTP/2 connection
 }
 
-fn connect(client: HTTP2Client, server: HTTP1Server) -> Connection {
+fn connect(client: HTTP2Client, server: HTTP1Server): Connection {
     // Downgrade to HTTP/1.1
 }
 
-fn connect(client: HTTP1Client, server: HTTP2Server) -> Connection {
+fn connect(client: HTTP1Client, server: HTTP2Server): Connection {
     // Upgrade to HTTP/2
 }
 ```
@@ -361,23 +361,23 @@ fn connect(client: HTTP1Client, server: HTTP2Server) -> Connection {
 
 ```home
 // Good - clear, specific variants
-fn draw(shape: Circle, canvas: Canvas2D) -> void { }
-fn draw(shape: Rectangle, canvas: Canvas2D) -> void { }
+fn draw(shape: Circle, canvas: Canvas2D): void { }
+fn draw(shape: Rectangle, canvas: Canvas2D): void { }
 
 // Avoid - too generic
-fn draw(shape: Any, canvas: Any) -> void { }
+fn draw(shape: Any, canvas: Any): void { }
 ```
 
 ### 2. Avoid Ambiguity
 
 ```home
 // Good - unambiguous
-fn process(a: i32, b: String) -> void { }
-fn process(a: String, b: i32) -> void { }
+fn process(a: i32, b: String): void { }
+fn process(a: String, b: i32): void { }
 
 // Avoid - ambiguous
-fn process(a: Number, b: Number) -> void { }
-fn process(a: Integer, b: Integer) -> void { }
+fn process(a: Number, b: Number): void { }
+fn process(a: Integer, b: Integer): void { }
 // What if both Number and Integer match?
 ```
 
@@ -385,11 +385,11 @@ fn process(a: Integer, b: Integer) -> void { }
 
 ```home
 // Good - both directions defined
-fn combine(a: String, b: i32) -> String { }
-fn combine(a: i32, b: String) -> String { }
+fn combine(a: String, b: i32): String { }
+fn combine(a: i32, b: String): String { }
 
 // Or use delegation
-fn combine(a: i32, b: String) -> String {
+fn combine(a: i32, b: String): String {
     combine(b, a)  // Reuse String-i32 version
 }
 ```
@@ -404,7 +404,7 @@ fn combine(a: i32, b: String) -> String {
 /// - `(String, i32)` - Append number
 /// - `(i32, String)` - Prepend number
 /// - `(i32, i32)` - Sum then convert
-fn combine(a: impl Display, b: impl Display) -> String {
+fn combine(a: impl Display, b: impl Display): String {
     // ...
 }
 ```
@@ -433,12 +433,12 @@ fn test_collisions() {
 ### Generic Dispatch
 
 ```home
-fn process<T: Serialize>(data: T, format: JSON) -> String {
+fn process<T: Serialize>(data: T, format: JSON): String {
     // Generic data, specific format
     data.to_json()
 }
 
-fn process<T: Serialize>(data: T, format: XML) -> String {
+fn process<T: Serialize>(data: T, format: XML): String {
     // Generic data, different format
     data.to_xml()
 }
@@ -447,12 +447,12 @@ fn process<T: Serialize>(data: T, format: XML) -> String {
 ### Constrained Dispatch
 
 ```home
-fn compare<T: Ord>(a: T, b: T) -> Ordering {
+fn compare<T: Ord>(a: T, b: T): Ordering {
     // Same type comparison
     a.cmp(&b)
 }
 
-fn compare<T: Ord, U: Ord>(a: T, b: U) -> Ordering
+fn compare<T: Ord, U: Ord>(a: T, b: U): Ordering
 where
     T: Into<U>
 {
@@ -464,11 +464,11 @@ where
 ### Default Fallback
 
 ```home
-fn handle(event: Event, target: Widget) -> void {
+fn handle(event: Event, target: Widget): void {
     // Specific handlers defined elsewhere
 }
 
-fn handle(event: Event, target: impl Widget) -> void {
+fn handle(event: Event, target: impl Widget): void {
     // Default handler for any widget
     target.default_handle(event)
 }

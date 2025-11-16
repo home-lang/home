@@ -8,7 +8,7 @@ let sum = x + y;
 assert(sum == 30);
 
 // Test 2: Function calls (all platforms)
-fn add(a: int, b: int) -> int {
+fn add(a: int, b: int): int {
     return a + b;
 }
 
@@ -48,7 +48,7 @@ for (let i = 0; i < 5; i = i + 1) {
 assert(count == 5);
 
 // Test 8: Recursion (all platforms)
-fn factorial(n: int) -> int {
+fn factorial(n: int): int {
     if (n <= 1) {
         return 1;
     }
@@ -59,7 +59,7 @@ let fact = factorial(5);
 assert(fact == 120);
 
 // Test 9: Generics (all platforms)
-fn identity<T>(value: T) -> T {
+fn identity<T>(value: T): T {
     return value;
 }
 
@@ -70,7 +70,7 @@ let string_result = identity<string>("test");
 assert(string_result == "test");
 
 // Test 10: Async operations (all platforms with runtime)
-async fn asyncValue() -> int {
+async fn asyncValue(): int {
     return 42;
 }
 

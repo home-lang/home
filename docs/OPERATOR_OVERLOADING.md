@@ -21,7 +21,7 @@ let result = a.add(b)
 ```home
 trait Add<Rhs = Self> {
     type Output
-    fn add(self, rhs: Rhs) -> Self::Output
+    fn add(self, rhs: Rhs): Self::Output
 }
 
 // Example implementation
@@ -33,7 +33,7 @@ struct Vector2 {
 impl Add for Vector2 {
     type Output = Vector2
     
-    fn add(self, rhs: Vector2) -> Vector2 {
+    fn add(self, rhs: Vector2): Vector2 {
         Vector2 {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -54,12 +54,12 @@ Similar to `Add`, these traits allow overloading subtraction, multiplication, di
 ```home
 impl Sub for Vector2 {
     type Output = Vector2
-    fn sub(self, rhs: Vector2) -> Vector2 { ... }
+    fn sub(self, rhs: Vector2): Vector2 { ... }
 }
 
 impl Mul<f64> for Vector2 {
     type Output = Vector2
-    fn mul(self, scalar: f64) -> Vector2 {
+    fn mul(self, scalar: f64): Vector2 {
         Vector2 {
             x: self.x * scalar,
             y: self.y * scalar,
@@ -75,12 +75,12 @@ impl Mul<f64> for Vector2 {
 ```home
 trait Neg {
     type Output
-    fn neg(self) -> Self::Output
+    fn neg(self): Self::Output
 }
 
 impl Neg for Vector2 {
     type Output = Vector2
-    fn neg(self) -> Vector2 {
+    fn neg(self): Vector2 {
         Vector2 { x: -self.x, y: -self.y }
     }
 }
@@ -94,12 +94,12 @@ let negated = -v  // Calls v.neg()
 ```home
 trait Not {
     type Output
-    fn not(self) -> Self::Output
+    fn not(self): Self::Output
 }
 
 impl Not for bool {
     type Output = bool
-    fn not(self) -> bool {
+    fn not(self): bool {
         !self  // Built-in implementation
     }
 }
@@ -116,7 +116,7 @@ struct Flags {
 
 impl BitOr for Flags {
     type Output = Flags
-    fn bitor(self, rhs: Flags) -> Flags {
+    fn bitor(self, rhs: Flags): Flags {
         Flags { bits: self.bits | rhs.bits }
     }
 }
@@ -129,7 +129,7 @@ let flags = FLAG_READ | FLAG_WRITE  // Calls FLAG_READ.bitor(FLAG_WRITE)
 ```home
 impl Shl<u32> for u64 {
     type Output = u64
-    fn shl(self, rhs: u32) -> u64 {
+    fn shl(self, rhs: u32): u64 {
         self << rhs  // Built-in implementation
     }
 }
@@ -141,11 +141,11 @@ impl Shl<u32> for u64 {
 
 ```home
 trait AddAssign<Rhs = Self> {
-    fn add_assign(&mut self, rhs: Rhs) -> void
+    fn add_assign(&mut self, rhs: Rhs): void
 }
 
 impl AddAssign for Vector2 {
-    fn add_assign(&mut self, rhs: Vector2) -> void {
+    fn add_assign(&mut self, rhs: Vector2): void {
         self.x += rhs.x
         self.y += rhs.y
     }
@@ -162,11 +162,11 @@ v += Vector2 { x: 3.0, y: 4.0 }  // Calls v.add_assign(...)
 ```home
 trait Index<Idx> {
     type Output
-    fn index(&self, index: Idx) -> &Self::Output
+    fn index(&self, index: Idx): &Self::Output
 }
 
 trait IndexMut<Idx>: Index<Idx> {
-    fn index_mut(&mut self, index: Idx) -> &mut Self::Output
+    fn index_mut(&mut self, index: Idx): &mut Self::Output
 }
 
 // Example: Custom array type
@@ -177,13 +177,13 @@ struct MyArray<T> {
 impl<T> Index<usize> for MyArray<T> {
     type Output = T
     
-    fn index(&self, index: usize) -> &T {
+    fn index(&self, index: usize): &T {
         &self.data[index]
     }
 }
 
 impl<T> IndexMut<usize> for MyArray<T> {
-    fn index_mut(&mut self, index: usize) -> &mut T {
+    fn index_mut(&mut self, index: usize): &mut T {
         &mut self.data[index]
     }
 }
@@ -200,11 +200,11 @@ arr[1] = 42         // Calls arr.index_mut(1)
 ```home
 trait Deref {
     type Target
-    fn deref(&self) -> &Self::Target
+    fn deref(&self): &Self::Target
 }
 
 trait DerefMut: Deref {
-    fn deref_mut(&mut self) -> &mut Self::Target
+    fn deref_mut(&mut self): &mut Self::Target
 }
 
 // Smart pointer example
@@ -215,7 +215,7 @@ struct Box<T> {
 impl<T> Deref for Box<T> {
     type Target = T
     
-    fn deref(&self) -> &T {
+    fn deref(&self): &T {
         unsafe { &*self.ptr }
     }
 }
@@ -232,13 +232,13 @@ You can implement operators for different right-hand side types:
 // Vector + Vector
 impl Add for Vector2 {
     type Output = Vector2
-    fn add(self, rhs: Vector2) -> Vector2 { ... }
+    fn add(self, rhs: Vector2): Vector2 { ... }
 }
 
 // Vector + scalar
 impl Add<f64> for Vector2 {
     type Output = Vector2
-    fn add(self, scalar: f64) -> Vector2 {
+    fn add(self, scalar: f64): Vector2 {
         Vector2 {
             x: self.x + scalar,
             y: self.y + scalar,
@@ -257,24 +257,24 @@ let v3 = v + 5.0                          // Vector + f64
 
 | Operator | Trait | Method | Description |
 |----------|-------|--------|-------------|
-| `+` | `Add<Rhs>` | `add(self, rhs: Rhs) -> Output` | Addition |
-| `-` | `Sub<Rhs>` | `sub(self, rhs: Rhs) -> Output` | Subtraction |
-| `*` | `Mul<Rhs>` | `mul(self, rhs: Rhs) -> Output` | Multiplication |
-| `/` | `Div<Rhs>` | `div(self, rhs: Rhs) -> Output` | Division |
-| `%` | `Rem<Rhs>` | `rem(self, rhs: Rhs) -> Output` | Remainder |
-| `&` | `BitAnd<Rhs>` | `bitand(self, rhs: Rhs) -> Output` | Bitwise AND |
-| `\|` | `BitOr<Rhs>` | `bitor(self, rhs: Rhs) -> Output` | Bitwise OR |
-| `^` | `BitXor<Rhs>` | `bitxor(self, rhs: Rhs) -> Output` | Bitwise XOR |
-| `<<` | `Shl<Rhs>` | `shl(self, rhs: Rhs) -> Output` | Left shift |
-| `>>` | `Shr<Rhs>` | `shr(self, rhs: Rhs) -> Output` | Right shift |
+| `+` | `Add<Rhs>` | `add(self, rhs: Rhs): Output` | Addition |
+| `-` | `Sub<Rhs>` | `sub(self, rhs: Rhs): Output` | Subtraction |
+| `*` | `Mul<Rhs>` | `mul(self, rhs: Rhs): Output` | Multiplication |
+| `/` | `Div<Rhs>` | `div(self, rhs: Rhs): Output` | Division |
+| `%` | `Rem<Rhs>` | `rem(self, rhs: Rhs): Output` | Remainder |
+| `&` | `BitAnd<Rhs>` | `bitand(self, rhs: Rhs): Output` | Bitwise AND |
+| `\|` | `BitOr<Rhs>` | `bitor(self, rhs: Rhs): Output` | Bitwise OR |
+| `^` | `BitXor<Rhs>` | `bitxor(self, rhs: Rhs): Output` | Bitwise XOR |
+| `<<` | `Shl<Rhs>` | `shl(self, rhs: Rhs): Output` | Left shift |
+| `>>` | `Shr<Rhs>` | `shr(self, rhs: Rhs): Output` | Right shift |
 
 ### Unary Operators
 
 | Operator | Trait | Method | Description |
 |----------|-------|--------|-------------|
-| `-` | `Neg` | `neg(self) -> Output` | Negation |
-| `!` | `Not` | `not(self) -> Output` | Logical NOT |
-| `*` | `Deref` | `deref(&self) -> &Target` | Dereference |
+| `-` | `Neg` | `neg(self): Output` | Negation |
+| `!` | `Not` | `not(self): Output` | Logical NOT |
+| `*` | `Deref` | `deref(&self): &Target` | Dereference |
 
 ### Compound Assignment
 
@@ -290,8 +290,8 @@ let v3 = v + 5.0                          // Vector + f64
 
 | Operator | Trait | Method | Description |
 |----------|-------|--------|-------------|
-| `[]` | `Index<Idx>` | `index(&self, index: Idx) -> &Output` | Immutable indexing |
-| `[]` | `IndexMut<Idx>` | `index_mut(&mut self, index: Idx) -> &mut Output` | Mutable indexing |
+| `[]` | `Index<Idx>` | `index(&self, index: Idx): &Output` | Immutable indexing |
+| `[]` | `IndexMut<Idx>` | `index_mut(&mut self, index: Idx): &mut Output` | Mutable indexing |
 
 ## Best Practices
 
@@ -329,7 +329,7 @@ This happens during type checking, allowing the compiler to:
 Operator overloading is fully integrated with Home's type system:
 
 ```home
-fn add_vectors<T>(a: T, b: T) -> T::Output 
+fn add_vectors<T>(a: T, b: T): T::Output 
 where 
     T: Add<T>
 {

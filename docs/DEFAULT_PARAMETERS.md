@@ -17,7 +17,7 @@ Default parameters allow functions to have optional arguments with predefined va
 
 ```home
 // Function with default parameter
-fn greet(name: string = "World") -> void {
+fn greet(name: string = "World"): void {
     println("Hello, {}!", name)
 }
 
@@ -36,7 +36,7 @@ fn create_user(
     age: i32 = 0,
     active: bool = true,
     role: string = "user"
-) -> User {
+): User {
     User { name, age, active, role }
 }
 
@@ -55,10 +55,10 @@ Required parameters must come before optional ones:
 
 ```home
 // ✓ Correct - required first, then optional
-fn func(required: i32, optional: i32 = 0) -> void { }
+fn func(required: i32, optional: i32 = 0): void { }
 
 // ✗ Error - optional before required
-fn func(optional: i32 = 0, required: i32) -> void { }
+fn func(optional: i32 = 0, required: i32): void { }
 ```
 
 ### All or Nothing for Positional
@@ -70,7 +70,7 @@ fn config(
     host: string = "localhost",
     port: i32 = 8080,
     timeout: i32 = 30
-) -> Config {
+): Config {
     Config { host, port, timeout }
 }
 
@@ -94,7 +94,7 @@ fn draw_rect(
     y: i32 = 0,
     width: i32 = 100,
     height: i32 = 100
-) -> void {
+): void {
     // Draw rectangle
 }
 
@@ -134,7 +134,7 @@ fn connect(
     timeout: i32 = 30,
     retries: i32 = 3,
     ssl: bool = false
-) -> Connection {
+): Connection {
     // ...
 }
 
@@ -156,7 +156,7 @@ connect("localhost", 3000, ssl: true, timeout: 60)
 fn create_vec<T>(
     capacity: usize = 10,
     fill_value: T = T::default()
-) -> Vec<T> {
+): Vec<T> {
     let mut vec = Vec::with_capacity(capacity)
     for _ in 0..capacity {
         vec.push(fill_value.clone())
@@ -175,7 +175,7 @@ let v3 = create_vec::<i32>(20, 42)     // capacity=20, fill=42
 fn sort<T: Ord>(
     items: &mut [T],
     reverse: bool = false
-) -> void {
+): void {
     if reverse {
         items.sort_by(|a, b| b.cmp(a))
     } else {
@@ -201,13 +201,13 @@ fn read_file(
     path: string,
     encoding: string = "utf-8",
     buffer_size: usize = 4096
-) -> Result<string> { }
+): Result<string> { }
 
 // Avoid - arbitrary defaults
 fn process(
     data: string,
     multiplier: i32 = 42  // Why 42?
-) -> void { }
+): void { }
 ```
 
 ### 2. Document Defaults
@@ -225,7 +225,7 @@ fn connect_db(
     port: i32 = 5432,
     timeout: i32 = 30,
     pool_size: i32 = 10
-) -> Connection { }
+): Connection { }
 ```
 
 ### 3. Use Named-Only for Clarity
@@ -241,7 +241,7 @@ fn copy_file(
     overwrite: bool = false,
     preserve_metadata: bool = true,
     follow_symlinks: bool = false
-) -> Result<()> { }
+): Result<()> { }
 
 copy_file("a.txt", "b.txt", overwrite: true)
 
@@ -252,7 +252,7 @@ fn copy_file(
     overwrite: bool = false,
     preserve: bool = true,
     follow: bool = false
-) -> Result<()> { }
+): Result<()> { }
 
 copy_file("a.txt", "b.txt", true, false, true)  // What do these mean?
 ```
@@ -265,7 +265,7 @@ fn create_button(
     text: string,
     width: i32 = 100,
     height: i32 = 30
-) -> Button { }
+): Button { }
 
 // Avoid - too many parameters
 fn create_widget(
@@ -278,19 +278,19 @@ fn create_widget(
     margin: i32 = 0,
     font_size: i32 = 12,
     // ... 10 more parameters
-) -> Widget { }  // Consider a builder pattern instead
+): Widget { }  // Consider a builder pattern instead
 ```
 
 ### 5. Avoid Mutable Defaults
 
 ```home
 // Avoid - mutable default can cause issues
-fn process(items: Vec<i32> = vec![]) -> void {
+fn process(items: Vec<i32> = vec![]): void {
     // Each call shares the same default vector!
 }
 
 // Better - use Option
-fn process(items: Option<Vec<i32>> = None) -> void {
+fn process(items: Option<Vec<i32>> = None): void {
     let items = items.unwrap_or_else(|| vec![])
     // Now each call gets a fresh vector
 }
@@ -308,7 +308,7 @@ fn start_server(
     max_connections: i32 = 1000,
     timeout: i32 = 30,
     debug: bool = false
-) -> Server {
+): Server {
     Server::new()
         .port(port)
         .workers(workers)
@@ -329,7 +329,7 @@ let prod_server = start_server(workers: 8, max_connections: 5000)
 ### Range Functions
 
 ```home
-fn range(start: i32 = 0, end: i32, step: i32 = 1) -> Range {
+fn range(start: i32 = 0, end: i32, step: i32 = 1): Range {
     Range { start, end, step }
 }
 
@@ -355,7 +355,7 @@ fn format_number(
     *,
     thousands_sep: string = ",",
     decimal_point: string = "."
-) -> string {
+): string {
     // Format number with specified options
 }
 
@@ -376,7 +376,7 @@ fn get(
     headers: HashMap<string, string> = HashMap::new(),
     follow_redirects: bool = true,
     max_redirects: i32 = 10
-) -> Result<Response> {
+): Result<Response> {
     // Make HTTP GET request
 }
 
@@ -401,7 +401,7 @@ fn query<T>(
     params: Vec<any> = vec![],
     timeout: i32 = 30,
     readonly: bool = false
-) -> Result<Vec<T>> {
+): Result<Vec<T>> {
     // Execute database query
 }
 

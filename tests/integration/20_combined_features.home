@@ -7,11 +7,11 @@ let result1 = (val1 ?? 10) > 5 ? 100 : 50;
 assert(result1 == 100);
 
 // Test 2: Pipe with ternary
-fn double(n: int) -> int {
+fn double(n: int): int {
     return n * 2;
 }
 
-fn triple(n: int) -> int {
+fn triple(n: int): int {
     return n * 3;
 }
 
@@ -55,7 +55,7 @@ let nestedResult = nested ?? (1 > 0 ? 100 : (2 > 1 ? 200 : 300));
 assert(nestedResult == 100);
 
 // Test 8: Pipe chain with null coalescing
-fn addTen(n: int) -> int {
+fn addTen(n: int): int {
     return n + 10;
 }
 
@@ -89,7 +89,7 @@ try {
 }
 
 // Test 11: All features combined
-fn complexFunc(input: int) -> int {
+fn complexFunc(input: int): int {
     let result = 0;
 
     // Ternary

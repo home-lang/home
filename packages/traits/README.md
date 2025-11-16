@@ -87,8 +87,8 @@ const satisfies = trait_system.checkBounds("MyType", &bounds);
 
 ```home
 trait Drawable {
-    fn draw(&self) -> void
-    fn bounds(&self) -> Rect
+    fn draw(&self): void
+    fn bounds(&self): Rect
 }
 ```
 
@@ -96,11 +96,11 @@ trait Drawable {
 
 ```home
 impl Drawable for Circle {
-    fn draw(&self) -> void {
+    fn draw(&self): void {
         println("Drawing circle")
     }
     
-    fn bounds(&self) -> Rect {
+    fn bounds(&self): Rect {
         Rect { x: self.x, y: self.y, w: self.radius * 2, h: self.radius * 2 }
     }
 }
@@ -111,7 +111,7 @@ impl Drawable for Circle {
 ```home
 trait Add<Rhs = Self> {
     type Output
-    fn add(self, rhs: Rhs) -> Self::Output
+    fn add(self, rhs: Rhs): Self::Output
 }
 ```
 
@@ -119,14 +119,14 @@ trait Add<Rhs = Self> {
 
 ```home
 trait ColoredShape: Shape + Colored {
-    fn describe(&self) -> string
+    fn describe(&self): string
 }
 ```
 
 ### Trait Objects
 
 ```home
-fn render(shapes: &[dyn Drawable]) -> void {
+fn render(shapes: &[dyn Drawable]): void {
     for shape in shapes {
         shape.draw()
     }

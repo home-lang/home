@@ -2,19 +2,19 @@
 // This shows how to write inline tests similar to JavaScript testing frameworks
 
 // Helper functions for testing
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: i32, b: i32): i32 {
   return a + b
 }
 
-fn subtract(a: i32, b: i32) -> i32 {
+fn subtract(a: i32, b: i32): i32 {
   return a - b
 }
 
-fn multiply(a: i32, b: i32) -> i32 {
+fn multiply(a: i32, b: i32): i32 {
   return a * b
 }
 
-fn is_even(n: i32) -> bool {
+fn is_even(n: i32): bool {
   return n % 2 == 0
 }
 

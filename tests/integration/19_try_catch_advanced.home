@@ -52,7 +52,7 @@ try {
 }
 
 // Test 6: Try-catch in function
-fn safeDivide(a: int, b: int) -> int {
+fn safeDivide(a: int, b: int): int {
     try {
         return a / b;
     } catch {
@@ -104,7 +104,7 @@ try {
 assert(complex == 21);
 
 // Test 10: Try-catch-finally with all paths
-fn testAllPaths(flag: int) -> int {
+fn testAllPaths(flag: int): int {
     let result = 0;
     try {
         result = result + 1;
@@ -169,7 +169,7 @@ try {
 assert(multi == 18);
 
 // Test 15: Try-catch with function calls
-fn mayFail(n: int) -> int {
+fn mayFail(n: int): int {
     return n * 2;
 }
 

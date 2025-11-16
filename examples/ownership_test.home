@@ -1,5 +1,5 @@
 // Test ownership tracking
-fn take_ownership(s: string) -> string {
+fn take_ownership(s: string): string {
     return s
 }
 

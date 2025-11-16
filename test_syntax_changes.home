@@ -1,0 +1,37 @@
+// Test TypeScript-style syntax with colon for return types
+
+// Function with return type
+fn add(x: i32, y: i32): i32 {
+    return x + y
+}
+
+// Function without return type
+fn greet(name: String) {
+    print("Hello, {name}!")
+}
+
+// Closure with return type
+let multiply = |a: i32, b: i32|: i32 {
+    a * b
+}
+
+// Closure without return type
+let logger = |msg: String| {
+    print(msg)
+}
+
+// Function with generic type parameters
+fn identity<T>(value: T): T {
+    return value
+}
+
+// Main function
+fn main() {
+    let result = add(10, 20)
+    print("Result: {result}")
+
+    greet("World")
+
+    let product = multiply(5, 6)
+    print("Product: {product}")
+}

@@ -1,5 +1,5 @@
 // Test function calls
-fn add(a: int, b: int) -> int {
+fn add(a: int, b: int): int {
   return a + b
 }
 

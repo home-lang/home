@@ -1,5 +1,5 @@
 // Simple recursive fibonacci
-fn fib(n: int) -> int {
+fn fib(n: int): int {
   if n <= 1 {
     return n
   }

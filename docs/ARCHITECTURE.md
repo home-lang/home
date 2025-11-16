@@ -75,7 +75,7 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 
 #### Statements
 - Variable declarations: `let x = 10;`
-- Function declarations: `fn add(a: int, b: int) -> int { ... }`
+- Function declarations: `fn add(a: int, b: int): int { ... }`
 - Struct declarations: `struct Point { x: int, y: int }`
 - Enum declarations: `enum Color { Red, Green, Blue }`
 - Type aliases: `type UserId = int;`

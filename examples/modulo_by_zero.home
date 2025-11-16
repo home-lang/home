@@ -1,5 +1,5 @@
 // Modulo by zero example (should fail type checking)
-fn main() -> int {
+fn main(): int {
     let x = 10 % 0
     return x
 }

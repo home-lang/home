@@ -135,7 +135,7 @@ test "optional semicolons - mixed usage" {
 // Test return statement without semicolon
 test "optional semicolons - return statement" {
     const source =
-        \\fn add(a: int, b: int) -> int {
+        \\fn add(a: int, b: int): int {
         \\    return a + b
         \\}
     ;
@@ -158,7 +158,7 @@ test "optional semicolons - return statement" {
 // Test last statement in block without semicolon
 test "optional semicolons - last statement in block" {
     const source =
-        \\fn compute() -> int {
+        \\fn compute(): int {
         \\    let x = 10
         \\    let y = 20
         \\    x + y

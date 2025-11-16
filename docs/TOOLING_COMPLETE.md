@@ -295,17 +295,17 @@ The profiler expects the Home compiler to output profiling data in this format:
 
 #### Start Profiling
 ```
-Cmd/Ctrl + Shift + P -> "Start Home Profiler"
+Cmd/Ctrl + Shift + P: "Start Home Profiler"
 ```
 
 #### Stop Profiling
 ```
-Cmd/Ctrl + Shift + P -> "Stop Home Profiler"
+Cmd/Ctrl + Shift + P: "Stop Home Profiler"
 ```
 
 #### View Report
 ```
-Cmd/Ctrl + Shift + P -> "View Profiler Report"
+Cmd/Ctrl + Shift + P: "View Profiler Report"
 ```
 
 #### Programmatic Usage
@@ -543,7 +543,7 @@ package {
    home package publish
 
    # Via VSCode
-   Cmd/Ctrl + Shift + P -> "Publish Package"
+   Cmd/Ctrl + Shift + P: "Publish Package"
    ```
 
 ---
@@ -618,7 +618,7 @@ fn main() {
     print(y)
 }
 
-fn calculate(n: i32) -> i32 {
+fn calculate(n: i32): i32 {
     return n * 2  // Set breakpoint here
 }
 ```
@@ -665,11 +665,11 @@ package {
 }
 
 // lib.home
-pub fn add(a: i32, b: i32) -> i32 {
+pub fn add(a: i32, b: i32): i32 {
     return a + b
 }
 
-pub fn multiply(a: i32, b: i32) -> i32 {
+pub fn multiply(a: i32, b: i32): i32 {
     return a * b
 }
 ```
@@ -805,7 +805,7 @@ which ion
 ion lsp --version
 
 # Restart server
-Cmd/Ctrl + Shift + P -> "Restart Home Language Server"
+Cmd/Ctrl + Shift + P: "Restart Home Language Server"
 ```
 
 ### Debugger Not Working
@@ -814,7 +814,7 @@ Cmd/Ctrl + Shift + P -> "Restart Home Language Server"
 ion debug --version
 
 # View debug console
-View -> Debug Console
+View: Debug Console
 ```
 
 ### Registry Connection Failed

@@ -4,7 +4,7 @@
 // Example 1: Basic Variadic Functions
 // ============================================================================
 
-fn sum(...numbers: i32) -> i32 {
+fn sum(...numbers: i32): i32 {
     let mut total = 0
     for num in numbers {
         total += num
@@ -12,7 +12,7 @@ fn sum(...numbers: i32) -> i32 {
     total
 }
 
-fn test_basic_variadic() -> void {
+fn test_basic_variadic(): void {
     println("=== Basic Variadic Functions ===")
     
     println("sum(1, 2, 3) = {}", sum(1, 2, 3))
@@ -25,13 +25,13 @@ fn test_basic_variadic() -> void {
 // Example 2: Mixed Parameters
 // ============================================================================
 
-fn greet(greeting: string, ...names: string) -> void {
+fn greet(greeting: string, ...names: string): void {
     for name in names {
         println("{}, {}!", greeting, name)
     }
 }
 
-fn multiply_all(factor: i32, ...numbers: i32) -> Vec<i32> {
+fn multiply_all(factor: i32, ...numbers: i32): Vec<i32> {
     let mut results = vec![]
     for num in numbers {
         results.push(factor * num)
@@ -39,7 +39,7 @@ fn multiply_all(factor: i32, ...numbers: i32) -> Vec<i32> {
     results
 }
 
-fn test_mixed_parameters() -> void {
+fn test_mixed_parameters(): void {
     println("\n=== Mixed Parameters ===")
     
     greet("Hello", "Alice", "Bob", "Charlie")
@@ -55,7 +55,7 @@ fn test_mixed_parameters() -> void {
 // Example 3: Generic Variadic Functions
 // ============================================================================
 
-fn first_of<T>(...items: T) -> Option<T> 
+fn first_of<T>(...items: T): Option<T> 
 where 
     T: Clone
 {
@@ -66,7 +66,7 @@ where
     }
 }
 
-fn max<T>(...values: T) -> T
+fn max<T>(...values: T): T
 where
     T: Ord + Clone
 {
@@ -81,7 +81,7 @@ where
     maximum
 }
 
-fn min<T>(...values: T) -> T
+fn min<T>(...values: T): T
 where
     T: Ord + Clone
 {
@@ -96,7 +96,7 @@ where
     minimum
 }
 
-fn test_generic_variadic() -> void {
+fn test_generic_variadic(): void {
     println("\n=== Generic Variadic Functions ===")
     
     let first_num = first_of(1, 2, 3, 4, 5)
@@ -116,7 +116,7 @@ fn test_generic_variadic() -> void {
 // Example 4: Spread Operator
 // ============================================================================
 
-fn test_spread_operator() -> void {
+fn test_spread_operator(): void {
     println("\n=== Spread Operator ===")
     
     let numbers1 = vec![1, 2, 3]
@@ -144,7 +144,7 @@ fn test_spread_operator() -> void {
 // Example 5: Variadic with Display Trait
 // ============================================================================
 
-fn print_all<T>(...items: T) -> void
+fn print_all<T>(...items: T): void
 where
     T: Display
 {
@@ -153,7 +153,7 @@ where
     }
 }
 
-fn join<T>(...items: T) -> string
+fn join<T>(...items: T): string
 where
     T: Display
 {
@@ -163,7 +163,7 @@ where
         .join(", ")
 }
 
-fn test_variadic_display() -> void {
+fn test_variadic_display(): void {
     println("\n=== Variadic with Display ===")
     
     println("Numbers:")
@@ -187,7 +187,7 @@ enum LogLevel {
     Error,
 }
 
-fn log(level: LogLevel, ...messages: any) -> void {
+fn log(level: LogLevel, ...messages: any): void {
     let prefix = match level {
         LogLevel::Debug => "[DEBUG]",
         LogLevel::Info => "[INFO]",
@@ -205,7 +205,7 @@ fn log(level: LogLevel, ...messages: any) -> void {
     println("")
 }
 
-fn test_logging() -> void {
+fn test_logging(): void {
     println("\n=== Logging Utility ===")
     
     log(LogLevel::Info, "Application started")
@@ -218,21 +218,21 @@ fn test_logging() -> void {
 // Example 7: Mathematical Operations
 // ============================================================================
 
-fn average(...numbers: f64) -> f64 {
+fn average(...numbers: f64): f64 {
     if numbers.len() == 0 {
         return 0.0
     }
     numbers.iter().sum::<f64>() / numbers.len() as f64
 }
 
-fn product(...numbers: f64) -> f64 {
+fn product(...numbers: f64): f64 {
     if numbers.len() == 0 {
         return 1.0
     }
     numbers.iter().product()
 }
 
-fn range(...numbers: f64) -> f64 {
+fn range(...numbers: f64): f64 {
     if numbers.len() == 0 {
         return 0.0
     }
@@ -241,7 +241,7 @@ fn range(...numbers: f64) -> f64 {
     max_val - min_val
 }
 
-fn test_math_operations() -> void {
+fn test_math_operations(): void {
     println("\n=== Mathematical Operations ===")
     
     let avg = average(1.0, 2.0, 3.0, 4.0, 5.0)
@@ -258,15 +258,15 @@ fn test_math_operations() -> void {
 // Example 8: String Operations
 // ============================================================================
 
-fn concat(...strings: string) -> string {
+fn concat(...strings: string): string {
     strings.join("")
 }
 
-fn concat_with_separator(separator: string, ...strings: string) -> string {
+fn concat_with_separator(separator: string, ...strings: string): string {
     strings.join(separator)
 }
 
-fn longest(...strings: string) -> string {
+fn longest(...strings: string): string {
     if strings.len() == 0 {
         return ""
     }
@@ -280,7 +280,7 @@ fn longest(...strings: string) -> string {
     longest
 }
 
-fn test_string_operations() -> void {
+fn test_string_operations(): void {
     println("\n=== String Operations ===")
     
     let combined = concat("Hello", " ", "World", "!")
@@ -297,7 +297,7 @@ fn test_string_operations() -> void {
 // Example 9: Collection Operations
 // ============================================================================
 
-fn merge<T>(...arrays: Vec<T>) -> Vec<T>
+fn merge<T>(...arrays: Vec<T>): Vec<T>
 where
     T: Clone
 {
@@ -308,14 +308,14 @@ where
     result
 }
 
-fn flatten<T>(...items: T) -> Vec<T>
+fn flatten<T>(...items: T): Vec<T>
 where
     T: Clone
 {
     items.to_vec()
 }
 
-fn unique<T>(...items: T) -> Vec<T>
+fn unique<T>(...items: T): Vec<T>
 where
     T: Clone + Eq + std::hash::Hash
 {
@@ -331,7 +331,7 @@ where
     result
 }
 
-fn test_collection_operations() -> void {
+fn test_collection_operations(): void {
     println("\n=== Collection Operations ===")
     
     let arr1 = vec![1, 2, 3]
@@ -352,7 +352,7 @@ fn test_collection_operations() -> void {
 // Example 10: Assertion Utilities
 // ============================================================================
 
-fn assert_all_equal<T>(...values: T) -> void
+fn assert_all_equal<T>(...values: T): void
 where
     T: PartialEq + Debug
 {
@@ -371,7 +371,7 @@ where
     }
 }
 
-fn assert_all_true(...conditions: bool) -> void {
+fn assert_all_true(...conditions: bool): void {
     for (i, condition) in conditions.iter().enumerate() {
         if !condition {
             panic!("Assertion failed: condition[{}] is false", i)
@@ -379,7 +379,7 @@ fn assert_all_true(...conditions: bool) -> void {
     }
 }
 
-fn test_assertions() -> void {
+fn test_assertions(): void {
     println("\n=== Assertion Utilities ===")
     
     assert_all_equal(5, 5, 5, 5)
@@ -400,7 +400,7 @@ struct QueryBuilder {
 }
 
 impl QueryBuilder {
-    fn new(table: string) -> QueryBuilder {
+    fn new(table: string): QueryBuilder {
         QueryBuilder {
             table,
             columns: vec![],
@@ -408,14 +408,14 @@ impl QueryBuilder {
         }
     }
     
-    fn select(&mut self, ...columns: string) -> &mut QueryBuilder {
+    fn select(&mut self, ...columns: string): &mut QueryBuilder {
         for col in columns {
             self.columns.push(col.to_string())
         }
         self
     }
     
-    fn where_in(&mut self, field: string, ...values: i32) -> &mut QueryBuilder {
+    fn where_in(&mut self, field: string, ...values: i32): &mut QueryBuilder {
         let vals = values.iter()
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
@@ -425,7 +425,7 @@ impl QueryBuilder {
         self
     }
     
-    fn build(&self) -> string {
+    fn build(&self): string {
         let cols = if self.columns.is_empty() {
             "*".to_string()
         } else {
@@ -443,7 +443,7 @@ impl QueryBuilder {
     }
 }
 
-fn test_builder_pattern() -> void {
+fn test_builder_pattern(): void {
     println("\n=== Builder Pattern ===")
     
     let query = QueryBuilder::new("users")
@@ -458,7 +458,7 @@ fn test_builder_pattern() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     test_basic_variadic()
     test_mixed_parameters()
     test_generic_variadic()

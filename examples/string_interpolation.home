@@ -1,5 +1,5 @@
 // String interpolation example
-fn main() -> int {
+fn main(): int {
     let name = "Alice"
     let age = 30
     let greeting = "Hello {name}, you are {age} years old"

@@ -176,9 +176,9 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
         
         _ = try self.expect(.RightParen, "Expected ')' after parameters");
         
-        // Parse return type
+        // Parse return type (TypeScript-style with colon)
         var return_type: ?*ast.TypeExpr = null;
-        if (self.match(&.{.Arrow})) {
+        if (self.match(&.{.Colon})) {
             return_type = try self.parseTypeExpr();
         }
         

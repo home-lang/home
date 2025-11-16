@@ -16,7 +16,7 @@ Named parameters allow you to pass arguments to functions by parameter name rath
 ### Calling with Named Arguments
 
 ```home
-fn create_rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+fn create_rect(x: i32, y: i32, width: i32, height: i32): Rect {
     Rect { x, y, width, height }
 }
 
@@ -33,7 +33,7 @@ let r3 = create_rect(width: 100, height: 50, x: 10, y: 20)
 ### Clarity for Boolean Flags
 
 ```home
-fn copy_file(source: string, dest: string, overwrite: bool, preserve_metadata: bool) -> Result<()> {
+fn copy_file(source: string, dest: string, overwrite: bool, preserve_metadata: bool): Result<()> {
     // ...
 }
 
@@ -79,7 +79,7 @@ fn draw_text(
     color: Color = Color::Black,
     bold: bool = false,
     italic: bool = false
-) -> void {
+): void {
     // ...
 }
 
@@ -114,7 +114,7 @@ send_email(
 3. Cannot use positional after named
 
 ```home
-fn configure(host: string, port: i32, timeout: i32, retries: i32) -> Config {
+fn configure(host: string, port: i32, timeout: i32, retries: i32): Config {
     Config { host, port, timeout, retries }
 }
 
@@ -146,7 +146,7 @@ fn connect(
     timeout: i32 = 30,
     ssl: bool = false,
     verify_cert: bool = true
-) -> Connection {
+): Connection {
     // ...
 }
 
@@ -173,7 +173,7 @@ fn process_data(
     validate: bool = true,
     transform: bool = true,
     cache: bool = false
-) -> Result<Data> {
+): Result<Data> {
     // ...
 }
 
@@ -196,7 +196,7 @@ fn create_window(
     fullscreen: bool = false,
     vsync: bool = true,
     msaa: i32 = 4
-) -> Window {
+): Window {
     // ...
 }
 
@@ -215,7 +215,7 @@ fn log(
     timestamp: bool = true,
     color: bool = true,
     file: string = "app.log"
-) -> void {
+): void {
     // ...
 }
 
@@ -237,7 +237,7 @@ fn start_server(
     max_connections: i32 = 1000,
     timeout: i32 = 30,
     debug: bool = false
-) -> Server {
+): Server {
     // ...
 }
 
@@ -278,8 +278,8 @@ http_get("https://api.example.com/users", None, None, Some(60), Some(custom_head
 
 ```home
 // Good - consistent parameter names across similar functions
-fn read_file(path: string, encoding: string = "utf-8") -> Result<string> { }
-fn write_file(path: string, content: string, encoding: string = "utf-8") -> Result<()> { }
+fn read_file(path: string, encoding: string = "utf-8"): Result<string> { }
+fn write_file(path: string, content: string, encoding: string = "utf-8"): Result<()> { }
 
 // Both use 'encoding' with same meaning
 let content = read_file("data.txt", encoding: "latin1")?
@@ -302,7 +302,7 @@ fn create_button(
     // Behavior parameters
     enabled: bool = true,
     visible: bool = true
-) -> Button {
+): Button {
     // ...
 }
 ```
@@ -320,7 +320,7 @@ fn query_builder(
     order_by: Option<string> = None,
     limit: Option<i32> = None,
     offset: Option<i32> = None
-) -> Query {
+): Query {
     // ...
 }
 
@@ -345,7 +345,7 @@ fn http_request(
     timeout: i32 = 30,
     follow_redirects: bool = true,
     verify_ssl: bool = true
-) -> Result<Response> {
+): Result<Response> {
     // ...
 }
 
@@ -370,7 +370,7 @@ fn connect_db(
     pool_size: i32 = 10,
     timeout: i32 = 30,
     ssl: bool = false
-) -> Result<Connection> {
+): Result<Connection> {
     // ...
 }
 
@@ -393,7 +393,7 @@ fn create_cache<K, V>(
     capacity: usize = 100,
     ttl: i32 = 3600,
     eviction_policy: EvictionPolicy = EvictionPolicy::LRU
-) -> Cache<K, V> {
+): Cache<K, V> {
     // ...
 }
 
@@ -412,9 +412,9 @@ fn sort_by<T, F>(
     *,
     reverse: bool = false,
     stable: bool = true
-) -> void
+): void
 where
-    F: Fn(&T, &T) -> Ordering
+    F: Fn(&T, &T): Ordering
 {
     // ...
 }
@@ -430,7 +430,7 @@ fn wrapper_function(
     *,
     timeout: i32 = 30,
     retries: i32 = 3
-) -> Result<()> {
+): Result<()> {
     // Forward named arguments
     inner_function(
         data,
@@ -454,7 +454,7 @@ fn configure_app(
     database_url: string,
     cache_size: usize = 100,
     debug: bool = false
-) -> AppConfig {
+): AppConfig {
     AppConfig {
         log_level,
         log_file,
@@ -487,7 +487,7 @@ fn draw_circle(
     stroke_color: Color = Color::Black,
     stroke_width: f64 = 1.0,
     alpha: f64 = 1.0
-) -> void {
+): void {
     // ...
 }
 
@@ -504,7 +504,7 @@ fn assert_response(
     content_type: string = "application/json",
     contains: Option<string> = None,
     headers: HashMap<string, string> = HashMap::new()
-) -> void {
+): void {
     // ...
 }
 

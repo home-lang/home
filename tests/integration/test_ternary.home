@@ -17,7 +17,7 @@ let result = (x + y) > 5 ? x * 2 : y * 2;
 assert(result == 6);
 
 // Ternary as function argument
-fn checkPositive(n: int) -> string {
+fn checkPositive(n: int): string {
     return n > 0 ? "positive" : "non-positive";
 }
 
@@ -25,7 +25,7 @@ let check1 = checkPositive(5);
 let check2 = checkPositive(-3);
 
 // Ternary in return statement
-fn abs(n: int) -> int {
+fn abs(n: int): int {
     return n >= 0 ? n : -n;
 }
 

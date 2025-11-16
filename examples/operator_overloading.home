@@ -13,7 +13,7 @@ struct Vector2D {
 impl Add for Vector2D {
     type Output = Vector2D
     
-    fn add(self, rhs: Vector2D) -> Vector2D {
+    fn add(self, rhs: Vector2D): Vector2D {
         Vector2D {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
@@ -25,7 +25,7 @@ impl Add for Vector2D {
 impl Sub for Vector2D {
     type Output = Vector2D
     
-    fn sub(self, rhs: Vector2D) -> Vector2D {
+    fn sub(self, rhs: Vector2D): Vector2D {
         Vector2D {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
@@ -37,7 +37,7 @@ impl Sub for Vector2D {
 impl Mul<f64> for Vector2D {
     type Output = Vector2D
     
-    fn mul(self, scalar: f64) -> Vector2D {
+    fn mul(self, scalar: f64): Vector2D {
         Vector2D {
             x: self.x * scalar,
             y: self.y * scalar,
@@ -49,7 +49,7 @@ impl Mul<f64> for Vector2D {
 impl Neg for Vector2D {
     type Output = Vector2D
     
-    fn neg(self) -> Vector2D {
+    fn neg(self): Vector2D {
         Vector2D {
             x: -self.x,
             y: -self.y,
@@ -59,13 +59,13 @@ impl Neg for Vector2D {
 
 // Implement AddAssign for in-place addition
 impl AddAssign for Vector2D {
-    fn add_assign(&mut self, rhs: Vector2D) -> void {
+    fn add_assign(&mut self, rhs: Vector2D): void {
         self.x += rhs.x
         self.y += rhs.y
     }
 }
 
-fn test_vector_ops() -> void {
+fn test_vector_ops(): void {
     let v1 = Vector2D { x: 1.0, y: 2.0 }
     let v2 = Vector2D { x: 3.0, y: 4.0 }
     
@@ -103,7 +103,7 @@ struct Complex {
 impl Add for Complex {
     type Output = Complex
     
-    fn add(self, rhs: Complex) -> Complex {
+    fn add(self, rhs: Complex): Complex {
         Complex {
             real: self.real + rhs.real,
             imag: self.imag + rhs.imag,
@@ -114,7 +114,7 @@ impl Add for Complex {
 impl Mul for Complex {
     type Output = Complex
     
-    fn mul(self, rhs: Complex) -> Complex {
+    fn mul(self, rhs: Complex): Complex {
         // (a + bi) * (c + di) = (ac - bd) + (ad + bc)i
         Complex {
             real: self.real * rhs.real - self.imag * rhs.imag,
@@ -124,7 +124,7 @@ impl Mul for Complex {
 }
 
 impl Display for Complex {
-    fn fmt(&self, f: &mut Formatter) -> Result {
+    fn fmt(&self, f: &mut Formatter): Result {
         if self.imag >= 0.0 {
             write!(f, "{} + {}i", self.real, self.imag)
         } else {
@@ -133,7 +133,7 @@ impl Display for Complex {
     }
 }
 
-fn test_complex_ops() -> void {
+fn test_complex_ops(): void {
     let c1 = Complex { real: 3.0, imag: 4.0 }
     let c2 = Complex { real: 1.0, imag: 2.0 }
     
@@ -155,7 +155,7 @@ struct Matrix2x2 {
 impl Add for Matrix2x2 {
     type Output = Matrix2x2
     
-    fn add(self, rhs: Matrix2x2) -> Matrix2x2 {
+    fn add(self, rhs: Matrix2x2): Matrix2x2 {
         Matrix2x2 {
             data: [
                 [self.data[0][0] + rhs.data[0][0], self.data[0][1] + rhs.data[0][1]],
@@ -168,7 +168,7 @@ impl Add for Matrix2x2 {
 impl Mul for Matrix2x2 {
     type Output = Matrix2x2
     
-    fn mul(self, rhs: Matrix2x2) -> Matrix2x2 {
+    fn mul(self, rhs: Matrix2x2): Matrix2x2 {
         // Matrix multiplication
         Matrix2x2 {
             data: [
@@ -188,18 +188,18 @@ impl Mul for Matrix2x2 {
 impl Index<usize> for Matrix2x2 {
     type Output = [f64; 2]
     
-    fn index(&self, row: usize) -> &[f64; 2] {
+    fn index(&self, row: usize): &[f64; 2] {
         &self.data[row]
     }
 }
 
 impl IndexMut<usize> for Matrix2x2 {
-    fn index_mut(&mut self, row: usize) -> &mut [f64; 2] {
+    fn index_mut(&mut self, row: usize): &mut [f64; 2] {
         &mut self.data[row]
     }
 }
 
-fn test_matrix_ops() -> void {
+fn test_matrix_ops(): void {
     let m1 = Matrix2x2 {
         data: [[1.0, 2.0], [3.0, 4.0]],
     }
@@ -233,7 +233,7 @@ struct MyString {
 impl Add for MyString {
     type Output = MyString
     
-    fn add(self, rhs: MyString) -> MyString {
+    fn add(self, rhs: MyString): MyString {
         MyString {
             data: self.data + rhs.data,
         }
@@ -241,12 +241,12 @@ impl Add for MyString {
 }
 
 impl AddAssign for MyString {
-    fn add_assign(&mut self, rhs: MyString) -> void {
+    fn add_assign(&mut self, rhs: MyString): void {
         self.data += rhs.data
     }
 }
 
-fn test_string_ops() -> void {
+fn test_string_ops(): void {
     let s1 = MyString { data: "Hello, " }
     let s2 = MyString { data: "World!" }
     
@@ -273,7 +273,7 @@ const EXECUTE: Permissions = Permissions { bits: 0b100 }
 impl BitOr for Permissions {
     type Output = Permissions
     
-    fn bitor(self, rhs: Permissions) -> Permissions {
+    fn bitor(self, rhs: Permissions): Permissions {
         Permissions {
             bits: self.bits | rhs.bits,
         }
@@ -283,7 +283,7 @@ impl BitOr for Permissions {
 impl BitAnd for Permissions {
     type Output = Permissions
     
-    fn bitand(self, rhs: Permissions) -> Permissions {
+    fn bitand(self, rhs: Permissions): Permissions {
         Permissions {
             bits: self.bits & rhs.bits,
         }
@@ -291,12 +291,12 @@ impl BitAnd for Permissions {
 }
 
 impl Permissions {
-    fn has(&self, perm: Permissions) -> bool {
+    fn has(&self, perm: Permissions): bool {
         (self.bits & perm.bits) == perm.bits
     }
 }
 
-fn test_permission_ops() -> void {
+fn test_permission_ops(): void {
     let perms = READ | WRITE
     
     if perms.has(READ) {
@@ -314,14 +314,14 @@ fn test_permission_ops() -> void {
 // Example 6: Generic operator implementation
 // ============================================================================
 
-fn add_generic<T>(a: T, b: T) -> T::Output 
+fn add_generic<T>(a: T, b: T): T::Output 
 where 
     T: Add<T>
 {
     a + b
 }
 
-fn test_generic_ops() -> void {
+fn test_generic_ops(): void {
     let v1 = Vector2D { x: 1.0, y: 2.0 }
     let v2 = Vector2D { x: 3.0, y: 4.0 }
     let v3 = add_generic(v1, v2)
@@ -335,7 +335,7 @@ fn test_generic_ops() -> void {
 // Main
 // ============================================================================
 
-fn main() -> void {
+fn main(): void {
     println("=== Vector Operations ===")
     test_vector_ops()
     

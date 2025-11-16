@@ -96,7 +96,7 @@ pub const CapableType = struct {
 **Example**:
 ```home
 // Function type includes capabilities
-fn open_file(path: String) -> File requires ReadFile {
+fn open_file(path: String): File requires ReadFile {
     // Implementation
 }
 
@@ -328,7 +328,7 @@ pub const Sync = struct {
 **Example**:
 ```home
 // Compiler checks Send/Sync at compile time
-fn spawn_thread<T: Send>(data: T) -> Thread {
+fn spawn_thread<T: Send>(data: T): Thread {
     // OK only if T implements Send
 }
 

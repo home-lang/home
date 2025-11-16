@@ -106,7 +106,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Relationships (one-to-one, one-to-many, many-to-many)
   ```home
   impl User {
-      fn posts(self: &Self) -> HasMany<Post> {
+      fn posts(self: &Self): HasMany<Post> {
           self.hasMany(Post)
       }
   }
@@ -152,7 +152,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Role-based access control (RBAC)
   ```home
   @authorize("admin")
-  async fn delete_user(req: Request) -> Response {
+  async fn delete_user(req: Request): Response {
       // Only admins can delete users
   }
   ```
@@ -351,12 +351,12 @@ await Mail.to(user.email)
 - [ ] GraphQL server
   ```home
   @graphql_query
-  fn users(limit: i32) -> Vec<User> {
+  fn users(limit: i32): Vec<User> {
       User.all().limit(limit)
   }
 
   @graphql_mutation
-  fn create_user(input: CreateUserInput) -> Result<User> {
+  fn create_user(input: CreateUserInput): Result<User> {
       User.create(input)
   }
   ```
@@ -439,7 +439,7 @@ await Mail.to(user.email)
 - [ ] Response caching
   ```home
   @cache(ttl: 5m, key: "user:{id}")
-  async fn get_user(id: i64) -> User {
+  async fn get_user(id: i64): User {
       User.find(id)
   }
   ```
@@ -460,7 +460,7 @@ await Mail.to(user.email)
   }
 
   impl Job for SendEmailJob {
-      async fn handle(self) -> Result<()> {
+      async fn handle(self): Result<()> {
           await Mail.send(self.to, self.subject);
       }
   }
@@ -664,7 +664,7 @@ await Mail.to(user.email)
 - [ ] SQL in comptime (validated at compile time)
   ```home
   @comptime_sql("SELECT * FROM users WHERE id = ?")
-  fn get_user(id: i64) -> User;
+  fn get_user(id: i64): User;
   ```
 - [ ] Type-safe HTML templates (prevents XSS at compile time)
 - [ ] Automatic API client generation

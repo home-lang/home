@@ -104,7 +104,7 @@ pub const Formatter = struct {
         try self.output.append(self.allocator, ')');
 
         if (fn_decl.return_type) |ret_type| {
-            try self.output.appendSlice(self.allocator, " -> ");
+            try self.output.appendSlice(self.allocator, ": ");
             try self.output.appendSlice(self.allocator, ret_type);
         }
 

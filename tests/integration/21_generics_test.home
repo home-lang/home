@@ -2,7 +2,7 @@
 // Tests the complete generics implementation
 
 // Test 1: Simple generic function
-fn identity<T>(value: T) -> T {
+fn identity<T>(value: T): T {
     return value;
 }
 
@@ -13,7 +13,7 @@ let text = identity(100);
 assert(text == 100);
 
 // Test 2: Generic function with multiple type parameters
-fn pair<T, U>(first: T, second: U) -> int {
+fn pair<T, U>(first: T, second: U): int {
     return first + second;
 }
 
@@ -26,7 +26,7 @@ struct Box<T> {
 }
 
 // Test 4: Generic function with constraints (simulated)
-fn max<T>(a: T, b: T) -> T {
+fn max<T>(a: T, b: T): T {
     return a > b ? a : b;
 }
 
@@ -34,7 +34,7 @@ let maximum = max(5, 10);
 assert(maximum == 10);
 
 // Test 5: Nested generics
-fn transform<T>(input: T) -> T {
+fn transform<T>(input: T): T {
     return input * 2;
 }
 
@@ -42,7 +42,7 @@ let doubled = transform(21);
 assert(doubled == 42);
 
 // Test 6: Generic with tuple
-fn makeP air<T>(a: T, b: T) -> int {
+fn makeP air<T>(a: T, b: T): int {
     let sum = a + b;
     return sum;
 }
@@ -51,11 +51,11 @@ let pairSum = makePair(15, 27);
 assert(pairSum == 42);
 
 // Test 7: Multiple generic functions
-fn add<T>(a: T, b: T) -> T {
+fn add<T>(a: T, b: T): T {
     return a + b;
 }
 
-fn multiply<T>(a: T, b: T) -> T {
+fn multiply<T>(a: T, b: T): T {
     return a * b;
 }
 
@@ -66,7 +66,7 @@ let product = multiply(6, 7);
 assert(product == 42);
 
 // Test 8: Generic with ternary
-fn conditional<T>(flag: int, ifTrue: T, ifFalse: T) -> T {
+fn conditional<T>(flag: int, ifTrue: T, ifFalse: T): T {
     return flag > 0 ? ifTrue : ifFalse;
 }
 
@@ -74,11 +74,11 @@ let choice = conditional(1, 100, 200);
 assert(choice == 100);
 
 // Test 9: Generic chain
-fn increment<T>(n: T) -> T {
+fn increment<T>(n: T): T {
     return n + 1;
 }
 
-fn decrement<T>(n: T) -> T {
+fn decrement<T>(n: T): T {
     return n - 1;
 }
 
@@ -89,7 +89,7 @@ val = decrement(43);
 assert(val == 42);
 
 // Test 10: Generic with null coalescing
-fn getOrDefault<T>(value: T, default: T) -> T {
+fn getOrDefault<T>(value: T, default: T): T {
     return value ?? default;
 }
 

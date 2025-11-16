@@ -15,7 +15,7 @@ enum Result {
     Err(string)
 }
 
-fn main() -> int {
+fn main(): int {
     // Note: Enum instantiation not yet implemented
     // This shows the enum declaration syntax
     return 0

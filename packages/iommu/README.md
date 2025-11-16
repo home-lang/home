@@ -92,7 +92,7 @@ pub fn main() !void {
     try net_domain.map(dma_buffer_iova, dma_buffer_phys, buffer_size, access);
 
     std.debug.print("Network card isolated in domain {}\n", .{net_domain.id});
-    std.debug.print("DMA buffer mapped: 0x{X} -> 0x{X}\n", .{
+    std.debug.print("DMA buffer mapped: 0x{X}: 0x{X}\n", .{
         dma_buffer_iova,
         dma_buffer_phys,
     });

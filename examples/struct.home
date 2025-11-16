@@ -9,7 +9,7 @@ struct Person {
     age: int
 }
 
-fn main() -> int {
+fn main(): int {
     // Note: Struct literals not yet implemented
     // This shows the member access syntax that will work
     // once struct instantiation is added
