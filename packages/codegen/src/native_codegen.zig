@@ -242,38 +242,10 @@ pub const NativeCodegen = struct {
     }
 
     pub fn generate(self: *NativeCodegen) ![]const u8 {
-        // Set up function prologue
-        try self.assembler.pushReg(.rbp);
-        try self.assembler.movRegReg(.rbp, .rsp);
-
         // Generate code for all statements
+        // Note: Don't add prologue/epilogue here - each function handles its own
         for (self.program.statements) |stmt| {
             try self.generateStmt(stmt);
-        }
-
-        // Function epilogue
-        try self.assembler.movRegReg(.rsp, .rbp);
-        try self.assembler.popReg(.rbp);
-
-        // On macOS with LC_MAIN, dyld expects us to return
-        // On Linux, we need to call exit syscall
-        switch (builtin.os.tag) {
-            .macos => {
-                // Just return - dyld will handle exit
-                try self.assembler.ret();
-            },
-            .linux => {
-                // Exit syscall
-                try self.assembler.movRegImm64(.rax, 60); // sys_exit
-                try self.assembler.xorRegReg(.rdi, .rdi); // exit code 0
-                try self.assembler.syscall();
-            },
-            else => {
-                // Default to Linux behavior
-                try self.assembler.movRegImm64(.rax, 60);
-                try self.assembler.xorRegReg(.rdi, .rdi);
-                try self.assembler.syscall();
-            },
         }
 
         return try self.assembler.getCode();
@@ -283,11 +255,14 @@ pub const NativeCodegen = struct {
         const code = try self.generate();
         defer self.allocator.free(code);
 
+        // Find main function offset
+        const main_offset = self.functions.get("main") orelse 0;
+
         // Use platform-appropriate binary format
         switch (builtin.os.tag) {
             .macos => {
                 var writer = macho.MachOWriter.init(self.allocator, code);
-                try writer.write(path);
+                try writer.writeWithEntryPoint(path, main_offset);
             },
             .linux => {
                 var writer = elf.ElfWriter.init(self.allocator, code);
@@ -544,6 +519,10 @@ pub const NativeCodegen = struct {
     }
 
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
+        // Reset local variable tracking for new function
+        self.next_local_offset = 0;
+        self.locals.clearRetainingCapacity();
+
         // Record function position
         const func_pos = self.assembler.getPosition();
         const name_copy = try self.allocator.dupe(u8, func.name);
@@ -554,15 +533,45 @@ pub const NativeCodegen = struct {
         try self.assembler.pushReg(.rbp);
         try self.assembler.movRegReg(.rbp, .rsp);
 
+        // Handle parameters - x86-64 calling convention:
+        // First 6 integer args: rdi, rsi, rdx, rcx, r8, r9
+        // Additional args on stack
+        const param_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+
+        for (func.params, 0..) |param, i| {
+            if (i < param_regs.len) {
+                // Parameter is in register - save to stack
+                const offset = self.next_local_offset;
+                self.next_local_offset += 1; // Increment count, not bytes
+
+                // Store parameter name and offset
+                const name = try self.allocator.dupe(u8, param.name);
+                errdefer self.allocator.free(name);
+                try self.locals.put(name, offset);
+
+                // Push parameter register onto stack
+                try self.assembler.pushReg(param_regs[i]);
+            } else {
+                // Parameter is on stack (passed by caller)
+                // TODO: Handle stack parameters
+                return error.UnsupportedFeature;
+            }
+        }
+
         // Generate function body
         for (func.body.statements) |stmt| {
             try self.generateStmt(stmt);
         }
 
-        // Function epilogue (if no explicit return)
-        try self.assembler.movRegReg(.rsp, .rbp);
-        try self.assembler.popReg(.rbp);
-        try self.assembler.ret();
+        // Function epilogue (only if no explicit return at end)
+        const needs_epilogue = func.body.statements.len == 0 or
+            func.body.statements[func.body.statements.len - 1] != .ReturnStmt;
+
+        if (needs_epilogue) {
+            try self.assembler.movRegReg(.rsp, .rbp);
+            try self.assembler.popReg(.rbp);
+            try self.assembler.ret();
+        }
     }
 
     fn generateLetDecl(self: *NativeCodegen, decl: *ast.LetDecl) !void {
@@ -576,7 +585,7 @@ pub const NativeCodegen = struct {
 
             // Store on stack
             const offset = self.next_local_offset;
-            self.next_local_offset += 8; // 8 bytes per variable
+            self.next_local_offset += 1; // Increment count, not bytes
 
             // Store variable name and offset
             const name = try self.allocator.dupe(u8, decl.name);
@@ -597,8 +606,13 @@ pub const NativeCodegen = struct {
             .Identifier => |id| {
                 // Load from stack
                 if (self.locals.get(id.name)) |offset| {
-                    // Stack layout: rbp points to saved rbp, locals are below
-                    // Variables are pushed onto stack, so first var is at [rbp-8], second at [rbp-16], etc.
+                    // Stack layout after function prologue:
+                    // [rbp+0]: saved rbp
+                    // [rbp-8]: first pushed item (offset=0)
+                    // [rbp-16]: second pushed item (offset=1)
+                    // [rbp-24]: third pushed item (offset=2)
+                    // etc.
+                    // Items pushed first are at higher addresses (closer to rbp)
                     const stack_offset: i32 = -@as(i32, @intCast((offset + 1) * 8));
                     // mov rax, [rbp + stack_offset]
                     try self.assembler.movRegMem(.rax, .rbp, stack_offset);
@@ -640,11 +654,19 @@ pub const NativeCodegen = struct {
                         const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
                         const arg_count = @min(call.args.len, arg_regs.len);
 
-                        for (call.args[0..arg_count], 0..) |arg, i| {
-                            try self.generateExpr(arg);
-                            // Result in rax, move to appropriate register
-                            if (i > 0) {
-                                try self.assembler.movRegReg(arg_regs[i], .rax);
+                        // Evaluate all arguments and push onto stack first
+                        var i: usize = 0;
+                        while (i < arg_count) : (i += 1) {
+                            try self.generateExpr(call.args[i]);
+                            try self.assembler.pushReg(.rax);
+                        }
+
+                        // Pop arguments into correct registers (in reverse order)
+                        if (arg_count > 0) {
+                            var j: usize = arg_count;
+                            while (j > 0) {
+                                j -= 1;
+                                try self.assembler.popReg(arg_regs[j]);
                             }
                         }
 
