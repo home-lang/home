@@ -1,7 +1,7 @@
 const std = @import("std");
-const home = @import("ion");
-const Lexer = ion.lexer.Lexer;
-const Parser = ion.parser.Parser;
+const home = @import("home");
+const Lexer = home.lexer.Lexer;
+const Parser = home.parser.Parser;
 
 const Timer = std.time.Timer;
 

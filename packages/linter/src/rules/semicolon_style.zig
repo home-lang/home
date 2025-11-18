@@ -54,8 +54,8 @@ pub const SemicolonStyle = struct {
         allocator: std.mem.Allocator,
         tokens: []const Token,
     ) ![]LintError {
-        var errors = std.ArrayList(LintError).init(allocator);
-        errdefer errors.deinit();
+        var errors = std.ArrayList(LintError){};
+        errdefer errors.deinit(allocator);
 
         var i: usize = 0;
         while (i < tokens.len) : (i += 1) {
@@ -65,7 +65,7 @@ pub const SemicolonStyle = struct {
             if (token.type == .Semicolon and self.config.style == .never) {
                 const is_required = self.isSemicolonRequired(tokens, i);
                 if (!is_required) {
-                    try errors.append(.{
+                    try errors.append(allocator, .{
                         .message = try allocator.dupe(u8, "Unnecessary semicolon (style: never)"),
                         .line = token.line,
                         .column = token.column,
@@ -83,7 +83,7 @@ pub const SemicolonStyle = struct {
                     if (i + 1 < tokens.len) {
                         const next = tokens[i + 1];
                         if (token.line == next.line and self.isStatementStart(next)) {
-                            try errors.append(.{
+                            try errors.append(allocator, .{
                                 .message = try allocator.dupe(u8, "Missing semicolon (style: always)"),
                                 .line = token.line,
                                 .column = token.column + token.lexeme.len,
@@ -101,7 +101,7 @@ pub const SemicolonStyle = struct {
                 if (token.type != .Semicolon and i + 1 < tokens.len) {
                     const next = tokens[i + 1];
                     if (token.line == next.line and self.isStatementStart(next)) {
-                        try errors.append(.{
+                        try errors.append(allocator, .{
                             .message = try allocator.dupe(u8, "Semicolon required (multiple statements on same line)"),
                             .line = token.line,
                             .column = token.column + token.lexeme.len,
@@ -114,7 +114,7 @@ pub const SemicolonStyle = struct {
             }
         }
 
-        return errors.toOwnedSlice();
+        return errors.toOwnedSlice(allocator);
     }
 
     /// Check if a semicolon is required at the given position.

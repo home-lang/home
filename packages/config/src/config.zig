@@ -89,7 +89,7 @@ pub const ConfigLoader = struct {
     /// Strip single-line and multi-line comments from JSON
     fn stripJsonComments(self: *ConfigLoader, content: []const u8) ![]u8 {
         var result = try std.ArrayList(u8).initCapacity(self.allocator, content.len);
-        errdefer result.deinit();
+        errdefer result.deinit(self.allocator);
 
         var i: usize = 0;
         var in_string = false;
@@ -148,7 +148,7 @@ pub const ConfigLoader = struct {
             i += 1;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Parse TOML content (simplified parser)

@@ -77,7 +77,7 @@ pub const PackageManager = struct {
         };
 
         // Try to load lockfile
-        pm.lockfile = LockFile.load(allocator, "ion.lock") catch null;
+        pm.lockfile = LockFile.load(allocator, "home.lock") catch null;
 
         return pm;
     }
@@ -235,7 +235,7 @@ pub const PackageManager = struct {
         }
 
         self.lockfile = try LockFile.create(self.allocator, resolved);
-        try self.lockfile.?.save("ion.lock");
+        try self.lockfile.?.save("home.lock");
 
         // Download packages
         try self.downloadAll();
@@ -977,7 +977,7 @@ pub const DependencySource = union(enum) {
     Url: []const u8, // Direct HTTP/HTTPS download
 };
 
-/// Lock file (ion.lock) for reproducible builds
+/// Lock file (home.lock) for reproducible builds
 pub const LockFile = struct {
     allocator: std.mem.Allocator,
     version: u32,

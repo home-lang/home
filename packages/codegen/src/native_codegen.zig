@@ -2,6 +2,8 @@ const std = @import("std");
 const ast = @import("ast");
 pub const x64 = @import("x64.zig");
 const elf = @import("elf.zig");
+const macho = @import("macho.zig");
+const builtin = @import("builtin");
 
 /// Error set for code generation operations.
 ///
@@ -253,10 +255,26 @@ pub const NativeCodegen = struct {
         try self.assembler.movRegReg(.rsp, .rbp);
         try self.assembler.popReg(.rbp);
 
-        // Exit syscall: mov rax, 60; xor rdi, rdi; syscall
-        try self.assembler.movRegImm64(.rax, 60); // sys_exit
-        try self.assembler.xorRegReg(.rdi, .rdi); // exit code 0
-        try self.assembler.syscall();
+        // On macOS with LC_MAIN, dyld expects us to return
+        // On Linux, we need to call exit syscall
+        switch (builtin.os.tag) {
+            .macos => {
+                // Just return - dyld will handle exit
+                try self.assembler.ret();
+            },
+            .linux => {
+                // Exit syscall
+                try self.assembler.movRegImm64(.rax, 60); // sys_exit
+                try self.assembler.xorRegReg(.rdi, .rdi); // exit code 0
+                try self.assembler.syscall();
+            },
+            else => {
+                // Default to Linux behavior
+                try self.assembler.movRegImm64(.rax, 60);
+                try self.assembler.xorRegReg(.rdi, .rdi);
+                try self.assembler.syscall();
+            },
+        }
 
         return try self.assembler.getCode();
     }
@@ -265,8 +283,21 @@ pub const NativeCodegen = struct {
         const code = try self.generate();
         defer self.allocator.free(code);
 
-        var writer = elf.ElfWriter.init(self.allocator, code);
-        try writer.write(path);
+        // Use platform-appropriate binary format
+        switch (builtin.os.tag) {
+            .macos => {
+                var writer = macho.MachOWriter.init(self.allocator, code);
+                try writer.write(path);
+            },
+            .linux => {
+                var writer = elf.ElfWriter.init(self.allocator, code);
+                try writer.write(path);
+            },
+            else => {
+                std.debug.print("Unsupported platform: {s}\n", .{@tagName(builtin.os.tag)});
+                return error.UnsupportedPlatform;
+            },
+        }
     }
 
     fn generateStmt(self: *NativeCodegen, stmt: ast.Stmt) CodegenError!void {
@@ -671,7 +702,12 @@ pub const NativeCodegen = struct {
                             try self.assembler.jnzRel32(0);
 
                             // Condition false - exit with code 1
-                            try self.assembler.movRegImm64(.rax, 60); // sys_exit
+                            const exit_syscall: u64 = switch (builtin.os.tag) {
+                                .macos => 0x2000001,
+                                .linux => 60,
+                                else => 60,
+                            };
+                            try self.assembler.movRegImm64(.rax, exit_syscall);
                             try self.assembler.movRegImm64(.rdi, 1); // exit code 1
                             try self.assembler.syscall();
 
@@ -988,6 +1024,15 @@ pub const NativeCodegen = struct {
                 // For now, return an error placeholder
                 _ = reflect_expr;
                 try self.assembler.movRegImm64(.rax, 0); // Placeholder
+            },
+
+            .StringLiteral => |str_lit| {
+                // For now, store string data inline and load address into rax
+                // In a real implementation, we'd have a .data section
+                // For simplicity, we'll just load a null pointer
+                // TODO: Implement proper string data section
+                _ = str_lit;
+                try self.assembler.xorRegReg(.rax, .rax); // Load null for now
             },
 
             .MacroExpr => {

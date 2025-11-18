@@ -49,10 +49,18 @@ pub const ModuleResolver = struct {
     }
 
     pub fn deinit(self: *ModuleResolver) void {
-        var it = self.module_cache.valueIterator();
-        while (it.next()) |module| {
+        // Free all cached module file paths
+        var value_it = self.module_cache.valueIterator();
+        while (value_it.next()) |module| {
             self.allocator.free(module.file_path);
         }
+
+        // Free all cache keys
+        var key_it = self.module_cache.keyIterator();
+        while (key_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+
         self.module_cache.deinit();
         self.allocator.free(self.packages_root);
     }
@@ -64,25 +72,30 @@ pub const ModuleResolver = struct {
     pub fn resolve(self: *ModuleResolver, path_segments: []const []const u8) ModuleError!ResolvedModule {
         // Create cache key
         const cache_key = try self.pathKey(path_segments);
-        defer self.allocator.free(cache_key);
+        errdefer self.allocator.free(cache_key);
 
         // Check cache
         if (self.module_cache.get(cache_key)) |cached| {
+            self.allocator.free(cache_key);
             return cached;
         }
 
         // Try resolving as standard library module
         if (try self.resolveStdLib(path_segments)) |module| {
+            // Keep cache_key for storage in hashmap
             try self.module_cache.put(cache_key, module);
             return module;
         }
 
         // Try resolving as local module
         if (try self.resolveLocal(path_segments)) |module| {
+            // Keep cache_key for storage in hashmap
             try self.module_cache.put(cache_key, module);
             return module;
         }
 
+        // Free cache_key only if module not found
+        self.allocator.free(cache_key);
         return error.ModuleNotFound;
     }
 

@@ -664,7 +664,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    parser_bench.root_module.addImport("ion", home_module);
+    parser_bench.root_module.addImport("home", home_module);
 
     b.installArtifact(parser_bench);
 

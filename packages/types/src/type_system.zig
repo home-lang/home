@@ -272,6 +272,10 @@ pub const Type = union(enum) {
         }
 
         return switch (self) {
+            .TypeVar => |tv1| {
+                const tv2 = other.TypeVar;
+                return tv1.id == tv2.id;
+            },
             .Int, .I8, .I16, .I32, .I64, .I128,
             .U8, .U16, .U32, .U64, .U128,
             .Float, .F32, .F64,

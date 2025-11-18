@@ -523,8 +523,8 @@ pub const Parser = struct {
         var it_description: ?[]const u8 = null;
         for (attributes) |attr| {
             if (ast.Attribute.isNamed(attr, "it")) {
-                // Get the description from the attribute value
-                if (attr.value) |val| {
+                // Get the description from the first argument
+                if (attr.getStringArg(0)) |val| {
                     it_description = val;
                 }
                 break;
@@ -556,8 +556,8 @@ pub const Parser = struct {
 
         if (self.match(&.{.Type})) {
             var stmt = try self.typeAliasDeclaration();
-            if (is_pub) stmt.TypeDecl.is_public = true;
-            stmt.TypeDecl.attributes = attributes;
+            if (is_pub) stmt.TypeAliasDecl.is_public = true;
+            stmt.TypeAliasDecl.attributes = attributes;
             return stmt;
         }
 
@@ -595,7 +595,7 @@ pub const Parser = struct {
 
         // Check for @it "description" { body } syntax (block without keyword)
         if (it_description != null and self.check(.LeftBrace)) {
-            const body = try self.block();
+            const body = try self.blockStatement();
             const it_decl = try ast.ItTestDecl.init(
                 self.allocator,
                 it_description.?,
@@ -734,7 +734,7 @@ pub const Parser = struct {
         _ = try self.expect(.RightParen, "Expected ')' after test description");
 
         // Parse the test body block
-        const body = try self.block();
+        const body = try self.blockStatement();
 
         const it_decl = try ast.ItTestDecl.init(
             self.allocator,

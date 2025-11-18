@@ -3,6 +3,7 @@ const ast = @import("ast");
 const lexer_mod = @import("lexer");
 const Token = lexer_mod.Token;
 const TokenType = lexer_mod.TokenType;
+const Lexer = lexer_mod.Lexer;
 const Parser = @import("parser").Parser;
 
 pub const LinterConfigLoader = @import("config_loader.zig").LinterConfigLoader;
@@ -96,7 +97,7 @@ pub const Linter = struct {
         return .{
             .allocator = allocator,
             .config = config,
-            .diagnostics = std.ArrayList(LintDiagnostic).init(allocator),
+            .diagnostics = std.ArrayList(LintDiagnostic){},
             .source = "",
         };
     }
@@ -107,18 +108,23 @@ pub const Linter = struct {
                 self.allocator.free(fix.edits);
             }
         }
-        self.diagnostics.deinit();
+        self.diagnostics.deinit(self.allocator);
     }
 
     pub fn lint(self: *Linter, source: []const u8) ![]LintDiagnostic {
         self.source = source;
         self.diagnostics.clearRetainingCapacity();
 
-        // Parse the source code
-        var parser = Parser.init(self.allocator, source);
+        // Tokenize the source code first
+        var lexer = Lexer.init(self.allocator, source);
+        var tokens = try lexer.tokenize();
+        defer tokens.deinit(self.allocator);
+
+        // Parse the tokens
+        var parser = try Parser.init(self.allocator, tokens.items);
         defer parser.deinit();
 
-        const program = parser.parseProgram() catch {
+        const program = parser.parse() catch {
             // If parsing fails, return syntax errors
             return self.diagnostics.items;
         };
@@ -151,10 +157,10 @@ pub const Linter = struct {
     }
 
     pub fn autoFix(self: *Linter) ![]const u8 {
-        var fixed_source = std.ArrayList(u8).init(self.allocator);
-        defer fixed_source.deinit();
+        var fixed_source = std.ArrayList(u8){};
+        defer fixed_source.deinit(self.allocator);
 
-        try fixed_source.appendSlice(self.source);
+        try fixed_source.appendSlice(self.allocator, self.source);
 
         // Sort diagnostics by position (reverse order for safe editing)
         const Context = struct {};
@@ -179,7 +185,7 @@ pub const Linter = struct {
             }
         }
 
-        return fixed_source.toOwnedSlice();
+        return fixed_source.toOwnedSlice(self.allocator);
     }
 
     // Rule implementations
@@ -265,7 +271,7 @@ pub const Linter = struct {
                         .new_text = "",
                     };
 
-                    try self.diagnostics.append(.{
+                    try self.diagnostics.append(self.allocator, .{
                         .rule_id = rule_id,
                         .severity = config.severity,
                         .message = "Trailing whitespace detected",
@@ -295,7 +301,7 @@ pub const Linter = struct {
             if (char == '\n') {
                 const line_length = i - line_start;
                 if (line_length > self.config.max_line_length) {
-                    try self.diagnostics.append(.{
+                    try self.diagnostics.append(self.allocator, .{
                         .rule_id = rule_id,
                         .severity = config.severity,
                         .message = try std.fmt.allocPrint(
@@ -357,7 +363,7 @@ pub const Linter = struct {
                         .new_text = spaces,
                     };
 
-                    try self.diagnostics.append(.{
+                    try self.diagnostics.append(self.allocator, .{
                         .rule_id = rule_id,
                         .severity = config.severity,
                         .message = "Expected spaces for indentation",
@@ -387,7 +393,7 @@ pub const Linter = struct {
                 if (line_length == 0) {
                     empty_lines += 1;
                     if (empty_lines > 1) {
-                        try self.diagnostics.append(.{
+                        try self.diagnostics.append(self.allocator, .{
                             .rule_id = rule_id,
                             .severity = config.severity,
                             .message = "Multiple consecutive empty lines",
@@ -424,7 +430,7 @@ pub const Linter = struct {
                 .new_text = "\n",
             };
 
-            try self.diagnostics.append(.{
+            try self.diagnostics.append(self.allocator, .{
                 .rule_id = rule_id,
                 .severity = config.severity,
                 .message = "Missing newline at end of file",
@@ -460,7 +466,7 @@ pub const Linter = struct {
                 }
 
                 if (has_spaces and has_tabs) {
-                    try self.diagnostics.append(.{
+                    try self.diagnostics.append(self.allocator, .{
                         .rule_id = rule_id,
                         .severity = config.severity,
                         .message = "Mixed spaces and tabs in indentation",
@@ -492,10 +498,9 @@ pub const Linter = struct {
 
         // Tokenize source to check semicolon usage
         var lex = @import("lexer").Lexer.init(self.allocator, self.source);
-        defer lex.deinit();
 
-        const tokens = lex.tokenize() catch return;
-        defer self.allocator.free(tokens);
+        var tokens = lex.tokenize() catch return;
+        defer tokens.deinit(self.allocator);
 
         // Check for unnecessary/missing semicolons based on style
         const style: @import("rules/semicolon_style.zig").SemicolonStyle.Config.Style =
@@ -505,7 +510,7 @@ pub const Linter = struct {
             .style = style,
         });
 
-        const errors = rule.check(self.allocator, tokens) catch return;
+        const errors = rule.check(self.allocator, tokens.items) catch return;
         defer {
             for (errors) |*err| {
                 err.deinit(self.allocator);
@@ -515,7 +520,7 @@ pub const Linter = struct {
 
         // Convert semicolon errors to linter diagnostics
         for (errors) |err| {
-            try self.diagnostics.append(.{
+            try self.diagnostics.append(self.allocator, .{
                 .rule_id = rule_id,
                 .severity = switch (err.severity) {
                     .Error => .error_,

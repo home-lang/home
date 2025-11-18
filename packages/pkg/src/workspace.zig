@@ -110,10 +110,10 @@ pub const Workspace = struct {
             std.debug.print("  Installing {s}...\n", .{pkg.name});
 
             // Parse config file to extract dependencies
-            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "ion.toml" });
+            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "home.toml" });
             defer self.allocator.free(toml_path);
 
-            // Read ion.toml
+            // Read home.toml
             const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {
                 std.debug.print("    ⚠️  Warning: Could not open {s}: {s}\n", .{ toml_path, @errorName(err) });
                 continue;
@@ -257,8 +257,8 @@ pub const Workspace = struct {
         for (self.packages.items) |pkg| {
             std.debug.print("  {s}:\n", .{pkg.name});
 
-            // Read ion.toml to get scripts
-            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "ion.toml" });
+            // Read home.toml to get scripts
+            const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "home.toml" });
             defer self.allocator.free(toml_path);
 
             const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {

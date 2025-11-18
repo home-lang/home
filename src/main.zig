@@ -412,12 +412,12 @@ fn getSuggestion(error_message: []const u8) ?[]const u8 {
 fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
     // fmt is an alias for lint --fix
     // Build new args array with --fix flag
-    var new_args = std.ArrayList([:0]u8).init(allocator);
-    defer new_args.deinit();
+    var new_args = std.ArrayList([:0]u8){};
+    defer new_args.deinit(allocator);
 
-    try new_args.append(try allocator.dupeZ(u8, "--fix"));
+    try new_args.append(allocator, try allocator.dupeZ(u8, "--fix"));
     for (args) |arg| {
-        try new_args.append(arg);
+        try new_args.append(allocator, arg);
     }
 
     try lint_cmd.lintCommand(allocator, new_args.items);
@@ -689,12 +689,12 @@ fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !v
     });
 
     // Walk the directory and find test files
-    var test_files = std.ArrayList([]const u8).init(allocator);
+    var test_files = std.ArrayList([]const u8){};
     defer {
         for (test_files.items) |file| {
             allocator.free(file);
         }
-        test_files.deinit();
+        test_files.deinit(allocator);
     }
 
     try discoverTestFiles(allocator, search_path, &test_files);
@@ -744,7 +744,7 @@ fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_fi
             .file => {
                 if (isTestFile(entry.name)) {
                     const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-                    try test_files.append(full_path);
+                    try test_files.append(allocator, full_path);
                 }
             },
             .directory => {
@@ -959,16 +959,16 @@ pub fn main() !void {
     const program_name = std.fs.path.basename(args[0]);
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
-        var test_args = std.ArrayList([:0]u8).init(allocator);
-        defer test_args.deinit();
+        var test_args = std.ArrayList([:0]u8){};
+        defer test_args.deinit(allocator);
 
-        try test_args.append(args[0]); // Program name
-        try test_args.append(try allocator.dupeZ(u8, "test")); // Inject 'test' command
+        try test_args.append(allocator, args[0]); // Program name
+        try test_args.append(allocator, try allocator.dupeZ(u8, "test")); // Inject 'test' command
 
         // Add remaining args (skip program name)
         if (args.len > 1) {
             for (args[1..]) |arg| {
-                try test_args.append(arg);
+                try test_args.append(allocator, arg);
             }
         } else {
             // No args provided - show help
