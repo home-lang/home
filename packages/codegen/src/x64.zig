@@ -161,6 +161,15 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
     }
 
+    /// imul dst, imm32 - multiply register by immediate
+    pub fn imulRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
+        // REX.W + 69 /r imm32
+        try self.emitRex(true, dst.needsRexPrefix(), false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x69);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(dst));
+        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
+    }
+
     /// idiv reg (signed divide: rdx:rax / reg -> rax=quotient, rdx=remainder)
     /// Note: caller must set up rdx:rax (typically via cqo to sign-extend rax into rdx)
     pub fn idivReg(self: *Assembler, divisor: Register) !void {

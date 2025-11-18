@@ -665,11 +665,11 @@ pub const Parser = struct {
             while (true) {
                 const param_name = try self.expect(.Identifier, "Expected parameter name");
                 _ = try self.expect(.Colon, "Expected ':' after parameter name");
-                const param_type = try self.expect(.Identifier, "Expected parameter type");
+                const param_type = try self.parseTypeAnnotation();
 
                 try params.append(self.allocator, .{
                     .name = param_name.lexeme,
-                    .type_name = param_type.lexeme,
+                    .type_name = param_type,
                     .loc = ast.SourceLocation.fromToken(param_name),
                 });
 
@@ -682,8 +682,7 @@ pub const Parser = struct {
         // Parse return type (TypeScript-style with colon)
         var return_type: ?[]const u8 = null;
         if (self.match(&.{.Colon})) {
-            const ret_token = try self.expect(.Identifier, "Expected return type");
-            return_type = ret_token.lexeme;
+            return_type = try self.parseTypeAnnotation();
         }
 
         // Parse body
@@ -775,11 +774,11 @@ pub const Parser = struct {
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             const field_name = try self.expect(.Identifier, "Expected field name");
             _ = try self.expect(.Colon, "Expected ':' after field name");
-            const field_type = try self.expect(.Identifier, "Expected field type");
+            const field_type_name = try self.parseTypeAnnotation();
 
             try fields.append(self.allocator, .{
                 .name = field_name.lexeme,
-                .type_name = field_type.lexeme,
+                .type_name = field_type_name,
                 .loc = ast.SourceLocation.fromToken(field_name),
             });
 
@@ -1054,6 +1053,31 @@ pub const Parser = struct {
         return ast.Stmt{ .ImportDecl = decl };
     }
 
+    /// Parse a type annotation (supports arrays, generics, etc.)
+    fn parseTypeAnnotation(self: *Parser) ![]const u8 {
+        // Check for array type: [T] or [size]T
+        if (self.match(&.{.LeftBracket})) {
+            // For now, skip size if present and just get element type
+            if (self.peek().type != .RightBracket) {
+                // Has size or element type inside brackets
+                const inner = try self.expect(.Identifier, "Expected type in array");
+                _ = try self.expect(.RightBracket, "Expected ']'");
+                // Return [element_type] as string
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner.lexeme});
+                return arr_type;
+            } else {
+                _ = try self.expect(.RightBracket, "Expected ']'");
+                const elem_type = try self.expect(.Identifier, "Expected element type after '[]'");
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{elem_type.lexeme});
+                return arr_type;
+            }
+        }
+
+        // Regular type (identifier)
+        const type_token = try self.expect(.Identifier, "Expected type name");
+        return type_token.lexeme;
+    }
+
     /// Parse a let/const declaration
     fn letDeclaration(self: *Parser, is_const: bool) !ast.Stmt {
         _ = is_const;
@@ -1063,8 +1087,7 @@ pub const Parser = struct {
         // Optional type annotation
         var type_name: ?[]const u8 = null;
         if (self.match(&.{.Colon})) {
-            const type_token = try self.expect(.Identifier, "Expected type name");
-            type_name = type_token.lexeme;
+            type_name = try self.parseTypeAnnotation();
         }
 
         // Optional initializer

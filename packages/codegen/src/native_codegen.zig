@@ -297,6 +297,24 @@ pub const NativeCodegen = struct {
         return size;
     }
 
+    /// Get the size of a type in bytes
+    fn getTypeSize(self: *NativeCodegen, type_name: []const u8) CodegenError!usize {
+        // Primitive types
+        if (std.mem.eql(u8, type_name, "i32")) return 8; // i64 on x64
+        if (std.mem.eql(u8, type_name, "i64")) return 8;
+        if (std.mem.eql(u8, type_name, "bool")) return 8;
+        if (std.mem.eql(u8, type_name, "f32")) return 4;
+        if (std.mem.eql(u8, type_name, "f64")) return 8;
+
+        // Check if it's a struct type
+        if (self.struct_layouts.get(type_name)) |layout| {
+            return layout.total_size;
+        }
+
+        std.debug.print("Unknown type: {s}\n", .{type_name});
+        return error.UnsupportedFeature;
+    }
+
     /// Write all string literals to a buffer for the data section
     fn writeDataSection(self: *NativeCodegen) ![]u8 {
         const size = self.getDataSectionSize();
@@ -724,10 +742,38 @@ pub const NativeCodegen = struct {
                     }
                 }
             },
-            .UnionDecl, .StructDecl, .EnumDecl, .TypeAliasDecl => {
-                // Type declarations - these are compile-time constructs
+            .StructDecl => |struct_decl| {
+                // Calculate struct layout
+                var fields = std.ArrayList(FieldInfo){};
+                defer fields.deinit(self.allocator);
+
+                var offset: usize = 0;
+                for (struct_decl.fields) |field| {
+                    const field_size = try self.getTypeSize(field.type_name);
+                    // Align to field size (simple alignment for now)
+                    const alignment = field_size;
+                    offset = std.mem.alignForward(usize, offset, alignment);
+
+                    try fields.append(.{
+                        .name = field.name,
+                        .offset = offset,
+                        .size = field_size,
+                    });
+                    offset += field_size;
+                }
+
+                // Store struct layout
+                const layout = StructLayout{
+                    .name = struct_decl.name,
+                    .fields = try fields.toOwnedSlice(),
+                    .total_size = offset,
+                };
+                const name_copy = try self.allocator.dupe(u8, struct_decl.name);
+                try self.struct_layouts.put(name_copy, layout);
+            },
+            .UnionDecl, .EnumDecl, .TypeAliasDecl => {
+                // Type declarations - compile-time constructs
                 // No runtime code generation needed
-                // Type information is recorded for use in other expressions
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
@@ -1412,6 +1458,102 @@ pub const NativeCodegen = struct {
             .MacroExpr => {
                 // Macro expressions should have been expanded before codegen
                 return error.UnexpandedMacro;
+            },
+
+            .AssignmentExpr => |assign| {
+                // x = value
+                // Evaluate the value expression (result in rax)
+                try self.generateExpr(assign.value);
+
+                // Store to target (must be an Identifier for now)
+                if (assign.target.* != .Identifier) {
+                    std.debug.print("Assignment target must be an identifier\n", .{});
+                    return error.UnsupportedFeature;
+                }
+
+                const target_name = assign.target.Identifier.name;
+                if (self.locals.get(target_name)) |offset| {
+                    // Store rax to stack location
+                    const stack_offset: i32 = -@as(i32, @intCast((offset + 1) * 8));
+                    try self.assembler.movMemReg(.rbp, stack_offset, .rax);
+                } else {
+                    std.debug.print("Undefined variable in assignment: {s}\n", .{target_name});
+                    return error.UndefinedVariable;
+                }
+            },
+
+            .ArrayLiteral => |array| {
+                // Allocate array on stack
+                // For now: simple inline allocation
+                // Store array base pointer in rax
+
+                if (array.elements.len == 0) {
+                    // Empty array - return null
+                    try self.assembler.movRegImm64(.rax, 0);
+                    return;
+                }
+
+                // Allocate space for all elements on stack
+                const elem_size: usize = 8; // All values are i64 for now
+                const total_size = array.elements.len * elem_size;
+
+                // Reserve stack space
+                try self.assembler.subRegImm32(.rsp, @intCast(total_size));
+
+                // Store each element
+                for (array.elements, 0..) |elem, i| {
+                    // Evaluate element
+                    try self.generateExpr(elem);
+                    // Store to stack: [rsp + i * 8]
+                    const offset: i32 = @intCast(i * elem_size);
+                    try self.assembler.movMemReg(.rsp, offset, .rax);
+                }
+
+                // Return pointer to array (rsp)
+                try self.assembler.movRegReg(.rax, .rsp);
+            },
+
+            .IndexExpr => |index| {
+                // array[index]
+                // Evaluate array expression (get pointer in rax)
+                try self.generateExpr(index.object);
+                try self.assembler.pushReg(.rax); // Save array pointer
+
+                // Evaluate index expression
+                try self.generateExpr(index.index);
+                // Index is now in rax
+
+                // Pop array pointer into rcx
+                try self.assembler.popReg(.rcx);
+
+                // Calculate offset: index * 8
+                try self.assembler.imulRegImm32(.rax, 8);
+
+                // Add to base pointer: rcx + rax
+                try self.assembler.addRegReg(.rcx, .rax);
+
+                // Load value from [rcx]
+                try self.assembler.movRegMem(.rax, .rcx, 0);
+            },
+
+            .MemberExpr => |member| {
+                // struct.field
+                // Evaluate object expression (get pointer in rax)
+                try self.generateExpr(member.object);
+
+                // Get struct type - for now assume object is an identifier
+                if (member.object.* != .Identifier) {
+                    std.debug.print("Member access only supported on identifiers for now\n", .{});
+                    return error.UnsupportedFeature;
+                }
+
+                _ = member.object.Identifier.name;
+                // For now, assume all structs are stored as pointers
+                // In future: need type info to get actual struct name
+
+                // Find field offset (need struct layout info - stub for now)
+                std.debug.print("MemberExpr not fully implemented - need struct type tracking\n", .{});
+                return error.UnsupportedFeature;
             },
 
             else => |expr_tag| {
