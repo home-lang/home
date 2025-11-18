@@ -20,7 +20,9 @@ pub const CodegenError = error{
     UndefinedVariable,
     /// Macro was not expanded before codegen
     UnexpandedMacro,
-} || std.mem.Allocator.Error;
+    /// Failed to import module
+    ImportFailed,
+} || std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError;
 
 /// Maximum number of local variables per function.
 ///
@@ -64,6 +66,16 @@ pub const FieldInfo = struct {
     offset: usize,
     /// Size of field in bytes
     size: usize,
+};
+
+/// Enum layout information.
+///
+/// Maps enum variant names to their integer values (indices).
+pub const EnumLayout = struct {
+    /// Enum type name
+    name: []const u8,
+    /// Variant names (ordered by declaration)
+    variants: []const []const u8,
 };
 
 /// Local variable information.
@@ -146,6 +158,8 @@ pub const NativeCodegen = struct {
     // Type/struct layouts
     /// Map of struct names to their memory layouts
     struct_layouts: std.StringHashMap(StructLayout),
+    /// Map of enum names to their variant lists
+    enum_layouts: std.StringHashMap(EnumLayout),
 
     // String literal data
     /// List of string literals to be placed in __DATA section
@@ -172,6 +186,7 @@ pub const NativeCodegen = struct {
             .functions = std.StringHashMap(usize).init(allocator),
             .heap_ptr = HEAP_START,
             .struct_layouts = std.StringHashMap(StructLayout).init(allocator),
+            .enum_layouts = std.StringHashMap(EnumLayout).init(allocator),
             .string_literals = std.ArrayList([]const u8){},
             .string_offsets = std.StringHashMap(usize).init(allocator),
             .string_fixups = std.ArrayList(StringFixup){},
@@ -210,6 +225,7 @@ pub const NativeCodegen = struct {
         }
 
         self.struct_layouts.deinit();
+        self.enum_layouts.deinit();
         self.string_literals.deinit(self.allocator);
         self.string_offsets.deinit();
         self.string_fixups.deinit(self.allocator);
@@ -317,10 +333,16 @@ pub const NativeCodegen = struct {
         if (std.mem.eql(u8, type_name, "bool")) return 8;
         if (std.mem.eql(u8, type_name, "f32")) return 4;
         if (std.mem.eql(u8, type_name, "f64")) return 8;
+        if (std.mem.eql(u8, type_name, "str")) return 8; // String pointers are 8 bytes
 
         // Check if it's a struct type
         if (self.struct_layouts.get(type_name)) |layout| {
             return layout.total_size;
+        }
+
+        // Check if it's an enum type
+        if (self.enum_layouts.contains(type_name)) {
+            return 8; // Enums represented as i64
         }
 
         std.debug.print("Unknown type: {s}\n", .{type_name});
@@ -787,15 +809,427 @@ pub const NativeCodegen = struct {
                 const name_copy = try self.allocator.dupe(u8, struct_decl.name);
                 try self.struct_layouts.put(name_copy, layout);
             },
-            .UnionDecl, .EnumDecl, .TypeAliasDecl => {
+            .EnumDecl => |enum_decl| {
+                // Store enum layout for variant value resolution
+                var variant_names = try self.allocator.alloc([]const u8, enum_decl.variants.len);
+                for (enum_decl.variants, 0..) |variant, i| {
+                    variant_names[i] = variant.name;
+                }
+
+                const layout = EnumLayout{
+                    .name = enum_decl.name,
+                    .variants = variant_names,
+                };
+                const name_copy = try self.allocator.dupe(u8, enum_decl.name);
+                try self.enum_layouts.put(name_copy, layout);
+            },
+            .UnionDecl, .TypeAliasDecl => {
                 // Type declarations - compile-time constructs
                 // No runtime code generation needed
+            },
+            .ImportDecl => |import_decl| {
+                // Handle import statement
+                try self.handleImport(import_decl);
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
                 return error.UnsupportedFeature;
             },
         }
+    }
+
+    fn handleImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) CodegenError!void {
+        // Convert import path to file path
+        // For now, simple strategy: join path components with '/' and add '.home'
+        var path_buffer: [256]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&path_buffer);
+        const writer = fbs.writer();
+
+        for (import_decl.path, 0..) |component, i| {
+            if (i > 0) try writer.writeByte('/');
+            try writer.writeAll(component);
+        }
+        try writer.writeAll(".home");
+
+        const module_path = fbs.getWritten();
+
+        // Read and parse the module file
+        const module_source = std.fs.cwd().readFileAlloc(
+            self.allocator,
+            module_path,
+            10 * 1024 * 1024, // 10MB max
+        ) catch |err| {
+            std.debug.print("Failed to read import file '{s}': {}\n", .{module_path, err});
+            return error.ImportFailed;
+        };
+        defer self.allocator.free(module_source);
+
+        // Parse the module
+        const lexer_mod = @import("lexer");
+        const parser_mod = @import("parser");
+
+        var lexer = lexer_mod.Lexer.init(self.allocator, module_source);
+        var token_list = lexer.tokenize() catch |err| {
+            std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
+            return error.ImportFailed;
+        };
+        defer token_list.deinit(self.allocator);
+        const tokens = token_list.items;
+
+        var parser = parser_mod.Parser.init(self.allocator, tokens) catch |err| {
+            std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
+            return error.ImportFailed;
+        };
+        const module_ast = parser.parse() catch |err| {
+            std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
+            return error.ImportFailed;
+        };
+        defer module_ast.deinit(self.allocator);
+
+        // Generate code for all module statements
+        // This will register functions, structs, etc. in our codegen context
+        for (module_ast.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+    }
+
+    /// Check if an expression is a string type
+    fn isStringExpr(self: *NativeCodegen, expr: *ast.Expr) bool {
+        _ = self;
+        return switch (expr.*) {
+            .StringLiteral => true,
+            .Identifier => |id| {
+                // Check if variable has string type
+                // For now, we'll check during runtime based on the value
+                // This is simplified - a proper type system would track this
+                _ = id;
+                return false;
+            },
+            else => false,
+        };
+    }
+
+    /// Handle string binary operations (concatenation and comparison)
+    fn handleStringBinaryOp(self: *NativeCodegen, binary: *ast.BinaryExpr) !void {
+        switch (binary.op) {
+            .Add => {
+                // String concatenation
+                try self.stringConcat(binary.left, binary.right);
+            },
+            .Equal, .NotEqual => {
+                // String comparison
+                try self.stringCompare(binary.left, binary.right, binary.op);
+            },
+            .Less, .LessEq, .Greater, .GreaterEq => {
+                // String ordering comparison
+                try self.stringOrderCompare(binary.left, binary.right, binary.op);
+            },
+            else => {
+                std.debug.print("Unsupported string operation: {}\n", .{binary.op});
+                return error.UnsupportedFeature;
+            },
+        }
+    }
+
+    /// Concatenate two strings
+    fn stringConcat(self: *NativeCodegen, left: *ast.Expr, right: *ast.Expr) !void {
+        // Evaluate left string (pointer in rax)
+        try self.generateExpr(left);
+        try self.assembler.pushReg(.rax); // Save left string pointer
+
+        // Evaluate right string (pointer in rax)
+        try self.generateExpr(right);
+        try self.assembler.movRegReg(.rcx, .rax); // Right string in rcx
+
+        // Pop left string pointer
+        try self.assembler.popReg(.rax); // Left string in rax
+
+        // Now: rax = left string pointer, rcx = right string pointer
+        // We need to:
+        // 1. Calculate strlen(left) -> store in r8
+        // 2. Calculate strlen(right) -> store in r9
+        // 3. Allocate buffer of size (strlen(left) + strlen(right) + 1)
+        // 4. Copy left string to buffer
+        // 5. Copy right string to buffer + strlen(left)
+        // 6. Null-terminate
+        // 7. Return pointer to concatenated string in rax
+
+        // Save string pointers
+        try self.assembler.pushReg(.rax); // Save left
+        try self.assembler.pushReg(.rcx); // Save right
+
+        // Calculate strlen(left)
+        try self.assembler.popReg(.rdi); // rdi = left string (for strlen)
+        try self.assembler.pushReg(.rdi); // Save again
+        try self.stringLength(.rdi); // Result in rax
+        try self.assembler.movRegReg(.r8, .rax); // r8 = strlen(left)
+
+        // Calculate strlen(right)
+        try self.assembler.popReg(.rax); // Pop left (discard)
+        try self.assembler.popReg(.rdi); // rdi = right string (for strlen)
+        try self.assembler.pushReg(.rdi); // Save again
+        try self.stringLength(.rdi); // Result in rax
+        try self.assembler.movRegReg(.r9, .rax); // r9 = strlen(right)
+
+        // Calculate total size = r8 + r9 + 1
+        try self.assembler.movRegReg(.rax, .r8);
+        try self.assembler.addRegReg(.rax, .r9);
+        try self.assembler.addRegImm(.rax, 1); // +1 for null terminator
+
+        // Allocate buffer (size in rax)
+        try self.assembler.movRegReg(.rdi, .rax); // Size for allocation
+        try self.heapAlloc(); // Returns pointer in rax
+        try self.assembler.movRegReg(.r10, .rax); // r10 = destination buffer
+
+        // Pop string pointers in correct order
+        try self.assembler.popReg(.rcx); // rcx = right string
+        try self.assembler.pushReg(.rcx); // Save for later
+        try self.assembler.popReg(.rax); // rax = left string (from earlier push)
+        try self.assembler.pushReg(.rax); // Save for later
+
+        // Copy left string to buffer
+        // memcpy(r10, rax, r8)
+        try self.assembler.movRegReg(.rdi, .r10); // dest
+        try self.assembler.movRegReg(.rsi, .rax); // src = left string
+        try self.assembler.movRegReg(.rdx, .r8); // count = strlen(left)
+        try self.memcpy();
+
+        // Copy right string to buffer + strlen(left)
+        try self.assembler.popReg(.rax); // Pop left (discard)
+        try self.assembler.popReg(.rcx); // rcx = right string
+        try self.assembler.movRegReg(.rdi, .r10); // dest = buffer start
+        try self.assembler.addRegReg(.rdi, .r8); // dest += strlen(left)
+        try self.assembler.movRegReg(.rsi, .rcx); // src = right string
+        try self.assembler.movRegReg(.rdx, .r9); // count = strlen(right)
+        try self.memcpy();
+
+        // Null-terminate
+        try self.assembler.movRegReg(.rdi, .r10); // dest = buffer start
+        try self.assembler.addRegReg(.rdi, .r8); // dest += strlen(left)
+        try self.assembler.addRegReg(.rdi, .r9); // dest += strlen(right)
+        try self.assembler.movByteMemImm(.rdi, 0, 0); // *dest = '\0'
+
+        // Return pointer to concatenated string in rax
+        try self.assembler.movRegReg(.rax, .r10);
+    }
+
+    /// Compare two strings for equality/inequality
+    fn stringCompare(self: *NativeCodegen, left: *ast.Expr, right: *ast.Expr, op: ast.BinaryOp) !void {
+        // Evaluate left string (pointer in rax)
+        try self.generateExpr(left);
+        try self.assembler.pushReg(.rax);
+
+        // Evaluate right string (pointer in rax)
+        try self.generateExpr(right);
+        try self.assembler.movRegReg(.rsi, .rax); // Right string in rsi
+
+        // Pop left string pointer
+        try self.assembler.popReg(.rdi); // Left string in rdi
+
+        // Compare strings byte by byte
+        try self.strcmp(.rdi, .rsi); // Result in rax (0 if equal, non-zero otherwise)
+
+        // Convert result to boolean based on operation
+        switch (op) {
+            .Equal => {
+                // Check if result == 0
+                try self.assembler.testRegReg(.rax, .rax);
+                try self.assembler.setzReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            .NotEqual => {
+                // Check if result != 0
+                try self.assembler.testRegReg(.rax, .rax);
+                try self.assembler.setneReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Compare two strings for ordering
+    fn stringOrderCompare(self: *NativeCodegen, left: *ast.Expr, right: *ast.Expr, op: ast.BinaryOp) !void {
+        // Evaluate left string (pointer in rax)
+        try self.generateExpr(left);
+        try self.assembler.pushReg(.rax);
+
+        // Evaluate right string (pointer in rax)
+        try self.generateExpr(right);
+        try self.assembler.movRegReg(.rsi, .rax); // Right string in rsi
+
+        // Pop left string pointer
+        try self.assembler.popReg(.rdi); // Left string in rdi
+
+        // Compare strings byte by byte (returns -1, 0, or 1)
+        try self.strcmp(.rdi, .rsi); // Result in rax
+
+        // Convert result to boolean based on operation
+        switch (op) {
+            .Less => {
+                // Check if result < 0
+                try self.assembler.cmpRegImm(.rax, 0);
+                try self.assembler.setlReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            .LessEq => {
+                // Check if result <= 0
+                try self.assembler.cmpRegImm(.rax, 0);
+                try self.assembler.setleReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            .Greater => {
+                // Check if result > 0
+                try self.assembler.cmpRegImm(.rax, 0);
+                try self.assembler.setgReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            .GreaterEq => {
+                // Check if result >= 0
+                try self.assembler.cmpRegImm(.rax, 0);
+                try self.assembler.setgeReg(.rax);
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Calculate string length
+    /// Input: register containing string pointer
+    /// Output: rax = length
+    fn stringLength(self: *NativeCodegen, str_reg: x64.Register) !void {
+        // strlen: count bytes until null terminator
+        try self.assembler.xorRegReg(.rax, .rax); // rax = 0 (counter)
+        try self.assembler.movRegReg(.r11, str_reg); // r11 = string pointer (copy)
+
+        // Loop: while (*r11 != 0) { rax++; r11++; }
+        const loop_start = self.assembler.getPosition();
+
+        // Load byte from [r11]
+        try self.assembler.movzxReg64Mem8(.rcx, .r11, 0);
+
+        // Check if byte is 0
+        try self.assembler.testRegReg(.rcx, .rcx);
+
+        // If zero, exit loop (jump forward)
+        const je_pos = try self.assembler.jeRel8(0); // Placeholder
+
+        // Increment counter
+        try self.assembler.addRegImm(.rax, 1);
+
+        // Increment pointer
+        try self.assembler.addRegImm(.r11, 1);
+
+        // Jump back to loop start
+        const current_pos = self.assembler.getPosition();
+        const rel_offset = @as(i8, @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 2))));
+        _ = try self.assembler.jmpRel8(rel_offset);
+
+        // Patch the je instruction
+        const exit_pos = self.assembler.getPosition();
+        const je_offset = @as(i8, @intCast(@as(i32, @intCast(exit_pos)) - @as(i32, @intCast(je_pos + 2))));
+        self.assembler.patchJe8(je_pos, je_offset);
+    }
+
+    /// Compare two strings
+    /// Input: rdi = string1, rsi = string2
+    /// Output: rax = 0 if equal, <0 if s1<s2, >0 if s1>s2
+    fn strcmp(self: *NativeCodegen, str1_reg: x64.Register, str2_reg: x64.Register) !void {
+        try self.assembler.movRegReg(.r11, str1_reg); // r11 = string1
+        try self.assembler.movRegReg(.r12, str2_reg); // r12 = string2
+
+        // Loop: compare byte by byte
+        const loop_start = self.assembler.getPosition();
+
+        // Load bytes
+        try self.assembler.movzxReg64Mem8(.rax, .r11, 0); // rax = *s1
+        try self.assembler.movzxReg64Mem8(.rcx, .r12, 0); // rcx = *s2
+
+        // Compare bytes
+        try self.assembler.cmpRegReg(.rax, .rcx);
+
+        // If not equal, return difference
+        const jne_pos = try self.assembler.jneRel8(0); // Placeholder
+
+        // If both are 0, strings are equal
+        try self.assembler.testRegReg(.rax, .rax);
+        const je_pos = try self.assembler.jeRel8(0); // Placeholder (exit with rax=0)
+
+        // Increment pointers
+        try self.assembler.addRegImm(.r11, 1);
+        try self.assembler.addRegImm(.r12, 1);
+
+        // Jump back to loop start
+        const current_pos2 = self.assembler.getPosition();
+        const rel_offset2 = @as(i8, @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos2 + 2))));
+        _ = try self.assembler.jmpRel8(rel_offset2);
+
+        // Patch jne: return difference (rax - rcx)
+        const diff_pos = self.assembler.getPosition();
+        const jne_offset = @as(i8, @intCast(@as(i32, @intCast(diff_pos)) - @as(i32, @intCast(jne_pos + 2))));
+        self.assembler.patchJne8(jne_pos, jne_offset);
+
+        try self.assembler.subRegReg(.rax, .rcx); // rax = rax - rcx
+        const jmp_exit_pos = try self.assembler.jmpRel8(0); // Jump to end
+
+        // Patch je: return 0 (already in rax)
+        const equal_pos = self.assembler.getPosition();
+        const je_offset = @as(i8, @intCast(@as(i32, @intCast(equal_pos)) - @as(i32, @intCast(je_pos + 2))));
+        self.assembler.patchJe8(je_pos, je_offset);
+
+        try self.assembler.xorRegReg(.rax, .rax); // rax = 0
+
+        // Patch final jump
+        const exit_pos = self.assembler.getPosition();
+        const jmp_offset = @as(i8, @intCast(@as(i32, @intCast(exit_pos)) - @as(i32, @intCast(jmp_exit_pos + 2))));
+        self.assembler.patchJmp8(jmp_exit_pos, jmp_offset);
+    }
+
+    /// Copy memory from src to dest
+    /// Input: rdi = dest, rsi = src, rdx = count
+    fn memcpy(self: *NativeCodegen) !void {
+        // Simple byte-by-byte copy
+        try self.assembler.testRegReg(.rdx, .rdx);
+        const je_exit = try self.assembler.jeRel8(0); // If count==0, exit
+
+        const loop_start = self.assembler.getPosition();
+
+        // Load byte from [rsi]
+        try self.assembler.movzxReg64Mem8(.rax, .rsi, 0);
+
+        // Store byte to [rdi]
+        try self.assembler.movByteMemReg(.rdi, 0, .rax);
+
+        // Increment pointers
+        try self.assembler.addRegImm(.rsi, 1);
+        try self.assembler.addRegImm(.rdi, 1);
+
+        // Decrement counter
+        try self.assembler.subRegImm(.rdx, 1);
+
+        // Loop if rdx != 0
+        try self.assembler.testRegReg(.rdx, .rdx);
+        const current_pos3 = self.assembler.getPosition();
+        const rel_offset3 = @as(i8, @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos3 + 2))));
+        _ = try self.assembler.jneRel8(rel_offset3);
+
+        // Patch exit jump
+        const exit_pos = self.assembler.getPosition();
+        const je_offset = @as(i8, @intCast(@as(i32, @intCast(exit_pos)) - @as(i32, @intCast(je_exit + 2))));
+        self.assembler.patchJe8(je_exit, je_offset);
+    }
+
+    /// Allocate memory on the heap
+    /// Input: rdi = size to allocate
+    /// Output: rax = pointer to allocated memory
+    fn heapAlloc(self: *NativeCodegen) !void {
+        // Simple bump allocator
+        // Heap pointer stored at HEAP_START - 8
+        // For now, we'll use a simpler approach: allocate on stack
+        // In a real implementation, this would use a proper heap allocator
+
+        // Allocate on stack (simple but works for testing)
+        try self.assembler.subRegReg(.rsp, .rdi);
+        try self.assembler.movRegReg(.rax, .rsp);
     }
 
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
@@ -904,6 +1338,56 @@ pub const NativeCodegen = struct {
                     try self.assembler.pushReg(.rax);
                     self.next_local_offset += 1;
                 }
+            } else if (value.* == .StructLiteral) {
+                // Special handling for struct literals
+                const struct_lit = value.StructLiteral;
+
+                // Get struct layout
+                const struct_layout = self.struct_layouts.get(struct_lit.type_name) orelse {
+                    std.debug.print("Unknown struct type: {s}\n", .{struct_lit.type_name});
+                    return error.UnsupportedFeature;
+                };
+
+                // Struct base points to first field
+                const struct_start_offset = self.next_local_offset;
+
+                // Store variable name
+                const name = try self.allocator.dupe(u8, decl.name);
+                errdefer self.allocator.free(name);
+                try self.locals.put(name, .{
+                    .offset = struct_start_offset,
+                    .type_name = type_name,
+                    .size = struct_layout.total_size,
+                });
+
+                // Allocate and initialize fields in order
+                // We need to match fields in the literal to fields in the layout
+                for (struct_layout.fields) |field_info| {
+                    if (self.next_local_offset >= MAX_LOCALS) {
+                        return error.TooManyVariables;
+                    }
+
+                    // Find the field in the literal
+                    var field_value: ?*ast.Expr = null;
+                    for (struct_lit.fields) |lit_field| {
+                        if (std.mem.eql(u8, lit_field.name, field_info.name)) {
+                            field_value = lit_field.value;
+                            break;
+                        }
+                    }
+
+                    if (field_value) |val| {
+                        // Evaluate and push field value
+                        try self.generateExpr(val);
+                        try self.assembler.pushReg(.rax);
+                        self.next_local_offset += 1;
+                    } else {
+                        // Field not initialized - push zero
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.pushReg(.rax);
+                        self.next_local_offset += 1;
+                    }
+                }
             } else {
                 // Regular scalar value
                 // Evaluate the expression (result in rax)
@@ -942,8 +1426,9 @@ pub const NativeCodegen = struct {
             .Identifier => |id| {
                 // Load from stack
                 if (self.locals.get(id.name)) |local_info| {
-                    // Check if this is an array type - return pointer instead of value
+                    // Check if this is an array or struct type - return pointer instead of value
                     const is_array = local_info.type_name.len > 0 and local_info.type_name[0] == '[';
+                    const is_struct = self.struct_layouts.contains(local_info.type_name);
 
                     // Stack layout after function prologue:
                     // [rbp+0]: saved rbp
@@ -954,8 +1439,8 @@ pub const NativeCodegen = struct {
                     // Items pushed first are at higher addresses (closer to rbp)
                     const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
 
-                    if (is_array) {
-                        // For arrays, return pointer to array start (address of first element)
+                    if (is_array or is_struct) {
+                        // For arrays and structs, return pointer to start
                         // lea rax, [rbp + stack_offset]
                         try self.assembler.movRegReg(.rax, .rbp);
                         try self.assembler.addRegImm32(.rax, stack_offset);
@@ -970,6 +1455,15 @@ pub const NativeCodegen = struct {
                 }
             },
             .BinaryExpr => |binary| {
+                // Check if this is a string operation
+                const is_string_op = self.isStringExpr(binary.left) or self.isStringExpr(binary.right);
+
+                if (is_string_op) {
+                    // Handle string operations
+                    try self.handleStringBinaryOp(binary);
+                    return;
+                }
+
                 // Evaluate right operand first (save result)
                 try self.generateExpr(binary.right);
                 try self.assembler.pushReg(.rax);
@@ -1564,6 +2058,13 @@ pub const NativeCodegen = struct {
                 return error.UnsupportedFeature;
             },
 
+            .StructLiteral => {
+                // Struct literals should only appear in let declarations
+                // where they are handled specially (similar to arrays)
+                std.debug.print("Struct literals are only supported in let declarations\n", .{});
+                return error.UnsupportedFeature;
+            },
+
             .IndexExpr => |index| {
                 // array[index]
                 // Evaluate array expression (get pointer in rax)
@@ -1589,18 +2090,38 @@ pub const NativeCodegen = struct {
             },
 
             .MemberExpr => |member| {
-                // struct.field
-                // Get struct type from identifier
+                // Can be: struct.field or Enum.Variant
                 if (member.object.* != .Identifier) {
                     std.debug.print("Member access only supported on identifiers for now\n", .{});
                     return error.UnsupportedFeature;
                 }
 
-                const var_name = member.object.Identifier.name;
+                const type_or_var_name = member.object.Identifier.name;
 
-                // Look up variable to get its type
-                const local_info = self.locals.get(var_name) orelse {
-                    std.debug.print("Undefined variable in member access: {s}\n", .{var_name});
+                // Check if this is an enum value (Enum.Variant)
+                if (self.enum_layouts.get(type_or_var_name)) |enum_layout| {
+                    // Find variant index
+                    var variant_index: ?usize = null;
+                    for (enum_layout.variants, 0..) |variant_name, i| {
+                        if (std.mem.eql(u8, variant_name, member.member)) {
+                            variant_index = i;
+                            break;
+                        }
+                    }
+
+                    if (variant_index == null) {
+                        std.debug.print("Variant {s} not found in enum {s}\n", .{member.member, type_or_var_name});
+                        return error.UnsupportedFeature;
+                    }
+
+                    // Load the variant index as the enum value
+                    try self.assembler.movRegImm64(.rax, @intCast(variant_index.?));
+                    return;
+                }
+
+                // Otherwise, it's struct field access
+                const local_info = self.locals.get(type_or_var_name) orelse {
+                    std.debug.print("Undefined variable in member access: {s}\n", .{type_or_var_name});
                     return error.UndefinedVariable;
                 };
 
@@ -1610,34 +2131,26 @@ pub const NativeCodegen = struct {
                     return error.UnsupportedFeature;
                 };
 
-                // Find field in struct layout
-                var field_offset: ?usize = null;
-                for (struct_layout.fields) |field| {
+                // Find field index in struct layout
+                var field_index: ?usize = null;
+                for (struct_layout.fields, 0..) |field, i| {
                     if (std.mem.eql(u8, field.name, member.member)) {
-                        field_offset = field.offset;
+                        field_index = i;
                         break;
                     }
                 }
 
-                if (field_offset == null) {
+                if (field_index == null) {
                     std.debug.print("Field {s} not found in struct {s}\n", .{member.member, local_info.type_name});
                     return error.UnsupportedFeature;
                 }
 
-                // Calculate address of struct on stack
-                const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                // Calculate address of field on stack
+                // Struct base is at offset, field i is at offset + i
+                const field_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + field_index.? + 1) * 8));
 
-                // Load struct base address into rax
-                try self.assembler.movRegReg(.rax, .rbp);
-                try self.assembler.addRegImm32(.rax, stack_offset);
-
-                // Add field offset to get field address
-                if (field_offset.? > 0) {
-                    try self.assembler.addRegImm32(.rax, @intCast(field_offset.?));
-                }
-
-                // Load field value from [rax]
-                try self.assembler.movRegMem(.rax, .rax, 0);
+                // Load field value directly from stack
+                try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
             },
 
             else => |expr_tag| {

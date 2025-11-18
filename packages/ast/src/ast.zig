@@ -1002,7 +1002,7 @@ pub const Expr = union(NodeType) {
     MacroExpr: *MacroExpr,
     InlineAsm: InlineAsm,
     ClosureExpr: *ClosureExpr,
-    StructLiteral: void,
+    StructLiteral: *StructLiteralExpr,
     TupleStructLiteral: void,
     AnonymousStruct: void,
     ArrayComprehension: void,
@@ -1499,7 +1499,7 @@ pub const Stmt = union(NodeType) {
     MacroExpr: void,
     InlineAsm: void,
     ClosureExpr: void,
-    StructLiteral: void,
+    StructLiteral: void,  // Handled via pointer deinit
     TupleStructLiteral: void,
     AnonymousStruct: void,
     ArrayComprehension: void,

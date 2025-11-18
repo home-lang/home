@@ -2572,6 +2572,43 @@ pub const Parser = struct {
                 return expr;
             }
 
+            // Check for struct literal: TypeName { field: value, ... }
+            if (self.check(.LeftBrace)) {
+                _ = self.advance(); // consume '{'
+
+                var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                defer fields.deinit(self.allocator);
+
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const field_name_token = try self.expect(.Identifier, "Expected field name");
+                    _ = try self.expect(.Colon, "Expected ':' after field name");
+                    const field_value = try self.expression();
+
+                    try fields.append(self.allocator, ast.FieldInit{
+                        .name = field_name_token.lexeme,
+                        .value = field_value,
+                        .is_shorthand = false,
+                        .loc = ast.SourceLocation.fromToken(field_name_token),
+                    });
+
+                    if (!self.match(&.{.Comma})) break;
+                }
+
+                _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+
+                const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
+                struct_lit.* = ast.StructLiteralExpr.init(
+                    token.lexeme,
+                    try fields.toOwnedSlice(self.allocator),
+                    false,
+                    ast.SourceLocation.fromToken(token),
+                );
+
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .StructLiteral = struct_lit };
+                return expr;
+            }
+
             // Regular identifier
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{

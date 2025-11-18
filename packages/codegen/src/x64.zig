@@ -534,4 +534,126 @@ pub const Assembler = struct {
         self.code.items[pos + 4] = offset_bytes[2];
         self.code.items[pos + 5] = offset_bytes[3];
     }
+
+    /// movzx reg64, byte [base + offset] - Zero-extend byte from memory to 64-bit register
+    pub fn movzxReg64Mem8(self: *Assembler, dst: Register, base: Register, offset: i32) !void {
+        // REX.W + 0F B6 /r [base + disp32]
+        try self.emitRex(true, dst.needsRexPrefix(), false, base.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xB6);
+
+        if (offset == 0 and base != .rbp) {
+            // [base] with no displacement (ModRM = 00)
+            try self.emitModRM(0b00, @intFromEnum(dst), @intFromEnum(base));
+        } else {
+            // [base + disp32] (ModRM = 10)
+            try self.emitModRM(0b10, @intFromEnum(dst), @intFromEnum(base));
+            const offset_bytes = @as([4]u8, @bitCast(offset));
+            try self.code.appendSlice(self.allocator, &offset_bytes);
+        }
+    }
+
+    /// mov byte [base + offset], reg8 - Store low 8 bits of register to memory
+    pub fn movByteMemReg(self: *Assembler, base: Register, offset: i32, src: Register) !void {
+        // 88 /r [base + disp32]
+        // No REX prefix needed for byte access to low 8 bits
+        try self.code.append(self.allocator, 0x88);
+
+        if (offset == 0 and base != .rbp) {
+            // [base] with no displacement
+            try self.emitModRM(0b00, @intFromEnum(src), @intFromEnum(base));
+        } else {
+            // [base + disp32]
+            try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
+            const offset_bytes = @as([4]u8, @bitCast(offset));
+            try self.code.appendSlice(self.allocator, &offset_bytes);
+        }
+    }
+
+    /// mov byte [base + offset], imm8 - Store immediate byte to memory
+    pub fn movByteMemImm(self: *Assembler, base: Register, offset: i32, value: u8) !void {
+        // C6 /0 [base + disp32] imm8
+        try self.code.append(self.allocator, 0xC6);
+
+        if (offset == 0 and base != .rbp) {
+            // [base] with no displacement
+            try self.emitModRM(0b00, 0, @intFromEnum(base));
+        } else {
+            // [base + disp32]
+            try self.emitModRM(0b10, 0, @intFromEnum(base));
+            const offset_bytes = @as([4]u8, @bitCast(offset));
+            try self.code.appendSlice(self.allocator, &offset_bytes);
+        }
+
+        try self.code.append(self.allocator, value);
+    }
+
+    /// add reg, imm32 - Add immediate to register
+    pub fn addRegImm(self: *Assembler, dst: Register, value: i32) !void {
+        // REX.W + 81 /0 imm32
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+        const value_bytes = @as([4]u8, @bitCast(value));
+        try self.code.appendSlice(self.allocator, &value_bytes);
+    }
+
+    /// sub reg, imm32 - Subtract immediate from register
+    pub fn subRegImm(self: *Assembler, dst: Register, value: i32) !void {
+        // REX.W + 81 /5 imm32
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 5, @intFromEnum(dst));
+        const value_bytes = @as([4]u8, @bitCast(value));
+        try self.code.appendSlice(self.allocator, &value_bytes);
+    }
+
+    /// cmp reg, imm32 - Compare register with immediate
+    pub fn cmpRegImm(self: *Assembler, dst: Register, value: i32) !void {
+        // REX.W + 81 /7 imm32
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 7, @intFromEnum(dst));
+        const value_bytes = @as([4]u8, @bitCast(value));
+        try self.code.appendSlice(self.allocator, &value_bytes);
+    }
+
+    /// jmp rel8 - Unconditional jump (short)
+    pub fn jmpRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0xEB);
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// je rel8 - Jump if equal (short)
+    pub fn jeRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x74);
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// jne rel8 - Jump if not equal (short)
+    pub fn jneRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x75);
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// Patch je rel8 at position
+    pub fn patchJe8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
+    /// Patch jne rel8 at position
+    pub fn patchJne8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
+    /// Patch jmp rel8 at position
+    pub fn patchJmp8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
 };
