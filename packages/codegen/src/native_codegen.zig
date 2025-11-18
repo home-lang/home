@@ -172,8 +172,31 @@ pub const NativeCodegen = struct {
     /// variable maps, and struct layouts.
     pub fn deinit(self: *NativeCodegen) void {
         self.assembler.deinit();
-        self.locals.deinit();
-        self.functions.deinit();
+
+        // Free duplicated strings in locals HashMap
+        {
+            var locals_iter = self.locals.keyIterator();
+            while (locals_iter.next()) |key_ptr| {
+                const key = key_ptr.*;
+                if (key.len > 0) {
+                    self.allocator.free(key);
+                }
+            }
+            self.locals.deinit();
+        }
+
+        // Free duplicated strings in functions HashMap
+        {
+            var funcs_iter = self.functions.keyIterator();
+            while (funcs_iter.next()) |key_ptr| {
+                const key = key_ptr.*;
+                if (key.len > 0) {
+                    self.allocator.free(key);
+                }
+            }
+            self.functions.deinit();
+        }
+
         self.struct_layouts.deinit();
         self.string_literals.deinit(self.allocator);
         self.string_offsets.deinit();
@@ -500,6 +523,84 @@ pub const NativeCodegen = struct {
                 const back_offset = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 6));
                 try self.assembler.jnzRel32(back_offset);
             },
+            .ForStmt => |for_stmt| {
+                // For loop: for iterator in iterable { body }
+                // Currently only supports range expressions (e.g., 0..10)
+
+                // Check if iterable is a range expression
+                if (for_stmt.iterable.* != .RangeExpr) {
+                    std.debug.print("For loops currently only support range expressions\n", .{});
+                    return error.UnsupportedFeature;
+                }
+
+                const range = for_stmt.iterable.RangeExpr;
+
+                // Evaluate range start (result in rax)
+                try self.generateExpr(range.start);
+                // Store start value in r8 (current iterator value)
+                try self.assembler.movRegReg(.r8, .rax);
+
+                // Evaluate range end (result in rax)
+                try self.generateExpr(range.end);
+                // Store end value in r9 (end bound)
+                try self.assembler.movRegReg(.r9, .rax);
+
+                // Allocate stack space for iterator variable (push once at start)
+                const iterator_offset = self.next_local_offset;
+                self.next_local_offset += 1;
+                const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
+                errdefer self.allocator.free(iterator_name_copy);
+                try self.locals.put(iterator_name_copy, iterator_offset);
+
+                // Push initial iterator value to stack
+                try self.assembler.movRegReg(.rax, .r8);
+                try self.assembler.pushReg(.rax);
+
+                // Loop start: update stack and compare iterator with end
+                const loop_start = self.assembler.getPosition();
+
+                // Update the stack with current iterator value
+                // Stack offset calculation: [rbp - (offset + 1) * 8]
+                const stack_offset: i32 = -@as(i32, @intCast((iterator_offset + 1) * 8));
+                try self.assembler.movMemReg(.rbp, stack_offset, .r8);
+
+                // Compare iterator (r8) with end (r9)
+                try self.assembler.cmpRegReg(.r8, .r9);
+
+                // For inclusive ranges (..=), use jg (jump if greater)
+                // For exclusive ranges (..), use jge (jump if greater or equal)
+                const jmp_pos = self.assembler.getPosition();
+                if (range.inclusive) {
+                    try self.assembler.jgRel32(0); // Placeholder - exit if r8 > r9
+                } else {
+                    try self.assembler.jgeRel32(0); // Placeholder - exit if r8 >= r9
+                }
+
+                // Generate loop body
+                for (for_stmt.body.statements) |body_stmt| {
+                    try self.generateStmt(body_stmt);
+                }
+
+                // Increment iterator: inc r8
+                try self.assembler.incReg(.r8);
+
+                // Jump back to loop start
+                const current_pos = self.assembler.getPosition();
+                const back_offset = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 5));
+                try self.assembler.jmpRel32(back_offset);
+
+                // Patch the conditional jump to point here (after loop)
+                const loop_end = self.assembler.getPosition();
+                const forward_offset = @as(i32, @intCast(loop_end)) - @as(i32, @intCast(jmp_pos + 6));
+                if (range.inclusive) {
+                    try self.assembler.patchJgRel32(jmp_pos, forward_offset);
+                } else {
+                    try self.assembler.patchJgeRel32(jmp_pos, forward_offset);
+                }
+
+                // Pop the iterator value (cleanup stack after loop)
+                try self.assembler.popReg(.rax);
+            },
             .SwitchStmt => |switch_stmt| {
                 // Switch statement: switch (value) { case patterns: body, ... }
                 // Implemented using sequential pattern matching with conditional jumps
@@ -629,7 +730,7 @@ pub const NativeCodegen = struct {
                 // Type information is recorded for use in other expressions
             },
             else => {
-                std.debug.print("Unsupported statement in native codegen\n", .{});
+                std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
                 return error.UnsupportedFeature;
             },
         }
@@ -638,6 +739,12 @@ pub const NativeCodegen = struct {
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
         // Reset local variable tracking for new function
         self.next_local_offset = 0;
+
+        // Free duplicated strings before clearing locals
+        var iter = self.locals.keyIterator();
+        while (iter.next()) |key_ptr| {
+            self.allocator.free(key_ptr.*);
+        }
         self.locals.clearRetainingCapacity();
 
         // Record function position
@@ -719,6 +826,10 @@ pub const NativeCodegen = struct {
             .IntegerLiteral => |lit| {
                 // Load immediate value into rax
                 try self.assembler.movRegImm64(.rax, lit.value);
+            },
+            .BooleanLiteral => |lit| {
+                // Load boolean value into rax (0 for false, 1 for true)
+                try self.assembler.movRegImm64(.rax, if (lit.value) 1 else 0);
             },
             .Identifier => |id| {
                 // Load from stack
@@ -829,8 +940,46 @@ pub const NativeCodegen = struct {
                     .BitAnd => try self.assembler.andRegReg(.rax, .rcx),
                     .BitOr => try self.assembler.orRegReg(.rax, .rcx),
                     .BitXor => try self.assembler.xorRegReg(.rax, .rcx),
+                    // Shift operators (shift amount must be in CL register)
+                    .LeftShift => {
+                        // Left operand (value to shift) is in rax
+                        // Right operand (shift amount) is in rcx
+                        // x64 shift instructions require shift amount in CL (lower 8 bits of RCX)
+                        try self.assembler.shlRegCl(.rax);
+                    },
+                    .RightShift => {
+                        // Logical right shift (unsigned)
+                        try self.assembler.shrRegCl(.rax);
+                    },
                     else => {
                         std.debug.print("Unsupported binary op in native codegen: {}\n", .{binary.op});
+                        return error.UnsupportedFeature;
+                    },
+                }
+            },
+            .UnaryExpr => |unary| {
+                // Evaluate operand first (result in rax)
+                try self.generateExpr(unary.operand);
+
+                // Apply unary operation
+                switch (unary.op) {
+                    .Neg => {
+                        // Arithmetic negation: neg rax
+                        try self.assembler.negReg(.rax);
+                    },
+                    .Not => {
+                        // Logical NOT: convert to boolean first, then invert
+                        // test rax, rax; setz al; movzx rax, al
+                        try self.assembler.testRegReg(.rax, .rax);
+                        try self.assembler.setzReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .BitNot => {
+                        // Bitwise NOT: not rax
+                        try self.assembler.notReg(.rax);
+                    },
+                    .Deref, .AddressOf => {
+                        std.debug.print("Pointer operations not yet implemented in native codegen\n", .{});
                         return error.UnsupportedFeature;
                     },
                 }

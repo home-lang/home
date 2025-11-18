@@ -97,6 +97,17 @@ pub const Assembler = struct {
         try self.code.writer(self.allocator).writeInt(i32, offset, .little);
     }
 
+    /// mov [base + offset], src - Store register to memory
+    pub fn movMemReg(self: *Assembler, base: Register, offset: i32, src: Register) !void {
+        // REX.W + 89 /r [base + disp32]
+        try self.emitRex(true, src.needsRexPrefix(), false, base.needsRexPrefix());
+        try self.code.append(self.allocator, 0x89);
+        // ModRM byte: mod=10 (32-bit displacement), reg=src, rm=base
+        try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
+        // Emit 32-bit displacement
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
     /// lea reg, [rip + disp32] - Load Effective Address with RIP-relative addressing
     /// This is used for loading addresses of data in the data section
     /// Returns the position where the displacement was written so it can be patched later
@@ -407,6 +418,58 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, 0, @intFromEnum(dst));
     }
 
+    /// setz reg (set byte on zero flag, alias for sete)
+    pub fn setzReg(self: *Assembler, dst: Register) !void {
+        // SETZ is the same as SETE (both check ZF=1)
+        // REX (if needed) + 0F 94 /r
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x94);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// neg reg (two's complement negation)
+    pub fn negReg(self: *Assembler, dst: Register) !void {
+        // REX.W + F7 /3
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xF7);
+        try self.emitModRM(0b11, 3, @intFromEnum(dst));
+    }
+
+    /// not reg (bitwise NOT, one's complement)
+    pub fn notReg(self: *Assembler, dst: Register) !void {
+        // REX.W + F7 /2
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xF7);
+        try self.emitModRM(0b11, 2, @intFromEnum(dst));
+    }
+
+    /// shl reg, cl (shift left by value in CL register)
+    pub fn shlRegCl(self: *Assembler, dst: Register) !void {
+        // REX.W + D3 /4
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xD3);
+        try self.emitModRM(0b11, 4, @intFromEnum(dst));
+    }
+
+    /// shr reg, cl (logical shift right by value in CL register)
+    pub fn shrRegCl(self: *Assembler, dst: Register) !void {
+        // REX.W + D3 /5
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xD3);
+        try self.emitModRM(0b11, 5, @intFromEnum(dst));
+    }
+
+    /// sar reg, cl (arithmetic shift right by value in CL register)
+    pub fn sarRegCl(self: *Assembler, dst: Register) !void {
+        // REX.W + D3 /7
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xD3);
+        try self.emitModRM(0b11, 7, @intFromEnum(dst));
+    }
+
     /// movzx reg64, reg8 (zero-extend 8-bit to 64-bit)
     pub fn movzxReg64Reg8(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 0F B6 /r
@@ -414,5 +477,35 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0xB6);
         try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// inc reg (increment register by 1)
+    pub fn incReg(self: *Assembler, dst: Register) !void {
+        // REX.W + FF /0
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xFF);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// Patch jg rel32 at position
+    pub fn patchJgRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jg is 6 bytes: 0F 8F offset32
+        // Patch the offset32 at pos + 2
+        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
+        self.code.items[pos + 2] = offset_bytes[0];
+        self.code.items[pos + 3] = offset_bytes[1];
+        self.code.items[pos + 4] = offset_bytes[2];
+        self.code.items[pos + 5] = offset_bytes[3];
+    }
+
+    /// Patch jge rel32 at position
+    pub fn patchJgeRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jge is 6 bytes: 0F 8D offset32
+        // Patch the offset32 at pos + 2
+        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
+        self.code.items[pos + 2] = offset_bytes[0];
+        self.code.items[pos + 3] = offset_bytes[1];
+        self.code.items[pos + 4] = offset_bytes[2];
+        self.code.items[pos + 5] = offset_bytes[3];
     }
 };
