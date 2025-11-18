@@ -4,6 +4,7 @@ const std = @import("std");
 pub const MachOWriter = struct {
     allocator: std.mem.Allocator,
     code: []const u8,
+    data: []const u8, // Data section (for string literals, etc.)
     entry_point: u64,
 
     // Mach-O constants
@@ -22,10 +23,11 @@ pub const MachOWriter = struct {
     const VM_PROT_WRITE: u32 = 2;
     const VM_PROT_EXECUTE: u32 = 4;
 
-    pub fn init(allocator: std.mem.Allocator, code: []const u8) MachOWriter {
+    pub fn init(allocator: std.mem.Allocator, code: []const u8, data: []const u8) MachOWriter {
         return .{
             .allocator = allocator,
             .code = code,
+            .data = data,
             .entry_point = 0x100000000 + 0x1000, // Standard macOS load address + offset
         };
     }
@@ -43,9 +45,18 @@ pub const MachOWriter = struct {
         // Calculate sizes
         const page_size: u64 = 0x1000;
         const code_size_aligned = std.mem.alignForward(u64, self.code.len, page_size);
+        const data_size_aligned = if (self.data.len > 0)
+            std.mem.alignForward(u64, self.data.len, page_size)
+        else
+            0;
+
+        // Calculate file offsets
+        const text_file_offset: u64 = 0x1000; // __TEXT at page 1
+        const data_file_offset: u64 = text_file_offset + code_size_aligned; // __DATA after __TEXT
+        const linkedit_offset: u64 = data_file_offset + data_size_aligned; // __LINKEDIT after __DATA
 
         // Write Mach-O header
-        try self.writeMachHeader(file);
+        try self.writeMachHeader(file, self.data.len > 0);
 
         // Write __PAGEZERO segment (required by modern macOS)
         try self.writePageZeroSegment(file);
@@ -53,8 +64,13 @@ pub const MachOWriter = struct {
         // Write segment command for __TEXT segment
         try self.writeTextSegment(file, code_size_aligned);
 
+        // Write __DATA segment (if we have data)
+        if (self.data.len > 0) {
+            try self.writeDataSegment(file, data_file_offset, data_size_aligned);
+        }
+
         // Write __LINKEDIT segment (for symbol tables)
-        try self.writeLinkedItSegment(file, code_size_aligned);
+        try self.writeLinkedItSegment(file, linkedit_offset);
 
         // Write LC_LOAD_DYLINKER command (required to specify dyld)
         try self.writeLoadDylinker(file);
@@ -66,26 +82,40 @@ pub const MachOWriter = struct {
         try self.writeLoadDylib(file);
 
         // Write symbol table command
-        try self.writeSymtabCommand(file, code_size_aligned);
+        try self.writeSymtabCommand(file, linkedit_offset);
 
         // Write dynamic symbol table command
         try self.writeDysymtabCommand(file);
 
         // Write code at page boundary
-        try file.seekTo(0x1000);
+        try file.seekTo(text_file_offset);
         try file.writeAll(self.code);
 
-        // Pad to page boundary
-        const padding_size = code_size_aligned - self.code.len;
-        if (padding_size > 0) {
-            const padding = try self.allocator.alloc(u8, padding_size);
+        // Pad __TEXT to page boundary
+        const text_padding_size = code_size_aligned - self.code.len;
+        if (text_padding_size > 0) {
+            const padding = try self.allocator.alloc(u8, text_padding_size);
             defer self.allocator.free(padding);
             @memset(padding, 0);
             try file.writeAll(padding);
         }
 
+        // Write data section (if we have data)
+        if (self.data.len > 0) {
+            try file.seekTo(data_file_offset);
+            try file.writeAll(self.data);
+
+            // Pad __DATA to page boundary
+            const data_padding_size = data_size_aligned - self.data.len;
+            if (data_padding_size > 0) {
+                const padding = try self.allocator.alloc(u8, data_padding_size);
+                defer self.allocator.free(padding);
+                @memset(padding, 0);
+                try file.writeAll(padding);
+            }
+        }
+
         // Write LINKEDIT data (minimal symbol table)
-        const linkedit_offset = code_size_aligned + 0x1000;
         try file.seekTo(linkedit_offset);
         const null_byte: [1]u8 = .{0};
         try file.writeAll(&null_byte);
@@ -94,7 +124,7 @@ pub const MachOWriter = struct {
         try file.chmod(0o755);
     }
 
-    fn writeMachHeader(self: *MachOWriter, file: std.fs.File) !void {
+    fn writeMachHeader(self: *MachOWriter, file: std.fs.File, has_data: bool) !void {
         _ = self;
         var header: [32]u8 = undefined;
         @memset(&header, 0);
@@ -112,20 +142,25 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, header[12..16], MH_EXECUTE, .little);
 
         // ncmds - number of load commands
-        // PAGEZERO + TEXT + LINKEDIT + LOAD_DYLINKER + MAIN + LOAD_DYLIB + SYMTAB + DYSYMTAB = 8
-        std.mem.writeInt(u32, header[16..20], 8, .little);
+        // PAGEZERO + TEXT + [DATA] + LINKEDIT + LOAD_DYLINKER + MAIN + LOAD_DYLIB + SYMTAB + DYSYMTAB
+        const num_cmds: u32 = if (has_data) 9 else 8;
+        std.mem.writeInt(u32, header[16..20], num_cmds, .little);
 
         // sizeofcmds - total size of load commands
         const pagezero_size: u32 = 72;
         const text_segment_size: u32 = 152; // Includes __text section (72 + 80)
+        const data_segment_size: u32 = 152; // Includes __data section (72 + 80)
         const linkedit_size: u32 = 72;
         const dylinker_cmd_size: u32 = 32; // LC_LOAD_DYLINKER for /usr/lib/dyld
         const main_cmd_size: u32 = 24;
         const dylib_cmd_size: u32 = 56; // Includes path string
         const symtab_size: u32 = 24;
         const dysymtab_size: u32 = 80;
-        const total_cmd_size = pagezero_size + text_segment_size + linkedit_size +
+        var total_cmd_size = pagezero_size + text_segment_size + linkedit_size +
                                dylinker_cmd_size + main_cmd_size + dylib_cmd_size + symtab_size + dysymtab_size;
+        if (has_data) {
+            total_cmd_size += data_segment_size;
+        }
         std.mem.writeInt(u32, header[20..24], total_cmd_size, .little);
 
         // flags
@@ -191,12 +226,53 @@ pub const MachOWriter = struct {
         try file.writeAll(&cmd);
     }
 
-    fn writeLinkedItSegment(self: *MachOWriter, file: std.fs.File, code_size: u64) !void {
+    fn writeDataSegment(self: *MachOWriter, file: std.fs.File, file_offset: u64, data_size: u64) !void {
+        _ = self;
+        // Segment command (72 bytes) + section header (80 bytes) = 152 bytes
+        var cmd: [152]u8 = undefined;
+        @memset(&cmd, 0);
+
+        // Calculate VM address: after __TEXT segment
+        // __TEXT is at 0x100000000, size is code_size_aligned + 0x1000
+        // We'll use a simple scheme: __DATA starts right after __TEXT in VM space
+        const text_vmsize = file_offset; // file_offset is actually text_file_offset + code_size_aligned
+        const data_vmaddr = 0x100000000 + text_vmsize;
+
+        // Segment command
+        std.mem.writeInt(u32, cmd[0..4], LC_SEGMENT_64, .little);
+        std.mem.writeInt(u32, cmd[4..8], 152, .little); // cmdsize includes section
+        @memcpy(cmd[8..14], "__DATA");
+        std.mem.writeInt(u64, cmd[24..32], data_vmaddr, .little); // vmaddr
+        std.mem.writeInt(u64, cmd[32..40], data_size, .little); // vmsize
+        std.mem.writeInt(u64, cmd[40..48], file_offset, .little); // fileoff
+        std.mem.writeInt(u64, cmd[48..56], data_size, .little); // filesize
+        std.mem.writeInt(i32, cmd[56..60], @as(i32, @intCast(VM_PROT_READ | VM_PROT_WRITE)), .little); // maxprot
+        std.mem.writeInt(i32, cmd[60..64], @as(i32, @intCast(VM_PROT_READ | VM_PROT_WRITE)), .little); // initprot
+        std.mem.writeInt(u32, cmd[64..68], 1, .little); // nsects - 1 section (__data)
+        std.mem.writeInt(u32, cmd[68..72], 0, .little); // flags
+
+        // __data section header (80 bytes starting at offset 72)
+        @memcpy(cmd[72..78], "__data"); // sectname (0-15, using 0-5)
+        @memcpy(cmd[88..94], "__DATA"); // segname (16-31, using 16-21)
+        std.mem.writeInt(u64, cmd[104..112], data_vmaddr, .little); // addr (32-39)
+        std.mem.writeInt(u64, cmd[112..120], data_size, .little); // size (40-47)
+        std.mem.writeInt(u32, cmd[120..124], @intCast(file_offset), .little); // offset in file (48-51)
+        std.mem.writeInt(u32, cmd[124..128], 3, .little); // align (52-55) - 2^3 = 8 bytes
+        std.mem.writeInt(u32, cmd[128..132], 0, .little); // reloff (56-59)
+        std.mem.writeInt(u32, cmd[132..136], 0, .little); // nreloc (60-63)
+        std.mem.writeInt(u32, cmd[136..140], 0, .little); // flags (64-67)
+        std.mem.writeInt(u32, cmd[140..144], 0, .little); // reserved1 (68-71)
+        std.mem.writeInt(u32, cmd[144..148], 0, .little); // reserved2 (72-75)
+        std.mem.writeInt(u32, cmd[148..152], 0, .little); // reserved3 (76-79)
+
+        try file.writeAll(&cmd);
+    }
+
+    fn writeLinkedItSegment(self: *MachOWriter, file: std.fs.File, linkedit_offset: u64) !void {
         _ = self;
         var cmd: [72]u8 = undefined;
         @memset(&cmd, 0);
 
-        const linkedit_offset = code_size + 0x1000;
         std.mem.writeInt(u32, cmd[0..4], LC_SEGMENT_64, .little);
         std.mem.writeInt(u32, cmd[4..8], 72, .little);
         @memcpy(cmd[8..18], "__LINKEDIT");
@@ -272,12 +348,11 @@ pub const MachOWriter = struct {
         try file.writeAll(&cmd);
     }
 
-    fn writeSymtabCommand(self: *MachOWriter, file: std.fs.File, code_size: u64) !void {
+    fn writeSymtabCommand(self: *MachOWriter, file: std.fs.File, linkedit_offset: u64) !void {
         _ = self;
         var cmd: [24]u8 = undefined;
         @memset(&cmd, 0);
 
-        const linkedit_offset = code_size + 0x1000;
         std.mem.writeInt(u32, cmd[0..4], LC_SYMTAB, .little);
         std.mem.writeInt(u32, cmd[4..8], 24, .little); // cmdsize
         std.mem.writeInt(u32, cmd[8..12], @intCast(linkedit_offset), .little); // symoff

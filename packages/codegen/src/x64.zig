@@ -97,6 +97,34 @@ pub const Assembler = struct {
         try self.code.writer(self.allocator).writeInt(i32, offset, .little);
     }
 
+    /// lea reg, [rip + disp32] - Load Effective Address with RIP-relative addressing
+    /// This is used for loading addresses of data in the data section
+    /// Returns the position where the displacement was written so it can be patched later
+    pub fn leaRipRel(self: *Assembler, dst: Register, disp32: i32) !usize {
+        // REX.W + 8D /r [rip + disp32]
+        // ModRM for RIP-relative: mod=00, reg=dst, rm=101 (RIP-relative)
+        try self.emitRex(true, dst.needsRexPrefix(), false, false);
+        try self.code.append(self.allocator, 0x8D); // LEA opcode
+
+        // ModRM byte: mod=00 (no displacement, but RIP-relative uses disp32)
+        // reg=dst, rm=101 (0b101 = RIP-relative addressing)
+        const modrm = (0b00 << 6) | ((@intFromEnum(dst) & 0x7) << 3) | 0b101;
+        try self.code.append(self.allocator, modrm);
+
+        // Remember position where we write the displacement
+        const disp_pos = self.code.items.len;
+
+        // Emit 32-bit displacement (offset from RIP)
+        try self.code.writer(self.allocator).writeInt(i32, disp32, .little);
+
+        return disp_pos;
+    }
+
+    /// Patch a previously written RIP-relative displacement
+    pub fn patchLeaRipRel(self: *Assembler, disp_pos: usize, new_disp: i32) !void {
+        std.mem.writeInt(i32, self.code.items[disp_pos..][0..4], new_disp, .little);
+    }
+
     /// add reg, reg
     pub fn addRegReg(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 01 /r
@@ -120,6 +148,22 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0xAF);
         try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// idiv reg (signed divide: rdx:rax / reg -> rax=quotient, rdx=remainder)
+    /// Note: caller must set up rdx:rax (typically via cqo to sign-extend rax into rdx)
+    pub fn idivReg(self: *Assembler, divisor: Register) !void {
+        // REX.W + F7 /7
+        try self.emitRex(true, false, false, divisor.needsRexPrefix());
+        try self.code.append(self.allocator, 0xF7);
+        try self.emitModRM(0b11, 7, @intFromEnum(divisor));
+    }
+
+    /// cqo - sign extend rax into rdx:rax (for division)
+    pub fn cqo(self: *Assembler) !void {
+        // REX.W + 99
+        try self.emitRex(true, false, false, false);
+        try self.code.append(self.allocator, 0x99);
     }
 
     /// push reg
@@ -159,6 +203,22 @@ pub const Assembler = struct {
         // REX.W + 31 /r
         try self.emitRex(true, src.needsRexPrefix(), false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x31);
+        try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
+    }
+
+    /// and reg, reg (bitwise AND)
+    pub fn andRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        // REX.W + 21 /r
+        try self.emitRex(true, src.needsRexPrefix(), false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x21);
+        try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
+    }
+
+    /// or reg, reg (bitwise OR)
+    pub fn orRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        // REX.W + 09 /r
+        try self.emitRex(true, src.needsRexPrefix(), false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x09);
         try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
     }
 
@@ -284,5 +344,75 @@ pub const Assembler = struct {
         // je is 6 bytes: 0F 84 [rel32]
         // The rel32 starts at pos + 2
         std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
+    /// sete reg (set byte on equal)
+    pub fn seteReg(self: *Assembler, dst: Register) !void {
+        // REX (if needed) + 0F 94 /r
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x94);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// setne reg (set byte on not equal)
+    pub fn setneReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x95);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// setl reg (set byte on less than, signed)
+    pub fn setlReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x9C);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// setle reg (set byte on less than or equal, signed)
+    pub fn setleReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x9E);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// setg reg (set byte on greater than, signed)
+    pub fn setgReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x9F);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// setge reg (set byte on greater than or equal, signed)
+    pub fn setgeReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x9D);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// movzx reg64, reg8 (zero-extend 8-bit to 64-bit)
+    pub fn movzxReg64Reg8(self: *Assembler, dst: Register, src: Register) !void {
+        // REX.W + 0F B6 /r
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xB6);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
     }
 };

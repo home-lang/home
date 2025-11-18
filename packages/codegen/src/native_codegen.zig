@@ -66,6 +66,15 @@ pub const FieldInfo = struct {
     size: usize,
 };
 
+/// String literal fixup information
+/// Tracks where in the code we need to patch string addresses
+pub const StringFixup = struct {
+    /// Position in code where the displacement was written
+    code_pos: usize,
+    /// Offset of the string in the data section
+    data_offset: usize,
+};
+
 /// Native x86-64 code generator for Home.
 ///
 /// Compiles Home AST directly to native x64 machine code without going
@@ -126,6 +135,14 @@ pub const NativeCodegen = struct {
     /// Map of struct names to their memory layouts
     struct_layouts: std.StringHashMap(StructLayout),
 
+    // String literal data
+    /// List of string literals to be placed in __DATA section
+    string_literals: std.ArrayList([]const u8),
+    /// Map of string content to their offsets in __DATA section
+    string_offsets: std.StringHashMap(usize),
+    /// Positions in code that need patching for string addresses
+    string_fixups: std.ArrayList(StringFixup),
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -143,6 +160,9 @@ pub const NativeCodegen = struct {
             .functions = std.StringHashMap(usize).init(allocator),
             .heap_ptr = HEAP_START,
             .struct_layouts = std.StringHashMap(StructLayout).init(allocator),
+            .string_literals = std.ArrayList([]const u8){},
+            .string_offsets = std.StringHashMap(usize).init(allocator),
+            .string_fixups = std.ArrayList(StringFixup){},
         };
     }
 
@@ -155,6 +175,9 @@ pub const NativeCodegen = struct {
         self.locals.deinit();
         self.functions.deinit();
         self.struct_layouts.deinit();
+        self.string_literals.deinit(self.allocator);
+        self.string_offsets.deinit();
+        self.string_fixups.deinit(self.allocator);
     }
 
     /// Generate heap allocation code (bump allocator).
@@ -222,6 +245,55 @@ pub const NativeCodegen = struct {
         try writer.writeInt(i32, offset, .little);
     }
 
+    /// Register a string literal and return its offset in the data section
+    fn registerStringLiteral(self: *NativeCodegen, str: []const u8) !usize {
+        // Check if we've already seen this string
+        if (self.string_offsets.get(str)) |offset| {
+            return offset;
+        }
+
+        // Calculate offset in data section
+        var offset: usize = 0;
+        for (self.string_literals.items) |existing_str| {
+            offset += existing_str.len + 1; // +1 for null terminator
+        }
+
+        // Store the string and its offset
+        try self.string_literals.append(self.allocator, str);
+        try self.string_offsets.put(str, offset);
+
+        return offset;
+    }
+
+    /// Get the total size of the data section (all strings + null terminators)
+    fn getDataSectionSize(self: *NativeCodegen) usize {
+        var size: usize = 0;
+        for (self.string_literals.items) |str| {
+            size += str.len + 1; // +1 for null terminator
+        }
+        return size;
+    }
+
+    /// Write all string literals to a buffer for the data section
+    fn writeDataSection(self: *NativeCodegen) ![]u8 {
+        const size = self.getDataSectionSize();
+        if (size == 0) {
+            return &[_]u8{};
+        }
+
+        var data = try self.allocator.alloc(u8, size);
+        var offset: usize = 0;
+
+        for (self.string_literals.items) |str| {
+            @memcpy(data[offset..][0..str.len], str);
+            offset += str.len;
+            data[offset] = 0; // Null terminator
+            offset += 1;
+        }
+
+        return data;
+    }
+
     /// Copy memory from source to destination
     /// Input: rdi = dest, rsi = src, rdx = count
     /// Uses rep movsb for byte-by-byte copy
@@ -241,6 +313,30 @@ pub const NativeCodegen = struct {
         try self.assembler.popReg(.rcx);
     }
 
+    /// Patch all string literal references with correct RIP-relative offsets
+    /// Must be called after code generation is complete and before getting final code
+    /// data_section_file_offset: offset in the file where __DATA section starts
+    fn patchStringFixups(self: *NativeCodegen, data_section_file_offset: usize) !void {
+        const text_section_base: usize = 0x1000; // __TEXT starts at file offset 0x1000
+
+        for (self.string_fixups.items) |fixup| {
+            // Calculate RIP at the point after the LEA instruction
+            // The fixup.code_pos points to the displacement field (4 bytes before end of instruction)
+            const instruction_end = fixup.code_pos + 4; // 4 bytes for the i32 displacement
+            const rip_after_lea = text_section_base + instruction_end;
+
+            // Calculate target address in file
+            const target_address = data_section_file_offset + fixup.data_offset;
+
+            // Calculate RIP-relative displacement
+            // displacement = target - rip_after_instruction
+            const displacement = @as(i32, @intCast(@as(i64, @intCast(target_address)) - @as(i64, @intCast(rip_after_lea))));
+
+            // Patch the displacement in the code
+            try self.assembler.patchLeaRipRel(fixup.code_pos, displacement);
+        }
+    }
+
     pub fn generate(self: *NativeCodegen) ![]const u8 {
         // Generate code for all statements
         // Note: Don't add prologue/epilogue here - each function handles its own
@@ -252,8 +348,29 @@ pub const NativeCodegen = struct {
     }
 
     pub fn writeExecutable(self: *NativeCodegen, path: []const u8) !void {
-        const code = try self.generate();
+        // Generate code (this fills self.assembler.code)
+        for (self.program.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+
+        // Calculate data section file offset (after code + padding)
+        const page_size: usize = 0x1000;
+        const code_size = self.assembler.code.items.len;
+        const code_size_aligned = std.mem.alignForward(usize, code_size, page_size);
+        const text_file_offset: usize = 0x1000;
+        const data_file_offset = text_file_offset + code_size_aligned;
+
+        // Patch string fixups with correct RIP-relative addresses
+        // This modifies self.assembler.code in place
+        try self.patchStringFixups(data_file_offset);
+
+        // Get the final code after patching
+        const code = try self.assembler.getCode();
         defer self.allocator.free(code);
+
+        // Write data section
+        const data = try self.writeDataSection();
+        defer if (data.len > 0) self.allocator.free(data);
 
         // Find main function offset
         const main_offset = self.functions.get("main") orelse 0;
@@ -261,7 +378,7 @@ pub const NativeCodegen = struct {
         // Use platform-appropriate binary format
         switch (builtin.os.tag) {
             .macos => {
-                var writer = macho.MachOWriter.init(self.allocator, code);
+                var writer = macho.MachOWriter.init(self.allocator, code, data);
                 try writer.writeWithEntryPoint(path, main_offset);
             },
             .linux => {
@@ -291,6 +408,48 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.rsp, .rbp);
                 try self.assembler.popReg(.rbp);
                 try self.assembler.ret();
+            },
+            .IfStmt => |if_stmt| {
+                // Evaluate condition
+                try self.generateExpr(if_stmt.condition);
+
+                // Test rax (condition result)
+                try self.assembler.testRegReg(.rax, .rax);
+
+                // Reserve space for conditional jump to else/end
+                const jz_pos = self.assembler.getPosition();
+                try self.assembler.jzRel32(0); // Placeholder
+
+                // Generate then block
+                for (if_stmt.then_block.statements) |then_stmt| {
+                    try self.generateStmt(then_stmt);
+                }
+
+                if (if_stmt.else_block) |else_block| {
+                    // If there's an else block, jump over it from then block
+                    const jmp_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0); // Placeholder
+
+                    // Patch the jz to jump to else block
+                    const else_start = self.assembler.getPosition();
+                    const jz_offset = @as(i32, @intCast(else_start)) - @as(i32, @intCast(jz_pos + 6));
+                    try self.assembler.patchJzRel32(jz_pos, jz_offset);
+
+                    // Generate else block
+                    for (else_block.statements) |else_stmt| {
+                        try self.generateStmt(else_stmt);
+                    }
+
+                    // Patch the jmp to jump to end
+                    const end_pos = self.assembler.getPosition();
+                    const jmp_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jmp_pos + 5));
+                    try self.assembler.patchJmpRel32(jmp_pos, jmp_offset);
+                } else {
+                    // No else block, just patch jz to jump to end
+                    const end_pos = self.assembler.getPosition();
+                    const jz_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jz_pos + 6));
+                    try self.assembler.patchJzRel32(jz_pos, jz_offset);
+                }
             },
             .WhileStmt => |while_stmt| {
                 // While loop: test condition, jump if false, body, jump back
@@ -340,48 +499,6 @@ pub const NativeCodegen = struct {
                 const current_pos = self.assembler.getPosition();
                 const back_offset = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 6));
                 try self.assembler.jnzRel32(back_offset);
-            },
-            .IfStmt => |if_stmt| {
-                // Evaluate condition
-                try self.generateExpr(if_stmt.condition);
-
-                // Test rax
-                try self.assembler.testRegReg(.rax, .rax);
-
-                // Jump if zero (false) to else block or end
-                const jz_pos = self.assembler.getPosition();
-                try self.assembler.jzRel32(0); // Placeholder
-
-                // Generate then block
-                for (if_stmt.then_block.statements) |then_stmt| {
-                    try self.generateStmt(then_stmt);
-                }
-
-                if (if_stmt.else_block) |else_block| {
-                    // Jump over else block
-                    const jmp_pos = self.assembler.getPosition();
-                    try self.assembler.jmpRel32(0); // Placeholder
-
-                    // Patch jz to point to else block
-                    const else_start = self.assembler.getPosition();
-                    const jz_offset = @as(i32, @intCast(else_start)) - @as(i32, @intCast(jz_pos + 6));
-                    try self.assembler.patchJzRel32(jz_pos, jz_offset);
-
-                    // Generate else block
-                    for (else_block.statements) |else_stmt| {
-                        try self.generateStmt(else_stmt);
-                    }
-
-                    // Patch jmp to point after else
-                    const if_end = self.assembler.getPosition();
-                    const jmp_offset = @as(i32, @intCast(if_end)) - @as(i32, @intCast(jmp_pos + 5));
-                    try self.assembler.patchJmpRel32(jmp_pos, jmp_offset);
-                } else {
-                    // No else block, just patch jz to end
-                    const if_end = self.assembler.getPosition();
-                    const jz_offset = @as(i32, @intCast(if_end)) - @as(i32, @intCast(jz_pos + 6));
-                    try self.assembler.patchJzRel32(jz_pos, jz_offset);
-                }
             },
             .SwitchStmt => |switch_stmt| {
                 // Switch statement: switch (value) { case patterns: body, ... }
@@ -637,8 +754,83 @@ pub const NativeCodegen = struct {
                     .Add => try self.assembler.addRegReg(.rax, .rcx),
                     .Sub => try self.assembler.subRegReg(.rax, .rcx),
                     .Mul => try self.assembler.imulRegReg(.rax, .rcx),
+                    .Div => {
+                        // For division: rdx:rax / rcx -> rax=quotient, rdx=remainder
+                        // Need to sign-extend rax into rdx first
+                        try self.assembler.cqo();
+                        try self.assembler.idivReg(.rcx);
+                    },
+                    .Mod => {
+                        // Modulo: same as division but we want rdx (remainder)
+                        try self.assembler.cqo();
+                        try self.assembler.idivReg(.rcx);
+                        // Move remainder from rdx to rax
+                        try self.assembler.movRegReg(.rax, .rdx);
+                    },
+                    // Comparison operators - result is 0 or 1
+                    .Equal => {
+                        // cmp rax, rcx; sete al; movzx rax, al
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.seteReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .NotEqual => {
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.setneReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .Less => {
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.setlReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .LessEq => {
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.setleReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .Greater => {
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.setgReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    .GreaterEq => {
+                        try self.assembler.cmpRegReg(.rax, .rcx);
+                        try self.assembler.setgeReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                    },
+                    // Logical operators - treat as boolean (0 = false, non-zero = true)
+                    .And => {
+                        // Convert to boolean first: test rax, rax; setne al; movzx rax, al
+                        try self.assembler.testRegReg(.rax, .rax);
+                        try self.assembler.setneReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                        // Save left boolean in r11
+                        try self.assembler.movRegReg(.r11, .rax);
+                        // Convert right to boolean
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        try self.assembler.setneReg(.rcx);
+                        try self.assembler.movzxReg64Reg8(.rcx, .rcx);
+                        // AND the booleans
+                        try self.assembler.andRegReg(.rax, .rcx);
+                    },
+                    .Or => {
+                        // Convert to boolean and OR
+                        try self.assembler.testRegReg(.rax, .rax);
+                        try self.assembler.setneReg(.rax);
+                        try self.assembler.movzxReg64Reg8(.rax, .rax);
+                        try self.assembler.movRegReg(.r11, .rax);
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        try self.assembler.setneReg(.rcx);
+                        try self.assembler.movzxReg64Reg8(.rcx, .rcx);
+                        try self.assembler.orRegReg(.rax, .rcx);
+                    },
+                    // Bitwise operators
+                    .BitAnd => try self.assembler.andRegReg(.rax, .rcx),
+                    .BitOr => try self.assembler.orRegReg(.rax, .rcx),
+                    .BitXor => try self.assembler.xorRegReg(.rax, .rcx),
                     else => {
-                        std.debug.print("Unsupported binary op in native codegen\n", .{});
+                        std.debug.print("Unsupported binary op in native codegen: {}\n", .{binary.op});
                         return error.UnsupportedFeature;
                     },
                 }
@@ -1049,12 +1241,23 @@ pub const NativeCodegen = struct {
             },
 
             .StringLiteral => |str_lit| {
-                // For now, store string data inline and load address into rax
-                // In a real implementation, we'd have a .data section
-                // For simplicity, we'll just load a null pointer
-                // TODO: Implement proper string data section
-                _ = str_lit;
-                try self.assembler.xorRegReg(.rax, .rax); // Load null for now
+                // Register the string literal and get its offset in data section
+                const data_offset = try self.registerStringLiteral(str_lit.value);
+
+                // Use LEA with RIP-relative addressing to load the string address
+                // lea rax, [rip + displacement]
+                // The displacement will be calculated as:
+                //   data_section_start - (current_rip + instruction_length)
+                // We'll patch this later when we know the final code size
+
+                // Emit LEA with placeholder displacement (0 for now)
+                const code_pos = try self.assembler.leaRipRel(.rax, 0);
+
+                // Record this fixup so we can patch it later
+                try self.string_fixups.append(self.allocator, .{
+                    .code_pos = code_pos,
+                    .data_offset = data_offset,
+                });
             },
 
             .MacroExpr => {
