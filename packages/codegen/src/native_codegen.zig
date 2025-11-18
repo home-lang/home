@@ -66,6 +66,18 @@ pub const FieldInfo = struct {
     size: usize,
 };
 
+/// Local variable information.
+///
+/// Stores both stack location and type information for local variables.
+pub const LocalInfo = struct {
+    /// Stack offset from RBP (1-based index)
+    offset: u8,
+    /// Type name (e.g., "i32", "[i32]", "Point")
+    type_name: []const u8,
+    /// Size in bytes
+    size: usize,
+};
+
 /// String literal fixup information
 /// Tracks where in the code we need to patch string addresses
 pub const StringFixup = struct {
@@ -118,8 +130,8 @@ pub const NativeCodegen = struct {
     program: *const ast.Program,
 
     // Variable tracking
-    /// Map of variable names to stack offsets (RBP-relative)
-    locals: std.StringHashMap(u8),
+    /// Map of variable names to local variable info (stack offset + type)
+    locals: std.StringHashMap(LocalInfo),
     /// Next available stack offset for local variables
     next_local_offset: u8,
 
@@ -155,7 +167,7 @@ pub const NativeCodegen = struct {
             .allocator = allocator,
             .assembler = x64.Assembler.init(allocator),
             .program = program,
-            .locals = std.StringHashMap(u8).init(allocator),
+            .locals = std.StringHashMap(LocalInfo).init(allocator),
             .next_local_offset = 0,
             .functions = std.StringHashMap(usize).init(allocator),
             .heap_ptr = HEAP_START,
@@ -568,7 +580,11 @@ pub const NativeCodegen = struct {
                 self.next_local_offset += 1;
                 const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
                 errdefer self.allocator.free(iterator_name_copy);
-                try self.locals.put(iterator_name_copy, iterator_offset);
+                try self.locals.put(iterator_name_copy, .{
+                    .offset = iterator_offset,
+                    .type_name = "i32",  // For loop iterators are always i32
+                    .size = 8,
+                });
 
                 // Push initial iterator value to stack
                 try self.assembler.movRegReg(.rax, .r8);
@@ -754,7 +770,7 @@ pub const NativeCodegen = struct {
                     const alignment = field_size;
                     offset = std.mem.alignForward(usize, offset, alignment);
 
-                    try fields.append(.{
+                    try fields.append(self.allocator, .{
                         .name = field.name,
                         .offset = offset,
                         .size = field_size,
@@ -765,7 +781,7 @@ pub const NativeCodegen = struct {
                 // Store struct layout
                 const layout = StructLayout{
                     .name = struct_decl.name,
-                    .fields = try fields.toOwnedSlice(),
+                    .fields = try fields.toOwnedSlice(self.allocator),
                     .total_size = offset,
                 };
                 const name_copy = try self.allocator.dupe(u8, struct_decl.name);
@@ -814,10 +830,15 @@ pub const NativeCodegen = struct {
                 const offset = self.next_local_offset;
                 self.next_local_offset += 1; // Increment count, not bytes
 
-                // Store parameter name and offset
+                // Store parameter name, offset, and type
                 const name = try self.allocator.dupe(u8, param.name);
                 errdefer self.allocator.free(name);
-                try self.locals.put(name, offset);
+                const param_size = try self.getTypeSize(param.type_name);
+                try self.locals.put(name, .{
+                    .offset = offset,
+                    .type_name = param.type_name,
+                    .size = param_size,
+                });
 
                 // Push parameter register onto stack
                 try self.assembler.pushReg(param_regs[i]);
@@ -850,20 +871,61 @@ pub const NativeCodegen = struct {
         }
 
         if (decl.value) |value| {
-            // Evaluate the expression (result in rax)
-            try self.generateExpr(value);
+            const type_name = decl.type_name orelse "i32";  // Default to i32 if no type given
 
-            // Store on stack
-            const offset = self.next_local_offset;
-            self.next_local_offset += 1; // Increment count, not bytes
+            // Check if this is an array type
+            const is_array = type_name.len > 0 and type_name[0] == '[';
 
-            // Store variable name and offset
-            const name = try self.allocator.dupe(u8, decl.name);
-            errdefer self.allocator.free(name);
-            try self.locals.put(name, offset);
+            if (is_array and value.* == .ArrayLiteral) {
+                // Special handling for array literals
+                const array_lit = value.ArrayLiteral;
+                const elem_size: usize = 8; // All values are i64 for now
+                const num_elements = array_lit.elements.len;
 
-            // Push rax onto stack
-            try self.assembler.pushReg(.rax);
+                // Array base points to the first element (index 0)
+                const array_start_offset = self.next_local_offset;
+
+                // Store variable name with pointer to array start
+                const name = try self.allocator.dupe(u8, decl.name);
+                errdefer self.allocator.free(name);
+                try self.locals.put(name, .{
+                    .offset = array_start_offset,
+                    .type_name = type_name,
+                    .size = num_elements * elem_size,
+                });
+
+                // Evaluate and push each element onto stack in FORWARD order
+                // Element 0 at [rbp - (offset+1)*8], element 1 at [rbp - (offset+2)*8], etc.
+                for (array_lit.elements) |elem| {
+                    if (self.next_local_offset >= MAX_LOCALS) {
+                        return error.TooManyVariables;
+                    }
+                    try self.generateExpr(elem);
+                    try self.assembler.pushReg(.rax);
+                    self.next_local_offset += 1;
+                }
+            } else {
+                // Regular scalar value
+                // Evaluate the expression (result in rax)
+                try self.generateExpr(value);
+
+                // Store on stack
+                const offset = self.next_local_offset;
+                self.next_local_offset += 1; // Increment count, not bytes
+
+                // Store variable name, offset, and type
+                const name = try self.allocator.dupe(u8, decl.name);
+                errdefer self.allocator.free(name);
+                const var_size = try self.getTypeSize(type_name);
+                try self.locals.put(name, .{
+                    .offset = offset,
+                    .type_name = type_name,
+                    .size = var_size,
+                });
+
+                // Push rax onto stack
+                try self.assembler.pushReg(.rax);
+            }
         }
     }
 
@@ -879,7 +941,10 @@ pub const NativeCodegen = struct {
             },
             .Identifier => |id| {
                 // Load from stack
-                if (self.locals.get(id.name)) |offset| {
+                if (self.locals.get(id.name)) |local_info| {
+                    // Check if this is an array type - return pointer instead of value
+                    const is_array = local_info.type_name.len > 0 and local_info.type_name[0] == '[';
+
                     // Stack layout after function prologue:
                     // [rbp+0]: saved rbp
                     // [rbp-8]: first pushed item (offset=0)
@@ -887,9 +952,18 @@ pub const NativeCodegen = struct {
                     // [rbp-24]: third pushed item (offset=2)
                     // etc.
                     // Items pushed first are at higher addresses (closer to rbp)
-                    const stack_offset: i32 = -@as(i32, @intCast((offset + 1) * 8));
-                    // mov rax, [rbp + stack_offset]
-                    try self.assembler.movRegMem(.rax, .rbp, stack_offset);
+                    const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+
+                    if (is_array) {
+                        // For arrays, return pointer to array start (address of first element)
+                        // lea rax, [rbp + stack_offset]
+                        try self.assembler.movRegReg(.rax, .rbp);
+                        try self.assembler.addRegImm32(.rax, stack_offset);
+                    } else {
+                        // For scalars, load the value
+                        // mov rax, [rbp + stack_offset]
+                        try self.assembler.movRegMem(.rax, .rbp, stack_offset);
+                    }
                 } else {
                     std.debug.print("Undefined variable: {s}\n", .{id.name});
                     return error.UndefinedVariable;
@@ -1472,9 +1546,9 @@ pub const NativeCodegen = struct {
                 }
 
                 const target_name = assign.target.Identifier.name;
-                if (self.locals.get(target_name)) |offset| {
+                if (self.locals.get(target_name)) |local_info| {
                     // Store rax to stack location
-                    const stack_offset: i32 = -@as(i32, @intCast((offset + 1) * 8));
+                    const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
                     try self.assembler.movMemReg(.rbp, stack_offset, .rax);
                 } else {
                     std.debug.print("Undefined variable in assignment: {s}\n", .{target_name});
@@ -1482,41 +1556,18 @@ pub const NativeCodegen = struct {
                 }
             },
 
-            .ArrayLiteral => |array| {
-                // Allocate array on stack
-                // For now: simple inline allocation
-                // Store array base pointer in rax
-
-                if (array.elements.len == 0) {
-                    // Empty array - return null
-                    try self.assembler.movRegImm64(.rax, 0);
-                    return;
-                }
-
-                // Allocate space for all elements on stack
-                const elem_size: usize = 8; // All values are i64 for now
-                const total_size = array.elements.len * elem_size;
-
-                // Reserve stack space
-                try self.assembler.subRegImm32(.rsp, @intCast(total_size));
-
-                // Store each element
-                for (array.elements, 0..) |elem, i| {
-                    // Evaluate element
-                    try self.generateExpr(elem);
-                    // Store to stack: [rsp + i * 8]
-                    const offset: i32 = @intCast(i * elem_size);
-                    try self.assembler.movMemReg(.rsp, offset, .rax);
-                }
-
-                // Return pointer to array (rsp)
-                try self.assembler.movRegReg(.rax, .rsp);
+            .ArrayLiteral => {
+                // Array literals should only appear in let declarations
+                // where they are handled specially. If we encounter one here,
+                // it's likely being used in an unsupported context.
+                std.debug.print("Array literals are only supported in let declarations\n", .{});
+                return error.UnsupportedFeature;
             },
 
             .IndexExpr => |index| {
                 // array[index]
                 // Evaluate array expression (get pointer in rax)
-                try self.generateExpr(index.object);
+                try self.generateExpr(index.array);
                 try self.assembler.pushReg(.rax); // Save array pointer
 
                 // Evaluate index expression
@@ -1529,8 +1580,9 @@ pub const NativeCodegen = struct {
                 // Calculate offset: index * 8
                 try self.assembler.imulRegImm32(.rax, 8);
 
-                // Add to base pointer: rcx + rax
-                try self.assembler.addRegReg(.rcx, .rax);
+                // Subtract from base pointer (stack grows down)
+                // rcx - rax gives us the address of element at index
+                try self.assembler.subRegReg(.rcx, .rax);
 
                 // Load value from [rcx]
                 try self.assembler.movRegMem(.rax, .rcx, 0);
@@ -1538,22 +1590,54 @@ pub const NativeCodegen = struct {
 
             .MemberExpr => |member| {
                 // struct.field
-                // Evaluate object expression (get pointer in rax)
-                try self.generateExpr(member.object);
-
-                // Get struct type - for now assume object is an identifier
+                // Get struct type from identifier
                 if (member.object.* != .Identifier) {
                     std.debug.print("Member access only supported on identifiers for now\n", .{});
                     return error.UnsupportedFeature;
                 }
 
-                _ = member.object.Identifier.name;
-                // For now, assume all structs are stored as pointers
-                // In future: need type info to get actual struct name
+                const var_name = member.object.Identifier.name;
 
-                // Find field offset (need struct layout info - stub for now)
-                std.debug.print("MemberExpr not fully implemented - need struct type tracking\n", .{});
-                return error.UnsupportedFeature;
+                // Look up variable to get its type
+                const local_info = self.locals.get(var_name) orelse {
+                    std.debug.print("Undefined variable in member access: {s}\n", .{var_name});
+                    return error.UndefinedVariable;
+                };
+
+                // Look up struct layout from type
+                const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
+                    std.debug.print("Type {s} is not a struct\n", .{local_info.type_name});
+                    return error.UnsupportedFeature;
+                };
+
+                // Find field in struct layout
+                var field_offset: ?usize = null;
+                for (struct_layout.fields) |field| {
+                    if (std.mem.eql(u8, field.name, member.member)) {
+                        field_offset = field.offset;
+                        break;
+                    }
+                }
+
+                if (field_offset == null) {
+                    std.debug.print("Field {s} not found in struct {s}\n", .{member.member, local_info.type_name});
+                    return error.UnsupportedFeature;
+                }
+
+                // Calculate address of struct on stack
+                const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+
+                // Load struct base address into rax
+                try self.assembler.movRegReg(.rax, .rbp);
+                try self.assembler.addRegImm32(.rax, stack_offset);
+
+                // Add field offset to get field address
+                if (field_offset.? > 0) {
+                    try self.assembler.addRegImm32(.rax, @intCast(field_offset.?));
+                }
+
+                // Load field value from [rax]
+                try self.assembler.movRegMem(.rax, .rax, 0);
             },
 
             else => |expr_tag| {

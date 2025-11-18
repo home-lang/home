@@ -790,11 +790,15 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("interpreter", interpreter_pkg);
     debug_exe.root_module.addImport("codegen", codegen_pkg);
     debug_exe.root_module.addImport("formatter", formatter_pkg);
+    debug_exe.root_module.addImport("linter", linter_pkg);
+    debug_exe.root_module.addImport("traits", traits_pkg);
     debug_exe.root_module.addImport("diagnostics", diagnostics_pkg);
     debug_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     debug_exe.root_module.addImport("queue", queue_pkg);
     debug_exe.root_module.addImport("database", database_pkg);
+    debug_exe.root_module.addImport("ir_cache", cache_pkg);
     debug_exe.root_module.addImport("collections", collections_pkg);
+    debug_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
     const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
@@ -816,11 +820,15 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("interpreter", interpreter_pkg);
     release_safe_exe.root_module.addImport("codegen", codegen_pkg);
     release_safe_exe.root_module.addImport("formatter", formatter_pkg);
+    release_safe_exe.root_module.addImport("linter", linter_pkg);
+    release_safe_exe.root_module.addImport("traits", traits_pkg);
     release_safe_exe.root_module.addImport("diagnostics", diagnostics_pkg);
     release_safe_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_safe_exe.root_module.addImport("queue", queue_pkg);
     release_safe_exe.root_module.addImport("database", database_pkg);
+    release_safe_exe.root_module.addImport("ir_cache", cache_pkg);
     release_safe_exe.root_module.addImport("collections", collections_pkg);
+    release_safe_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
     const release_safe_step = b.step("release-safe", "Build Home compiler in ReleaseSafe mode (optimized with safety)");
@@ -842,11 +850,15 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("interpreter", interpreter_pkg);
     release_small_exe.root_module.addImport("codegen", codegen_pkg);
     release_small_exe.root_module.addImport("formatter", formatter_pkg);
+    release_small_exe.root_module.addImport("linter", linter_pkg);
+    release_small_exe.root_module.addImport("traits", traits_pkg);
     release_small_exe.root_module.addImport("diagnostics", diagnostics_pkg);
     release_small_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_small_exe.root_module.addImport("queue", queue_pkg);
     release_small_exe.root_module.addImport("database", database_pkg);
+    release_small_exe.root_module.addImport("ir_cache", cache_pkg);
     release_small_exe.root_module.addImport("collections", collections_pkg);
+    release_small_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
     const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");

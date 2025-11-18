@@ -144,12 +144,29 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
     }
 
+    pub fn addRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
+        // REX.W + 81 /0 imm32
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
+    }
+
     /// sub reg, reg
     pub fn subRegReg(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 29 /r
         try self.emitRex(true, src.needsRexPrefix(), false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x29);
         try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
+    }
+
+    /// sub reg, imm32
+    pub fn subRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
+        // REX.W + 81 /5 imm32
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 5, @intFromEnum(dst));
+        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
     }
 
     /// imul reg, reg (signed multiply)
