@@ -399,10 +399,19 @@ pub const NativeCodegen = struct {
         switch (pattern) {
             .IntLiteral => |int_val| {
                 // Compare value with literal
-                // Move literal to temp register
-                try self.assembler.movRegImm64(.rcx, @intCast(int_val));
+                // Save value_reg if it's a register we need to use
+                const needs_save = (value_reg == .rcx or value_reg == .rdx);
+                const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+
+                if (needs_save) {
+                    try self.assembler.movRegReg(saved_reg, value_reg);
+                }
+
+                // Use rdx as temp register
+                try self.assembler.movRegImm64(.rdx, @intCast(int_val));
                 // Compare
-                try self.assembler.cmpRegReg(value_reg, .rcx);
+                const cmp_reg = if (needs_save) saved_reg else value_reg;
+                try self.assembler.cmpRegReg(cmp_reg, .rdx);
                 // Set rax based on comparison
                 try self.assembler.movRegImm64(.rax, 0); // Assume no match
                 try self.assembler.jneRel32(10); // Skip next instruction if not equal (10 bytes for movRegImm64)
@@ -453,10 +462,43 @@ pub const NativeCodegen = struct {
                 // Wildcard always matches
                 try self.assembler.movRegImm64(.rax, 1);
             },
-            .Identifier => |_| {
-                // Identifier pattern always matches and binds the value
-                // Variable binding is implemented in bindPatternVariables()
-                try self.assembler.movRegImm64(.rax, 1);
+            .Identifier => |ident_name| {
+                // Check if this identifier is actually an enum variant name
+                // If so, treat it as an EnumVariant pattern with no payload
+                var is_enum_variant = false;
+                var target_tag: i64 = 0;
+
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants, 0..) |v, idx| {
+                        if (std.mem.eql(u8, v.name, ident_name)) {
+                            is_enum_variant = true;
+                            target_tag = @intCast(idx);
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
+
+                if (is_enum_variant) {
+                    // Treat as EnumVariant pattern with no payload
+                    // value_reg contains pointer to enum
+                    // Load tag from memory (first 8 bytes)
+                    try self.assembler.movRegMem(.rcx, value_reg, 0);
+                    // Load expected tag
+                    try self.assembler.movRegImm64(.rdx, @intCast(target_tag));
+                    // Compare
+                    try self.assembler.cmpRegReg(.rcx, .rdx);
+                    // Set result based on comparison
+                    try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                    try self.assembler.jneRel32(10); // Skip next instruction if not equal
+                    try self.assembler.movRegImm64(.rax, 1); // Match found
+                } else {
+                    // Regular identifier pattern - always matches and binds the value
+                    // Variable binding is implemented in bindPatternVariables()
+                    try self.assembler.movRegImm64(.rax, 1);
+                }
             },
             .EnumVariant => |variant| {
                 // For enum variants, check the tag (first 8 bytes)
@@ -546,22 +588,40 @@ pub const NativeCodegen = struct {
     fn bindPatternVariables(self: *NativeCodegen, pattern: ast.Pattern, value_reg: x64.Register) CodegenError!void {
         switch (pattern) {
             .Identifier => |name| {
-                // Bind the value to this identifier
-                // Push value onto stack and add to locals
-                try self.assembler.pushReg(value_reg); // Push directly without using rax
+                // Check if this identifier is actually an enum variant name
+                // If so, don't bind it (it's a pattern match, not a variable binding)
+                var is_enum_variant = false;
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants) |v| {
+                        if (std.mem.eql(u8, v.name, name)) {
+                            is_enum_variant = true;
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
 
-                const offset = self.next_local_offset;
-                self.next_local_offset += 1;
+                if (!is_enum_variant) {
+                    // Regular identifier - bind the value to this identifier
+                    // Push value onto stack and add to locals
+                    try self.assembler.pushReg(value_reg); // Push directly without using rax
 
-                const name_copy = try self.allocator.dupe(u8, name);
-                errdefer self.allocator.free(name_copy);
+                    const offset = self.next_local_offset;
+                    self.next_local_offset += 1;
 
-                // We don't know the exact type, so use a generic size
-                try self.locals.put(name_copy, .{
-                    .offset = offset,
-                    .type_name = "i32", // Default to i32 for now
-                    .size = 8,
-                });
+                    const name_copy = try self.allocator.dupe(u8, name);
+                    errdefer self.allocator.free(name_copy);
+
+                    // We don't know the exact type, so use a generic size
+                    try self.locals.put(name_copy, .{
+                        .offset = offset,
+                        .type_name = "i32", // Default to i32 for now
+                        .size = 8,
+                    });
+                }
+                // If it's an enum variant, do nothing (no binding needed)
             },
             .EnumVariant => |variant| {
                 // If the variant has a payload pattern, bind it
