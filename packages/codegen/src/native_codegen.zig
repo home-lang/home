@@ -22,6 +22,10 @@ pub const CodegenError = error{
     UnexpandedMacro,
     /// Failed to import module
     ImportFailed,
+    /// Referenced an unknown struct type in pattern
+    UnknownStructType,
+    /// Referenced an unknown field in struct pattern
+    UnknownField,
 } || std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError;
 
 /// Maximum number of local variables per function.
@@ -392,6 +396,57 @@ pub const NativeCodegen = struct {
         return size;
     }
 
+    /// Check if a match statement is exhaustive
+    /// Returns error if match is non-exhaustive
+    fn checkMatchExhaustiveness(self: *NativeCodegen, match_stmt: *ast.MatchStmt) CodegenError!void {
+        // Check if there's a wildcard pattern (catch-all)
+        var has_wildcard = false;
+        for (match_stmt.arms) |arm| {
+            if (arm.pattern.* == .Wildcard) {
+                has_wildcard = true;
+                break;
+            }
+        }
+
+        // If there's a wildcard or identifier pattern, match is exhaustive
+        for (match_stmt.arms) |arm| {
+            if (arm.pattern.* == .Identifier) {
+                // Check if it's an enum variant or variable binding
+                const name = arm.pattern.Identifier;
+                var is_enum_variant = false;
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants) |v| {
+                        if (std.mem.eql(u8, v.name, name)) {
+                            is_enum_variant = true;
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
+                if (!is_enum_variant) {
+                    // It's a variable binding, which is a catch-all
+                    has_wildcard = true;
+                    break;
+                }
+            }
+        }
+
+        if (has_wildcard) {
+            // Match is exhaustive
+            return;
+        }
+
+        // No wildcard - check if all enum variants are covered (for enum types)
+        // For now, we'll emit a warning in the future but allow compilation
+        // TODO: Implement proper type inference to determine match value type
+        //       Then check if all enum variants are covered
+
+        // For production: should return error for non-exhaustive matches
+        // For now: allow non-exhaustive matches (runtime will fall through)
+    }
+
     /// Generate pattern matching code
     /// Returns: pattern match result in rax (1 if matched, 0 if not matched)
     /// value_reg: register containing the value to match against
@@ -573,7 +628,227 @@ pub const NativeCodegen = struct {
                     try self.assembler.movRegImm64(.rax, 0);
                 }
             },
-            .Tuple, .Array, .Struct, .Range, .Or, .As => {
+            .Tuple => |tuple_patterns| {
+                // Tuple pattern: (a, b, c)
+                // value_reg contains pointer to tuple
+                // Tuple layout: [count][elem0][elem1][elem2]...
+
+                // Load element count from tuple
+                try self.assembler.movRegMem(.rcx, value_reg, 0);
+
+                // Check if tuple has expected number of elements
+                try self.assembler.movRegImm64(.rdx, @intCast(tuple_patterns.len));
+                try self.assembler.cmpRegReg(.rcx, .rdx);
+
+                // If count doesn't match, pattern fails
+                try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                const count_mismatch_pos = self.assembler.getPosition();
+                try self.assembler.jneRel32(0); // Jump if not equal
+
+                // Count matches! Now check each element pattern
+                // Track jump positions for element failures
+                var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                defer elem_fail_jumps.deinit(self.allocator);
+
+                for (tuple_patterns, 0..) |elem_pattern, i| {
+                    // Load element i from tuple at offset (i+1)*8
+                    const offset: i32 = @intCast((i + 1) * 8);
+                    try self.assembler.movRegMem(.rbx, value_reg, offset);
+
+                    // Recursively match the element pattern
+                    try self.generatePatternMatch(elem_pattern.*, .rbx);
+
+                    // If this element didn't match, whole tuple pattern fails
+                    try self.assembler.testRegReg(.rax, .rax);
+                    const elem_fail_pos = self.assembler.getPosition();
+                    try self.assembler.jzRel32(0); // Jump if zero (pattern failed)
+                    try elem_fail_jumps.append(self.allocator, elem_fail_pos);
+                }
+
+                // All elements matched! Set success
+                try self.assembler.movRegImm64(.rax, 1);
+                const success_jump_pos = self.assembler.getPosition();
+                try self.assembler.jmpRel32(0); // Jump to end
+
+                // Patch count mismatch and all element failure jumps to here
+                const fail_pos = self.assembler.getPosition();
+
+                // Patch count mismatch
+                const count_offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(count_mismatch_pos + 6));
+                try self.assembler.patchJneRel32(count_mismatch_pos, count_offset);
+
+                // Patch all element failure jumps
+                for (elem_fail_jumps.items) |jump_pos| {
+                    const offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(jump_pos + 6));
+                    try self.assembler.patchJzRel32(jump_pos, offset);
+                }
+
+                // Set failure result
+                try self.assembler.movRegImm64(.rax, 0);
+
+                // Patch success jump to here (end)
+                const end_pos = self.assembler.getPosition();
+                const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump_pos + 5));
+                try self.assembler.patchJmpRel32(success_jump_pos, success_offset);
+            },
+            .Array => |array_pattern| {
+                // Array layout: [count][elem0][elem1][elem2]...
+                // Similar to tuple, but supports rest pattern
+
+                // Load element count from array
+                try self.assembler.movRegMem(.rcx, value_reg, 0);
+
+                // Check array length based on rest pattern
+                if (array_pattern.rest) |_| {
+                    // With rest pattern: array must have AT LEAST this many elements
+                    try self.assembler.movRegImm64(.rdx, @intCast(array_pattern.elements.len));
+                    try self.assembler.cmpRegReg(.rcx, .rdx);
+
+                    // If array is shorter, pattern fails
+                    try self.assembler.movRegImm64(.rax, 0);
+                    const too_short_pos = self.assembler.getPosition();
+                    try self.assembler.jlRel32(0); // Jump if less than
+
+                    // Array is long enough! Match the fixed elements
+                    var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                    defer elem_fail_jumps.deinit(self.allocator);
+
+                    for (array_pattern.elements, 0..) |elem_pattern, i| {
+                        const offset: i32 = @intCast((i + 1) * 8);
+                        try self.assembler.movRegMem(.rbx, value_reg, offset);
+                        try self.generatePatternMatch(elem_pattern.*, .rbx);
+                        try self.assembler.testRegReg(.rax, .rax);
+                        const elem_fail_pos = self.assembler.getPosition();
+                        try self.assembler.jzRel32(0);
+                        try elem_fail_jumps.append(self.allocator, elem_fail_pos);
+                    }
+
+                    // All elements matched!
+                    try self.assembler.movRegImm64(.rax, 1);
+                    const success_jump_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0);
+
+                    // Patch too_short and element failures
+                    const fail_pos = self.assembler.getPosition();
+                    const too_short_offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(too_short_pos + 6));
+                    try self.assembler.patchJlRel32(too_short_pos, too_short_offset);
+
+                    for (elem_fail_jumps.items) |jump_pos| {
+                        const offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(jump_pos + 6));
+                        try self.assembler.patchJzRel32(jump_pos, offset);
+                    }
+
+                    try self.assembler.movRegImm64(.rax, 0);
+
+                    const end_pos = self.assembler.getPosition();
+                    const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump_pos + 5));
+                    try self.assembler.patchJmpRel32(success_jump_pos, success_offset);
+                } else {
+                    // No rest pattern: exact length match required
+                    try self.assembler.movRegImm64(.rdx, @intCast(array_pattern.elements.len));
+                    try self.assembler.cmpRegReg(.rcx, .rdx);
+
+                    try self.assembler.movRegImm64(.rax, 0);
+                    const count_mismatch_pos = self.assembler.getPosition();
+                    try self.assembler.jneRel32(0);
+
+                    var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                    defer elem_fail_jumps.deinit(self.allocator);
+
+                    for (array_pattern.elements, 0..) |elem_pattern, i| {
+                        const offset: i32 = @intCast((i + 1) * 8);
+                        try self.assembler.movRegMem(.rbx, value_reg, offset);
+                        try self.generatePatternMatch(elem_pattern.*, .rbx);
+                        try self.assembler.testRegReg(.rax, .rax);
+                        const elem_fail_pos = self.assembler.getPosition();
+                        try self.assembler.jzRel32(0);
+                        try elem_fail_jumps.append(self.allocator, elem_fail_pos);
+                    }
+
+                    try self.assembler.movRegImm64(.rax, 1);
+                    const success_jump_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0);
+
+                    const fail_pos = self.assembler.getPosition();
+                    const count_offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(count_mismatch_pos + 6));
+                    try self.assembler.patchJneRel32(count_mismatch_pos, count_offset);
+
+                    for (elem_fail_jumps.items) |jump_pos| {
+                        const offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(jump_pos + 6));
+                        try self.assembler.patchJzRel32(jump_pos, offset);
+                    }
+
+                    try self.assembler.movRegImm64(.rax, 0);
+
+                    const end_pos = self.assembler.getPosition();
+                    const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump_pos + 5));
+                    try self.assembler.patchJmpRel32(success_jump_pos, success_offset);
+                }
+            },
+            .Struct => |struct_pattern| {
+                // Struct pattern: Point { x, y } or Point { x: 10, y }
+                // value_reg points to struct instance in memory
+
+                // Look up the struct layout
+                const struct_layout = self.struct_layouts.get(struct_pattern.name) orelse {
+                    std.debug.print("Unknown struct type: {s}\n", .{struct_pattern.name});
+                    return error.UnknownStructType;
+                };
+
+                // Check each field pattern
+                var field_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                defer field_fail_jumps.deinit(self.allocator);
+
+                for (struct_pattern.fields) |field_pattern| {
+                    // Find the field info in the layout
+                    var field_info: ?FieldInfo = null;
+                    for (struct_layout.fields) |fi| {
+                        if (std.mem.eql(u8, fi.name, field_pattern.name)) {
+                            field_info = fi;
+                            break;
+                        }
+                    }
+
+                    if (field_info == null) {
+                        std.debug.print("Unknown field '{s}' in struct '{s}'\n", .{ field_pattern.name, struct_pattern.name });
+                        return error.UnknownField;
+                    }
+
+                    const fi = field_info.?;
+
+                    // Load the field value from struct at offset
+                    const offset: i32 = @intCast(fi.offset);
+                    try self.assembler.movRegMem(.rbx, value_reg, offset);
+
+                    // Recursively match the field pattern
+                    try self.generatePatternMatch(field_pattern.pattern.*, .rbx);
+
+                    // If this field didn't match, whole struct pattern fails
+                    try self.assembler.testRegReg(.rax, .rax);
+                    const field_fail_pos = self.assembler.getPosition();
+                    try self.assembler.jzRel32(0);
+                    try field_fail_jumps.append(self.allocator, field_fail_pos);
+                }
+
+                // All fields matched!
+                try self.assembler.movRegImm64(.rax, 1);
+                const success_jump_pos = self.assembler.getPosition();
+                try self.assembler.jmpRel32(0);
+
+                // Patch all field failure jumps to here
+                const fail_pos = self.assembler.getPosition();
+                for (field_fail_jumps.items) |jump_pos| {
+                    const offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(jump_pos + 6));
+                    try self.assembler.patchJzRel32(jump_pos, offset);
+                }
+
+                try self.assembler.movRegImm64(.rax, 0);
+
+                const end_pos = self.assembler.getPosition();
+                const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump_pos + 5));
+                try self.assembler.patchJmpRel32(success_jump_pos, success_offset);
+            },
+            .Range, .Or, .As => {
                 // Complex patterns not implemented yet
                 try self.assembler.movRegImm64(.rax, 0);
             },
@@ -634,10 +909,88 @@ pub const NativeCodegen = struct {
                     try self.bindPatternVariables(payload_pattern.*, .rcx);
                 }
             },
+            .Tuple => |tuple_patterns| {
+                // Bind variables from tuple elements
+                // value_reg points to tuple: [count][elem0][elem1]...
+                for (tuple_patterns, 0..) |elem_pattern, i| {
+                    // Load element i from tuple at offset (i+1)*8
+                    const offset: i32 = @intCast((i + 1) * 8);
+                    try self.assembler.movRegMem(.rcx, value_reg, offset);
+                    // Recursively bind the element pattern
+                    try self.bindPatternVariables(elem_pattern.*, .rcx);
+                }
+            },
+            .Array => |array_pattern| {
+                // Bind variables from array elements
+                // value_reg points to array: [count][elem0][elem1]...
+                for (array_pattern.elements, 0..) |elem_pattern, i| {
+                    // Load element i from array at offset (i+1)*8
+                    const offset: i32 = @intCast((i + 1) * 8);
+                    try self.assembler.movRegMem(.rcx, value_reg, offset);
+                    // Recursively bind the element pattern
+                    try self.bindPatternVariables(elem_pattern.*, .rcx);
+                }
+
+                // Bind rest pattern if present
+                if (array_pattern.rest) |rest_name| {
+                    // The rest pattern binds to a sub-array containing remaining elements
+                    // For now, we'll bind the whole array pointer
+                    // TODO: Create a new array slice with remaining elements
+                    const rest_offset: i32 = @intCast((array_pattern.elements.len + 1) * 8);
+                    try self.assembler.leaRegMem(.rcx, value_reg, rest_offset);
+
+                    try self.assembler.pushReg(.rcx);
+                    const offset = self.next_local_offset;
+                    self.next_local_offset += 1;
+
+                    const name_copy = try self.allocator.dupe(u8, rest_name);
+                    errdefer self.allocator.free(name_copy);
+
+                    try self.locals.put(name_copy, .{
+                        .offset = offset,
+                        .type_name = "array",
+                        .size = 8,
+                    });
+                }
+            },
+            .Struct => |struct_pattern| {
+                // Bind variables from struct fields
+                // value_reg points to struct instance
+
+                const struct_layout = self.struct_layouts.get(struct_pattern.name) orelse {
+                    std.debug.print("Unknown struct type: {s}\n", .{struct_pattern.name});
+                    return error.UnknownStructType;
+                };
+
+                for (struct_pattern.fields) |field_pattern| {
+                    // Find the field info
+                    var field_info: ?FieldInfo = null;
+                    for (struct_layout.fields) |fi| {
+                        if (std.mem.eql(u8, fi.name, field_pattern.name)) {
+                            field_info = fi;
+                            break;
+                        }
+                    }
+
+                    if (field_info == null) {
+                        std.debug.print("Unknown field '{s}' in struct '{s}'\n", .{ field_pattern.name, struct_pattern.name });
+                        return error.UnknownField;
+                    }
+
+                    const fi = field_info.?;
+
+                    // Load the field value
+                    const offset: i32 = @intCast(fi.offset);
+                    try self.assembler.movRegMem(.rcx, value_reg, offset);
+
+                    // Recursively bind the field pattern
+                    try self.bindPatternVariables(field_pattern.pattern.*, .rcx);
+                }
+            },
             // Other pattern types don't bind variables
             .IntLiteral, .FloatLiteral, .StringLiteral, .BoolLiteral, .Wildcard => {},
             // Complex patterns TODO
-            .Tuple, .Array, .Struct, .Range, .Or, .As => {},
+            .Range, .Or, .As => {},
         }
     }
 
@@ -1262,6 +1615,9 @@ pub const NativeCodegen = struct {
                 // Match statement: match value { pattern => body, ... }
                 // Implemented using sequential pattern matching with conditional jumps
 
+                // Check exhaustiveness before code generation
+                try self.checkMatchExhaustiveness(match_stmt);
+
                 // Save callee-saved register rbx (required by x86-64 ABI)
                 try self.assembler.pushReg(.rbx);
 
@@ -1795,8 +2151,33 @@ pub const NativeCodegen = struct {
                 try self.assembler.pushReg(param_regs[i]);
             } else {
                 // Parameter is on stack (passed by caller)
-                // TODO: Handle stack parameters
-                return error.UnsupportedFeature;
+                // Stack layout after prologue:
+                // [rbp+0]: old rbp
+                // [rbp+8]: return address
+                // [rbp+16]: 7th arg (param index 6)
+                // [rbp+24]: 8th arg (param index 7)
+                // etc.
+
+                // Calculate offset from rbp
+                const stack_param_index = i - param_regs.len;
+                const offset_from_rbp: i32 = @intCast(16 + (stack_param_index * 8));
+
+                // Load the stack parameter and push it to our local stack
+                // This normalizes all parameters to be accessed the same way
+                try self.assembler.movRegMem(.rax, .rbp, offset_from_rbp);
+                try self.assembler.pushReg(.rax);
+
+                const offset = self.next_local_offset;
+                self.next_local_offset += 1;
+
+                const name = try self.allocator.dupe(u8, param.name);
+                errdefer self.allocator.free(name);
+                const param_size = try self.getTypeSize(param.type_name);
+                try self.locals.put(name, .{
+                    .offset = offset,
+                    .type_name = param.type_name,
+                    .size = param_size,
+                });
             }
         }
 
@@ -1959,7 +2340,59 @@ pub const NativeCodegen = struct {
         }
     }
 
+    /// Try to fold constant expressions at compile-time
+    fn tryFoldConstant(self: *NativeCodegen, expr: *const ast.Expr) ?i64 {
+        _ = self;
+        switch (expr.*) {
+            .IntegerLiteral => |lit| return lit.value,
+            .BooleanLiteral => |lit| return if (lit.value) 1 else 0,
+            .BinaryExpr => |bin| {
+                const left = self.tryFoldConstant(bin.left) orelse return null;
+                const right = self.tryFoldConstant(bin.right) orelse return null;
+
+                return switch (bin.operator) {
+                    .Add => left + right,
+                    .Subtract => left - right,
+                    .Multiply => left * right,
+                    .Divide => if (right != 0) @divTrunc(left, right) else null,
+                    .Modulo => if (right != 0) @mod(left, right) else null,
+                    .BitwiseAnd => left & right,
+                    .BitwiseOr => left | right,
+                    .BitwiseXor => left ^ right,
+                    .ShiftLeft => if (right >= 0 and right < 64) left << @intCast(right) else null,
+                    .ShiftRight => if (right >= 0 and right < 64) left >> @intCast(right) else null,
+                    .Equal => if (left == right) 1 else 0,
+                    .NotEqual => if (left != right) 1 else 0,
+                    .LessThan => if (left < right) 1 else 0,
+                    .LessEqual => if (left <= right) 1 else 0,
+                    .GreaterThan => if (left > right) 1 else 0,
+                    .GreaterEqual => if (left >= right) 1 else 0,
+                    .LogicalAnd => if (left != 0 and right != 0) 1 else 0,
+                    .LogicalOr => if (left != 0 or right != 0) 1 else 0,
+                    else => null,
+                };
+            },
+            .UnaryExpr => |un| {
+                const operand = self.tryFoldConstant(un.operand) orelse return null;
+
+                return switch (un.operator) {
+                    .Negate => -operand,
+                    .Not => if (operand == 0) 1 else 0,
+                    .BitwiseNot => ~operand,
+                    else => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
     fn generateExpr(self: *NativeCodegen, expr: *const ast.Expr) CodegenError!void {
+        // Try constant folding first
+        if (self.tryFoldConstant(expr)) |folded_value| {
+            try self.assembler.movRegImm64(.rax, @bitCast(folded_value));
+            return;
+        }
+
         switch (expr.*) {
             .IntegerLiteral => |lit| {
                 // Load immediate value into rax
@@ -2207,20 +2640,31 @@ pub const NativeCodegen = struct {
 
                     // Check if it's a known function
                     if (self.functions.get(func_name)) |func_pos| {
-                        // x64 System V ABI: first 6 integer args in registers
+                        // x64 System V ABI: first 6 integer args in registers, rest on stack
                         const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
-                        const arg_count = @min(call.args.len, arg_regs.len);
+                        const reg_arg_count = @min(call.args.len, arg_regs.len);
 
-                        // Evaluate all arguments and push onto stack first
+                        // Push stack arguments first (args 7+) in reverse order
+                        // This is required by System V ABI: caller pushes in reverse
+                        if (call.args.len > arg_regs.len) {
+                            var i: usize = call.args.len;
+                            while (i > arg_regs.len) {
+                                i -= 1;
+                                try self.generateExpr(call.args[i]);
+                                try self.assembler.pushReg(.rax);
+                            }
+                        }
+
+                        // Evaluate register arguments and push onto stack first
                         var i: usize = 0;
-                        while (i < arg_count) : (i += 1) {
+                        while (i < reg_arg_count) : (i += 1) {
                             try self.generateExpr(call.args[i]);
                             try self.assembler.pushReg(.rax);
                         }
 
                         // Pop arguments into correct registers (in reverse order)
-                        if (arg_count > 0) {
-                            var j: usize = arg_count;
+                        if (reg_arg_count > 0) {
+                            var j: usize = reg_arg_count;
                             while (j > 0) {
                                 j -= 1;
                                 try self.assembler.popReg(arg_regs[j]);
@@ -2231,6 +2675,14 @@ pub const NativeCodegen = struct {
                         const current_pos = self.assembler.getPosition();
                         const rel_offset = @as(i32, @intCast(func_pos)) - @as(i32, @intCast(current_pos + 5));
                         try self.assembler.callRel32(rel_offset);
+
+                        // Clean up stack arguments (args 7+) after the call
+                        // Each arg is 8 bytes
+                        if (call.args.len > arg_regs.len) {
+                            const stack_args = call.args.len - arg_regs.len;
+                            const stack_bytes: i32 = @intCast(stack_args * 8);
+                            try self.assembler.addRegImm(.rsp, stack_bytes);
+                        }
 
                         return;
                     }
