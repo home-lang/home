@@ -392,6 +392,65 @@ pub const NativeCodegen = struct {
         return size;
     }
 
+    /// Generate pattern matching code
+    /// Returns: pattern match result in rax (1 if matched, 0 if not matched)
+    /// value_reg: register containing the value to match against
+    fn generatePatternMatch(self: *NativeCodegen, pattern: ast.Pattern, value_reg: x64.Register) CodegenError!void {
+        switch (pattern) {
+            .IntLiteral => |int_val| {
+                // Compare value with literal
+                // Move literal to temp register
+                try self.assembler.movRegImm64(.rcx, @intCast(int_val));
+                // Compare
+                try self.assembler.cmpRegReg(value_reg, .rcx);
+                // Set rax based on comparison
+                try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                try self.assembler.jneRel32(10); // Skip next instruction if not equal (10 bytes for movRegImm64)
+                try self.assembler.movRegImm64(.rax, 1); // Match found
+            },
+            .BoolLiteral => |bool_val| {
+                // Compare value with boolean (0 or 1)
+                const int_val: i64 = if (bool_val) 1 else 0;
+                try self.assembler.movRegImm64(.rcx, @intCast(int_val));
+                try self.assembler.cmpRegReg(value_reg, .rcx);
+                try self.assembler.movRegImm64(.rax, 0);
+                try self.assembler.jneRel32(10);
+                try self.assembler.movRegImm64(.rax, 1);
+            },
+            .StringLiteral => |str_val| {
+                // String comparison - for now, just compare pointers
+                // TODO: implement proper string comparison
+                const str_offset = try self.registerStringLiteral(str_val);
+                _ = str_offset;
+                // For now, set rax to 0 (not implemented)
+                try self.assembler.movRegImm64(.rax, 0);
+            },
+            .Wildcard => {
+                // Wildcard always matches
+                try self.assembler.movRegImm64(.rax, 1);
+            },
+            .Identifier => |_| {
+                // Identifier pattern always matches and binds the value
+                // TODO: implement variable binding
+                try self.assembler.movRegImm64(.rax, 1);
+            },
+            .EnumVariant => |variant| {
+                // For enum variants, check the tag (first 8 bytes)
+                // Get enum layout to find variant index
+                // For now, simple implementation
+                _ = variant;
+                try self.assembler.movRegImm64(.rax, 0); // Not implemented yet
+            },
+            .Tuple, .Array, .Struct, .Range, .Or, .As => {
+                // Complex patterns not implemented yet
+                try self.assembler.movRegImm64(.rax, 0);
+            },
+            else => {
+                try self.assembler.movRegImm64(.rax, 0);
+            },
+        }
+    }
+
     /// Get the size of a type in bytes
     fn getTypeSize(self: *NativeCodegen, type_name: []const u8) CodegenError!usize {
         // Primitive types
@@ -963,6 +1022,80 @@ pub const NativeCodegen = struct {
             .ImportDecl => |import_decl| {
                 // Handle import statement
                 try self.handleImport(import_decl);
+            },
+            .MatchStmt => |match_stmt| {
+                // Match statement: match value { pattern => body, ... }
+                // Implemented using sequential pattern matching with conditional jumps
+
+                // Evaluate match value (result in rax)
+                try self.generateExpr(match_stmt.value);
+
+                // Save match value on stack for later pattern comparisons
+                try self.assembler.pushReg(.rax);
+
+                // Track positions for patching jumps to end
+                var arm_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                defer arm_end_jumps.deinit(self.allocator);
+
+                // Generate code for each match arm
+                for (match_stmt.arms) |arm| {
+                    // Load match value from stack into rbx for comparison
+                    try self.assembler.movRegMem(.rbx, .rsp, 0);
+
+                    // Try to match pattern (result in rax)
+                    try self.generatePatternMatch(arm.pattern.*, .rbx);
+
+                    // Test pattern match result
+                    try self.assembler.testRegReg(.rax, .rax);
+
+                    // If pattern didn't match, jump to next arm
+                    const next_arm_jump = self.assembler.getPosition();
+                    try self.assembler.jzRel32(0); // Jump if pattern match failed (rax == 0)
+
+                    // Pattern matched, evaluate guard if present
+                    if (arm.guard) |guard| {
+                        try self.generateExpr(guard);
+                        // Test guard result
+                        try self.assembler.testRegReg(.rax, .rax);
+                        // If guard failed, jump to next arm
+                        const guard_fail_jump = self.assembler.getPosition();
+                        try self.assembler.jzRel32(0);
+
+                        // Guard succeeded, execute arm body
+                        try self.generateExpr(arm.body);
+
+                        // Jump to end of match
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition());
+                        try self.assembler.jmpRel32(0);
+
+                        // Patch guard fail jump to next arm
+                        const next_pos = self.assembler.getPosition();
+                        const guard_offset = @as(i32, @intCast(next_pos)) - @as(i32, @intCast(guard_fail_jump + 6));
+                        try self.assembler.patchJzRel32(guard_fail_jump, guard_offset);
+                    } else {
+                        // No guard, execute arm body directly
+                        try self.generateExpr(arm.body);
+
+                        // Jump to end of match
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition());
+                        try self.assembler.jmpRel32(0);
+                    }
+
+                    // Patch pattern match fail jump to next arm
+                    const next_arm_pos = self.assembler.getPosition();
+                    const next_offset = @as(i32, @intCast(next_arm_pos)) - @as(i32, @intCast(next_arm_jump + 6));
+                    try self.assembler.patchJzRel32(next_arm_jump, next_offset);
+                }
+
+                // Pop match value from stack
+                try self.assembler.popReg(.rcx);
+
+                // Patch all "end of match" jumps
+                const match_end = self.assembler.getPosition();
+                for (arm_end_jumps.items) |jump_pos| {
+                    const offset = @as(i32, @intCast(match_end)) - @as(i32, @intCast(jump_pos + 5));
+                    try self.assembler.patchJmpRel32(jump_pos, offset);
+                }
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
