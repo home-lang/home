@@ -68,14 +68,22 @@ pub const FieldInfo = struct {
     size: usize,
 };
 
+/// Enum variant information.
+pub const EnumVariantInfo = struct {
+    /// Variant name
+    name: []const u8,
+    /// Optional data type (null for unit variants like None)
+    data_type: ?[]const u8,
+};
+
 /// Enum layout information.
 ///
-/// Maps enum variant names to their integer values (indices).
+/// Maps enum variant names to their integer values (indices) and data types.
 pub const EnumLayout = struct {
     /// Enum type name
     name: []const u8,
-    /// Variant names (ordered by declaration)
-    variants: []const []const u8,
+    /// Variant information (ordered by declaration)
+    variants: []const EnumVariantInfo,
 };
 
 /// Local variable information.
@@ -200,7 +208,7 @@ pub const NativeCodegen = struct {
     pub fn deinit(self: *NativeCodegen) void {
         self.assembler.deinit();
 
-        // Free duplicated strings in locals HashMap
+        // Free duplicated strings in locals HashMap (keys only, type_name points to AST or literals)
         {
             var locals_iter = self.locals.keyIterator();
             while (locals_iter.next()) |key_ptr| {
@@ -224,10 +232,69 @@ pub const NativeCodegen = struct {
             self.functions.deinit();
         }
 
-        self.struct_layouts.deinit();
-        self.enum_layouts.deinit();
-        self.string_literals.deinit(self.allocator);
+        // Free struct_layouts memory
+        {
+            var struct_iter = self.struct_layouts.iterator();
+            while (struct_iter.next()) |entry| {
+                const key = entry.key_ptr.*;
+                const layout = entry.value_ptr.*;
+
+                // Free field names
+                for (layout.fields) |field| {
+                    if (field.name.len > 0) {
+                        self.allocator.free(field.name);
+                    }
+                }
+
+                // Free fields array
+                if (layout.fields.len > 0) {
+                    self.allocator.free(layout.fields);
+                }
+
+                // Free struct name (key and layout.name are the same pointer)
+                if (key.len > 0) {
+                    self.allocator.free(key);
+                }
+            }
+            self.struct_layouts.deinit();
+        }
+
+        // Free enum_layouts memory
+        {
+            var enum_iter = self.enum_layouts.iterator();
+            while (enum_iter.next()) |entry| {
+                const key = entry.key_ptr.*;
+                const layout = entry.value_ptr.*;
+
+                // Free variant names and data types
+                for (layout.variants) |variant| {
+                    if (variant.name.len > 0) {
+                        self.allocator.free(variant.name);
+                    }
+                    if (variant.data_type) |dt| {
+                        if (dt.len > 0) {
+                            self.allocator.free(dt);
+                        }
+                    }
+                }
+
+                // Free variants array
+                if (layout.variants.len > 0) {
+                    self.allocator.free(layout.variants);
+                }
+
+                // Free enum name (key and layout.name are the same pointer)
+                if (key.len > 0) {
+                    self.allocator.free(key);
+                }
+            }
+            self.enum_layouts.deinit();
+        }
+
+        // Free string_offsets (keys point to AST memory, not allocated)
         self.string_offsets.deinit();
+
+        self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
     }
 
@@ -341,8 +408,19 @@ pub const NativeCodegen = struct {
         }
 
         // Check if it's an enum type
-        if (self.enum_layouts.contains(type_name)) {
-            return 8; // Enums represented as i64
+        if (self.enum_layouts.get(type_name)) |enum_layout| {
+            // Check if any variant has data
+            var has_data = false;
+            for (enum_layout.variants) |variant| {
+                if (variant.data_type != null) {
+                    has_data = true;
+                    break;
+                }
+            }
+
+            // If enum has variants with data, it's a tagged union (16 bytes: tag + data)
+            // Otherwise it's a simple enum (8 bytes: just the tag)
+            return if (has_data) 16 else 8;
         }
 
         std.debug.print("Unknown type: {s}\n", .{type_name});
@@ -792,8 +870,11 @@ pub const NativeCodegen = struct {
                     const alignment = field_size;
                     offset = std.mem.alignForward(usize, offset, alignment);
 
+                    const field_name_copy = try self.allocator.dupe(u8, field.name);
+                    errdefer self.allocator.free(field_name_copy);
+
                     try fields.append(self.allocator, .{
-                        .name = field.name,
+                        .name = field_name_copy,
                         .offset = offset,
                         .size = field_size,
                     });
@@ -801,26 +882,78 @@ pub const NativeCodegen = struct {
                 }
 
                 // Store struct layout
+                const name_copy = try self.allocator.dupe(u8, struct_decl.name);
+                errdefer self.allocator.free(name_copy);
+
+                const fields_slice = try fields.toOwnedSlice(self.allocator);
+                errdefer {
+                    // Free field names and array if put fails
+                    for (fields_slice) |field| {
+                        if (field.name.len > 0) {
+                            self.allocator.free(field.name);
+                        }
+                    }
+                    self.allocator.free(fields_slice);
+                }
+
                 const layout = StructLayout{
-                    .name = struct_decl.name,
-                    .fields = try fields.toOwnedSlice(self.allocator),
+                    .name = name_copy,  // Reuse the same copied name
+                    .fields = fields_slice,
                     .total_size = offset,
                 };
-                const name_copy = try self.allocator.dupe(u8, struct_decl.name);
                 try self.struct_layouts.put(name_copy, layout);
             },
             .EnumDecl => |enum_decl| {
                 // Store enum layout for variant value resolution
-                var variant_names = try self.allocator.alloc([]const u8, enum_decl.variants.len);
+                var variant_infos = try self.allocator.alloc(EnumVariantInfo, enum_decl.variants.len);
+                errdefer {
+                    // Free any already-allocated variant data on error
+                    for (variant_infos) |variant| {
+                        if (variant.name.len > 0) {
+                            self.allocator.free(variant.name);
+                        }
+                        if (variant.data_type) |dt| {
+                            if (dt.len > 0) {
+                                self.allocator.free(dt);
+                            }
+                        }
+                    }
+                    self.allocator.free(variant_infos);
+                }
+
                 for (enum_decl.variants, 0..) |variant, i| {
-                    variant_names[i] = variant.name;
+                    const data_type_copy = if (variant.data_type) |dt|
+                        try self.allocator.dupe(u8, dt)
+                    else
+                        null;
+
+                    variant_infos[i] = EnumVariantInfo{
+                        .name = try self.allocator.dupe(u8, variant.name),
+                        .data_type = data_type_copy,
+                    };
+                }
+
+                const name_copy = try self.allocator.dupe(u8, enum_decl.name);
+                errdefer {
+                    // Free variant data if name_copy succeeds but put fails
+                    for (variant_infos) |variant| {
+                        if (variant.name.len > 0) {
+                            self.allocator.free(variant.name);
+                        }
+                        if (variant.data_type) |dt| {
+                            if (dt.len > 0) {
+                                self.allocator.free(dt);
+                            }
+                        }
+                    }
+                    self.allocator.free(variant_infos);
+                    self.allocator.free(name_copy);
                 }
 
                 const layout = EnumLayout{
-                    .name = enum_decl.name,
-                    .variants = variant_names,
+                    .name = name_copy,  // Reuse the same copied name
+                    .variants = variant_infos,
                 };
-                const name_copy = try self.allocator.dupe(u8, enum_decl.name);
                 try self.enum_layouts.put(name_copy, layout);
             },
             .UnionDecl, .TypeAliasDecl => {
@@ -1599,6 +1732,61 @@ pub const NativeCodegen = struct {
                 }
             },
             .CallExpr => |call| {
+                // Check if this is an enum variant constructor (e.g., Option.Some(42))
+                if (call.callee.* == .MemberExpr) {
+                    const member = call.callee.MemberExpr;
+                    if (member.object.* == .Identifier) {
+                        const enum_name = member.object.Identifier.name;
+                        const variant_name = member.member;
+
+                        if (self.enum_layouts.get(enum_name)) |enum_layout| {
+                            // Find the variant
+                            var variant_index: ?usize = null;
+                            var variant_info: ?EnumVariantInfo = null;
+                            for (enum_layout.variants, 0..) |v, i| {
+                                if (std.mem.eql(u8, v.name, variant_name)) {
+                                    variant_index = i;
+                                    variant_info = v;
+                                    break;
+                                }
+                            }
+
+                            if (variant_index) |idx| {
+                                // Create enum value on stack
+                                // Layout: [tag (8 bytes)][data (8 bytes if present)]
+                                // Tag is the variant index
+
+                                // Evaluate argument if present
+                                if (variant_info.?.data_type != null) {
+                                    if (call.args.len > 0) {
+                                        try self.generateExpr(call.args[0]);
+                                        // Data value is in rax
+                                        try self.assembler.pushReg(.rax); // Push data
+                                    } else {
+                                        // No arg provided but expected - push 0
+                                        try self.assembler.movRegImm64(.rax, 0);
+                                        try self.assembler.pushReg(.rax);
+                                    }
+                                } else {
+                                    // No data for this variant - push 0 as placeholder
+                                    try self.assembler.movRegImm64(.rax, 0);
+                                    try self.assembler.pushReg(.rax);
+                                }
+
+                                // Push tag (variant index)
+                                try self.assembler.movRegImm64(.rax, @intCast(idx));
+                                try self.assembler.pushReg(.rax);
+
+                                // Return pointer to the enum value on stack
+                                // lea rax, [rsp]
+                                try self.assembler.movRegReg(.rax, .rsp);
+
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // x64 calling convention: rdi, rsi, rdx, rcx, r8, r9 for first 6 args
                 if (call.callee.* == .Identifier) {
                     const func_name = call.callee.Identifier.name;
@@ -2102,8 +2290,8 @@ pub const NativeCodegen = struct {
                 if (self.enum_layouts.get(type_or_var_name)) |enum_layout| {
                     // Find variant index
                     var variant_index: ?usize = null;
-                    for (enum_layout.variants, 0..) |variant_name, i| {
-                        if (std.mem.eql(u8, variant_name, member.member)) {
+                    for (enum_layout.variants, 0..) |variant_info, i| {
+                        if (std.mem.eql(u8, variant_info.name, member.member)) {
                             variant_index = i;
                             break;
                         }
