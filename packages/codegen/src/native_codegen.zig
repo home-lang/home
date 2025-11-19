@@ -1027,11 +1027,14 @@ pub const NativeCodegen = struct {
                 // Match statement: match value { pattern => body, ... }
                 // Implemented using sequential pattern matching with conditional jumps
 
+                // Save callee-saved register rbx (required by x86-64 ABI)
+                try self.assembler.pushReg(.rbx);
+
                 // Evaluate match value (result in rax)
                 try self.generateExpr(match_stmt.value);
 
-                // Save match value on stack for later pattern comparisons
-                try self.assembler.pushReg(.rax);
+                // Save match value in r10 for pattern comparisons (avoid stack issues)
+                try self.assembler.movRegReg(.r10, .rax);
 
                 // Track positions for patching jumps to end
                 var arm_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
@@ -1039,8 +1042,8 @@ pub const NativeCodegen = struct {
 
                 // Generate code for each match arm
                 for (match_stmt.arms) |arm| {
-                    // Load match value from stack into rbx for comparison
-                    try self.assembler.movRegMem(.rbx, .rsp, 0);
+                    // Load match value from r10 into rbx for comparison
+                    try self.assembler.movRegReg(.rbx, .r10);
 
                     // Try to match pattern (result in rax)
                     try self.generatePatternMatch(arm.pattern.*, .rbx);
@@ -1065,8 +1068,8 @@ pub const NativeCodegen = struct {
                         try self.generateExpr(arm.body);
 
                         // Jump to end of match
-                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition());
                         try self.assembler.jmpRel32(0);
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
 
                         // Patch guard fail jump to next arm
                         const next_pos = self.assembler.getPosition();
@@ -1077,8 +1080,8 @@ pub const NativeCodegen = struct {
                         try self.generateExpr(arm.body);
 
                         // Jump to end of match
-                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition());
                         try self.assembler.jmpRel32(0);
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
                     }
 
                     // Patch pattern match fail jump to next arm
@@ -1087,8 +1090,7 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJzRel32(next_arm_jump, next_offset);
                 }
 
-                // Pop match value from stack
-                try self.assembler.popReg(.rcx);
+                // Match value is in r10, no need to pop from stack
 
                 // Patch all "end of match" jumps
                 const match_end = self.assembler.getPosition();
@@ -1096,6 +1098,9 @@ pub const NativeCodegen = struct {
                     const offset = @as(i32, @intCast(match_end)) - @as(i32, @intCast(jump_pos + 5));
                     try self.assembler.patchJmpRel32(jump_pos, offset);
                 }
+
+                // Restore callee-saved register rbx
+                try self.assembler.popReg(.rbx);
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});

@@ -1407,11 +1407,7 @@ pub const Parser = struct {
             }
 
             // Expect => arrow
-            _ = try self.expect(.EqualEqual, "Expected '=>' after match pattern");
-            if (!self.match(&.{.Greater})) {
-                try self.reportError("Expected '=>' after match pattern");
-                return error.UnexpectedToken;
-            }
+            _ = try self.expect(.FatArrow, "Expected '=>' after match pattern");
 
             // Parse arm body (just parse as expression, blocks are expressions too)
             const body = try self.expression();

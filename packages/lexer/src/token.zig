@@ -60,6 +60,7 @@ pub const TokenType = enum {
     Tilde, // ~
     LeftShift, // <<
     RightShift, // >>
+    FatArrow, // =>
 
     // Literals
     Identifier,
@@ -177,6 +178,7 @@ pub const TokenType = enum {
             .Tilde => "~",
             .LeftShift => "<<",
             .RightShift => ">>",
+            .FatArrow => "=>",
             .Identifier => "identifier",
             .String => "string",
             .StringInterpolationStart => "string_interpolation_start",

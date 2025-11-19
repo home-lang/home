@@ -785,7 +785,7 @@ pub const Lexer = struct {
             '/' => if (self.match('=')) self.makeToken(.SlashEqual) else self.makeToken(.Slash),
             '%' => if (self.match('=')) self.makeToken(.PercentEqual) else self.makeToken(.Percent),
             '!' => if (self.match('=')) self.makeToken(.BangEqual) else self.makeToken(.Bang),
-            '=' => if (self.match('=')) self.makeToken(.EqualEqual) else self.makeToken(.Equal),
+            '=' => if (self.match('=')) self.makeToken(.EqualEqual) else if (self.match('>')) self.makeToken(.FatArrow) else self.makeToken(.Equal),
             '>' => if (self.match('>')) self.makeToken(.RightShift) else if (self.match('=')) self.makeToken(.GreaterEqual) else self.makeToken(.Greater),
             '<' => if (self.match('<')) self.makeToken(.LeftShift) else if (self.match('=')) self.makeToken(.LessEqual) else self.makeToken(.Less),
             '&' => if (self.match('&')) self.makeToken(.AmpersandAmpersand) else self.makeToken(.Ampersand),
