@@ -418,12 +418,36 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegImm64(.rax, 1);
             },
             .StringLiteral => |str_val| {
-                // String comparison - for now, just compare pointers
-                // TODO: implement proper string comparison
+                // String comparison - compare the string values
+                // value_reg contains pointer to the runtime string value
+                // str_val is the pattern string literal
+
+                // Save value_reg to avoid clobbering
+                try self.assembler.movRegReg(.rsi, value_reg); // rsi = runtime string
+
+                // Register the pattern string in the data section
                 const str_offset = try self.registerStringLiteral(str_val);
-                _ = str_offset;
-                // For now, set rax to 0 (not implemented)
-                try self.assembler.movRegImm64(.rax, 0);
+
+                // Get address of pattern string in rdi using LEA with RIP-relative addressing
+                // This returns the position where we need to patch the offset later
+                const lea_pos = try self.assembler.leaRipRel(.rdi, 0);
+
+                // Track this fixup for later patching
+                try self.string_fixups.append(self.allocator, .{
+                    .code_pos = lea_pos,
+                    .data_offset = str_offset,
+                });
+
+                // Compare pattern string (in rdi) with runtime string (in rsi)
+                try self.strcmp(.rdi, .rsi); // Result in rax: 0 if equal
+
+                // Convert strcmp result to match result
+                // If strcmp returns 0, strings are equal -> match success (rax = 1)
+                // If strcmp returns non-zero, strings differ -> match fail (rax = 0)
+                try self.assembler.testRegReg(.rax, .rax);
+                try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                try self.assembler.jneRel32(10); // Skip next instruction if not equal
+                try self.assembler.movRegImm64(.rax, 1); // Match found
             },
             .Wildcard => {
                 // Wildcard always matches
@@ -431,15 +455,81 @@ pub const NativeCodegen = struct {
             },
             .Identifier => |_| {
                 // Identifier pattern always matches and binds the value
-                // TODO: implement variable binding
+                // Variable binding is implemented in bindPatternVariables()
                 try self.assembler.movRegImm64(.rax, 1);
             },
             .EnumVariant => |variant| {
                 // For enum variants, check the tag (first 8 bytes)
-                // Get enum layout to find variant index
-                // For now, simple implementation
-                _ = variant;
-                try self.assembler.movRegImm64(.rax, 0); // Not implemented yet
+                // value_reg contains pointer to enum value
+                // Enum layout: [tag (8 bytes)][data (8 bytes)]
+                // Tag is at offset 0
+
+                // Extract enum name from variant string (format: "EnumName.VariantName")
+                // For now, we need to infer the enum type from context
+                // This is a limitation - ideally we'd have type information
+
+                // Try to find matching enum layout and variant
+                var found = false;
+                var target_tag: i64 = 0;
+
+                // Iterate through all enum layouts
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    // Check if variant exists in this enum
+                    for (enum_layout.variants, 0..) |v, idx| {
+                        if (std.mem.eql(u8, v.name, variant.variant)) {
+                            found = true;
+                            target_tag = @intCast(idx);
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+
+                if (found) {
+                    // Load tag from memory (first 8 bytes at value_reg)
+                    // value_reg contains the pointer to the enum value
+                    try self.assembler.movRegMem(.rcx, value_reg, 0); // Load tag into rcx
+                    // Compare with expected tag
+                    try self.assembler.movRegImm64(.rdx, @intCast(target_tag));
+                    try self.assembler.cmpRegReg(.rcx, .rdx);
+
+                    // If tags don't match, set rax=0 and skip payload check
+                    const tag_mismatch_pos = self.assembler.getPosition();
+                    try self.assembler.jeRel32(0); // Jump if equal (tag matches), placeholder offset
+
+                    // Tag didn't match
+                    try self.assembler.movRegImm64(.rax, 0);
+                    const skip_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0); // Jump to end, placeholder offset
+
+                    // Patch tag match jump to here
+                    const tag_match_pos = self.assembler.getPosition();
+                    const tag_match_offset = @as(i32, @intCast(tag_match_pos)) - @as(i32, @intCast(tag_mismatch_pos + 6));
+                    try self.assembler.patchJeRel32(tag_mismatch_pos, tag_match_offset);
+
+                    // Tag matched! Now check payload pattern if present
+                    if (variant.payload) |payload_pattern| {
+                        // Load the payload data (at offset 8) into rcx
+                        try self.assembler.movRegMem(.rcx, value_reg, 8);
+
+                        // Recursively match the payload pattern
+                        try self.generatePatternMatch(payload_pattern.*, .rcx);
+                        // rax now contains payload match result (0 or 1)
+                    } else {
+                        // No payload pattern, just tag match = success
+                        try self.assembler.movRegImm64(.rax, 1);
+                    }
+
+                    // Patch skip jump to here (end of match logic)
+                    const end_pos = self.assembler.getPosition();
+                    const skip_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(skip_pos + 5));
+                    try self.assembler.patchJmpRel32(skip_pos, skip_offset);
+                } else {
+                    // Variant not found in any enum - no match
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
             },
             .Tuple, .Array, .Struct, .Range, .Or, .As => {
                 // Complex patterns not implemented yet
@@ -448,6 +538,90 @@ pub const NativeCodegen = struct {
             else => {
                 try self.assembler.movRegImm64(.rax, 0);
             },
+        }
+    }
+
+    /// Bind variables from a pattern to locals
+    /// value_reg contains the value that was matched
+    fn bindPatternVariables(self: *NativeCodegen, pattern: ast.Pattern, value_reg: x64.Register) CodegenError!void {
+        switch (pattern) {
+            .Identifier => |name| {
+                // Bind the value to this identifier
+                // Push value onto stack and add to locals
+                try self.assembler.pushReg(value_reg); // Push directly without using rax
+
+                const offset = self.next_local_offset;
+                self.next_local_offset += 1;
+
+                const name_copy = try self.allocator.dupe(u8, name);
+                errdefer self.allocator.free(name_copy);
+
+                // We don't know the exact type, so use a generic size
+                try self.locals.put(name_copy, .{
+                    .offset = offset,
+                    .type_name = "i32", // Default to i32 for now
+                    .size = 8,
+                });
+            },
+            .EnumVariant => |variant| {
+                // If the variant has a payload pattern, bind it
+                if (variant.payload) |payload_pattern| {
+                    // value_reg points to the enum value
+                    // Enum layout: [tag (8 bytes)][data (8 bytes)]
+                    // Load the data (at offset 8) and bind it
+                    try self.assembler.movRegMem(.rcx, value_reg, 8);
+                    // Recursively bind the payload pattern with the data value
+                    try self.bindPatternVariables(payload_pattern.*, .rcx);
+                }
+            },
+            // Other pattern types don't bind variables
+            .IntLiteral, .FloatLiteral, .StringLiteral, .BoolLiteral, .Wildcard => {},
+            // Complex patterns TODO
+            .Tuple, .Array, .Struct, .Range, .Or, .As => {},
+        }
+    }
+
+    /// Clean up pattern variables added after a certain point
+    /// This removes variables from the locals map and adjusts stack
+    /// Preserves rax (the arm body result)
+    fn cleanupPatternVariables(self: *NativeCodegen, locals_before: usize) CodegenError!void {
+        const locals_after = self.locals.count();
+        const vars_to_remove = locals_after - locals_before;
+
+        if (vars_to_remove == 0) return;
+
+        // Save rax (arm body result)
+        try self.assembler.pushReg(.rax);
+
+        // Pop variables from stack (into rcx to discard)
+        var i: usize = 0;
+        while (i < vars_to_remove) : (i += 1) {
+            try self.assembler.popReg(.rcx); // Pop into rcx (discard)
+        }
+
+        // Restore rax
+        try self.assembler.popReg(.rax);
+
+        // Reset local offset
+        self.next_local_offset -= @intCast(vars_to_remove);
+
+        // Remove from locals HashMap
+        // We need to iterate and remove entries added after locals_before
+        // Since HashMap doesn't support removal during iteration, collect keys first
+        var keys_to_remove = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+        defer keys_to_remove.deinit(self.allocator);
+
+        var iter = self.locals.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.offset >= @as(u8, @intCast(locals_before))) {
+                try keys_to_remove.append(self.allocator, entry.key_ptr.*);
+            }
+        }
+
+        // Now remove the collected keys
+        for (keys_to_remove.items) |key| {
+            _ = self.locals.remove(key);
+            self.allocator.free(key);
         }
     }
 
@@ -460,6 +634,7 @@ pub const NativeCodegen = struct {
         if (std.mem.eql(u8, type_name, "f32")) return 4;
         if (std.mem.eql(u8, type_name, "f64")) return 8;
         if (std.mem.eql(u8, type_name, "str")) return 8; // String pointers are 8 bytes
+        if (std.mem.eql(u8, type_name, "string")) return 8; // String pointers are 8 bytes
 
         // Check if it's a struct type
         if (self.struct_layouts.get(type_name)) |layout| {
@@ -1055,6 +1230,11 @@ pub const NativeCodegen = struct {
                     const next_arm_jump = self.assembler.getPosition();
                     try self.assembler.jzRel32(0); // Jump if pattern match failed (rax == 0)
 
+                    // Pattern matched, bind any pattern variables
+                    // value_reg (rbx) still contains the matched value
+                    const locals_before = self.locals.count();
+                    try self.bindPatternVariables(arm.pattern.*, .rbx);
+
                     // Pattern matched, evaluate guard if present
                     if (arm.guard) |guard| {
                         try self.generateExpr(guard);
@@ -1067,6 +1247,9 @@ pub const NativeCodegen = struct {
                         // Guard succeeded, execute arm body
                         try self.generateExpr(arm.body);
 
+                        // Clean up pattern variables
+                        try self.cleanupPatternVariables(locals_before);
+
                         // Jump to end of match
                         try self.assembler.jmpRel32(0);
                         try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
@@ -1078,6 +1261,9 @@ pub const NativeCodegen = struct {
                     } else {
                         // No guard, execute arm body directly
                         try self.generateExpr(arm.body);
+
+                        // Clean up pattern variables
+                        try self.cleanupPatternVariables(locals_before);
 
                         // Jump to end of match
                         try self.assembler.jmpRel32(0);
@@ -1659,6 +1845,35 @@ pub const NativeCodegen = struct {
                         self.next_local_offset += 1;
                     }
                 }
+            } else if (self.enum_layouts.contains(type_name)) {
+                // Special handling for enum values
+                // Enums are 16 bytes: [tag (8 bytes)][data (8 bytes)]
+                // The enum constructor pushes: data first, then tag
+                // So the stack layout is: [tag at lower addr] [data at higher addr]
+
+                // Evaluate the enum constructor expression
+                // This will push data then tag onto stack and return pointer in rax
+                try self.generateExpr(value);
+
+                // rax now contains pointer to the enum on stack (points to tag)
+                // The enum constructor pushed 2 values:
+                // - offset+0: data (pushed first, higher address)
+                // - offset+1: tag (pushed second, lower address)
+
+                // We want the variable to point to the tag (the second push)
+                const tag_offset = self.next_local_offset + 1;
+
+                // Store variable name pointing to the tag
+                const name = try self.allocator.dupe(u8, decl.name);
+                errdefer self.allocator.free(name);
+                try self.locals.put(name, .{
+                    .offset = tag_offset,
+                    .type_name = type_name,
+                    .size = 16, // All enums are 16 bytes (tag + data)
+                });
+
+                // Update offset to account for 2 slots used by enum
+                self.next_local_offset += 2;
             } else {
                 // Regular scalar value
                 // Evaluate the expression (result in rax)
@@ -1697,9 +1912,10 @@ pub const NativeCodegen = struct {
             .Identifier => |id| {
                 // Load from stack
                 if (self.locals.get(id.name)) |local_info| {
-                    // Check if this is an array or struct type - return pointer instead of value
+                    // Check if this is an array, struct, or enum type - return pointer instead of value
                     const is_array = local_info.type_name.len > 0 and local_info.type_name[0] == '[';
                     const is_struct = self.struct_layouts.contains(local_info.type_name);
+                    const is_enum = self.enum_layouts.contains(local_info.type_name);
 
                     // Stack layout after function prologue:
                     // [rbp+0]: saved rbp
@@ -1710,8 +1926,8 @@ pub const NativeCodegen = struct {
                     // Items pushed first are at higher addresses (closer to rbp)
                     const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
 
-                    if (is_array or is_struct) {
-                        // For arrays and structs, return pointer to start
+                    if (is_array or is_struct or is_enum) {
+                        // For arrays, structs, and enums, return pointer to start
                         // lea rax, [rbp + stack_offset]
                         try self.assembler.movRegReg(.rax, .rbp);
                         try self.assembler.addRegImm32(.rax, stack_offset);

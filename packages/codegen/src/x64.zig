@@ -542,9 +542,16 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0xB6);
 
-        if (offset == 0 and base != .rbp) {
+        // r12 and rsp require SIB byte even with offset=0
+        const needs_sib = (base == .r12 or base == .rsp);
+
+        if (offset == 0 and base != .rbp and !needs_sib) {
             // [base] with no displacement (ModRM = 00)
             try self.emitModRM(0b00, @intFromEnum(dst), @intFromEnum(base));
+        } else if (offset == 0 and needs_sib) {
+            // [base] with SIB byte but no displacement
+            try self.emitModRM(0b00, @intFromEnum(dst), 0b100); // 0b100 indicates SIB follows
+            try self.code.append(self.allocator, 0x24); // SIB: scale=0, index=rsp(4), base=r12/rsp
         } else {
             // [base + disp32] (ModRM = 10)
             try self.emitModRM(0b10, @intFromEnum(dst), @intFromEnum(base));
