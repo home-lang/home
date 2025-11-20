@@ -10,6 +10,8 @@ const type_integration_mod = @import("type_integration.zig");
 pub const TypeIntegration = type_integration_mod.TypeIntegration;
 const move_checker_mod = @import("move_checker.zig");
 pub const MoveChecker = move_checker_mod.MoveChecker;
+const borrow_checker_mod = @import("borrow_checker.zig");
+pub const BorrowChecker = borrow_checker_mod.BorrowChecker;
 
 /// Error set for code generation operations.
 ///
@@ -582,6 +584,10 @@ pub const NativeCodegen = struct {
     /// Move semantics checker for ownership and borrow checking
     move_checker: ?MoveChecker,
 
+    // Borrow checking
+    /// Borrow checker for reference lifetime analysis
+    borrow_checker: ?BorrowChecker,
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -606,6 +612,7 @@ pub const NativeCodegen = struct {
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
+            .borrow_checker = null, // Initialized on demand
         };
     }
 
@@ -713,6 +720,11 @@ pub const NativeCodegen = struct {
         // Free move checker if initialized
         if (self.move_checker) |*mc| {
             mc.deinit();
+        }
+
+        // Free borrow checker if initialized
+        if (self.borrow_checker) |*bc| {
+            bc.deinit();
         }
     }
 
@@ -839,6 +851,51 @@ pub const NativeCodegen = struct {
     pub fn isVariableMoved(self: *NativeCodegen, var_name: []const u8) bool {
         if (self.move_checker) |*mc| {
             return mc.isMoved(var_name);
+        }
+        return false;
+    }
+
+    /// Run borrow checking and lifetime analysis on the program.
+    ///
+    /// This performs comprehensive borrow checking:
+    /// - Tracks reference lifetimes
+    /// - Detects dangling references
+    /// - Enforces aliasing rules (no &mut with other refs)
+    /// - Validates borrow scopes
+    /// - Checks lifetime constraints
+    ///
+    /// Returns: true if borrow checking passed, false if there were errors
+    pub fn runBorrowCheck(self: *NativeCodegen) !bool {
+        // Initialize borrow checker if not already done
+        if (self.borrow_checker == null) {
+            self.borrow_checker = BorrowChecker.init(self.allocator);
+        }
+
+        var bc = &self.borrow_checker.?;
+
+        // Run borrow checking on the entire program
+        bc.checkProgram(self.program) catch |err| {
+            std.debug.print("Borrow checking failed with error: {}\n", .{err});
+            bc.printErrors();
+            return false;
+        };
+
+        // Check for errors
+        if (bc.hasErrors()) {
+            bc.printErrors();
+            return false;
+        }
+
+        std.debug.print("Borrow checking passed successfully!\n", .{});
+        return true;
+    }
+
+    /// Check if a variable is currently borrowed
+    ///
+    /// Returns: true if the variable has an active borrow
+    pub fn isVariableBorrowed(self: *NativeCodegen, var_name: []const u8) bool {
+        if (self.borrow_checker) |*bc| {
+            return bc.isBorrowed(var_name);
         }
         return false;
     }

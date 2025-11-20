@@ -1,0 +1,209 @@
+// Comprehensive tests for borrow checking and lifetime analysis
+
+// Test 1: Shared borrow (immutable reference)
+fn test_shared_borrow(): i32 {
+    let x = 42;
+    let r = &x;       // Immutable borrow
+    let s = &x;       // Multiple immutable borrows OK
+    return *r + *s;   // Both can be used
+}
+
+// Test 2: Mutable borrow (exclusive reference)
+fn test_mutable_borrow(): i32 {
+    let mut x = 10;
+    let r = &mut x;   // Mutable borrow
+    *r = 20;          // Can mutate through reference
+    return x;         // Should be 20
+}
+
+// Test 3: Cannot have mutable and immutable borrows simultaneously
+fn test_conflicting_borrows(): i32 {
+    let mut x = 10;
+    let r = &x;       // Immutable borrow
+    // let s = &mut x; // ERROR: cannot borrow mutably while immutably borrowed
+    return *r;
+}
+
+// Test 4: Cannot have multiple mutable borrows
+fn test_multiple_mutable_borrows(): i32 {
+    let mut x = 10;
+    let r = &mut x;   // First mutable borrow
+    // let s = &mut x; // ERROR: cannot borrow mutably more than once
+    *r = 20;
+    return x;
+}
+
+// Test 5: Borrow scope (borrows end when references go out of scope)
+fn test_borrow_scope(): i32 {
+    let mut x = 10;
+    {
+        let r = &mut x;   // Mutable borrow in inner scope
+        *r = 20;
+    }                     // r goes out of scope, borrow ends
+    let s = &mut x;       // OK: can borrow again
+    *s = 30;
+    return x;             // Should be 30
+}
+
+// Test 6: Dangling reference detection
+fn dangling_reference(): &i32 {
+    let x = 42;
+    return &x;        // ERROR: x goes out of scope, reference dangles
+}
+
+// Test 7: Reference to longer-lived value (OK)
+fn valid_reference(x: &i32): &i32 {
+    return x;         // OK: x outlives this function
+}
+
+// Test 8: Borrow after move (should error)
+fn test_borrow_after_move(): i32 {
+    let s = "Hello";
+    let t = s;        // s is moved
+    // let r = &s;    // ERROR: cannot borrow moved value
+    return 0;
+}
+
+// Test 9: Cannot modify through immutable borrow
+fn test_immutable_borrow_modify(): i32 {
+    let mut x = 10;
+    let r = &x;       // Immutable borrow
+    // *r = 20;       // ERROR: cannot assign to immutable borrow
+    return *r;
+}
+
+// Test 10: Borrow in function parameter
+fn borrow_param(x: &i32): i32 {
+    return *x;
+}
+
+fn test_borrow_param(): i32 {
+    let x = 42;
+    return borrow_param(&x);
+}
+
+// Test 11: Mutable borrow in function parameter
+fn mut_borrow_param(x: &mut i32): i32 {
+    *x = *x + 10;
+    return *x;
+}
+
+fn test_mut_borrow_param(): i32 {
+    let mut x = 32;
+    return mut_borrow_param(&mut x);  // Should be 42
+}
+
+// Test 12: Struct field borrows
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn test_struct_field_borrow(): i32 {
+    let p = Point { x: 10, y: 20 };
+    let rx = &p.x;    // Borrow field
+    let ry = &p.y;    // Borrow another field
+    return *rx + *ry; // Both can be used
+}
+
+// Test 13: Return borrowed value (lifetime must match)
+fn borrow_first(arr: &[i32]): &i32 {
+    return &arr[0];   // OK: lifetime of return matches parameter
+}
+
+// Test 14: Borrow in loop
+fn test_borrow_in_loop(): i32 {
+    let mut sum = 0;
+    let arr = [1, 2, 3, 4, 5];
+
+    for x in arr {
+        let r = &x;   // Borrow loop variable
+        sum = sum + *r;
+    }
+
+    return sum;       // Should be 15
+}
+
+// Test 15: Nested borrows
+fn test_nested_borrows(): i32 {
+    let x = 10;
+    let r1 = &x;      // First level borrow
+    let r2 = &r1;     // Borrow the reference
+    return **r2;      // Double dereference
+}
+
+// Test 16: Borrow after mutation allowed
+fn test_borrow_after_mutation(): i32 {
+    let mut x = 10;
+    x = 20;           // Mutation
+    let r = &x;       // Borrow after mutation OK
+    return *r;        // Should be 20
+}
+
+// Test 17: Reborrow (shorten lifetime)
+fn test_reborrow(r: &mut i32): &i32 {
+    return &*r;       // Reborrow as immutable (shortening lifetime)
+}
+
+// Test 18: Conditional borrow
+fn test_conditional_borrow(cond: bool): i32 {
+    let mut x = 10;
+
+    if cond {
+        let r = &mut x;
+        *r = 20;
+    } else {
+        let s = &mut x;
+        *s = 30;
+    }
+
+    return x;
+}
+
+// Test 19: Borrow in match expression
+enum Option {
+    Some(i32),
+    None,
+}
+
+fn test_borrow_in_match(opt: &Option): i32 {
+    match opt {
+        Option.Some(x) => return *x,
+        Option.None => return 0,
+    }
+}
+
+// Test 20: Multiple borrows released in order
+fn test_borrow_ordering(): i32 {
+    let mut x = 10;
+    {
+        let r1 = &x;
+        {
+            let r2 = &x;
+            let sum = *r1 + *r2;
+        }   // r2 released
+    }       // r1 released
+    let r3 = &mut x;   // OK: all immutable borrows released
+    *r3 = 30;
+    return x;
+}
+
+// Main test runner
+fn main(): i32 {
+    print("Testing borrow checking...\n");
+
+    test_shared_borrow();
+    test_mutable_borrow();
+    test_borrow_scope();
+    test_borrow_param();
+    test_mut_borrow_param();
+    test_struct_field_borrow();
+    test_borrow_in_loop();
+    test_nested_borrows();
+    test_borrow_after_mutation();
+    test_conditional_borrow(true);
+    test_borrow_ordering();
+
+    print("All borrow checking tests completed!\n");
+    return 0;
+}
