@@ -6,6 +6,8 @@ const macho = @import("macho.zig");
 const builtin = @import("builtin");
 const type_checker_mod = @import("type_checker.zig");
 pub const TypeChecker = type_checker_mod.TypeChecker;
+const type_integration_mod = @import("type_integration.zig");
+pub const TypeIntegration = type_integration_mod.TypeIntegration;
 
 /// Error set for code generation operations.
 ///
@@ -570,6 +572,10 @@ pub const NativeCodegen = struct {
     /// Simple register allocator for optimizing register usage
     reg_alloc: RegisterAllocator,
 
+    // Type inference
+    /// Type integration layer for Hindley-Milner type inference
+    type_integration: ?TypeIntegration,
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -592,6 +598,7 @@ pub const NativeCodegen = struct {
             .string_offsets = std.StringHashMap(usize).init(allocator),
             .string_fixups = std.ArrayList(StringFixup){},
             .reg_alloc = RegisterAllocator.init(),
+            .type_integration = null, // Initialized on demand
         };
     }
 
@@ -690,6 +697,11 @@ pub const NativeCodegen = struct {
 
         self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
+
+        // Free type integration if initialized
+        if (self.type_integration) |*ti| {
+            ti.deinit();
+        }
     }
 
     /// Run type checking on the program before code generation.
@@ -720,6 +732,58 @@ pub const NativeCodegen = struct {
 
         std.debug.print("Type checking passed successfully!\n", .{});
         return true;
+    }
+
+    /// Run Hindley-Milner type inference on the program.
+    ///
+    /// This performs full type inference using the Hindley-Milner algorithm:
+    /// - Generates type variables for unknown types
+    /// - Collects type constraints from expressions
+    /// - Unifies constraints to solve for concrete types
+    /// - Generalizes let-polymorphic types
+    ///
+    /// The inferred types are stored in the type_integration field
+    /// and can be queried using getVarTypeString().
+    ///
+    /// Returns: true if type inference succeeded, false if there were errors
+    pub fn runTypeInference(self: *NativeCodegen) !bool {
+        // Initialize type integration if not already done
+        if (self.type_integration == null) {
+            self.type_integration = TypeIntegration.init(self.allocator);
+        }
+
+        var ti = &self.type_integration.?;
+
+        // Run type inference on the entire program
+        ti.inferProgram(self.program) catch |err| {
+            std.debug.print("Type inference failed with error: {}\n", .{err});
+            return false;
+        };
+
+        // Check for errors (unresolved type variables, etc.)
+        if (ti.hasErrors()) {
+            std.debug.print("Type inference completed with errors\n", .{});
+            return false;
+        }
+
+        // Print inferred types for debugging
+        try ti.printInferredTypes();
+
+        std.debug.print("Type inference completed successfully!\n", .{});
+        return true;
+    }
+
+    /// Get the inferred type for a variable as a string.
+    ///
+    /// This can be used during code generation to get type information
+    /// for variables without explicit type annotations.
+    ///
+    /// Returns: Type string (e.g., "i32", "[i32]", "bool") or null if not inferred
+    pub fn getInferredType(self: *NativeCodegen, var_name: []const u8) !?[]const u8 {
+        if (self.type_integration) |*ti| {
+            return try ti.getVarTypeString(var_name);
+        }
+        return null;
     }
 
     /// Generate heap allocation code (bump allocator).
