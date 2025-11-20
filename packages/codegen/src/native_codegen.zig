@@ -8,6 +8,8 @@ const type_checker_mod = @import("type_checker.zig");
 pub const TypeChecker = type_checker_mod.TypeChecker;
 const type_integration_mod = @import("type_integration.zig");
 pub const TypeIntegration = type_integration_mod.TypeIntegration;
+const move_checker_mod = @import("move_checker.zig");
+pub const MoveChecker = move_checker_mod.MoveChecker;
 
 /// Error set for code generation operations.
 ///
@@ -576,6 +578,10 @@ pub const NativeCodegen = struct {
     /// Type integration layer for Hindley-Milner type inference
     type_integration: ?TypeIntegration,
 
+    // Move semantics
+    /// Move semantics checker for ownership and borrow checking
+    move_checker: ?MoveChecker,
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -599,6 +605,7 @@ pub const NativeCodegen = struct {
             .string_fixups = std.ArrayList(StringFixup){},
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
+            .move_checker = null, // Initialized on demand
         };
     }
 
@@ -702,6 +709,11 @@ pub const NativeCodegen = struct {
         if (self.type_integration) |*ti| {
             ti.deinit();
         }
+
+        // Free move checker if initialized
+        if (self.move_checker) |*mc| {
+            mc.deinit();
+        }
     }
 
     /// Run type checking on the program before code generation.
@@ -784,6 +796,51 @@ pub const NativeCodegen = struct {
             return try ti.getVarTypeString(var_name);
         }
         return null;
+    }
+
+    /// Run move semantics checking on the program.
+    ///
+    /// This performs move semantics analysis:
+    /// - Tracks variable moves
+    /// - Detects use-after-move errors
+    /// - Handles partial moves (struct fields)
+    /// - Manages conditional moves (if/match branches)
+    /// - Distinguishes Copy vs Move types
+    ///
+    /// Returns: true if move checking passed, false if there were errors
+    pub fn runMoveCheck(self: *NativeCodegen) !bool {
+        // Initialize move checker if not already done
+        if (self.move_checker == null) {
+            self.move_checker = MoveChecker.init(self.allocator);
+        }
+
+        var mc = &self.move_checker.?;
+
+        // Run move checking on the entire program
+        mc.checkProgram(self.program) catch |err| {
+            std.debug.print("Move checking failed with error: {}\n", .{err});
+            mc.printErrors();
+            return false;
+        };
+
+        // Check for errors
+        if (mc.hasErrors()) {
+            mc.printErrors();
+            return false;
+        }
+
+        std.debug.print("Move checking passed successfully!\n", .{});
+        return true;
+    }
+
+    /// Check if a variable has been moved
+    ///
+    /// Returns: true if the variable has been fully or partially moved
+    pub fn isVariableMoved(self: *NativeCodegen, var_name: []const u8) bool {
+        if (self.move_checker) |*mc| {
+            return mc.isMoved(var_name);
+        }
+        return false;
     }
 
     /// Generate heap allocation code (bump allocator).
