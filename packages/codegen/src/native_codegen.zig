@@ -3931,6 +3931,63 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
             },
 
+            .TryExpr => |try_expr| {
+                // Try operator (?): Unwrap Result or propagate error
+                // Result<T, E> is represented as an enum with:
+                //   Ok(T):  tag=0, value at offset 8
+                //   Err(E): tag=1, error at offset 8
+                //
+                // The ? operator:
+                // 1. Evaluates the operand (Result value)
+                // 2. Checks the tag
+                // 3. If Ok: extracts and returns the value
+                // 4. If Err: returns early from current function with Err
+
+                // Evaluate the Result expression
+                try self.generateExpr(try_expr.operand);
+
+                // rax now contains pointer to Result enum on heap/stack
+                // Result layout: [tag (8 bytes)][data (8 bytes)]
+
+                // Save Result pointer in rbx
+                try self.assembler.movRegReg(.rbx, .rax);
+
+                // Load tag from Result: mov rcx, [rbx]
+                try self.assembler.movRegMem(.rcx, .rbx, 0);
+
+                // Check if tag == 0 (Ok variant)
+                try self.assembler.testRegReg(.rcx, .rcx);
+
+                // If tag != 0 (is Err), propagate the error
+                const is_ok_jump = self.assembler.getPosition();
+                try self.assembler.jzRel32(0); // Jump if zero (Ok)
+
+                // Error path: Return Err from current function
+                // Load error value from Result: mov rax, [rbx + 8]
+                try self.assembler.movRegMem(.rax, .rbx, 8);
+
+                // Store error value back to Result and return
+                // For simplicity, we'll just move the Result pointer to rax
+                try self.assembler.movRegReg(.rax, .rbx);
+
+                // Return from function with error
+                // Note: This assumes we're in a function context
+                // Restore stack frame
+                try self.assembler.movRegReg(.rsp, .rbp);
+                try self.assembler.popReg(.rbp);
+                try self.assembler.ret();
+
+                // Ok path: Extract value
+                const ok_path = self.assembler.getPosition();
+                const ok_offset = @as(i32, @intCast(ok_path)) - @as(i32, @intCast(is_ok_jump + 6));
+                try self.assembler.patchJzRel32(is_ok_jump, ok_offset);
+
+                // Load Ok value from Result: mov rax, [rbx + 8]
+                try self.assembler.movRegMem(.rax, .rbx, 8);
+
+                // rax now contains the unwrapped value
+            },
+
             else => |expr_tag| {
                 std.debug.print("Unsupported expression type in native codegen: {s}\n", .{@tagName(expr_tag)});
                 return error.UnsupportedFeature;

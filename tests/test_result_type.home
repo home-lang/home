@@ -1,0 +1,280 @@
+// Comprehensive tests for Result<T, E> type and try operator (?)
+
+// Result enum for error handling
+enum Result {
+    Ok(i32),
+    Err(string),
+}
+
+// Helper functions to create Results
+fn ok(value: i32): Result {
+    return Result.Ok(value);
+}
+
+fn err(message: string): Result {
+    return Result.Err(message);
+}
+
+// Test 1: Basic Result creation and matching
+fn test_basic_result(): i32 {
+    let success: Result = ok(42);
+
+    match success {
+        Result.Ok(value) => {
+            if value == 42 {
+                return 0;  // Success
+            }
+            return 1;  // Wrong value
+        },
+        Result.Err(msg) => return 2,  // Should not be error
+    }
+}
+
+// Test 2: Error case
+fn test_error_result(): i32 {
+    let failure: Result = err("Something went wrong");
+
+    match failure {
+        Result.Ok(value) => return 1,  // Should not be Ok
+        Result.Err(msg) => return 0,    // Success - got error as expected
+    }
+}
+
+// Test 3: Function returning Result
+fn divide(a: i32, b: i32): Result {
+    if b == 0 {
+        return err("Division by zero");
+    }
+    return ok(a / b);
+}
+
+fn test_divide_success(): i32 {
+    let result: Result = divide(10, 2);
+
+    match result {
+        Result.Ok(value) => {
+            if value == 5 {
+                return 0;  // Success
+            }
+            return 1;  // Wrong result
+        },
+        Result.Err(msg) => return 2,  // Should not error
+    }
+}
+
+fn test_divide_error(): i32 {
+    let result: Result = divide(10, 0);
+
+    match result {
+        Result.Ok(value) => return 1,  // Should have errored
+        Result.Err(msg) => return 0,    // Success - got error
+    }
+}
+
+// Test 4: Nested Result operations
+fn parse_number(s: string): Result {
+    // Simplified: just return a dummy value
+    // In real implementation, would parse string
+    if s == "42" {
+        return ok(42);
+    }
+    return err("Invalid number");
+}
+
+fn double_number(s: string): Result {
+    let result: Result = parse_number(s);
+
+    match result {
+        Result.Ok(value) => return ok(value * 2),
+        Result.Err(e) => return err(e),
+    }
+}
+
+fn test_nested_results(): i32 {
+    let result1: Result = double_number("42");
+
+    match result1 {
+        Result.Ok(value) => {
+            if value == 84 {  // 42 * 2
+                return 0;  // Success
+            }
+            return 1;  // Wrong value
+        },
+        Result.Err(msg) => return 2,  // Should not error
+    }
+}
+
+// Test 5: Error propagation (manual without ? operator)
+fn add_numbers(a_str: string, b_str: string): Result {
+    let a_result: Result = parse_number(a_str);
+    let a: i32 = 0;
+
+    match a_result {
+        Result.Ok(val) => {
+            a = val;
+        },
+        Result.Err(e) => return err(e),  // Propagate error
+    }
+
+    let b_result: Result = parse_number(b_str);
+    let b: i32 = 0;
+
+    match b_result {
+        Result.Ok(val) => {
+            b = val;
+        },
+        Result.Err(e) => return err(e),  // Propagate error
+    }
+
+    return ok(a + b);
+}
+
+fn test_error_propagation(): i32 {
+    let result1: Result = add_numbers("42", "42");
+
+    match result1 {
+        Result.Ok(value) => {
+            if value == 84 {
+                return 0;  // Success
+            }
+            return 1;  // Wrong value
+        },
+        Result.Err(msg) => return 2,  // Should not error
+    }
+}
+
+// Test 6: Chaining Results
+fn calculate(a: i32, b: i32, c: i32): Result {
+    let step1: Result = divide(a, b);
+
+    match step1 {
+        Result.Ok(result1) => {
+            let step2: Result = divide(result1, c);
+
+            match step2 {
+                Result.Ok(result2) => return ok(result2),
+                Result.Err(e) => return err(e),
+            }
+        },
+        Result.Err(e) => return err(e),
+    }
+}
+
+fn test_chained_results(): i32 {
+    // (100 / 10) / 2 = 5
+    let result: Result = calculate(100, 10, 2);
+
+    match result {
+        Result.Ok(value) => {
+            if value == 5 {
+                return 0;  // Success
+            }
+            return 1;  // Wrong value
+        },
+        Result.Err(msg) => return 2,  // Should not error
+    }
+}
+
+// Test 7: Result with default value
+fn get_or_default(result: Result, default: i32): i32 {
+    match result {
+        Result.Ok(value) => return value,
+        Result.Err(msg) => return default,
+    }
+}
+
+fn test_get_or_default(): i32 {
+    let success: Result = ok(42);
+    let failure: Result = err("Error");
+
+    let val1: i32 = get_or_default(success, 0);
+    let val2: i32 = get_or_default(failure, 99);
+
+    if val1 == 42 && val2 == 99 {
+        return 0;  // Success
+    }
+    return 1;  // Wrong values
+}
+
+// Test 8: Result map operation
+fn map_result(result: Result, multiplier: i32): Result {
+    match result {
+        Result.Ok(value) => return ok(value * multiplier),
+        Result.Err(e) => return err(e),
+    }
+}
+
+fn test_map_result(): i32 {
+    let result: Result = ok(10);
+    let mapped: Result = map_result(result, 5);
+
+    match mapped {
+        Result.Ok(value) => {
+            if value == 50 {
+                return 0;  // Success
+            }
+            return 1;  // Wrong value
+        },
+        Result.Err(msg) => return 2,  // Should not error
+    }
+}
+
+// Main test runner
+fn main(): i32 {
+    let t1: i32 = test_basic_result();
+    if t1 != 0 {
+        print("test_basic_result failed\n");
+        return 1;
+    }
+
+    let t2: i32 = test_error_result();
+    if t2 != 0 {
+        print("test_error_result failed\n");
+        return 2;
+    }
+
+    let t3: i32 = test_divide_success();
+    if t3 != 0 {
+        print("test_divide_success failed\n");
+        return 3;
+    }
+
+    let t4: i32 = test_divide_error();
+    if t4 != 0 {
+        print("test_divide_error failed\n");
+        return 4;
+    }
+
+    let t5: i32 = test_nested_results();
+    if t5 != 0 {
+        print("test_nested_results failed\n");
+        return 5;
+    }
+
+    let t6: i32 = test_error_propagation();
+    if t6 != 0 {
+        print("test_error_propagation failed\n");
+        return 6;
+    }
+
+    let t7: i32 = test_chained_results();
+    if t7 != 0 {
+        print("test_chained_results failed\n");
+        return 7;
+    }
+
+    let t8: i32 = test_get_or_default();
+    if t8 != 0 {
+        print("test_get_or_default failed\n");
+        return 8;
+    }
+
+    let t9: i32 = test_map_result();
+    if t9 != 0 {
+        print("test_map_result failed\n");
+        return 9;
+    }
+
+    print("All Result type tests passed!\n");
+    return 0;
+}

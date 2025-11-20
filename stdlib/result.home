@@ -1,0 +1,97 @@
+// Standard library Result<T, E> type for error handling
+//
+// Result represents a value that can either be:
+// - Ok(T): A successful result containing a value of type T
+// - Err(E): An error result containing an error of type E
+//
+// This provides type-safe error handling without exceptions.
+
+// Note: In the actual implementation, Result would be generic.
+// For now, we'll demonstrate with concrete types.
+
+// Example: Result<i32, string> for operations that return i32 or string errors
+enum Result {
+    Ok(i32),      // Success with value
+    Err(string),  // Error with message
+}
+
+// Helper function to create an Ok result
+fn ok(value: i32): Result {
+    return Result.Ok(value);
+}
+
+// Helper function to create an Err result
+fn err(message: string): Result {
+    return Result.Err(message);
+}
+
+// Example: Division that can fail
+fn divide(a: i32, b: i32): Result {
+    if b == 0 {
+        return err("Division by zero");
+    }
+    return ok(a / b);
+}
+
+// Example: Using match to handle Result
+fn handle_result(result: Result): i32 {
+    match result {
+        Result.Ok(value) => value,
+        Result.Err(msg) => {
+            print("Error: ");
+            print(msg);
+            print("\n");
+            return -1;
+        },
+    }
+}
+
+// Example: The ? operator for error propagation
+// This is syntactic sugar for:
+// match expr {
+//     Ok(val) => val,
+//     Err(e) => return Err(e),
+// }
+fn try_divide(a: i32, b: i32): Result {
+    // Without ? operator:
+    let result: Result = divide(a, b);
+    match result {
+        Result.Ok(value) => return ok(value * 2),
+        Result.Err(e) => return err(e),
+    }
+}
+
+// With ? operator (future syntax):
+// fn try_divide_with_operator(a: i32, b: i32): Result {
+//     let value: i32 = divide(a, b)?;  // Propagates error automatically
+//     return ok(value * 2);
+// }
+
+fn main(): i32 {
+    // Test successful division
+    let result1: Result = divide(10, 2);
+    let value1: i32 = handle_result(result1);
+    if value1 != 5 {
+        print("Test 1 failed\n");
+        return 1;
+    }
+
+    // Test division by zero
+    let result2: Result = divide(10, 0);
+    let value2: i32 = handle_result(result2);
+    if value2 != -1 {
+        print("Test 2 failed\n");
+        return 2;
+    }
+
+    // Test error propagation
+    let result3: Result = try_divide(10, 2);
+    let value3: i32 = handle_result(result3);
+    if value3 != 10 {  // (10/2) * 2 = 10
+        print("Test 3 failed\n");
+        return 3;
+    }
+
+    print("All Result type tests passed!\n");
+    return 0;
+}
