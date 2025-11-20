@@ -19,3 +19,4 @@ packages/.DS_Store
 /packages/build/.test-cache
 /pantry_modules
 /packages/collections/.zig-cache
+/packages/io/.zig-cache

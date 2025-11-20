@@ -11,8 +11,6 @@ const HashMap = if (@import("builtin").is_test)
 else
     @import("collections").HashMap;
 
-const AsyncFile = @import("async_file.zig").AsyncFile;
-
 /// Represents a parsed INI file
 pub const IniFile = struct {
     allocator: Allocator,
@@ -132,10 +130,7 @@ pub const IniFile = struct {
 
     /// Parse an INI file from a file path
     pub fn parseFile(allocator: Allocator, path: []const u8) !IniFile {
-        var file = try AsyncFile.open(path, allocator);
-        defer file.close();
-
-        const content = try file.readAll();
+        const content = try std.fs.cwd().readFileAlloc(path, allocator, .unlimited);
         defer allocator.free(content);
 
         return try parse(allocator, content);
@@ -361,9 +356,9 @@ test "INI Parser: parse file" {
 
     // Write test file
     {
-        var file = try AsyncFile.create(test_file, allocator);
+        const file = try std.fs.cwd().createFile(test_file, .{});
         defer file.close();
-        try file.write(ini_content);
+        try file.writeAll(ini_content);
     }
 
     // Parse it
