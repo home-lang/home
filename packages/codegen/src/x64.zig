@@ -1285,4 +1285,471 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0xEF);
         try self.emitModRM(0b11, dst.encodeModRM(), src2.encodeModRM());
     }
+
+    // ============ FMA Instructions (FMA3) ============
+
+    /// vfmadd213ps xmm1, xmm2, xmm3 - FMA: xmm1 = (xmm1 * xmm2) + xmm3 (4x32-bit)
+    pub fn vfmadd213psXmmXmmXmm(self: *Assembler, dst: XmmRegister, src1: XmmRegister, src2: XmmRegister) !void {
+        // VEX.128.66.0F38.W0 A8 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            src2.needsRexPrefix(),
+            0b00010, // 0F38 map
+            false,   // W=0
+            @intFromEnum(src1),
+            false,   // L=0 for 128-bit
+            0b01,    // pp=01 (66 prefix)
+        );
+        try self.code.append(self.allocator, 0xA8);
+        try self.emitModRM(0b11, dst.encodeModRM(), src2.encodeModRM());
+    }
+
+    /// vfmadd213pd xmm1, xmm2, xmm3 - FMA: xmm1 = (xmm1 * xmm2) + xmm3 (2x64-bit)
+    pub fn vfmadd213pdXmmXmmXmm(self: *Assembler, dst: XmmRegister, src1: XmmRegister, src2: XmmRegister) !void {
+        // VEX.128.66.0F38.W1 A8 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            src2.needsRexPrefix(),
+            0b00010, // 0F38 map
+            true,    // W=1 for double precision
+            @intFromEnum(src1),
+            false,   // L=0 for 128-bit
+            0b01,    // pp=01 (66 prefix)
+        );
+        try self.code.append(self.allocator, 0xA8);
+        try self.emitModRM(0b11, dst.encodeModRM(), src2.encodeModRM());
+    }
+
+    /// vfmadd213ps ymm1, ymm2, ymm3 - FMA: ymm1 = (ymm1 * ymm2) + ymm3 (8x32-bit)
+    pub fn vfmadd213psYmmYmmYmm(self: *Assembler, dst: YmmRegister, src1: YmmRegister, src2: YmmRegister) !void {
+        // VEX.256.66.0F38.W0 A8 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            src2.needsRexPrefix(),
+            0b00010,
+            false,
+            @intFromEnum(src1),
+            true,    // L=1 for 256-bit
+            0b01,
+        );
+        try self.code.append(self.allocator, 0xA8);
+        try self.emitModRM(0b11, dst.encodeModRM(), src2.encodeModRM());
+    }
+
+    /// vfmadd213pd ymm1, ymm2, ymm3 - FMA: ymm1 = (ymm1 * ymm2) + ymm3 (4x64-bit)
+    pub fn vfmadd213pdYmmYmmYmm(self: *Assembler, dst: YmmRegister, src1: YmmRegister, src2: YmmRegister) !void {
+        // VEX.256.66.0F38.W1 A8 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            src2.needsRexPrefix(),
+            0b00010,
+            true,
+            @intFromEnum(src1),
+            true,
+            0b01,
+        );
+        try self.code.append(self.allocator, 0xA8);
+        try self.emitModRM(0b11, dst.encodeModRM(), src2.encodeModRM());
+    }
+
+    // ============ Horizontal Operations ============
+
+    /// haddps xmm1, xmm2 - Horizontal add packed single-precision
+    pub fn haddpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // F2 0F 7C /r
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x7C);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// haddpd xmm1, xmm2 - Horizontal add packed double-precision
+    pub fn haddpdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 7C /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x7C);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ============ Comparison Operations ============
+
+    /// cmpps xmm1, xmm2, imm8 - Compare packed single-precision
+    pub fn cmppsXmmXmmImm(self: *Assembler, dst: XmmRegister, src: XmmRegister, imm: u8) !void {
+        // 0F C2 /r ib
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xC2);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+        try self.code.append(self.allocator, imm);
+    }
+
+    /// cmppd xmm1, xmm2, imm8 - Compare packed double-precision
+    pub fn cmppdXmmXmmImm(self: *Assembler, dst: XmmRegister, src: XmmRegister, imm: u8) !void {
+        // 66 0F C2 /r ib
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xC2);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+        try self.code.append(self.allocator, imm);
+    }
+
+    // ============ Blend Operations ============
+
+    /// blendvps xmm1, xmm2, xmm0 - Blend packed single-precision using XMM0 mask
+    pub fn blendvpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 38 14 /r (mask in XMM0)
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x38);
+        try self.code.append(self.allocator, 0x14);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// blendvpd xmm1, xmm2, xmm0 - Blend packed double-precision using XMM0 mask
+    pub fn blendvpdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 38 15 /r (mask in XMM0)
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x38);
+        try self.code.append(self.allocator, 0x15);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ============ Min/Max Operations ============
+
+    /// minps xmm1, xmm2 - Minimum of packed single-precision
+    pub fn minpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 5D /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5D);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// maxps xmm1, xmm2 - Maximum of packed single-precision
+    pub fn maxpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 5F /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5F);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ============ Broadcast Operations ============
+
+    /// vbroadcastss xmm, m32 - Broadcast single float to all elements
+    pub fn vbroadcastssXmmMem(self: *Assembler, dst: XmmRegister, base: Register, offset: i32) !void {
+        // VEX.128.66.0F38.W0 18 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            base.needsRexPrefix(),
+            0b00010, // 0F38 map
+            false,
+            0, // vvvv unused
+            false, // L=0 for 128-bit
+            0b01,
+        );
+        try self.code.append(self.allocator, 0x18);
+        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// vbroadcastss ymm, m32 - Broadcast single float to all 8 elements
+    pub fn vbroadcastssYmmMem(self: *Assembler, dst: YmmRegister, base: Register, offset: i32) !void {
+        // VEX.256.66.0F38.W0 18 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            base.needsRexPrefix(),
+            0b00010,
+            false,
+            0,
+            true, // L=1 for 256-bit
+            0b01,
+        );
+        try self.code.append(self.allocator, 0x18);
+        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// vbroadcastsd ymm, m64 - Broadcast single double to all 4 elements
+    pub fn vbroadcastsdYmmMem(self: *Assembler, dst: YmmRegister, base: Register, offset: i32) !void {
+        // VEX.256.66.0F38.W0 19 /r
+        try self.emitVex3(
+            dst.needsRexPrefix(),
+            false,
+            base.needsRexPrefix(),
+            0b00010,
+            false,
+            0,
+            true,
+            0b01,
+        );
+        try self.code.append(self.allocator, 0x19);
+        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    // ============ Conversion Instructions ============
+
+    /// cvtdq2ps xmm, xmm - Convert packed i32 to f32
+    pub fn cvtdq2psXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 5B /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5B);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// cvtps2dq xmm, xmm - Convert packed f32 to i32 (truncate)
+    pub fn cvtps2dqXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 5B /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5B);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// cvtpd2ps xmm, xmm - Convert packed f64 to f32
+    pub fn cvtpd2psXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 5A /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5A);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// cvtps2pd xmm, xmm - Convert packed f32 to f64
+    pub fn cvtps2pdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 5A /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5A);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ============ Unaligned Load/Store ============
+
+    /// movups xmm, [base + offset] - Move unaligned packed single-precision
+    pub fn movupsXmmMem(self: *Assembler, dst: XmmRegister, base: Register, offset: i32) !void {
+        // 0F 10 /r
+        if (dst.needsRexPrefix() or base.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, base.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x10);
+        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// movups [base + offset], xmm - Store unaligned packed single-precision
+    pub fn movupsMemXmm(self: *Assembler, base: Register, offset: i32, src: XmmRegister) !void {
+        // 0F 11 /r
+        if (src.needsRexPrefix() or base.needsRexPrefix()) {
+            try self.emitRex(false, src.needsRexPrefix(), false, base.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x11);
+        try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// movdqu xmm, [base + offset] - Move unaligned 128-bit integer
+    pub fn movdquXmmMem(self: *Assembler, dst: XmmRegister, base: Register, offset: i32) !void {
+        // F3 0F 6F /r
+        try self.code.append(self.allocator, 0xF3);
+        if (dst.needsRexPrefix() or base.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, base.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x6F);
+        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    /// movdqu [base + offset], xmm - Store unaligned 128-bit integer
+    pub fn movdquMemXmm(self: *Assembler, base: Register, offset: i32, src: XmmRegister) !void {
+        // F3 0F 7F /r
+        try self.code.append(self.allocator, 0xF3);
+        if (src.needsRexPrefix() or base.needsRexPrefix()) {
+            try self.emitRex(false, src.needsRexPrefix(), false, base.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x7F);
+        try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
+        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+    }
+
+    // ============ Bit Manipulation ============
+
+    /// pslld xmm, imm8 - Shift left logical doubleword by immediate
+    pub fn pslldXmmImm(self: *Assembler, dst: XmmRegister, imm: u8) !void {
+        // 66 0F 72 /6 ib
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, dst.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x72);
+        try self.emitModRM(0b11, 6, dst.encodeModRM());
+        try self.code.append(self.allocator, imm);
+    }
+
+    /// psrld xmm, imm8 - Shift right logical doubleword by immediate
+    pub fn psrldXmmImm(self: *Assembler, dst: XmmRegister, imm: u8) !void {
+        // 66 0F 72 /2 ib
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, dst.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x72);
+        try self.emitModRM(0b11, 2, dst.encodeModRM());
+        try self.code.append(self.allocator, imm);
+    }
+
+    /// psrad xmm, imm8 - Shift right arithmetic doubleword by immediate
+    pub fn psradXmmImm(self: *Assembler, dst: XmmRegister, imm: u8) !void {
+        // 66 0F 72 /4 ib
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, dst.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x72);
+        try self.emitModRM(0b11, 4, dst.encodeModRM());
+        try self.code.append(self.allocator, imm);
+    }
+
+    /// pand xmm1, xmm2 - Bitwise AND
+    pub fn pandXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F DB /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xDB);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// por xmm1, xmm2 - Bitwise OR
+    pub fn porXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F EB /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xEB);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// pandn xmm1, xmm2 - Bitwise AND NOT (xmm1 = ~xmm1 & xmm2)
+    pub fn pandnXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F DF /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xDF);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ============ Absolute Value & Sign Manipulation ============
+
+    /// andps xmm1, xmm2 - Bitwise AND for floats (used for abs)
+    pub fn andpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 54 /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x54);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// andnps xmm1, xmm2 - Bitwise AND NOT for floats
+    pub fn andnpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 55 /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x55);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// orps xmm1, xmm2 - Bitwise OR for floats (used for sign manipulation)
+    pub fn orpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 56 /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x56);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// xorps xmm1, xmm2 - Bitwise XOR for floats (used for negation)
+    pub fn xorpsXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 0F 57 /r
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x57);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// pabsd xmm, xmm - Absolute value of packed i32 (SSSE3)
+    pub fn pabsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        // 66 0F 38 1E /r
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x38);
+        try self.code.append(self.allocator, 0x1E);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
 };
