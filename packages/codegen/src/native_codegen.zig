@@ -786,6 +786,76 @@ pub const NativeCodegen = struct {
 
     /// Check if a match statement is exhaustive
     /// Returns error if match is non-exhaustive
+    /// Helper function to recursively check pattern exhaustiveness
+    fn checkPatternExhaustiveness(
+        self: *NativeCodegen,
+        pattern: *ast.Pattern,
+        covered_variants: *std.ArrayList([]const u8),
+        match_enum_name: *?[]const u8,
+        has_wildcard: *bool,
+    ) CodegenError!void {
+        switch (pattern.*) {
+            .Identifier => |name| {
+                // Check if it's an enum variant or variable binding
+                var is_enum_variant = false;
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_name = entry.key_ptr.*;
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants) |v| {
+                        if (std.mem.eql(u8, v.name, name)) {
+                            is_enum_variant = true;
+                            match_enum_name.* = enum_name;
+                            try covered_variants.append(self.allocator, name);
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
+                if (!is_enum_variant) {
+                    // It's a variable binding, which is a catch-all
+                    has_wildcard.* = true;
+                }
+            },
+            .EnumVariant => |ev| {
+                // Track covered variant
+                try covered_variants.append(self.allocator, ev.variant);
+                // Determine which enum this belongs to
+                if (match_enum_name.* == null) {
+                    var enum_iter = self.enum_layouts.iterator();
+                    while (enum_iter.next()) |entry| {
+                        const enum_name = entry.key_ptr.*;
+                        const enum_layout = entry.value_ptr.*;
+                        for (enum_layout.variants) |v| {
+                            if (std.mem.eql(u8, v.name, ev.variant)) {
+                                match_enum_name.* = enum_name;
+                                break;
+                            }
+                        }
+                        if (match_enum_name.* != null) break;
+                    }
+                }
+            },
+            .Wildcard => {
+                has_wildcard.* = true;
+            },
+            .Or => |or_patterns| {
+                // For Or patterns, recursively check all alternatives
+                for (or_patterns) |alt_pattern| {
+                    try self.checkPatternExhaustiveness(alt_pattern, covered_variants, match_enum_name, has_wildcard);
+                }
+            },
+            .As => |as_pattern| {
+                // For As patterns, check the inner pattern
+                // The binding itself is a catch-all if it binds a variable
+                try self.checkPatternExhaustiveness(as_pattern.pattern, covered_variants, match_enum_name, has_wildcard);
+            },
+            else => {
+                // Other patterns don't contribute to exhaustiveness checking
+            },
+        }
+    }
+
     fn checkMatchExhaustiveness(self: *NativeCodegen, match_stmt: *ast.MatchStmt) CodegenError!void {
         // Check if there's a wildcard pattern (catch-all)
         var has_wildcard = false;
@@ -804,51 +874,7 @@ pub const NativeCodegen = struct {
         var match_enum_name: ?[]const u8 = null;
 
         for (match_stmt.arms) |arm| {
-            switch (arm.pattern.*) {
-                .Identifier => |name| {
-                    // Check if it's an enum variant or variable binding
-                    var is_enum_variant = false;
-                    var enum_iter = self.enum_layouts.iterator();
-                    while (enum_iter.next()) |entry| {
-                        const enum_name = entry.key_ptr.*;
-                        const enum_layout = entry.value_ptr.*;
-                        for (enum_layout.variants) |v| {
-                            if (std.mem.eql(u8, v.name, name)) {
-                                is_enum_variant = true;
-                                match_enum_name = enum_name;
-                                try covered_variants.append(self.allocator, name);
-                                break;
-                            }
-                        }
-                        if (is_enum_variant) break;
-                    }
-                    if (!is_enum_variant) {
-                        // It's a variable binding, which is a catch-all
-                        has_wildcard = true;
-                        break;
-                    }
-                },
-                .EnumVariant => |ev| {
-                    // Track covered variant
-                    try covered_variants.append(self.allocator, ev.variant);
-                    // Determine which enum this belongs to
-                    if (match_enum_name == null) {
-                        var enum_iter = self.enum_layouts.iterator();
-                        while (enum_iter.next()) |entry| {
-                            const enum_name = entry.key_ptr.*;
-                            const enum_layout = entry.value_ptr.*;
-                            for (enum_layout.variants) |v| {
-                                if (std.mem.eql(u8, v.name, ev.variant)) {
-                                    match_enum_name = enum_name;
-                                    break;
-                                }
-                            }
-                            if (match_enum_name != null) break;
-                        }
-                    }
-                },
-                else => {},
-            }
+            try self.checkPatternExhaustiveness(arm.pattern, &covered_variants, &match_enum_name, &has_wildcard);
         }
 
         if (has_wildcard) {
@@ -927,6 +953,32 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegImm64(.rax, 0);
                 try self.assembler.jneRel32(10);
                 try self.assembler.movRegImm64(.rax, 1);
+            },
+            .FloatLiteral => |float_val| {
+                // Compare value with float literal
+                // value_reg contains the float value as a u64 bit pattern
+                // Convert the float pattern literal to u64 bit pattern
+                const float_bits: u64 = @bitCast(float_val);
+
+                // Save value_reg if it's a register we need to use
+                const needs_save = (value_reg == .rcx or value_reg == .rdx);
+                const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+
+                if (needs_save) {
+                    try self.assembler.movRegReg(saved_reg, value_reg);
+                }
+
+                // Load expected float bits into rdx
+                try self.assembler.movRegImm64(.rdx, float_bits);
+
+                // Compare
+                const cmp_reg = if (needs_save) saved_reg else value_reg;
+                try self.assembler.cmpRegReg(cmp_reg, .rdx);
+
+                // Set rax based on comparison
+                try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                try self.assembler.jneRel32(10); // Skip next instruction if not equal
+                try self.assembler.movRegImm64(.rax, 1); // Match found
             },
             .StringLiteral => |str_val| {
                 // String comparison - compare the string values
@@ -1295,9 +1347,111 @@ pub const NativeCodegen = struct {
                 const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump_pos + 5));
                 try self.assembler.patchJmpRel32(success_jump_pos, success_offset);
             },
-            .Range, .Or, .As => {
-                // Complex patterns not implemented yet
+            .As => |as_pattern| {
+                // As pattern: pattern @ identifier
+                // First match the inner pattern, then bind the whole value to identifier
+                // The binding happens in bindPatternVariables(), here we just match
+                try self.generatePatternMatch(as_pattern.pattern.*, value_reg);
+                // Result is already in rax from the inner pattern match
+            },
+            .Or => |or_patterns| {
+                // Or pattern: pattern1 | pattern2 | pattern3
+                // Try each pattern until one matches
+                // value_reg contains the value to match against
+
+                if (or_patterns.len == 0) {
+                    // Empty or pattern always fails
+                    try self.assembler.movRegImm64(.rax, 0);
+                    return;
+                }
+
+                // Track jump positions for successful matches
+                var success_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                defer success_jumps.deinit(self.allocator);
+
+                // Try each alternative pattern
+                for (or_patterns, 0..) |alt_pattern, i| {
+                    // Try to match this alternative
+                    try self.generatePatternMatch(alt_pattern.*, value_reg);
+
+                    // Test if this alternative matched
+                    try self.assembler.testRegReg(.rax, .rax);
+
+                    if (i == or_patterns.len - 1) {
+                        // Last alternative - result is already in rax, we're done
+                        break;
+                    } else {
+                        // Not the last alternative - jump to success if matched
+                        const success_jump = self.assembler.getPosition();
+                        try self.assembler.jnzRel32(0); // Jump if not zero (pattern matched)
+                        try success_jumps.append(self.allocator, success_jump);
+                    }
+                }
+
+                // Patch all success jumps to here (end of Or pattern)
+                const end_pos = self.assembler.getPosition();
+                for (success_jumps.items) |jump_pos| {
+                    const offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jump_pos + 6));
+                    try self.assembler.patchJnzRel32(jump_pos, offset);
+                }
+            },
+            .Range => |range_pattern| {
+                // Range pattern: start..end or start..=end
+                // value_reg contains the value to check
+                // We need to evaluate start and end expressions and check if value is in range
+
+                // Save value_reg to r10 (we'll need it for comparisons)
+                try self.assembler.movRegReg(.r10, value_reg);
+
+                // Evaluate start expression
+                try self.generateExpr(range_pattern.start);
+                // start value is now in rax, move to r11
+                try self.assembler.movRegReg(.r11, .rax);
+
+                // Evaluate end expression
+                try self.generateExpr(range_pattern.end);
+                // end value is now in rax, move to r12
+                try self.assembler.movRegReg(.r12, .rax);
+
+                // Now check if r10 (value) is in range [r11, r12]
+                // First check: value >= start
+                try self.assembler.cmpRegReg(.r10, .r11);
+                const too_small_jump = self.assembler.getPosition();
+                try self.assembler.jlRel32(0); // Jump if less than
+
+                // Second check: value <= end (or value < end for exclusive range)
+                try self.assembler.cmpRegReg(.r10, .r12);
+                const too_large_jump = self.assembler.getPosition();
+                if (range_pattern.inclusive) {
+                    try self.assembler.jgRel32(0); // Jump if greater than (inclusive)
+                } else {
+                    try self.assembler.jgeRel32(0); // Jump if greater or equal (exclusive)
+                }
+
+                // Value is in range! Set rax = 1
+                try self.assembler.movRegImm64(.rax, 1);
+                const success_jump = self.assembler.getPosition();
+                try self.assembler.jmpRel32(0); // Jump to end
+
+                // Patch failure jumps to here
+                const fail_pos = self.assembler.getPosition();
+                const too_small_offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(too_small_jump + 6));
+                try self.assembler.patchJlRel32(too_small_jump, too_small_offset);
+
+                const too_large_offset = @as(i32, @intCast(fail_pos)) - @as(i32, @intCast(too_large_jump + 6));
+                if (range_pattern.inclusive) {
+                    try self.assembler.patchJgRel32(too_large_jump, too_large_offset);
+                } else {
+                    try self.assembler.patchJgeRel32(too_large_jump, too_large_offset);
+                }
+
+                // Value is not in range, set rax = 0
                 try self.assembler.movRegImm64(.rax, 0);
+
+                // Patch success jump to here (end)
+                const end_pos = self.assembler.getPosition();
+                const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump + 5));
+                try self.assembler.patchJmpRel32(success_jump, success_offset);
             },
             else => {
                 try self.assembler.movRegImm64(.rax, 0);
@@ -1434,10 +1588,35 @@ pub const NativeCodegen = struct {
                     try self.bindPatternVariables(field_pattern.pattern.*, .rcx);
                 }
             },
+            .As => |as_pattern| {
+                // As pattern: pattern @ identifier
+                // First bind the identifier to the whole value
+                try self.assembler.pushReg(value_reg);
+
+                const offset = self.next_local_offset;
+                self.next_local_offset += 1;
+
+                const name_copy = try self.allocator.dupe(u8, as_pattern.identifier);
+                errdefer self.allocator.free(name_copy);
+
+                try self.locals.put(name_copy, .{
+                    .offset = offset,
+                    .type_name = "i32", // Default type
+                    .size = 8,
+                });
+
+                // Then recursively bind variables from the inner pattern
+                try self.bindPatternVariables(as_pattern.pattern.*, value_reg);
+            },
             // Other pattern types don't bind variables
             .IntLiteral, .FloatLiteral, .StringLiteral, .BoolLiteral, .Wildcard => {},
+            .Or => {
+                // Or patterns can't bind variables because different alternatives
+                // might bind different sets of variables. This is typically enforced
+                // at the type-checking stage.
+            },
             // Complex patterns TODO
-            .Range, .Or, .As => {},
+            .Range => {},
         }
     }
 
