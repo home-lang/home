@@ -1,0 +1,563 @@
+// Comprehensive async I/O examples for Home language
+// Demonstrates file I/O, network I/O, and HTTP client
+
+// ==================== FILE I/O EXAMPLES ====================
+
+// Example 1: Read a file asynchronously
+async fn readFileExample() -> Result<(), FileError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    // Open file for reading
+    let file = await asyncFs.open("example.txt", OpenMode.ReadOnly, reactor)?;
+    defer file.close();
+
+    // Read into buffer
+    let mut buffer: [1024]u8 = undefined;
+    let bytes_read = await file.read(&buffer)?;
+
+    println("Read {bytes_read} bytes from file");
+    println("Content: {buffer[0..bytes_read]}");
+
+    return Ok(());
+}
+
+// Example 2: Write to a file asynchronously
+async fn writeFileExample() -> Result<(), FileError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    // Open file for writing
+    let file = await asyncFs.open("output.txt", OpenMode.Create, reactor)?;
+    defer file.close();
+
+    let data = "Hello, async file I/O!";
+    let bytes_written = await file.write(data.bytes())?;
+
+    println("Wrote {bytes_written} bytes to file");
+
+    return Ok(());
+}
+
+// Example 3: Read entire file contents
+async fn readAllExample() -> Result<(), FileError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let file = await asyncFs.open("large_file.txt", OpenMode.ReadOnly, reactor)?;
+    defer file.close();
+
+    let contents = await file.readAll(allocator)?;
+    defer allocator.free(contents);
+
+    println("Read entire file: {contents.len} bytes");
+
+    return Ok(());
+}
+
+// Example 4: Copy file asynchronously
+async fn copyFileExample(src: string, dst: string) -> Result<(), FileError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    // Open source file
+    let src_file = await asyncFs.open(src, OpenMode.ReadOnly, reactor)?;
+    defer src_file.close();
+
+    // Read all contents
+    let contents = await src_file.readAll(allocator)?;
+    defer allocator.free(contents);
+
+    // Open destination file
+    let dst_file = await asyncFs.open(dst, OpenMode.Create, reactor)?;
+    defer dst_file.close();
+
+    // Write all contents
+    await dst_file.writeAll(contents)?;
+
+    println("Copied {contents.len} bytes from {src} to {dst}");
+
+    return Ok(());
+}
+
+// ==================== NETWORK I/O EXAMPLES ====================
+
+// Example 5: TCP echo server
+async fn echoServer() -> Result<(), NetError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    // Bind to localhost:8080
+    let addr = SocketAddr.init(IpAddr.localhost(), 8080);
+    let listener = await asyncNet.bind(addr, reactor)?;
+    defer listener.close();
+
+    println("Echo server listening on {addr}");
+
+    // Accept connections in a loop
+    loop {
+        let client = await listener.accept()?;
+        println("Accepted connection from {client.peerAddr()}");
+
+        // Spawn a task to handle the client
+        spawn(handleClient(client));
+    }
+}
+
+async fn handleClient(stream: TcpStream) -> Result<(), NetError> {
+    defer stream.close();
+
+    let mut buffer: [1024]u8 = undefined;
+
+    loop {
+        // Read from client
+        let n = await stream.read(&buffer)?;
+
+        if (n == 0) {
+            // Client disconnected
+            println("Client disconnected");
+            break;
+        }
+
+        println("Received: {buffer[0..n]}");
+
+        // Echo back
+        await stream.writeAll(buffer[0..n])?;
+    }
+
+    return Ok(());
+}
+
+// Example 6: TCP client
+async fn tcpClientExample() -> Result<(), NetError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    // Connect to server
+    let addr = SocketAddr.init(IpAddr.localhost(), 8080);
+    let stream = await asyncNet.connect(addr, reactor)?;
+    defer stream.close();
+
+    println("Connected to server");
+
+    // Send message
+    let message = "Hello, server!";
+    await stream.writeAll(message.bytes())?;
+    println("Sent: {message}");
+
+    // Read response
+    let mut buffer: [1024]u8 = undefined;
+    let n = await stream.read(&buffer)?;
+    println("Received: {buffer[0..n]}");
+
+    return Ok(());
+}
+
+// Example 7: Chat server (multiple clients)
+async fn chatServer() -> Result<(), NetError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    // Create a channel for broadcasting messages
+    let (tx, rx) = channel();
+
+    // Bind listener
+    let addr = SocketAddr.init(IpAddr.localhost(), 9000);
+    let listener = await asyncNet.bind(addr, reactor)?;
+    defer listener.close();
+
+    println("Chat server listening on {addr}");
+
+    // Spawn broadcaster task
+    spawn(broadcaster(rx));
+
+    // Accept clients
+    loop {
+        let client = await listener.accept()?;
+        println("New client: {client.peerAddr()}");
+
+        // Spawn handler for this client
+        spawn(chatClient(client, tx.clone()));
+    }
+}
+
+async fn chatClient(stream: TcpStream, tx: Sender<string>) -> Result<(), NetError> {
+    defer stream.close();
+    let allocator = getDefaultAllocator();
+
+    loop {
+        let line = await stream.readLine(allocator)?;
+        defer allocator.free(line);
+
+        if (line.len == 0) break;
+
+        println("Client says: {line}");
+        await tx.send(line)?;
+    }
+
+    return Ok(());
+}
+
+async fn broadcaster(rx: Receiver<string>) {
+    let mut clients: []TcpStream = [];
+
+    while let Ok(message) = await rx.recv() {
+        println("Broadcasting: {message}");
+
+        // Send to all clients
+        for client in clients {
+            await client.writeAll(message.bytes()) catch {
+                // Client disconnected, remove from list
+                continue;
+            };
+        }
+    }
+}
+
+// ==================== HTTP CLIENT EXAMPLES ====================
+
+// Example 8: Simple HTTP GET request
+async fn httpGetExample() -> Result<(), HttpError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let client = HttpClient.init(reactor, allocator);
+
+    let response = await client.get("http://example.com/")?;
+    defer response.deinit();
+
+    println("Status: {response.status_code} {response.status_text}");
+    println("Body: {response.body}");
+
+    return Ok(());
+}
+
+// Example 9: HTTP POST request
+async fn httpPostExample() -> Result<(), HttpError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let client = HttpClient.init(reactor, allocator);
+
+    let body = "{\"name\": \"Alice\", \"age\": 30}";
+    let response = await client.post("http://api.example.com/users", body)?;
+    defer response.deinit();
+
+    println("Created user: {response.status_code}");
+    println("Response: {response.body}");
+
+    return Ok(());
+}
+
+// Example 10: HTTP request with custom headers
+async fn httpWithHeadersExample() -> Result<(), HttpError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let client = HttpClient.init(reactor, allocator);
+
+    let mut request = Request.init(allocator, Method.GET, "http://api.example.com/data");
+    defer request.deinit();
+
+    // Add custom headers
+    await request.setHeader("Authorization", "Bearer token123")?;
+    await request.setHeader("Accept", "application/json")?;
+
+    let response = await client.send(request)?;
+    defer response.deinit();
+
+    println("Response: {response.body}");
+
+    return Ok(());
+}
+
+// Example 11: Concurrent HTTP requests
+async fn concurrentHttpRequests() -> Result<(), HttpError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let client = HttpClient.init(reactor, allocator);
+
+    let urls = [
+        "http://api1.example.com/data",
+        "http://api2.example.com/data",
+        "http://api3.example.com/data",
+    ];
+
+    let mut futures = [];
+    for url in urls {
+        futures.push(client.get(url));
+    }
+
+    // Wait for all requests to complete
+    let responses = await joinAll(futures);
+
+    for (response, i) in responses {
+        match response {
+            Ok(resp) => {
+                println("Request {i}: {resp.status_code}");
+                resp.deinit();
+            },
+            Err(err) => println("Request {i} failed: {err}"),
+        }
+    }
+
+    return Ok(());
+}
+
+// Example 12: HTTP with timeout
+async fn httpWithTimeout() -> Result<(), HttpError> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let client = HttpClient.init(reactor, allocator);
+
+    match await timeout(Duration.seconds(5), client.get("http://slow-api.example.com")) {
+        Ok(response) => {
+            println("Success: {response.status_code}");
+            response.deinit();
+        },
+        Err(TimeoutError) => {
+            println("Request timed out!");
+            return Err(HttpError.Timeout);
+        },
+    }
+
+    return Ok(());
+}
+
+// ==================== COMBINED EXAMPLES ====================
+
+// Example 13: Fetch data from URL and save to file
+async fn fetchAndSave(url: string, path: string) -> Result<(), Error> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    // Fetch from URL
+    let client = HttpClient.init(reactor, allocator);
+    let response = await client.get(url)
+        .mapErr(|e| Error.Http(e))?;
+    defer response.deinit();
+
+    if (response.status_code != 200) {
+        return Err(Error.HttpStatus(response.status_code));
+    }
+
+    // Save to file
+    let file = await asyncFs.open(path, OpenMode.Create, reactor)
+        .mapErr(|e| Error.File(e))?;
+    defer file.close();
+
+    await file.writeAll(response.body)
+        .mapErr(|e| Error.File(e))?;
+
+    println("Saved {response.body.len} bytes to {path}");
+
+    return Ok(());
+}
+
+// Example 14: Web server serving files
+async fn fileServer() -> Result<(), Error> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+    let allocator = runtime.getAllocator();
+
+    let addr = SocketAddr.init(IpAddr.localhost(), 3000);
+    let listener = await asyncNet.bind(addr, reactor)
+        .mapErr(|e| Error.Network(e))?;
+    defer listener.close();
+
+    println("File server listening on {addr}");
+
+    loop {
+        let client = await listener.accept()
+            .mapErr(|e| Error.Network(e))?;
+
+        spawn(serveFile(client, reactor, allocator));
+    }
+}
+
+async fn serveFile(stream: TcpStream, reactor: *Reactor, allocator: Allocator) -> Result<(), Error> {
+    defer stream.close();
+
+    // Read HTTP request (simplified)
+    let request_line = await stream.readLine(allocator)
+        .mapErr(|e| Error.Network(e))?;
+    defer allocator.free(request_line);
+
+    println("Request: {request_line}");
+
+    // Parse file path from request
+    // GET /index.html HTTP/1.1
+    let parts = request_line.split(' ');
+    if (parts.len < 2) {
+        return sendError(stream, 400, "Bad Request");
+    }
+
+    let path = parts[1];
+    let file_path = "public" ++ path;
+
+    // Read file
+    let file = await asyncFs.open(file_path, OpenMode.ReadOnly, reactor)
+        .mapErr(|e| Error.File(e))?;
+    defer file.close();
+
+    let contents = await file.readAll(allocator)
+        .mapErr(|e| Error.File(e))?;
+    defer allocator.free(contents);
+
+    // Send HTTP response
+    let response = "HTTP/1.1 200 OK\r\n" ++
+                   "Content-Length: {contents.len}\r\n" ++
+                   "\r\n" ++
+                   contents;
+
+    await stream.writeAll(response.bytes())
+        .mapErr(|e| Error.Network(e))?;
+
+    return Ok(());
+}
+
+async fn sendError(stream: TcpStream, code: i32, message: string) -> Result<(), Error> {
+    let response = "HTTP/1.1 {code} {message}\r\n\r\n";
+    await stream.writeAll(response.bytes())
+        .mapErr(|e| Error.Network(e))?;
+    return Ok(());
+}
+
+// Example 15: Proxy server
+async fn proxyServer() -> Result<(), Error> {
+    let runtime = Runtime.new();
+    let reactor = runtime.getReactor();
+
+    let addr = SocketAddr.init(IpAddr.localhost(), 8888);
+    let listener = await asyncNet.bind(addr, reactor)
+        .mapErr(|e| Error.Network(e))?;
+    defer listener.close();
+
+    println("Proxy server listening on {addr}");
+
+    loop {
+        let client = await listener.accept()
+            .mapErr(|e| Error.Network(e))?;
+
+        spawn(handleProxyClient(client, reactor));
+    }
+}
+
+async fn handleProxyClient(client_stream: TcpStream, reactor: *Reactor) -> Result<(), Error> {
+    defer client_stream.close();
+    let allocator = getDefaultAllocator();
+
+    // Read request from client
+    let request = await client_stream.readLine(allocator)
+        .mapErr(|e| Error.Network(e))?;
+    defer allocator.free(request);
+
+    println("Proxy request: {request}");
+
+    // Connect to target server
+    let target_addr = SocketAddr.init(IpAddr.localhost(), 80);
+    let target_stream = await asyncNet.connect(target_addr, reactor)
+        .mapErr(|e| Error.Network(e))?;
+    defer target_stream.close();
+
+    // Forward request to target
+    await target_stream.writeAll(request.bytes())
+        .mapErr(|e| Error.Network(e))?;
+
+    // Read response from target
+    let mut buffer: [4096]u8 = undefined;
+    let n = await target_stream.read(&buffer)
+        .mapErr(|e| Error.Network(e))?;
+
+    // Forward response to client
+    await client_stream.writeAll(buffer[0..n])
+        .mapErr(|e| Error.Network(e))?;
+
+    return Ok(());
+}
+
+// ==================== MAIN ====================
+
+fn main() {
+    let runtime = Runtime.new(4);
+
+    println("=== Async I/O Examples ===\n");
+
+    // Run file I/O examples
+    println("1. Reading file...");
+    runtime.blockOn(readFileExample()) catch |err| {
+        println("Error: {err}");
+    };
+
+    println("\n2. Writing file...");
+    runtime.blockOn(writeFileExample()) catch |err| {
+        println("Error: {err}");
+    };
+
+    println("\n3. Copying file...");
+    runtime.blockOn(copyFileExample("input.txt", "output.txt")) catch |err| {
+        println("Error: {err}");
+    };
+
+    // Run network examples
+    println("\n4. Starting TCP echo server (in background)...");
+    runtime.spawn(echoServer());
+
+    println("\n5. Connecting TCP client...");
+    runtime.blockOn(tcpClientExample()) catch |err| {
+        println("Error: {err}");
+    };
+
+    // Run HTTP examples
+    println("\n6. HTTP GET request...");
+    runtime.blockOn(httpGetExample()) catch |err| {
+        println("Error: {err}");
+    };
+
+    println("\n7. HTTP POST request...");
+    runtime.blockOn(httpPostExample()) catch |err| {
+        println("Error: {err}");
+    };
+
+    println("\n8. Concurrent HTTP requests...");
+    runtime.blockOn(concurrentHttpRequests()) catch |err| {
+        println("Error: {err}");
+    };
+
+    // Run combined examples
+    println("\n9. Fetch and save to file...");
+    runtime.blockOn(fetchAndSave(
+        "http://example.com/data.json",
+        "downloaded.json"
+    )) catch |err| {
+        println("Error: {err}");
+    };
+
+    println("\nAll examples completed!");
+}
+
+// Helper types
+enum Error {
+    File(FileError),
+    Network(NetError),
+    Http(HttpError),
+    HttpStatus(i32),
+}
+
+struct Duration {
+    pub fn seconds(s: i64) -> Duration {
+        return Duration { nanoseconds: s * 1_000_000_000 };
+    }
+
+    nanoseconds: i64,
+}

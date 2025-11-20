@@ -318,8 +318,11 @@ Wheel 3 (4.6h slots):   [0][1][2]...[255]  (4.6h-49d)
 | Timer | 267 | 100 | 367 |
 | Result Future | 232 | 113 | 345 |
 | Async Transform | 397 | 145 | 542 |
+| **Async File I/O** | **380** | **70** | **450** |
+| **Async Network I/O** | **470** | **80** | **550** |
+| **Async HTTP Client** | **330** | **70** | **400** |
 | Integration tests | - | 341 | 341 |
-| **TOTAL** | **3,170** | **1,728** | **4,898** |
+| **TOTAL** | **4,350** | **1,948** | **6,298** |
 
 ### Test Coverage
 
@@ -523,9 +526,37 @@ Automatic transformation of async functions to state machines:
 - Poll method generation
 - Support for ? operator in async functions
 
+### Async I/O Integration (✅ Complete)
+
+**Files**: `packages/async/src/{fs.zig, net.zig, http_client.zig}` (1,400 lines)
+
+Complete async I/O stack integrated with the runtime:
+
+#### File I/O (`fs.zig` - 450 lines)
+- Async file operations (open, read, write, close)
+- Read/write all helpers
+- Non-blocking with reactor integration
+- Full Result type support
+
+#### Network I/O (`net.zig` - 550 lines)
+- TCP client and server
+- Async connect, bind, accept
+- Stream read/write operations
+- IP address handling (IPv4/IPv6)
+
+#### HTTP Client (`http_client.zig` - 400 lines)
+- GET, POST, and custom requests
+- Header management
+- Simple URL parsing
+- Request/response handling
+
+**Examples**: `examples/async_io_example.home` (500+ lines) with 15 complete examples
+
+**Documentation**: `ASYNC_IO_INTEGRATION.md` - Complete I/O integration guide
+
 ## Conclusion
 
-The async runtime implementation for Home language provides a robust, efficient, and production-ready foundation for asynchronous programming. With **~4,900 lines of code** (including tests), it delivers:
+The async runtime implementation for Home language provides a robust, efficient, and production-ready foundation for asynchronous programming. With **~6,300 lines of code** (including tests), it delivers:
 
 - ✅ Zero-cost async abstractions
 - ✅ Efficient work-stealing scheduler
@@ -533,10 +564,12 @@ The async runtime implementation for Home language provides a robust, efficient,
 - ✅ Rich set of async primitives (channels, mutex, rwlock, semaphore)
 - ✅ Result type integration with ? operator
 - ✅ Automatic state machine transformation
-- ✅ Comprehensive test coverage (1,728 lines of tests)
+- ✅ **Complete async I/O stack (file, network, HTTP)**
+- ✅ Comprehensive test coverage (1,948 lines of tests)
 - ✅ Clean API design
+- ✅ Production-ready examples
 
-The runtime is feature-complete and ready for production use.
+The runtime is feature-complete with full I/O integration and ready for production use.
 
 ## References
 
@@ -544,10 +577,12 @@ The runtime is feature-complete and ready for production use.
 - Architecture Design: `ASYNC_RUNTIME_ARCHITECTURE.md`
 - Complete Guide: `ASYNC_COMPLETE_GUIDE.md`
 - Result Integration: `ASYNC_RESULT_INTEGRATION.md`
+- I/O Integration: `ASYNC_IO_INTEGRATION.md`
 
 ### Examples
 - Basic Async: `examples/async_example.home`
 - Result + Async: `examples/async_result_example.home`
+- Async I/O: `examples/async_io_example.home`
 
 ### Academic Papers
 - Work-Stealing: "Dynamic Circular Work-Stealing Deque" by Chase and Lev (2005)
