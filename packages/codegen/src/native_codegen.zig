@@ -4,6 +4,8 @@ pub const x64 = @import("x64.zig");
 const elf = @import("elf.zig");
 const macho = @import("macho.zig");
 const builtin = @import("builtin");
+const type_checker_mod = @import("type_checker.zig");
+pub const TypeChecker = type_checker_mod.TypeChecker;
 
 /// Error set for code generation operations.
 ///
@@ -688,6 +690,36 @@ pub const NativeCodegen = struct {
 
         self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
+    }
+
+    /// Run type checking on the program before code generation.
+    ///
+    /// This validates:
+    /// - Function parameter types match at call sites
+    /// - Return types match function signatures
+    /// - Variable types are consistent with their usage
+    /// - Type annotations match inferred types
+    ///
+    /// Returns: true if type checking passed, false if there were errors
+    pub fn typeCheck(self: *NativeCodegen) !bool {
+        var checker = TypeChecker.init(self.allocator);
+        defer checker.deinit();
+
+        // Run type checking on the entire program
+        checker.checkProgram(self.program) catch |err| {
+            std.debug.print("Type checking failed with error: {}\n", .{err});
+            checker.printErrors();
+            return false;
+        };
+
+        // Check if there were any type errors
+        if (checker.hasErrors()) {
+            checker.printErrors();
+            return false;
+        }
+
+        std.debug.print("Type checking passed successfully!\n", .{});
+        return true;
     }
 
     /// Generate heap allocation code (bump allocator).
