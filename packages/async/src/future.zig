@@ -27,11 +27,11 @@ pub fn PollResult(comptime T: type) type {
 pub const Context = struct {
     waker: Waker,
 
-    pub fn init(waker: Waker) Context {
-        return .{ .waker = waker };
+    pub fn init(w: Waker) Context {
+        return .{ .waker = w };
     }
 
-    pub fn waker(self: *const Context) *const Waker {
+    pub fn getWaker(self: *const Context) *const Waker {
         return &self.waker;
     }
 };
@@ -406,10 +406,10 @@ test "Future - join" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut1 = try ready(i32, 10, allocator);
+    const fut1 = try ready(i32, 10, allocator);
     defer allocator.destroy(@as(*anyopaque, @ptrCast(fut1.state)));
 
-    var fut2 = try ready(i32, 20, allocator);
+    const fut2 = try ready(i32, 20, allocator);
     defer allocator.destroy(@as(*anyopaque, @ptrCast(fut2.state)));
 
     var joined = try join(i32, i32, allocator, fut1, fut2);
@@ -447,10 +447,10 @@ test "Future - select first" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut1 = try ready(i32, 42, allocator);
+    const fut1 = try ready(i32, 42, allocator);
     defer allocator.destroy(@as(*anyopaque, @ptrCast(fut1.state)));
 
-    var fut2 = try pending(i32, allocator);
+    const fut2 = try pending(i32, allocator);
     defer allocator.destroy(@as(*anyopaque, @ptrCast(fut2.state)));
 
     var selected = try select(i32, i32, allocator, fut1, fut2);

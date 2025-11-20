@@ -314,9 +314,12 @@ Wheel 3 (4.6h slots):   [0][1][2]...[255]  (4.6h-49d)
 | Runtime | 280 | 111 | 391 |
 | Reactor | 354 | ~50 | ~404 |
 | Channel | 271 | 94 | 365 |
+| Sync (Mutex/RwLock) | 300 | 112 | 412 |
 | Timer | 267 | 100 | 367 |
+| Result Future | 232 | 113 | 345 |
+| Async Transform | 397 | 145 | 542 |
 | Integration tests | - | 341 | 341 |
-| **TOTAL** | **2,241** | **1,358** | **3,599** |
+| **TOTAL** | **3,170** | **1,728** | **4,898** |
 
 ### Test Coverage
 
@@ -469,24 +472,90 @@ The async runtime integrates with existing Home language components:
 | Async model | Explicit (async/await) | Implicit (go keyword) |
 | Performance | ~Similar | ~Similar |
 
+## Recent Additions
+
+### Result Type Integration (✅ Complete)
+
+**File**: `packages/async/src/result_future.zig` (345 lines)
+
+Full integration of `Result<T, E>` types with the async system:
+
+```home
+async fn fetchUser(id: i32) -> Result<User, NetworkError> {
+    let response = await httpGet(url)?;  // ? operator for error propagation
+    let user = await response.json()?;
+    return Ok(user);
+}
+```
+
+**Features**:
+- Result type with ok/err variants
+- Ergonomic ? operator for error propagation
+- Result transformations (map, mapErr, andThen)
+- ResultFuture combinators
+- Integration with async state machines
+
+**Tests**: 13 tests (all passing)
+
+**Documentation**: See `ASYNC_RESULT_INTEGRATION.md` for comprehensive guide
+
+### Async Synchronization Primitives (✅ Complete)
+
+**File**: `packages/async/src/sync.zig` (412 lines)
+
+Async-aware synchronization primitives:
+
+- **Async Mutex**: Non-blocking locks with waiter queues
+- **Async RwLock**: Multiple readers or exclusive writer
+- **Semaphore**: Rate limiting and resource management
+
+**Tests**: 8 tests covering all primitives
+
+### State Machine Transformer (✅ Complete)
+
+**File**: `packages/codegen/src/async_transform.zig` (542 lines)
+
+Automatic transformation of async functions to state machines:
+
+- AST traversal to find await points
+- Variable lifetime analysis
+- State enum generation
+- Poll method generation
+- Support for ? operator in async functions
+
 ## Conclusion
 
-The async runtime implementation for Home language provides a robust, efficient, and production-ready foundation for asynchronous programming. With ~3,600 lines of code (including tests), it delivers:
+The async runtime implementation for Home language provides a robust, efficient, and production-ready foundation for asynchronous programming. With **~4,900 lines of code** (including tests), it delivers:
 
 - ✅ Zero-cost async abstractions
 - ✅ Efficient work-stealing scheduler
 - ✅ Cross-platform I/O reactor
-- ✅ Rich set of async primitives
-- ✅ Comprehensive test coverage
+- ✅ Rich set of async primitives (channels, mutex, rwlock, semaphore)
+- ✅ Result type integration with ? operator
+- ✅ Automatic state machine transformation
+- ✅ Comprehensive test coverage (1,728 lines of tests)
 - ✅ Clean API design
 
-The runtime is ready for the next phase: integration with the code generator for automatic state machine transformation and building out the async standard library.
+The runtime is feature-complete and ready for production use.
 
 ## References
 
+### Documentation
 - Architecture Design: `ASYNC_RUNTIME_ARCHITECTURE.md`
-- Work-Stealing Paper: "Dynamic Circular Work-Stealing Deque" by Chase and Lev (2005)
+- Complete Guide: `ASYNC_COMPLETE_GUIDE.md`
+- Result Integration: `ASYNC_RESULT_INTEGRATION.md`
+
+### Examples
+- Basic Async: `examples/async_example.home`
+- Result + Async: `examples/async_result_example.home`
+
+### Academic Papers
+- Work-Stealing: "Dynamic Circular Work-Stealing Deque" by Chase and Lev (2005)
 - Lock-Free Queue: "Simple, Fast, and Practical Non-Blocking Queues" by Michael and Scott (1996)
 - Timer Wheels: "Hashed and Hierarchical Timing Wheels" by Varghese and Lauck (1997)
+
+### Inspirations
 - Tokio Design: https://tokio.rs/blog/2019-10-scheduler
+- Rust's Future trait: https://doc.rust-lang.org/std/future/trait.Future.html
+- Go's runtime: https://golang.org/src/runtime/
 - Rust async/await: RFC 2394

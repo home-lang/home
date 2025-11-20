@@ -1,0 +1,397 @@
+// Comprehensive async/await example for Home language
+// Demonstrates: async functions, channels, futures, error handling, and concurrency
+
+// Example 1: Basic async function
+async fn fetchUserData(user_id: i32) -> Result<User, Error> {
+    // Simulate network delay
+    await sleep(Duration.millis(100));
+
+    if (user_id < 0) {
+        return Err(Error.InvalidUserId);
+    }
+
+    return Ok(User {
+        id: user_id,
+        name: "Alice",
+        email: "alice@example.com",
+    });
+}
+
+// Example 2: Async function with multiple await points
+async fn processUserData(user_id: i32) -> Result<ProcessedData, Error> {
+    // First await: fetch user
+    let user = await fetchUserData(user_id)?;
+
+    // Second await: fetch user's posts
+    let posts = await fetchUserPosts(user.id)?;
+
+    // Third await: fetch user's comments
+    let comments = await fetchUserComments(user.id)?;
+
+    // Process data
+    return Ok(ProcessedData {
+        user: user,
+        post_count: posts.len(),
+        comment_count: comments.len(),
+    });
+}
+
+// Example 3: Concurrent execution with join
+async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, Error> {
+    let mut futures = [];
+
+    // Start all fetches concurrently
+    for id in user_ids {
+        futures.push(fetchUserData(id));
+    }
+
+    // Wait for all to complete
+    let results = await joinAll(futures);
+
+    // Collect successful results
+    let mut users = [];
+    for result in results {
+        match result {
+            Ok(user) => users.push(user),
+            Err(err) => println("Error fetching user: {err}"),
+        }
+    }
+
+    return Ok(users);
+}
+
+// Example 4: Using channels for producer-consumer
+async fn producer(tx: Sender<i32>, count: i32) {
+    for i in 0..count {
+        await tx.send(i * 10)?;
+        await sleep(Duration.millis(50));
+    }
+    tx.close();
+}
+
+async fn consumer(rx: Receiver<i32>) -> i32 {
+    let mut sum = 0;
+
+    while let Ok(value) = await rx.recv() {
+        println("Received: {value}");
+        sum += value;
+    }
+
+    return sum;
+}
+
+async fn channelExample() -> i32 {
+    let (tx, rx) = channel();
+
+    // Spawn producer task
+    spawn(producer(tx, 10));
+
+    // Run consumer (returns sum)
+    return await consumer(rx);
+}
+
+// Example 5: Timeout and error handling
+async fn fetchWithTimeout(url: string) -> Result<Data, Error> {
+    match await timeout(Duration.seconds(5), httpGet(url)) {
+        Ok(response) => {
+            let data = await response.json()?;
+            return Ok(data);
+        },
+        Err(TimeoutError) => {
+            println("Request timed out!");
+            return Err(Error.Timeout);
+        },
+    }
+}
+
+// Example 6: Retry logic
+async fn fetchWithRetry(url: string, max_attempts: i32) -> Result<Data, Error> {
+    for attempt in 0..max_attempts {
+        match await fetchWithTimeout(url) {
+            Ok(data) => return Ok(data),
+            Err(err) => {
+                if (attempt == max_attempts - 1) {
+                    return Err(err);
+                }
+
+                println("Attempt {attempt + 1} failed, retrying...");
+                await sleep(Duration.seconds(1));
+            },
+        }
+    }
+
+    return Err(Error.MaxRetriesExceeded);
+}
+
+// Example 7: Select (race between futures)
+async fn firstToComplete() -> Result<Data, Error> {
+    let primary = fetchData("https://primary.api.com");
+    let backup = fetchData("https://backup.api.com");
+
+    // Return whichever completes first
+    return await select! {
+        result = primary => result,
+        result = backup => result,
+    };
+}
+
+// Example 8: Async mutex for shared state
+async fn updateCounter(mutex: &Mutex<i32>, increment: i32) {
+    let guard = await mutex.lock();
+    guard.get().* += increment;
+    // Guard automatically unlocks when dropped
+}
+
+async fn sharedStateExample() -> i32 {
+    let counter = Mutex.new(0);
+
+    // Spawn 10 tasks that increment the counter
+    let mut handles = [];
+    for i in 0..10 {
+        handles.push(spawn(updateCounter(&counter, i)));
+    }
+
+    // Wait for all tasks
+    for handle in handles {
+        await handle.join();
+    }
+
+    // Get final value
+    let guard = await counter.lock();
+    return guard.get().*;
+}
+
+// Example 9: Async read-write lock
+async fn readWriteExample() {
+    let data = RwLock.new(vec![1, 2, 3]);
+
+    // Multiple readers can access concurrently
+    let reader1 = spawn(async {
+        let guard = await data.read();
+        println("Reader 1: {guard.get()}");
+    });
+
+    let reader2 = spawn(async {
+        let guard = await data.read();
+        println("Reader 2: {guard.get()}");
+    });
+
+    await join(reader1, reader2);
+
+    // Exclusive writer
+    {
+        let guard = await data.write();
+        guard.get().push(4);
+    }
+}
+
+// Example 10: Semaphore for rate limiting
+async fn rateLimitedRequest(url: string, semaphore: &Semaphore) -> Result<Data, Error> {
+    // Wait for permit
+    await semaphore.acquire();
+
+    // Make request
+    let result = await httpGet(url);
+
+    // Release permit
+    semaphore.release();
+
+    return result?.json();
+}
+
+async fn rateLimitingExample() {
+    let semaphore = Semaphore.new(3); // Max 3 concurrent requests
+
+    let urls = [
+        "https://api.example.com/1",
+        "https://api.example.com/2",
+        "https://api.example.com/3",
+        "https://api.example.com/4",
+        "https://api.example.com/5",
+    ];
+
+    let mut futures = [];
+    for url in urls {
+        futures.push(rateLimitedRequest(url, &semaphore));
+    }
+
+    let results = await joinAll(futures);
+    println("Fetched {results.len()} items");
+}
+
+// Example 11: Async trait implementation
+trait AsyncReader {
+    async fn read(&mut self) -> Result<Vec<u8>, Error>;
+}
+
+struct FileReader {
+    path: string,
+}
+
+impl AsyncReader for FileReader {
+    async fn read(&mut self) -> Result<Vec<u8>, Error> {
+        let file = await asyncFs.open(self.path)?;
+        let contents = await file.readAll()?;
+        return Ok(contents);
+    }
+}
+
+// Example 12: Complex async workflow
+async fn complexWorkflow(user_id: i32) -> Result<Report, Error> {
+    // Fetch user data
+    let user = await fetchUserData(user_id)?;
+
+    // Fetch related data concurrently
+    let (posts, comments, likes) = await join3(
+        fetchUserPosts(user.id),
+        fetchUserComments(user.id),
+        fetchUserLikes(user.id),
+    );
+
+    let posts = posts?;
+    let comments = comments?;
+    let likes = likes?;
+
+    // Process in background
+    let analysis_future = spawn(async {
+        return await analyzeUserBehavior(posts, comments, likes);
+    });
+
+    // Generate report while analysis runs
+    let mut report = Report.new(user);
+
+    // Wait for analysis
+    let analysis = await analysis_future.join();
+    report.addAnalysis(analysis);
+
+    return Ok(report);
+}
+
+// Main function demonstrating usage
+fn main() {
+    // Create runtime with 4 worker threads
+    let runtime = Runtime.new(4);
+
+    // Example 1: Simple async execution
+    let user_result = runtime.blockOn(fetchUserData(123));
+    match user_result {
+        Ok(user) => println("User: {user.name}"),
+        Err(err) => println("Error: {err}"),
+    }
+
+    // Example 2: Channel communication
+    let sum = runtime.blockOn(channelExample());
+    println("Sum from channel: {sum}");
+
+    // Example 3: Concurrent fetching
+    let user_ids = [1, 2, 3, 4, 5];
+    let users = runtime.blockOn(fetchMultipleUsers(user_ids));
+    println("Fetched {users.len()} users");
+
+    // Example 4: Shared state
+    let final_count = runtime.blockOn(sharedStateExample());
+    println("Final counter: {final_count}");
+
+    // Example 5: Run multiple async tasks
+    runtime.spawn(rateLimitingExample());
+    runtime.spawn(readWriteExample());
+
+    // Run until all tasks complete
+    runtime.run();
+
+    println("All async tasks completed!");
+}
+
+// Helper types and functions
+struct User {
+    id: i32,
+    name: string,
+    email: string,
+}
+
+struct ProcessedData {
+    user: User,
+    post_count: i32,
+    comment_count: i32,
+}
+
+struct Post {
+    id: i32,
+    title: string,
+    content: string,
+}
+
+struct Comment {
+    id: i32,
+    text: string,
+}
+
+struct Data {
+    // Generic data structure
+}
+
+struct Report {
+    user: User,
+    analysis: ?Analysis,
+}
+
+struct Analysis {
+    // Analysis results
+}
+
+enum Error {
+    InvalidUserId,
+    NetworkError,
+    Timeout,
+    MaxRetriesExceeded,
+}
+
+struct Duration {
+    pub fn millis(ms: i64) -> Duration {
+        return Duration { nanoseconds: ms * 1_000_000 };
+    }
+
+    pub fn seconds(s: i64) -> Duration {
+        return Duration { nanoseconds: s * 1_000_000_000 };
+    }
+
+    nanoseconds: i64,
+}
+
+// Placeholder implementations
+async fn fetchUserPosts(user_id: i32) -> Result<[]Post, Error> {
+    await sleep(Duration.millis(50));
+    return Ok([]);
+}
+
+async fn fetchUserComments(user_id: i32) -> Result<[]Comment, Error> {
+    await sleep(Duration.millis(50));
+    return Ok([]);
+}
+
+async fn fetchUserLikes(user_id: i32) -> Result<i32, Error> {
+    await sleep(Duration.millis(50));
+    return Ok(42);
+}
+
+async fn fetchData(url: string) -> Result<Data, Error> {
+    await sleep(Duration.millis(100));
+    return Ok(Data{});
+}
+
+async fn httpGet(url: string) -> Result<HttpResponse, Error> {
+    await sleep(Duration.millis(100));
+    return Ok(HttpResponse{});
+}
+
+struct HttpResponse {
+    pub async fn json(self) -> Result<Data, Error> {
+        await sleep(Duration.millis(10));
+        return Ok(Data{});
+    }
+}
+
+async fn analyzeUserBehavior(posts: []Post, comments: []Comment, likes: i32) -> Analysis {
+    await sleep(Duration.millis(200));
+    return Analysis{};
+}

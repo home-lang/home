@@ -1,0 +1,435 @@
+// Comprehensive async/await + Result type integration example
+// Demonstrates error handling with ? operator in async functions
+
+// Define error types
+enum NetworkError {
+    ConnectionFailed,
+    Timeout,
+    InvalidResponse,
+    NotFound,
+}
+
+enum DatabaseError {
+    ConnectionFailed,
+    QueryFailed,
+    RecordNotFound,
+}
+
+enum AppError {
+    Network(NetworkError),
+    Database(DatabaseError),
+    ValidationError(string),
+    Unknown(string),
+}
+
+// Basic structs
+struct User {
+    id: i32,
+    name: string,
+    email: string,
+}
+
+struct Post {
+    id: i32,
+    user_id: i32,
+    title: string,
+    content: string,
+}
+
+struct ApiResponse {
+    status: i32,
+    data: string,
+}
+
+// Example 1: Basic async function with Result and ? operator
+async fn fetchUser(user_id: i32) -> Result<User, NetworkError> {
+    // Simulate network delay
+    await sleep(Duration.millis(100));
+
+    if (user_id < 0) {
+        return Err(NetworkError.InvalidResponse);
+    }
+
+    if (user_id > 1000) {
+        return Err(NetworkError.NotFound);
+    }
+
+    return Ok(User {
+        id: user_id,
+        name: "Alice",
+        email: "alice@example.com",
+    });
+}
+
+// Example 2: Using ? operator to propagate errors
+async fn getUserName(user_id: i32) -> Result<string, NetworkError> {
+    // The ? operator automatically propagates NetworkError
+    let user = await fetchUser(user_id)?;
+
+    return Ok(user.name);
+}
+
+// Example 3: Chaining multiple async operations with ?
+async fn getUserPosts(user_id: i32) -> Result<[]Post, AppError> {
+    // Fetch user first
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Fetch posts for the user
+    let posts = await fetchPostsForUser(user.id)
+        .mapErr(|e| AppError.Database(e))?;
+
+    return Ok(posts);
+}
+
+// Example 4: Complex error handling with multiple error types
+async fn processUserData(user_id: i32) -> Result<ProcessedData, AppError> {
+    // Step 1: Validate input
+    if (user_id < 0) {
+        return Err(AppError.ValidationError("Invalid user ID"));
+    }
+
+    // Step 2: Fetch user (can fail with NetworkError)
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Step 3: Fetch posts (can fail with DatabaseError)
+    let posts = await fetchPostsForUser(user.id)
+        .mapErr(|e| AppError.Database(e))?;
+
+    // Step 4: Fetch comments (can fail with DatabaseError)
+    let comments = await fetchCommentsForUser(user.id)
+        .mapErr(|e| AppError.Database(e))?;
+
+    // All operations succeeded
+    return Ok(ProcessedData {
+        user: user,
+        post_count: posts.len(),
+        comment_count: comments.len(),
+    });
+}
+
+// Example 5: Parallel operations with Result
+async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, NetworkError> {
+    let mut futures = [];
+
+    // Start all fetches concurrently
+    for id in user_ids {
+        futures.push(fetchUser(id));
+    }
+
+    // Wait for all to complete
+    let results = await joinAll(futures);
+
+    // Collect results, propagating first error
+    let mut users = [];
+    for result in results {
+        // ? operator propagates the error
+        users.push(result?);
+    }
+
+    return Ok(users);
+}
+
+// Example 6: Timeout with Result
+async fn fetchUserWithTimeout(user_id: i32) -> Result<User, NetworkError> {
+    match await timeout(Duration.seconds(5), fetchUser(user_id)) {
+        Ok(result) => return result, // Result<User, NetworkError>
+        Err(TimeoutError) => return Err(NetworkError.Timeout),
+    }
+}
+
+// Example 7: Retry logic with Result
+async fn fetchUserWithRetry(user_id: i32, max_attempts: i32) -> Result<User, NetworkError> {
+    for attempt in 0..max_attempts {
+        match await fetchUser(user_id) {
+            Ok(user) => return Ok(user),
+            Err(err) => {
+                if (attempt == max_attempts - 1) {
+                    return Err(err);
+                }
+
+                // Wait before retry
+                await sleep(Duration.seconds(1));
+            },
+        }
+    }
+
+    // This is unreachable but required for type checking
+    return Err(NetworkError.Unknown);
+}
+
+// Example 8: Converting between error types
+async fn fetchAndStore(user_id: i32) -> Result<(), AppError> {
+    // Fetch from network (NetworkError)
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Store in database (DatabaseError)
+    await storeUser(user)
+        .mapErr(|e| AppError.Database(e))?;
+
+    return Ok(());
+}
+
+// Example 9: Early return pattern with ?
+async fn validateAndFetch(user_id: i32) -> Result<User, AppError> {
+    // Multiple validation steps, each can return early
+
+    if (user_id < 0) {
+        return Err(AppError.ValidationError("ID cannot be negative"));
+    }
+
+    if (user_id == 0) {
+        return Err(AppError.ValidationError("ID cannot be zero"));
+    }
+
+    // Check if user exists in cache
+    if let Some(cached) = await checkCache(user_id) {
+        return Ok(cached);
+    }
+
+    // Not in cache, fetch from network
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Store in cache for next time
+    await updateCache(user);
+
+    return Ok(user);
+}
+
+// Example 10: Fallback pattern
+async fn fetchUserWithFallback(user_id: i32) -> Result<User, NetworkError> {
+    // Try primary server
+    match await fetchUser(user_id) {
+        Ok(user) => return Ok(user),
+        Err(NetworkError.ConnectionFailed) => {
+            // Try backup server
+            return await fetchUserFromBackup(user_id);
+        },
+        Err(err) => return Err(err),
+    }
+}
+
+// Example 11: Selective error handling
+async fn smartFetch(user_id: i32) -> Result<User, NetworkError> {
+    match await fetchUser(user_id) {
+        Ok(user) => Ok(user),
+        Err(NetworkError.NotFound) => {
+            // Create default user for NotFound
+            Ok(User {
+                id: user_id,
+                name: "Guest",
+                email: "guest@example.com",
+            })
+        },
+        Err(err) => Err(err), // Propagate other errors
+    }
+}
+
+// Example 12: Combining multiple Results
+async fn aggregateUserData(user_ids: []i32) -> Result<AggregateData, AppError> {
+    let mut total_posts = 0;
+    let mut total_comments = 0;
+    let mut successful_users = 0;
+
+    for user_id in user_ids {
+        // Continue on error instead of propagating
+        match await getUserPosts(user_id) {
+            Ok(posts) => {
+                total_posts += posts.len();
+                successful_users += 1;
+            },
+            Err(err) => {
+                println("Failed to fetch posts for user {user_id}: {err}");
+                // Continue processing other users
+            },
+        }
+    }
+
+    return Ok(AggregateData {
+        total_posts: total_posts,
+        successful_users: successful_users,
+    });
+}
+
+// Example 13: Nested async with Result
+async fn complexWorkflow(user_id: i32) -> Result<Report, AppError> {
+    // Fetch user
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Spawn background tasks
+    let posts_future = spawn(fetchPostsForUser(user.id));
+    let comments_future = spawn(fetchCommentsForUser(user.id));
+    let likes_future = spawn(fetchLikesForUser(user.id));
+
+    // Wait for all background tasks
+    let (posts_result, comments_result, likes_result) = await join3(
+        posts_future.join(),
+        comments_future.join(),
+        likes_future.join(),
+    );
+
+    // Extract results with ?
+    let posts = posts_result.mapErr(|e| AppError.Database(e))?;
+    let comments = comments_result.mapErr(|e| AppError.Database(e))?;
+    let likes = likes_result.mapErr(|e| AppError.Database(e))?;
+
+    // Generate report
+    return Ok(Report {
+        user: user,
+        posts: posts,
+        comments: comments,
+        likes: likes,
+    });
+}
+
+// Example 14: Result with async mutex
+async fn updateUserSafely(
+    user_id: i32,
+    cache: &Mutex<HashMap<i32, User>>,
+) -> Result<(), AppError> {
+    // Fetch user
+    let user = await fetchUser(user_id)
+        .mapErr(|e| AppError.Network(e))?;
+
+    // Acquire lock and update cache
+    let guard = await cache.lock();
+    guard.get().insert(user.id, user);
+
+    return Ok(());
+}
+
+// Example 15: Channels with Result
+async fn processUserQueue(
+    rx: Receiver<i32>,
+    tx: Sender<Result<User, NetworkError>>,
+) {
+    while let Ok(user_id) = await rx.recv() {
+        // Fetch user and send result (including errors)
+        let result = await fetchUser(user_id);
+        await tx.send(result)?;
+    }
+}
+
+// Main function demonstrating usage
+fn main() {
+    let runtime = Runtime.new(4);
+
+    // Example 1: Basic usage
+    match runtime.blockOn(fetchUser(123)) {
+        Ok(user) => println("User: {user.name}"),
+        Err(NetworkError.NotFound) => println("User not found"),
+        Err(err) => println("Error: {err}"),
+    }
+
+    // Example 2: Using ? in async context
+    let name_result = runtime.blockOn(getUserName(123));
+    match name_result {
+        Ok(name) => println("User name: {name}"),
+        Err(err) => println("Error: {err}"),
+    }
+
+    // Example 3: Complex error handling
+    let processed = runtime.blockOn(processUserData(123));
+    match processed {
+        Ok(data) => println("Processed: {data.post_count} posts"),
+        Err(AppError.Network(err)) => println("Network error: {err}"),
+        Err(AppError.Database(err)) => println("Database error: {err}"),
+        Err(AppError.ValidationError(msg)) => println("Validation: {msg}"),
+        Err(err) => println("Unknown error: {err}"),
+    }
+
+    // Example 4: Parallel operations
+    let user_ids = [1, 2, 3, 4, 5];
+    match runtime.blockOn(fetchMultipleUsers(user_ids)) {
+        Ok(users) => println("Fetched {users.len()} users"),
+        Err(err) => println("Failed to fetch users: {err}"),
+    }
+
+    // Example 5: Timeout and retry
+    let user_result = runtime.blockOn(fetchUserWithRetry(123, 3));
+    match user_result {
+        Ok(user) => println("Got user after retries: {user.name}"),
+        Err(err) => println("Failed after retries: {err}"),
+    }
+
+    println("All async operations with Result completed!");
+}
+
+// Helper types
+struct ProcessedData {
+    user: User,
+    post_count: i32,
+    comment_count: i32,
+}
+
+struct AggregateData {
+    total_posts: i32,
+    successful_users: i32,
+}
+
+struct Report {
+    user: User,
+    posts: []Post,
+    comments: []Comment,
+    likes: i32,
+}
+
+struct Comment {
+    id: i32,
+    text: string,
+}
+
+// Placeholder implementations
+async fn fetchPostsForUser(user_id: i32) -> Result<[]Post, DatabaseError> {
+    await sleep(Duration.millis(50));
+    return Ok([]);
+}
+
+async fn fetchCommentsForUser(user_id: i32) -> Result<[]Comment, DatabaseError> {
+    await sleep(Duration.millis(50));
+    return Ok([]);
+}
+
+async fn fetchLikesForUser(user_id: i32) -> Result<i32, DatabaseError> {
+    await sleep(Duration.millis(50));
+    return Ok(42);
+}
+
+async fn storeUser(user: User) -> Result<(), DatabaseError> {
+    await sleep(Duration.millis(100));
+    return Ok(());
+}
+
+async fn checkCache(user_id: i32) -> Option<User> {
+    await sleep(Duration.millis(10));
+    return None;
+}
+
+async fn updateCache(user: User) {
+    await sleep(Duration.millis(10));
+}
+
+async fn fetchUserFromBackup(user_id: i32) -> Result<User, NetworkError> {
+    await sleep(Duration.millis(200));
+    return Ok(User {
+        id: user_id,
+        name: "Backup User",
+        email: "backup@example.com",
+    });
+}
+
+struct Duration {
+    pub fn millis(ms: i64) -> Duration {
+        return Duration { nanoseconds: ms * 1_000_000 };
+    }
+
+    pub fn seconds(s: i64) -> Duration {
+        return Duration { nanoseconds: s * 1_000_000_000 };
+    }
+
+    nanoseconds: i64,
+}
