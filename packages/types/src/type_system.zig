@@ -276,10 +276,7 @@ pub const Type = union(enum) {
                 const tv2 = other.TypeVar;
                 return tv1.id == tv2.id;
             },
-            .Int, .I8, .I16, .I32, .I64, .I128,
-            .U8, .U16, .U32, .U64, .U128,
-            .Float, .F32, .F64,
-            .Bool, .String, .Void => true,
+            .Int, .I8, .I16, .I32, .I64, .I128, .U8, .U16, .U32, .U64, .U128, .Float, .F32, .F64, .Bool, .String, .Void => true,
             .Array => |a1| {
                 const a2 = other.Array;
                 return a1.element_type.equals(a2.element_type.*);
@@ -417,9 +414,9 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .program = program,
             .env = TypeEnvironment.init(allocator),
-            .errors = .empty,
-            .allocated_types = .empty,
-            .allocated_slices = .empty,
+            .errors = std.ArrayList(TypeErrorInfo).init(allocator),
+            .allocated_types = std.ArrayList(*Type).init(allocator),
+            .allocated_slices = std.ArrayList([]Type).init(allocator),
             // .ownership_tracker = ownership.OwnershipTracker.init(allocator), // TODO: Implement
         };
     }
@@ -1258,7 +1255,7 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "f64")) return Type.F64;
         if (std.mem.eql(u8, name, "bool")) return Type.Bool;
         if (std.mem.eql(u8, name, "string")) return Type.String;
-        if (std.mem.eql(u8, name, "str")) return Type.String;  // Allow both string and str
+        if (std.mem.eql(u8, name, "str")) return Type.String; // Allow both string and str
         if (std.mem.eql(u8, name, "void")) return Type.Void;
 
         // Check if it's a reference type

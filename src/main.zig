@@ -512,31 +512,30 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     const program = try parser.parse();
 
     // Type check (unless disabled or kernel mode)
-    // TODO: Fix TypeChecker segfault before re-enabling
-    // if (!kernel_mode) {
-    //     std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    if (!kernel_mode) {
+        std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-    //     var type_checker = TypeChecker.init(allocator, program);
-    //     defer type_checker.deinit();
+        var type_checker = TypeChecker.init(allocator, program);
+        defer type_checker.deinit();
 
-    //     const type_check_passed = try type_checker.check();
+        const type_check_passed = try type_checker.check();
 
-    //     if (!type_check_passed) {
-    //         std.debug.print("{s}Type Errors:{s}\n", .{ Color.Red.code(), Color.Reset.code() });
-    //         for (type_checker.errors.items) |err_info| {
-    //             std.debug.print("  {s}Error:{s} {s} (line {d}, col {d})\n", .{
-    //                 Color.Red.code(),
-    //                 Color.Reset.code(),
-    //                 err_info.message,
-    //                 err_info.loc.line,
-    //                 err_info.loc.column,
-    //             });
-    //         }
-    //         std.process.exit(1);
-    //     }
+        if (!type_check_passed) {
+            std.debug.print("{s}Type Errors:{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+            for (type_checker.errors.items) |err_info| {
+                std.debug.print("  {s}Error:{s} {s} (line {d}, col {d})\n", .{
+                    Color.Red.code(),
+                    Color.Reset.code(),
+                    err_info.message,
+                    err_info.loc.line,
+                    err_info.loc.column,
+                });
+            }
+            std.process.exit(1);
+        }
 
-    //     std.debug.print("{s}Type check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
-    // }
+        std.debug.print("{s}Type check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
 
     if (kernel_mode) {
         // Kernel mode: generate assembly
