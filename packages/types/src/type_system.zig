@@ -417,9 +417,9 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .program = program,
             .env = TypeEnvironment.init(allocator),
-            .errors = std.ArrayList(TypeErrorInfo){},
-            .allocated_types = std.ArrayList(*Type){},
-            .allocated_slices = std.ArrayList([]Type){},
+            .errors = .empty,
+            .allocated_types = .empty,
+            .allocated_slices = .empty,
             // .ownership_tracker = ownership.OwnershipTracker.init(allocator), // TODO: Implement
         };
     }
@@ -1243,9 +1243,22 @@ pub const TypeChecker = struct {
     fn parseTypeName(self: *TypeChecker, name: []const u8) !Type {
         // Built-in primitive types
         if (std.mem.eql(u8, name, "int")) return Type.Int;
+        if (std.mem.eql(u8, name, "i8")) return Type.I8;
+        if (std.mem.eql(u8, name, "i16")) return Type.I16;
+        if (std.mem.eql(u8, name, "i32")) return Type.I32;
+        if (std.mem.eql(u8, name, "i64")) return Type.I64;
+        if (std.mem.eql(u8, name, "i128")) return Type.I128;
+        if (std.mem.eql(u8, name, "u8")) return Type.U8;
+        if (std.mem.eql(u8, name, "u16")) return Type.U16;
+        if (std.mem.eql(u8, name, "u32")) return Type.U32;
+        if (std.mem.eql(u8, name, "u64")) return Type.U64;
+        if (std.mem.eql(u8, name, "u128")) return Type.U128;
         if (std.mem.eql(u8, name, "float")) return Type.Float;
+        if (std.mem.eql(u8, name, "f32")) return Type.F32;
+        if (std.mem.eql(u8, name, "f64")) return Type.F64;
         if (std.mem.eql(u8, name, "bool")) return Type.Bool;
         if (std.mem.eql(u8, name, "string")) return Type.String;
+        if (std.mem.eql(u8, name, "str")) return Type.String;  // Allow both string and str
         if (std.mem.eql(u8, name, "void")) return Type.Void;
 
         // Check if it's a reference type

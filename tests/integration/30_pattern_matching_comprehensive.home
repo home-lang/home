@@ -1,0 +1,49 @@
+// Comprehensive Pattern Matching Tests
+
+enum Option {
+    Some(i32),
+    None
+}
+
+fn test_enum_patterns(): i32 {
+    let opt: Option = Option.Some(42);
+    match (opt) {
+        Some(x) => x,
+        None => 0,
+    }
+}
+
+fn test_bare_enum_patterns(): i32 {
+    let opt: Option = Option.None;
+    match (opt) {
+        None => 99,
+        Some(x) => x,
+    }
+}
+
+fn test_int_patterns(): i32 {
+    let x = 10;
+    match (x) {
+        10 => 42,
+        20 => 99,
+        _ => 0,
+    }
+}
+
+fn test_bool_patterns(): i32 {
+    let b = true;
+    match (b) {
+        true => 42,
+        false => 0,
+    }
+}
+
+fn main(): i32 {
+    let r1 = test_enum_patterns();      // 42
+    let r2 = test_bare_enum_patterns(); // 99
+    let r3 = test_int_patterns();       // 42
+    let r4 = test_bool_patterns();      // 42
+    
+    // Sum: 42+99+42+42 = 225
+    r1 + r2 + r3 + r4
+}

@@ -11,6 +11,7 @@ const std = @import("std");
 // Export core types
 pub const Collection = @import("collection.zig").Collection;
 pub const LazyCollection = @import("lazy_collection.zig").LazyCollection;
+pub const HashMap = @import("hash_map.zig").HashMap;
 
 // Export traits
 pub const traits = @import("traits.zig");

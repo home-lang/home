@@ -408,28 +408,58 @@ pub const NativeCodegen = struct {
             }
         }
 
-        // If there's a wildcard or identifier pattern, match is exhaustive
+        // Check for variable binding patterns (also catch-all)
+        // and collect covered enum variants
+        var covered_variants = std.ArrayList([]const u8){};
+        defer covered_variants.deinit(self.allocator);
+
+        var match_enum_name: ?[]const u8 = null;
+
         for (match_stmt.arms) |arm| {
-            if (arm.pattern.* == .Identifier) {
-                // Check if it's an enum variant or variable binding
-                const name = arm.pattern.Identifier;
-                var is_enum_variant = false;
-                var enum_iter = self.enum_layouts.iterator();
-                while (enum_iter.next()) |entry| {
-                    const enum_layout = entry.value_ptr.*;
-                    for (enum_layout.variants) |v| {
-                        if (std.mem.eql(u8, v.name, name)) {
-                            is_enum_variant = true;
-                            break;
+            switch (arm.pattern.*) {
+                .Identifier => |name| {
+                    // Check if it's an enum variant or variable binding
+                    var is_enum_variant = false;
+                    var enum_iter = self.enum_layouts.iterator();
+                    while (enum_iter.next()) |entry| {
+                        const enum_name = entry.key_ptr.*;
+                        const enum_layout = entry.value_ptr.*;
+                        for (enum_layout.variants) |v| {
+                            if (std.mem.eql(u8, v.name, name)) {
+                                is_enum_variant = true;
+                                match_enum_name = enum_name;
+                                try covered_variants.append(self.allocator, name);
+                                break;
+                            }
+                        }
+                        if (is_enum_variant) break;
+                    }
+                    if (!is_enum_variant) {
+                        // It's a variable binding, which is a catch-all
+                        has_wildcard = true;
+                        break;
+                    }
+                },
+                .EnumVariant => |ev| {
+                    // Track covered variant
+                    try covered_variants.append(self.allocator, ev.variant);
+                    // Determine which enum this belongs to
+                    if (match_enum_name == null) {
+                        var enum_iter = self.enum_layouts.iterator();
+                        while (enum_iter.next()) |entry| {
+                            const enum_name = entry.key_ptr.*;
+                            const enum_layout = entry.value_ptr.*;
+                            for (enum_layout.variants) |v| {
+                                if (std.mem.eql(u8, v.name, ev.variant)) {
+                                    match_enum_name = enum_name;
+                                    break;
+                                }
+                            }
+                            if (match_enum_name != null) break;
                         }
                     }
-                    if (is_enum_variant) break;
-                }
-                if (!is_enum_variant) {
-                    // It's a variable binding, which is a catch-all
-                    has_wildcard = true;
-                    break;
-                }
+                },
+                else => {},
             }
         }
 
@@ -438,13 +468,42 @@ pub const NativeCodegen = struct {
             return;
         }
 
-        // No wildcard - check if all enum variants are covered (for enum types)
-        // For now, we'll emit a warning in the future but allow compilation
-        // TODO: Implement proper type inference to determine match value type
-        //       Then check if all enum variants are covered
+        // If we identified an enum type, check if all variants are covered
+        if (match_enum_name) |enum_name| {
+            if (self.enum_layouts.get(enum_name)) |enum_layout| {
+                // Check if all variants are covered
+                var all_covered = true;
+                var missing_variants = std.ArrayList([]const u8){};
+                defer missing_variants.deinit(self.allocator);
 
-        // For production: should return error for non-exhaustive matches
-        // For now: allow non-exhaustive matches (runtime will fall through)
+                for (enum_layout.variants) |variant| {
+                    var found = false;
+                    for (covered_variants.items) |covered| {
+                        if (std.mem.eql(u8, variant.name, covered)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        all_covered = false;
+                        try missing_variants.append(self.allocator, variant.name);
+                    }
+                }
+
+                if (!all_covered) {
+                    // Emit warning for non-exhaustive match
+                    std.debug.print("Warning: non-exhaustive pattern match on enum '{s}'\n", .{enum_name});
+                    std.debug.print("Missing variants:\n", .{});
+                    for (missing_variants.items) |variant| {
+                        std.debug.print("  - {s}\n", .{variant});
+                    }
+                    std.debug.print("Consider adding a wildcard pattern '_' to handle all cases\n", .{});
+                }
+            }
+        }
+
+        // Allow non-exhaustive matches for now (with warning)
+        // Future enhancement: make this an error in strict mode
     }
 
     /// Generate pattern matching code
@@ -1190,6 +1249,31 @@ pub const NativeCodegen = struct {
                 return error.UnsupportedPlatform;
             },
         }
+    }
+
+    /// Check if a statement is a return (for dead code elimination)
+    fn isReturn(stmt: ast.Stmt) bool {
+        return stmt == .ReturnStmt;
+    }
+
+    /// Check if a block always returns (all paths lead to return)
+    fn blockAlwaysReturns(block: *const ast.Block) bool {
+        if (block.statements.len == 0) return false;
+
+        // Check if last statement is a return
+        const last = block.statements[block.statements.len - 1];
+        if (last == .ReturnStmt) return true;
+
+        // Check if last statement is an if where both branches return
+        if (last == .IfStmt) {
+            const if_stmt = last.IfStmt;
+            const then_returns = blockAlwaysReturns(&if_stmt.then_block);
+            if (if_stmt.else_block) |else_block| {
+                return then_returns and blockAlwaysReturns(&else_block);
+            }
+        }
+
+        return false;
     }
 
     fn generateStmt(self: *NativeCodegen, stmt: ast.Stmt) CodegenError!void {
@@ -2181,9 +2265,19 @@ pub const NativeCodegen = struct {
             }
         }
 
-        // Generate function body
-        for (func.body.statements) |stmt| {
+        // Generate function body with dead code elimination
+        for (func.body.statements, 0..) |stmt, i| {
             try self.generateStmt(stmt);
+
+            // Dead code elimination: stop generating code after a return
+            if (isReturn(stmt)) {
+                // Skip remaining statements (they're unreachable)
+                if (i + 1 < func.body.statements.len) {
+                    // Emit warning about dead code (optional)
+                    // std.debug.print("Warning: Dead code after return in function {s}\n", .{func.name});
+                }
+                break;
+            }
         }
 
         // Function epilogue (only if no explicit return at end)
@@ -2203,7 +2297,23 @@ pub const NativeCodegen = struct {
         }
 
         if (decl.value) |value| {
-            const type_name = decl.type_name orelse "i32";  // Default to i32 if no type given
+            // Infer type from enum constructor if no type annotation
+            var inferred_type_name: ?[]const u8 = decl.type_name;
+            if (inferred_type_name == null and value.* == .CallExpr) {
+                const call = value.CallExpr;
+                if (call.callee.* == .MemberExpr) {
+                    const field = call.callee.MemberExpr;
+                    if (field.object.* == .Identifier) {
+                        const enum_name = field.object.Identifier.name;
+                        // Check if this is an enum type
+                        if (self.enum_layouts.contains(enum_name)) {
+                            inferred_type_name = enum_name;
+                        }
+                    }
+                }
+            }
+
+            const type_name = inferred_type_name orelse "i32";
 
             // Check if this is an array type
             const is_array = type_name.len > 0 and type_name[0] == '[';
@@ -2290,30 +2400,34 @@ pub const NativeCodegen = struct {
                 // Special handling for enum values
                 // Enums are 16 bytes: [tag (8 bytes)][data (8 bytes)]
                 // The enum constructor pushes: data first, then tag
-                // So the stack layout is: [tag at lower addr] [data at higher addr]
+                // Stack layout after constructor:
+                //   [rsp+0] = tag (pushed second, lower address)
+                //   [rsp+8] = data (pushed first, higher address)
 
                 // Evaluate the enum constructor expression
-                // This will push data then tag onto stack and return pointer in rax
+                // This will push data then tag onto stack and return pointer (rsp) in rax
                 try self.generateExpr(value);
 
-                // rax now contains pointer to the enum on stack (points to tag)
-                // The enum constructor pushed 2 values:
-                // - offset+0: data (pushed first, higher address)
-                // - offset+1: tag (pushed second, lower address)
+                // rax contains rsp (pointer to tag on stack)
+                // The enum constructor already pushed both values onto the stack
+                // Current stack (from low to high addr):
+                //   [rbp - ((next_local_offset+1)*8)] = tag  <- rsp points here
+                //   [rbp - ((next_local_offset+0)*8)] = data
 
-                // We want the variable to point to the tag (the second push)
+                // Record that the tag is at the current offset
+                // (The tag was the SECOND push, so it's at next_local_offset+1)
                 const tag_offset = self.next_local_offset + 1;
 
-                // Store variable name pointing to the tag
+                // Store variable name pointing to where the tag is on stack
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
                 try self.locals.put(name, .{
-                    .offset = tag_offset,
+                    .offset = tag_offset,  // Tag is at higher offset (pushed second)
                     .type_name = type_name,
                     .size = 16, // All enums are 16 bytes (tag + data)
                 });
 
-                // Update offset to account for 2 slots used by enum
+                // Update offset to account for 2 slots used by enum (data and tag)
                 self.next_local_offset += 2;
             } else {
                 // Regular scalar value
@@ -2342,7 +2456,6 @@ pub const NativeCodegen = struct {
 
     /// Try to fold constant expressions at compile-time
     fn tryFoldConstant(self: *NativeCodegen, expr: *const ast.Expr) ?i64 {
-        _ = self;
         switch (expr.*) {
             .IntegerLiteral => |lit| return lit.value,
             .BooleanLiteral => |lit| return if (lit.value) 1 else 0,
@@ -2350,35 +2463,35 @@ pub const NativeCodegen = struct {
                 const left = self.tryFoldConstant(bin.left) orelse return null;
                 const right = self.tryFoldConstant(bin.right) orelse return null;
 
-                return switch (bin.operator) {
+                return switch (bin.op) {
                     .Add => left + right,
-                    .Subtract => left - right,
-                    .Multiply => left * right,
-                    .Divide => if (right != 0) @divTrunc(left, right) else null,
-                    .Modulo => if (right != 0) @mod(left, right) else null,
-                    .BitwiseAnd => left & right,
-                    .BitwiseOr => left | right,
-                    .BitwiseXor => left ^ right,
-                    .ShiftLeft => if (right >= 0 and right < 64) left << @intCast(right) else null,
-                    .ShiftRight => if (right >= 0 and right < 64) left >> @intCast(right) else null,
+                    .Sub => left - right,
+                    .Mul => left * right,
+                    .Div => if (right != 0) @divTrunc(left, right) else null,
+                    .Mod => if (right != 0) @mod(left, right) else null,
+                    .BitAnd => left & right,
+                    .BitOr => left | right,
+                    .BitXor => left ^ right,
+                    .LeftShift => if (right >= 0 and right < 64) left << @intCast(right) else null,
+                    .RightShift => if (right >= 0 and right < 64) left >> @intCast(right) else null,
                     .Equal => if (left == right) 1 else 0,
                     .NotEqual => if (left != right) 1 else 0,
-                    .LessThan => if (left < right) 1 else 0,
-                    .LessEqual => if (left <= right) 1 else 0,
-                    .GreaterThan => if (left > right) 1 else 0,
-                    .GreaterEqual => if (left >= right) 1 else 0,
-                    .LogicalAnd => if (left != 0 and right != 0) 1 else 0,
-                    .LogicalOr => if (left != 0 or right != 0) 1 else 0,
+                    .Less => if (left < right) 1 else 0,
+                    .LessEq => if (left <= right) 1 else 0,
+                    .Greater => if (left > right) 1 else 0,
+                    .GreaterEq => if (left >= right) 1 else 0,
+                    .And => if (left != 0 and right != 0) 1 else 0,
+                    .Or => if (left != 0 or right != 0) 1 else 0,
                     else => null,
                 };
             },
             .UnaryExpr => |un| {
                 const operand = self.tryFoldConstant(un.operand) orelse return null;
 
-                return switch (un.operator) {
-                    .Negate => -operand,
+                return switch (un.op) {
+                    .Neg => -operand,
                     .Not => if (operand == 0) 1 else 0,
-                    .BitwiseNot => ~operand,
+                    .BitNot => ~operand,
                     else => null,
                 };
             },
@@ -3168,8 +3281,20 @@ pub const NativeCodegen = struct {
                         return error.UnsupportedFeature;
                     }
 
-                    // Load the variant index as the enum value
+                    // Create enum value on stack (same as CallExpr for enums)
+                    // Layout: [tag (8 bytes)][data (8 bytes)]
+                    // No-argument variants have data = 0
+
+                    // Push data (always 0 for no-argument variants)
+                    try self.assembler.movRegImm64(.rax, 0);
+                    try self.assembler.pushReg(.rax);
+
+                    // Push tag (variant index)
                     try self.assembler.movRegImm64(.rax, @intCast(variant_index.?));
+                    try self.assembler.pushReg(.rax);
+
+                    // Return pointer to enum on stack
+                    try self.assembler.movRegReg(.rax, .rsp);
                     return;
                 }
 

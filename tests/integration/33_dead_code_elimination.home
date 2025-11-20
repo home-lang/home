@@ -1,0 +1,27 @@
+// Dead Code Elimination Test
+
+fn early_return(): i32 {
+    return 42;
+    // These should not be generated
+    let x = 100;
+    return x;
+}
+
+fn conditional_return(flag: bool): i32 {
+    if (flag) {
+        return 10;
+    } else {
+        return 20;
+    }
+    // This should not be generated
+    return 99;
+}
+
+fn main(): i32 {
+    let r1 = early_return();           // 42
+    let r2 = conditional_return(true); // 10
+    let r3 = conditional_return(false);// 20
+    
+    // Expected: 42 + 10 + 20 = 72
+    r1 + r2 + r3
+}
