@@ -12,6 +12,7 @@ const std = @import("std");
 pub const Collection = @import("collection.zig").Collection;
 pub const LazyCollection = @import("lazy_collection.zig").LazyCollection;
 pub const HashMap = @import("hash_map.zig").HashMap;
+pub const Set = @import("set.zig").Set;
 
 // Export traits
 pub const traits = @import("traits.zig");

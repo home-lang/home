@@ -1163,36 +1163,38 @@ pub fn Collection(comptime T: type) type {
         /// Convert collection to JSON string (requires T to support formatting)
         /// For simple number types, uses fmt to create JSON-compatible output
         pub fn toJson(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
-            var string = std.array_list.AlignedManaged(u8, null).init(allocator);
-            errdefer string.deinit();
+            var list: std.ArrayList(u8) = .empty;
+            errdefer list.deinit(allocator);
 
-            const writer = string.writer();
-            try writer.writeByte('[');
+            try list.append(allocator, '[');
 
             for (self.items.items, 0..) |item, i| {
-                if (i > 0) try writer.writeByte(',');
-                try writer.print("{any}", .{item});
+                if (i > 0) try list.append(allocator, ',');
+                const item_str = try std.fmt.allocPrint(allocator, "{any}", .{item});
+                defer allocator.free(item_str);
+                try list.appendSlice(allocator, item_str);
             }
 
-            try writer.writeByte(']');
-            return try string.toOwnedSlice();
+            try list.append(allocator, ']');
+            return list.toOwnedSlice(allocator);
         }
 
         /// Convert collection to pretty JSON string
         pub fn toJsonPretty(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
-            var string = std.array_list.AlignedManaged(u8, null).init(allocator);
-            errdefer string.deinit();
+            var list: std.ArrayList(u8) = .empty;
+            errdefer list.deinit(allocator);
 
-            const writer = string.writer();
-            try writer.writeAll("[\n");
+            try list.appendSlice(allocator, "[\n");
 
             for (self.items.items, 0..) |item, i| {
-                if (i > 0) try writer.writeAll(",\n");
-                try writer.print("  {any}", .{item});
+                if (i > 0) try list.appendSlice(allocator, ",\n");
+                const item_str = try std.fmt.allocPrint(allocator, "  {any}", .{item});
+                defer allocator.free(item_str);
+                try list.appendSlice(allocator, item_str);
             }
 
-            try writer.writeAll("\n]");
-            return try string.toOwnedSlice();
+            try list.appendSlice(allocator, "\n]");
+            return list.toOwnedSlice(allocator);
         }
 
         /// Create collection from JSON string (basic implementation for numeric types)
