@@ -33,8 +33,8 @@ pub fn Channel(comptime T: type) type {
 
         allocator: std.mem.Allocator,
         /// Queue of values
-        head: std.atomic.Atomic(?*Node),
-        tail: std.atomic.Atomic(?*Node),
+        head: std.atomic.Value(?*Node),
+        tail: std.atomic.Value(?*Node),
         /// List of waiting senders
         send_waiters: std.ArrayList(*Waker),
         /// List of waiting receivers
@@ -42,23 +42,23 @@ pub fn Channel(comptime T: type) type {
         /// Protects waiter lists
         mutex: std.Thread.Mutex,
         /// Is the channel closed?
-        closed: std.atomic.Atomic(bool),
+        closed: std.atomic.Value(bool),
 
         pub fn init(allocator: std.mem.Allocator) !Self {
             return Self{
                 .allocator = allocator,
-                .head = std.atomic.Atomic(?*Node).init(null),
-                .tail = std.atomic.Atomic(?*Node).init(null),
+                .head = std.atomic.Value(?*Node).init(null),
+                .tail = std.atomic.Value(?*Node).init(null),
                 .send_waiters = std.ArrayList(*Waker).init(allocator),
                 .recv_waiters = std.ArrayList(*Waker).init(allocator),
                 .mutex = .{},
-                .closed = std.atomic.Atomic(bool).init(false),
+                .closed = std.atomic.Value(bool).init(false),
             };
         }
 
         pub fn deinit(self: *Self) void {
             // Free remaining nodes
-            var current = self.head.load(.Acquire);
+            var current = self.head.load(.acquire);
             while (current) |node| {
                 const next = node.next;
                 self.allocator.destroy(node);
@@ -96,7 +96,7 @@ pub fn Channel(comptime T: type) type {
 
         /// Try to send immediately without waiting
         pub fn trySend(self: *Self, value: T) !void {
-            if (self.closed.load(.Acquire)) {
+            if (self.closed.load(.acquire)) {
                 return SendError.Closed;
             }
 
@@ -104,12 +104,12 @@ pub fn Channel(comptime T: type) type {
             node.* = .{ .value = value, .next = null };
 
             // Add to queue
-            const old_tail = self.tail.swap(node, .AcqRel);
+            const old_tail = self.tail.swap(node, .acq_rel);
 
             if (old_tail) |tail| {
                 tail.next = node;
             } else {
-                self.head.store(node, .Release);
+                self.head.store(node, .release);
             }
 
             // Wake a receiver
@@ -124,8 +124,8 @@ pub fn Channel(comptime T: type) type {
 
         /// Try to receive immediately without waiting
         pub fn tryRecv(self: *Self) !T {
-            const head = self.head.load(.Acquire) orelse {
-                if (self.closed.load(.Acquire)) {
+            const head = self.head.load(.acquire) orelse {
+                if (self.closed.load(.acquire)) {
                     return RecvError.Closed;
                 }
                 return error.Empty;
@@ -136,8 +136,8 @@ pub fn Channel(comptime T: type) type {
             if (!self.head.cmpxchgStrong(
                 head,
                 next,
-                .AcqRel,
-                .Acquire,
+                .acq_rel,
+                .acquire,
             )) {
                 return error.Empty;
             }
@@ -146,7 +146,7 @@ pub fn Channel(comptime T: type) type {
             self.allocator.destroy(head);
 
             if (next == null) {
-                _ = self.tail.cmpxchgStrong(head, null, .Release, .Acquire);
+                _ = self.tail.cmpxchgStrong(head, null, .release, .acquire);
             }
 
             // Wake a sender
@@ -163,7 +163,7 @@ pub fn Channel(comptime T: type) type {
 
         /// Close the channel
         pub fn close(self: *Self) void {
-            self.closed.store(true, .Release);
+            self.closed.store(true, .release);
 
             // Wake all waiters
             self.mutex.lock();

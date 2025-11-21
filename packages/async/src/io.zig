@@ -326,7 +326,7 @@ pub const TcpListener = struct {
                     try self.reactor.register(self.fd, .{ .read = true }, waker);
 
                     // In full implementation, this would yield to runtime
-                    std.time.sleep(10_000_000); // 10ms
+                    std.posix.nanosleep(0, 10_000_000); // 10ms
                     continue;
                 }
                 return err;
@@ -402,7 +402,7 @@ pub const TcpStream = struct {
                     try self.reactor.register(self.fd, .{ .read = true }, waker);
 
                     // In full implementation, this would yield to runtime
-                    std.time.sleep(10_000_000); // 10ms
+                    std.posix.nanosleep(0, 10_000_000); // 10ms
                     continue;
                 }
                 return err;
@@ -425,7 +425,7 @@ pub const TcpStream = struct {
                     try self.reactor.register(self.fd, .{ .write = true }, waker);
 
                     // In full implementation, this would yield to runtime
-                    std.time.sleep(10_000_000); // 10ms
+                    std.posix.nanosleep(0, 10_000_000); // 10ms
                     continue;
                 }
                 return err;
@@ -474,7 +474,7 @@ pub const File = struct {
                     };
 
                     try self.reactor.register(self.fd, .{ .read = true }, waker);
-                    std.time.sleep(10_000_000);
+                    std.posix.nanosleep(0, 10_000_000);
                     continue;
                 }
                 return err;
@@ -494,7 +494,7 @@ pub const File = struct {
                     };
 
                     try self.reactor.register(self.fd, .{ .write = true }, waker);
-                    std.time.sleep(10_000_000);
+                    std.posix.nanosleep(0, 10_000_000);
                     continue;
                 }
                 return err;

@@ -15,23 +15,23 @@ pub fn ConcurrentQueue(comptime T: type) type {
 
         const Node = struct {
             value: ?T,
-            next: std.atomic.Atomic(?*Node),
+            next: std.atomic.Value(?*Node),
 
             fn init(allocator: std.mem.Allocator, value: ?T) !*Node {
                 const node = try allocator.create(Node);
                 node.* = .{
                     .value = value,
-                    .next = std.atomic.Atomic(?*Node).init(null),
+                    .next = std.atomic.Value(?*Node).init(null),
                 };
                 return node;
             }
         };
 
         allocator: std.mem.Allocator,
-        head: std.atomic.Atomic(?*Node),
-        tail: std.atomic.Atomic(?*Node),
+        head: std.atomic.Value(?*Node),
+        tail: std.atomic.Value(?*Node),
         /// Approximate size (for statistics)
-        len: std.atomic.Atomic(usize),
+        len: std.atomic.Value(usize),
 
         pub fn init(allocator: std.mem.Allocator) !Self {
             // Create a dummy node
@@ -39,17 +39,17 @@ pub fn ConcurrentQueue(comptime T: type) type {
 
             return Self{
                 .allocator = allocator,
-                .head = std.atomic.Atomic(?*Node).init(dummy),
-                .tail = std.atomic.Atomic(?*Node).init(dummy),
-                .len = std.atomic.Atomic(usize).init(0),
+                .head = std.atomic.Value(?*Node).init(dummy),
+                .tail = std.atomic.Value(?*Node).init(dummy),
+                .len = std.atomic.Value(usize).init(0),
             };
         }
 
         pub fn deinit(self: *Self) void {
             // Free all remaining nodes
-            var current = self.head.load(.Acquire);
+            var current = self.head.load(.acquire);
             while (current) |node| {
-                const next = node.next.load(.Acquire);
+                const next = node.next.load(.acquire);
                 self.allocator.destroy(node);
                 current = next;
             }
@@ -63,28 +63,28 @@ pub fn ConcurrentQueue(comptime T: type) type {
             const node = try Node.init(self.allocator, value);
 
             while (true) {
-                const tail = self.tail.load(.Acquire);
-                const next = tail.?.next.load(.Acquire);
+                const tail = self.tail.load(.acquire);
+                const next = tail.?.next.load(.acquire);
 
                 // Check if tail is still the same
-                if (tail == self.tail.load(.Acquire)) {
+                if (tail == self.tail.load(.acquire)) {
                     if (next == null) {
                         // Try to link new node at the end
                         if (tail.?.next.cmpxchgStrong(
                             null,
                             node,
-                            .Release,
-                            .Acquire,
+                            .release,
+                            .acquire,
                         ) == null) {
                             // Success! Try to swing tail to the new node
                             _ = self.tail.cmpxchgStrong(
                                 tail,
                                 node,
-                                .Release,
-                                .Acquire,
+                                .release,
+                                .acquire,
                             );
 
-                            _ = self.len.fetchAdd(1, .Monotonic);
+                            _ = self.len.fetchAdd(1, .monotonic);
                             return;
                         }
                     } else {
@@ -92,8 +92,8 @@ pub fn ConcurrentQueue(comptime T: type) type {
                         _ = self.tail.cmpxchgStrong(
                             tail,
                             next,
-                            .Release,
-                            .Acquire,
+                            .release,
+                            .acquire,
                         );
                     }
                 }
@@ -107,12 +107,12 @@ pub fn ConcurrentQueue(comptime T: type) type {
         /// continues to make progress.
         pub fn pop(self: *Self) ?T {
             while (true) {
-                const head = self.head.load(.Acquire);
-                const tail = self.tail.load(.Acquire);
-                const next = head.?.next.load(.Acquire);
+                const head = self.head.load(.acquire);
+                const tail = self.tail.load(.acquire);
+                const next = head.?.next.load(.acquire);
 
                 // Check if head is still the same
-                if (head == self.head.load(.Acquire)) {
+                if (head == self.head.load(.acquire)) {
                     if (head == tail) {
                         // Queue is empty or tail is falling behind
                         if (next == null) {
@@ -124,8 +124,8 @@ pub fn ConcurrentQueue(comptime T: type) type {
                         _ = self.tail.cmpxchgStrong(
                             tail,
                             next,
-                            .Release,
-                            .Acquire,
+                            .release,
+                            .acquire,
                         );
                     } else {
                         // Queue is not empty
@@ -135,13 +135,13 @@ pub fn ConcurrentQueue(comptime T: type) type {
                         if (self.head.cmpxchgStrong(
                             head,
                             next,
-                            .Release,
-                            .Acquire,
+                            .release,
+                            .acquire,
                         ) == head) {
                             // Success! Free the old head
                             self.allocator.destroy(head.?);
 
-                            _ = self.len.fetchSub(1, .Monotonic);
+                            _ = self.len.fetchSub(1, .monotonic);
                             return value;
                         }
                     }
@@ -154,7 +154,7 @@ pub fn ConcurrentQueue(comptime T: type) type {
         /// Note: This is not linearizable - the actual size may have changed
         /// by the time this function returns.
         pub fn size(self: *Self) usize {
-            return self.len.load(.Monotonic);
+            return self.len.load(.monotonic);
         }
 
         /// Check if empty (approximate)
@@ -286,7 +286,7 @@ test "ConcurrentQueue - concurrent push and pop" {
             var i: i32 = 0;
             while (i < ctx.count) : (i += 1) {
                 ctx.queue.push(i) catch unreachable;
-                std.time.sleep(100); // Small delay
+                std.posix.nanosleep(0, 100); // Small delay
             }
         }
     }.run;
@@ -300,7 +300,7 @@ test "ConcurrentQueue - concurrent push and pop" {
                 if (ctx.queue.pop()) |value| {
                     ctx.popped.append(value) catch unreachable;
                 }
-                std.time.sleep(100);
+                std.posix.nanosleep(0, 100);
             }
         }
     }.run;

@@ -18,7 +18,7 @@ const Worker = struct {
     runtime: *Runtime,
     thread: ?std.Thread,
     parker: Parker,
-    notified: std.atomic.Atomic(bool),
+    notified: std.atomic.Value(bool),
 
     fn init(id: usize, runtime: *Runtime) !Worker {
         return .{
@@ -27,7 +27,7 @@ const Worker = struct {
             .runtime = runtime,
             .thread = null,
             .parker = Parker.init(),
-            .notified = std.atomic.Atomic(bool).init(false),
+            .notified = std.atomic.Value(bool).init(false),
         };
     }
 
@@ -37,7 +37,7 @@ const Worker = struct {
 
     /// Main worker loop
     fn run(self: *Worker) void {
-        while (!self.runtime.shutdown.load(.Acquire)) {
+        while (!self.runtime.shutdown.load(.acquire)) {
             if (self.findTask()) |task| {
                 self.runTask(task);
             } else {
@@ -119,7 +119,7 @@ const Worker = struct {
     /// Park this worker thread
     fn park(self: *Worker) void {
         // Check if we were notified before parking
-        if (self.notified.swap(false, .Acquire)) {
+        if (self.notified.swap(false, .acquire)) {
             return;
         }
 
@@ -129,7 +129,7 @@ const Worker = struct {
 
     /// Unpark this worker
     fn unpark(self: *Worker) void {
-        self.notified.store(true, .Release);
+        self.notified.store(true, .release);
         self.parker.unpark();
     }
 
@@ -196,8 +196,8 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     workers: []Worker,
     global_queue: ConcurrentQueue(RawTask),
-    shutdown: std.atomic.Atomic(bool),
-    prng: std.rand.DefaultPrng,
+    shutdown: std.atomic.Value(bool),
+    prng: std.Random.DefaultPrng,
 
     /// Create a new runtime with the specified number of worker threads
     pub fn init(allocator: std.mem.Allocator, num_workers: usize) !Runtime {
@@ -207,8 +207,8 @@ pub const Runtime = struct {
             .allocator = allocator,
             .workers = try allocator.alloc(Worker, worker_count),
             .global_queue = try ConcurrentQueue(RawTask).init(allocator),
-            .shutdown = std.atomic.Atomic(bool).init(false),
-            .prng = std.rand.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
+            .shutdown = std.atomic.Value(bool).init(false),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
         };
 
         // Initialize workers
@@ -221,7 +221,7 @@ pub const Runtime = struct {
 
     /// Clean up runtime resources
     pub fn deinit(self: *Runtime) void {
-        self.shutdown.store(true, .Release);
+        self.shutdown.store(true, .release);
 
         // Wait for workers to finish
         for (self.workers) |*worker| {
@@ -314,7 +314,7 @@ pub const Runtime = struct {
         const result = try handle.await();
 
         // Shutdown runtime
-        self.shutdown.store(true, .Release);
+        self.shutdown.store(true, .release);
         runtime_thread.join();
 
         return result;
@@ -349,14 +349,14 @@ test "Runtime - spawn ready future" {
     const rt_thread = try std.Thread.spawn(.{}, Runtime.run, .{&runtime});
 
     // Give it time to execute
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 10 * std.time.ns_per_ms);
 
     // Should be completed
     if (handle.tryGet()) |result| {
         try testing.expectEqual(@as(i32, 42), result);
     }
 
-    runtime.shutdown.store(true, .Release);
+    runtime.shutdown.store(true, .release);
     for (runtime.workers) |*worker| {
         worker.unpark();
     }
@@ -404,9 +404,9 @@ test "Runtime - multiple tasks" {
     const rt_thread = try std.Thread.spawn(.{}, Runtime.run, .{&runtime});
 
     // Give time for execution
-    std.time.sleep(50 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 50 * std.time.ns_per_ms);
 
-    runtime.shutdown.store(true, .Release);
+    runtime.shutdown.store(true, .release);
     for (runtime.workers) |*worker| {
         worker.unpark();
     }

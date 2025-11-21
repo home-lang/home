@@ -230,7 +230,7 @@ pub const AsyncRuntime = struct {
             }
 
             // Small yield to prevent busy loop
-            std.time.sleep(1_000_000); // 1ms
+            std.posix.nanosleep(0, 1_000_000); // 1ms
         }
     }
 
@@ -254,7 +254,7 @@ pub const AsyncRuntime = struct {
                 i += 1;
             }
 
-            std.time.sleep(1_000_000); // 1ms
+            std.posix.nanosleep(0, 1_000_000); // 1ms
         }
     }
 
@@ -274,7 +274,7 @@ pub fn sleep(duration_ns: u64) Future(void) {
 
     // In a real implementation, this would register with the runtime
     // For now, just complete after sleeping
-    std.time.sleep(duration_ns);
+    std.posix.nanosleep(0, duration_ns);
     future.complete({});
 
     return future;
@@ -291,7 +291,7 @@ pub fn join(allocator: std.mem.Allocator, comptime T: type, futures: []Future(T)
                 try results.append(value);
                 break;
             }
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
         }
     }
 

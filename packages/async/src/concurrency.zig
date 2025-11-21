@@ -57,7 +57,7 @@ pub fn Channel(comptime T: type) type {
                 }
 
                 self.mutex.unlock();
-                std.time.sleep(100_000); // 0.1ms
+                std.posix.nanosleep(0, 100_000); // 0.1ms
             }
         }
 
@@ -98,7 +98,7 @@ pub const AsyncMutex = struct {
         self.inner_mutex.lock();
         while (self.locked) {
             self.inner_mutex.unlock();
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
             self.inner_mutex.lock();
         }
         self.locked = true;
@@ -149,7 +149,7 @@ pub const AsyncRwLock = struct {
             }
 
             self.mutex.unlock();
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
         }
     }
 
@@ -170,7 +170,7 @@ pub const AsyncRwLock = struct {
             }
 
             self.mutex.unlock();
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
         }
     }
 
@@ -206,7 +206,7 @@ pub const Semaphore = struct {
             }
 
             self.mutex.unlock();
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
         }
     }
 
@@ -271,7 +271,7 @@ pub const Barrier = struct {
                 return;
             }
             self.mutex.unlock();
-            std.time.sleep(100_000); // 0.1ms
+            std.posix.nanosleep(0, 100_000); // 0.1ms
         }
     }
 };

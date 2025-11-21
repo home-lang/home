@@ -63,11 +63,11 @@ pub fn WorkStealingDeque(comptime T: type) type {
 
         allocator: std.mem.Allocator,
         /// Top index (accessed by thieves)
-        top: std.atomic.Atomic(i64),
+        top: std.atomic.Value(i64),
         /// Bottom index (accessed by owner)
-        bottom: std.atomic.Atomic(i64),
+        bottom: std.atomic.Value(i64),
         /// Current buffer (atomic pointer for resizing)
-        buffer: std.atomic.Atomic(?*Buffer),
+        buffer: std.atomic.Value(?*Buffer),
 
         /// Minimum capacity for the deque
         const MIN_CAPACITY: usize = 32;
@@ -77,14 +77,14 @@ pub fn WorkStealingDeque(comptime T: type) type {
 
             return Self{
                 .allocator = allocator,
-                .top = std.atomic.Atomic(i64).init(0),
-                .bottom = std.atomic.Atomic(i64).init(0),
-                .buffer = std.atomic.Atomic(?*Buffer).init(buf),
+                .top = std.atomic.Value(i64).init(0),
+                .bottom = std.atomic.Value(i64).init(0),
+                .buffer = std.atomic.Value(?*Buffer).init(buf),
             };
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.buffer.load(.Acquire)) |buf| {
+            if (self.buffer.load(.acquire)) |buf| {
                 buf.deinit(self.allocator);
             }
         }
@@ -94,9 +94,9 @@ pub fn WorkStealingDeque(comptime T: type) type {
         /// This is the fast path for the owner thread.
         /// No synchronization needed except for resizing.
         pub fn push(self: *Self, value: T) !void {
-            const b = self.bottom.load(.Relaxed);
-            const t = self.top.load(.Acquire);
-            var buf = self.buffer.load(.Relaxed).?;
+            const b = self.bottom.load(.monotonic);
+            const t = self.top.load(.acquire);
+            var buf = self.buffer.load(.monotonic).?;
 
             const size = b - t;
 
@@ -105,7 +105,7 @@ pub fn WorkStealingDeque(comptime T: type) type {
                 const new_buf = try buf.grow(self.allocator, t, b);
 
                 // Update buffer pointer
-                self.buffer.store(new_buf, .Release);
+                self.buffer.store(new_buf, .release);
 
                 // Defer cleanup of old buffer
                 // In production, use epoch-based reclamation
@@ -117,24 +117,24 @@ pub fn WorkStealingDeque(comptime T: type) type {
             buf.put(b, value);
 
             // Ensure the write to buffer happens before we increment bottom
-            std.atomic.fence(.Release);
+            @fence(.release);
 
-            self.bottom.store(b + 1, .Release);
+            self.bottom.store(b + 1, .release);
         }
 
         /// Pop a task from the bottom (owner only)
         ///
         /// Returns null if the deque is empty.
         pub fn pop(self: *Self) ?T {
-            var b = self.bottom.load(.Relaxed) - 1;
-            const buf = self.buffer.load(.Relaxed).?;
+            var b = self.bottom.load(.monotonic) - 1;
+            const buf = self.buffer.load(.monotonic).?;
 
-            self.bottom.store(b, .Relaxed);
+            self.bottom.store(b, .monotonic);
 
             // Ensure bottom is written before we read top
-            std.atomic.fence(.SeqCst);
+            @fence(.seq_cst);
 
-            const t = self.top.load(.Relaxed);
+            const t = self.top.load(.monotonic);
 
             var result: ?T = null;
 
@@ -147,18 +147,18 @@ pub fn WorkStealingDeque(comptime T: type) type {
                     if (!self.top.cmpxchgStrong(
                         t,
                         t + 1,
-                        .SeqCst,
-                        .Relaxed,
+                        .seq_cst,
+                        .monotonic,
                     )) {
                         // Lost race with stealer
                         result = null;
                     }
 
-                    self.bottom.store(b + 1, .Relaxed);
+                    self.bottom.store(b + 1, .monotonic);
                 }
             } else {
                 // Deque is empty
-                self.bottom.store(b + 1, .Relaxed);
+                self.bottom.store(b + 1, .monotonic);
             }
 
             return result;
@@ -169,27 +169,27 @@ pub fn WorkStealingDeque(comptime T: type) type {
         /// Returns null if the deque is empty or if we lose the race
         /// with another thief or the owner.
         pub fn steal(self: *Self) ?T {
-            const t = self.top.load(.Acquire);
+            const t = self.top.load(.acquire);
 
             // Ensure we read top before bottom
-            std.atomic.fence(.SeqCst);
+            @fence(.seq_cst);
 
-            const b = self.bottom.load(.Acquire);
+            const b = self.bottom.load(.acquire);
 
             if (t >= b) {
                 // Deque is empty
                 return null;
             }
 
-            const buf = self.buffer.load(.Acquire).?;
+            const buf = self.buffer.load(.acquire).?;
             const item = buf.get(t);
 
             // Try to increment top
             if (!self.top.cmpxchgStrong(
                 t,
                 t + 1,
-                .SeqCst,
-                .Relaxed,
+                .seq_cst,
+                .monotonic,
             )) {
                 // Lost race with another stealer or owner
                 return null;
@@ -200,8 +200,8 @@ pub fn WorkStealingDeque(comptime T: type) type {
 
         /// Get the approximate size (not linearizable)
         pub fn size(self: *Self) usize {
-            const b = self.bottom.load(.Relaxed);
-            const t = self.top.load(.Relaxed);
+            const b = self.bottom.load(.monotonic);
+            const t = self.top.load(.monotonic);
             const diff = b - t;
             if (diff < 0) return 0;
             return @intCast(diff);
@@ -340,7 +340,7 @@ test "WorkStealingDeque - concurrent push and steal" {
             while (c.deque.steal()) |item| {
                 c.stolen.append(item) catch unreachable;
                 // Small sleep to allow owner to push
-                std.time.sleep(100);
+                std.posix.nanosleep(0, 100);
             }
         }
     }.run;
@@ -348,7 +348,7 @@ test "WorkStealingDeque - concurrent push and steal" {
     const thread = try std.Thread.spawn(.{}, thief_fn, .{&ctx});
 
     // Give thief time to steal some
-    std.time.sleep(1_000_000); // 1ms
+    std.posix.nanosleep(0, 1_000_000); // 1ms
 
     thread.join();
 

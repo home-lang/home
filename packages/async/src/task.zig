@@ -9,10 +9,10 @@ const Waker = future_mod.Waker;
 pub const TaskId = struct {
     id: u64,
 
-    var next_id = std.atomic.Atomic(u64).init(1);
+    var next_id = std.atomic.Value(u64).init(1);
 
     pub fn generate() TaskId {
-        return .{ .id = next_id.fetchAdd(1, .Monotonic) };
+        return .{ .id = next_id.fetchAdd(1, .monotonic) };
     }
 };
 
@@ -42,7 +42,7 @@ pub fn Task(comptime T: type) type {
         const Self = @This();
 
         id: TaskId,
-        state: std.atomic.Atomic(TaskState),
+        state: std.atomic.Value(TaskState),
         future: Future(T),
         result: ?T,
         waker: ?*Waker,
@@ -52,7 +52,7 @@ pub fn Task(comptime T: type) type {
             const task = try allocator.create(Self);
             task.* = .{
                 .id = TaskId.generate(),
-                .state = std.atomic.Atomic(TaskState).init(.Pending),
+                .state = std.atomic.Value(TaskState).init(.Pending),
                 .future = fut,
                 .result = null,
                 .waker = null,
@@ -73,8 +73,8 @@ pub fn Task(comptime T: type) type {
             _ = self.state.cmpxchgStrong(
                 .Pending,
                 .Running,
-                .Acquire,
-                .Monotonic,
+                .acquire,
+                .monotonic,
             );
 
             const result = self.future.poll(ctx);
@@ -82,11 +82,11 @@ pub fn Task(comptime T: type) type {
             switch (result) {
                 .Ready => |value| {
                     self.result = value;
-                    self.state.store(.Completed, .Release);
+                    self.state.store(.Completed, .release);
                     return true;
                 },
                 .Pending => {
-                    self.state.store(.Pending, .Release);
+                    self.state.store(.Pending, .release);
                     return false;
                 },
             }
@@ -94,17 +94,17 @@ pub fn Task(comptime T: type) type {
 
         /// Cancel the task
         pub fn cancel(self: *Self) void {
-            self.state.store(.Cancelled, .Release);
+            self.state.store(.Cancelled, .release);
         }
 
         /// Check if task is completed
         pub fn isCompleted(self: *Self) bool {
-            return self.state.load(.Acquire) == .Completed;
+            return self.state.load(.acquire) == .Completed;
         }
 
         /// Check if task is cancelled
         pub fn isCancelled(self: *Self) bool {
-            return self.state.load(.Acquire) == .Cancelled;
+            return self.state.load(.acquire) == .Cancelled;
         }
     };
 }
@@ -150,7 +150,7 @@ pub fn JoinHandle(comptime T: type) type {
 
         /// Check if the task is done (completed or cancelled)
         pub fn isDone(self: Self) bool {
-            const state = self.task.state.load(.Acquire);
+            const state = self.task.state.load(.acquire);
             return state == .Completed or state == .Cancelled or state == .Failed;
         }
     };

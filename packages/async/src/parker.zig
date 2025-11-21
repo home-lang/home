@@ -10,7 +10,7 @@ const std = @import("std");
 /// to minimize syscalls in the common case.
 pub const Parker = struct {
     /// State: 0 = empty, 1 = notified
-    state: std.atomic.Atomic(u32),
+    state: std.atomic.Value(u32),
     /// Semaphore for actual blocking
     semaphore: std.Thread.Semaphore,
 
@@ -19,7 +19,7 @@ pub const Parker = struct {
 
     pub fn init() Parker {
         return .{
-            .state = std.atomic.Atomic(u32).init(EMPTY),
+            .state = std.atomic.Value(u32).init(EMPTY),
             .semaphore = .{},
         };
     }
@@ -31,7 +31,7 @@ pub const Parker = struct {
     /// immediately.
     pub fn park(self: *Parker) void {
         // If we're already notified, consume the notification and return
-        if (self.state.swap(EMPTY, .Acquire) == NOTIFIED) {
+        if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
             return;
         }
 
@@ -40,7 +40,7 @@ pub const Parker = struct {
             self.semaphore.wait();
 
             // Check if we were actually notified
-            if (self.state.swap(EMPTY, .Acquire) == NOTIFIED) {
+            if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
                 return;
             }
 
@@ -53,15 +53,15 @@ pub const Parker = struct {
     /// Returns true if unparked by another thread, false if timed out.
     pub fn parkTimeout(self: *Parker, timeout_ns: u64) bool {
         // If we're already notified, consume the notification and return
-        if (self.state.swap(EMPTY, .Acquire) == NOTIFIED) {
+        if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
             return true;
         }
 
-        const start = std.time.nanoTimestamp();
+        const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
         const deadline = start + @as(i128, timeout_ns);
 
         while (true) {
-            const now = std.time.nanoTimestamp();
+            const now = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
             if (now >= deadline) {
                 // Timed out
                 return false;
@@ -76,7 +76,7 @@ pub const Parker = struct {
             };
 
             // Check if we were actually notified
-            if (self.state.swap(EMPTY, .Acquire) == NOTIFIED) {
+            if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
                 return true;
             }
 
@@ -90,7 +90,7 @@ pub const Parker = struct {
     /// If not, the next call to park() will return immediately.
     pub fn unpark(self: *Parker) void {
         // Set notified state
-        if (self.state.swap(NOTIFIED, .Release) == EMPTY) {
+        if (self.state.swap(NOTIFIED, .release) == EMPTY) {
             // Thread might be waiting, signal semaphore
             self.semaphore.post();
         }
@@ -134,11 +134,11 @@ test "Parker - park timeout" {
 
     var parker = Parker.init();
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
     const timeout = 10 * std.time.ns_per_ms; // 10ms
 
     const unparked = parker.parkTimeout(timeout);
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); } - start;
 
     // Should have timed out
     try testing.expect(!unparked);
@@ -160,7 +160,7 @@ test "Parker - concurrent unpark" {
     const unparker_fn = struct {
         fn run(ctx: *Context) void {
             // Wait a bit before unparking
-            std.time.sleep(5 * std.time.ns_per_ms); // 5ms
+            std.posix.nanosleep(0, 5 * std.time.ns_per_ms); // 5ms
             ctx.parker.unpark();
         }
     }.run;
@@ -169,9 +169,9 @@ test "Parker - concurrent unpark" {
 
     const thread = try std.Thread.spawn(.{}, unparker_fn, .{&ctx});
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
     parker.park();
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); } - start;
 
     thread.join();
 
@@ -211,7 +211,7 @@ test "Parker - unparker handle" {
 
     const unparker_fn = struct {
         fn run(ctx: *Context) void {
-            std.time.sleep(5 * std.time.ns_per_ms);
+            std.posix.nanosleep(0, 5 * std.time.ns_per_ms);
             ctx.unparker.unpark();
         }
     }.run;

@@ -16,7 +16,7 @@ pub fn Mutex(comptime T: type) type {
         /// The protected data
         data: T,
         /// Is the mutex currently locked?
-        locked: std.atomic.Atomic(bool),
+        locked: std.atomic.Value(bool),
         /// Queue of waiting tasks
         waiters: std.ArrayList(*Waker),
         /// Protects the waiter queue
@@ -25,7 +25,7 @@ pub fn Mutex(comptime T: type) type {
         pub fn init(data: T, allocator: std.mem.Allocator) Self {
             return .{
                 .data = data,
-                .locked = std.atomic.Atomic(bool).init(false),
+                .locked = std.atomic.Value(bool).init(false),
                 .waiters = std.ArrayList(*Waker).init(allocator),
                 .queue_mutex = .{},
             };
@@ -52,14 +52,14 @@ pub fn Mutex(comptime T: type) type {
 
         /// Try to lock without blocking
         pub fn tryLock(self: *Self) ?MutexGuard(T) {
-            if (self.locked.cmpxchgStrong(false, true, .Acquire, .Monotonic) == null) {
+            if (self.locked.cmpxchgStrong(false, true, .acquire, .monotonic) == null) {
                 return MutexGuard(T){ .mutex = self };
             }
             return null;
         }
 
         fn unlock(self: *Self) void {
-            self.locked.store(false, .Release);
+            self.locked.store(false, .release);
 
             // Wake one waiter
             self.queue_mutex.lock();
@@ -141,7 +141,7 @@ pub fn RwLock(comptime T: type) type {
         };
 
         data: T,
-        state: std.atomic.Atomic(u8), // 0=unlocked, >0=readers, 255=writer
+        state: std.atomic.Value(u8), // 0=unlocked, >0=readers, 255=writer
         read_waiters: std.ArrayList(*Waker),
         write_waiters: std.ArrayList(*Waker),
         queue_mutex: std.Thread.Mutex,
@@ -149,7 +149,7 @@ pub fn RwLock(comptime T: type) type {
         pub fn init(data: T, allocator: std.mem.Allocator) Self {
             return .{
                 .data = data,
-                .state = std.atomic.Atomic(u8).init(0),
+                .state = std.atomic.Value(u8).init(0),
                 .read_waiters = std.ArrayList(*Waker).init(allocator),
                 .write_waiters = std.ArrayList(*Waker).init(allocator),
                 .queue_mutex = .{},
@@ -189,7 +189,7 @@ pub fn RwLock(comptime T: type) type {
         /// Try to acquire read lock
         pub fn tryRead(self: *Self) ?ReadGuard(T) {
             while (true) {
-                const current = self.state.load(.Acquire);
+                const current = self.state.load(.acquire);
 
                 // Can't read if there's a writer
                 if (current == 255) return null;
@@ -198,8 +198,8 @@ pub fn RwLock(comptime T: type) type {
                 if (self.state.cmpxchgWeak(
                     current,
                     current + 1,
-                    .Acquire,
-                    .Monotonic,
+                    .acquire,
+                    .monotonic,
                 ) == null) {
                     return ReadGuard(T){ .rwlock = self };
                 }
@@ -208,14 +208,14 @@ pub fn RwLock(comptime T: type) type {
 
         /// Try to acquire write lock
         pub fn tryWrite(self: *Self) ?WriteGuard(T) {
-            if (self.state.cmpxchgStrong(0, 255, .Acquire, .Monotonic) == null) {
+            if (self.state.cmpxchgStrong(0, 255, .acquire, .monotonic) == null) {
                 return WriteGuard(T){ .rwlock = self };
             }
             return null;
         }
 
         fn unlockRead(self: *Self) void {
-            const prev = self.state.fetchSub(1, .Release);
+            const prev = self.state.fetchSub(1, .release);
 
             // If we were the last reader, wake a writer
             if (prev == 1) {
@@ -230,7 +230,7 @@ pub fn RwLock(comptime T: type) type {
         }
 
         fn unlockWrite(self: *Self) void {
-            self.state.store(0, .Release);
+            self.state.store(0, .release);
 
             self.queue_mutex.lock();
             defer self.queue_mutex.unlock();
@@ -339,13 +339,13 @@ pub fn WriteGuard(comptime T: type) type {
 
 /// Async semaphore for limiting concurrent access
 pub const Semaphore = struct {
-    permits: std.atomic.Atomic(usize),
+    permits: std.atomic.Value(usize),
     waiters: std.ArrayList(*Waker),
     mutex: std.Thread.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, permits: usize) Semaphore {
         return .{
-            .permits = std.atomic.Atomic(usize).init(permits),
+            .permits = std.atomic.Value(usize).init(permits),
             .waiters = std.ArrayList(*Waker).init(allocator),
             .mutex = .{},
         };
@@ -370,14 +370,14 @@ pub const Semaphore = struct {
 
     pub fn tryAcquire(self: *Semaphore) bool {
         while (true) {
-            const current = self.permits.load(.Acquire);
+            const current = self.permits.load(.acquire);
             if (current == 0) return false;
 
             if (self.permits.cmpxchgWeak(
                 current,
                 current - 1,
-                .Acquire,
-                .Monotonic,
+                .acquire,
+                .monotonic,
             ) == null) {
                 return true;
             }
@@ -385,7 +385,7 @@ pub const Semaphore = struct {
     }
 
     pub fn release(self: *Semaphore) void {
-        _ = self.permits.fetchAdd(1, .Release);
+        _ = self.permits.fetchAdd(1, .release);
 
         self.mutex.lock();
         defer self.mutex.unlock();

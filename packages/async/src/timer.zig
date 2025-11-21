@@ -45,7 +45,7 @@ pub const TimerWheel = struct {
             .allocator = allocator,
             .wheels = undefined,
             .current_ticks = [_]u64{0} ** NUM_WHEELS,
-            .start_time = @intCast(std.time.nanoTimestamp()),
+            .start_time = @intCast(@as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt)))),
             .mutex = .{},
         };
 
@@ -82,7 +82,7 @@ pub const TimerWheel = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const now = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const now = @as(u64, @intCast(@as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt)))));
         const deadline = now + delay_ns;
 
         // Calculate which wheel and slot
@@ -109,7 +109,7 @@ pub const TimerWheel = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const now = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const now = @as(u64, @intCast(@as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt)))));
 
         // Process wheel 0 (finest granularity)
         self.advanceWheel(0, now);
@@ -208,7 +208,7 @@ pub const SleepFuture = struct {
             // Register with timer wheel
             // TODO: Get timer wheel from context/runtime
             // For now, just use actual sleep
-            std.time.sleep(self.duration_ns);
+            std.posix.nanosleep(0, self.duration_ns);
             self.registered = true;
             return .{ .Ready = {} };
         }
@@ -241,11 +241,11 @@ pub fn TimeoutFuture(comptime T: type) type {
         pub fn poll(self: *Self, ctx: *Context) PollResult(error{Timeout}!T) {
             // Initialize start time on first poll
             if (self.start_time == null) {
-                self.start_time = @intCast(std.time.nanoTimestamp());
+                self.start_time = @intCast(@as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt))));
             }
 
             // Check if timed out
-            const now = @as(u64, @intCast(std.time.nanoTimestamp()));
+            const now = @as(u64, @intCast(@as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt)))));
             if (now >= self.start_time.? + self.deadline_ns) {
                 return .{ .Ready = TimeoutError.Timeout };
             }
@@ -342,7 +342,7 @@ test "TimerWheel - schedule and advance" {
     try wheel.schedule(std.time.ns_per_ms, &waker);
 
     // Sleep for 2ms
-    std.time.sleep(2 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 2 * std.time.ns_per_ms);
 
     // Advance the wheel
     wheel.advance();
@@ -354,7 +354,7 @@ test "TimerWheel - schedule and advance" {
 test "sleep - basic" {
     const testing = std.testing;
 
-    const start = std.time.nanoTimestamp();
+    const start = @as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt)));
     var sleep_fut = sleep(10 * std.time.ns_per_ms);
 
     const waker = Waker{
@@ -380,7 +380,7 @@ test "sleep - basic" {
     var ctx = Context.init(waker);
     const result = sleep_fut.poll(&ctx);
 
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = @as(i64, @intCast((try std.time.Instant.now()).order(std.time.Instant{ .timestamp = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .uefi) 0 else .{ .tv_sec = 0, .tv_nsec = 0 } }).compare(.gt))) - start;
 
     try testing.expect(result.isReady());
     try testing.expect(elapsed >= 9 * std.time.ns_per_ms); // Allow some slack
