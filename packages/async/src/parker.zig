@@ -1,4 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Simpler approach: track relative time using since()
+// We don't actually need absolute timestamps, just elapsed time
 
 /// Parker/Unparker for efficient thread parking and unparking.
 ///
@@ -57,17 +61,18 @@ pub const Parker = struct {
             return true;
         }
 
-        const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
-        const deadline = start + @as(i128, timeout_ns);
+        const start = std.time.Instant.now() catch return false;
 
         while (true) {
-            const now = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
-            if (now >= deadline) {
+            const now = std.time.Instant.now() catch return false;
+            const elapsed = now.since(start);
+
+            if (elapsed >= timeout_ns) {
                 // Timed out
                 return false;
             }
 
-            const remaining = @as(u64, @intCast(deadline - now));
+            const remaining = timeout_ns - elapsed;
 
             // Wait with timeout
             self.semaphore.timedWait(remaining) catch {
@@ -134,11 +139,11 @@ test "Parker - park timeout" {
 
     var parker = Parker.init();
 
-    const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
+    const start = std.time.Instant.now() catch unreachable;
     const timeout = 10 * std.time.ns_per_ms; // 10ms
 
     const unparked = parker.parkTimeout(timeout);
-    const elapsed = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); } - start;
+    const now = std.time.Instant.now() catch unreachable; const elapsed = now.since(start);
 
     // Should have timed out
     try testing.expect(!unparked);
@@ -169,9 +174,9 @@ test "Parker - concurrent unpark" {
 
     const thread = try std.Thread.spawn(.{}, unparker_fn, .{&ctx});
 
-    const start = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); };
+    const start = std.time.Instant.now() catch unreachable;
     parker.park();
-    const elapsed = blk: { const instant = std.time.Instant.now() catch break :blk 0; break :blk @as(i64, @intCast(@as(u64, @bitCast(instant.timestamp)))); } - start;
+    const now = std.time.Instant.now() catch unreachable; const elapsed = now.since(start);
 
     thread.join();
 

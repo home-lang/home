@@ -279,6 +279,7 @@ test "ConcurrentQueue - concurrent push and pop" {
     const PopContext = struct {
         queue: *ConcurrentQueue(i32),
         popped: std.ArrayList(i32),
+        allocator: std.mem.Allocator,
     };
 
     const pusher = struct {
@@ -298,7 +299,7 @@ test "ConcurrentQueue - concurrent push and pop" {
 
             while (attempts < max_attempts) : (attempts += 1) {
                 if (ctx.queue.pop()) |value| {
-                    ctx.popped.append(value) catch unreachable;
+                    ctx.popped.append(ctx.allocator, value) catch unreachable;
                 }
                 std.posix.nanosleep(0, 100);
             }
@@ -306,11 +307,11 @@ test "ConcurrentQueue - concurrent push and pop" {
     }.run;
 
     var push_ctx = PushContext{ .queue = &queue, .count = 100 };
-    var pop_ctx1 = PopContext{ .queue = &queue, .popped = std.ArrayList(i32).init(allocator) };
-    var pop_ctx2 = PopContext{ .queue = &queue, .popped = std.ArrayList(i32).init(allocator) };
+    var pop_ctx1 = PopContext{ .queue = &queue, .popped = .empty, .allocator = allocator };
+    var pop_ctx2 = PopContext{ .queue = &queue, .popped = .empty, .allocator = allocator };
 
-    defer pop_ctx1.popped.deinit();
-    defer pop_ctx2.popped.deinit();
+    defer pop_ctx1.popped.deinit(allocator);
+    defer pop_ctx2.popped.deinit(allocator);
 
     const push_thread = try std.Thread.spawn(.{}, pusher, .{&push_ctx});
     const pop_thread1 = try std.Thread.spawn(.{}, popper, .{&pop_ctx1});

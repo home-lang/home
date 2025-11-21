@@ -17,7 +17,7 @@ pub const TaskId = struct {
 };
 
 /// Task state
-pub const TaskState = enum {
+pub const TaskState = enum(u8) {
     /// Task is ready to run
     Pending,
     /// Task is currently running

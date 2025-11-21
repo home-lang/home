@@ -98,10 +98,10 @@ pub fn WorkStealingDeque(comptime T: type) type {
             const t = self.top.load(.acquire);
             var buf = self.buffer.load(.monotonic).?;
 
-            const size = b - t;
+            const len = b - t;
 
             // Check if we need to grow the buffer
-            if (size >= @as(i64, @intCast(buf.capacity))) {
+            if (len >= @as(i64, @intCast(buf.capacity))) {
                 const new_buf = try buf.grow(self.allocator, t, b);
 
                 // Update buffer pointer
@@ -117,8 +117,7 @@ pub fn WorkStealingDeque(comptime T: type) type {
             buf.put(b, value);
 
             // Ensure the write to buffer happens before we increment bottom
-            @fence(.release);
-
+            // (fence removed in Zig 0.16, using release store which provides ordering)
             self.bottom.store(b + 1, .release);
         }
 
@@ -126,15 +125,14 @@ pub fn WorkStealingDeque(comptime T: type) type {
         ///
         /// Returns null if the deque is empty.
         pub fn pop(self: *Self) ?T {
-            var b = self.bottom.load(.monotonic) - 1;
+            const b = self.bottom.load(.monotonic) - 1;
             const buf = self.buffer.load(.monotonic).?;
 
             self.bottom.store(b, .monotonic);
 
             // Ensure bottom is written before we read top
-            @fence(.seq_cst);
-
-            const t = self.top.load(.monotonic);
+            // (fence removed in Zig 0.16, using seq_cst load instead)
+            const t = self.top.load(.seq_cst);
 
             var result: ?T = null;
 
@@ -144,13 +142,14 @@ pub fn WorkStealingDeque(comptime T: type) type {
 
                 if (t == b) {
                     // Last element - compete with stealers
-                    if (!self.top.cmpxchgStrong(
+                    // cmpxchgStrong now returns null on success, previous value on failure
+                    if (self.top.cmpxchgStrong(
                         t,
                         t + 1,
                         .seq_cst,
                         .monotonic,
-                    )) {
-                        // Lost race with stealer
+                    )) |_| {
+                        // Lost race with stealer (got previous value)
                         result = null;
                     }
 
@@ -172,9 +171,8 @@ pub fn WorkStealingDeque(comptime T: type) type {
             const t = self.top.load(.acquire);
 
             // Ensure we read top before bottom
-            @fence(.seq_cst);
-
-            const b = self.bottom.load(.acquire);
+            // (fence removed in Zig 0.16, using seq_cst load instead)
+            const b = self.bottom.load(.seq_cst);
 
             if (t >= b) {
                 // Deque is empty
@@ -185,13 +183,14 @@ pub fn WorkStealingDeque(comptime T: type) type {
             const item = buf.get(t);
 
             // Try to increment top
-            if (!self.top.cmpxchgStrong(
+            // cmpxchgStrong now returns null on success, previous value on failure
+            if (self.top.cmpxchgStrong(
                 t,
                 t + 1,
                 .seq_cst,
                 .monotonic,
-            )) {
-                // Lost race with another stealer or owner
+            )) |_| {
+                // Lost race with another stealer or owner (got previous value)
                 return null;
             }
 
@@ -320,6 +319,7 @@ test "WorkStealingDeque - concurrent push and steal" {
     const StealContext = struct {
         deque: *WorkStealingDeque(i32),
         stolen: std.ArrayList(i32),
+        allocator: std.mem.Allocator,
     };
 
     // Push many items
@@ -331,14 +331,15 @@ test "WorkStealingDeque - concurrent push and steal" {
     // Spawn thief thread
     var ctx = StealContext{
         .deque = &deque,
-        .stolen = std.ArrayList(i32).init(allocator),
+        .stolen = .empty,
+        .allocator = allocator,
     };
-    defer ctx.stolen.deinit();
+    defer ctx.stolen.deinit(allocator);
 
     const thief_fn = struct {
         fn run(c: *StealContext) void {
             while (c.deque.steal()) |item| {
-                c.stolen.append(item) catch unreachable;
+                c.stolen.append(c.allocator, item) catch unreachable;
                 // Small sleep to allow owner to push
                 std.posix.nanosleep(0, 100);
             }

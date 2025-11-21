@@ -199,7 +199,7 @@ pub const TaskQueue = struct {
 
         b -= 1;
         self.bottom.store(b, .monotonic);
-        @fence(.seq_cst);
+        @atomicFence(.seq_cst);
 
         const t = self.top.load(.monotonic);
         const idx = b % self.capacity;
@@ -227,7 +227,7 @@ pub const TaskQueue = struct {
     pub fn steal(self: *TaskQueue) ?*async_runtime.Task {
         while (true) {
             const t = self.top.load(.acquire);
-            @fence(.seq_cst);
+            @atomicFence(.seq_cst);
             const b = self.bottom.load(.acquire);
 
             if (t >= b) {
