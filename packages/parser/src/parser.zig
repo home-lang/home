@@ -10,6 +10,9 @@ pub const ModuleResolver = module_resolver.ModuleResolver;
 const symbol_table = @import("symbol_table.zig");
 pub const SymbolTable = symbol_table.SymbolTable;
 pub const Symbol = symbol_table.Symbol;
+const compilation_unit = @import("compilation_unit.zig");
+pub const CompilationUnit = compilation_unit.CompilationUnit;
+pub const CompiledModule = compilation_unit.CompiledModule;
 const trait_parser = @import("trait_parser.zig");
 const closure_parser = @import("closure_parser.zig");
 

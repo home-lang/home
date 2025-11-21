@@ -105,8 +105,8 @@ pub const BorrowChecker = struct {
                 try self.tracker.declareOwned(let_decl.name, current_scope);
 
                 // Check initializer if present
-                if (let_decl.initializer) |init| {
-                    const init_expr = @as(*const ast.Expr, @ptrCast(init));
+                if (let_decl.initializer) |initializer| {
+                    const init_expr = @as(*const ast.Expr, @ptrCast(initializer));
                     try self.checkExpression(init_expr);
 
                     // Check if this is a borrow

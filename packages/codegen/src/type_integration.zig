@@ -59,8 +59,8 @@ pub const TypeIntegration = struct {
             },
             .LetDecl => |let_decl| {
                 // Infer let binding type
-                if (let_decl.initializer) |init| {
-                    const init_expr = @as(*const ast.Expr, @ptrCast(init));
+                if (let_decl.initializer) |initializer| {
+                    const init_expr = @as(*const ast.Expr, @ptrCast(initializer));
                     const ty = try self.inferencer.inferExpression(init_expr, env);
 
                     // Store inferred type for this variable
@@ -186,6 +186,7 @@ pub const TypeIntegration = struct {
 
     /// Check if type inference succeeded without errors
     pub fn hasErrors(self: *TypeIntegration) bool {
+        _ = self;
         // Check if any type variables remain unresolved
         // This is a simplified check - a real implementation would track errors
         return false;

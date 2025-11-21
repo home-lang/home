@@ -820,13 +820,10 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     const file_path = args[0];
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| {
         std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     std.debug.print("{s}Running Tests:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -918,12 +915,13 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     for (discovered_tests.items) |test_item| {
-        const start_time = std.time.milliTimestamp();
+        const start_time = std.time.Instant.now() catch @panic("Timer unsupported");
 
         // TODO: Execute individual test functions
         // For now, just validate that the test exists
 
-        const duration = std.time.milliTimestamp() - start_time;
+        const end_time = std.time.Instant.now() catch @panic("Timer unsupported");
+        const duration = end_time.since(start_time) / std.time.ns_per_ms;
         total_duration += duration;
         passed += 1;
         std.debug.print("  {s}✓{s} {s} (found)\n", .{

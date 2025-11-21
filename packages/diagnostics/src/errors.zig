@@ -203,7 +203,7 @@ pub const ErrorFormatter = struct {
         var buf = std.ArrayList(u8){};
         errdefer buf.deinit(self.allocator);
 
-        const writer = buf.writer(self.allocator);
+        const writer = buf.writer();
 
         const ctx = ErrorContext{
             .file = file,
