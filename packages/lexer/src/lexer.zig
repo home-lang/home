@@ -161,6 +161,11 @@ pub const Lexer = struct {
                 },
                 '/' => {
                     if (self.peekNext() == '/') {
+                        // Check for doc comment (///)
+                        if (self.current + 2 < self.source.len and self.source[self.current + 2] == '/') {
+                            // This is a doc comment - don't skip it, return to scanToken
+                            return;
+                        }
                         // Skip single-line comment //
                         while (self.peek() != '\n' and !self.isAtEnd()) {
                             _ = self.advance();
@@ -442,6 +447,26 @@ pub const Lexer = struct {
             self.in_interpolation = false;
             return self.makeToken(.StringInterpolationEnd);
         }
+    }
+
+    /// Lex a documentation comment (/// ...).
+    ///
+    /// Doc comments start with /// and continue to end of line.
+    /// The lexeme includes the full /// prefix and content.
+    ///
+    /// Returns: DocComment token
+    fn docComment(self: *Lexer) Token {
+        // We're at the first / after /, so advance past // to get to third /
+        _ = self.advance(); // second /
+        _ = self.advance(); // third /
+
+        // Scan to end of line - include everything in lexeme
+        while (self.peek() != '\n' and !self.isAtEnd()) {
+            _ = self.advance();
+        }
+
+        // makeToken will use self.source[self.start..self.current] which includes ///
+        return self.makeToken(.DocComment);
     }
 
     /// Lex a raw string literal (r"..." or r#"..."#).
@@ -782,7 +807,14 @@ pub const Lexer = struct {
             '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
             '-' => if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
             '*' => if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
-            '/' => if (self.match('=')) self.makeToken(.SlashEqual) else self.makeToken(.Slash),
+            '/' => blk: {
+                // Check for doc comment ///
+                if (self.peek() == '/' and self.peekNext() == '/') {
+                    break :blk self.docComment();
+                }
+                if (self.match('=')) break :blk self.makeToken(.SlashEqual);
+                break :blk self.makeToken(.Slash);
+            },
             '%' => if (self.match('=')) self.makeToken(.PercentEqual) else self.makeToken(.Percent),
             '!' => if (self.match('=')) self.makeToken(.BangEqual) else self.makeToken(.Bang),
             '=' => if (self.match('=')) self.makeToken(.EqualEqual) else if (self.match('>')) self.makeToken(.FatArrow) else self.makeToken(.Equal),

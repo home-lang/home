@@ -70,6 +70,7 @@ pub const TokenType = enum {
     StringInterpolationEnd,   // }text"
     Integer,
     Float,
+    DocComment, // /// documentation comment
 
     // Keywords
     And,
