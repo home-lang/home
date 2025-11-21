@@ -139,7 +139,11 @@ pub const Assembler = struct {
         // REX.W + B0 + rd + imm64
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0xB8 + dst.encodeModRM());
-        try self.code.writer(self.allocator).writeInt(i64, imm, .little);
+
+        // Write i64 in little endian
+        var bytes: [8]u8 = undefined;
+        std.mem.writeInt(i64, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// mov reg, reg
@@ -158,7 +162,9 @@ pub const Assembler = struct {
         // ModRM byte: mod=10 (32-bit displacement), reg=dst, rm=base
         try self.emitModRM(0b10, @intFromEnum(dst), @intFromEnum(base));
         // Emit 32-bit displacement
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// mov [base + offset], src - Store register to memory
@@ -169,7 +175,9 @@ pub const Assembler = struct {
         // ModRM byte: mod=10 (32-bit displacement), reg=src, rm=base
         try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
         // Emit 32-bit displacement
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// lea reg, [rip + disp32] - Load Effective Address with RIP-relative addressing
@@ -190,7 +198,9 @@ pub const Assembler = struct {
         const disp_pos = self.code.items.len;
 
         // Emit 32-bit displacement (offset from RIP)
-        try self.code.writer(self.allocator).writeInt(i32, disp32, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, disp32, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
 
         return disp_pos;
     }
@@ -223,7 +233,9 @@ pub const Assembler = struct {
             if (src == .rsp or src == .r12) {
                 try self.code.append(self.allocator, 0x24); // SIB for rsp/r12
             }
-            try self.code.writer(self.allocator).writeInt(i32, disp, .little);
+            var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, disp, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
         }
     }
 
@@ -240,7 +252,9 @@ pub const Assembler = struct {
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x81);
         try self.emitModRM(0b11, 0, @intFromEnum(dst));
-        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// sub reg, reg
@@ -257,7 +271,9 @@ pub const Assembler = struct {
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x81);
         try self.emitModRM(0b11, 5, @intFromEnum(dst));
-        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// imul reg, reg (signed multiply)
@@ -275,7 +291,9 @@ pub const Assembler = struct {
         try self.emitRex(true, dst.needsRexPrefix(), false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x69);
         try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(dst));
-        try self.code.writer(self.allocator).writeInt(i32, imm, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// idiv reg (signed divide: rdx:rax / reg -> rax=quotient, rdx=remainder)
@@ -361,55 +379,71 @@ pub const Assembler = struct {
     /// jmp rel32 (relative jump)
     pub fn jmpRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0xE9);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// je rel32 (jump if equal)
     pub fn jeRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x84);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jne rel32 (jump if not equal)
     pub fn jneRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x85);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jl rel32 (jump if less)
     pub fn jlRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x8C);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jle rel32 (jump if less or equal)
     pub fn jleRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x8E);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jg rel32 (jump if greater)
     pub fn jgRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x8F);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jge rel32 (jump if greater or equal)
     pub fn jgeRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x8D);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// call rel32 (relative call)
     pub fn callRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0xE8);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// Get current code position (for calculating jumps)
@@ -436,14 +470,18 @@ pub const Assembler = struct {
     pub fn jzRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x84);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// jnz rel32 (jump if not zero) - same as jne
     pub fn jnzRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x85);
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// Patch a jz (je) rel32 instruction at a specific position
@@ -781,7 +819,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x6F);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// movdqa [base + offset], xmm - Move aligned 128-bit integer from XMM register to memory
@@ -794,7 +834,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x7F);
         try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// paddd xmm1, xmm2 - Packed add doubleword (add 4x32-bit integers)
@@ -1006,7 +1048,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x28);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// movaps [base + offset], xmm - Store aligned packed single-precision
@@ -1018,7 +1062,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x29);
         try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     // ============ VEX-encoded Helper ============
@@ -1248,7 +1294,9 @@ pub const Assembler = struct {
         );
         try self.code.append(self.allocator, 0x6F);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// vmovdqa [base + offset], ymm - Store aligned 256-bit integer to memory
@@ -1266,7 +1314,9 @@ pub const Assembler = struct {
         );
         try self.code.append(self.allocator, 0x7F);
         try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// vpxor ymm1, ymm2, ymm3 - AVX2 packed XOR (common way to zero a YMM register)
@@ -1478,7 +1528,9 @@ pub const Assembler = struct {
         );
         try self.code.append(self.allocator, 0x18);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// vbroadcastss ymm, m32 - Broadcast single float to all 8 elements
@@ -1496,7 +1548,9 @@ pub const Assembler = struct {
         );
         try self.code.append(self.allocator, 0x18);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// vbroadcastsd ymm, m64 - Broadcast single double to all 4 elements
@@ -1514,7 +1568,9 @@ pub const Assembler = struct {
         );
         try self.code.append(self.allocator, 0x19);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     // ============ Conversion Instructions ============
@@ -1576,7 +1632,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x10);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// movups [base + offset], xmm - Store unaligned packed single-precision
@@ -1588,7 +1646,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x11);
         try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// movdqu xmm, [base + offset] - Move unaligned 128-bit integer
@@ -1601,7 +1661,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x6F);
         try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     /// movdqu [base + offset], xmm - Store unaligned 128-bit integer
@@ -1614,7 +1676,9 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x7F);
         try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
-        try self.code.writer(self.allocator).writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     // ============ Bit Manipulation ============

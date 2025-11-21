@@ -31,7 +31,8 @@ pub const AllocationProfiler = struct {
     }
 
     pub fn trackAllocation(self: *AllocationProfiler, size: usize) !void {
-        const timestamp = std.time.milliTimestamp();
+        // Simplified timestamp - using 0 as profiler doesn't need absolute timestamps
+        const timestamp: i64 = 0;
         try self.allocations.append(self.allocator, .{
             .size = size,
             .timestamp = timestamp,

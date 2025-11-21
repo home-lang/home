@@ -670,10 +670,7 @@ pub const PackageConfig = struct {
     config_file: []const u8, // Track which file was used
 
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !*PackageConfig {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+        const content = try std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.limited(1024 * 1024));
         defer allocator.free(content);
 
         const config = try allocator.create(PackageConfig);
@@ -1004,10 +1001,7 @@ pub const LockFile = struct {
     }
 
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !*LockFile {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+        const content = try std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
         defer allocator.free(content);
 
         // Parse lockfile (simplified)

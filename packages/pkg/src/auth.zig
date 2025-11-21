@@ -16,7 +16,7 @@ pub const AuthToken = struct {
 
     pub fn isValid(self: AuthToken) bool {
         if (self.expires_at == 0) return true;
-        const now = std.time.timestamp();
+        const now = getUnixTimestamp();
         return now < self.expires_at;
     }
 
@@ -74,17 +74,28 @@ pub const TokenStore = struct {
 
     /// Load tokens from disk
     pub fn load(self: *TokenStore) !void {
-        const file = std.fs.openFileAbsolute(self.config_path, .{}) catch |err| {
+        // Read and parse JSON
+        var threaded = std.Io.Threaded.init(self.allocator);
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const file = std.Io.File.openAbsolute(io, self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
                 // No tokens file yet, that's okay
                 return;
             }
             return err;
         };
-        defer file.close();
+        defer file.close(io);
 
-        // Read and parse JSON
-        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024); // 1MB max
+        // Get file size
+        const stat = try file.stat(io);
+        const file_size = stat.size;
+
+        // Read file contents
+        var io_buf: [8192]u8 = undefined;
+        var reader = file.reader(io, &io_buf);
+        const content = try reader.interface.readAlloc(self.allocator, file_size);
         defer self.allocator.free(content);
 
         const parsed = try std.json.parseFromSlice(
@@ -305,7 +316,7 @@ pub const AuthManager = struct {
             const auth_token = AuthToken{
                 .token = t,
                 .registry = reg,
-                .created_at = std.time.timestamp(),
+                .created_at = getUnixTimestamp(),
                 .expires_at = 0, // No expiry for manually provided tokens
                 .username = username,
             };
@@ -318,15 +329,18 @@ pub const AuthManager = struct {
         }
 
         // Interactive login
-        const stdin = std.fs.File.stdin();
-        const stdout = std.fs.File.stdout();
+        var threaded_io = std.Io.Threaded.init(self.allocator);
+        defer threaded_io.deinit();
+        const io = threaded_io.io();
+
+        const stdin = std.Io.File.stdin();
 
         // Prompt for username if not provided
         var stdin_buf: [4096]u8 = undefined;
-        var stdin_reader = stdin.reader(&stdin_buf);
+        var stdin_reader = stdin.reader(io, &stdin_buf);
 
         const user = if (username) |u| u else blk: {
-            _ = try stdout.write("Username: ");
+            std.debug.print("Username: ", .{});
             const input = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
                 if (err == error.EndOfStream) return error.NoInput;
                 return err;
@@ -336,7 +350,7 @@ pub const AuthManager = struct {
         defer if (username == null) self.allocator.free(user);
 
         // Prompt for password/token
-        _ = try stdout.write("Token or Password: ");
+        std.debug.print("Token or Password: ", .{});
 
         // TODO: Hide password input (platform-specific)
         const password = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
@@ -353,7 +367,7 @@ pub const AuthManager = struct {
         const auth_token = AuthToken{
             .token = obtained_token,
             .registry = reg,
-            .created_at = std.time.timestamp(),
+            .created_at = getUnixTimestamp(),
             .expires_at = 0, // TODO: Parse expiry from registry response
             .username = user,
         };
@@ -441,4 +455,14 @@ pub fn verifyToken(auth_manager: *AuthManager, registry: []const u8) !bool {
     // 2. Return true if 200 OK, false otherwise
 
     return token.isValid();
+}
+
+/// Get current UNIX timestamp (seconds since epoch)
+fn getUnixTimestamp() i64 {
+    // Use POSIX clock_gettime for realtime clock
+    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+        // Fallback to 0 if clock not available
+        return 0;
+    };
+    return ts.sec;
 }

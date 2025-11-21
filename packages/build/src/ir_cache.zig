@@ -5,6 +5,12 @@ const std = @import("std");
 const crypto = std.crypto;
 const fs = std.fs;
 
+// Zig 0.16 compatibility: std.time.timestamp() was removed
+fn getTimestamp() i64 {
+    const instant = std.time.Instant.now() catch return 0;
+    return @as(i64, @intCast(instant.timestamp.sec));
+}
+
 // ============================================================================
 // Cache Key Generation
 // ============================================================================
@@ -190,7 +196,7 @@ pub const IRCache = struct {
         }
 
         // Update access stats
-        entry.last_accessed = std.time.timestamp();
+        entry.last_accessed = getTimestamp();
         entry.hit_count += 1;
         self.stats.cache_hits += 1;
 
@@ -236,8 +242,8 @@ pub const IRCache = struct {
             .dependencies = try self.allocator.dupe(CacheHash, dependencies),
             .ir_path = ir_path,
             .object_path = obj_path,
-            .created_at = std.time.timestamp(),
-            .last_accessed = std.time.timestamp(),
+            .created_at = getTimestamp(),
+            .last_accessed = getTimestamp(),
             .hit_count = 0,
             .compile_time_ms = compile_time_ms,
         };
@@ -373,10 +379,7 @@ pub const IRCache = struct {
     }
 
     fn loadMetadata(self: *IRCache) !void {
-        const file = try fs.cwd().openFile(self.metadata_file, .{});
-        defer file.close();
-
-        const data = try file.readToEndAlloc(self.allocator, 100 * 1024 * 1024);
+        const data = try std.fs.cwd().readFileAlloc(self.metadata_file, self.allocator, std.Io.Limit.limited(100 * 1024 * 1024));
         defer self.allocator.free(data);
         // TODO: Parse JSON metadata
         // For now, just note that we attempted to load

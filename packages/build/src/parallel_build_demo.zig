@@ -40,7 +40,7 @@ pub fn main() !void {
     std.debug.print("\n", .{});
 
     // Create parallel builder
-    var builder = try parallel_build.ParallelBuilder.init(allocator, num_threads);
+    var builder = try parallel_build.ParallelBuilder.init(allocator, num_threads, null, null);
     defer builder.deinit();
 
     builder.verbose = verbose;

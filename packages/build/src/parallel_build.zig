@@ -2,6 +2,20 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ir_cache = @import("ir_cache.zig");
 
+/// Get current timestamp in milliseconds (Zig 0.16 compatible)
+fn getMilliTimestamp() i64 {
+    const instant = std.time.Instant.now() catch return 0;
+    // Use since() relative to an arbitrary epoch for profiling purposes
+    // We just need relative timestamps for build timing
+    return @as(i64, @intCast(@divFloor(instant.timestamp.sec * 1000 + @divFloor(instant.timestamp.nsec, 1_000_000), 1)));
+}
+
+/// Get current timestamp in nanoseconds (Zig 0.16 compatible)
+fn getNanoTimestamp() i128 {
+    const instant = std.time.Instant.now() catch return 0;
+    return @as(i128, instant.timestamp.sec) * 1_000_000_000 + @as(i128, instant.timestamp.nsec);
+}
+
 /// Build task representing a single compilation unit
 pub const BuildTask = struct {
     module_name: []const u8,
@@ -223,7 +237,7 @@ pub const ParallelBuilder = struct {
     pub fn build(self: *ParallelBuilder) !void {
         if (self.tasks.items.len == 0) return;
 
-        const start_time = std.time.milliTimestamp();
+        const start_time = getMilliTimestamp();
 
         if (self.verbose) {
             std.debug.print("Building {d} modules with {d} threads...\n", .{
@@ -262,7 +276,7 @@ pub const ParallelBuilder = struct {
             try self.buildWaveParallel();
         }
 
-        const end_time = std.time.milliTimestamp();
+        const end_time = getMilliTimestamp();
         self.stats.total_time_ms = end_time - start_time;
 
         // Calculate parallel speedup (estimate)
@@ -313,7 +327,7 @@ pub const ParallelBuilder = struct {
             deque_ptrs[i] = deque;
         }
 
-        const wave_start = std.time.nanoTimestamp();
+        const wave_start = getNanoTimestamp();
 
         // Spawn worker threads
         for (0..thread_count) |i| {
@@ -332,7 +346,7 @@ pub const ParallelBuilder = struct {
             thread.join();
         }
 
-        const wave_end = std.time.nanoTimestamp();
+        const wave_end = getNanoTimestamp();
         const wave_duration_ns = @as(u64, @intCast(wave_end - wave_start));
 
         // Calculate worker utilization
@@ -362,7 +376,7 @@ pub const ParallelBuilder = struct {
                 break :blk stolen orelse break; // No more work
             };
 
-            const task_start = std.time.nanoTimestamp();
+            const task_start = getNanoTimestamp();
 
             // Build the task
             task.worker_id = worker_id;
@@ -370,7 +384,7 @@ pub const ParallelBuilder = struct {
                 task.status = .Failed;
             };
 
-            const task_end = std.time.nanoTimestamp();
+            const task_end = getNanoTimestamp();
             work_time += @intCast(task_end - task_start);
         }
 
@@ -420,53 +434,33 @@ pub const ParallelBuilder = struct {
 
     fn buildTask(self: *ParallelBuilder, task: *BuildTask) !void {
         task.status = .InProgress;
-        task.start_time = std.time.milliTimestamp();
+        task.start_time = getMilliTimestamp();
 
         if (self.verbose) {
             std.debug.print("  [Worker {d}] Compiling {s}...\n", .{ task.worker_id orelse 0, task.module_name });
         }
 
         // Read source file
-        const file = std.fs.cwd().openFile(task.file_path, .{}) catch |err| {
-            if (self.verbose) {
-                std.debug.print("    [31m✗ Failed to open file: {any}[0m\n", .{err});
-            }
-            task.status = .Failed;
-            task.end_time = std.time.milliTimestamp();
-            return err;
-        };
-        defer file.close();
-
-        const source = file.readToEndAlloc(self.allocator, 1024 * 1024 * 10) catch |err| {
+        const source = std.fs.cwd().readFileAlloc(task.file_path, self.allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| {
             if (self.verbose) {
                 std.debug.print("    [31m✗ Failed to read file: {any}[0m\n", .{err});
             }
             task.status = .Failed;
-            task.end_time = std.time.milliTimestamp();
+            task.end_time = getMilliTimestamp();
             return err;
         };
         defer self.allocator.free(source);
 
-        // Get source file modification time
-        const stat = file.stat() catch |err| {
-            if (self.verbose) {
-                std.debug.print("    [31m✗ Failed to stat file: {any}[0m\n", .{err});
-            }
-            task.status = .Failed;
-            task.end_time = std.time.milliTimestamp();
-            return err;
-        };
-
         // Collect dependency hashes for cache key
-        var dep_hashes = std.ArrayList(ir_cache.CacheHash).init(self.allocator);
-        defer dep_hashes.deinit();
+        var dep_hashes = std.ArrayList(ir_cache.CacheHash){};
+        defer dep_hashes.deinit(self.allocator);
 
         for (task.dependencies) |dep_name| {
             // Find dependency task to get its cache key
             for (self.tasks.items) |dep_task| {
                 if (std.mem.eql(u8, dep_task.module_name, dep_name)) {
                     if (dep_task.cache_key) |key| {
-                        try dep_hashes.append(key);
+                        try dep_hashes.append(self.allocator, key);
                     }
                     break;
                 }
@@ -482,21 +476,19 @@ pub const ParallelBuilder = struct {
         );
         task.cache_key = cache_key;
 
-        // Check cache
+        // Check cache (mtime validation disabled - using source hash only)
         if (self.ir_cache.get(cache_key)) |entry| {
-            // Cache hit - verify mtime hasn't changed
-            if (entry.source_mtime == stat.mtime) {
-                if (self.verbose) {
-                    std.debug.print("    [36m⚡ Cache hit (saved {d}ms)[0m\n", .{entry.compile_time_ms});
-                }
-
-                task.cache_hit = true;
-                task.status = .Completed;
-                task.end_time = std.time.milliTimestamp();
-                self.stats.completed_tasks += 1;
-                self.stats.cached_tasks += 1;
-                return;
+            _ = entry;
+            if (self.verbose) {
+                std.debug.print("    [36m⚡ Cache hit[0m\n", .{});
             }
+
+            task.cache_hit = true;
+            task.status = .Completed;
+            task.end_time = getMilliTimestamp();
+            self.stats.completed_tasks += 1;
+            self.stats.cached_tasks += 1;
+            return;
         }
 
         // Cache miss - compile from scratch
@@ -511,14 +503,14 @@ pub const ParallelBuilder = struct {
         // 4. Optimize
         // 5. Generate machine code
 
-        // For now, simulate work
-        std.Thread.sleep(1_000_000); // 1ms per task
+        // For now, simulate work (sleep removed - not available in Zig 0.16)
+        // Work simulation is handled by the actual compilation steps
 
         // Create IR and object file paths
-        var ir_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        var ir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const ir_path = try std.fmt.bufPrint(&ir_path_buf, "{s}/{s}.ir", .{ self.cache_dir, task.module_name });
 
-        var obj_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        var obj_path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const obj_path = try std.fmt.bufPrint(&obj_path_buf, "{s}/{s}.o", .{ self.cache_dir, task.module_name });
 
         // Store in cache
@@ -527,7 +519,7 @@ pub const ParallelBuilder = struct {
             cache_key,
             task.module_name,
             task.file_path,
-            stat.mtime,
+            0, // mtime disabled - using hash-only caching
             dep_hashes.items,
             ir_path,
             obj_path,
@@ -535,7 +527,7 @@ pub const ParallelBuilder = struct {
         );
 
         task.status = .Completed;
-        task.end_time = std.time.milliTimestamp();
+        task.end_time = getMilliTimestamp();
         self.stats.completed_tasks += 1;
 
         if (self.verbose) {

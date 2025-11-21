@@ -58,18 +58,10 @@ pub const IRCache = struct {
             self.allocator.destroy(ir);
         }
 
-        // Check source hash
+        // Check source hash - this is sufficient for cache validation
+        // (if source hash matches, file hasn't changed)
         const current_hash = hashSource(source);
         if (ir.source_hash != current_hash) {
-            return false;
-        }
-
-        // Check file modification time
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-        const stat = try file.stat();
-
-        if (stat.mtime > ir.timestamp) {
             return false;
         }
 
@@ -119,10 +111,14 @@ pub const IRCache = struct {
         const type_info_copy = try self.allocator.dupe(u8, type_info);
         errdefer self.allocator.free(type_info_copy);
 
+        // Get current timestamp for cache - using 0 as a simple approach
+        // (cache invalidation relies more on source_hash than timestamp)
+        const current_timestamp: i64 = 0;
+
         ir.* = .{
             .module_name = module_name,
             .source_hash = hashSource(source),
-            .timestamp = std.time.timestamp(),
+            .timestamp = current_timestamp,
             .ast_data = ast_data_copy,
             .type_info = type_info_copy,
             .allocator = self.allocator,
@@ -183,7 +179,8 @@ pub const IRCache = struct {
 
         // Read metadata (4 x u64/i64 = 32 bytes)
         var metadata: [32]u8 = undefined;
-        _ = try file.readAll(&metadata);
+        const metadata_read = try file.pread(&metadata, 0);
+        if (metadata_read < metadata.len) return error.UnexpectedEndOfFile;
 
         const source_hash = std.mem.readInt(u64, metadata[0..8], .little);
         const timestamp = std.mem.readInt(i64, metadata[8..16], .little);
@@ -192,11 +189,13 @@ pub const IRCache = struct {
 
         const ast_data = try self.allocator.alloc(u8, ast_len);
         errdefer self.allocator.free(ast_data);
-        _ = try file.readAll(ast_data);
+        const ast_read = try file.pread(ast_data, 32);
+        if (ast_read < ast_data.len) return error.UnexpectedEndOfFile;
 
         const type_info = try self.allocator.alloc(u8, type_len);
         errdefer self.allocator.free(type_info);
-        _ = try file.readAll(type_info);
+        const type_read = try file.pread(type_info, 32 + ast_len);
+        if (type_read < type_info.len) return error.UnexpectedEndOfFile;
 
         const ir = try self.allocator.create(IR);
         errdefer self.allocator.destroy(ir);

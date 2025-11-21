@@ -456,13 +456,10 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8, kernel_mode: bool) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(source);
 
     if (kernel_mode) {
@@ -585,13 +582,10 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
 fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(source);
 
     std.debug.print("{s}Profiling:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -606,18 +600,20 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const arena_allocator = arena.allocator();
 
     // Tokenize
-    const start_lex = std.time.milliTimestamp();
+    const start_lex = try std.time.Instant.now();
     var lexer = Lexer.init(arena_allocator, source);
     const tokens = try lexer.tokenize();
-    const lex_time = std.time.milliTimestamp() - start_lex;
+    const end_lex = try std.time.Instant.now();
+    const lex_time = @divFloor(end_lex.since(start_lex), std.time.ns_per_ms);
 
     try prof.trackAllocation(tokens.items.len * @sizeOf(Token));
 
     // Parse
-    const start_parse = std.time.milliTimestamp();
+    const start_parse = try std.time.Instant.now();
     var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
-    const parse_time = std.time.milliTimestamp() - start_parse;
+    const end_parse = try std.time.Instant.now();
+    const parse_time = @divFloor(end_parse.since(start_parse), std.time.ns_per_ms);
 
     // Estimate AST size
     const ast_size = program.statements.len * 1000; // Rough estimate

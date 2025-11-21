@@ -47,7 +47,7 @@ pub const MoveChecker = struct {
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
         }
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
     }
 
     /// Check move semantics for an entire program

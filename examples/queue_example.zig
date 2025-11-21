@@ -43,8 +43,7 @@ pub fn main() !void {
         const handler = struct {
             fn process(j: *queue_mod.Job) !void {
                 std.debug.print("   Processing: {s}\n", .{j.payload});
-                // Simulate work
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                // Simulate work (sleep removed for Zig 0.16 compatibility)
                 std.debug.print("   Completed successfully!\n", .{});
             }
         }.process;
@@ -78,7 +77,7 @@ pub fn main() !void {
     const handler = struct {
         fn process(j: *queue_mod.Job) !void {
             std.debug.print("   [{s}] {s}\n", .{ j.queue, j.payload });
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            // Sleep removed for Zig 0.16 compatibility
         }
     }.process;
 

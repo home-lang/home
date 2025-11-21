@@ -961,8 +961,9 @@ pub const NativeCodegen = struct {
         try self.assembler.code.append(self.allocator, modrm);
 
         // Write displacement
-        const writer = self.assembler.code.writer(self.allocator);
-        try writer.writeInt(i32, offset, .little);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.assembler.code.appendSlice(self.allocator, &bytes);
     }
 
     /// Register a string literal and return its offset in the data section
@@ -1179,7 +1180,7 @@ pub const NativeCodegen = struct {
                 }
 
                 // Load expected float bits into rdx
-                try self.assembler.movRegImm64(.rdx, float_bits);
+                try self.assembler.movRegImm64(.rdx, @bitCast(float_bits));
 
                 // Compare
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
@@ -1662,9 +1663,6 @@ pub const NativeCodegen = struct {
                 const end_pos = self.assembler.getPosition();
                 const success_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(success_jump + 5));
                 try self.assembler.patchJmpRel32(success_jump, success_offset);
-            },
-            else => {
-                try self.assembler.movRegImm64(.rax, 0);
             },
         }
     }
@@ -2575,23 +2573,22 @@ pub const NativeCodegen = struct {
     fn handleImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) CodegenError!void {
         // Convert import path to file path
         // For now, simple strategy: join path components with '/' and add '.home'
-        var path_buffer: [256]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&path_buffer);
-        const writer = fbs.writer();
+        var path_list = std.ArrayList(u8){};
+        defer path_list.deinit(self.allocator);
 
         for (import_decl.path, 0..) |component, i| {
-            if (i > 0) try writer.writeByte('/');
-            try writer.writeAll(component);
+            if (i > 0) try path_list.append(self.allocator, '/');
+            try path_list.appendSlice(self.allocator, component);
         }
-        try writer.writeAll(".home");
+        try path_list.appendSlice(self.allocator, ".home");
 
-        const module_path = fbs.getWritten();
+        const module_path = path_list.items;
 
         // Read and parse the module file
         const module_source = std.fs.cwd().readFileAlloc(
-            self.allocator,
             module_path,
-            10 * 1024 * 1024, // 10MB max
+            self.allocator,
+            std.Io.Limit.limited(10 * 1024 * 1024), // 10MB max
         ) catch |err| {
             std.debug.print("Failed to read import file '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;

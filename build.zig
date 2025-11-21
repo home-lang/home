@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
     codegen_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("lexer", lexer_pkg);
     codegen_pkg.addImport("parser", parser_pkg);
+    codegen_pkg.addImport("types", types_pkg);
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);

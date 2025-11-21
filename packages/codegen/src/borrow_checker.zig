@@ -52,8 +52,8 @@ pub const BorrowChecker = struct {
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
         }
-        self.errors.deinit();
-        self.scope_stack.deinit();
+        self.errors.deinit(self.allocator);
+        self.scope_stack.deinit(self.allocator);
     }
 
     /// Check borrow rules for an entire program

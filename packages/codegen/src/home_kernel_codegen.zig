@@ -41,12 +41,23 @@ pub const HomeKernelCodegen = struct {
         self.output.deinit(self.allocator);
     }
 
+    /// Helper to write string to output
+    fn writeAll(self: *HomeKernelCodegen, bytes: []const u8) !void {
+        try self.output.appendSlice(self.allocator, bytes);
+    }
+
+    /// Helper to format and write to output
+    fn print(self: *HomeKernelCodegen, comptime fmt: []const u8, args: anytype) !void {
+        const str = try std.fmt.allocPrint(self.allocator, fmt, args);
+        defer self.allocator.free(str);
+        try self.output.appendSlice(self.allocator, str);
+    }
+
     /// Generate kernel code from Home AST
     pub fn generate(self: *HomeKernelCodegen, program: *const ast.Program) ![]const u8 {
-        const writer = self.output.writer(self.allocator);
 
         // Emit assembly header
-        try writer.writeAll(
+        try self.writeAll(
             \\.section .text
             \\.global kernel_main
             \\
@@ -55,13 +66,13 @@ pub const HomeKernelCodegen = struct {
 
         // Generate code for each statement
         for (program.statements) |stmt| {
-            try self.generateStmt(writer, stmt);
+            try self.generateStmt(stmt);
         }
 
         return self.output.items;
     }
 
-    fn generateStmt(self: *HomeKernelCodegen, writer: anytype, stmt: ast.Stmt) !void {
+    fn generateStmt(self: *HomeKernelCodegen, stmt: ast.Stmt) !void {
         switch (stmt) {
             .FnDecl => |func| {
                 // Check if this is an exported function (like kernel_main)
@@ -70,10 +81,10 @@ pub const HomeKernelCodegen = struct {
                     std.mem.eql(u8, func.name, "main");
 
                 if (is_export) {
-                    try writer.print(".global {s}\n", .{func.name});
+                    try self.print(".global {s}\n", .{func.name});
                 }
 
-                try writer.print("{s}:\n", .{func.name});
+                try self.print("{s}:\n", .{func.name});
 
                 // Function prologue
                 const attrs = kernel_codegen.FunctionAttributes{
@@ -83,91 +94,91 @@ pub const HomeKernelCodegen = struct {
                         false,
                 };
 
-                try writer.writeAll("    pushq %rbp\n");
-                try writer.writeAll("    movq %rsp, %rbp\n");
+                try self.writeAll("    pushq %rbp\n");
+                try self.writeAll("    movq %rsp, %rbp\n");
 
                 // Generate function body
                 for (func.body.statements) |body_stmt| {
-                    try self.generateStmt(writer, body_stmt);
+                    try self.generateStmt(body_stmt);
                 }
 
                 // Function epilogue (if not noreturn)
                 if (!attrs.noreturn) {
-                    try writer.writeAll("    movq %rbp, %rsp\n");
-                    try writer.writeAll("    popq %rbp\n");
-                    try writer.writeAll("    ret\n");
+                    try self.writeAll("    movq %rbp, %rsp\n");
+                    try self.writeAll("    popq %rbp\n");
+                    try self.writeAll("    ret\n");
                 }
 
-                try writer.writeAll("\n");
+                try self.writeAll("\n");
             },
             .ExprStmt => |expr| {
-                try self.generateExpr(writer, expr);
+                try self.generateExpr(expr);
             },
             .LetDecl => |decl| {
                 // Variable declaration
                 if (decl.value) |value| {
-                    try self.generateExpr(writer, value);
+                    try self.generateExpr(value);
                     // TODO: Store in local variable on stack
                 }
             },
             .IfStmt => |if_stmt| {
                 // Generate if statement
-                try self.generateExpr(writer, if_stmt.condition);
+                try self.generateExpr(if_stmt.condition);
 
                 // Test condition (result in %rax)
-                try writer.writeAll("    testq %rax, %rax\n");
+                try self.writeAll("    testq %rax, %rax\n");
 
                 // Generate unique labels
                 const label_num = @intFromPtr(if_stmt);
-                try writer.print("    jz .L_else_{d}\n", .{label_num});
+                try self.print("    jz .L_else_{d}\n", .{label_num});
 
                 // Then block
                 for (if_stmt.then_block.statements) |then_stmt| {
-                    try self.generateStmt(writer, then_stmt);
+                    try self.generateStmt(then_stmt);
                 }
 
                 if (if_stmt.else_block) |else_block| {
-                    try writer.print("    jmp .L_endif_{d}\n", .{label_num});
-                    try writer.print(".L_else_{d}:\n", .{label_num});
+                    try self.print("    jmp .L_endif_{d}\n", .{label_num});
+                    try self.print(".L_else_{d}:\n", .{label_num});
 
                     for (else_block.statements) |else_stmt| {
-                        try self.generateStmt(writer, else_stmt);
+                        try self.generateStmt(else_stmt);
                     }
 
-                    try writer.print(".L_endif_{d}:\n", .{label_num});
+                    try self.print(".L_endif_{d}:\n", .{label_num});
                 } else {
-                    try writer.print(".L_else_{d}:\n", .{label_num});
+                    try self.print(".L_else_{d}:\n", .{label_num});
                 }
             },
             .WhileStmt => |while_stmt| {
                 const label_num = @intFromPtr(while_stmt);
 
-                try writer.print(".L_while_start_{d}:\n", .{label_num});
+                try self.print(".L_while_start_{d}:\n", .{label_num});
 
                 // Condition
-                try self.generateExpr(writer, while_stmt.condition);
-                try writer.writeAll("    testq %rax, %rax\n");
-                try writer.print("    jz .L_while_end_{d}\n", .{label_num});
+                try self.generateExpr(while_stmt.condition);
+                try self.writeAll("    testq %rax, %rax\n");
+                try self.print("    jz .L_while_end_{d}\n", .{label_num});
 
                 // Body
                 for (while_stmt.body.statements) |body_stmt| {
-                    try self.generateStmt(writer, body_stmt);
+                    try self.generateStmt(body_stmt);
                 }
 
-                try writer.print("    jmp .L_while_start_{d}\n", .{label_num});
-                try writer.print(".L_while_end_{d}:\n", .{label_num});
+                try self.print("    jmp .L_while_start_{d}\n", .{label_num});
+                try self.print(".L_while_end_{d}:\n", .{label_num});
             },
             .ReturnStmt => |return_stmt| {
                 // Generate return statement
                 // If there's a return value, evaluate it (result goes in %rax)
                 if (return_stmt.value) |value| {
-                    try self.generateExpr(writer, value);
+                    try self.generateExpr(value);
                 }
 
                 // Restore stack frame and return
-                try writer.writeAll("    movq %rbp, %rsp\n");
-                try writer.writeAll("    popq %rbp\n");
-                try writer.writeAll("    ret\n");
+                try self.writeAll("    movq %rbp, %rsp\n");
+                try self.writeAll("    popq %rbp\n");
+                try self.writeAll("    ret\n");
             },
             else => {
                 // Unsupported statement type - skip for now
@@ -175,24 +186,24 @@ pub const HomeKernelCodegen = struct {
         }
     }
 
-    fn generateExpr(self: *HomeKernelCodegen, writer: anytype, expr: *const ast.Expr) anyerror!void {
+    fn generateExpr(self: *HomeKernelCodegen, expr: *const ast.Expr) anyerror!void {
         switch (expr.*) {
             .IntegerLiteral => |lit| {
                 // Load immediate value into %rax
-                try writer.print("    movq ${d}, %rax\n", .{lit.value});
+                try self.print("    movq ${d}, %rax\n", .{lit.value});
             },
             .BooleanLiteral => |lit| {
                 // Load boolean as integer (0 or 1) into %rax
-                try writer.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
+                try self.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
             },
             .InlineAsm => |asm_node| {
                 // Emit inline assembly instruction directly
-                try writer.print("    {s}\n", .{asm_node.instruction});
+                try self.print("    {s}\n", .{asm_node.instruction});
             },
             .StringLiteral => |lit| {
                 // Create string constant in .rodata
                 const label_num = @intFromPtr(lit.value.ptr);
-                try writer.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
+                try self.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
 
                 // We'll emit the string data at the end
                 // TODO: Collect string literals and emit in .rodata section
@@ -210,7 +221,7 @@ pub const HomeKernelCodegen = struct {
                         // Look up the symbol in the symbol table
                         if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
                             // Generate FFI call to Zig function
-                            try self.generateFFICall(writer, symbol, call.args);
+                            try self.generateFFICall(symbol, call.args);
                         } else {
                             std.debug.print("Unknown symbol: {s}.{s}\n", .{module_name, func_name});
                         }
@@ -221,7 +232,7 @@ pub const HomeKernelCodegen = struct {
 
                     // Check if it's a known symbol
                     if (self.symbol_table.lookupSymbol(func_name)) |symbol| {
-                        try self.generateFFICall(writer, symbol, call.args);
+                        try self.generateFFICall(symbol, call.args);
                     } else {
                         // Local function call
                         // Evaluate arguments (System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9)
@@ -234,14 +245,14 @@ pub const HomeKernelCodegen = struct {
                             var i: usize = call.args.len;
                             while (i > 0) {
                                 i -= 1;
-                                try self.generateExpr(writer, call.args[i]);
-                                try writer.writeAll("    pushq %rax\n");
+                                try self.generateExpr(call.args[i]);
+                                try self.writeAll("    pushq %rax\n");
                             }
 
                             // Pop arguments into registers in correct order
                             for (0..call.args.len) |reg_idx| {
                                 if (reg_idx < arg_regs.len) {
-                                    try writer.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                                    try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
                                 } else {
                                     // Arguments beyond 6 stay on stack for the call
                                     break;
@@ -250,34 +261,34 @@ pub const HomeKernelCodegen = struct {
                         }
 
                         // Call function
-                        try writer.print("    call {s}\n", .{func_name});
+                        try self.print("    call {s}\n", .{func_name});
                     }
                 }
             },
             .BinaryExpr => |binary| {
                 // Evaluate right operand
-                try self.generateExpr(writer, binary.right);
-                try writer.writeAll("    pushq %rax\n");
+                try self.generateExpr(binary.right);
+                try self.writeAll("    pushq %rax\n");
 
                 // Evaluate left operand
-                try self.generateExpr(writer, binary.left);
+                try self.generateExpr(binary.left);
 
                 // Pop right operand
-                try writer.writeAll("    popq %rcx\n");
+                try self.writeAll("    popq %rcx\n");
 
                 // Perform operation
                 switch (binary.op) {
-                    .Add => try writer.writeAll("    addq %rcx, %rax\n"),
-                    .Sub => try writer.writeAll("    subq %rcx, %rax\n"),
+                    .Add => try self.writeAll("    addq %rcx, %rax\n"),
+                    .Sub => try self.writeAll("    subq %rcx, %rax\n"),
                     .Equal => {
-                        try writer.writeAll("    cmpq %rcx, %rax\n");
-                        try writer.writeAll("    sete %al\n");
-                        try writer.writeAll("    movzbq %al, %rax\n");
+                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        try self.writeAll("    sete %al\n");
+                        try self.writeAll("    movzbq %al, %rax\n");
                     },
                     .NotEqual => {
-                        try writer.writeAll("    cmpq %rcx, %rax\n");
-                        try writer.writeAll("    setne %al\n");
-                        try writer.writeAll("    movzbq %al, %rax\n");
+                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        try self.writeAll("    setne %al\n");
+                        try self.writeAll("    movzbq %al, %rax\n");
                     },
                     else => {},
                 }
@@ -285,7 +296,7 @@ pub const HomeKernelCodegen = struct {
             .Identifier => |id| {
                 // Load variable
                 // TODO: Track variable offsets on stack
-                try writer.print("    # Load variable {s}\n", .{id.name});
+                try self.print("    # Load variable {s}\n", .{id.name});
             },
             else => {
                 // Unsupported expression - skip
@@ -296,7 +307,6 @@ pub const HomeKernelCodegen = struct {
     /// Generate FFI call to a Zig function from imported module
     fn generateFFICall(
         self: *HomeKernelCodegen,
-        writer: anytype,
         symbol: Symbol,
         args: []const *const ast.Expr,
     ) !void {
@@ -320,28 +330,28 @@ pub const HomeKernelCodegen = struct {
         for (args, 0..) |arg, i| {
             if (i < arg_regs.len) {
                 // Evaluate argument (result in %rax)
-                try self.generateExpr(writer, arg);
+                try self.generateExpr(arg);
 
                 // Move to appropriate argument register
                 if (i == 0) {
-                    try writer.print("    movq %rax, %{s}\n", .{arg_regs[i]});
+                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
                 } else {
-                    try writer.print("    movq %rax, %{s}\n", .{arg_regs[i]});
+                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
                 }
             } else {
                 // Push additional arguments onto stack
-                try self.generateExpr(writer, arg);
-                try writer.writeAll("    pushq %rax\n");
+                try self.generateExpr(arg);
+                try self.writeAll("    pushq %rax\n");
             }
         }
 
         // Call the external Zig function
-        try writer.print("    call {s}\n", .{ffi_name.items});
+        try self.print("    call {s}\n", .{ffi_name.items});
 
         // Clean up stack if we pushed extra arguments
         if (args.len > arg_regs.len) {
             const stack_bytes = (args.len - arg_regs.len) * 8;
-            try writer.print("    addq ${d}, %rsp\n", .{stack_bytes});
+            try self.print("    addq ${d}, %rsp\n", .{stack_bytes});
         }
     }
 };

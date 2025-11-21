@@ -1356,3 +1356,36 @@ pub const TypeEnvironment = struct {
         return null;
     }
 };
+
+/// Stub for lifetime tracking (to be implemented)
+pub const LifetimeTracker = struct {
+    pub fn init(allocator: std.mem.Allocator) LifetimeTracker {
+        _ = allocator;
+        return .{};
+    }
+    pub fn deinit(self: *LifetimeTracker) void {
+        _ = self;
+    }
+};
+
+/// Stub for move tracking (to be implemented)
+pub const MoveTracker = struct {
+    pub fn init(allocator: std.mem.Allocator) MoveTracker {
+        _ = allocator;
+        return .{};
+    }
+    pub fn deinit(self: *MoveTracker) void {
+        _ = self;
+    }
+};
+
+/// Stub for type inference (to be implemented)
+pub const TypeInferencer = struct {
+    pub fn init(allocator: std.mem.Allocator) TypeInferencer {
+        _ = allocator;
+        return .{};
+    }
+    pub fn deinit(self: *TypeInferencer) void {
+        _ = self;
+    }
+};
