@@ -96,27 +96,27 @@ pub extern "c" fn objc_msgSend_fpret() void;
 
 // Type-safe message send wrappers
 pub fn msgSend(obj: id, selector: SEL, comptime ReturnType: type) ReturnType {
-    const func = @as(*const fn (id, SEL) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
+    const func = @as(*const fn (id, SEL) callconv(.c) ReturnType, @ptrCast(&objc_msgSend));
     return func(obj, selector);
 }
 
 pub fn msgSend1(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype) ReturnType {
-    const func = @as(*const fn (id, SEL, @TypeOf(arg1)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
+    const func = @as(*const fn (id, SEL, @TypeOf(arg1)) callconv(.c) ReturnType, @ptrCast(&objc_msgSend));
     return func(obj, selector, arg1);
 }
 
 pub fn msgSend2(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype) ReturnType {
-    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
+    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2)) callconv(.c) ReturnType, @ptrCast(&objc_msgSend));
     return func(obj, selector, arg1, arg2);
 }
 
 pub fn msgSend3(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype) ReturnType {
-    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
+    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3)) callconv(.c) ReturnType, @ptrCast(&objc_msgSend));
     return func(obj, selector, arg1, arg2, arg3);
 }
 
 pub fn msgSend4(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype) ReturnType {
-    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3), @TypeOf(arg4)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
+    const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3), @TypeOf(arg4)) callconv(.c) ReturnType, @ptrCast(&objc_msgSend));
     return func(obj, selector, arg1, arg2, arg3, arg4);
 }
 
@@ -345,7 +345,7 @@ pub fn run(app: id) void {
 }
 
 pub fn terminate(app: id) void {
-    _ = msgSend1(app, sel("terminate:"), void, null);
+    _ = msgSend1(app, sel("terminate:"), void, @as(id, null));
 }
 
 // ============================================================================
@@ -373,7 +373,7 @@ pub fn setWindowTitle(window: id, title: [*:0]const u8) void {
 }
 
 pub fn makeKeyAndOrderFront(window: id) void {
-    _ = msgSend1(window, sel("makeKeyAndOrderFront:"), void, null);
+    _ = msgSend1(window, sel("makeKeyAndOrderFront:"), void, @as(id, null));
 }
 
 pub fn center(window: id) void {
@@ -434,18 +434,27 @@ pub fn mouseLocation(event: id) CGPoint {
 // NSOpenGLView Helpers
 // ============================================================================
 
-pub fn createOpenGLPixelFormat(attributes: []const NSOpenGLPixelFormatAttribute) id {
+/// Create OpenGL pixel format from raw u32 attribute array
+/// The array should be terminated with 0
+pub fn createOpenGLPixelFormat(attributes: []const u32) id {
+    const NSOpenGLPixelFormat = getClass("NSOpenGLPixelFormat");
+    const pixel_format = alloc(NSOpenGLPixelFormat);
+    return msgSend1(pixel_format, sel("initWithAttributes:"), id, attributes.ptr);
+}
+
+/// Create OpenGL pixel format from enum attributes
+pub fn createOpenGLPixelFormatEnum(attributes: []const NSOpenGLPixelFormatAttribute) id {
     const NSOpenGLPixelFormat = getClass("NSOpenGLPixelFormat");
     const pixel_format = alloc(NSOpenGLPixelFormat);
 
     // Convert attributes to u32 array
-    var attrs = std.ArrayList(u32).init(std.heap.page_allocator);
-    defer attrs.deinit();
+    var attrs: std.ArrayList(u32) = .{};
+    defer attrs.deinit(std.heap.page_allocator);
 
     for (attributes) |attr| {
-        attrs.append(@intFromEnum(attr)) catch unreachable;
+        attrs.append(std.heap.page_allocator, @intFromEnum(attr)) catch unreachable;
     }
-    attrs.append(0) catch unreachable; // Null-terminate
+    attrs.append(std.heap.page_allocator, 0) catch unreachable; // Null-terminate
 
     return msgSend1(pixel_format, sel("initWithAttributes:"), id, attrs.items.ptr);
 }
@@ -453,7 +462,7 @@ pub fn createOpenGLPixelFormat(attributes: []const NSOpenGLPixelFormatAttribute)
 pub fn createOpenGLContext(pixel_format: id, share_context: ?id) id {
     const NSOpenGLContext = getClass("NSOpenGLContext");
     const context = alloc(NSOpenGLContext);
-    return msgSend2(context, sel("initWithFormat:shareContext:"), id, pixel_format, share_context orelse null);
+    return msgSend2(context, sel("initWithFormat:shareContext:"), id, pixel_format, share_context orelse @as(id, null));
 }
 
 pub fn makeCurrentContext(context: id) void {

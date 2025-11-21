@@ -58,6 +58,8 @@ pub const GL_LINE_STRIP: GLenum = 0x0003;
 pub const GL_TRIANGLES: GLenum = 0x0004;
 pub const GL_TRIANGLE_STRIP: GLenum = 0x0005;
 pub const GL_TRIANGLE_FAN: GLenum = 0x0006;
+pub const GL_QUADS_LEGACY: GLenum = 0x0007; // Deprecated but needed for compatibility
+pub const GL_POLYGON: GLenum = 0x0009; // Legacy polygon mode
 
 // Buffer objects
 pub const GL_ARRAY_BUFFER: GLenum = 0x8892;
@@ -443,6 +445,44 @@ pub fn linkProgram(vertex_shader: GLuint, fragment_shader: GLuint) !GLuint {
 
     return program;
 }
+
+// ============================================================================
+// Legacy OpenGL Functions (Compatibility Profile)
+// These are deprecated in modern OpenGL but useful for quick prototyping
+// ============================================================================
+
+// Matrix modes
+pub const GL_MODELVIEW: GLenum = 0x1700;
+pub const GL_PROJECTION: GLenum = 0x1701;
+
+// Primitive types (legacy)
+pub const GL_QUADS: GLenum = 0x0007;
+
+// Legacy functions
+pub extern "c" fn glMatrixMode(mode: GLenum) void;
+pub extern "c" fn glLoadIdentity() void;
+pub extern "c" fn glOrtho(left: GLdouble, right: GLdouble, bottom: GLdouble, top: GLdouble, near: GLdouble, far: GLdouble) void;
+pub extern "c" fn glPushMatrix() void;
+pub extern "c" fn glPopMatrix() void;
+pub extern "c" fn glTranslatef(x: GLfloat, y: GLfloat, z: GLfloat) void;
+pub extern "c" fn glRotatef(angle: GLfloat, x: GLfloat, y: GLfloat, z: GLfloat) void;
+pub extern "c" fn glScalef(x: GLfloat, y: GLfloat, z: GLfloat) void;
+
+// Immediate mode rendering
+pub extern "c" fn glBegin(mode: GLenum) void;
+pub extern "c" fn glEnd() void;
+pub extern "c" fn glVertex2f(x: GLfloat, y: GLfloat) void;
+pub extern "c" fn glVertex3f(x: GLfloat, y: GLfloat, z: GLfloat) void;
+pub extern "c" fn glVertex2i(x: GLint, y: GLint) void;
+pub extern "c" fn glVertex3i(x: GLint, y: GLint, z: GLint) void;
+pub extern "c" fn glColor3f(r: GLfloat, g: GLfloat, b: GLfloat) void;
+pub extern "c" fn glColor4f(r: GLfloat, g: GLfloat, b: GLfloat, a: GLfloat) void;
+pub extern "c" fn glColor3ub(r: GLubyte, g: GLubyte, b: GLubyte) void;
+pub extern "c" fn glColor4ub(r: GLubyte, g: GLubyte, b: GLubyte, a: GLubyte) void;
+pub extern "c" fn glTexCoord2f(s: GLfloat, t: GLfloat) void;
+pub extern "c" fn glNormal3f(nx: GLfloat, ny: GLfloat, nz: GLfloat) void;
+pub extern "c" fn glPointSize(size: GLfloat) void;
+pub extern "c" fn glLineWidth(width: GLfloat) void;
 
 // ============================================================================
 // Tests

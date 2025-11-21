@@ -70,8 +70,8 @@ pub const KeyCode = enum(u16) {
     Return = 36,
     Tab = 48,
     Space = 49,
-    Delete = 51,
-    Backspace = 51,
+    Delete = 51, // macOS delete key (backspace) - value 51
+    // Note: Backspace is same as Delete on macOS
 
     // Arrow keys
     LeftArrow = 123,
@@ -202,12 +202,12 @@ pub const InputState = struct {
             .mouse_scroll_y = 0,
             .modifiers = ModifierKeys{},
             .allocator = allocator,
-            .events = std.ArrayList(InputEvent).init(allocator),
+            .events = .{},
         };
     }
 
     pub fn deinit(self: *InputState) void {
-        self.events.deinit();
+        self.events.deinit(self.allocator);
     }
 
     /// Call this at the start of each frame
@@ -226,7 +226,7 @@ pub const InputState = struct {
 
     /// Process an input event
     pub fn processEvent(self: *InputState, event: InputEvent) !void {
-        try self.events.append(event);
+        try self.events.append(self.allocator, event);
 
         switch (event) {
             .KeyDown => |key_event| {
