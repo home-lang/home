@@ -1,7 +1,5 @@
 const std = @import("std");
-const ast = @import("../ast/ast.zig");
-const lexer = @import("../lexer/lexer.zig");
-const parser = @import("../parser/parser.zig");
+const ast = @import("ast");
 
 /// Macro definition types
 pub const MacroKind = enum {

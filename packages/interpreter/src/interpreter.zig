@@ -89,9 +89,16 @@ pub const Interpreter = struct {
         // Register built-in functions
         try self.registerBuiltins();
 
-        // Execute all statements
+        // Execute all statements (collect function definitions)
         for (self.program.statements) |stmt| {
             try self.executeStatement(stmt, &self.global_env);
+        }
+
+        // Call main() if it exists
+        if (self.global_env.get("main")) |main_value| {
+            if (main_value == .Function) {
+                _ = try self.callUserFunction(main_value.Function, &[_]*const ast.Expr{}, &self.global_env);
+            }
         }
     }
 
@@ -667,6 +674,10 @@ pub const Interpreter = struct {
                 // Store tuple as an array for now (in a full implementation, we'd have a Tuple value type)
                 return Value{ .Array = elements };
             },
+            .MacroExpr => |macro| {
+                // Handle built-in macros at runtime
+                return try self.evaluateMacroExpression(macro, env);
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -807,6 +818,185 @@ pub const Interpreter = struct {
 
         // No explicit return, return void
         return Value.Void;
+    }
+
+    fn evaluateMacroExpression(self: *Interpreter, macro: *ast.MacroExpr, env: *Environment) InterpreterError!Value {
+        // Handle built-in macros at runtime
+        const name = macro.name;
+
+        if (std.mem.eql(u8, name, "println")) {
+            // println! macro - print with newline
+            for (macro.args, 0..) |arg, i| {
+                if (i > 0) std.debug.print(" ", .{});
+                const value = try self.evaluateExpression(arg, env);
+                self.printValue(value);
+            }
+            std.debug.print("\n", .{});
+            return Value.Void;
+        } else if (std.mem.eql(u8, name, "print")) {
+            // print! macro - print without newline
+            for (macro.args, 0..) |arg, i| {
+                if (i > 0) std.debug.print(" ", .{});
+                const value = try self.evaluateExpression(arg, env);
+                self.printValue(value);
+            }
+            return Value.Void;
+        } else if (std.mem.eql(u8, name, "debug")) {
+            // debug! macro - print debug representation with location
+            std.debug.print("[DEBUG {}:{}] ", .{ macro.node.loc.line, macro.node.loc.column });
+            for (macro.args, 0..) |arg, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                const value = try self.evaluateExpression(arg, env);
+                self.printValueDebug(value);
+            }
+            std.debug.print("\n", .{});
+            return Value.Void;
+        } else if (std.mem.eql(u8, name, "assert")) {
+            // assert! macro
+            if (macro.args.len < 1) {
+                std.debug.print("assert! expects at least 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const value = try self.evaluateExpression(macro.args[0], env);
+            if (!value.isTrue()) {
+                if (macro.args.len > 1) {
+                    // Custom message
+                    const msg = try self.evaluateExpression(macro.args[1], env);
+                    if (msg == .String) {
+                        std.debug.print("assertion failed: {s}\n", .{msg.String});
+                    } else {
+                        std.debug.print("assertion failed!\n", .{});
+                    }
+                } else {
+                    std.debug.print("assertion failed!\n", .{});
+                }
+                return error.RuntimeError;
+            }
+            return Value.Void;
+        } else if (std.mem.eql(u8, name, "todo")) {
+            // todo! macro - panic with "not yet implemented"
+            if (macro.args.len > 0) {
+                const msg = try self.evaluateExpression(macro.args[0], env);
+                if (msg == .String) {
+                    std.debug.print("not yet implemented: {s}\n", .{msg.String});
+                } else {
+                    std.debug.print("not yet implemented\n", .{});
+                }
+            } else {
+                std.debug.print("not yet implemented\n", .{});
+            }
+            return error.RuntimeError;
+        } else if (std.mem.eql(u8, name, "unimplemented")) {
+            // unimplemented! macro
+            std.debug.print("not implemented\n", .{});
+            return error.RuntimeError;
+        } else if (std.mem.eql(u8, name, "unreachable")) {
+            // unreachable! macro
+            std.debug.print("entered unreachable code\n", .{});
+            return error.RuntimeError;
+        } else if (std.mem.eql(u8, name, "panic")) {
+            // panic! macro
+            if (macro.args.len > 0) {
+                const msg = try self.evaluateExpression(macro.args[0], env);
+                if (msg == .String) {
+                    std.debug.print("panic: {s}\n", .{msg.String});
+                } else {
+                    std.debug.print("panic!\n", .{});
+                }
+            } else {
+                std.debug.print("panic!\n", .{});
+            }
+            return error.RuntimeError;
+        } else if (std.mem.eql(u8, name, "vec")) {
+            // vec! macro - create array
+            var elements = try self.arena.allocator().alloc(Value, macro.args.len);
+            for (macro.args, 0..) |arg, i| {
+                elements[i] = try self.evaluateExpression(arg, env);
+            }
+            return Value{ .Array = elements };
+        } else if (std.mem.eql(u8, name, "format")) {
+            // format! macro - string formatting (simplified)
+            if (macro.args.len == 0) {
+                return Value{ .String = "" };
+            }
+            const fmt_val = try self.evaluateExpression(macro.args[0], env);
+            if (fmt_val != .String) {
+                std.debug.print("format! expects string as first argument\n", .{});
+                return error.TypeMismatch;
+            }
+            // Simple implementation - just return format string for now
+            // Full implementation would substitute {} placeholders
+            return fmt_val;
+        } else if (std.mem.eql(u8, name, "stringify")) {
+            // stringify! macro - convert expression to string
+            if (macro.args.len != 1) {
+                std.debug.print("stringify! expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const value = try self.evaluateExpression(macro.args[0], env);
+            const str = try self.valueToString(value);
+            return Value{ .String = str };
+        } else if (std.mem.eql(u8, name, "env")) {
+            // env! macro - get environment variable (compile-time in full impl, runtime here)
+            if (macro.args.len != 1) {
+                std.debug.print("env! expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const name_val = try self.evaluateExpression(macro.args[0], env);
+            if (name_val != .String) {
+                std.debug.print("env! expects string argument\n", .{});
+                return error.TypeMismatch;
+            }
+            if (std.posix.getenv(name_val.String)) |val| {
+                return Value{ .String = val };
+            }
+            return Value.Void;
+        } else {
+            std.debug.print("Unknown macro: {s}!\n", .{name});
+            return error.RuntimeError;
+        }
+    }
+
+    fn printValue(self: *Interpreter, value: Value) void {
+        _ = self;
+        switch (value) {
+            .Int => |v| std.debug.print("{d}", .{v}),
+            .Float => |v| std.debug.print("{d}", .{v}),
+            .Bool => |v| std.debug.print("{}", .{v}),
+            .String => |s| std.debug.print("{s}", .{s}),
+            .Array => |arr| {
+                std.debug.print("[", .{});
+                for (arr, 0..) |elem, idx| {
+                    if (idx > 0) std.debug.print(", ", .{});
+                    std.debug.print("{any}", .{elem});
+                }
+                std.debug.print("]", .{});
+            },
+            .Struct => |s| std.debug.print("<{s} instance>", .{s.type_name}),
+            .Function => |f| std.debug.print("<fn {s}>", .{f.name}),
+            .Void => std.debug.print("void", .{}),
+        }
+    }
+
+    fn printValueDebug(self: *Interpreter, value: Value) void {
+        _ = self;
+        switch (value) {
+            .Int => |v| std.debug.print("Int({d})", .{v}),
+            .Float => |v| std.debug.print("Float({d})", .{v}),
+            .Bool => |v| std.debug.print("Bool({})", .{v}),
+            .String => |s| std.debug.print("String(\"{s}\")", .{s}),
+            .Array => |arr| {
+                std.debug.print("Array[{d}]{{", .{arr.len});
+                for (arr, 0..) |elem, idx| {
+                    if (idx > 0) std.debug.print(", ", .{});
+                    std.debug.print("{any}", .{elem});
+                }
+                std.debug.print("}}", .{});
+            },
+            .Struct => |s| std.debug.print("Struct({s})", .{s.type_name}),
+            .Function => |f| std.debug.print("Function({s})", .{f.name}),
+            .Void => std.debug.print("Void", .{}),
+        }
     }
 
     fn builtinPrint(self: *Interpreter, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {

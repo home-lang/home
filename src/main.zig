@@ -14,7 +14,10 @@ const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
 const pkg_manager_mod = @import("pkg_manager");
 const PackageManager = pkg_manager_mod.PackageManager;
 const AuthManager = pkg_manager_mod.AuthManager;
-const IRCache = @import("ir_cache").IRCache;
+const ir_cache_mod = @import("ir_cache");
+const IRCache = ir_cache_mod.IRCache;
+const FileWatcher = ir_cache_mod.FileWatcher;
+const IncrementalCompiler = ir_cache_mod.IncrementalCompiler;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
 const AllocationProfiler = profiler_mod.AllocationProfiler;
@@ -60,6 +63,7 @@ fn printUsage() void {
         \\  fmt <file>         Format and auto-fix (alias for lint --fix)
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
+        \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
         \\  test / t [opts]    Run tests (use --help for more options)
         \\  profile <file>     Profile memory allocations during compilation
         \\
@@ -198,6 +202,14 @@ fn printExpr(expr: *const ast.Expr, indent: usize) void {
                 printExpr(arg, indent);
             }
             std.debug.print("])", .{});
+        },
+        .MacroExpr => |macro| {
+            std.debug.print("{s}{s}!{s}(", .{ Color.Magenta.code(), macro.name, Color.Reset.code() });
+            for (macro.args, 0..) |arg, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                printExpr(arg, indent);
+            }
+            std.debug.print(")", .{});
         },
         else => {
             std.debug.print("<unknown-expr>", .{});
@@ -691,6 +703,97 @@ fn printTestUsage() void {
     });
 }
 
+/// Watch command for hot reloading
+fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    _ = FileWatcher; // Available for future advanced use
+
+    std.debug.print("{s}Watching:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    std.debug.print("{s}Press Ctrl+C to stop{s}\n\n", .{ Color.Yellow.code(), Color.Reset.code() });
+
+    // Initial run
+    std.debug.print("{s}[Initial Run]{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    runAndReportError(allocator, file_path);
+
+    // Get initial modification time
+    var last_mtime: std.Io.Timestamp = blk: {
+        const stat = std.fs.cwd().statFile(file_path) catch |err| {
+            std.debug.print("{s}Error:{s} Cannot watch file: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+            return err;
+        };
+        break :blk stat.mtime;
+    };
+
+    // Polling loop
+    var iteration: u32 = 0;
+    while (true) {
+        // Sleep for 500ms
+        std.posix.nanosleep(0, 500_000_000);
+
+        const stat = std.fs.cwd().statFile(file_path) catch continue;
+
+        // Compare timestamps
+        const mtime_changed = stat.mtime.nanoseconds != last_mtime.nanoseconds;
+        if (mtime_changed) {
+            last_mtime = stat.mtime;
+            iteration += 1;
+
+            std.debug.print("\n{s}[Hot Reload #{d}]{s} File changed, recompiling...\n", .{
+                Color.Magenta.code(),
+                iteration,
+                Color.Reset.code(),
+            });
+
+            runAndReportError(allocator, file_path);
+        }
+    }
+}
+
+fn runAndReportError(allocator: std.mem.Allocator, file_path: []const u8) void {
+    // Read the file
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
+    defer allocator.free(source);
+
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Tokenize
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = lexer.tokenize() catch |err| {
+        std.debug.print("{s}Lexer Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
+
+    // Parse
+    var parser = Parser.init(arena_allocator, tokens.items) catch |err| {
+        std.debug.print("{s}Parser Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
+    const program = parser.parse() catch |err| {
+        std.debug.print("{s}Parse Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
+
+    // Interpret
+    var interpreter = Interpreter.init(allocator, program);
+    defer interpreter.deinit();
+
+    interpreter.interpret() catch |err| {
+        if (err == error.Return) {
+            std.debug.print("{s}OK{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+            return;
+        }
+        std.debug.print("{s}Runtime Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
+
+    std.debug.print("{s}OK{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+}
+
 fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !void {
     std.debug.print("{s}Discovering tests in:{s} {s}\n\n", .{
         Color.Blue.code(),
@@ -1110,6 +1213,17 @@ pub fn main() !void {
         }
 
         try buildCommand(allocator, args[2], output_path, kernel_mode);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "watch")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'watch' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try watchCommand(allocator, args[2]);
         return;
     }
 

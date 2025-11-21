@@ -244,3 +244,312 @@ fn hashSource(source: []const u8) u64 {
     hasher.update(source);
     return hasher.final();
 }
+
+/// Compiled Output Cache for storing generated machine code
+pub const CompiledCache = struct {
+    allocator: std.mem.Allocator,
+    cache_dir: []const u8,
+    dependency_graph: std.StringHashMap([]const []const u8),
+    modified_times: std.StringHashMap(i128),
+
+    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8) !CompiledCache {
+        // Ensure cache directory exists
+        std.fs.cwd().makePath(cache_dir) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+
+        return .{
+            .allocator = allocator,
+            .cache_dir = try allocator.dupe(u8, cache_dir),
+            .dependency_graph = std.StringHashMap([]const []const u8).init(allocator),
+            .modified_times = std.StringHashMap(i128).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *CompiledCache) void {
+        var dep_it = self.dependency_graph.iterator();
+        while (dep_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            for (entry.value_ptr.*) |dep| {
+                self.allocator.free(dep);
+            }
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.dependency_graph.deinit();
+
+        var time_it = self.modified_times.iterator();
+        while (time_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.modified_times.deinit();
+
+        self.allocator.free(self.cache_dir);
+    }
+
+    /// Check if a file needs recompilation
+    pub fn needsRecompile(self: *CompiledCache, file_path: []const u8) !bool {
+        const obj_path = try self.getObjectPath(file_path);
+        defer self.allocator.free(obj_path);
+
+        // Check if object file exists
+        const obj_stat = std.fs.cwd().statFile(obj_path) catch return true;
+
+        // Check if source file is newer than object file
+        const source_stat = std.fs.cwd().statFile(file_path) catch return true;
+
+        // Use mtime for comparison (simple approach)
+        const obj_mtime = obj_stat.mtime.nanoseconds;
+        const src_mtime = source_stat.mtime.nanoseconds;
+
+        // If source is newer than object, needs recompile
+        if (src_mtime > obj_mtime) {
+            return true;
+        }
+
+        // Check dependencies
+        if (self.dependency_graph.get(file_path)) |deps| {
+            for (deps) |dep| {
+                const dep_stat = std.fs.cwd().statFile(dep) catch continue;
+                if (dep_stat.mtime.nanoseconds > obj_mtime) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// Store compiled object file
+    pub fn storeObject(self: *CompiledCache, file_path: []const u8, object_data: []const u8) !void {
+        const obj_path = try self.getObjectPath(file_path);
+        defer self.allocator.free(obj_path);
+
+        try std.fs.cwd().writeFile(.{
+            .sub_path = obj_path,
+            .data = object_data,
+        });
+    }
+
+    /// Load cached object file
+    pub fn loadObject(self: *CompiledCache, file_path: []const u8) ![]const u8 {
+        const obj_path = try self.getObjectPath(file_path);
+        defer self.allocator.free(obj_path);
+
+        return try std.fs.cwd().readFileAlloc(obj_path, self.allocator, std.Io.Limit.unlimited);
+    }
+
+    /// Register file dependencies for incremental tracking
+    pub fn registerDependencies(self: *CompiledCache, file_path: []const u8, deps: []const []const u8) !void {
+        const key = try self.allocator.dupe(u8, file_path);
+        errdefer self.allocator.free(key);
+
+        var deps_copy = try self.allocator.alloc([]const u8, deps.len);
+        errdefer self.allocator.free(deps_copy);
+
+        for (deps, 0..) |dep, i| {
+            deps_copy[i] = try self.allocator.dupe(u8, dep);
+        }
+
+        // Remove old entry if exists
+        if (self.dependency_graph.fetchRemove(file_path)) |old| {
+            self.allocator.free(old.key);
+            for (old.value) |dep| {
+                self.allocator.free(dep);
+            }
+            self.allocator.free(old.value);
+        }
+
+        try self.dependency_graph.put(key, deps_copy);
+    }
+
+    fn getObjectPath(self: *CompiledCache, file_path: []const u8) ![]const u8 {
+        const basename = std.fs.path.basename(file_path);
+        const hash = hashSource(file_path);
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{s}/{s}_{x}.o",
+            .{ self.cache_dir, basename, hash },
+        );
+    }
+
+    /// Get list of files that need recompilation
+    pub fn getFilesToRecompile(self: *CompiledCache, files: []const []const u8) ![]const []const u8 {
+        var to_recompile = std.ArrayList([]const u8).init(self.allocator);
+        errdefer to_recompile.deinit();
+
+        for (files) |file| {
+            if (try self.needsRecompile(file)) {
+                try to_recompile.append(try self.allocator.dupe(u8, file));
+            }
+        }
+
+        return try to_recompile.toOwnedSlice();
+    }
+};
+
+/// File watcher for hot reloading (uses polling for cross-platform support)
+pub const FileWatcher = struct {
+    allocator: std.mem.Allocator,
+    watch_paths: std.StringHashMap(i96),
+    callback: ?*const fn (path: []const u8) void,
+    poll_interval_ms: u64,
+    running: bool,
+
+    pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64) FileWatcher {
+        return .{
+            .allocator = allocator,
+            .watch_paths = std.StringHashMap(i96).init(allocator),
+            .callback = null,
+            .poll_interval_ms = poll_interval_ms,
+            .running = false,
+        };
+    }
+
+    pub fn deinit(self: *FileWatcher) void {
+        self.running = false;
+        var it = self.watch_paths.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.watch_paths.deinit();
+    }
+
+    /// Add a file to watch
+    pub fn watch(self: *FileWatcher, path: []const u8) !void {
+        const mtime = try self.getModTime(path);
+        const key = try self.allocator.dupe(u8, path);
+        try self.watch_paths.put(key, mtime);
+    }
+
+    /// Remove a file from watch
+    pub fn unwatch(self: *FileWatcher, path: []const u8) void {
+        if (self.watch_paths.fetchRemove(path)) |old| {
+            self.allocator.free(old.key);
+        }
+    }
+
+    /// Set callback for file changes
+    pub fn setCallback(self: *FileWatcher, callback: *const fn (path: []const u8) void) void {
+        self.callback = callback;
+    }
+
+    /// Check for changes once (non-blocking)
+    pub fn checkOnce(self: *FileWatcher) ![]const []const u8 {
+        var changed = std.ArrayList([]const u8).init(self.allocator);
+        errdefer changed.deinit();
+
+        var it = self.watch_paths.iterator();
+        while (it.next()) |entry| {
+            const current_mtime = self.getModTime(entry.key_ptr.*) catch continue;
+            if (current_mtime != entry.value_ptr.*) {
+                entry.value_ptr.* = current_mtime;
+                try changed.append(try self.allocator.dupe(u8, entry.key_ptr.*));
+
+                if (self.callback) |cb| {
+                    cb(entry.key_ptr.*);
+                }
+            }
+        }
+
+        return try changed.toOwnedSlice();
+    }
+
+    fn getModTime(self: *FileWatcher, path: []const u8) !i96 {
+        _ = self;
+        const stat = try std.fs.cwd().statFile(path);
+        return stat.mtime.nanoseconds;
+    }
+};
+
+/// Incremental Compilation Manager - coordinates all caching and recompilation
+pub const IncrementalCompiler = struct {
+    allocator: std.mem.Allocator,
+    ir_cache: IRCache,
+    compiled_cache: CompiledCache,
+    file_watcher: ?FileWatcher,
+    verbose: bool,
+
+    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, enable_watch: bool) !IncrementalCompiler {
+        return .{
+            .allocator = allocator,
+            .ir_cache = try IRCache.init(allocator, cache_dir),
+            .compiled_cache = try CompiledCache.init(allocator, cache_dir),
+            .file_watcher = if (enable_watch) FileWatcher.init(allocator, 100) else null,
+            .verbose = false,
+        };
+    }
+
+    pub fn deinit(self: *IncrementalCompiler) void {
+        self.ir_cache.deinit();
+        self.compiled_cache.deinit();
+        if (self.file_watcher) |*w| w.deinit();
+    }
+
+    /// Check if a file can use cached compilation
+    pub fn canUseCached(self: *IncrementalCompiler, file_path: []const u8, source: []const u8) !bool {
+        // First check IR cache
+        if (!try self.ir_cache.isCacheValid(file_path, source)) {
+            return false;
+        }
+
+        // Then check if object file needs recompile
+        if (try self.compiled_cache.needsRecompile(file_path)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// Get cached object or null if not available
+    pub fn getCachedObject(self: *IncrementalCompiler, file_path: []const u8) !?[]const u8 {
+        if (try self.compiled_cache.needsRecompile(file_path)) {
+            return null;
+        }
+        return self.compiled_cache.loadObject(file_path) catch null;
+    }
+
+    /// Store compilation results
+    pub fn storeCompilation(
+        self: *IncrementalCompiler,
+        file_path: []const u8,
+        source: []const u8,
+        ast_data: []const u8,
+        type_info: []const u8,
+        object_data: []const u8,
+        dependencies: []const []const u8,
+    ) !void {
+        try self.ir_cache.put(file_path, source, ast_data, type_info);
+        try self.compiled_cache.storeObject(file_path, object_data);
+        try self.compiled_cache.registerDependencies(file_path, dependencies);
+    }
+
+    /// Enable file watching for hot reload
+    pub fn enableWatch(self: *IncrementalCompiler, file_path: []const u8) !void {
+        if (self.file_watcher) |*w| {
+            try w.watch(file_path);
+        }
+    }
+
+    /// Check for changed files (for hot reload)
+    pub fn getChangedFiles(self: *IncrementalCompiler) ![]const []const u8 {
+        if (self.file_watcher) |*w| {
+            return try w.checkOnce();
+        }
+        return &[_][]const u8{};
+    }
+
+    /// Clear all caches
+    pub fn clearAll(self: *IncrementalCompiler) !void {
+        try self.ir_cache.clear();
+        // Also clear compiled objects
+        var dir = std.fs.cwd().openDir(self.compiled_cache.cache_dir, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".o")) {
+                dir.deleteFile(entry.name) catch {};
+            }
+        }
+    }
+};
