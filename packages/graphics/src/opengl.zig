@@ -5,7 +5,7 @@
 // OpenGL 4.1 is the maximum version supported on macOS
 
 const std = @import("std");
-const ffi = @import("../../ffi/src/ffi.zig");
+const ffi = @import("ffi");
 
 // ============================================================================
 // OpenGL Types

@@ -4,7 +4,7 @@
 // OpenAL is a cross-platform 3D audio API similar to OpenGL
 
 const std = @import("std");
-const ffi = @import("../../ffi/src/ffi.zig");
+const ffi = @import("ffi");
 
 // ============================================================================
 // OpenAL Types

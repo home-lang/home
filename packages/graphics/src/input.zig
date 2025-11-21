@@ -4,7 +4,7 @@
 // This module provides a unified input interface across platforms
 
 const std = @import("std");
-const cocoa = @import("../../mac/src/cocoa.zig");
+const cocoa = @import("cocoa");
 
 // ============================================================================
 // Input Types

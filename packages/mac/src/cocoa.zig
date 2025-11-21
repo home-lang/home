@@ -4,7 +4,7 @@
 // This module uses the Objective-C runtime to interface with macOS frameworks
 
 const std = @import("std");
-const ffi = @import("../../ffi/src/ffi.zig");
+const ffi = @import("ffi");
 
 // ============================================================================
 // Objective-C Runtime Types
@@ -95,29 +95,29 @@ pub extern "c" fn objc_msgSend_stret() void;
 pub extern "c" fn objc_msgSend_fpret() void;
 
 // Type-safe message send wrappers
-pub fn msgSend(obj: id, sel: SEL, comptime ReturnType: type) ReturnType {
+pub fn msgSend(obj: id, selector: SEL, comptime ReturnType: type) ReturnType {
     const func = @as(*const fn (id, SEL) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
-    return func(obj, sel);
+    return func(obj, selector);
 }
 
-pub fn msgSend1(obj: id, sel: SEL, comptime ReturnType: type, arg1: anytype) ReturnType {
+pub fn msgSend1(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype) ReturnType {
     const func = @as(*const fn (id, SEL, @TypeOf(arg1)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
-    return func(obj, sel, arg1);
+    return func(obj, selector, arg1);
 }
 
-pub fn msgSend2(obj: id, sel: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype) ReturnType {
+pub fn msgSend2(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype) ReturnType {
     const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
-    return func(obj, sel, arg1, arg2);
+    return func(obj, selector, arg1, arg2);
 }
 
-pub fn msgSend3(obj: id, sel: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype) ReturnType {
+pub fn msgSend3(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype) ReturnType {
     const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
-    return func(obj, sel, arg1, arg2, arg3);
+    return func(obj, selector, arg1, arg2, arg3);
 }
 
-pub fn msgSend4(obj: id, sel: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype) ReturnType {
+pub fn msgSend4(obj: id, selector: SEL, comptime ReturnType: type, arg1: anytype, arg2: anytype, arg3: anytype, arg4: anytype) ReturnType {
     const func = @as(*const fn (id, SEL, @TypeOf(arg1), @TypeOf(arg2), @TypeOf(arg3), @TypeOf(arg4)) callconv(.C) ReturnType, @ptrCast(&objc_msgSend));
-    return func(obj, sel, arg1, arg2, arg3, arg4);
+    return func(obj, selector, arg1, arg2, arg3, arg4);
 }
 
 // ============================================================================
@@ -352,7 +352,7 @@ pub fn terminate(app: id) void {
 // NSWindow Helpers
 // ============================================================================
 
-pub fn createWindow(rect: CGRect, style: NSWindowStyleMask, backing: NSBackingStoreType, defer: bool) id {
+pub fn createWindow(rect: CGRect, style: NSWindowStyleMask, backing: NSBackingStoreType, defer_display: bool) id {
     const NSWindow = getClass("NSWindow");
     const window = alloc(NSWindow);
     return msgSend4(
@@ -362,7 +362,7 @@ pub fn createWindow(rect: CGRect, style: NSWindowStyleMask, backing: NSBackingSt
         rect,
         @as(NSUInteger, @bitCast(style)),
         @intFromEnum(backing),
-        if (defer) YES else NO,
+        if (defer_display) YES else NO,
     );
 }
 

@@ -14,15 +14,14 @@
 
 const std = @import("std");
 
-// Re-export submodules
-pub const loop = @import("game_loop.zig");
-pub const assets = @import("assets.zig");
-pub const pathfinding = @import("pathfinding.zig");
-pub const ai = @import("ai.zig");
-pub const replay = @import("replay.zig");
-pub const network = @import("network.zig");
-pub const mods = @import("mods.zig");
-pub const ecs = @import("ecs.zig");
+// Import submodules
+const assets = @import("game_assets");
+const replay = @import("game_replay");
+const mods = @import("game_mods");
+
+// Note: Additional submodules are available as separate packages:
+// - game_loop, game_pathfinding, game_ai, game_network, game_ecs
+// Import them directly in your project using @import("game_xxx")
 
 // ============================================================================
 // Craft Integration Types

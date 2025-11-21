@@ -9,7 +9,7 @@
 // - Hierarchical pathfinding for large maps
 
 const std = @import("std");
-const game = @import("game.zig");
+const game = @import("game");
 
 // ============================================================================
 // Grid-Based A* Pathfinding

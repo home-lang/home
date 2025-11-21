@@ -95,6 +95,38 @@ pub fn build(b: *std.Build) void {
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
 
+    // Graphics packages (for games)
+    const opengl_pkg = createPackage(b, "packages/graphics/src/opengl.zig", target, optimize, zig_test_framework);
+    opengl_pkg.addImport("ffi", ffi_pkg);
+    const openal_pkg = createPackage(b, "packages/graphics/src/openal.zig", target, optimize, zig_test_framework);
+    openal_pkg.addImport("ffi", ffi_pkg);
+    const cocoa_pkg = createPackage(b, "packages/mac/src/cocoa.zig", target, optimize, zig_test_framework);
+    cocoa_pkg.addImport("ffi", ffi_pkg);
+    const input_pkg = createPackage(b, "packages/graphics/src/input.zig", target, optimize, zig_test_framework);
+    input_pkg.addImport("cocoa", cocoa_pkg);
+    const renderer_pkg = createPackage(b, "packages/graphics/src/renderer.zig", target, optimize, zig_test_framework);
+    const particles_pkg = createPackage(b, "packages/graphics/src/particles.zig", target, optimize, zig_test_framework);
+    const shaders_pkg = createPackage(b, "packages/graphics/src/shaders.zig", target, optimize, zig_test_framework);
+
+    // Game development packages (order matters for dependencies)
+    const game_assets_pkg = createPackage(b, "packages/game/src/assets.zig", target, optimize, zig_test_framework);
+    const game_replay_pkg = createPackage(b, "packages/game/src/replay.zig", target, optimize, zig_test_framework);
+    const game_mods_pkg = createPackage(b, "packages/game/src/mods.zig", target, optimize, zig_test_framework);
+    const game_loop_pkg = createPackage(b, "packages/game/src/game_loop.zig", target, optimize, zig_test_framework);
+    const game_ai_pkg = createPackage(b, "packages/game/src/ai.zig", target, optimize, zig_test_framework);
+    const game_ecs_pkg = createPackage(b, "packages/game/src/ecs.zig", target, optimize, zig_test_framework);
+    const game_network_pkg = createPackage(b, "packages/game/src/network.zig", target, optimize, zig_test_framework);
+
+    // game_pkg depends on assets, replay, mods
+    const game_pkg = createPackage(b, "packages/game/src/game.zig", target, optimize, zig_test_framework);
+    game_pkg.addImport("game_assets", game_assets_pkg);
+    game_pkg.addImport("game_replay", game_replay_pkg);
+    game_pkg.addImport("game_mods", game_mods_pkg);
+
+    // pathfinding depends on game (for Vec2)
+    const game_pathfinding_pkg = createPackage(b, "packages/game/src/pathfinding.zig", target, optimize, zig_test_framework);
+    game_pathfinding_pkg.addImport("game", game_pkg);
+
     // Setup dependencies between packages
     ast_pkg.addImport("lexer", lexer_pkg);
     parser_pkg.addImport("lexer", lexer_pkg);
