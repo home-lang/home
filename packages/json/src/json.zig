@@ -218,6 +218,12 @@ pub const Parser = struct {
             if (self.source[self.pos] != ',') return error.ExpectedComma;
             self.pos += 1;
             self.skipWhitespace();
+
+            // JSONC: Allow trailing comma
+            if (self.pos < self.source.len and self.source[self.pos] == ']') {
+                self.pos += 1;
+                return .{ .array_value = try items.toOwnedSlice(self.allocator) };
+            }
         }
     }
 
@@ -266,14 +272,46 @@ pub const Parser = struct {
 
             if (self.source[self.pos] != ',') return error.ExpectedComma;
             self.pos += 1;
+            self.skipWhitespace();
+
+            // JSONC: Allow trailing comma
+            if (self.pos < self.source.len and self.source[self.pos] == '}') {
+                self.pos += 1;
+                return .{ .object_value = obj };
+            }
         }
     }
 
     fn skipWhitespace(self: *Parser) void {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
-            if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
-            self.pos += 1;
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                self.pos += 1;
+                continue;
+            }
+            // JSONC: Skip single-line comments (//)
+            if (c == '/' and self.pos + 1 < self.source.len) {
+                if (self.source[self.pos + 1] == '/') {
+                    self.pos += 2;
+                    while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+                // JSONC: Skip block comments (/* */)
+                if (self.source[self.pos + 1] == '*') {
+                    self.pos += 2;
+                    while (self.pos + 1 < self.source.len) {
+                        if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
+                            self.pos += 2;
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+            }
+            break;
         }
     }
 };
@@ -538,4 +576,89 @@ test "JSON - parse and stringify round-trip" {
     defer reparsed.deinit(allocator);
 
     try testing.expect(reparsed == .object_value);
+}
+
+// ==================== JSONC Tests ====================
+
+test "JSONC - single-line comments" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const value = try parse(allocator,
+        \\{
+        \\  // This is a comment
+        \\  "name": "test"  // inline comment
+        \\}
+    );
+    defer value.deinit(allocator);
+
+    try testing.expect(value == .object_value);
+    const name = value.object_value.get("name").?;
+    try testing.expectEqualStrings("test", name.string_value);
+}
+
+test "JSONC - block comments" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const value = try parse(allocator,
+        \\{
+        \\  /* This is a
+        \\     multi-line comment */
+        \\  "value": 42
+        \\}
+    );
+    defer value.deinit(allocator);
+
+    try testing.expect(value == .object_value);
+    const val = value.object_value.get("value").?;
+    try testing.expectEqual(@as(f64, 42), val.number_value);
+}
+
+test "JSONC - trailing comma in array" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const value = try parse(allocator, "[1, 2, 3,]");
+    defer value.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 3), value.array_value.len);
+}
+
+test "JSONC - trailing comma in object" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const value = try parse(allocator,
+        \\{
+        \\  "a": 1,
+        \\  "b": 2,
+        \\}
+    );
+    defer value.deinit(allocator);
+
+    try testing.expect(value == .object_value);
+    const a = value.object_value.get("a").?;
+    try testing.expectEqual(@as(f64, 1), a.number_value);
+}
+
+test "JSONC - combined features" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const value = try parse(allocator,
+        \\{
+        \\  // Configuration file
+        \\  "debug": true,  /* enable debug mode */
+        \\  "values": [
+        \\    1,
+        \\    2,  // trailing comma ok
+        \\  ],
+        \\}
+    );
+    defer value.deinit(allocator);
+
+    try testing.expect(value == .object_value);
+    const debug = value.object_value.get("debug").?;
+    try testing.expect(debug.bool_value == true);
 }
