@@ -468,10 +468,10 @@ pub fn cors() Middleware {
 pub fn logger() Middleware {
     return struct {
         fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {
-            const start = std.time.nanoTimestamp();
+            const start = std.time.Instant.now() catch @panic("Timer unsupported");
             try next();
-            const end = std.time.nanoTimestamp();
-            const duration_ms = @divTrunc(end - start, std.time.ns_per_ms);
+            const end = std.time.Instant.now() catch @panic("Timer unsupported");
+            const duration_ms = end.since(start) / std.time.ns_per_ms;
 
             std.debug.print("{s} {s} - {d} ({d}ms)\n", .{
                 req.method.toString(),

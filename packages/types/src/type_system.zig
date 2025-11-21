@@ -414,9 +414,9 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .program = program,
             .env = TypeEnvironment.init(allocator),
-            .errors = std.ArrayList(TypeErrorInfo).init(allocator),
-            .allocated_types = std.ArrayList(*Type).init(allocator),
-            .allocated_slices = std.ArrayList([]Type).init(allocator),
+            .errors = std.ArrayList(TypeErrorInfo){},
+            .allocated_types = std.ArrayList(*Type){},
+            .allocated_slices = std.ArrayList([]Type){},
             // .ownership_tracker = ownership.OwnershipTracker.init(allocator), // TODO: Implement
         };
     }

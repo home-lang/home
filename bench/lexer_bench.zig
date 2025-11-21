@@ -78,33 +78,27 @@ pub fn main() !void {
     try benchmark(allocator, "Struct (13 LOC)", struct_def, 5000);
 
     // Benchmark 4: Large program (100 lines)
-    var large_program = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    var large_program = std.ArrayList(u8){};
     defer large_program.deinit(allocator);
 
     var line_num: usize = 0;
     while (line_num < 100) : (line_num += 1) {
-        try large_program.appendSlice(allocator, "let x");
-        try large_program.writer(allocator).print("{d}", .{line_num});
-        try large_program.appendSlice(allocator, " = ");
-        try large_program.writer(allocator).print("{d}", .{line_num});
-        try large_program.appendSlice(allocator, " + ");
-        try large_program.writer(allocator).print("{d}", .{line_num + 1});
-        try large_program.appendSlice(allocator, "\n");
+        const line_str = try std.fmt.allocPrint(allocator, "let x{d} = {d} + {d}\n", .{line_num, line_num, line_num + 1});
+        defer allocator.free(line_str);
+        try large_program.appendSlice(allocator, line_str);
     }
 
     try benchmark(allocator, "Large Program (100 LOC)", large_program.items, 1000);
 
     // Benchmark 5: Large program (1000 lines)
-    var very_large_program = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    var very_large_program = std.ArrayList(u8){};
     defer very_large_program.deinit(allocator);
 
     line_num = 0;
     while (line_num < 1000) : (line_num += 1) {
-        try very_large_program.appendSlice(allocator, "let variable");
-        try very_large_program.writer(allocator).print("{d}", .{line_num});
-        try very_large_program.appendSlice(allocator, " = calculate_value(");
-        try very_large_program.writer(allocator).print("{d}", .{line_num});
-        try very_large_program.appendSlice(allocator, ")\n");
+        const line_str = try std.fmt.allocPrint(allocator, "let variable{d} = calculate_value({d})\n", .{line_num, line_num});
+        defer allocator.free(line_str);
+        try very_large_program.appendSlice(allocator, line_str);
     }
 
     try benchmark(allocator, "Very Large Program (1000 LOC)", very_large_program.items, 100);

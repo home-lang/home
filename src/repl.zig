@@ -37,9 +37,13 @@ pub const Repl = struct {
     }
 
     pub fn run(self: *Repl) !void {
-        const stdin_file = std.fs.File.stdin();
+        var threaded = std.Io.Threaded.init(self.allocator);
+        defer threaded.deinit();
+        const io = threaded.io();
+        const stdin_file = std.Io.File.stdin();
         var stdin_buf: [8192]u8 = undefined;
-        var io_reader = stdin_file.reader(&stdin_buf).interface;
+        var stdin_file_reader = stdin_file.reader(io, &stdin_buf);
+        var stdin_reader = &stdin_file_reader.interface;
 
         // Print welcome banner
         self.printBanner();
@@ -59,13 +63,17 @@ pub const Repl = struct {
                 std.debug.print("{s}>>> {s}", .{ Color.Green.code(), Color.Reset.code() });
             }
 
-            // Read line
-            const line = io_reader.takeDelimiterExclusive('\n') catch |err| {
-                if (err == error.EndOfStream) {
+            // Read line - try to take up to newline delimiter
+            const line = stdin_reader.takeDelimiter('\n') catch |err| {
+                if (err == error.EndOfStream or err == error.ReadFailed) {
                     std.debug.print("\n", .{});
                     break;
                 }
+                std.debug.print("\n", .{});
                 return err;
+            } orelse {
+                std.debug.print("\n", .{});
+                break;
             };
 
             // Trim whitespace

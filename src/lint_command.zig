@@ -50,13 +50,10 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
     const path = file_path.?;
 
     // Read the file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), path, err });
+    const source = std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     // Load config from project directory

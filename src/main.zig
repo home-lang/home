@@ -110,13 +110,10 @@ fn printUsage() void {
 
 fn parseCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     // Use arena allocator for tokens
@@ -305,13 +302,10 @@ fn printStmt(stmt: ast.Stmt, indent: usize) void {
 
 fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     // Use arena allocator for AST to reduce allocation overhead
@@ -341,13 +335,10 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     // Initialize diagnostic reporter
@@ -425,13 +416,10 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
-    defer file.close();
-
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
     defer allocator.free(source);
 
     // Use arena allocator for AST
@@ -474,7 +462,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     };
     defer file.close();
 
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    const source = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(source);
 
     if (kernel_mode) {
@@ -603,7 +591,7 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     };
     defer file.close();
 
-    const source = try file.readToEndAlloc(allocator, 1024 * 1024 * 10); // 10 MB max
+    const source = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(source);
 
     std.debug.print("{s}Profiling:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -909,7 +897,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     // Execute tests
     var passed: usize = 0;
     const failed: usize = 0; // TODO: implement actual test execution
-    var total_duration: i64 = 0;
+    var total_duration: u64 = 0;
 
     std.debug.print("{s}Running Tests{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
     std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });

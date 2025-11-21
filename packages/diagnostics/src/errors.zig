@@ -200,24 +200,54 @@ pub const ErrorFormatter = struct {
         error_code: ?[]const u8,
         suggestion: ?[]const u8,
     ) ![]const u8 {
-        var buf = std.ArrayList(u8){};
-        errdefer buf.deinit(self.allocator);
+        // Build error message parts
+        var parts = std.ArrayList([]const u8){};
+        defer parts.deinit(self.allocator);
 
-        const writer = buf.writer();
+        // Format: file:line:column: error: message
+        const header = try std.fmt.allocPrint(self.allocator, "{s}:{d}:{d}: error", .{ file, line, column });
+        try parts.append(self.allocator, header);
 
-        const ctx = ErrorContext{
-            .file = file,
-            .line = line,
-            .column = column,
-            .source_line = source_line,
-            .message = message,
-            .error_code = error_code,
-            .suggestion = suggestion,
-        };
+        if (error_code) |code| {
+            const code_str = try std.fmt.allocPrint(self.allocator, "[{s}]", .{code});
+            try parts.append(self.allocator, code_str);
+        }
 
-        try ctx.format("", .{}, writer);
+        const msg = try std.fmt.allocPrint(self.allocator, ": {s}\n", .{message});
+        try parts.append(self.allocator, msg);
 
-        return buf.toOwnedSlice(self.allocator);
+        // Show source line with caret
+        if (source_line) |line_str| {
+            const line_part = try std.fmt.allocPrint(self.allocator, "  {s}\n", .{line_str});
+            try parts.append(self.allocator, line_part);
+
+            const spaces = try self.allocator.alloc(u8, column + 2);
+            @memset(spaces, ' ');
+            try parts.append(self.allocator, spaces);
+
+            const caret = try self.allocator.dupe(u8, "^\n");
+            try parts.append(self.allocator, caret);
+        }
+
+        // Show suggestion if available
+        if (suggestion) |sug| {
+            const sug_part = try std.fmt.allocPrint(self.allocator, "  help: {s}\n", .{sug});
+            try parts.append(self.allocator, sug_part);
+        }
+
+        // Join all parts
+        var total_len: usize = 0;
+        for (parts.items) |part| total_len += part.len;
+
+        const result = try self.allocator.alloc(u8, total_len);
+        var pos: usize = 0;
+        for (parts.items) |part| {
+            @memcpy(result[pos..][0..part.len], part);
+            pos += part.len;
+            self.allocator.free(part);
+        }
+
+        return result;
     }
 
     pub fn compilerError(

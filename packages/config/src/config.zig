@@ -41,10 +41,7 @@ pub const ConfigLoader = struct {
 
     /// Load and parse config file content
     pub fn loadConfigFile(self: *ConfigLoader, path: []const u8) ![]const u8 {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        return try file.readToEndAlloc(self.allocator, 1024 * 1024); // 1MB max
+        return try std.fs.cwd().readFileAlloc(path, self.allocator, std.Io.Limit.limited(1024 * 1024)); // 1MB max
     }
 
     /// Parse JSON or JSONC content

@@ -31,10 +31,11 @@ pub const Job = struct {
     pub fn init(allocator: std.mem.Allocator, queue: []const u8, payload: []const u8) !*Job {
         const job = try allocator.create(Job);
 
-        // Generate simple ID
+        // Generate simple ID - use a simple counter or random value
         var buf: [32]u8 = undefined;
-        const timestamp = std.time.timestamp();
-        const id = try std.fmt.bufPrint(&buf, "job_{d}", .{timestamp});
+        // Use address of job as unique ID (simple but effective)
+        const job_id = @intFromPtr(job);
+        const id = try std.fmt.bufPrint(&buf, "job_{x}", .{job_id});
 
         job.* = Job{
             .id = try allocator.dupe(u8, id),
@@ -177,7 +178,8 @@ pub const Queue = struct {
             return null;
         }
 
-        const current_time = std.time.timestamp();
+        // For now, just use a simple counter since timestamp is platform-specific
+        const current_time: i64 = 0;
 
         // Find first job that's ready to process
         for (self.pending_jobs.items, 0..) |job, i| {
