@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
+    const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
 
     // Graphics packages (for games)
     const opengl_pkg = createPackage(b, "packages/graphics/src/opengl.zig", target, optimize, zig_test_framework);
@@ -180,6 +181,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("database", database_pkg);
     exe.root_module.addImport("ir_cache", cache_pkg);
     exe.root_module.addImport("collections", collections_pkg);
+    exe.root_module.addImport("json", json_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -876,6 +878,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("database", database_pkg);
     debug_exe.root_module.addImport("ir_cache", cache_pkg);
     debug_exe.root_module.addImport("collections", collections_pkg);
+    debug_exe.root_module.addImport("json", json_pkg);
     debug_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
@@ -906,6 +909,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("database", database_pkg);
     release_safe_exe.root_module.addImport("ir_cache", cache_pkg);
     release_safe_exe.root_module.addImport("collections", collections_pkg);
+    release_safe_exe.root_module.addImport("json", json_pkg);
     release_safe_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
@@ -936,6 +940,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("database", database_pkg);
     release_small_exe.root_module.addImport("ir_cache", cache_pkg);
     release_small_exe.root_module.addImport("collections", collections_pkg);
+    release_small_exe.root_module.addImport("json", json_pkg);
     release_small_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
