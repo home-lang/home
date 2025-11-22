@@ -521,8 +521,8 @@ const dist = Math.distance(0, 0, 3, 4);  // 5.0
 
 ### Zig Version
 - **Minimum**: Zig 0.11.0
-- **Tested**: Zig 0.15.1
-- **Recommended**: Zig 0.15.1+
+- **Tested**: Zig 0.16.0
+- **Recommended**: Zig 0.16.0+
 
 ### C Standard
 - **Minimum**: C99

@@ -283,11 +283,14 @@ home/
 
 ### Prerequisites
 
-- Zig 0.15+ (for building the compiler)
+- Zig 0.16+ (for building the compiler)
 
 ```bash
 # macOS
 brew install zig
+
+# alternatively
+pantry install zig
 
 # Linux
 # Download from https://ziglang.org/download/

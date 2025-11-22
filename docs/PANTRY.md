@@ -48,7 +48,7 @@ Keeping them separate means:
 
 ## For Home Development
 
-The `pantry.json` file declares what Home itself needs to build (currently just Zig 0.15.1).
+The `pantry.json` file declares what Home itself needs to build (currently just Zig 0.16.0).
 
 ## For Home-OS
 
