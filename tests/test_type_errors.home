@@ -34,7 +34,7 @@ fn test_binary_type_error(): i32 {
 // Error 5: Wrong condition type in if statement
 fn test_condition_error(): i32 {
     let x: i32 = 10;
-    if x {  // ERROR: If condition must be bool, got i32
+    if (x) {  // ERROR: If condition must be bool, got i32
         return 1;
     }
     return 0;

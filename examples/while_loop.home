@@ -2,7 +2,7 @@
 fn main(): int {
     let mut count = 0
 
-    while count < 5 {
+    while (count < 5) {
         count = count + 1
     }
 

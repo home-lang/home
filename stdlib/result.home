@@ -27,7 +27,7 @@ fn err(message: string): Result {
 
 // Example: Division that can fail
 fn divide(a: i32, b: i32): Result {
-    if b == 0 {
+    if (b == 0) {
         return err("Division by zero");
     }
     return ok(a / b);
@@ -71,7 +71,7 @@ fn main(): i32 {
     // Test successful division
     let result1: Result = divide(10, 2);
     let value1: i32 = handle_result(result1);
-    if value1 != 5 {
+    if (value1 != 5) {
         print("Test 1 failed\n");
         return 1;
     }
@@ -79,7 +79,7 @@ fn main(): i32 {
     // Test division by zero
     let result2: Result = divide(10, 0);
     let value2: i32 = handle_result(result2);
-    if value2 != -1 {
+    if (value2 != -1) {
         print("Test 2 failed\n");
         return 2;
     }
@@ -87,7 +87,7 @@ fn main(): i32 {
     // Test error propagation
     let result3: Result = try_divide(10, 2);
     let value3: i32 = handle_result(result3);
-    if value3 != 10 {  // (10/2) * 2 = 10
+    if (value3 != 10) {  // (10/2) * 2 = 10
         print("Test 3 failed\n");
         return 3;
     }

@@ -47,14 +47,14 @@ it('can multiply numbers') {
   }
 }
 
-it('can check if number is even') {
+it('can check if (number is even')) {
   let result = is_even(4)
   if (!result) {
     panic("Expected 4 to be even")
   }
 }
 
-it('can check if number is odd') {
+it('can check if (number is odd')) {
   let result = is_even(5)
   if (result) {
     panic("Expected 5 to be odd")

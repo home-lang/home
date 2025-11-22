@@ -432,7 +432,7 @@ fn test_test_data(): void {
         create_test_user("Charlie"),
     ]
     
-    for user in users {
+    for (user in users) {
         println("Test user: {} - {}", user.name, user.email)
     }
 }

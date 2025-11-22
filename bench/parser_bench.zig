@@ -75,7 +75,7 @@ pub fn main() !void {
     // If statement
     try benchmark(
         "If statement",
-        "if x > 0 { return x } else { return 0 }",
+        "if (x > 0) { return x } else { return 0 }",
         10000,
         allocator,
     );

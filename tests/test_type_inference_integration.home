@@ -24,7 +24,7 @@ fn array_ops(): i32 {
 // Test 4: Conditional inference
 fn conditional(): i32 {
     let cond = true;  // Should infer bool
-    let value = if cond { 10 } else { 20 };  // Should infer i32
+    let value = if (cond) { 10 } else { 20 };  // Should infer i32
     return value;
 }
 
@@ -36,27 +36,27 @@ fn identity(x: i32): i32 {
 
 fn main(): i32 {
     let t1: i32 = test_simple_inference();
-    if t1 != 42 {
+    if (t1 != 42) {
         return 1;
     }
 
     let t2: i32 = add(10, 20);
-    if t2 != 30 {
+    if (t2 != 30) {
         return 2;
     }
 
     let t3: i32 = array_ops();
-    if t3 != 1 {
+    if (t3 != 1) {
         return 3;
     }
 
     let t4: i32 = conditional();
-    if t4 != 10 {
+    if (t4 != 10) {
         return 4;
     }
 
     let t5: i32 = identity(99);
-    if t5 != 99 {
+    if (t5 != 99) {
         return 5;
     }
 

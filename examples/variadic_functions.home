@@ -6,7 +6,7 @@
 
 fn sum(...numbers: i32): i32 {
     let mut total = 0
-    for num in numbers {
+    for (num in numbers) {
         total += num
     }
     total
@@ -26,14 +26,14 @@ fn test_basic_variadic(): void {
 // ============================================================================
 
 fn greet(greeting: string, ...names: string): void {
-    for name in names {
+    for (name in names) {
         println("{}, {}!", greeting, name)
     }
 }
 
 fn multiply_all(factor: i32, ...numbers: i32): Vec<i32> {
     let mut results = vec![]
-    for num in numbers {
+    for (num in numbers) {
         results.push(factor * num)
     }
     results
@@ -59,7 +59,7 @@ fn first_of<T>(...items: T): Option<T>
 where 
     T: Clone
 {
-    if items.len() > 0 {
+    if (items.len() > 0) {
         Some(items[0].clone())
     } else {
         None
@@ -73,8 +73,8 @@ where
     assert!(values.len() > 0, "max requires at least one value")
     
     let mut maximum = values[0].clone()
-    for value in values[1..] {
-        if value > maximum {
+    for (value in values[1..]) {
+        if (value > maximum) {
             maximum = value.clone()
         }
     }
@@ -88,8 +88,8 @@ where
     assert!(values.len() > 0, "min requires at least one value")
     
     let mut minimum = values[0].clone()
-    for value in values[1..] {
-        if value < minimum {
+    for (value in values[1..]) {
+        if (value < minimum) {
             minimum = value.clone()
         }
     }
@@ -197,7 +197,7 @@ fn log(level: LogLevel, ...messages: any): void {
     
     print("{} ", prefix)
     for (i, msg) in messages.iter().enumerate() {
-        if i > 0 {
+        if (i > 0) {
             print(" ")
         }
         print("{:?}", msg)
@@ -219,21 +219,21 @@ fn test_logging(): void {
 // ============================================================================
 
 fn average(...numbers: f64): f64 {
-    if numbers.len() == 0 {
+    if (numbers.len() == 0) {
         return 0.0
     }
     numbers.iter().sum::<f64>() / numbers.len() as f64
 }
 
 fn product(...numbers: f64): f64 {
-    if numbers.len() == 0 {
+    if (numbers.len() == 0) {
         return 1.0
     }
     numbers.iter().product()
 }
 
 fn range(...numbers: f64): f64 {
-    if numbers.len() == 0 {
+    if (numbers.len() == 0) {
         return 0.0
     }
     let min_val = numbers.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap()
@@ -267,13 +267,13 @@ fn concat_with_separator(separator: string, ...strings: string): string {
 }
 
 fn longest(...strings: string): string {
-    if strings.len() == 0 {
+    if (strings.len() == 0) {
         return ""
     }
     
     let mut longest = strings[0]
-    for s in strings[1..] {
-        if s.len() > longest.len() {
+    for (s in strings[1..]) {
+        if (s.len() > longest.len()) {
             longest = s
         }
     }
@@ -302,7 +302,7 @@ where
     T: Clone
 {
     let mut result = vec![]
-    for arr in arrays {
+    for (arr in arrays) {
         result.extend(arr.clone())
     }
     result
@@ -322,8 +322,8 @@ where
     let mut seen = HashSet::new()
     let mut result = vec![]
     
-    for item in items {
-        if seen.insert(item.clone()) {
+    for (item in items) {
+        if (seen.insert(item.clone())) {
             result.push(item.clone())
         }
     }
@@ -356,13 +356,13 @@ fn assert_all_equal<T>(...values: T): void
 where
     T: PartialEq + Debug
 {
-    if values.len() < 2 {
+    if (values.len() < 2) {
         return
     }
     
     let first = values[0]
     for (i, value) in values[1..].iter().enumerate() {
-        if value != first {
+        if (value != first) {
             panic!(
                 "Assertion failed: values[0] != values[{}]\n  left: {:?}\n right: {:?}",
                 i + 1, first, value
@@ -373,7 +373,7 @@ where
 
 fn assert_all_true(...conditions: bool): void {
     for (i, condition) in conditions.iter().enumerate() {
-        if !condition {
+        if (!condition) {
             panic!("Assertion failed: condition[{}] is false", i)
         }
     }
@@ -409,7 +409,7 @@ impl QueryBuilder {
     }
     
     fn select(&mut self, ...columns: string): &mut QueryBuilder {
-        for col in columns {
+        for (col in columns) {
             self.columns.push(col.to_string())
         }
         self
@@ -426,7 +426,7 @@ impl QueryBuilder {
     }
     
     fn build(&self): string {
-        let cols = if self.columns.is_empty() {
+        let cols = if (self.columns.is_empty()) {
             "*".to_string()
         } else {
             self.columns.join(", ")
@@ -434,7 +434,7 @@ impl QueryBuilder {
         
         let mut query = format!("SELECT {} FROM {}", cols, self.table)
         
-        if !self.conditions.is_empty() {
+        if (!self.conditions.is_empty()) {
             query.push_str(" WHERE ")
             query.push_str(&self.conditions.join(" AND "))
         }

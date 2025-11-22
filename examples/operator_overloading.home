@@ -125,7 +125,7 @@ impl Mul for Complex {
 
 impl Display for Complex {
     fn fmt(&self, f: &mut Formatter): Result {
-        if self.imag >= 0.0 {
+        if (self.imag >= 0.0) {
             write!(f, "{} + {}i", self.real, self.imag)
         } else {
             write!(f, "{} - {}i", self.real, -self.imag)
@@ -299,11 +299,11 @@ impl Permissions {
 fn test_permission_ops(): void {
     let perms = READ | WRITE
     
-    if perms.has(READ) {
+    if (perms.has(READ)) {
         println("Has read permission")
     }
     
-    if perms.has(EXECUTE) {
+    if (perms.has(EXECUTE)) {
         println("Has execute permission")
     } else {
         println("No execute permission")

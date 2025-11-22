@@ -41,7 +41,7 @@ fn test_move_to_function(): i32 {
 fn test_conditional_move(): i32 {
     let s = "Hello";
 
-    if true {
+    if (true) {
         let t = s;    // s moved in then branch
     } else {
         let u = s;    // s moved in else branch
@@ -79,7 +79,7 @@ fn test_reinitialize(): i32 {
 fn test_move_in_loop(): i32 {
     let arr = ["a", "b", "c"];
 
-    for item in arr {
+    for (item in arr) {
         // Each iteration moves an element
         // item is owned in this scope
     }

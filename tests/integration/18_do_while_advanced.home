@@ -5,14 +5,14 @@
 let count1 = 0;
 do {
     count1 = count1 + 1;
-} while count1 < 5;
+} while (count1 < 5)
 assert(count1 == 5);
 
 // Test 2: Do-while with single iteration
 let count2 = 10;
 do {
     count2 = count2 + 1;
-} while count2 < 5;
+} while (count2 < 5)
 assert(count2 == 11);
 
 // Test 3: Do-while with complex condition
@@ -21,7 +21,7 @@ let sum = 0;
 do {
     count3 = count3 + 1;
     sum = sum + count3;
-} while count3 < 10;
+} while (count3 < 10)
 assert(count3 == 10);
 assert(sum == 55);
 
@@ -34,16 +34,16 @@ do {
     do {
         total = total + 1;
         inner = inner + 1;
-    } while inner < 3;
+    } while (inner < 3)
     outer = outer + 1;
-} while outer < 3;
+} while (outer < 3)
 assert(total == 9);
 
 // Test 5: Do-while with break-like condition
 let count5 = 0;
 do {
     count5 = count5 + 1;
-} while count5 < 100;
+} while (count5 < 100)
 assert(count5 == 100);
 
 // Test 6: Do-while in function
@@ -51,7 +51,7 @@ fn countUntil(limit: int): int {
     let count = 0;
     do {
         count = count + 1;
-    } while count < limit;
+    } while (count < limit)
     return count;
 }
 
@@ -64,7 +64,7 @@ let m2 = 0;
 do {
     m1 = m1 + 2;
     m2 = m2 + 3;
-} while m1 < 10;
+} while (m1 < 10)
 assert(m1 == 10);
 assert(m2 == 15);
 
@@ -72,26 +72,26 @@ assert(m2 == 15);
 let val8 = 1;
 do {
     val8 = val8 * 2;
-} while val8 < 64;
+} while (val8 < 64)
 assert(val8 == 64);
 
 // Test 9: Do-while with decreasing counter
 let dec = 10;
 do {
     dec = dec - 1;
-} while dec > 0;
+} while (dec > 0)
 assert(dec == 0);
 
 // Test 10: Multiple do-while loops
 let l1 = 0;
 do {
     l1 = l1 + 1;
-} while l1 < 3;
+} while (l1 < 3)
 
 let l2 = 0;
 do {
     l2 = l2 + 2;
-} while l2 < 6;
+} while (l2 < 6)
 
 assert(l1 == 3);
 assert(l2 == 6);
@@ -100,7 +100,7 @@ assert(l2 == 6);
 let comp = 1;
 do {
     comp = comp + comp;
-} while comp < 100;
+} while (comp < 100)
 assert(comp == 128);
 
 // Test 12: Do-while calling functions
@@ -111,7 +111,7 @@ fn increment(n: int): int {
 let func = 0;
 do {
     func = increment(func);
-} while func < 5;
+} while (func < 5)
 assert(func == 5);
 
 // Test 13: Do-while with boolean condition
@@ -119,14 +119,14 @@ let bool = 0;
 let iterations = 0;
 do {
     iterations = iterations + 1;
-} while bool == 0;
+} while (bool == 0)
 assert(iterations == 1);
 
 // Test 14: Long-running do-while
 let longCount = 0;
 do {
     longCount = longCount + 1;
-} while longCount < 1000;
+} while (longCount < 1000)
 assert(longCount == 1000);
 
 // Test 15: Do-while with modulo
@@ -135,7 +135,7 @@ let modCount = 0;
 do {
     modCount = modCount + 1;
     mod = modCount;
-} while mod < 20;
+} while (mod < 20)
 assert(mod == 20);
 
 print("✓ All advanced do-while tests passed!");

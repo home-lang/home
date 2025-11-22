@@ -34,7 +34,7 @@ assert(switchRes == 200);
 let dwCount = 0;
 do {
     dwCount = dwCount + 1;
-} while dwCount < (dwCount > 5 ? 10 : 7);
+} while (dwCount < (dwCount > 5 ? 10 : 7))
 assert(dwCount == 7);
 
 // Test 5: Try-catch with null coalescing
@@ -72,7 +72,7 @@ do {
         default: { swdwRes = swdwRes + 3; }
     }
     swdw = swdw + 1;
-} while swdw < 3;
+} while (swdw < 3)
 assert(swdwRes == 6);
 
 // Test 10: Try-catch with switch
@@ -103,7 +103,7 @@ fn complexFunc(input: int): int {
     do {
         count = count + 1;
         result = result + value;
-    } while count < 3;
+    } while (count < 3)
 
     // Switch
     switch result {
@@ -161,7 +161,7 @@ try {
                 everything = everything + 2;
             }
         }
-    } while everything < 1;
+    } while (everything < 1)
 
     assert(everything == 1);
 } catch {

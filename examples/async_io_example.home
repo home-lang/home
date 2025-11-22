@@ -203,11 +203,11 @@ async fn chatClient(stream: TcpStream, tx: Sender<string>) -> Result<(), NetErro
 async fn broadcaster(rx: Receiver<string>) {
     let mut clients: []TcpStream = [];
 
-    while let Ok(message) = await rx.recv() {
+    while (let Ok(message) = await rx.recv()) {
         println("Broadcasting: {message}");
 
         // Send to all clients
-        for client in clients {
+        for (client in clients) {
             await client.writeAll(message.bytes()) catch {
                 // Client disconnected, remove from list
                 continue;
@@ -291,7 +291,7 @@ async fn concurrentHttpRequests() -> Result<(), HttpError> {
     ];
 
     let mut futures = [];
-    for url in urls {
+    for (url in urls) {
         futures.push(client.get(url));
     }
 

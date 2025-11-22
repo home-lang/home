@@ -1,6 +1,6 @@
 // Test Result<T, E> type and error propagation
 fn divide(a: int, b: int): int {
-    if b == 0 {
+    if (b == 0) {
         return 0  // In a real Result type, this would be Err
     }
     return a / b

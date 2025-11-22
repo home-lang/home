@@ -114,7 +114,7 @@ async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, NetworkError> {
     let mut futures = [];
 
     // Start all fetches concurrently
-    for id in user_ids {
+    for (id in user_ids) {
         futures.push(fetchUser(id));
     }
 
@@ -123,7 +123,7 @@ async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, NetworkError> {
 
     // Collect results, propagating first error
     let mut users = [];
-    for result in results {
+    for (result in results) {
         // ? operator propagates the error
         users.push(result?);
     }
@@ -141,7 +141,7 @@ async fn fetchUserWithTimeout(user_id: i32) -> Result<User, NetworkError> {
 
 // Example 7: Retry logic with Result
 async fn fetchUserWithRetry(user_id: i32, max_attempts: i32) -> Result<User, NetworkError> {
-    for attempt in 0..max_attempts {
+    for (attempt in 0..max_attempts) {
         match await fetchUser(user_id) {
             Ok(user) => return Ok(user),
             Err(err) => {
@@ -185,7 +185,7 @@ async fn validateAndFetch(user_id: i32) -> Result<User, AppError> {
     }
 
     // Check if user exists in cache
-    if let Some(cached) = await checkCache(user_id) {
+    if (let Some(cached) = await checkCache(user_id)) {
         return Ok(cached);
     }
 
@@ -234,7 +234,7 @@ async fn aggregateUserData(user_ids: []i32) -> Result<AggregateData, AppError> {
     let mut total_comments = 0;
     let mut successful_users = 0;
 
-    for user_id in user_ids {
+    for (user_id in user_ids) {
         // Continue on error instead of propagating
         match await getUserPosts(user_id) {
             Ok(posts) => {
@@ -307,7 +307,7 @@ async fn processUserQueue(
     rx: Receiver<i32>,
     tx: Sender<Result<User, NetworkError>>,
 ) {
-    while let Ok(user_id) = await rx.recv() {
+    while (let Ok(user_id) = await rx.recv()) {
         // Fetch user and send result (including errors)
         let result = await fetchUser(user_id);
         await tx.send(result)?;

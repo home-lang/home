@@ -64,7 +64,7 @@ impl Iterator for Counter {
     type Item = u32
     
     fn next(&mut self): Option<u32> {
-        if self.count < self.max {
+        if (self.count < self.max) {
             self.count += 1
             Some(self.count)
         } else {
@@ -76,7 +76,7 @@ impl Iterator for Counter {
 fn test_associated_types(): void {
     let mut counter = Counter { count: 0, max: 5 }
     
-    while let Some(num) = counter.next() {
+    while (let Some(num) = counter.next()) {
         println("Count: {}", num)
     }
 }
@@ -269,7 +269,7 @@ where
     I: Iterator,
     I::Item: Display
 {
-    while let Some(item) = iter.next() {
+    while (let Some(item) = iter.next()) {
         println("{}", item)
     }
 }
@@ -309,7 +309,7 @@ impl Drawable for Rectangle {
 }
 
 fn render_all(shapes: &[dyn Drawable]): void {
-    for shape in shapes {
+    for (shape in shapes) {
         shape.draw()
     }
 }

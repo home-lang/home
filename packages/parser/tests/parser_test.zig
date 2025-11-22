@@ -225,7 +225,7 @@ test "parser: return statement without value" {
 }
 
 test "parser: if statement" {
-    const program = try parseSource(testing.allocator, "if x > 0 { return x }");
+    const program = try parseSource(testing.allocator, "if (x > 0) { return x }");
     defer program.deinit(testing.allocator);
 
     const stmt = program.statements[0];
@@ -238,7 +238,7 @@ test "parser: if statement" {
 }
 
 test "parser: if-else statement" {
-    const program = try parseSource(testing.allocator, "if true { return 1 } else { return 0 }");
+    const program = try parseSource(testing.allocator, "if (true) { return 1 } else { return 0 }");
     defer program.deinit(testing.allocator);
 
     const if_stmt = program.statements[0].IfStmt;
@@ -247,7 +247,7 @@ test "parser: if-else statement" {
 }
 
 test "parser: while statement" {
-    const program = try parseSource(testing.allocator, "while x < 10 { increment(x) }");
+    const program = try parseSource(testing.allocator, "while (x < 10) { increment(x) }");
     defer program.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), program.statements.len);
@@ -261,7 +261,7 @@ test "parser: while statement" {
 }
 
 test "parser: for statement" {
-    const program = try parseSource(testing.allocator, "for i in items { process(i) }");
+    const program = try parseSource(testing.allocator, "for (i in items) { process(i) }");
     defer program.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), program.statements.len);

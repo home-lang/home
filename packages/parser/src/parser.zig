@@ -1159,7 +1159,9 @@ pub const Parser = struct {
     /// Parse an if statement
     fn ifStatement(self: *Parser) !ast.Stmt {
         const if_token = self.previous();
+        _ = try self.expect(.LeftParen, "Expected '(' after 'if'");
         const condition = try self.expression();
+        _ = try self.expect(.RightParen, "Expected ')' after if condition");
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const then_block = try self.blockStatement();
@@ -1185,7 +1187,9 @@ pub const Parser = struct {
     /// Parse a while statement
     fn whileStatement(self: *Parser) !ast.Stmt {
         const while_token = self.previous();
+        _ = try self.expect(.LeftParen, "Expected '(' after 'while'");
         const condition = try self.expression();
+        _ = try self.expect(.RightParen, "Expected ')' after while condition");
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const body = try self.blockStatement();
@@ -1227,6 +1231,7 @@ pub const Parser = struct {
     /// Parse a for statement
     fn forStatement(self: *Parser) !ast.Stmt {
         const for_token = self.previous();
+        _ = try self.expect(.LeftParen, "Expected '(' after 'for'");
 
         const first_token = try self.expect(.Identifier, "Expected iterator variable name");
         const first_name = first_token.lexeme;
@@ -1246,6 +1251,7 @@ pub const Parser = struct {
 
         const iterable = try self.expression();
         errdefer ast.Program.deinitExpr(iterable, self.allocator);
+        _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
 
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
@@ -1270,8 +1276,10 @@ pub const Parser = struct {
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
 
         _ = try self.expect(.While, "Expected 'while' after do-while body");
+        _ = try self.expect(.LeftParen, "Expected '(' after 'while'");
 
         const condition = try self.expression();
+        _ = try self.expect(.RightParen, "Expected ')' after do-while condition");
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const stmt = try ast.DoWhileStmt.init(

@@ -250,7 +250,7 @@ impl Button {
     
     fn click(&mut self) {
         println("Button '{}' clicked", self.label)
-        if let Some(ref mut handler) = self.on_click {
+        if (let Some(ref mut handler) = self.on_click) {
             handler()
         }
     }
@@ -296,7 +296,7 @@ where
     }
     
     fn get(&mut self): &T {
-        if self.value.is_none() {
+        if (self.value.is_none()) {
             let init = self.init.take().unwrap()
             self.value = Some(init())
         }
@@ -357,7 +357,7 @@ fn test_custom_iterator(): void {
         func: |x| x * x,
     }
     
-    for squared in transform {
+    for (squared in transform) {
         println("  {}", squared)
     }
 }
@@ -388,7 +388,7 @@ where
     }
     
     fn call(&mut self, arg: T): T {
-        if let Some(result) = self.cache.get(&arg) {
+        if (let Some(result) = self.cache.get(&arg)) {
             return result.clone()
         }
         
@@ -399,7 +399,7 @@ where
 }
 
 fn fibonacci(n: i32): i32 {
-    if n <= 1 {
+    if (n <= 1) {
         n
     } else {
         fibonacci(n - 1) + fibonacci(n - 2)

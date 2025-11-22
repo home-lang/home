@@ -4,7 +4,7 @@ fn add(a: int, b: int): int {
 let x = 10
 let y = 20
 let result = add(x, y)
-if result > 25 {
+if (result > 25) {
     print("Large!")
 } else {
     print("Small")

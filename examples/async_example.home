@@ -41,7 +41,7 @@ async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, Error> {
     let mut futures = [];
 
     // Start all fetches concurrently
-    for id in user_ids {
+    for (id in user_ids) {
         futures.push(fetchUserData(id));
     }
 
@@ -50,7 +50,7 @@ async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, Error> {
 
     // Collect successful results
     let mut users = [];
-    for result in results {
+    for (result in results) {
         match result {
             Ok(user) => users.push(user),
             Err(err) => println("Error fetching user: {err}"),
@@ -62,7 +62,7 @@ async fn fetchMultipleUsers(user_ids: []i32) -> Result<[]User, Error> {
 
 // Example 4: Using channels for producer-consumer
 async fn producer(tx: Sender<i32>, count: i32) {
-    for i in 0..count {
+    for (i in 0..count) {
         await tx.send(i * 10)?;
         await sleep(Duration.millis(50));
     }
@@ -72,7 +72,7 @@ async fn producer(tx: Sender<i32>, count: i32) {
 async fn consumer(rx: Receiver<i32>) -> i32 {
     let mut sum = 0;
 
-    while let Ok(value) = await rx.recv() {
+    while (let Ok(value) = await rx.recv()) {
         println("Received: {value}");
         sum += value;
     }
@@ -106,7 +106,7 @@ async fn fetchWithTimeout(url: string) -> Result<Data, Error> {
 
 // Example 6: Retry logic
 async fn fetchWithRetry(url: string, max_attempts: i32) -> Result<Data, Error> {
-    for attempt in 0..max_attempts {
+    for (attempt in 0..max_attempts) {
         match await fetchWithTimeout(url) {
             Ok(data) => return Ok(data),
             Err(err) => {
@@ -147,12 +147,12 @@ async fn sharedStateExample() -> i32 {
 
     // Spawn 10 tasks that increment the counter
     let mut handles = [];
-    for i in 0..10 {
+    for (i in 0..10) {
         handles.push(spawn(updateCounter(&counter, i)));
     }
 
     // Wait for all tasks
-    for handle in handles {
+    for (handle in handles) {
         await handle.join();
     }
 
@@ -211,7 +211,7 @@ async fn rateLimitingExample() {
     ];
 
     let mut futures = [];
-    for url in urls {
+    for (url in urls) {
         futures.push(rateLimitedRequest(url, &semaphore));
     }
 

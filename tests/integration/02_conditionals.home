@@ -1,17 +1,17 @@
 // Test if statements and conditionals
 let x = 10;
 
-if x > 5 {
+if (x > 5) {
     let y = x * 2;
 }
 
-if x < 5 {
+if (x < 5) {
     let z = 0;
 } else {
     let z = 1;
 }
 
 let condition = x == 10;
-if condition {
+if (condition) {
     let result = x + 1;
 }

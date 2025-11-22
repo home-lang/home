@@ -4,7 +4,7 @@
 let count = 0;
 do {
     count = count + 1;
-} while count < (count > 3 ? 5 : 10);
+} while (count < (count > 3 ? 5 : 10))
 assert(count >= 5);
 
 // Test 2: Switch with ternary
@@ -42,7 +42,7 @@ fn processValue(val: int): int {
     do {
         result = result + 1;
         iterations = iterations + 1;
-    } while iterations < 3;
+    } while (iterations < 3)
 
     // Use switch
     switch result {
@@ -86,7 +86,7 @@ do {
         }
     }
     outer = outer + 1;
-} while outer < 3;
+} while (outer < 3)
 
 print("✓ All comprehensive integration tests passed!");
 print("✓ All new features working together correctly!");

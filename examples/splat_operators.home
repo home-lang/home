@@ -74,7 +74,7 @@ fn add(a: i32, b: i32, c: i32): i32 {
 
 fn sum(...numbers: i32): i32 {
     let mut total = 0
-    for num in numbers {
+    for (num in numbers) {
         total += num
     }
     total
@@ -106,14 +106,14 @@ fn test_function_call_spread(): void {
 // ============================================================================
 
 fn greet(greeting: string, ...names: string): void {
-    for name in names {
+    for (name in names) {
         println("{}, {}!", greeting, name)
     }
 }
 
 fn multiply(factor: i32, ...numbers: i32): Vec<i32> {
     let mut results = vec![]
-    for num in numbers {
+    for (num in numbers) {
         results.push(factor * num)
     }
     results
@@ -318,7 +318,7 @@ fn test_flattening(): void {
 fn compose<T>(...functions: fn(T): T): fn(T): T {
     return |x| {
         let mut result = x
-        for func in functions {
+        for (func in functions) {
             result = func(result)
         }
         result
@@ -368,7 +368,7 @@ type Middleware = fn(Handler): Handler
 
 fn apply_middleware(handler: Handler, ...middleware: Middleware): Handler {
     let mut wrapped = handler
-    for mw in middleware.iter().rev() {
+    for (mw in middleware.iter().rev()) {
         wrapped = mw(wrapped)
     }
     wrapped
@@ -385,7 +385,7 @@ fn logging_middleware(next: Handler): Handler {
 
 fn auth_middleware(next: Handler): Handler {
     return |req| {
-        if !req.is_authenticated() {
+        if (!req.is_authenticated()) {
             return Response::unauthorized()
         }
         next(req)
@@ -453,7 +453,7 @@ fn test_conditional_spreading(): void {
     
     let config = {
         ...base_config,
-        ...(if is_production {
+        ...(if (is_production) {
             { ssl: true, verify: true }
         } else {
             {}

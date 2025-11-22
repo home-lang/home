@@ -256,18 +256,20 @@ test "lexer: struct definition" {
 }
 
 test "lexer: if statement" {
-    var lexer = Lexer.init(testing.allocator, "if x > 0 { return true }");
+    var lexer = Lexer.init(testing.allocator, "if (x > 0) { return true }");
     var tokens = try lexer.tokenize();
     defer tokens.deinit(testing.allocator);
 
     try testing.expectEqual(TokenType.If, tokens.items[0].type);
-    try testing.expectEqual(TokenType.Identifier, tokens.items[1].type);
-    try testing.expectEqual(TokenType.Greater, tokens.items[2].type);
-    try testing.expectEqual(TokenType.Integer, tokens.items[3].type);
-    try testing.expectEqual(TokenType.LeftBrace, tokens.items[4].type);
-    try testing.expectEqual(TokenType.Return, tokens.items[5].type);
-    try testing.expectEqual(TokenType.True, tokens.items[6].type);
-    try testing.expectEqual(TokenType.RightBrace, tokens.items[7].type);
+    try testing.expectEqual(TokenType.LeftParen, tokens.items[1].type);
+    try testing.expectEqual(TokenType.Identifier, tokens.items[2].type);
+    try testing.expectEqual(TokenType.Greater, tokens.items[3].type);
+    try testing.expectEqual(TokenType.Integer, tokens.items[4].type);
+    try testing.expectEqual(TokenType.RightParen, tokens.items[5].type);
+    try testing.expectEqual(TokenType.LeftBrace, tokens.items[6].type);
+    try testing.expectEqual(TokenType.Return, tokens.items[7].type);
+    try testing.expectEqual(TokenType.True, tokens.items[8].type);
+    try testing.expectEqual(TokenType.RightBrace, tokens.items[9].type);
 }
 
 test "lexer: async function" {

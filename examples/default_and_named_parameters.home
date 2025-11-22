@@ -192,7 +192,7 @@ fn copy_file(
     follow_symlinks: bool = false,
     verbose: bool = false
 ): Result<()> {
-    if verbose {
+    if (verbose) {
         println("Copying {} to {}", source, dest)
         println("  Overwrite: {}", overwrite)
         println("  Preserve metadata: {}", preserve_metadata)
@@ -323,25 +323,25 @@ fn test_range_function(): void {
     println("\n=== Range Function ===")
     
     println("range(10): ")
-    for i in range(10) {
+    for (i in range(10)) {
         print("{} ", i)
     }
     println("")
     
     println("range(5, 15): ")
-    for i in range(5, 15) {
+    for (i in range(5, 15)) {
         print("{} ", i)
     }
     println("")
     
     println("range(0, 20, 2): ")
-    for i in range(0, 20, 2) {
+    for (i in range(0, 20, 2)) {
         print("{} ", i)
     }
     println("")
     
     println("range(end: 10, step: 2): ")
-    for i in range(end: 10, step: 2) {
+    for (i in range(end: 10, step: 2)) {
         print("{} ", i)
     }
     println("")
@@ -424,7 +424,7 @@ fn log(
         LogLevel::Error => "[ERROR]",
     }
     
-    if timestamp {
+    if (timestamp) {
         print("[{}] ", current_time())
     }
     
