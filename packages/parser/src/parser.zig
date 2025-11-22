@@ -89,7 +89,8 @@ const Precedence = enum(u8) {
         return switch (token_type) {
             .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
             .Question => .Ternary,
-            .QuestionQuestion => .NullCoalesce,
+            .QuestionQuestion, .QuestionColon => .NullCoalesce,
+            .QuestionBracket => .Call,
             .PipePipe, .Or => .Or,
             .AmpersandAmpersand, .And => .And,
             .Pipe => .BitOr,
@@ -1056,7 +1057,7 @@ pub const Parser = struct {
         return ast.Stmt{ .ImportDecl = decl };
     }
 
-    /// Parse a type annotation (supports arrays, generics, etc.)
+    /// Parse a type annotation (supports arrays, generics, nullable, etc.)
     fn parseTypeAnnotation(self: *Parser) ![]const u8 {
         // Check for array type: [T] or [size]T
         if (self.match(&.{.LeftBracket})) {
@@ -1078,7 +1079,44 @@ pub const Parser = struct {
 
         // Regular type (identifier)
         const type_token = try self.expect(.Identifier, "Expected type name");
-        return type_token.lexeme;
+        var result = try self.allocator.dupe(u8, type_token.lexeme);
+
+        // Check for generic type arguments: Type<Arg1, Arg2, ...>
+        if (self.match(&.{.Less})) {
+            var args = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            defer args.deinit(self.allocator);
+
+            while (!self.check(.Greater) and !self.isAtEnd()) {
+                const arg_type = try self.parseTypeAnnotation();
+                try args.append(self.allocator, arg_type);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+
+            _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
+
+            // Build the full generic type string: "Type<Arg1, Arg2>"
+            var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer full_type.deinit(self.allocator);
+            try full_type.appendSlice(self.allocator, result);
+            try full_type.append(self.allocator, '<');
+            for (args.items, 0..) |arg, i| {
+                if (i > 0) try full_type.appendSlice(self.allocator, ", ");
+                try full_type.appendSlice(self.allocator, arg);
+            }
+            try full_type.append(self.allocator, '>');
+            self.allocator.free(result);
+            result = try full_type.toOwnedSlice(self.allocator);
+        }
+
+        // Check for nullable suffix: Type?
+        if (self.match(&.{.Question})) {
+            const nullable_type = try std.fmt.allocPrint(self.allocator, "{s}?", .{result});
+            self.allocator.free(result);
+            result = nullable_type;
+        }
+
+        return result;
     }
 
     /// Parse a let/const declaration
@@ -1169,7 +1207,24 @@ pub const Parser = struct {
 
         var else_block: ?*ast.BlockStmt = null;
         if (self.match(&.{.Else})) {
-            else_block = try self.blockStatement();
+            // Handle else if as a nested if statement wrapped in a block
+            if (self.check(.If)) {
+                // Parse the else if as another if statement
+                _ = self.advance(); // consume 'if'
+                const else_if_stmt = try self.ifStatement();
+
+                // Wrap the else-if in a block
+                const else_block_ptr = try self.allocator.create(ast.BlockStmt);
+                var stmts_list = std.ArrayList(ast.Stmt){};
+                try stmts_list.append(self.allocator, else_if_stmt);
+                else_block_ptr.* = ast.BlockStmt{
+                    .node = .{ .type = .BlockStmt, .loc = ast.SourceLocation.fromToken(self.previous()) },
+                    .statements = try stmts_list.toOwnedSlice(self.allocator),
+                };
+                else_block = else_block_ptr;
+            } else {
+                else_block = try self.blockStatement();
+            }
         }
         errdefer if (else_block) |eb| ast.Program.deinitBlockStmt(eb, self.allocator);
 
@@ -1893,6 +1948,10 @@ pub const Parser = struct {
                 expr = try self.pipeExpr(expr);
             } else if (self.match(&.{.QuestionQuestion})) {
                 expr = try self.nullCoalesceExpr(expr);
+            } else if (self.match(&.{.QuestionColon})) {
+                expr = try self.elvisExpr(expr);
+            } else if (self.match(&.{.QuestionBracket})) {
+                expr = try self.safeIndexExpr(expr);
             } else if (self.check(.Question) and self.peekNext().type == .Colon) {
                 _ = self.advance(); // consume '?'
                 expr = try self.ternaryExpr(expr);
@@ -2279,6 +2338,236 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Parse an Elvis expression (value ?: default)
+    fn elvisExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
+        const elvis_token = self.previous();
+        const precedence = Precedence.fromToken(elvis_token.type);
+        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+
+        const elvis_expr = try ast.ElvisExpr.init(
+            self.allocator,
+            left,
+            right,
+            ast.SourceLocation.fromToken(elvis_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .ElvisExpr = elvis_expr };
+        return result;
+    }
+
+    /// Parse a safe index expression (array?[index])
+    fn safeIndexExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
+        const safe_index_token = self.previous();
+        // The ?[ token already consumed the '[', so we just need the index and ']'
+        const index = try self.expression();
+        _ = try self.expect(.RightBracket, "Expected ']' after safe index expression");
+
+        const safe_index_expr = try ast.SafeIndexExpr.init(
+            self.allocator,
+            object,
+            index,
+            ast.SourceLocation.fromToken(safe_index_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .SafeIndexExpr = safe_index_expr };
+        return result;
+    }
+
+    /// Parse an if expression: if (condition) { expr } else { expr }
+    fn ifExpr(self: *Parser) !*ast.Expr {
+        const if_token = self.previous();
+        _ = try self.expect(.LeftParen, "Expected '(' after 'if'");
+        const condition = try self.expression();
+        _ = try self.expect(.RightParen, "Expected ')' after if condition");
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after if condition");
+        const then_branch = try self.expression();
+        _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+
+        _ = try self.expect(.Else, "If expression requires 'else' branch");
+        _ = try self.expect(.LeftBrace, "Expected '{' after 'else'");
+        const else_branch = try self.expression();
+        _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
+
+        const if_expr = try ast.IfExpr.init(
+            self.allocator,
+            condition,
+            then_branch,
+            else_branch,
+            ast.SourceLocation.fromToken(if_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .IfExpr = if_expr };
+        return result;
+    }
+
+    /// Parse value expression for match - handles identifier, literals, member access
+    /// but NOT struct literals (to avoid confusion with match body braces)
+    fn parseMatchValue(self: *Parser) !*ast.Expr {
+        // Parse the base expression (identifier, literal, parenthesized)
+        var expr = try self.parseMatchValuePrimary();
+
+        // Handle member access and calls, but NOT struct literals
+        while (true) {
+            if (self.match(&.{.Dot})) {
+                const member_token = try self.expect(.Identifier, "Expected member name after '.'");
+                const member_expr = try ast.MemberExpr.init(
+                    self.allocator,
+                    expr,
+                    member_token.lexeme,
+                    ast.SourceLocation.fromToken(member_token),
+                );
+                expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .MemberExpr = member_expr };
+            } else if (self.match(&.{.LeftParen})) {
+                // Function call
+                var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                defer args.deinit(self.allocator);
+
+                if (!self.check(.RightParen)) {
+                    while (true) {
+                        const arg = try self.expression();
+                        try args.append(self.allocator, arg);
+                        if (!self.match(&.{.Comma})) break;
+                    }
+                }
+                _ = try self.expect(.RightParen, "Expected ')' after arguments");
+
+                const call_expr = try ast.CallExpr.init(
+                    self.allocator,
+                    expr,
+                    try args.toOwnedSlice(self.allocator),
+                    expr.getLocation(),
+                );
+                expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .CallExpr = call_expr };
+            } else if (self.match(&.{.LeftBracket})) {
+                // Index expression
+                const index = try self.expression();
+                _ = try self.expect(.RightBracket, "Expected ']' after index");
+                const index_expr = try ast.IndexExpr.init(
+                    self.allocator,
+                    expr,
+                    index,
+                    expr.getLocation(),
+                );
+                expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .IndexExpr = index_expr };
+            } else {
+                break;
+            }
+        }
+        return expr;
+    }
+
+    /// Parse primary expression for match value (no struct literals)
+    fn parseMatchValuePrimary(self: *Parser) !*ast.Expr {
+        if (self.match(&.{.Identifier})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
+        if (self.match(&.{.Integer})) {
+            const token = self.previous();
+            const value = std.fmt.parseInt(i64, token.lexeme, 10) catch 0;
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(value, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
+        if (self.match(&.{.String})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .StringLiteral = ast.StringLiteral.init(token.lexeme, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
+        if (self.match(&.{.True})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .BooleanLiteral = ast.BooleanLiteral.init(true, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
+        if (self.match(&.{.False})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .BooleanLiteral = ast.BooleanLiteral.init(false, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
+        if (self.match(&.{.LeftParen})) {
+            const expr = try self.expression();
+            _ = try self.expect(.RightParen, "Expected ')' after expression");
+            return expr;
+        }
+
+        try self.reportError("Expected expression for match value");
+        return error.UnexpectedToken;
+    }
+
+    /// Parse a match expression: match value { pattern => expr, ... }
+    fn matchExpr(self: *Parser) !*ast.Expr {
+        const match_token = self.previous();
+        // Parse value - use a simpler approach: just get the primary and handle
+        // member/call chains manually to avoid struct literal confusion
+        const value = try self.parseMatchValue();
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after match value");
+
+        var arms = std.ArrayList(ast.MatchExprArm){ .items = &.{}, .capacity = 0 };
+        defer arms.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Parse pattern
+            const pattern = try self.expression();
+
+            // Parse optional guard: if condition
+            var guard: ?*ast.Expr = null;
+            if (self.match(&.{.If})) {
+                guard = try self.expression();
+            }
+
+            _ = try self.expect(.FatArrow, "Expected '=>' after match pattern");
+
+            // Parse body expression
+            const body = try self.expression();
+
+            try arms.append(self.allocator, .{
+                .pattern = pattern,
+                .guard = guard,
+                .body = body,
+            });
+
+            // Allow optional comma between arms
+            _ = self.match(&.{.Comma});
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after match arms");
+
+        // Copy arms to owned slice
+        const arms_slice = try self.allocator.alloc(ast.MatchExprArm, arms.items.len);
+        @memcpy(arms_slice, arms.items);
+
+        const match_expr = try ast.MatchExpr.init(
+            self.allocator,
+            value,
+            arms_slice,
+            ast.SourceLocation.fromToken(match_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .MatchExpr = match_expr };
+        return result;
+    }
+
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
         // Inline assembly
@@ -2322,6 +2611,16 @@ pub const Parser = struct {
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{ .ComptimeExpr = comptime_expr };
             return expr;
+        }
+
+        // If expression: if (cond) { expr } else { expr }
+        if (self.match(&.{.If})) {
+            return try self.ifExpr();
+        }
+
+        // Match expression: match value { pattern => expr, ... }
+        if (self.match(&.{.Match})) {
+            return try self.matchExpr();
         }
 
         // Reflection expression (@TypeOf, @sizeOf, etc.)
@@ -2546,6 +2845,57 @@ pub const Parser = struct {
         // Identifiers (and macro invocations)
         if (self.match(&.{.Identifier})) {
             const token = self.previous();
+
+            // Check for static method call (Type::method())
+            if (self.match(&.{.ColonColon})) {
+                const method_token = try self.expect(.Identifier, "Expected method name after '::'");
+
+                // Parse arguments if followed by parentheses
+                if (self.match(&.{.LeftParen})) {
+                    var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                    defer args.deinit(self.allocator);
+
+                    if (!self.check(.RightParen)) {
+                        while (true) {
+                            const arg = try self.expression();
+                            try args.append(self.allocator, arg);
+                            if (!self.match(&.{.Comma})) break;
+                        }
+                    }
+
+                    _ = try self.expect(.RightParen, "Expected ')' after arguments");
+
+                    const static_call = try ast.StaticCallExpr.init(
+                        self.allocator,
+                        token.lexeme,
+                        method_token.lexeme,
+                        try args.toOwnedSlice(self.allocator),
+                        ast.SourceLocation.fromToken(token),
+                    );
+
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .StaticCallExpr = static_call };
+                    return expr;
+                } else {
+                    // Static method reference without call (e.g., for passing as callback)
+                    // Treat as member expression on type
+                    const type_id = try self.allocator.create(ast.Expr);
+                    type_id.* = ast.Expr{
+                        .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+                    };
+
+                    const member_expr = try ast.MemberExpr.init(
+                        self.allocator,
+                        type_id,
+                        method_token.lexeme,
+                        ast.SourceLocation.fromToken(method_token),
+                    );
+
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .MemberExpr = member_expr };
+                    return expr;
+                }
+            }
 
             // Check for macro invocation (identifier!)
             if (self.match(&.{.Bang})) {

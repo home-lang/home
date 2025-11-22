@@ -124,6 +124,7 @@ pub const NodeType = enum {
     UnaryExpr,
     AssignmentExpr,
     CallExpr,
+    StaticCallExpr,
     TryExpr,
     TypeCastExpr,
     IndexExpr,
@@ -135,6 +136,10 @@ pub const NodeType = enum {
     SpreadExpr,
     NullCoalesceExpr,
     SafeNavExpr,
+    ElvisExpr,
+    SafeIndexExpr,
+    IfExpr,
+    MatchExpr,
     TupleExpr,
     GenericTypeExpr,
     AwaitExpr,
@@ -612,6 +617,29 @@ pub const CallExpr = struct {
     }
 };
 
+/// Static method call expression (Type::method())
+///
+/// Represents a call to a static/associated method on a type,
+/// using the double-colon syntax common in Rust-like languages.
+/// Example: HashMap::new(), Vec::with_capacity(10)
+pub const StaticCallExpr = struct {
+    node: Node,
+    type_name: []const u8,
+    method_name: []const u8,
+    args: []const *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, type_name: []const u8, method_name: []const u8, args: []const *Expr, loc: SourceLocation) !*StaticCallExpr {
+        const expr = try allocator.create(StaticCallExpr);
+        expr.* = .{
+            .node = .{ .type = .StaticCallExpr, .loc = loc },
+            .type_name = type_name,
+            .method_name = method_name,
+            .args = args,
+        };
+        return expr;
+    }
+};
+
 /// Try expression (error propagation with ?)
 pub const TryExpr = struct {
     node: Node,
@@ -843,6 +871,85 @@ pub const SafeNavExpr = struct {
     }
 };
 
+/// Elvis expression (value ?: default) - alias for null coalescing
+pub const ElvisExpr = struct {
+    node: Node,
+    left: *Expr,
+    right: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, left: *Expr, right: *Expr, loc: SourceLocation) !*ElvisExpr {
+        const expr = try allocator.create(ElvisExpr);
+        expr.* = .{
+            .node = .{ .type = .ElvisExpr, .loc = loc },
+            .left = left,
+            .right = right,
+        };
+        return expr;
+    }
+};
+
+/// Safe index expression (array?[index]) - returns null if array is null or index out of bounds
+pub const SafeIndexExpr = struct {
+    node: Node,
+    object: *Expr,
+    index: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, object: *Expr, index: *Expr, loc: SourceLocation) !*SafeIndexExpr {
+        const expr = try allocator.create(SafeIndexExpr);
+        expr.* = .{
+            .node = .{ .type = .SafeIndexExpr, .loc = loc },
+            .object = object,
+            .index = index,
+        };
+        return expr;
+    }
+};
+
+/// If expression - if as an expression that returns a value
+/// Example: let x = if (cond) { value1 } else { value2 }
+pub const IfExpr = struct {
+    node: Node,
+    condition: *Expr,
+    then_branch: *Expr,
+    else_branch: *Expr,
+
+    pub fn init(allocator: std.mem.Allocator, condition: *Expr, then_branch: *Expr, else_branch: *Expr, loc: SourceLocation) !*IfExpr {
+        const expr = try allocator.create(IfExpr);
+        expr.* = .{
+            .node = .{ .type = .IfExpr, .loc = loc },
+            .condition = condition,
+            .then_branch = then_branch,
+            .else_branch = else_branch,
+        };
+        return expr;
+    }
+};
+
+/// Match arm for match expressions
+pub const MatchExprArm = struct {
+    pattern: *Expr,
+    guard: ?*Expr,
+    body: *Expr,
+};
+
+/// Match expression - pattern matching as an expression
+/// Example: let x = match value { Ok(v) => v, Err(_) => 0 }
+pub const MatchExpr = struct {
+    node: Node,
+    value: *Expr,
+    arms: []const MatchExprArm,
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, arms: []const MatchExprArm, loc: SourceLocation) !*MatchExpr {
+        const expr = try allocator.create(MatchExpr);
+        expr.* = .{
+            .node = .{ .type = .MatchExpr, .loc = loc },
+            .value = value,
+            .arms = arms,
+        };
+        return expr;
+    }
+};
+
 /// Tuple expression ((a, b, c))
 pub const TupleExpr = struct {
     node: Node,
@@ -983,6 +1090,7 @@ pub const Expr = union(NodeType) {
     UnaryExpr: *UnaryExpr,
     AssignmentExpr: *AssignmentExpr,
     CallExpr: *CallExpr,
+    StaticCallExpr: *StaticCallExpr,
     TryExpr: *TryExpr,
     TypeCastExpr: *TypeCastExpr,
     IndexExpr: *IndexExpr,
@@ -994,6 +1102,10 @@ pub const Expr = union(NodeType) {
     SpreadExpr: *SpreadExpr,
     NullCoalesceExpr: *NullCoalesceExpr,
     SafeNavExpr: *SafeNavExpr,
+    ElvisExpr: *ElvisExpr,
+    SafeIndexExpr: *SafeIndexExpr,
+    IfExpr: *IfExpr,
+    MatchExpr: *MatchExpr,
     TupleExpr: *TupleExpr,
     GenericTypeExpr: *GenericTypeExpr,
     AwaitExpr: *AwaitExpr,
@@ -1055,6 +1167,7 @@ pub const Expr = union(NodeType) {
             .UnaryExpr => |expr| expr.node.loc,
             .AssignmentExpr => |expr| expr.node.loc,
             .CallExpr => |expr| expr.node.loc,
+            .StaticCallExpr => |expr| expr.node.loc,
             .TryExpr => |expr| expr.node.loc,
             .IndexExpr => |expr| expr.node.loc,
             .MemberExpr => |expr| expr.node.loc,
@@ -1065,6 +1178,10 @@ pub const Expr = union(NodeType) {
             .SpreadExpr => |expr| expr.node.loc,
             .NullCoalesceExpr => |expr| expr.node.loc,
             .SafeNavExpr => |expr| expr.node.loc,
+            .ElvisExpr => |expr| expr.node.loc,
+            .SafeIndexExpr => |expr| expr.node.loc,
+            .IfExpr => |expr| expr.node.loc,
+            .MatchExpr => |expr| expr.node.loc,
             .TupleExpr => |expr| expr.node.loc,
             .GenericTypeExpr => |expr| expr.node.loc,
             .AwaitExpr => |expr| expr.node.loc,
@@ -1480,6 +1597,7 @@ pub const Stmt = union(NodeType) {
     UnaryExpr: void,
     AssignmentExpr: void,
     CallExpr: void,
+    StaticCallExpr: void,
     TryExpr: void,
     TypeCastExpr: void,
     IndexExpr: void,
@@ -1491,6 +1609,10 @@ pub const Stmt = union(NodeType) {
     SpreadExpr: void,
     NullCoalesceExpr: void,
     SafeNavExpr: void,
+    ElvisExpr: void,
+    SafeIndexExpr: void,
+    IfExpr: void,
+    MatchExpr: void,
     TupleExpr: void,
     GenericTypeExpr: void,
     AwaitExpr: void,

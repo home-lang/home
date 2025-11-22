@@ -796,11 +796,15 @@ pub const Lexer = struct {
                     self.makeToken(.DotDot))
             else self.makeToken(.Dot),
             ';' => self.makeToken(.Semicolon),
-            ':' => self.makeToken(.Colon),
+            ':' => if (self.match(':')) self.makeToken(.ColonColon) else self.makeToken(.Colon),
             '?' => if (self.match('.'))
                 self.makeToken(.QuestionDot)
             else if (self.match('?'))
                 self.makeToken(.QuestionQuestion)
+            else if (self.match(':'))
+                self.makeToken(.QuestionColon)
+            else if (self.match('['))
+                self.makeToken(.QuestionBracket)
             else
                 self.makeToken(.Question),
             '@' => self.makeToken(.At),

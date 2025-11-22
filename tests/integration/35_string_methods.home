@@ -1,0 +1,224 @@
+// Integration tests for string methods
+// Tests: len, upper, lower, trim, contains, split, replace, etc.
+
+// ============================================
+// LENGTH METHODS
+// ============================================
+
+fn test_string_len() {
+    let s = "hello"
+    let length = s.len()
+    assert(length == 5)
+
+    let empty = ""
+    assert(empty.len() == 0)
+
+    let longer = "hello world"
+    assert(longer.length() == 11)
+}
+
+// ============================================
+// CASE CONVERSION
+// ============================================
+
+fn test_upper() {
+    let s = "hello"
+    let upper = s.upper()
+    assert(upper == "HELLO")
+
+    let mixed = "Hello World"
+    assert(mixed.upper() == "HELLO WORLD")
+}
+
+fn test_lower() {
+    let s = "HELLO"
+    let lower = s.lower()
+    assert(lower == "hello")
+
+    let mixed = "Hello World"
+    assert(mixed.lower() == "hello world")
+}
+
+// ============================================
+// TRIMMING
+// ============================================
+
+fn test_trim() {
+    let s = "  hello  "
+    let trimmed = s.trim()
+    assert(trimmed == "hello")
+
+    let tabs = "\t\nhello\n\t"
+    assert(tabs.trim() == "hello")
+}
+
+fn test_trim_start() {
+    let s = "  hello  "
+    let trimmed = s.trim_start()
+    assert(trimmed == "hello  ")
+}
+
+fn test_trim_end() {
+    let s = "  hello  "
+    let trimmed = s.trim_end()
+    assert(trimmed == "  hello")
+}
+
+// ============================================
+// SEARCHING
+// ============================================
+
+fn test_contains() {
+    let s = "hello world"
+    assert(s.contains("world") == true)
+    assert(s.contains("foo") == false)
+    assert(s.contains("") == true)
+}
+
+fn test_starts_with() {
+    let s = "hello world"
+    assert(s.starts_with("hello") == true)
+    assert(s.starts_with("world") == false)
+    assert(s.starts_with("") == true)
+}
+
+fn test_ends_with() {
+    let s = "hello world"
+    assert(s.ends_with("world") == true)
+    assert(s.ends_with("hello") == false)
+    assert(s.ends_with("") == true)
+}
+
+// ============================================
+// SPLITTING AND REPLACING
+// ============================================
+
+fn test_split() {
+    let s = "a,b,c"
+    let parts = s.split(",")
+    assert(parts.len() == 3)
+    assert(parts[0] == "a")
+    assert(parts[1] == "b")
+    assert(parts[2] == "c")
+}
+
+fn test_replace() {
+    let s = "hello world"
+    let replaced = s.replace("world", "home")
+    assert(replaced == "hello home")
+
+    let multiple = "aaa"
+    assert(multiple.replace("a", "b") == "bbb")
+}
+
+// ============================================
+// OTHER METHODS
+// ============================================
+
+fn test_repeat() {
+    let s = "ab"
+    let repeated = s.repeat(3)
+    assert(repeated == "ababab")
+
+    assert("x".repeat(5) == "xxxxx")
+}
+
+fn test_is_empty() {
+    let empty = ""
+    assert(empty.is_empty() == true)
+
+    let not_empty = "hello"
+    assert(not_empty.is_empty() == false)
+}
+
+fn test_char_at() {
+    let s = "hello"
+    assert(s.char_at(0) == "h")
+    assert(s.char_at(1) == "e")
+    assert(s.char_at(4) == "o")
+}
+
+fn test_reverse() {
+    let s = "hello"
+    let reversed = s.reverse()
+    assert(reversed == "olleh")
+
+    assert("abc".reverse() == "cba")
+}
+
+// ============================================
+// CHAINED METHODS
+// ============================================
+
+fn test_chained_methods() {
+    let s = "  HELLO WORLD  "
+    let result = s.trim().lower()
+    assert(result == "hello world")
+}
+
+// ============================================
+// ARRAY METHODS
+// ============================================
+
+fn test_array_len() {
+    let arr = [1, 2, 3, 4, 5]
+    assert(arr.len() == 5)
+    assert(arr.length() == 5)
+}
+
+fn test_array_is_empty() {
+    let empty: []int = []
+    assert(empty.is_empty() == true)
+
+    let not_empty = [1, 2, 3]
+    assert(not_empty.is_empty() == false)
+}
+
+fn test_array_first_last() {
+    let arr = [10, 20, 30]
+    assert(arr.first() == 10)
+    assert(arr.last() == 30)
+}
+
+// ============================================
+// MAIN TEST RUNNER
+// ============================================
+
+fn main() {
+    // String length
+    test_string_len()
+
+    // Case conversion
+    test_upper()
+    test_lower()
+
+    // Trimming
+    test_trim()
+    test_trim_start()
+    test_trim_end()
+
+    // Searching
+    test_contains()
+    test_starts_with()
+    test_ends_with()
+
+    // Splitting and replacing
+    test_split()
+    test_replace()
+
+    // Other methods
+    test_repeat()
+    test_is_empty()
+    test_char_at()
+    test_reverse()
+
+    // Chained methods
+    test_chained_methods()
+
+    // Array methods
+    test_array_len()
+    test_array_is_empty()
+    test_array_first_last()
+
+    print("All string and array method tests passed!")
+}

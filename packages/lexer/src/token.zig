@@ -27,9 +27,12 @@ pub const TokenType = enum {
     DotDotDot, // ...
     Semicolon, // ;
     Colon, // :
+    ColonColon, // ::
     Question, // ?
     QuestionDot, // ?.
     QuestionQuestion, // ??
+    QuestionColon, // ?: (Elvis operator)
+    QuestionBracket, // ?[ (safe index)
     At, // @
 
     // One or two character tokens
@@ -148,9 +151,12 @@ pub const TokenType = enum {
             .DotDotDot => "...",
             .Semicolon => ";",
             .Colon => ":",
+            .ColonColon => "::",
             .Question => "?",
             .QuestionDot => "?.",
             .QuestionQuestion => "??",
+            .QuestionColon => "?:",
+            .QuestionBracket => "?[",
             .At => "@",
             .Plus => "+",
             .PlusEqual => "+=",

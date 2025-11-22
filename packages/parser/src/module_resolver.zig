@@ -185,30 +185,35 @@ pub const ModuleResolver = struct {
             try path_buf.appendSlice(self.allocator, segment);
         }
 
-        // Try .home extension
-        const home_path = try std.fmt.allocPrint(self.allocator, "{s}.home", .{path_buf.items});
-        defer self.allocator.free(home_path);
+        // Prefixes to search for local modules (current dir, src/, lib/)
+        const search_prefixes = [_][]const u8{ "", "src/", "lib/" };
 
-        if (try self.fileExists(home_path)) {
-            return ResolvedModule{
-                .path = path_segments,
-                .file_path = try self.allocator.dupe(u8, home_path),
-                .name = path_segments[path_segments.len - 1],
-                .is_zig = false,
-            };
-        }
+        for (search_prefixes) |prefix| {
+            // Try .home extension
+            const home_path = try std.fmt.allocPrint(self.allocator, "{s}{s}.home", .{ prefix, path_buf.items });
+            defer self.allocator.free(home_path);
 
-        // Try .hm extension
-        const hm_path = try std.fmt.allocPrint(self.allocator, "{s}.hm", .{path_buf.items});
-        defer self.allocator.free(hm_path);
+            if (try self.fileExists(home_path)) {
+                return ResolvedModule{
+                    .path = path_segments,
+                    .file_path = try self.allocator.dupe(u8, home_path),
+                    .name = path_segments[path_segments.len - 1],
+                    .is_zig = false,
+                };
+            }
 
-        if (try self.fileExists(hm_path)) {
-            return ResolvedModule{
-                .path = path_segments,
-                .file_path = try self.allocator.dupe(u8, hm_path),
-                .name = path_segments[path_segments.len - 1],
-                .is_zig = false,
-            };
+            // Try .hm extension
+            const hm_path = try std.fmt.allocPrint(self.allocator, "{s}{s}.hm", .{ prefix, path_buf.items });
+            defer self.allocator.free(hm_path);
+
+            if (try self.fileExists(hm_path)) {
+                return ResolvedModule{
+                    .path = path_segments,
+                    .file_path = try self.allocator.dupe(u8, hm_path),
+                    .name = path_segments[path_segments.len - 1],
+                    .is_zig = false,
+                };
+            }
         }
 
         return null;

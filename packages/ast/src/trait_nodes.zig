@@ -224,6 +224,7 @@ pub const TypeExpr = union(enum) {
         bounds: []const []const u8,
     },
     SelfType,  // The Self type in traits/impls
+    Nullable: *TypeExpr,  // Type? syntax for optional types
 
     pub fn deinit(self: *TypeExpr, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -270,6 +271,10 @@ pub const TypeExpr = union(enum) {
                 allocator.free(obj.bounds);
             },
             .SelfType => {},
+            .Nullable => |inner| {
+                inner.deinit(allocator);
+                allocator.destroy(inner);
+            },
         }
     }
 };

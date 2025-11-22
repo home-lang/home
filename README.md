@@ -132,6 +132,39 @@ match color {
 }
 ```
 
+### Expression Forms
+
+If and match can be used as expressions that return values:
+
+```home
+// if expression
+let status = if (code == 200) { "ok" } else { "error" }
+
+// match expression
+let name = match x {
+  1 => "one",
+  2 => "two",
+  _ => "other"
+}
+```
+
+### Null Safety Operators
+
+```home
+// Elvis operator (?:) - returns right side if left is null
+let name = user?.name ?: "Anonymous"
+
+// Null coalescing (??) - same as Elvis
+let value = maybeNull ?? defaultValue
+
+// Safe navigation (?.) - returns null if object is null
+let city = user?.address?.city
+
+// Safe indexing (?[]) - returns null if index out of bounds
+let first = items?[0]
+let safe = items?[10] ?: defaultItem
+```
+
 ### Error Handling
 
 ```home
@@ -160,6 +193,48 @@ let slice = numbers[1..4]      // [2, 3, 4]
 for (n in numbers) {
   print(n)
 }
+
+// Array methods
+numbers.len()       // 5
+numbers.is_empty()  // false
+numbers.first()     // 1
+numbers.last()      // 5
+```
+
+### String Methods
+
+```home
+let s = "  Hello World  "
+
+// Length
+s.len()              // 15
+
+// Case conversion
+s.upper()            // "  HELLO WORLD  "
+s.lower()            // "  hello world  "
+
+// Trimming
+s.trim()             // "Hello World"
+s.trim_start()       // "Hello World  "
+s.trim_end()         // "  Hello World"
+
+// Searching
+s.contains("World")  // true
+s.starts_with("  H") // true
+s.ends_with("  ")    // true
+
+// Splitting and replacing
+"a,b,c".split(",")           // ["a", "b", "c"]
+s.replace("World", "Home")   // "  Hello Home  "
+
+// Other methods
+"ab".repeat(3)       // "ababab"
+s.is_empty()         // false
+s.char_at(2)         // "H"
+"hello".reverse()    // "olleh"
+
+// Method chaining
+"  HELLO  ".trim().lower()  // "hello"
 ```
 
 ### Generics
@@ -322,6 +397,8 @@ zig build test
 - **Native performance** - Compiles to native x64 code
 - **Modern syntax** - TypeScript-inspired, clean and readable
 - **Pattern matching** - Exhaustive match expressions
+- **Expression-oriented** - If and match as expressions
+- **Null safety** - Elvis (`?:`), safe navigation (`?.`), safe indexing (`?[]`)
 - **Async/await** - Zero-cost async programming
 - **Generics** - Type-safe generic functions and types
 - **Comptime** - Compile-time code execution

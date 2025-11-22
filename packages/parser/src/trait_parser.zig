@@ -419,16 +419,16 @@ pub fn parseTypeExpr(self: *Parser) !*ast.TypeExpr {
     if (self.match(&.{.Less})) {
         var args = std.ArrayList(*ast.TypeExpr).empty;
         defer args.deinit(self.allocator);
-        
+
         while (!self.check(.Greater) and !self.isAtEnd()) {
             const arg = try self.parseTypeExpr();
             try args.append(self.allocator, arg);
-            
+
             if (!self.match(&.{.Comma})) break;
         }
-        
+
         _ = try self.expect(.Greater, "Expected '>' after generic arguments");
-        
+
         type_expr.* = .{ .Generic = .{
             .base = type_name,
             .args = try args.toOwnedSlice(self.allocator),
@@ -436,6 +436,13 @@ pub fn parseTypeExpr(self: *Parser) !*ast.TypeExpr {
     } else {
         type_expr.* = .{ .Named = type_name };
     }
-    
+
+    // Check for nullable suffix (Type?)
+    if (self.match(&.{.Question})) {
+        const nullable_expr = try self.allocator.create(ast.TypeExpr);
+        nullable_expr.* = .{ .Nullable = type_expr };
+        return nullable_expr;
+    }
+
     return type_expr;
 }

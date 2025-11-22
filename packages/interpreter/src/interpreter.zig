@@ -760,6 +760,25 @@ pub const Interpreter = struct {
     }
 
     fn evaluateCallExpression(self: *Interpreter, call: *ast.CallExpr, env: *Environment) InterpreterError!Value {
+        // Handle method calls (obj.method())
+        if (call.callee.* == .MemberExpr) {
+            const member = call.callee.MemberExpr;
+            const obj_value = try self.evaluateExpression(member.object, env);
+
+            // Handle string methods
+            if (obj_value == .String) {
+                return try self.evaluateStringMethod(obj_value.String, member.member, call.args, env);
+            }
+
+            // Handle array methods
+            if (obj_value == .Array) {
+                return try self.evaluateArrayMethod(obj_value.Array, member.member, call.args, env);
+            }
+
+            std.debug.print("Method calls only supported on strings and arrays\n", .{});
+            return error.RuntimeError;
+        }
+
         // Get function name
         if (call.callee.* == .Identifier) {
             const func_name = call.callee.Identifier.name;
@@ -784,6 +803,232 @@ pub const Interpreter = struct {
 
         std.debug.print("Complex function calls not yet supported\n", .{});
         return error.RuntimeError;
+    }
+
+    /// Evaluate string method calls
+    fn evaluateStringMethod(self: *Interpreter, str: []const u8, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+        const allocator = self.arena.allocator();
+
+        // len() - returns string length
+        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
+            return Value{ .Int = @as(i64, @intCast(str.len)) };
+        }
+
+        // upper() - convert to uppercase
+        if (std.mem.eql(u8, method, "upper")) {
+            const result = try allocator.alloc(u8, str.len);
+            for (str, 0..) |c, i| {
+                result[i] = if (c >= 'a' and c <= 'z') c - 32 else c;
+            }
+            return Value{ .String = result };
+        }
+
+        // lower() - convert to lowercase
+        if (std.mem.eql(u8, method, "lower")) {
+            const result = try allocator.alloc(u8, str.len);
+            for (str, 0..) |c, i| {
+                result[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+            }
+            return Value{ .String = result };
+        }
+
+        // trim() - remove leading and trailing whitespace
+        if (std.mem.eql(u8, method, "trim")) {
+            const trimmed = std.mem.trim(u8, str, " \t\n\r");
+            const result = try allocator.dupe(u8, trimmed);
+            return Value{ .String = result };
+        }
+
+        // trim_start() / trim_left() - remove leading whitespace
+        if (std.mem.eql(u8, method, "trim_start") or std.mem.eql(u8, method, "trim_left")) {
+            const trimmed = std.mem.trimLeft(u8, str, " \t\n\r");
+            const result = try allocator.dupe(u8, trimmed);
+            return Value{ .String = result };
+        }
+
+        // trim_end() / trim_right() - remove trailing whitespace
+        if (std.mem.eql(u8, method, "trim_end") or std.mem.eql(u8, method, "trim_right")) {
+            const trimmed = std.mem.trimRight(u8, str, " \t\n\r");
+            const result = try allocator.dupe(u8, trimmed);
+            return Value{ .String = result };
+        }
+
+        // contains(substring) - check if string contains substring
+        if (std.mem.eql(u8, method, "contains")) {
+            if (args.len != 1) {
+                std.debug.print("contains() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const substr_val = try self.evaluateExpression(args[0], env);
+            if (substr_val != .String) {
+                std.debug.print("contains() argument must be a string\n", .{});
+                return error.TypeMismatch;
+            }
+            const found = std.mem.indexOf(u8, str, substr_val.String) != null;
+            return Value{ .Bool = found };
+        }
+
+        // starts_with(prefix) - check if string starts with prefix
+        if (std.mem.eql(u8, method, "starts_with")) {
+            if (args.len != 1) {
+                std.debug.print("starts_with() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const prefix_val = try self.evaluateExpression(args[0], env);
+            if (prefix_val != .String) {
+                std.debug.print("starts_with() argument must be a string\n", .{});
+                return error.TypeMismatch;
+            }
+            const starts = std.mem.startsWith(u8, str, prefix_val.String);
+            return Value{ .Bool = starts };
+        }
+
+        // ends_with(suffix) - check if string ends with suffix
+        if (std.mem.eql(u8, method, "ends_with")) {
+            if (args.len != 1) {
+                std.debug.print("ends_with() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const suffix_val = try self.evaluateExpression(args[0], env);
+            if (suffix_val != .String) {
+                std.debug.print("ends_with() argument must be a string\n", .{});
+                return error.TypeMismatch;
+            }
+            const ends = std.mem.endsWith(u8, str, suffix_val.String);
+            return Value{ .Bool = ends };
+        }
+
+        // split(delimiter) - split string into array
+        if (std.mem.eql(u8, method, "split")) {
+            if (args.len != 1) {
+                std.debug.print("split() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const delim_val = try self.evaluateExpression(args[0], env);
+            if (delim_val != .String) {
+                std.debug.print("split() argument must be a string\n", .{});
+                return error.TypeMismatch;
+            }
+
+            var parts = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            defer parts.deinit(allocator);
+            var iter = std.mem.splitSequence(u8, str, delim_val.String);
+            while (iter.next()) |part| {
+                const part_copy = try allocator.dupe(u8, part);
+                try parts.append(allocator, Value{ .String = part_copy });
+            }
+            return Value{ .Array = try parts.toOwnedSlice(allocator) };
+        }
+
+        // replace(old, new) - replace all occurrences
+        if (std.mem.eql(u8, method, "replace")) {
+            if (args.len != 2) {
+                std.debug.print("replace() expects 2 arguments\n", .{});
+                return error.InvalidArguments;
+            }
+            const old_val = try self.evaluateExpression(args[0], env);
+            const new_val = try self.evaluateExpression(args[1], env);
+            if (old_val != .String or new_val != .String) {
+                std.debug.print("replace() arguments must be strings\n", .{});
+                return error.TypeMismatch;
+            }
+
+            const result = try std.mem.replaceOwned(u8, allocator, str, old_val.String, new_val.String);
+            return Value{ .String = result };
+        }
+
+        // repeat(n) - repeat string n times
+        if (std.mem.eql(u8, method, "repeat")) {
+            if (args.len != 1) {
+                std.debug.print("repeat() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const count_val = try self.evaluateExpression(args[0], env);
+            if (count_val != .Int) {
+                std.debug.print("repeat() argument must be an integer\n", .{});
+                return error.TypeMismatch;
+            }
+            const count: usize = @intCast(@max(0, count_val.Int));
+            const result = try allocator.alloc(u8, str.len * count);
+            for (0..count) |i| {
+                @memcpy(result[i * str.len .. (i + 1) * str.len], str);
+            }
+            return Value{ .String = result };
+        }
+
+        // is_empty() - check if string is empty
+        if (std.mem.eql(u8, method, "is_empty")) {
+            return Value{ .Bool = str.len == 0 };
+        }
+
+        // char_at(index) - get character at index
+        if (std.mem.eql(u8, method, "char_at")) {
+            if (args.len != 1) {
+                std.debug.print("char_at() expects 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const idx_val = try self.evaluateExpression(args[0], env);
+            if (idx_val != .Int) {
+                std.debug.print("char_at() argument must be an integer\n", .{});
+                return error.TypeMismatch;
+            }
+            const idx: usize = @intCast(@max(0, idx_val.Int));
+            if (idx >= str.len) {
+                std.debug.print("char_at() index out of bounds\n", .{});
+                return error.RuntimeError;
+            }
+            const char_str = try allocator.alloc(u8, 1);
+            char_str[0] = str[idx];
+            return Value{ .String = char_str };
+        }
+
+        // reverse() - reverse the string
+        if (std.mem.eql(u8, method, "reverse")) {
+            const result = try allocator.alloc(u8, str.len);
+            for (str, 0..) |c, i| {
+                result[str.len - 1 - i] = c;
+            }
+            return Value{ .String = result };
+        }
+
+        std.debug.print("Unknown string method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    /// Evaluate array method calls
+    fn evaluateArrayMethod(self: *Interpreter, arr: []const Value, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+        _ = self;
+        _ = env;
+        _ = args;
+
+        // len() / length() - returns array length
+        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
+            return Value{ .Int = @as(i64, @intCast(arr.len)) };
+        }
+
+        // is_empty() - check if array is empty
+        if (std.mem.eql(u8, method, "is_empty")) {
+            return Value{ .Bool = arr.len == 0 };
+        }
+
+        // first() - get first element
+        if (std.mem.eql(u8, method, "first")) {
+            if (arr.len == 0) {
+                return Value.Void; // or could return null/none
+            }
+            return arr[0];
+        }
+
+        // last() - get last element
+        if (std.mem.eql(u8, method, "last")) {
+            if (arr.len == 0) {
+                return Value.Void;
+            }
+            return arr[arr.len - 1];
+        }
+
+        std.debug.print("Unknown array method: {s}\n", .{method});
+        return error.UndefinedFunction;
     }
 
     fn callUserFunction(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
