@@ -1,0 +1,208 @@
+// Integration tests for new operators and features
+// Tests: Power (**), Integer Division (~/), Range Methods, Default Parameters
+
+// ============================================
+// POWER OPERATOR (**)
+// ============================================
+
+fn test_power_basic() {
+    // Basic integer powers
+    let result = 2 ** 3
+    assert(result == 8)
+
+    let square = 5 ** 2
+    assert(square == 25)
+
+    let cube = 3 ** 3
+    assert(cube == 27)
+}
+
+fn test_power_zero() {
+    // Any number to power 0 is 1
+    let result = 10 ** 0
+    assert(result == 1)
+
+    let also_one = 999 ** 0
+    assert(also_one == 1)
+}
+
+fn test_power_one() {
+    // Any number to power 1 is itself
+    let result = 42 ** 1
+    assert(result == 42)
+}
+
+fn test_power_large() {
+    // Larger exponents
+    let big = 2 ** 10
+    assert(big == 1024)
+}
+
+// ============================================
+// INTEGER DIVISION (~/)
+// ============================================
+
+fn test_intdiv_basic() {
+    // Basic integer division
+    let result = 7 ~/ 2
+    assert(result == 3)
+
+    let another = 10 ~/ 3
+    assert(another == 3)
+}
+
+fn test_intdiv_exact() {
+    // Exact division
+    let result = 10 ~/ 2
+    assert(result == 5)
+
+    let also_exact = 12 ~/ 4
+    assert(also_exact == 3)
+}
+
+fn test_intdiv_truncates() {
+    // Integer division truncates toward zero
+    let result = 17 ~/ 5
+    assert(result == 3)
+}
+
+// ============================================
+// RANGE METHODS
+// ============================================
+
+fn test_range_len() {
+    let r = 0..10
+    assert(r.len() == 10)
+
+    let inclusive = 0..=10
+    assert(inclusive.len() == 11)
+}
+
+fn test_range_first_last() {
+    let r = 5..15
+    assert(r.first() == 5)
+    assert(r.last() == 14)
+
+    let inclusive = 5..=15
+    assert(inclusive.last() == 15)
+}
+
+fn test_range_contains() {
+    let r = 0..10
+    assert(r.contains(0) == true)
+    assert(r.contains(5) == true)
+    assert(r.contains(9) == true)
+    assert(r.contains(10) == false)
+
+    let inclusive = 0..=10
+    assert(inclusive.contains(10) == true)
+}
+
+fn test_range_step() {
+    let r = (0..10).step(2)
+    assert(r.len() == 5)
+    assert(r.contains(0) == true)
+    assert(r.contains(2) == true)
+    assert(r.contains(1) == false)
+}
+
+fn test_range_to_array() {
+    let r = 1..4
+    let arr = r.to_array()
+    assert(arr.len() == 3)
+    assert(arr[0] == 1)
+    assert(arr[1] == 2)
+    assert(arr[2] == 3)
+}
+
+// ============================================
+// DEFAULT PARAMETER VALUES
+// ============================================
+
+fn greet(name: string = "World") {
+    print("Hello, {name}!")
+}
+
+fn add_with_default(a: int, b: int = 10) {
+    return a + b
+}
+
+fn test_default_params() {
+    // Using default
+    let result1 = add_with_default(5)
+    assert(result1 == 15)
+
+    // Overriding default
+    let result2 = add_with_default(5, 3)
+    assert(result2 == 8)
+}
+
+fn power_with_defaults(base: int = 2, exp: int = 2) {
+    return base ** exp
+}
+
+fn test_multiple_defaults() {
+    // Use all defaults
+    let result1 = power_with_defaults()
+    assert(result1 == 4)
+
+    // Override first
+    let result2 = power_with_defaults(3)
+    assert(result2 == 9)
+
+    // Override both
+    let result3 = power_with_defaults(3, 3)
+    assert(result3 == 27)
+}
+
+// ============================================
+// COMBINED TESTS
+// ============================================
+
+fn test_operators_combined() {
+    // Power and integer division together
+    let powered = 2 ** 5
+    let divided = powered ~/ 10
+    assert(divided == 3)  // 32 ~/ 10 = 3
+}
+
+fn test_range_with_operators() {
+    // Create range using power operator
+    let end = 2 ** 3
+    let r = 0..end
+    assert(r.len() == 8)
+}
+
+// ============================================
+// MAIN TEST RUNNER
+// ============================================
+
+fn main() {
+    // Power operator tests
+    test_power_basic()
+    test_power_zero()
+    test_power_one()
+    test_power_large()
+
+    // Integer division tests
+    test_intdiv_basic()
+    test_intdiv_exact()
+    test_intdiv_truncates()
+
+    // Range method tests
+    test_range_len()
+    test_range_first_last()
+    test_range_contains()
+    test_range_step()
+    test_range_to_array()
+
+    // Default parameter tests
+    test_default_params()
+    test_multiple_defaults()
+
+    // Combined tests
+    test_operators_combined()
+    test_range_with_operators()
+
+    print("All new operator and feature tests passed!")
+}

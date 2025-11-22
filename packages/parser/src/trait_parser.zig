@@ -295,13 +295,10 @@ pub fn parseImplDeclaration(self: *Parser) !ast.Stmt {
     
     while (!self.check(.RightBrace) and !self.isAtEnd()) {
         // Parse method (must be a function)
-        const is_async = self.match(&.{.Async});
+        // functionDeclaration expects `fn` to already be consumed
+        _ = self.match(&.{.Async}); // optional async
         _ = try self.expect(.Fn, "Expected 'fn' in impl block");
-        
-        // Reuse function parsing logic
-        self.current -= 1; // Back up to re-parse fn
-        if (is_async) self.current -= 1;
-        
+
         const method_stmt = try self.functionDeclaration(false);
         if (method_stmt == .FnDecl) {
             try methods.append(self.allocator, method_stmt.FnDecl);

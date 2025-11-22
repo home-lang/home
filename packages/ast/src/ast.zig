@@ -113,6 +113,7 @@ pub const NodeType = enum {
     StringLiteral,
     InterpolatedString,
     BooleanLiteral,
+    NullLiteral,
     ArrayLiteral,
     MapLiteral,
 
@@ -414,6 +415,21 @@ pub const BooleanLiteral = struct {
     }
 };
 
+/// Null literal expression.
+///
+/// Represents the null value.
+pub const NullLiteral = struct {
+    /// Base node metadata
+    node: Node,
+
+    /// Create a new null literal node.
+    pub fn init(loc: SourceLocation) NullLiteral {
+        return .{
+            .node = .{ .type = .NullLiteral, .loc = loc },
+        };
+    }
+};
+
 /// Identifier expression.
 ///
 /// Represents a variable or function name. Identifiers are resolved
@@ -481,7 +497,9 @@ pub const BinaryOp = enum {
     Sub, // -
     Mul, // *
     Div, // /
+    IntDiv, // ~/ (integer division)
     Mod, // %
+    Power, // ** (exponentiation)
     Equal, // ==
     NotEqual, // !=
     Less, // <
@@ -1083,6 +1101,7 @@ pub const Expr = union(NodeType) {
     StringLiteral: StringLiteral,
     InterpolatedString: *InterpolatedString,
     BooleanLiteral: BooleanLiteral,
+    NullLiteral: NullLiteral,
     ArrayLiteral: *ArrayLiteral,
     MapLiteral: *MapLiteral,
     Identifier: Identifier,
@@ -1161,6 +1180,7 @@ pub const Expr = union(NodeType) {
             .FloatLiteral => |lit| lit.node.loc,
             .StringLiteral => |lit| lit.node.loc,
             .BooleanLiteral => |lit| lit.node.loc,
+            .NullLiteral => |lit| lit.node.loc,
             .ArrayLiteral => |lit| lit.node.loc,
             .Identifier => |id| id.node.loc,
             .BinaryExpr => |expr| expr.node.loc,
@@ -1195,6 +1215,7 @@ pub const Expr = union(NodeType) {
 pub const Parameter = struct {
     name: []const u8,
     type_name: []const u8,
+    default_value: ?*Expr,
     loc: SourceLocation,
 };
 
@@ -1590,6 +1611,7 @@ pub const Stmt = union(NodeType) {
     StringLiteral: void,
     InterpolatedString: void,
     BooleanLiteral: void,
+    NullLiteral: void,
     ArrayLiteral: void,
     MapLiteral: void,
     Identifier: void,
@@ -1693,6 +1715,7 @@ pub const StructDecl = struct {
     name: []const u8,
     fields: []const StructField,
     type_params: []const []const u8, // Generic type parameters e.g. ["T", "E"]
+    methods: []const *FnDecl = &.{}, // Methods defined inside struct body
     is_public: bool = false,
     attributes: []const Attribute = &.{},
 
@@ -1703,6 +1726,18 @@ pub const StructDecl = struct {
             .name = name,
             .fields = fields,
             .type_params = type_params,
+        };
+        return decl;
+    }
+
+    pub fn initWithMethods(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, methods: []const *FnDecl, loc: SourceLocation) !*StructDecl {
+        const decl = try allocator.create(StructDecl);
+        decl.* = .{
+            .node = .{ .type = .StructDecl, .loc = loc },
+            .name = name,
+            .fields = fields,
+            .type_params = type_params,
+            .methods = methods,
         };
         return decl;
     }

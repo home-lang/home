@@ -75,6 +75,14 @@ fn greet(name: string) {
   print("Hello, {name}!")
 }
 
+// default parameter values
+fn greet_with_default(name: string = "World") {
+  print("Hello, {name}!")
+}
+
+greet_with_default()          // prints: Hello, World!
+greet_with_default("Alice")   // prints: Hello, Alice!
+
 // async functions
 fn fetch_data(): async Result<Data> {
   let response = await http.get("/api/data")
@@ -235,6 +243,50 @@ s.char_at(2)         // "H"
 
 // Method chaining
 "  HELLO  ".trim().lower()  // "hello"
+```
+
+### Arithmetic Operators
+
+```home
+// Power operator (**)
+let squared = 5 ** 2      // 25
+let cubed = 2 ** 3        // 8
+let power10 = 2 ** 10     // 1024
+
+// Integer division (~/)
+let result = 7 ~/ 2       // 3 (truncates toward zero)
+let another = 17 ~/ 5     // 3
+
+// Standard operators
+let sum = 10 + 5          // 15
+let diff = 10 - 3         // 7
+let prod = 4 * 3          // 12
+let quot = 10 / 4         // 2.5 (regular division)
+let rem = 10 % 3          // 1 (modulo)
+```
+
+### Range Methods
+
+```home
+// Create ranges
+let r = 0..10            // exclusive: 0,1,2,...,9
+let inclusive = 0..=10   // inclusive: 0,1,2,...,10
+
+// Range methods
+r.len()                  // 10
+r.first()                // 0
+r.last()                 // 9
+r.contains(5)            // true
+r.contains(10)           // false (exclusive)
+
+// Step through range
+let stepped = (0..10).step(2)
+stepped.to_array()       // [0, 2, 4, 6, 8]
+
+// Inclusive range
+inclusive.len()          // 11
+inclusive.contains(10)   // true
+inclusive.last()         // 10
 ```
 
 ### Generics
@@ -403,6 +455,11 @@ zig build test
 - **Generics** - Type-safe generic functions and types
 - **Comptime** - Compile-time code execution
 - **Error handling** - Result types with `?` propagation
+- **Power operator** - `**` for exponentiation (`2 ** 10`)
+- **Integer division** - `~/` for truncating division
+- **Range methods** - `.len()`, `.step()`, `.contains()`, `.to_array()`
+- **Default parameters** - `fn greet(name: string = "World")`
+- **String methods** - `.trim()`, `.upper()`, `.split()`, and more
 
 ## Current Status
 

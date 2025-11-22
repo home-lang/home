@@ -117,7 +117,11 @@ pub const SymbolTable = struct {
             .alias = alias,
         };
 
-        try self.modules.put(full_name, module);
+        if (!self.modules.contains(full_name)) {
+            try self.modules.put(full_name, module);
+        } else {
+            self.allocator.free(full_name);
+        }
     }
 
     /// Add a symbol to a module
@@ -139,10 +143,13 @@ pub const SymbolTable = struct {
             .module_path = module.path,
         };
 
-        try module.symbols.put(symbol_name, symbol);
+        // Check if symbol already exists in module
+        if (!module.symbols.contains(symbol_name)) {
+            try module.symbols.put(symbol_name, symbol);
+        }
 
-        // If exported, add to global symbols with module prefix
-        if (is_exported) {
+        // If exported, add to global symbols (only if not already there)
+        if (is_exported and !self.global_symbols.contains(symbol_name)) {
             try self.global_symbols.put(symbol_name, symbol);
         }
     }
@@ -157,14 +164,18 @@ pub const SymbolTable = struct {
         const module = self.modules.get(module_path) orelse return error.ModuleNotFound;
         const symbol = module.symbols.get(symbol_name) orelse return error.SymbolNotFound;
 
-        // Register the selective import
-        try self.selective_imports.put(symbol_name, .{
-            .module_path = module_path,
-            .original_name = symbol_name,
-        });
+        // Register the selective import (only if not already registered)
+        if (!self.selective_imports.contains(symbol_name)) {
+            try self.selective_imports.put(symbol_name, .{
+                .module_path = module_path,
+                .original_name = symbol_name,
+            });
+        }
 
-        // Add to global symbols for easy lookup
-        try self.global_symbols.put(symbol_name, symbol);
+        // Add to global symbols for easy lookup (only if not already there)
+        if (!self.global_symbols.contains(symbol_name)) {
+            try self.global_symbols.put(symbol_name, symbol);
+        }
     }
 
     /// Look up a symbol by name
@@ -225,6 +236,104 @@ pub const SymbolTable = struct {
     /// Check if a module is registered
     pub fn hasModule(self: *SymbolTable, module_path: []const u8) bool {
         return self.modules.contains(module_path);
+    }
+
+    /// Populate symbols for Home modules by scanning the source file
+    pub fn populateHomeModuleSymbols(self: *SymbolTable, module_path: []const u8, file_path: []const u8) !void {
+        // Read the file
+        const file = std.fs.cwd().openFile(file_path, .{}) catch return;
+        defer file.close();
+
+        // Get file size
+        const stat = file.stat() catch return;
+        const file_size = stat.size;
+
+        // Allocate buffer and read
+        const source = self.allocator.alloc(u8, file_size) catch return;
+        defer self.allocator.free(source);
+
+        var total_read: usize = 0;
+        while (total_read < file_size) {
+            const bytes_read = file.read(source[total_read..]) catch return;
+            if (bytes_read == 0) break;
+            total_read += bytes_read;
+        }
+
+        // Simple scanner: look for struct, enum, fn, const at top level
+        var i: usize = 0;
+        while (i < source.len) {
+            // Skip whitespace and comments
+            while (i < source.len and (source[i] == ' ' or source[i] == '\n' or source[i] == '\r' or source[i] == '\t')) {
+                i += 1;
+            }
+
+            // Skip line comments
+            if (i + 1 < source.len and source[i] == '/' and source[i + 1] == '/') {
+                while (i < source.len and source[i] != '\n') {
+                    i += 1;
+                }
+                continue;
+            }
+
+            // Check for declarations
+            if (i + 6 < source.len and std.mem.eql(u8, source[i .. i + 6], "struct")) {
+                i += 6;
+                // Skip whitespace
+                while (i < source.len and (source[i] == ' ' or source[i] == '\t')) {
+                    i += 1;
+                }
+                // Read identifier
+                const name_start = i;
+                while (i < source.len and (std.ascii.isAlphanumeric(source[i]) or source[i] == '_')) {
+                    i += 1;
+                }
+                if (i > name_start) {
+                    const name = source[name_start..i];
+                    self.addSymbol(module_path, name, .Type, null, true) catch {};
+                }
+            } else if (i + 4 < source.len and std.mem.eql(u8, source[i .. i + 4], "enum")) {
+                i += 4;
+                while (i < source.len and (source[i] == ' ' or source[i] == '\t')) {
+                    i += 1;
+                }
+                const name_start = i;
+                while (i < source.len and (std.ascii.isAlphanumeric(source[i]) or source[i] == '_')) {
+                    i += 1;
+                }
+                if (i > name_start) {
+                    const name = source[name_start..i];
+                    self.addSymbol(module_path, name, .Type, null, true) catch {};
+                }
+            } else if (i + 2 < source.len and std.mem.eql(u8, source[i .. i + 2], "fn")) {
+                i += 2;
+                while (i < source.len and (source[i] == ' ' or source[i] == '\t')) {
+                    i += 1;
+                }
+                const name_start = i;
+                while (i < source.len and (std.ascii.isAlphanumeric(source[i]) or source[i] == '_')) {
+                    i += 1;
+                }
+                if (i > name_start) {
+                    const name = source[name_start..i];
+                    self.addSymbol(module_path, name, .Function, null, true) catch {};
+                }
+            } else if (i + 5 < source.len and std.mem.eql(u8, source[i .. i + 5], "const")) {
+                i += 5;
+                while (i < source.len and (source[i] == ' ' or source[i] == '\t')) {
+                    i += 1;
+                }
+                const name_start = i;
+                while (i < source.len and (std.ascii.isAlphanumeric(source[i]) or source[i] == '_')) {
+                    i += 1;
+                }
+                if (i > name_start) {
+                    const name = source[name_start..i];
+                    self.addSymbol(module_path, name, .Constant, null, true) catch {};
+                }
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Populate symbols for Zig modules by introspecting the source

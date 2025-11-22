@@ -678,6 +678,25 @@ pub const Interpreter = struct {
                 // Handle built-in macros at runtime
                 return try self.evaluateMacroExpression(macro, env);
             },
+            .RangeExpr => |range| {
+                // Evaluate start and end values
+                const start_val = try self.evaluateExpression(range.start, env);
+                const end_val = try self.evaluateExpression(range.end, env);
+
+                // Both must be integers
+                if (start_val != .Int or end_val != .Int) {
+                    std.debug.print("Range bounds must be integers\n", .{});
+                    return error.TypeMismatch;
+                }
+
+                const RangeValue = @import("value.zig").RangeValue;
+                return Value{ .Range = RangeValue{
+                    .start = start_val.Int,
+                    .end = end_val.Int,
+                    .inclusive = range.inclusive,
+                    .step = 1,
+                } };
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -696,7 +715,9 @@ pub const Interpreter = struct {
             .Sub => try self.applyArithmetic(left, right, .Sub),
             .Mul => try self.applyArithmetic(left, right, .Mul),
             .Div => try self.applyArithmetic(left, right, .Div),
+            .IntDiv => try self.applyArithmetic(left, right, .IntDiv),
             .Mod => try self.applyArithmetic(left, right, .Mod),
+            .Power => try self.applyPower(left, right),
             .Equal => Value{ .Bool = try self.areEqual(left, right) },
             .NotEqual => Value{ .Bool = !(try self.areEqual(left, right)) },
             .Less => Value{ .Bool = try self.compare(left, right, .Less) },
@@ -775,7 +796,12 @@ pub const Interpreter = struct {
                 return try self.evaluateArrayMethod(obj_value.Array, member.member, call.args, env);
             }
 
-            std.debug.print("Method calls only supported on strings and arrays\n", .{});
+            // Handle range methods
+            if (obj_value == .Range) {
+                return try self.evaluateRangeMethod(obj_value.Range, member.member, call.args, env);
+            }
+
+            std.debug.print("Method calls only supported on strings, arrays, and ranges\n", .{});
             return error.RuntimeError;
         }
 
@@ -1031,10 +1057,126 @@ pub const Interpreter = struct {
         return error.UndefinedFunction;
     }
 
+    /// Evaluate range method calls
+    fn evaluateRangeMethod(self: *Interpreter, range: @import("value.zig").RangeValue, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+        // step(n) - create a new range with the specified step
+        if (std.mem.eql(u8, method, "step")) {
+            if (args.len != 1) {
+                std.debug.print("step() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const step_val = try self.evaluateExpression(args[0], env);
+            if (step_val != .Int) {
+                std.debug.print("step() argument must be an integer\n", .{});
+                return error.TypeMismatch;
+            }
+            const RangeValue = @import("value.zig").RangeValue;
+            return Value{ .Range = RangeValue{
+                .start = range.start,
+                .end = range.end,
+                .inclusive = range.inclusive,
+                .step = step_val.Int,
+            } };
+        }
+
+        // len() / length() / count() - returns the number of elements in the range
+        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length") or std.mem.eql(u8, method, "count")) {
+            const count = calculateRangeLength(range);
+            return Value{ .Int = count };
+        }
+
+        // to_array() - convert range to an array
+        if (std.mem.eql(u8, method, "to_array")) {
+            const count_i64 = calculateRangeLength(range);
+            if (count_i64 < 0) {
+                return Value{ .Array = &.{} };
+            }
+            const count: usize = @intCast(count_i64);
+            var elements = try self.arena.allocator().alloc(Value, count);
+            var i: usize = 0;
+            var current = range.start;
+            const end_check: i64 = if (range.inclusive) range.end + 1 else range.end;
+            while ((range.step > 0 and current < end_check) or (range.step < 0 and current > end_check)) : (i += 1) {
+                if (i >= count) break;
+                elements[i] = Value{ .Int = current };
+                current += range.step;
+            }
+            return Value{ .Array = elements[0..i] };
+        }
+
+        // first() - get first element
+        if (std.mem.eql(u8, method, "first")) {
+            return Value{ .Int = range.start };
+        }
+
+        // last() - get last element
+        if (std.mem.eql(u8, method, "last")) {
+            if (range.inclusive) {
+                return Value{ .Int = range.end };
+            } else {
+                return Value{ .Int = range.end - 1 };
+            }
+        }
+
+        // contains(n) - check if a value is in the range
+        if (std.mem.eql(u8, method, "contains")) {
+            if (args.len != 1) {
+                std.debug.print("contains() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const val = try self.evaluateExpression(args[0], env);
+            if (val != .Int) {
+                return Value{ .Bool = false };
+            }
+            const n = val.Int;
+            const in_bounds = if (range.inclusive)
+                n >= range.start and n <= range.end
+            else
+                n >= range.start and n < range.end;
+
+            // Also check that it matches the step pattern
+            if (in_bounds and range.step != 0) {
+                const offset = @mod(n - range.start, range.step);
+                return Value{ .Bool = offset == 0 };
+            }
+            return Value{ .Bool = in_bounds };
+        }
+
+        std.debug.print("Unknown range method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn calculateRangeLength(range: @import("value.zig").RangeValue) i64 {
+        if (range.step == 0) return 0;
+        const diff = range.end - range.start;
+        if (range.step > 0 and diff < 0) return 0;
+        if (range.step < 0 and diff > 0) return 0;
+
+        const abs_diff: i64 = if (diff < 0) -diff else diff;
+        const abs_step: i64 = if (range.step < 0) -range.step else range.step;
+        const count = @divTrunc(abs_diff, abs_step);
+        if (range.inclusive) {
+            return count + 1;
+        }
+        return count;
+    }
+
     fn callUserFunction(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
-        // Check argument count
-        if (args.len != func.params.len) {
-            std.debug.print("Function {s} expects {d} arguments, got {d}\n", .{ func.name, func.params.len, args.len });
+        // Count required parameters (those without default values)
+        var required_params: usize = 0;
+        for (func.params) |param| {
+            if (param.default_value == null) {
+                required_params += 1;
+            }
+        }
+
+        // Check argument count - must have at least required params, at most all params
+        if (args.len < required_params or args.len > func.params.len) {
+            if (required_params == func.params.len) {
+                std.debug.print("Function {s} expects {d} arguments, got {d}\n", .{ func.name, func.params.len, args.len });
+            } else {
+                std.debug.print("Function {s} expects {d}-{d} arguments, got {d}\n", .{ func.name, required_params, func.params.len, args.len });
+            }
             return error.InvalidArguments;
         }
 
@@ -1042,9 +1184,14 @@ pub const Interpreter = struct {
         var func_env = Environment.init(self.arena.allocator(), parent_env);
         defer func_env.deinit();
 
-        // Bind parameters to arguments
+        // Bind parameters to arguments (with default value support)
         for (func.params, 0..) |param, i| {
-            const arg_value = try self.evaluateExpression(args[i], parent_env);
+            const arg_value = if (i < args.len)
+                try self.evaluateExpression(args[i], parent_env)
+            else if (param.default_value) |default|
+                try self.evaluateExpression(default, parent_env)
+            else
+                return error.InvalidArguments;
             try func_env.define(param.name, arg_value);
         }
 
@@ -1219,6 +1366,13 @@ pub const Interpreter = struct {
             },
             .Struct => |s| std.debug.print("<{s} instance>", .{s.type_name}),
             .Function => |f| std.debug.print("<fn {s}>", .{f.name}),
+            .Range => |r| {
+                if (r.inclusive) {
+                    std.debug.print("{d}..={d}", .{ r.start, r.end });
+                } else {
+                    std.debug.print("{d}..{d}", .{ r.start, r.end });
+                }
+            },
             .Void => std.debug.print("void", .{}),
         }
     }
@@ -1230,6 +1384,7 @@ pub const Interpreter = struct {
             .Float => |v| std.debug.print("Float({d})", .{v}),
             .Bool => |v| std.debug.print("Bool({})", .{v}),
             .String => |s| std.debug.print("String(\"{s}\")", .{s}),
+            .Range => |r| std.debug.print("Range({d}..{d}, step={d})", .{ r.start, r.end, r.step }),
             .Array => |arr| {
                 std.debug.print("Array[{d}]{{", .{arr.len});
                 for (arr, 0..) |elem, idx| {
@@ -1265,6 +1420,13 @@ pub const Interpreter = struct {
                 },
                 .Struct => |s| std.debug.print("<{s} instance>", .{s.type_name}),
                 .Function => |f| std.debug.print("<fn {s}>", .{f.name}),
+                .Range => |r| {
+                    if (r.inclusive) {
+                        std.debug.print("{d}..={d}", .{ r.start, r.end });
+                    } else {
+                        std.debug.print("{d}..{d}", .{ r.start, r.end });
+                    }
+                },
                 .Void => std.debug.print("void", .{}),
             }
         }
@@ -1319,11 +1481,12 @@ pub const Interpreter = struct {
         switch (left) {
             .Int => |l| switch (right) {
                 .Int => |r| {
-                    if (op == .Div and r == 0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv) and r == 0) return error.DivisionByZero;
                     return Value{ .Int = switch (op) {
                         .Sub => l - r,
                         .Mul => l * r,
                         .Div => @divTrunc(l, r),
+                        .IntDiv => @divTrunc(l, r),
                         .Mod => @mod(l, r),
                         else => {
                             std.debug.print("Invalid arithmetic operator\n", .{});
@@ -1332,8 +1495,11 @@ pub const Interpreter = struct {
                     } };
                 },
                 .Float => |r| {
-                    if (op == .Div and r == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv) and r == 0.0) return error.DivisionByZero;
                     const lf = @as(f64, @floatFromInt(l));
+                    if (op == .IntDiv) {
+                        return Value{ .Int = @as(i64, @intFromFloat(@trunc(lf / r))) };
+                    }
                     return Value{ .Float = switch (op) {
                         .Sub => lf - r,
                         .Mul => lf * r,
@@ -1350,7 +1516,10 @@ pub const Interpreter = struct {
             .Float => |l| switch (right) {
                 .Int => |r| {
                     const rf = @as(f64, @floatFromInt(r));
-                    if (op == .Div and rf == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv) and rf == 0.0) return error.DivisionByZero;
+                    if (op == .IntDiv) {
+                        return Value{ .Int = @as(i64, @intFromFloat(@trunc(l / rf))) };
+                    }
                     return Value{ .Float = switch (op) {
                         .Sub => l - rf,
                         .Mul => l * rf,
@@ -1363,7 +1532,10 @@ pub const Interpreter = struct {
                     } };
                 },
                 .Float => |r| {
-                    if (op == .Div and r == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv) and r == 0.0) return error.DivisionByZero;
+                    if (op == .IntDiv) {
+                        return Value{ .Int = @as(i64, @intFromFloat(@trunc(l / r))) };
+                    }
                     return Value{ .Float = switch (op) {
                         .Sub => l - r,
                         .Mul => l * r,
@@ -1374,6 +1546,51 @@ pub const Interpreter = struct {
                             return error.InvalidOperation;
                         },
                     } };
+                },
+                else => return error.TypeMismatch,
+            },
+            else => return error.TypeMismatch,
+        }
+    }
+
+    fn applyPower(self: *Interpreter, left: Value, right: Value) InterpreterError!Value {
+        _ = self;
+        // Handle power operation: base ** exponent
+        switch (left) {
+            .Int => |base| switch (right) {
+                .Int => |exp| {
+                    if (exp < 0) {
+                        // Negative exponent results in float
+                        const base_f = @as(f64, @floatFromInt(base));
+                        const exp_f = @as(f64, @floatFromInt(exp));
+                        return Value{ .Float = std.math.pow(f64, base_f, exp_f) };
+                    }
+                    // Non-negative integer exponent
+                    var result: i64 = 1;
+                    var e: i64 = exp;
+                    var b: i64 = base;
+                    while (e > 0) {
+                        if (@mod(e, 2) == 1) {
+                            result = result * b;
+                        }
+                        b = b * b;
+                        e = @divTrunc(e, 2);
+                    }
+                    return Value{ .Int = result };
+                },
+                .Float => |exp| {
+                    const base_f = @as(f64, @floatFromInt(base));
+                    return Value{ .Float = std.math.pow(f64, base_f, exp) };
+                },
+                else => return error.TypeMismatch,
+            },
+            .Float => |base| switch (right) {
+                .Int => |exp| {
+                    const exp_f = @as(f64, @floatFromInt(exp));
+                    return Value{ .Float = std.math.pow(f64, base, exp_f) };
+                },
+                .Float => |exp| {
+                    return Value{ .Float = std.math.pow(f64, base, exp) };
                 },
                 else => return error.TypeMismatch,
             },
@@ -1429,6 +1646,10 @@ pub const Interpreter = struct {
             .Struct => return false, // Struct comparison not implemented
             .Void => return right == .Void,
             .Function => return false, // Functions are not comparable
+            .Range => |l| switch (right) {
+                .Range => |r| return l.start == r.start and l.end == r.end and l.inclusive == r.inclusive and l.step == r.step,
+                else => return false,
+            },
         }
     }
 
@@ -1522,6 +1743,13 @@ pub const Interpreter = struct {
             },
             .Function => |f| blk: {
                 const str = try std.fmt.allocPrint(self.arena.allocator(), "<fn {s}>", .{f.name});
+                break :blk str;
+            },
+            .Range => |r| blk: {
+                const str = if (r.inclusive)
+                    try std.fmt.allocPrint(self.arena.allocator(), "{d}..={d}", .{ r.start, r.end })
+                else
+                    try std.fmt.allocPrint(self.arena.allocator(), "{d}..{d}", .{ r.start, r.end });
                 break :blk str;
             },
             .Void => "void",

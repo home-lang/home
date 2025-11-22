@@ -27,6 +27,21 @@ pub const StructValue = struct {
     fields: std.StringHashMap(Value),
 };
 
+/// Range value at runtime.
+///
+/// Represents a range of integers from start to end.
+/// Used for iteration and range methods.
+pub const RangeValue = struct {
+    /// Start of the range (inclusive)
+    start: i64,
+    /// End of the range
+    end: i64,
+    /// Whether end is inclusive (..= vs ..)
+    inclusive: bool,
+    /// Step size for iteration (default 1)
+    step: i64,
+};
+
 /// Runtime value types for the Home interpreter
 ///
 /// MEMORY OWNERSHIP MODEL:
@@ -61,6 +76,8 @@ pub const Value = union(enum) {
     Struct: StructValue,
     /// Function or closure
     Function: FunctionValue,
+    /// Range for iteration
+    Range: RangeValue,
     /// Unit/void value (no value)
     Void,
 
@@ -94,6 +111,16 @@ pub const Value = union(enum) {
             },
             .Struct => |s| try writer.print("<{s} instance>", .{s.type_name}),
             .Function => |f| try writer.print("<fn {s}>", .{f.name}),
+            .Range => |r| {
+                if (r.inclusive) {
+                    try writer.print("{d}..={d}", .{ r.start, r.end });
+                } else {
+                    try writer.print("{d}..{d}", .{ r.start, r.end });
+                }
+                if (r.step != 1) {
+                    try writer.print(" step {d}", .{r.step});
+                }
+            },
             .Void => try writer.writeAll("void"),
         }
     }
@@ -125,6 +152,7 @@ pub const Value = union(enum) {
             .Struct => true,
             .Void => false,
             .Function => true,
+            .Range => true,
         };
     }
 

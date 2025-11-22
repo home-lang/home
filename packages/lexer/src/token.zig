@@ -41,8 +41,10 @@ pub const TokenType = enum {
     Minus, // -
     MinusEqual, // -=
     Star, // *
+    StarStar, // ** (power)
     StarEqual, // *=
     Slash, // /
+    TildeSlash, // ~/ (integer division)
     SlashEqual, // /=
     Percent, // %
     PercentEqual, // %=
@@ -93,6 +95,7 @@ pub const TokenType = enum {
     Dyn,
     Else,
     Finally,
+    Guard,
     Enum,
     False,
     Fn,
@@ -106,6 +109,7 @@ pub const TokenType = enum {
     Loop,
     Match,
     Mut,
+    Null,
     Or,
     Pub,
     Return,
@@ -163,8 +167,10 @@ pub const TokenType = enum {
             .Minus => "-",
             .MinusEqual => "-=",
             .Star => "*",
+            .StarStar => "**",
             .StarEqual => "*=",
             .Slash => "/",
+            .TildeSlash => "~/",
             .SlashEqual => "/=",
             .Percent => "%",
             .PercentEqual => "%=",
@@ -210,6 +216,7 @@ pub const TokenType = enum {
             .Dyn => "dyn",
             .Else => "else",
             .Finally => "finally",
+            .Guard => "guard",
             .Enum => "enum",
             .False => "false",
             .Fn => "fn",
@@ -223,6 +230,7 @@ pub const TokenType = enum {
             .Loop => "loop",
             .Match => "match",
             .Mut => "mut",
+            .Null => "null",
             .Or => "or",
             .Pub => "pub",
             .Return => "return",
@@ -334,6 +342,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "dyn", .Dyn },
     .{ "else", .Else },
     .{ "finally", .Finally },
+    .{ "guard", .Guard },
     .{ "enum", .Enum },
     .{ "false", .False },
     .{ "fn", .Fn },
@@ -347,6 +356,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "loop", .Loop },
     .{ "match", .Match },
     .{ "mut", .Mut },
+    .{ "null", .Null },
     .{ "or", .Or },
     .{ "pub", .Pub },
     .{ "return", .Return },

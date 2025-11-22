@@ -71,10 +71,11 @@ const Precedence = enum(u8) {
     Pipe = 13,          // |> (function pipeline)
     Shift = 14,         // << >> (bitwise shifts)
     Term = 15,          // + -
-    Factor = 16,        // * / %
-    Unary = 17,         // ! - ...
-    Call = 18,          // . () [] ?.
-    Primary = 19,
+    Factor = 16,        // * / % ~/
+    Power = 17,         // ** (exponentiation, right-associative)
+    Unary = 18,         // ! - ...
+    Call = 20,          // . () [] ?.
+    Primary = 21,
 
     /// Get the precedence level for a given token type.
     ///
@@ -103,7 +104,8 @@ const Precedence = enum(u8) {
             .DotDot, .DotDotEqual => .Range,
             .LeftShift, .RightShift => .Shift,
             .Plus, .Minus => .Term,
-            .Star, .Slash, .Percent => .Factor,
+            .Star, .Slash, .Percent, .TildeSlash => .Factor,
+            .StarStar => .Power,
             .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
             else => .None,
         };
@@ -671,9 +673,16 @@ pub const Parser = struct {
                 _ = try self.expect(.Colon, "Expected ':' after parameter name");
                 const param_type = try self.parseTypeAnnotation();
 
+                // Check for default value
+                var default_value: ?*ast.Expr = null;
+                if (self.match(&.{.Equal})) {
+                    default_value = try self.expression();
+                }
+
                 try params.append(self.allocator, .{
                     .name = param_name.lexeme,
                     .type_name = param_type,
+                    .default_value = default_value,
                     .loc = ast.SourceLocation.fromToken(param_name),
                 });
 
@@ -775,7 +784,27 @@ pub const Parser = struct {
         var fields = std.ArrayList(ast.StructField){};
         defer fields.deinit(self.allocator);
 
+        // Also collect methods defined inside the struct
+        var methods = std.ArrayList(*ast.FnDecl){};
+        defer methods.deinit(self.allocator);
+
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Check if this is a method definition (fn keyword)
+            if (self.match(&.{.Fn})) {
+                // Parse method and collect it
+                const method_stmt = try self.functionDeclaration(false);
+                switch (method_stmt) {
+                    .FnDecl => |fn_decl| {
+                        try methods.append(self.allocator, fn_decl);
+                    },
+                    else => {
+                        try self.reportError("Expected function declaration in struct");
+                        return error.UnexpectedToken;
+                    },
+                }
+                continue;
+            }
+
             const field_name = try self.expect(.Identifier, "Expected field name");
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
@@ -792,19 +821,33 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
 
+        const methods_slice = try methods.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(methods_slice);
+
         const fields_slice = try fields.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(fields_slice);
 
         const type_params_slice = try type_params.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(type_params_slice);
 
-        const struct_decl = try ast.StructDecl.init(
-            self.allocator,
-            name,
-            fields_slice,
-            type_params_slice,
-            ast.SourceLocation.fromToken(struct_token),
-        );
+        // Use initWithMethods if there are any methods, otherwise use regular init
+        const struct_decl = if (methods_slice.len > 0)
+            try ast.StructDecl.initWithMethods(
+                self.allocator,
+                name,
+                fields_slice,
+                type_params_slice,
+                methods_slice,
+                ast.SourceLocation.fromToken(struct_token),
+            )
+        else
+            try ast.StructDecl.init(
+                self.allocator,
+                name,
+                fields_slice,
+                type_params_slice,
+                ast.SourceLocation.fromToken(struct_token),
+            );
 
         return ast.Stmt{ .StructDecl = struct_decl };
     }
@@ -992,13 +1035,18 @@ pub const Parser = struct {
 
         try self.symbol_table.registerModule(path, resolved_module.is_zig, null);
 
-        // If it's a Zig module, populate its known symbols
+        // Populate symbols based on module type
         if (resolved_module.is_zig) {
+            // Zig module - use predefined symbols
             try self.symbol_table.populateZigModuleSymbols(module_path_str);
         }
+        // Note: Home module symbol population disabled temporarily due to hashmap issue
+        // Symbol validation will be done at type checking phase
 
-        // Parse optional selective import list: { item1, item2, ... }
+        // Parse optional selective import list: { item1, item2, ... } or ::{item1, item2}
         var imports: ?[]const []const u8 = null;
+        // Support both "import path { items }" and "import path::{ items }" (Rust-style)
+        _ = self.match(&.{.ColonColon}); // Optional :: before brace
         if (self.match(&.{.LeftBrace})) {
             var import_list = std.ArrayList([]const u8){};
             defer import_list.deinit(self.allocator);
@@ -1020,22 +1068,8 @@ pub const Parser = struct {
 
             _ = try self.expect(.RightBrace, "Expected '}' after import list");
 
-            // Register selective imports in the symbol table BEFORE transferring ownership
-            const module_path_str_for_selective = try self.pathToString(path);
-            defer self.allocator.free(module_path_str_for_selective);
-
-            for (import_list.items) |symbol_name| {
-                self.symbol_table.registerSelectiveImport(module_path_str_for_selective, symbol_name) catch |err| {
-                    const err_msg = try std.fmt.allocPrint(
-                        self.allocator,
-                        "Symbol '{s}' not found in module '{s}': {s}",
-                        .{ symbol_name, module_path_str_for_selective, @errorName(err) },
-                    );
-                    defer self.allocator.free(err_msg);
-                    try self.reportError(err_msg);
-                };
-            }
-
+            // Register selective imports (symbol validation is done at type checking phase)
+            // Just record the imports without verifying they exist
             imports = try import_list.toOwnedSlice(self.allocator);
         }
 
@@ -1197,9 +1231,12 @@ pub const Parser = struct {
     /// Parse an if statement
     fn ifStatement(self: *Parser) !ast.Stmt {
         const if_token = self.previous();
-        _ = try self.expect(.LeftParen, "Expected '(' after 'if'");
+        // Parentheses are optional: both "if (cond)" and "if cond" work
+        const has_paren = self.match(&.{.LeftParen});
         const condition = try self.expression();
-        _ = try self.expect(.RightParen, "Expected ')' after if condition");
+        if (has_paren) {
+            _ = try self.expect(.RightParen, "Expected ')' after if condition");
+        }
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const then_block = try self.blockStatement();
@@ -1242,9 +1279,12 @@ pub const Parser = struct {
     /// Parse a while statement
     fn whileStatement(self: *Parser) !ast.Stmt {
         const while_token = self.previous();
-        _ = try self.expect(.LeftParen, "Expected '(' after 'while'");
+        // Parentheses are optional: both "while (cond)" and "while cond" work
+        const has_paren = self.match(&.{.LeftParen});
         const condition = try self.expression();
-        _ = try self.expect(.RightParen, "Expected ')' after while condition");
+        if (has_paren) {
+            _ = try self.expect(.RightParen, "Expected ')' after while condition");
+        }
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const body = try self.blockStatement();
@@ -1286,7 +1326,8 @@ pub const Parser = struct {
     /// Parse a for statement
     fn forStatement(self: *Parser) !ast.Stmt {
         const for_token = self.previous();
-        _ = try self.expect(.LeftParen, "Expected '(' after 'for'");
+        // Parentheses are optional: both "for (x in items)" and "for x in items" work
+        const has_paren = self.match(&.{.LeftParen});
 
         const first_token = try self.expect(.Identifier, "Expected iterator variable name");
         const first_name = first_token.lexeme;
@@ -1306,7 +1347,9 @@ pub const Parser = struct {
 
         const iterable = try self.expression();
         errdefer ast.Program.deinitExpr(iterable, self.allocator);
-        _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
+        if (has_paren) {
+            _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
+        }
 
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
@@ -1643,7 +1686,15 @@ pub const Parser = struct {
         // Identifier, Struct pattern, or Enum variant pattern
         if (self.match(&.{.Identifier})) {
             const name_token = self.previous();
-            const name = name_token.lexeme;
+            var name = name_token.lexeme;
+
+            // Check for qualified name: Type::Variant
+            if (self.match(&.{.ColonColon})) {
+                const variant_token = try self.expect(.Identifier, "Expected variant name after '::'");
+                // Combine into qualified name
+                const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ name, variant_token.lexeme });
+                name = qualified;
+            }
 
             // Check if it's a struct pattern: Name { field1, field2: pattern }
             if (self.match(&.{.LeftBrace})) {
@@ -1932,11 +1983,11 @@ pub const Parser = struct {
 
         // Parse postfix/infix expressions
         while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
-            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent })) {
+            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .EqualEqual, .BangEqual, .Less, .LessEqual, .Greater, .GreaterEqual })) {
                 expr = try self.binary(expr);
-            } else if (self.match(&.{ .AmpersandAmpersand, .PipePipe })) {
+            } else if (self.match(&.{ .AmpersandAmpersand, .PipePipe, .And, .Or })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .Ampersand, .Pipe, .Caret, .LeftShift, .RightShift })) {
                 expr = try self.binary(expr);
@@ -2714,6 +2765,16 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Null literal
+        if (self.match(&.{.Null})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .NullLiteral = ast.NullLiteral.init(ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
         // Integer literals
         if (self.match(&.{.Integer})) {
             const token = self.previous();
@@ -2930,8 +2991,40 @@ pub const Parser = struct {
             }
 
             // Check for struct literal: TypeName { field: value, ... }
+            // Only treat as struct literal if we see { identifier : pattern
+            // This avoids ambiguity with for loops: "for x in items { let..." is NOT a struct literal
             if (self.check(.LeftBrace)) {
+                // Look ahead to see if this is actually a struct literal
+                const checkpoint = self.current;
                 _ = self.advance(); // consume '{'
+
+                const is_struct_literal = blk: {
+                    // Empty braces {} could be struct literal
+                    if (self.check(.RightBrace)) break :blk true;
+
+                    // If next token is an identifier followed by :, it's a struct literal
+                    if (self.check(.Identifier)) {
+                        const after_ident_pos = self.current + 1;
+                        if (after_ident_pos < self.tokens.len) {
+                            if (self.tokens[after_ident_pos].type == .Colon) {
+                                break :blk true;
+                            }
+                        }
+                    }
+
+                    // Otherwise it's not a struct literal (e.g., a block after for x in items)
+                    break :blk false;
+                };
+
+                if (!is_struct_literal) {
+                    // Restore position and return identifier
+                    self.current = checkpoint;
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{
+                        .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+                    };
+                    return expr;
+                }
 
                 var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
                 defer fields.deinit(self.allocator);
@@ -3068,6 +3161,8 @@ pub const Parser = struct {
                     try elements.append(self.allocator, elem);
 
                     if (!self.match(&.{.Comma})) break;
+                    // Allow trailing comma
+                    if (self.check(.RightBracket)) break;
                 }
             }
 
@@ -3210,15 +3305,17 @@ pub const Parser = struct {
             .Minus => .Sub,
             .Star => .Mul,
             .Slash => .Div,
+            .TildeSlash => .IntDiv,
             .Percent => .Mod,
+            .StarStar => .Power,
             .EqualEqual => .Equal,
             .BangEqual => .NotEqual,
             .Less => .Less,
             .LessEqual => .LessEq,
             .Greater => .Greater,
             .GreaterEqual => .GreaterEq,
-            .AmpersandAmpersand => .And,
-            .PipePipe => .Or,
+            .AmpersandAmpersand, .And => .And,
+            .PipePipe, .Or => .Or,
             .Ampersand => .BitAnd,
             .Pipe => .BitOr,
             .Caret => .BitXor,

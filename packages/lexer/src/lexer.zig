@@ -810,7 +810,7 @@ pub const Lexer = struct {
             '@' => self.makeToken(.At),
             '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
             '-' => if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
-            '*' => if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
+            '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
             '/' => blk: {
                 // Check for doc comment ///
                 if (self.peek() == '/' and self.peekNext() == '/') {
@@ -832,7 +832,7 @@ pub const Lexer = struct {
             else
                 self.makeToken(.Pipe),
             '^' => self.makeToken(.Caret),
-            '~' => self.makeToken(.Tilde),
+            '~' => if (self.match('/')) self.makeToken(.TildeSlash) else self.makeToken(.Tilde),
             else => self.makeToken(.Invalid),
         };
     }
