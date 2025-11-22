@@ -618,11 +618,19 @@ pub const AssignmentExpr = struct {
     }
 };
 
+/// Named argument in function call (for named parameter support)
+pub const NamedArg = struct {
+    name: []const u8,
+    value: *Expr,
+};
+
 /// Call expression
 pub const CallExpr = struct {
     node: Node,
     callee: *Expr,
     args: []const *Expr,
+    /// Named arguments (empty if none provided)
+    named_args: []const NamedArg = &.{},
 
     pub fn init(allocator: std.mem.Allocator, callee: *Expr, args: []const *Expr, loc: SourceLocation) !*CallExpr {
         const expr = try allocator.create(CallExpr);
@@ -630,6 +638,18 @@ pub const CallExpr = struct {
             .node = .{ .type = .CallExpr, .loc = loc },
             .callee = callee,
             .args = args,
+            .named_args = &.{},
+        };
+        return expr;
+    }
+
+    pub fn initWithNamedArgs(allocator: std.mem.Allocator, callee: *Expr, args: []const *Expr, named_args: []const NamedArg, loc: SourceLocation) !*CallExpr {
+        const expr = try allocator.create(CallExpr);
+        expr.* = .{
+            .node = .{ .type = .CallExpr, .loc = loc },
+            .callee = callee,
+            .args = args,
+            .named_args = named_args,
         };
         return expr;
     }

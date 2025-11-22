@@ -2174,29 +2174,84 @@ pub const Parser = struct {
         return result;
     }
 
-    /// Parse a call expression
+    /// Parse a call expression (supports both positional and named arguments)
     fn call(self: *Parser, callee: *ast.Expr) !*ast.Expr {
         const lparen_token = self.previous();
 
         var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
         defer args.deinit(self.allocator);
 
+        var named_args = std.ArrayList(ast.NamedArg){ .items = &.{}, .capacity = 0 };
+        defer named_args.deinit(self.allocator);
+
+        var seen_named = false; // Track if we've seen a named argument
+
         if (!self.check(.RightParen)) {
             while (true) {
-                const arg = try self.expression();
-                try args.append(self.allocator, arg);
+                // Check if this is a named argument: identifier followed by colon
+                // We need to lookahead to distinguish between:
+                //   - func(name: value)  -- named argument
+                //   - func(expr)         -- positional argument
+                if (self.check(.Identifier)) {
+                    // Save position in case this isn't a named argument
+                    const saved_pos = self.current;
+                    const name_token = self.advance();
+
+                    if (self.check(.Colon)) {
+                        // This is a named argument
+                        _ = self.advance(); // consume the colon
+                        const value = try self.expression();
+                        try named_args.append(self.allocator, .{
+                            .name = name_token.lexeme,
+                            .value = value,
+                        });
+                        seen_named = true;
+                    } else {
+                        // Not a named argument, backtrack and parse as expression
+                        self.current = saved_pos;
+
+                        if (seen_named) {
+                            // Error: positional argument after named argument
+                            try self.reportError("Positional arguments cannot follow named arguments");
+                            return error.UnexpectedToken;
+                        }
+
+                        const arg = try self.expression();
+                        try args.append(self.allocator, arg);
+                    }
+                } else {
+                    // Not starting with identifier, must be positional
+                    if (seen_named) {
+                        // Error: positional argument after named argument
+                        try self.reportError("Positional arguments cannot follow named arguments");
+                        return error.UnexpectedToken;
+                    }
+
+                    const arg = try self.expression();
+                    try args.append(self.allocator, arg);
+                }
+
                 if (!self.match(&.{.Comma})) break;
             }
         }
 
         _ = try self.expect(.RightParen, "Expected ')' after arguments");
 
-        const call_expr = try ast.CallExpr.init(
-            self.allocator,
-            callee,
-            try args.toOwnedSlice(self.allocator),
-            ast.SourceLocation.fromToken(lparen_token),
-        );
+        const call_expr = if (named_args.items.len > 0)
+            try ast.CallExpr.initWithNamedArgs(
+                self.allocator,
+                callee,
+                try args.toOwnedSlice(self.allocator),
+                try named_args.toOwnedSlice(self.allocator),
+                ast.SourceLocation.fromToken(lparen_token),
+            )
+        else
+            try ast.CallExpr.init(
+                self.allocator,
+                callee,
+                try args.toOwnedSlice(self.allocator),
+                ast.SourceLocation.fromToken(lparen_token),
+            );
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .CallExpr = call_expr };

@@ -110,6 +110,26 @@ pub const LocalInfo = struct {
     size: usize,
 };
 
+/// Function parameter information (for default values support)
+pub const FunctionParamInfo = struct {
+    /// Parameter name
+    name: []const u8,
+    /// Parameter type
+    type_name: []const u8,
+    /// Default value expression (null if no default)
+    default_value: ?*ast.Expr,
+};
+
+/// Function info for code generation
+pub const FunctionInfo = struct {
+    /// Code position
+    position: usize,
+    /// Parameters with default value info
+    params: []FunctionParamInfo,
+    /// Number of required parameters (without defaults)
+    required_params: usize,
+};
+
 /// String literal fixup information
 /// Tracks where in the code we need to patch string addresses
 pub const StringFixup = struct {
@@ -553,6 +573,8 @@ pub const NativeCodegen = struct {
     // Function tracking
     /// Map of function names to their code positions (for calls)
     functions: std.StringHashMap(usize),
+    /// Map of function names to their full info (params, defaults, etc.)
+    function_info: std.StringHashMap(FunctionInfo),
 
     // Heap management
     /// Current heap allocation pointer (bump allocator state)
@@ -603,6 +625,7 @@ pub const NativeCodegen = struct {
             .locals = std.StringHashMap(LocalInfo).init(allocator),
             .next_local_offset = 0,
             .functions = std.StringHashMap(usize).init(allocator),
+            .function_info = std.StringHashMap(FunctionInfo).init(allocator),
             .heap_ptr = HEAP_START,
             .struct_layouts = std.StringHashMap(StructLayout).init(allocator),
             .enum_layouts = std.StringHashMap(EnumLayout).init(allocator),
@@ -645,6 +668,18 @@ pub const NativeCodegen = struct {
                 }
             }
             self.functions.deinit();
+        }
+
+        // Free function_info memory
+        {
+            var info_iter = self.function_info.iterator();
+            while (info_iter.next()) |entry| {
+                // Free params slice if allocated
+                if (entry.value_ptr.params.len > 0) {
+                    self.allocator.free(entry.value_ptr.params);
+                }
+            }
+            self.function_info.deinit();
         }
 
         // Free struct_layouts memory
@@ -1667,6 +1702,136 @@ pub const NativeCodegen = struct {
         }
     }
 
+    /// Generate pattern matching code for expression-based patterns (used in MatchExpr)
+    /// Returns: pattern match result in rax (1 if matched, 0 if not matched)
+    /// value_reg: register containing the value to match against
+    fn generateExprAsPatternMatch(self: *NativeCodegen, pattern_expr: *ast.Expr, value_reg: x64.Register) CodegenError!void {
+        switch (pattern_expr.*) {
+            .IntegerLiteral => |int_lit| {
+                // Compare value with literal
+                const needs_save = (value_reg == .rcx or value_reg == .rdx);
+                const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+
+                if (needs_save) {
+                    try self.assembler.movRegReg(saved_reg, value_reg);
+                }
+
+                // Use rdx as temp register
+                try self.assembler.movRegImm64(.rdx, int_lit.value);
+                // Compare
+                const cmp_reg = if (needs_save) saved_reg else value_reg;
+                try self.assembler.cmpRegReg(cmp_reg, .rdx);
+                // Set rax based on comparison
+                try self.assembler.movRegImm64(.rax, 0); // Assume no match
+                try self.assembler.jneRel32(10); // Skip next instruction if not equal
+                try self.assembler.movRegImm64(.rax, 1); // Match succeeded
+            },
+            .Identifier => |ident| {
+                // Check if this is a wildcard (_)
+                if (std.mem.eql(u8, ident.name, "_")) {
+                    // Wildcard always matches
+                    try self.assembler.movRegImm64(.rax, 1);
+                    return;
+                }
+
+                // Check if this identifier is an enum variant
+                var is_enum_variant = false;
+                var enum_tag: i64 = 0;
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants, 0..) |v, idx| {
+                        if (std.mem.eql(u8, v.name, ident.name)) {
+                            is_enum_variant = true;
+                            enum_tag = @intCast(idx);
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
+
+                if (is_enum_variant) {
+                    // Compare enum tag
+                    const needs_save = (value_reg == .rcx or value_reg == .rdx);
+                    const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+
+                    if (needs_save) {
+                        try self.assembler.movRegReg(saved_reg, value_reg);
+                    }
+
+                    // Load tag from enum value (first 8 bytes)
+                    const enum_reg = if (needs_save) saved_reg else value_reg;
+                    try self.assembler.movRegMem(.rcx, enum_reg, 0);
+                    // Compare with expected tag
+                    try self.assembler.movRegImm64(.rdx, enum_tag);
+                    try self.assembler.cmpRegReg(.rcx, .rdx);
+                    // Set rax based on comparison
+                    try self.assembler.movRegImm64(.rax, 0);
+                    try self.assembler.jneRel32(10);
+                    try self.assembler.movRegImm64(.rax, 1);
+                } else {
+                    // This is a variable binding - always matches
+                    try self.assembler.movRegImm64(.rax, 1);
+                }
+            },
+            else => {
+                // For other expressions, this is an unsupported pattern
+                // For now, try to evaluate and compare directly
+                std.debug.print("Unsupported expression type in pattern matching: {s}\n", .{@tagName(pattern_expr.*)});
+                try self.assembler.movRegImm64(.rax, 0); // No match
+            },
+        }
+    }
+
+    /// Bind variables from expression-based patterns to locals (used in MatchExpr)
+    fn bindExprAsPatternVariables(self: *NativeCodegen, pattern_expr: *ast.Expr, value_reg: x64.Register) CodegenError!void {
+        switch (pattern_expr.*) {
+            .Identifier => |ident| {
+                // Don't bind wildcards
+                if (std.mem.eql(u8, ident.name, "_")) {
+                    return;
+                }
+
+                // Check if this is an enum variant (not a variable binding)
+                var is_enum_variant = false;
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants) |v| {
+                        if (std.mem.eql(u8, v.name, ident.name)) {
+                            is_enum_variant = true;
+                            break;
+                        }
+                    }
+                    if (is_enum_variant) break;
+                }
+
+                if (!is_enum_variant) {
+                    // This is a variable binding
+                    // Push value onto stack and add to locals
+                    try self.assembler.pushReg(value_reg);
+
+                    const offset = self.next_local_offset;
+                    self.next_local_offset += 1;
+
+                    // Duplicate the name since cleanup will free it
+                    const name_copy = try self.allocator.dupe(u8, ident.name);
+                    errdefer self.allocator.free(name_copy);
+
+                    // Add to locals
+                    try self.locals.put(name_copy, LocalInfo{
+                        .offset = offset,
+                        .type_name = "int",
+                        .size = 8,
+                    });
+                }
+            },
+            else => {
+                // No variable binding for other expression types
+            },
+        }
+    }
+
     /// Bind variables from a pattern to locals
     /// value_reg contains the value that was matched
     fn bindPatternVariables(self: *NativeCodegen, pattern: ast.Pattern, value_reg: x64.Register) CodegenError!void {
@@ -1837,17 +2002,11 @@ pub const NativeCodegen = struct {
 
         if (vars_to_remove == 0) return;
 
-        // Save rax (arm body result)
-        try self.assembler.pushReg(.rax);
-
-        // Pop variables from stack (into rcx to discard)
-        var i: usize = 0;
-        while (i < vars_to_remove) : (i += 1) {
-            try self.assembler.popReg(.rcx); // Pop into rcx (discard)
-        }
-
-        // Restore rax
-        try self.assembler.popReg(.rax);
+        // Discard pattern variables by adjusting stack pointer
+        // Pattern vars were pushed onto stack, so add to rsp to discard them
+        // This preserves rax (body result)
+        const bytes_to_remove = vars_to_remove * 8;
+        try self.assembler.addRegImm32(.rsp, @intCast(bytes_to_remove));
 
         // Reset local offset
         self.next_local_offset -= @intCast(vars_to_remove);
@@ -1870,6 +2029,17 @@ pub const NativeCodegen = struct {
             _ = self.locals.remove(key);
             self.allocator.free(key);
         }
+    }
+
+    /// Generate only the stack cleanup code for a given number of pattern variables
+    /// Does NOT modify locals map or next_local_offset - only generates machine code
+    /// This is needed when guard fails and we need to pop pattern vars before trying next arm
+    fn cleanupPatternVariablesCodeOnlyN(self: *NativeCodegen, vars_to_remove: usize) CodegenError!void {
+        if (vars_to_remove == 0) return;
+
+        // Discard pattern variables by adjusting stack pointer
+        const bytes_to_remove = vars_to_remove * 8;
+        try self.assembler.addRegImm32(.rsp, @intCast(bytes_to_remove));
     }
 
     /// Get the size of a type in bytes
@@ -2480,7 +2650,10 @@ pub const NativeCodegen = struct {
                 try self.checkMatchExhaustiveness(match_stmt);
 
                 // Save callee-saved register rbx (required by x86-64 ABI)
+                // Track as pseudo-local to keep stack offsets consistent
                 try self.assembler.pushReg(.rbx);
+                const rbx_save_offset = self.next_local_offset;
+                self.next_local_offset += 1;
 
                 // Evaluate match value (result in rax)
                 try self.generateExpr(match_stmt.value);
@@ -2562,8 +2735,10 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJmpRel32(jump_pos, offset);
                 }
 
-                // Restore callee-saved register rbx
+                // Restore callee-saved register rbx and stack offset
                 try self.assembler.popReg(.rbx);
+                _ = rbx_save_offset; // suppress unused warning
+                self.next_local_offset -= 1;
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
@@ -2981,6 +3156,28 @@ pub const NativeCodegen = struct {
         const name_copy = try self.allocator.dupe(u8, func.name);
         errdefer self.allocator.free(name_copy);
         try self.functions.put(name_copy, func_pos);
+
+        // Store function info with parameter defaults
+        var param_infos = try self.allocator.alloc(FunctionParamInfo, func.params.len);
+        errdefer self.allocator.free(param_infos);
+
+        var required_params: usize = 0;
+        for (func.params, 0..) |param, i| {
+            param_infos[i] = .{
+                .name = param.name,
+                .type_name = param.type_name,
+                .default_value = param.default_value,
+            };
+            if (param.default_value == null) {
+                required_params += 1;
+            }
+        }
+
+        try self.function_info.put(func.name, .{
+            .position = func_pos,
+            .params = param_infos,
+            .required_params = required_params,
+        });
 
         // Function prologue
         try self.assembler.pushReg(.rbp);
@@ -3571,15 +3768,58 @@ pub const NativeCodegen = struct {
                     if (self.functions.get(func_name)) |func_pos| {
                         // x64 System V ABI: first 6 integer args in registers, rest on stack
                         const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
-                        const reg_arg_count = @min(call.args.len, arg_regs.len);
+
+                        // Get function info for default parameter and named argument handling
+                        const func_info = self.function_info.get(func_name);
+                        const total_params = if (func_info) |info| info.params.len else call.args.len;
+
+                        // Resolve arguments: build an array of expressions for each parameter position
+                        // Start with null for each position
+                        var resolved_args: [16]?*ast.Expr = .{null} ** 16;
+
+                        // Fill in positional arguments
+                        for (call.args, 0..) |arg, idx| {
+                            if (idx < resolved_args.len) {
+                                resolved_args[idx] = arg;
+                            }
+                        }
+
+                        // Fill in named arguments by matching parameter names
+                        if (func_info) |info| {
+                            for (call.named_args) |named_arg| {
+                                // Find the parameter index for this named argument
+                                for (info.params, 0..) |param, param_idx| {
+                                    if (std.mem.eql(u8, param.name, named_arg.name)) {
+                                        if (param_idx < resolved_args.len) {
+                                            resolved_args[param_idx] = named_arg.value;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        const total_args = @max(call.args.len + call.named_args.len, total_params);
+                        const reg_arg_count = @min(total_args, arg_regs.len);
 
                         // Push stack arguments first (args 7+) in reverse order
                         // This is required by System V ABI: caller pushes in reverse
-                        if (call.args.len > arg_regs.len) {
-                            var i: usize = call.args.len;
+                        if (total_args > arg_regs.len) {
+                            var i: usize = total_args;
                             while (i > arg_regs.len) {
                                 i -= 1;
-                                try self.generateExpr(call.args[i]);
+                                if (resolved_args[i]) |arg_expr| {
+                                    try self.generateExpr(arg_expr);
+                                } else if (func_info) |info| {
+                                    // Use default value
+                                    if (i < info.params.len and info.params[i].default_value != null) {
+                                        try self.generateExpr(info.params[i].default_value.?);
+                                    } else {
+                                        try self.assembler.movRegImm64(.rax, 0);
+                                    }
+                                } else {
+                                    try self.assembler.movRegImm64(.rax, 0);
+                                }
                                 try self.assembler.pushReg(.rax);
                             }
                         }
@@ -3587,7 +3827,18 @@ pub const NativeCodegen = struct {
                         // Evaluate register arguments and push onto stack first
                         var i: usize = 0;
                         while (i < reg_arg_count) : (i += 1) {
-                            try self.generateExpr(call.args[i]);
+                            if (resolved_args[i]) |arg_expr| {
+                                try self.generateExpr(arg_expr);
+                            } else if (func_info) |info| {
+                                // Use default value
+                                if (i < info.params.len and info.params[i].default_value != null) {
+                                    try self.generateExpr(info.params[i].default_value.?);
+                                } else {
+                                    try self.assembler.movRegImm64(.rax, 0);
+                                }
+                            } else {
+                                try self.assembler.movRegImm64(.rax, 0);
+                            }
                             try self.assembler.pushReg(.rax);
                         }
 
@@ -3607,8 +3858,8 @@ pub const NativeCodegen = struct {
 
                         // Clean up stack arguments (args 7+) after the call
                         // Each arg is 8 bytes
-                        if (call.args.len > arg_regs.len) {
-                            const stack_args = call.args.len - arg_regs.len;
+                        if (total_args > arg_regs.len) {
+                            const stack_args = total_args - arg_regs.len;
                             const stack_bytes: i32 = @intCast(stack_args * 8);
                             try self.assembler.addRegImm(.rsp, stack_bytes);
                         }
@@ -4203,6 +4454,107 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegMem(.rax, .rbx, 8);
 
                 // rax now contains the unwrapped value
+            },
+
+            .MatchExpr => |match_expr| {
+                // Match expression: let result = match value { pattern => expr, ... }
+                // Similar to MatchStmt but used as an expression - result of matching arm body is kept in rax
+
+                // Save callee-saved register rbx (required by x86-64 ABI)
+                // We track this as a pseudo-local to keep stack offsets consistent
+                try self.assembler.pushReg(.rbx);
+                const rbx_save_offset = self.next_local_offset;
+                self.next_local_offset += 1;
+
+                // Evaluate match value (result in rax)
+                try self.generateExpr(match_expr.value);
+
+                // Save match value in r10 for pattern comparisons
+                try self.assembler.movRegReg(.r10, .rax);
+
+                // Track positions for patching jumps to end
+                var arm_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                defer arm_end_jumps.deinit(self.allocator);
+
+                // Generate code for each match arm
+                for (match_expr.arms) |arm| {
+                    // Load match value from r10 into rbx for comparison
+                    try self.assembler.movRegReg(.rbx, .r10);
+
+                    // Try to match pattern (result in rax) - use expression-based pattern matching
+                    try self.generateExprAsPatternMatch(arm.pattern, .rbx);
+
+                    // Test pattern match result
+                    try self.assembler.testRegReg(.rax, .rax);
+
+                    // If pattern didn't match, jump to next arm
+                    const next_arm_jump = self.assembler.getPosition();
+                    try self.assembler.jzRel32(0); // Jump if pattern match failed (rax == 0)
+
+                    // Pattern matched, bind any pattern variables
+                    const locals_before = self.locals.count();
+                    try self.bindExprAsPatternVariables(arm.pattern, .rbx);
+
+                    // Pattern matched, evaluate guard if present
+                    if (arm.guard) |guard| {
+                        // Count pattern variables BEFORE any cleanup
+                        const vars_added = self.locals.count() - locals_before;
+
+                        try self.generateExpr(guard);
+                        // Test guard result
+                        try self.assembler.testRegReg(.rax, .rax);
+                        // If guard failed, need to clean up pattern vars then jump to next arm
+                        const guard_fail_jump = self.assembler.getPosition();
+                        try self.assembler.jzRel32(0);
+
+                        // Guard succeeded, execute arm body (result stays in rax)
+                        try self.generateExpr(arm.body);
+
+                        // Clean up pattern variables
+                        try self.cleanupPatternVariables(locals_before);
+
+                        // Jump to end of match
+                        try self.assembler.jmpRel32(0);
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
+
+                        // Guard fail path: clean up pattern variables then continue to next arm
+                        const guard_fail_pos = self.assembler.getPosition();
+                        const guard_offset = @as(i32, @intCast(guard_fail_pos)) - @as(i32, @intCast(guard_fail_jump + 6));
+                        try self.assembler.patchJzRel32(guard_fail_jump, guard_offset);
+
+                        // Clean up pattern variables when guard fails (use pre-computed count)
+                        try self.cleanupPatternVariablesCodeOnlyN(vars_added);
+                    } else {
+                        // No guard, execute arm body directly (result stays in rax)
+                        try self.generateExpr(arm.body);
+
+                        // Clean up pattern variables
+                        try self.cleanupPatternVariables(locals_before);
+
+                        // Jump to end of match
+                        try self.assembler.jmpRel32(0);
+                        try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
+                    }
+
+                    // Patch pattern match fail jump to next arm
+                    const next_arm_pos = self.assembler.getPosition();
+                    const next_offset = @as(i32, @intCast(next_arm_pos)) - @as(i32, @intCast(next_arm_jump + 6));
+                    try self.assembler.patchJzRel32(next_arm_jump, next_offset);
+                }
+
+                // Patch all "end of match" jumps
+                const match_end = self.assembler.getPosition();
+                for (arm_end_jumps.items) |jump_pos| {
+                    const offset = @as(i32, @intCast(match_end)) - @as(i32, @intCast(jump_pos + 5));
+                    try self.assembler.patchJmpRel32(jump_pos, offset);
+                }
+
+                // Restore callee-saved register rbx and stack offset
+                try self.assembler.popReg(.rbx);
+                _ = rbx_save_offset; // suppress unused warning
+                self.next_local_offset -= 1;
+
+                // rax now contains the result of the matched arm's body expression
             },
 
             else => |expr_tag| {

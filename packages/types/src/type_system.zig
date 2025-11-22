@@ -113,6 +113,9 @@ pub const Type = union(enum) {
         params: []const Type,
         /// Return type (Void for procedures)
         return_type: *const Type,
+        /// Number of required parameters (without default values)
+        /// If null, all parameters are required (for backwards compatibility)
+        required_params: ?usize = null,
     };
 
     /// Struct type with named fields (product type).
@@ -507,8 +510,13 @@ pub const TypeChecker = struct {
         errdefer self.allocator.free(param_types);
         try self.allocated_slices.append(self.allocator, param_types);
 
+        // Count required parameters (those without default values)
+        var required_params: usize = 0;
         for (fn_decl.params, 0..) |param, i| {
             param_types[i] = try self.parseTypeName(param.type_name);
+            if (param.default_value == null) {
+                required_params += 1;
+            }
         }
 
         const return_type = try self.allocator.create(Type);
@@ -524,6 +532,7 @@ pub const TypeChecker = struct {
             .Function = .{
                 .params = param_types,
                 .return_type = return_type,
+                .required_params = required_params,
             },
         };
 
@@ -958,17 +967,31 @@ pub const TypeChecker = struct {
 
                 // Special case for print (variadic)
                 if (!std.mem.eql(u8, func_name, "print")) {
-                    if (call.args.len != expected_params.len) {
+                    // Get required params count (if not set, all params are required)
+                    const required_params = func_type.Function.required_params orelse expected_params.len;
+
+                    // Total provided arguments = positional + named
+                    const total_provided = call.args.len + call.named_args.len;
+
+                    // Check: args >= required_params AND args <= total_params
+                    if (total_provided < required_params or total_provided > expected_params.len) {
                         try self.addError("Wrong number of arguments", call.node.loc);
                         return error.WrongNumberOfArguments;
                     }
 
+                    // Type check positional arguments
                     for (call.args, 0..) |arg, i| {
                         const arg_type = try self.inferExpression(arg);
                         if (!arg_type.equals(expected_params[i])) {
                             try self.addError("Argument type mismatch", call.node.loc);
                             return error.TypeMismatch;
                         }
+                    }
+
+                    // Type check named arguments (we'd need parameter names to do full validation)
+                    // For now, just type check the expressions
+                    for (call.named_args) |named_arg| {
+                        _ = try self.inferExpression(named_arg.value);
                     }
                 }
 
