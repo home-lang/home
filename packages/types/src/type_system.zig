@@ -563,9 +563,14 @@ pub const TypeChecker = struct {
                 }
             },
             .FnDecl => |fn_decl| {
+                // Save the current env to a heap-allocated location so the pointer remains stable
+                const saved_env_ptr = try self.allocator.create(TypeEnvironment);
+                saved_env_ptr.* = self.env;
+                defer self.allocator.destroy(saved_env_ptr);
+
                 // Create new scope for function
                 var func_env = TypeEnvironment.init(self.allocator);
-                func_env.parent = &self.env;
+                func_env.parent = saved_env_ptr;  // Point to heap-allocated saved env
                 defer func_env.deinit();
 
                 // Add parameters to function scope
@@ -575,9 +580,8 @@ pub const TypeChecker = struct {
                 }
 
                 // Type check function body
-                const saved_env = self.env;
                 self.env = func_env;
-                defer self.env = saved_env;
+                defer self.env = saved_env_ptr.*;
 
                 for (fn_decl.body.statements) |body_stmt| {
                     self.checkStatement(body_stmt) catch |err| {

@@ -1875,9 +1875,11 @@ pub const NativeCodegen = struct {
     /// Get the size of a type in bytes
     fn getTypeSize(self: *NativeCodegen, type_name: []const u8) CodegenError!usize {
         // Primitive types
-        if (std.mem.eql(u8, type_name, "i32")) return 8; // i64 on x64
+        if (std.mem.eql(u8, type_name, "int")) return 8;  // Default int is i64 on x64
+        if (std.mem.eql(u8, type_name, "i32")) return 8;  // i64 on x64
         if (std.mem.eql(u8, type_name, "i64")) return 8;
         if (std.mem.eql(u8, type_name, "bool")) return 8;
+        if (std.mem.eql(u8, type_name, "float")) return 8;  // Default float is f64
         if (std.mem.eql(u8, type_name, "f32")) return 4;
         if (std.mem.eql(u8, type_name, "f64")) return 8;
         if (std.mem.eql(u8, type_name, "str")) return 8; // String pointers are 8 bytes
@@ -3358,6 +3360,46 @@ pub const NativeCodegen = struct {
                         try self.assembler.idivReg(.rcx);
                         // Move remainder from rdx to rax
                         try self.assembler.movRegReg(.rax, .rdx);
+                    },
+                    .IntDiv => {
+                        // Integer division (truncating) - same as regular div for integers
+                        try self.assembler.cqo();
+                        try self.assembler.idivReg(.rcx);
+                        // Quotient is already in rax
+                    },
+                    .Power => {
+                        // Power: rax = rax ** rcx
+                        // Simple loop implementation for integer exponentiation
+                        // Save base in r11, exponent in rcx, result in rax
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = base
+                        try self.assembler.movRegImm64(.rax, 1); // result = 1
+
+                        // Label for loop start
+                        const loop_start = self.assembler.code.items.len;
+
+                        // test rcx, rcx ; jz done
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        const jz_patch = self.assembler.code.items.len;
+                        try self.assembler.jzRel32(0); // Will patch later
+
+                        // result = result * base
+                        try self.assembler.imulRegReg(.rax, .r11);
+
+                        // dec rcx
+                        try self.assembler.subRegImm(.rcx, 1);
+
+                        // jmp loop_start
+                        const current_pos = self.assembler.code.items.len;
+                        const rel_offset = @as(i32, @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(current_pos + 5))));
+                        try self.assembler.jmpRel32(rel_offset);
+
+                        // Patch the jz offset
+                        const done_pos = self.assembler.code.items.len;
+                        const jz_rel = @as(i32, @intCast(@as(i64, @intCast(done_pos)) - @as(i64, @intCast(jz_patch + 6))));
+                        self.assembler.code.items[jz_patch + 2] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel))));
+                        self.assembler.code.items[jz_patch + 3] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 8));
+                        self.assembler.code.items[jz_patch + 4] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 16));
+                        self.assembler.code.items[jz_patch + 5] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 24));
                     },
                     // Comparison operators - result is 0 or 1
                     .Equal => {
