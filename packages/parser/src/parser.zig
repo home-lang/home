@@ -902,9 +902,28 @@ pub const Parser = struct {
                 _ = try self.expect(.RightParen, "Expected ')' after variant data type");
             }
 
+            // Check for explicit value assignment (e.g., RED = 0)
+            var value: ?i64 = null;
+            if (self.match(&.{.Equal})) {
+                // Parse integer literal for value
+                if (self.match(&.{.Integer})) {
+                    const value_token = self.previous();
+                    value = std.fmt.parseInt(i64, value_token.lexeme, 10) catch null;
+                } else if (self.match(&.{.Minus})) {
+                    // Handle negative values
+                    if (self.match(&.{.Integer})) {
+                        const value_token = self.previous();
+                        if (std.fmt.parseInt(i64, value_token.lexeme, 10)) |v| {
+                            value = -v;
+                        } else |_| {}
+                    }
+                }
+            }
+
             try variants.append(self.allocator, .{
                 .name = variant_name.lexeme,
                 .data_type = data_type,
+                .value = value,
             });
 
             // Optional comma between variants
@@ -1269,6 +1288,12 @@ pub const Parser = struct {
     /// Parse an if statement
     fn ifStatement(self: *Parser) !ast.Stmt {
         const if_token = self.previous();
+
+        // Check for if-let pattern matching: if let Some(x) = expr { ... }
+        if (self.match(&.{.Let})) {
+            return self.ifLetStatement(if_token);
+        }
+
         // Parentheses are optional: both "if (cond)" and "if cond" work
         const has_paren = self.match(&.{.LeftParen});
         const condition = try self.expression();
@@ -1312,6 +1337,51 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .IfStmt = stmt };
+    }
+
+    /// Parse an if-let statement: if let Some(x) = expr { ... }
+    fn ifLetStatement(self: *Parser, if_token: Token) !ast.Stmt {
+        // Parse pattern: Some(x), Ok(value), None, etc.
+        const pattern_token = try self.expect(.Identifier, "Expected pattern name after 'if let'");
+        const pattern = pattern_token.lexeme;
+
+        // Check for binding: Some(x) vs None
+        var binding: ?[]const u8 = null;
+        if (self.match(&.{.LeftParen})) {
+            const binding_token = try self.expect(.Identifier, "Expected binding name in pattern");
+            binding = binding_token.lexeme;
+            _ = try self.expect(.RightParen, "Expected ')' after binding name");
+        }
+
+        // Expect '=' followed by the expression to match
+        _ = try self.expect(.Equal, "Expected '=' after pattern in 'if let'");
+
+        // Parse the expression being matched
+        const value = try self.expression();
+        errdefer ast.Program.deinitExpr(value, self.allocator);
+
+        // Parse the then block
+        const then_block = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(then_block, self.allocator);
+
+        // Parse optional else block (simple else only, not else if chains for if-let)
+        var else_block: ?*ast.BlockStmt = null;
+        if (self.match(&.{.Else})) {
+            else_block = try self.blockStatement();
+        }
+        errdefer if (else_block) |eb| ast.Program.deinitBlockStmt(eb, self.allocator);
+
+        const stmt = try ast.IfLetStmt.init(
+            self.allocator,
+            pattern,
+            binding,
+            value,
+            then_block,
+            else_block,
+            ast.SourceLocation.fromToken(if_token),
+        );
+
+        return ast.Stmt{ .IfLetStmt = stmt };
     }
 
     /// Parse a while statement

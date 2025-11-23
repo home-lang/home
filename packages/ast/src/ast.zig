@@ -176,6 +176,7 @@ pub const NodeType = enum {
     ImplDecl,
     ReturnStmt,
     IfStmt,
+    IfLetStmt,
     WhileStmt,
     DoWhileStmt,
     ForStmt,
@@ -1197,6 +1198,7 @@ pub const Expr = union(NodeType) {
     ImplDecl: void,
     ReturnStmt: void,
     IfStmt: void,
+    IfLetStmt: void,
     WhileStmt: void,
     DoWhileStmt: void,
     ForStmt: void,
@@ -1331,6 +1333,29 @@ pub const IfStmt = struct {
         stmt.* = .{
             .node = .{ .type = .IfStmt, .loc = loc },
             .condition = condition,
+            .then_block = then_block,
+            .else_block = else_block,
+        };
+        return stmt;
+    }
+};
+
+/// If-let statement for pattern matching (e.g., if let Some(x) = expr { ... })
+pub const IfLetStmt = struct {
+    node: Node,
+    pattern: []const u8, // The pattern variant name (e.g., "Some", "Ok")
+    binding: ?[]const u8, // The bound variable name (e.g., "x" in Some(x)), null if no binding
+    value: *Expr, // The expression being matched
+    then_block: *BlockStmt,
+    else_block: ?*BlockStmt,
+
+    pub fn init(allocator: std.mem.Allocator, pattern: []const u8, binding: ?[]const u8, value: *Expr, then_block: *BlockStmt, else_block: ?*BlockStmt, loc: SourceLocation) !*IfLetStmt {
+        const stmt = try allocator.create(IfLetStmt);
+        stmt.* = .{
+            .node = .{ .type = .IfLetStmt, .loc = loc },
+            .pattern = pattern,
+            .binding = binding,
+            .value = value,
             .then_block = then_block,
             .else_block = else_block,
         };
@@ -1709,6 +1734,7 @@ pub const Stmt = union(NodeType) {
     ImplDecl: *ImplDecl,
     ReturnStmt: *ReturnStmt,
     IfStmt: *IfStmt,
+    IfLetStmt: *IfLetStmt,
     WhileStmt: *WhileStmt,
     DoWhileStmt: *DoWhileStmt,
     ForStmt: *ForStmt,
@@ -1790,6 +1816,7 @@ pub const StructDecl = struct {
 pub const EnumVariant = struct {
     name: []const u8,
     data_type: ?[]const u8, // Optional associated data type
+    value: ?i64 = null, // Optional explicit value assignment (e.g., RED = 0)
 };
 
 /// Enum declaration

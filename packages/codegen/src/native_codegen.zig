@@ -2525,6 +2525,109 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJzRel32(jz_pos, jz_offset);
                 }
             },
+            .IfLetStmt => |if_let| {
+                // if let Some(x) = expr { then } else { else }
+                // Pattern matching on enum variants
+                // Use r10 (caller-saved) to hold the enum pointer - no need to save/restore
+
+                // Evaluate the expression being matched (result in rax)
+                try self.generateExpr(if_let.value);
+
+                // Save value pointer in r10 for later use (caller-saved, no need to preserve)
+                try self.assembler.movRegReg(.r10, .rax);
+
+                // Find the target tag for the pattern (e.g., "Some" -> tag value)
+                var found = false;
+                var target_tag: i64 = 0;
+                var has_data = false;
+
+                var enum_iter = self.enum_layouts.iterator();
+                while (enum_iter.next()) |entry| {
+                    const enum_layout = entry.value_ptr.*;
+                    for (enum_layout.variants, 0..) |v, idx| {
+                        if (std.mem.eql(u8, v.name, if_let.pattern)) {
+                            found = true;
+                            target_tag = @intCast(idx);
+                            has_data = v.data_type != null;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+
+                // Load tag from enum value (first 8 bytes at r10)
+                try self.assembler.movRegMem(.rcx, .r10, 0);
+
+                // Compare with expected tag
+                try self.assembler.movRegImm64(.rdx, @intCast(target_tag));
+                try self.assembler.cmpRegReg(.rcx, .rdx);
+
+                // Reserve space for conditional jump to else/end
+                const jne_pos = self.assembler.getPosition();
+                try self.assembler.jneRel32(0); // Placeholder - jump if not equal
+
+                // Pattern matched - bind variable if present
+                const locals_before = self.locals.count();
+                if (if_let.binding) |binding_name| {
+                    if (has_data) {
+                        // Load the data (at offset 8) from enum
+                        try self.assembler.movRegMem(.rcx, .r10, 8);
+
+                        // Push value onto stack and add to locals
+                        try self.assembler.pushReg(.rcx);
+
+                        const offset = self.next_local_offset;
+                        self.next_local_offset += 1;
+
+                        // Free old key if variable exists (shadowing)
+                        if (self.locals.fetchRemove(binding_name)) |old_entry| {
+                            self.allocator.free(old_entry.key);
+                        }
+                        const name_copy = try self.allocator.dupe(u8, binding_name);
+                        errdefer self.allocator.free(name_copy);
+
+                        try self.locals.put(name_copy, .{
+                            .offset = offset,
+                            .type_name = "i64", // Default type
+                            .size = 8,
+                        });
+                    }
+                }
+
+                // Generate then block
+                for (if_let.then_block.statements) |then_stmt| {
+                    try self.generateStmt(then_stmt);
+                }
+
+                // Clean up pattern variables
+                try self.cleanupPatternVariables(locals_before);
+
+                if (if_let.else_block) |else_block| {
+                    // If there's an else block, jump over it from then block
+                    const jmp_pos = self.assembler.getPosition();
+                    try self.assembler.jmpRel32(0); // Placeholder
+
+                    // Patch the jne to jump to else block
+                    const else_start = self.assembler.getPosition();
+                    const jne_offset = @as(i32, @intCast(else_start)) - @as(i32, @intCast(jne_pos + 6));
+                    try self.assembler.patchJneRel32(jne_pos, jne_offset);
+
+                    // Generate else block
+                    for (else_block.statements) |else_stmt| {
+                        try self.generateStmt(else_stmt);
+                    }
+
+                    // Patch the jmp to jump to end
+                    const end_pos = self.assembler.getPosition();
+                    const jmp_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jmp_pos + 5));
+                    try self.assembler.patchJmpRel32(jmp_pos, jmp_offset);
+                } else {
+                    // No else block, just patch jne to jump to end
+                    const end_pos = self.assembler.getPosition();
+                    const jne_offset = @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jne_pos + 6));
+                    try self.assembler.patchJneRel32(jne_pos, jne_offset);
+                }
+            },
             .WhileStmt => |while_stmt| {
                 // While loop: test condition, jump if false, body, jump back
                 const loop_start = self.assembler.getPosition();
