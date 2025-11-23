@@ -65,11 +65,13 @@ pub const TokenType = enum {
     Tilde, // ~
     LeftShift, // <<
     RightShift, // >>
+    Arrow, // ->
     FatArrow, // =>
 
     // Literals
     Identifier,
     String,
+    Char, // 'a', '\n', etc.
     StringInterpolationStart, // "text{
     StringInterpolationMid,   // }text{
     StringInterpolationEnd,   // }text"

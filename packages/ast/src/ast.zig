@@ -111,6 +111,7 @@ pub const NodeType = enum {
     IntegerLiteral,
     FloatLiteral,
     StringLiteral,
+    CharLiteral,
     InterpolatedString,
     BooleanLiteral,
     NullLiteral,
@@ -352,6 +353,33 @@ pub const StringLiteral = struct {
     pub fn init(value: []const u8, loc: SourceLocation) StringLiteral {
         return .{
             .node = .{ .type = .StringLiteral, .loc = loc },
+            .value = value,
+        };
+    }
+};
+
+/// Character literal node.
+///
+/// Represents a single-quoted character like 'a', '\n', '\x41'.
+/// The value includes quotes and raw escapes for later processing.
+///
+/// Example: `'a'`, `'\n'`, `'\x41'`
+pub const CharLiteral = struct {
+    /// Base node metadata
+    node: Node,
+    /// The character value (with quotes and raw escapes)
+    value: []const u8,
+
+    /// Create a new character literal node.
+    ///
+    /// Parameters:
+    ///   - value: The char slice (must remain valid)
+    ///   - loc: Source location
+    ///
+    /// Returns: Initialized CharLiteral
+    pub fn init(value: []const u8, loc: SourceLocation) CharLiteral {
+        return .{
+            .node = .{ .type = .CharLiteral, .loc = loc },
             .value = value,
         };
     }
@@ -1139,6 +1167,7 @@ pub const Expr = union(NodeType) {
     IntegerLiteral: IntegerLiteral,
     FloatLiteral: FloatLiteral,
     StringLiteral: StringLiteral,
+    CharLiteral: CharLiteral,
     InterpolatedString: *InterpolatedString,
     BooleanLiteral: BooleanLiteral,
     NullLiteral: NullLiteral,
@@ -1220,6 +1249,7 @@ pub const Expr = union(NodeType) {
             .IntegerLiteral => |lit| lit.node.loc,
             .FloatLiteral => |lit| lit.node.loc,
             .StringLiteral => |lit| lit.node.loc,
+            .CharLiteral => |lit| lit.node.loc,
             .BooleanLiteral => |lit| lit.node.loc,
             .NullLiteral => |lit| lit.node.loc,
             .ArrayLiteral => |lit| lit.node.loc,
@@ -1673,6 +1703,7 @@ pub const Stmt = union(NodeType) {
     IntegerLiteral: void,
     FloatLiteral: void,
     StringLiteral: void,
+    CharLiteral: void,
     InterpolatedString: void,
     BooleanLiteral: void,
     NullLiteral: void,
@@ -1963,6 +1994,12 @@ pub const Program = struct {
                 allocator.destroy(decl);
             },
             .LetDecl => |decl| {
+                // Free type_name if allocated (via dupe in parseTypeAnnotation)
+                if (decl.type_name) |type_name| {
+                    if (type_name.len > 0) {
+                        allocator.free(type_name);
+                    }
+                }
                 if (decl.value) |val| deinitExpr(val, allocator);
                 allocator.destroy(decl);
             },
@@ -2109,3 +2146,112 @@ pub const Program = struct {
         allocator.destroy(expr);
     }
 };
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "ast: IntegerLiteral init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = IntegerLiteral.init(42, loc);
+
+    try testing.expectEqual(NodeType.IntegerLiteral, lit.node.type);
+    try testing.expectEqual(@as(i64, 42), lit.value);
+    try testing.expectEqual(@as(usize, 1), lit.node.loc.line);
+    try testing.expectEqual(@as(usize, 1), lit.node.loc.column);
+    try testing.expect(lit.type_suffix == null);
+}
+
+test "ast: IntegerLiteral initWithType" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 5, .column = 10 };
+    const lit = IntegerLiteral.initWithType(100, "i32", loc);
+
+    try testing.expectEqual(NodeType.IntegerLiteral, lit.node.type);
+    try testing.expectEqual(@as(i64, 100), lit.value);
+    try testing.expectEqualStrings("i32", lit.type_suffix.?);
+}
+
+test "ast: FloatLiteral init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = FloatLiteral.init(3.14, loc);
+
+    try testing.expectEqual(NodeType.FloatLiteral, lit.node.type);
+    try testing.expectApproxEqAbs(@as(f64, 3.14), lit.value, 0.001);
+    try testing.expect(lit.type_suffix == null);
+}
+
+test "ast: FloatLiteral initWithType" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = FloatLiteral.initWithType(2.5, "f32", loc);
+
+    try testing.expectEqual(NodeType.FloatLiteral, lit.node.type);
+    try testing.expectApproxEqAbs(@as(f64, 2.5), lit.value, 0.001);
+    try testing.expectEqualStrings("f32", lit.type_suffix.?);
+}
+
+test "ast: StringLiteral init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = StringLiteral.init("hello", loc);
+
+    try testing.expectEqual(NodeType.StringLiteral, lit.node.type);
+    try testing.expectEqualStrings("hello", lit.value);
+}
+
+test "ast: BooleanLiteral true" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = BooleanLiteral.init(true, loc);
+
+    try testing.expectEqual(NodeType.BooleanLiteral, lit.node.type);
+    try testing.expect(lit.value == true);
+}
+
+test "ast: BooleanLiteral false" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = BooleanLiteral.init(false, loc);
+
+    try testing.expectEqual(NodeType.BooleanLiteral, lit.node.type);
+    try testing.expect(lit.value == false);
+}
+
+test "ast: NullLiteral init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const lit = NullLiteral.init(loc);
+
+    try testing.expectEqual(NodeType.NullLiteral, lit.node.type);
+}
+
+test "ast: Identifier init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const ident = Identifier.init("myVariable", loc);
+
+    try testing.expectEqual(NodeType.Identifier, ident.node.type);
+    try testing.expectEqualStrings("myVariable", ident.name);
+}
+
+test "ast: NodeType enum values" {
+    const testing = std.testing;
+    // Verify key node types exist
+    try testing.expect(@intFromEnum(NodeType.IntegerLiteral) != @intFromEnum(NodeType.FloatLiteral));
+    try testing.expect(@intFromEnum(NodeType.BinaryExpr) != @intFromEnum(NodeType.UnaryExpr));
+    try testing.expect(@intFromEnum(NodeType.NullLiteral) != @intFromEnum(NodeType.BooleanLiteral));
+}
+
+test "ast: ArrayLiteral init" {
+    const testing = std.testing;
+    const loc = SourceLocation{ .line = 1, .column = 1 };
+    const elements = &[_]*Expr{};
+    const lit = try ArrayLiteral.init(testing.allocator, elements, loc);
+    defer testing.allocator.destroy(lit);
+
+    try testing.expectEqual(NodeType.ArrayLiteral, lit.node.type);
+    try testing.expectEqual(@as(usize, 0), lit.elements.len);
+}

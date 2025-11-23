@@ -519,3 +519,233 @@ test "parser: compound assignment with complex expression" {
     try testing.expect(add_expr.right.* == .BinaryExpr);
     try testing.expectEqual(ast.BinaryOp.Mul, add_expr.right.BinaryExpr.op);
 }
+
+// ============================================================================
+// NEW FEATURE TESTS - and/or keywords, null literal, import syntax, etc.
+// ============================================================================
+
+test "parser: null literal" {
+    const program = try parseSource(testing.allocator, "null");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .NullLiteral);
+}
+
+test "parser: and keyword" {
+    const program = try parseSource(testing.allocator, "true and false");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.And, expr.BinaryExpr.op);
+}
+
+test "parser: or keyword" {
+    const program = try parseSource(testing.allocator, "true or false");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.Or, expr.BinaryExpr.op);
+}
+
+test "parser: && operator" {
+    const program = try parseSource(testing.allocator, "a && b");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.And, expr.BinaryExpr.op);
+}
+
+test "parser: || operator" {
+    const program = try parseSource(testing.allocator, "a || b");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.Or, expr.BinaryExpr.op);
+}
+
+test "parser: complex boolean with and/or" {
+    const program = try parseSource(testing.allocator, "a and b or c");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    // Due to precedence, this should be (a and b) or c
+    try testing.expectEqual(ast.BinaryOp.Or, expr.BinaryExpr.op);
+}
+
+test "parser: array literal with trailing comma" {
+    const program = try parseSource(testing.allocator, "[1, 2, 3,]");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expectEqual(@as(usize, 3), expr.ArrayLiteral.elements.len);
+}
+
+test "parser: empty array" {
+    const program = try parseSource(testing.allocator, "[]");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expectEqual(@as(usize, 0), expr.ArrayLiteral.elements.len);
+}
+
+test "parser: range expression" {
+    const program = try parseSource(testing.allocator, "0..10");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .RangeExpr);
+    try testing.expectEqual(false, expr.RangeExpr.inclusive);
+}
+
+test "parser: inclusive range expression" {
+    const program = try parseSource(testing.allocator, "0..=10");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .RangeExpr);
+    try testing.expectEqual(true, expr.RangeExpr.inclusive);
+}
+
+test "parser: not equal comparison" {
+    const program = try parseSource(testing.allocator, "x != null");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.NotEqual, expr.BinaryExpr.op);
+}
+
+test "parser: bitwise and" {
+    const program = try parseSource(testing.allocator, "a & b");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.BitAnd, expr.BinaryExpr.op);
+}
+
+test "parser: bitwise or" {
+    const program = try parseSource(testing.allocator, "a | b");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.BitOr, expr.BinaryExpr.op);
+}
+
+test "parser: bitwise xor" {
+    const program = try parseSource(testing.allocator, "a ^ b");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.BitXor, expr.BinaryExpr.op);
+}
+
+test "parser: left shift" {
+    const program = try parseSource(testing.allocator, "a << 2");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.LeftShift, expr.BinaryExpr.op);
+}
+
+test "parser: right shift" {
+    const program = try parseSource(testing.allocator, "a >> 2");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.RightShift, expr.BinaryExpr.op);
+}
+
+test "parser: negation" {
+    const program = try parseSource(testing.allocator, "-42");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .UnaryExpr);
+    try testing.expectEqual(ast.UnaryOp.Neg, expr.UnaryExpr.op);
+}
+
+test "parser: logical not" {
+    const program = try parseSource(testing.allocator, "!true");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .UnaryExpr);
+    try testing.expectEqual(ast.UnaryOp.Not, expr.UnaryExpr.op);
+}
+
+test "parser: bitwise not" {
+    const program = try parseSource(testing.allocator, "~x");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .UnaryExpr);
+    try testing.expectEqual(ast.UnaryOp.BitNot, expr.UnaryExpr.op);
+}
+
+test "parser: member access" {
+    const program = try parseSource(testing.allocator, "obj.field");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .MemberExpr);
+    try testing.expectEqualStrings("field", expr.MemberExpr.member);
+}
+
+test "parser: triple chained member access" {
+    const program = try parseSource(testing.allocator, "a.b.c");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .MemberExpr);
+    try testing.expectEqualStrings("c", expr.MemberExpr.member);
+    try testing.expect(expr.MemberExpr.object.* == .MemberExpr);
+}
+
+test "parser: array index" {
+    const program = try parseSource(testing.allocator, "arr[0]");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .IndexExpr);
+}
+
+test "parser: chained index" {
+    const program = try parseSource(testing.allocator, "matrix[i][j]");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .IndexExpr);
+    try testing.expect(expr.IndexExpr.array.* == .IndexExpr);
+}
+
+test "parser: method call" {
+    const program = try parseSource(testing.allocator, "obj.method()");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .CallExpr);
+}
+
+test "parser: method call with arguments" {
+    const program = try parseSource(testing.allocator, "obj.method(1, 2)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .CallExpr);
+    try testing.expectEqual(@as(usize, 2), expr.CallExpr.args.len);
+}

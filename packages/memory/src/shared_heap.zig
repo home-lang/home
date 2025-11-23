@@ -53,6 +53,8 @@ pub const SharedHeap = struct {
     parent_allocator: std.mem.Allocator,
     free_list: ?*FreeBlock,
     total_allocated: usize,
+    /// Track dynamically allocated regions for proper cleanup
+    allocated_regions: std.ArrayList([*]u8),
 
     const FreeBlock = struct {
         size: usize,
@@ -69,10 +71,22 @@ pub const SharedHeap = struct {
             .parent_allocator = parent,
             .free_list = null,
             .total_allocated = 0,
+            .allocated_regions = std.ArrayList([*]u8){},
         };
     }
 
     pub fn deinit(self: *SharedHeap) void {
+        // Free all dynamically allocated regions
+        for (self.allocated_regions.items) |ptr| {
+            // Find the corresponding region to get the size
+            for (self.regions.items) |region| {
+                if (region.start == @intFromPtr(ptr)) {
+                    self.parent_allocator.free(ptr[0..region.size]);
+                    break;
+                }
+            }
+        }
+        self.allocated_regions.deinit(self.parent_allocator);
         self.regions.deinit(self.parent_allocator);
     }
 
@@ -184,6 +198,12 @@ pub const SharedHeap = struct {
                 .executable = false,
             };
 
+            // Track allocated region for cleanup
+            self.allocated_regions.append(self.parent_allocator, new_memory.ptr) catch {
+                self.parent_allocator.free(new_memory);
+                return null;
+            };
+
             self.registerRegion(region) catch return null;
 
             // Retry allocation
@@ -288,8 +308,26 @@ test "shared heap region management" {
 }
 
 test "shared heap auto-grow" {
-    // TODO: Fix auto-grow implementation
-    // Current implementation has memory leak issues
-    // Skip this test for now
-    return error.SkipZigTest;
+    const testing = std.testing;
+
+    var heap = try SharedHeap.init(testing.allocator, .{
+        .auto_grow = true,
+        .min_growth = 1024,
+    });
+    defer heap.deinit();
+
+    // With auto-grow enabled, allocations should trigger region creation
+    const allocator_inst = heap.allocator();
+
+    // Allocate some memory - this should trigger auto-grow
+    const data = try allocator_inst.alloc(u8, 256);
+    defer allocator_inst.free(data);
+
+    // Verify memory is usable
+    @memset(data, 0xAB);
+    try testing.expectEqual(@as(u8, 0xAB), data[0]);
+    try testing.expectEqual(@as(u8, 0xAB), data[255]);
+
+    // Verify region was created
+    try testing.expect(heap.regionCount() > 0);
 }

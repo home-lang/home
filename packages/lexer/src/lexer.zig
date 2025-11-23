@@ -211,6 +211,15 @@ pub const Lexer = struct {
     ///
     /// Returns: String token or interpolation token, or Invalid token on error
     fn string(self: *Lexer) Token {
+        // Check for triple-quoted multi-line string (""")
+        // At this point, we've already consumed the first quote, so check for two more
+        if (self.peek() == '"' and self.peekNext() == '"') {
+            // Consume the two additional quotes
+            _ = self.advance();
+            _ = self.advance();
+            return self.tripleQuotedString();
+        }
+
         var has_interpolation = false;
 
         // First pass: scan to detect if string has interpolation
@@ -239,6 +248,33 @@ pub const Lexer = struct {
 
         // Handle interpolated string
         return self.interpolatedString();
+    }
+
+    /// Lex a triple-quoted multi-line string (""" ... """)
+    /// These strings preserve all content literally including newlines.
+    /// No escape sequence processing is done.
+    fn tripleQuotedString(self: *Lexer) Token {
+        // Scan until we find closing """
+        while (!self.isAtEnd()) {
+            if (self.peek() == '"' and self.peekNext() == '"') {
+                // Check for third quote
+                if (self.current + 2 < self.source.len and self.source[self.current + 2] == '"') {
+                    // Found closing """
+                    _ = self.advance(); // first "
+                    _ = self.advance(); // second "
+                    _ = self.advance(); // third "
+                    return self.makeToken(.String);
+                }
+            }
+            if (self.peek() == '\n') {
+                self.line += 1;
+                self.column = 0;
+            }
+            _ = self.advance();
+        }
+
+        // Unterminated triple-quoted string
+        return self.makeToken(.Invalid);
     }
 
     /// Lex a simple string without interpolation
@@ -302,6 +338,70 @@ pub const Lexer = struct {
 
         _ = self.advance(); // closing quote
         return self.makeToken(.String);
+    }
+
+    /// Lex a character literal ('a', '\n', '\x41', etc.)
+    fn charLiteral(self: *Lexer) Token {
+        if (self.isAtEnd()) {
+            return self.makeToken(.Invalid);
+        }
+
+        // Check for escape sequence
+        if (self.peek() == '\\') {
+            _ = self.advance(); // consume backslash
+            if (self.isAtEnd()) {
+                return self.makeToken(.Invalid);
+            }
+
+            const escape_char = self.peek();
+            switch (escape_char) {
+                'n', 't', 'r', '\'', '"', '\\', '0' => {
+                    _ = self.advance();
+                },
+                'x' => {
+                    _ = self.advance();
+                    if (!std.ascii.isHex(self.peek())) {
+                        return self.makeToken(.Invalid);
+                    }
+                    _ = self.advance();
+                    if (!std.ascii.isHex(self.peek())) {
+                        return self.makeToken(.Invalid);
+                    }
+                    _ = self.advance();
+                },
+                'u' => {
+                    _ = self.advance();
+                    if (self.peek() != '{') {
+                        return self.makeToken(.Invalid);
+                    }
+                    _ = self.advance();
+
+                    var hex_count: usize = 0;
+                    while (std.ascii.isHex(self.peek()) and hex_count < 6) : (hex_count += 1) {
+                        _ = self.advance();
+                    }
+
+                    if (hex_count == 0 or self.peek() != '}') {
+                        return self.makeToken(.Invalid);
+                    }
+                    _ = self.advance();
+                },
+                else => {
+                    return self.makeToken(.Invalid);
+                },
+            }
+        } else {
+            // Regular character
+            _ = self.advance();
+        }
+
+        // Expect closing quote
+        if (self.peek() != '\'') {
+            return self.makeToken(.Invalid);
+        }
+        _ = self.advance(); // closing quote
+
+        return self.makeToken(.Char);
     }
 
     /// Lex an interpolated string part
@@ -565,8 +665,10 @@ pub const Lexer = struct {
     /// Returns: Integer or Float token
     fn number(self: *Lexer) Token {
         // Check for base prefix (binary, hex, octal)
-        if (self.peek() == '0') {
-            const next = self.peekNext();
+        // Note: We're called after advance() consumed the first digit,
+        // so check source[start] for the '0' prefix
+        if (self.source[self.start] == '0') {
+            const next = self.peek();
             if (next == 'b' or next == 'B') {
                 return self.binaryNumber();
             } else if (next == 'x' or next == 'X') {
@@ -611,7 +713,7 @@ pub const Lexer = struct {
 
     /// Lex a binary number literal (0b prefix).
     fn binaryNumber(self: *Lexer) Token {
-        _ = self.advance(); // '0'
+        // Note: '0' was already consumed by scanToken() calling advance()
         _ = self.advance(); // 'b' or 'B'
 
         var has_digits = false;
@@ -636,7 +738,7 @@ pub const Lexer = struct {
 
     /// Lex a hexadecimal number literal (0x prefix).
     fn hexNumber(self: *Lexer) Token {
-        _ = self.advance(); // '0'
+        // Note: '0' was already consumed by scanToken() calling advance()
         _ = self.advance(); // 'x' or 'X'
 
         var has_digits = false;
@@ -675,7 +777,7 @@ pub const Lexer = struct {
 
     /// Lex an octal number literal (0o prefix).
     fn octalNumber(self: *Lexer) Token {
-        _ = self.advance(); // '0'
+        // Note: '0' was already consumed by scanToken() calling advance()
         _ = self.advance(); // 'o' or 'O'
 
         var has_digits = false;
@@ -764,6 +866,11 @@ pub const Lexer = struct {
             return self.string();
         }
 
+        // Character literals
+        if (c == '\'') {
+            return self.charLiteral();
+        }
+
         // Operators and punctuation
         return switch (c) {
             '(' => self.makeToken(.LeftParen),
@@ -809,7 +916,7 @@ pub const Lexer = struct {
                 self.makeToken(.Question),
             '@' => self.makeToken(.At),
             '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
-            '-' => if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
+            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
             '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
             '/' => blk: {
                 // Check for doc comment ///
@@ -866,7 +973,7 @@ test "lexer: single tokens" {
     var tokens = try lexer.tokenize();
     defer tokens.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 9), tokens.items.len); // 8 tokens + EOF
+    try testing.expectEqual(@as(usize, 10), tokens.items.len); // 9 tokens + EOF
     try testing.expectEqual(TokenType.LeftParen, tokens.items[0].type);
     try testing.expectEqual(TokenType.RightParen, tokens.items[1].type);
     try testing.expectEqual(TokenType.LeftBrace, tokens.items[2].type);
@@ -997,4 +1104,135 @@ test "lexer: float type suffixes" {
 
     try testing.expectEqual(TokenType.Float, tokens.items[1].type);
     try testing.expectEqualStrings("2.5f64", tokens.items[1].lexeme);
+}
+
+test "lexer: null keyword" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "null");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), tokens.items.len); // null, EOF
+    try testing.expectEqual(TokenType.Null, tokens.items[0].type);
+    try testing.expectEqualStrings("null", tokens.items[0].lexeme);
+}
+
+test "lexer: and/or keywords" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "and or");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), tokens.items.len); // and, or, EOF
+    try testing.expectEqual(TokenType.And, tokens.items[0].type);
+    try testing.expectEqual(TokenType.Or, tokens.items[1].type);
+}
+
+test "lexer: && and || operators" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "&& ||");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), tokens.items.len);
+    try testing.expectEqual(TokenType.AmpersandAmpersand, tokens.items[0].type);
+    try testing.expectEqual(TokenType.PipePipe, tokens.items[1].type);
+}
+
+test "lexer: :: token" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "::");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), tokens.items.len);
+    try testing.expectEqual(TokenType.ColonColon, tokens.items[0].type);
+}
+
+test "lexer: range operators" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, ".. ..=");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), tokens.items.len);
+    try testing.expectEqual(TokenType.DotDot, tokens.items[0].type);
+    try testing.expectEqual(TokenType.DotDotEqual, tokens.items[1].type);
+}
+
+test "lexer: bitwise operators" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "& | ^ ~ << >>");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.Ampersand, tokens.items[0].type);
+    try testing.expectEqual(TokenType.Pipe, tokens.items[1].type);
+    try testing.expectEqual(TokenType.Caret, tokens.items[2].type);
+    try testing.expectEqual(TokenType.Tilde, tokens.items[3].type);
+    try testing.expectEqual(TokenType.LeftShift, tokens.items[4].type);
+    try testing.expectEqual(TokenType.RightShift, tokens.items[5].type);
+}
+
+test "lexer: comparison operators" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "== != < <= > >=");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.EqualEqual, tokens.items[0].type);
+    try testing.expectEqual(TokenType.BangEqual, tokens.items[1].type);
+    try testing.expectEqual(TokenType.Less, tokens.items[2].type);
+    try testing.expectEqual(TokenType.LessEqual, tokens.items[3].type);
+    try testing.expectEqual(TokenType.Greater, tokens.items[4].type);
+    try testing.expectEqual(TokenType.GreaterEqual, tokens.items[5].type);
+}
+
+test "lexer: compound assignment operators" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "+= -= *= /= %=");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.PlusEqual, tokens.items[0].type);
+    try testing.expectEqual(TokenType.MinusEqual, tokens.items[1].type);
+    try testing.expectEqual(TokenType.StarEqual, tokens.items[2].type);
+    try testing.expectEqual(TokenType.SlashEqual, tokens.items[3].type);
+    try testing.expectEqual(TokenType.PercentEqual, tokens.items[4].type);
+}
+
+test "lexer: fat arrow" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "=>");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), tokens.items.len);
+    try testing.expectEqual(TokenType.FatArrow, tokens.items[0].type);
+}
+
+test "lexer: more keywords" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "struct enum impl trait match while for in");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.Struct, tokens.items[0].type);
+    try testing.expectEqual(TokenType.Enum, tokens.items[1].type);
+    try testing.expectEqual(TokenType.Impl, tokens.items[2].type);
+    try testing.expectEqual(TokenType.Trait, tokens.items[3].type);
+    try testing.expectEqual(TokenType.Match, tokens.items[4].type);
+    try testing.expectEqual(TokenType.While, tokens.items[5].type);
+    try testing.expectEqual(TokenType.For, tokens.items[6].type);
+    try testing.expectEqual(TokenType.In, tokens.items[7].type);
+}
+
+test "lexer: boolean literals" {
+    const testing = std.testing;
+    var lexer = Lexer.init(testing.allocator, "true false");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    try testing.expectEqual(TokenType.True, tokens.items[0].type);
+    try testing.expectEqual(TokenType.False, tokens.items[1].type);
 }

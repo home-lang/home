@@ -5,6 +5,15 @@
 
 const std = @import("std");
 
+/// Get current Unix timestamp in seconds since epoch
+fn getUnixTimestamp() i64 {
+    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
+        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
+        return ts.sec;
+    }
+    return 0;
+}
+
 pub const auth = @import("auth.zig");
 pub const encrypt = @import("encrypt.zig");
 pub const access = @import("access.zig");
@@ -119,7 +128,7 @@ pub const LogMessage = struct {
         var log = LogMessage{
             .facility = facility,
             .severity = severity,
-            .timestamp = std.time.timestamp(),
+            .timestamp = getUnixTimestamp(),
             .hostname = [_]u8{0} ** 256,
             .hostname_len = hostname.len,
             .app_name = [_]u8{0} ** 48,

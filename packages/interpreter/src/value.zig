@@ -90,12 +90,7 @@ pub const Value = union(enum) {
     /// Parameters:
     ///   - self: The value to format
     ///   - writer: Output writer
-    pub fn format(
-        self: Value,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
             .Int => |v| try writer.print("{d}", .{v}),
             .Float => |v| try writer.print("{d}", .{v}),
@@ -105,7 +100,7 @@ pub const Value = union(enum) {
                 try writer.writeAll("[");
                 for (arr, 0..) |elem, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try elem.format("", .{}, writer);
+                    try elem.format(writer);
                 }
                 try writer.writeAll("]");
             },
@@ -174,3 +169,120 @@ pub const Value = union(enum) {
         // This function is kept for API compatibility but is a no-op
     }
 };
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "value: Int creation and equality" {
+    const testing = std.testing;
+
+    const v1 = Value{ .Int = 42 };
+    const v2 = Value{ .Int = 42 };
+    const v3 = Value{ .Int = 100 };
+
+    try testing.expectEqual(v1.Int, v2.Int);
+    try testing.expect(v1.Int != v3.Int);
+}
+
+test "value: Float creation" {
+    const testing = std.testing;
+
+    const v = Value{ .Float = 3.14 };
+    try testing.expectApproxEqAbs(@as(f64, 3.14), v.Float, 0.001);
+}
+
+test "value: Bool creation" {
+    const testing = std.testing;
+
+    const t = Value{ .Bool = true };
+    const f = Value{ .Bool = false };
+
+    try testing.expect(t.Bool == true);
+    try testing.expect(f.Bool == false);
+}
+
+test "value: String creation" {
+    const testing = std.testing;
+
+    const v = Value{ .String = "hello" };
+    try testing.expectEqualStrings("hello", v.String);
+}
+
+test "value: Void type" {
+    const testing = std.testing;
+
+    const v = Value{ .Void = {} };
+    try testing.expect(v == .Void);
+}
+
+test "value: Array creation" {
+    const testing = std.testing;
+
+    const elements = [_]Value{ Value{ .Int = 1 }, Value{ .Int = 2 }, Value{ .Int = 3 } };
+    const v = Value{ .Array = &elements };
+
+    try testing.expectEqual(@as(usize, 3), v.Array.len);
+    try testing.expectEqual(@as(i64, 1), v.Array[0].Int);
+    try testing.expectEqual(@as(i64, 2), v.Array[1].Int);
+    try testing.expectEqual(@as(i64, 3), v.Array[2].Int);
+}
+
+test "value: RangeValue creation" {
+    const testing = std.testing;
+
+    const range = RangeValue{
+        .start = 1,
+        .end = 10,
+        .inclusive = true,
+        .step = 1,
+    };
+
+    try testing.expectEqual(@as(i64, 1), range.start);
+    try testing.expectEqual(@as(i64, 10), range.end);
+    try testing.expect(range.inclusive == true);
+    try testing.expectEqual(@as(i64, 1), range.step);
+}
+
+test "value: Range value in Value union" {
+    const testing = std.testing;
+
+    const v = Value{ .Range = .{
+        .start = 0,
+        .end = 5,
+        .inclusive = false,
+        .step = 2,
+    } };
+
+    try testing.expectEqual(@as(i64, 0), v.Range.start);
+    try testing.expectEqual(@as(i64, 5), v.Range.end);
+    try testing.expect(v.Range.inclusive == false);
+    try testing.expectEqual(@as(i64, 2), v.Range.step);
+}
+
+test "value: discriminate union types" {
+    const testing = std.testing;
+
+    const int_val = Value{ .Int = 42 };
+    const float_val = Value{ .Float = 3.14 };
+    const bool_val = Value{ .Bool = true };
+    const string_val = Value{ .String = "test" };
+    const void_val = Value{ .Void = {} };
+
+    try testing.expect(int_val == .Int);
+    try testing.expect(float_val == .Float);
+    try testing.expect(bool_val == .Bool);
+    try testing.expect(string_val == .String);
+    try testing.expect(void_val == .Void);
+
+    try testing.expect(int_val != .Float);
+    try testing.expect(float_val != .Int);
+}
+
+test "value: deinit is no-op" {
+    const testing = std.testing;
+
+    // Just verify deinit doesn't crash - it's a no-op
+    const v = Value{ .Int = 42 };
+    v.deinit(testing.allocator);
+}

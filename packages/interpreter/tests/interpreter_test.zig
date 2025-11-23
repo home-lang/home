@@ -110,72 +110,47 @@ test "interpreter: void truthiness" {
 }
 
 test "interpreter: value formatting - integer" {
-    const allocator = testing.allocator;
-
     const value = Value{ .Int = 42 };
-    defer value.deinit(allocator);
 
-    // Manually format using a buffer
+    // Use {f} format specifier to call the custom format method (Zig 0.16+)
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try value.format("", .{}, fbs.writer());
-    const formatted = fbs.getWritten();
+    const formatted = std.fmt.bufPrint(&buf, "{f}", .{value}) catch unreachable;
 
     try testing.expectEqualStrings("42", formatted);
 }
 
 test "interpreter: value formatting - float" {
-    const allocator = testing.allocator;
-
     const value = Value{ .Float = 3.14 };
-    defer value.deinit(allocator);
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try value.format("", .{}, fbs.writer());
-    const formatted = fbs.getWritten();
+    const formatted = std.fmt.bufPrint(&buf, "{f}", .{value}) catch unreachable;
 
     try testing.expect(std.mem.indexOf(u8, formatted, "3.14") != null);
 }
 
 test "interpreter: value formatting - boolean" {
-    const allocator = testing.allocator;
-
     const value = Value{ .Bool = true };
-    defer value.deinit(allocator);
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try value.format("", .{}, fbs.writer());
-    const formatted = fbs.getWritten();
+    const formatted = std.fmt.bufPrint(&buf, "{f}", .{value}) catch unreachable;
 
     try testing.expectEqualStrings("true", formatted);
 }
 
 test "interpreter: value formatting - string" {
-    const allocator = testing.allocator;
-
     const value = Value{ .String = "hello" };
-    defer value.deinit(allocator);
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try value.format("", .{}, fbs.writer());
-    const formatted = fbs.getWritten();
+    const formatted = std.fmt.bufPrint(&buf, "{f}", .{value}) catch unreachable;
 
     try testing.expectEqualStrings("hello", formatted);
 }
 
 test "interpreter: value formatting - void" {
-    const allocator = testing.allocator;
-
     const value = Value{ .Void = {} };
-    defer value.deinit(allocator);
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try value.format("", .{}, fbs.writer());
-    const formatted = fbs.getWritten();
+    const formatted = std.fmt.bufPrint(&buf, "{f}", .{value}) catch unreachable;
 
     try testing.expectEqualStrings("void", formatted);
 }

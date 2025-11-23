@@ -5,6 +5,15 @@
 
 const std = @import("std");
 
+/// Get current Unix timestamp in seconds since epoch
+fn getUnixTimestamp() i64 {
+    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
+        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
+        return ts.sec;
+    }
+    return 0;
+}
+
 pub const encrypt = @import("encrypt.zig");
 pub const decrypt = @import("decrypt.zig");
 pub const keys = @import("keys.zig");
@@ -73,7 +82,7 @@ pub const DumpMetadata = struct {
         metadata.process_name = [_]u8{0} ** 256;
         metadata.process_name_len = process_name.len;
         metadata.signal = signal;
-        metadata.timestamp = std.time.timestamp();
+        metadata.timestamp = getUnixTimestamp();
         metadata.algorithm = .aes_256_gcm;
         metadata.uid = 0;
         metadata.gid = 0;

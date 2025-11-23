@@ -36,7 +36,11 @@ pub const Thread = struct {
     }
 
     pub fn sleep(nanoseconds: u64) void {
-        std.Thread.sleep(nanoseconds);
+        // In Zig 0.16-dev, std.Thread.sleep was removed
+        // Use std.posix.nanosleep instead
+        const seconds = nanoseconds / 1_000_000_000;
+        const nanos = nanoseconds % 1_000_000_000;
+        std.posix.nanosleep(seconds, nanos);
     }
 
     pub const Id = std.Thread.Id;
@@ -80,9 +84,12 @@ test "thread yield" {
 }
 
 test "thread sleep" {
-    const start = std.time.nanoTimestamp();
-    Thread.sleep(1_000_000); // 1ms
-    const elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - start));
     const testing = std.testing;
+    var timer = std.time.Timer.start() catch {
+        // Timer not supported on this platform, skip test
+        return;
+    };
+    Thread.sleep(1_000_000); // 1ms
+    const elapsed = timer.read();
     try testing.expect(elapsed >= 500_000);
 }

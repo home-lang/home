@@ -279,3 +279,57 @@ pub const Formatter = struct {
         }
     }
 };
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "formatter: FormatterOptions defaults" {
+    const testing = std.testing;
+    const options = Formatter.FormatterOptions{};
+
+    try testing.expectEqual(@as(usize, 4), options.indent_size);
+    try testing.expect(options.use_spaces == true);
+    try testing.expectEqual(@as(usize, 100), options.max_line_length);
+    try testing.expect(options.trailing_comma == true);
+    try testing.expect(options.quote_style == .double);
+    try testing.expect(options.semicolons == false);
+    try testing.expect(options.brace_style == .same_line);
+}
+
+test "formatter: FormatterOptions custom values" {
+    const testing = std.testing;
+    const options = Formatter.FormatterOptions{
+        .indent_size = 2,
+        .use_spaces = false,
+        .max_line_length = 80,
+        .trailing_comma = false,
+        .quote_style = .single,
+        .semicolons = true,
+        .brace_style = .next_line,
+    };
+
+    try testing.expectEqual(@as(usize, 2), options.indent_size);
+    try testing.expect(options.use_spaces == false);
+    try testing.expectEqual(@as(usize, 80), options.max_line_length);
+    try testing.expect(options.trailing_comma == false);
+    try testing.expect(options.quote_style == .single);
+    try testing.expect(options.semicolons == true);
+    try testing.expect(options.brace_style == .next_line);
+}
+
+test "formatter: QuoteStyle enum" {
+    const testing = std.testing;
+
+    try testing.expect(Formatter.QuoteStyle.single != Formatter.QuoteStyle.double);
+    try testing.expect(@intFromEnum(Formatter.QuoteStyle.single) == 0);
+    try testing.expect(@intFromEnum(Formatter.QuoteStyle.double) == 1);
+}
+
+test "formatter: BraceStyle enum" {
+    const testing = std.testing;
+
+    try testing.expect(Formatter.BraceStyle.same_line != Formatter.BraceStyle.next_line);
+    try testing.expect(@intFromEnum(Formatter.BraceStyle.same_line) == 0);
+    try testing.expect(@intFromEnum(Formatter.BraceStyle.next_line) == 1);
+}

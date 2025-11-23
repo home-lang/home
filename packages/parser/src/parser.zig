@@ -1692,6 +1692,32 @@ pub const Parser = struct {
             return pattern;
         }
 
+        // Character literal pattern (treat as integer)
+        if (self.match(&.{.Char})) {
+            const token = self.previous();
+            // Convert char to integer value
+            var char_value: i64 = 0;
+            const lexeme = token.lexeme;
+            if (lexeme.len >= 3) {
+                if (lexeme[1] == '\\' and lexeme.len >= 4) {
+                    char_value = switch (lexeme[2]) {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        '0' => 0,
+                        else => lexeme[2],
+                    };
+                } else {
+                    char_value = lexeme[1];
+                }
+            }
+            pattern.* = ast.Pattern{ .IntLiteral = char_value };
+            return pattern;
+        }
+
         // Boolean literal pattern
         if (self.match(&.{.True})) {
             pattern.* = ast.Pattern{ .BoolLiteral = true };
@@ -2703,6 +2729,13 @@ pub const Parser = struct {
             return expr;
         }
 
+        if (self.match(&.{.Char})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .CharLiteral = ast.CharLiteral.init(token.lexeme, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
         if (self.match(&.{.True})) {
             const token = self.previous();
             const expr = try self.allocator.create(ast.Expr);
@@ -3082,6 +3115,14 @@ pub const Parser = struct {
             expr.* = ast.Expr{
                 .StringLiteral = ast.StringLiteral.init(value, ast.SourceLocation.fromToken(token)),
             };
+            return expr;
+        }
+
+        // Character literals
+        if (self.match(&.{.Char})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .CharLiteral = ast.CharLiteral.init(token.lexeme, ast.SourceLocation.fromToken(token)) };
             return expr;
         }
 
@@ -3540,3 +3581,4 @@ pub const Parser = struct {
     // Closure parsing methods
     pub const parseClosureExpr = closure_parser.parseClosureExpr;
 };
+

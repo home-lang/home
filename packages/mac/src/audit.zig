@@ -1,6 +1,16 @@
 // Audit Logging - Security event logging and monitoring
 
 const std = @import("std");
+
+/// Get current Unix timestamp in seconds since epoch
+fn getUnixTimestamp() i64 {
+    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
+        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
+        return ts.sec;
+    }
+    return 0;
+}
+
 const context = @import("context.zig");
 const policy = @import("policy.zig");
 const enforcement = @import("enforcement.zig");
@@ -157,7 +167,7 @@ pub const AuditLog = struct {
         const result_str = if (decision.allowed) "allowed" else "denied";
 
         try self.addEntry(.{
-            .timestamp = std.time.timestamp(),
+            .timestamp = getUnixTimestamp(),
             .event_type = event_type,
             .severity = severity,
             .subject = subject_str,
@@ -172,7 +182,7 @@ pub const AuditLog = struct {
     /// Log a general event
     pub fn logEvent(self: *AuditLog, event_type: EventType, message: []const u8) !void {
         try self.addEntry(.{
-            .timestamp = std.time.timestamp(),
+            .timestamp = getUnixTimestamp(),
             .event_type = event_type,
             .severity = .info,
             .subject = null,
@@ -191,7 +201,7 @@ pub const AuditLog = struct {
         message: []const u8,
     ) !void {
         try self.addEntry(.{
-            .timestamp = std.time.timestamp(),
+            .timestamp = getUnixTimestamp(),
             .event_type = .violation,
             .severity = .critical,
             .subject = try self.allocator.dupe(u8, subject),
@@ -310,7 +320,7 @@ test "audit log entry creation" {
     const testing = std.testing;
 
     const entry = AuditEntry{
-        .timestamp = std.time.timestamp(),
+        .timestamp = getUnixTimestamp(),
         .event_type = .access_denied,
         .severity = .warning,
         .subject = "user_u:user_r:user_t:s0",

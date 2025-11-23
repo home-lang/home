@@ -323,8 +323,29 @@ test "kernel heap coalescing" {
 }
 
 test "kernel heap auto-grow" {
-    // TODO: Fix auto-grow implementation
-    // Current simplified implementation doesn't properly track free blocks
-    // Skip this test for now
-    return error.SkipZigTest;
+    const testing = std.testing;
+
+    // Start with small backing memory
+    var backing_memory: [512]u8 align(16) = undefined;
+    const base_addr = @intFromPtr(&backing_memory);
+
+    var heap = KernelHeap.initWithConfig(base_addr, backing_memory.len, testing.allocator, .{
+        .auto_grow = true,
+        .max_size = 64 * 1024,
+    });
+    defer heap.deinit();
+
+    const allocator_inst = heap.allocator();
+
+    // Allocate more than the initial backing memory - should trigger auto-grow
+    const data = try allocator_inst.alloc(u8, 256);
+    defer allocator_inst.free(data);
+
+    // Verify memory is usable
+    @memset(data, 0xCD);
+    try testing.expectEqual(@as(u8, 0xCD), data[0]);
+    try testing.expectEqual(@as(u8, 0xCD), data[255]);
+
+    // Validate heap integrity
+    try testing.expect(heap.validate());
 }
