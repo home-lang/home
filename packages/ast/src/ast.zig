@@ -1940,6 +1940,20 @@ pub const Program = struct {
                 allocator.destroy(decl);
             },
             .FnDecl => |decl| {
+                // Free type_name strings in params (allocated via dupe in parseTypeAnnotation)
+                for (decl.params) |param| {
+                    if (param.type_name.len > 0) {
+                        allocator.free(param.type_name);
+                    }
+                    // Note: default_value expressions are not freed here to avoid double-free
+                    // They will be cleaned up by the arena allocator at the end
+                }
+                // Free return_type if allocated
+                if (decl.return_type) |ret_type| {
+                    if (ret_type.len > 0) {
+                        allocator.free(ret_type);
+                    }
+                }
                 allocator.free(decl.params);
                 deinitBlockStmt(decl.body, allocator);
                 allocator.destroy(decl);
@@ -1949,6 +1963,19 @@ pub const Program = struct {
                 allocator.destroy(decl);
             },
             .StructDecl => |decl| {
+                // Free type_name strings in fields (they are allocated via dupe in parseTypeAnnotation)
+                for (decl.fields) |field| {
+                    if (field.type_name.len > 0) {
+                        allocator.free(field.type_name);
+                    }
+                }
+                // Free methods (they have their own FnDecl nodes)
+                for (decl.methods) |method| {
+                    deinitStmt(.{ .FnDecl = method }, allocator);
+                }
+                if (decl.methods.len > 0) {
+                    allocator.free(decl.methods);
+                }
                 allocator.free(decl.fields);
                 allocator.destroy(decl);
             },

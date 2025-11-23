@@ -704,10 +704,15 @@ pub const NativeCodegen = struct {
             self.functions.deinit();
         }
 
-        // Free function_info memory
+        // Free function_info memory (keys and params)
         {
             var info_iter = self.function_info.iterator();
             while (info_iter.next()) |entry| {
+                // Free the key (function name)
+                const key = entry.key_ptr.*;
+                if (key.len > 0) {
+                    self.allocator.free(key);
+                }
                 // Free params slice if allocated
                 if (entry.value_ptr.params.len > 0) {
                     self.allocator.free(entry.value_ptr.params);
@@ -1876,6 +1881,10 @@ pub const NativeCodegen = struct {
                     const offset = self.next_local_offset;
                     self.next_local_offset += 1;
 
+                    // Free old key if variable exists (shadowing)
+                    if (self.locals.fetchRemove(ident.name)) |old_entry| {
+                        self.allocator.free(old_entry.key);
+                    }
                     // Duplicate the name since cleanup will free it
                     const name_copy = try self.allocator.dupe(u8, ident.name);
                     errdefer self.allocator.free(name_copy);
@@ -1922,6 +1931,10 @@ pub const NativeCodegen = struct {
                     const offset = self.next_local_offset;
                     self.next_local_offset += 1;
 
+                    // Free old key if variable exists (shadowing)
+                    if (self.locals.fetchRemove(name)) |old_entry| {
+                        self.allocator.free(old_entry.key);
+                    }
                     const name_copy = try self.allocator.dupe(u8, name);
                     errdefer self.allocator.free(name_copy);
 
@@ -1979,6 +1992,10 @@ pub const NativeCodegen = struct {
                     const offset = self.next_local_offset;
                     self.next_local_offset += 1;
 
+                    // Free old key if variable exists (shadowing)
+                    if (self.locals.fetchRemove(rest_name)) |old_entry| {
+                        self.allocator.free(old_entry.key);
+                    }
                     const name_copy = try self.allocator.dupe(u8, rest_name);
                     errdefer self.allocator.free(name_copy);
 
@@ -2031,6 +2048,10 @@ pub const NativeCodegen = struct {
                 const offset = self.next_local_offset;
                 self.next_local_offset += 1;
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(as_pattern.identifier)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 const name_copy = try self.allocator.dupe(u8, as_pattern.identifier);
                 errdefer self.allocator.free(name_copy);
 
@@ -2578,6 +2599,10 @@ pub const NativeCodegen = struct {
                 // Allocate stack space for iterator variable (push once at start)
                 const iterator_offset = self.next_local_offset;
                 self.next_local_offset += 1;
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(for_stmt.iterator)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
                 errdefer self.allocator.free(iterator_name_copy);
                 try self.locals.put(iterator_name_copy, .{
@@ -3099,19 +3124,23 @@ pub const NativeCodegen = struct {
         };
         defer self.allocator.free(module_source);
 
-        // Parse the module
+        // Parse the module using an arena allocator to avoid leak issues
+        // The arena ensures all AST memory is freed when we're done
         const lexer_mod = @import("lexer");
         const parser_mod = @import("parser");
 
-        var lexer = lexer_mod.Lexer.init(self.allocator, module_source);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
         var token_list = lexer.tokenize() catch |err| {
             std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;
         };
-        defer token_list.deinit(self.allocator);
         const tokens = token_list.items;
 
-        var parser = parser_mod.Parser.init(self.allocator, tokens) catch |err| {
+        var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
             std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;
         };
@@ -3129,7 +3158,7 @@ pub const NativeCodegen = struct {
             std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;
         };
-        defer module_ast.deinit(self.allocator);
+        // Arena allocator will free all AST memory when it's deinitialized
 
         // Generate code for all module statements
         // This will register functions, structs, etc. in our codegen context
@@ -3546,6 +3575,10 @@ pub const NativeCodegen = struct {
                 const offset = self.next_local_offset;
                 self.next_local_offset += 1; // Increment count, not bytes
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(param.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 // Store parameter name, offset, and type
                 const name = try self.allocator.dupe(u8, param.name);
                 errdefer self.allocator.free(name);
@@ -3581,6 +3614,10 @@ pub const NativeCodegen = struct {
                 const offset = self.next_local_offset;
                 self.next_local_offset += 1;
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(param.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 const name = try self.allocator.dupe(u8, param.name);
                 errdefer self.allocator.free(name);
                 // For struct types, we pass by pointer (8 bytes) not by value
@@ -3647,6 +3684,10 @@ pub const NativeCodegen = struct {
                 // Array base points to the first element (index 0)
                 const array_start_offset = self.next_local_offset;
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(decl.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 // Store variable name with pointer to array start
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
@@ -3679,6 +3720,10 @@ pub const NativeCodegen = struct {
                 // Struct base points to first field
                 const struct_start_offset = self.next_local_offset;
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(decl.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 // Store variable name - use struct_lit.type_name for correct type
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
@@ -3738,6 +3783,10 @@ pub const NativeCodegen = struct {
                 // (The tag was the SECOND push, so it's at next_local_offset+1)
                 const tag_offset = self.next_local_offset + 1;
 
+                // Free old key if variable exists (shadowing)
+                if (self.locals.fetchRemove(decl.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 // Store variable name pointing to where the tag is on stack
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
@@ -3759,9 +3808,13 @@ pub const NativeCodegen = struct {
                 self.next_local_offset += 1; // Increment count, not bytes
 
                 // Store variable name, offset, and type
+                const var_size = try self.getTypeSize(type_name);
+                // Check if variable already exists (shadowing) and free old key
+                if (self.locals.fetchRemove(decl.name)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
-                const var_size = try self.getTypeSize(type_name);
                 try self.locals.put(name, .{
                     .offset = offset,
                     .type_name = type_name,

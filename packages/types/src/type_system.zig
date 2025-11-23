@@ -693,10 +693,14 @@ pub const TypeChecker = struct {
                     });
                 }
 
+                const fields_slice = try fields.toOwnedSlice(self.allocator);
+                // Track the allocated slice for proper cleanup
+                try self.env.trackAllocation(fields_slice);
+
                 const struct_type = Type{
                     .Struct = .{
                         .name = struct_decl.name,
-                        .fields = try fields.toOwnedSlice(self.allocator),
+                        .fields = fields_slice,
                     },
                 };
 
@@ -719,10 +723,14 @@ pub const TypeChecker = struct {
                     });
                 }
 
+                const variants_slice = try variants.toOwnedSlice(self.allocator);
+                // Track the allocated slice for proper cleanup
+                try self.env.trackAllocation(variants_slice);
+
                 const enum_type = Type{
                     .Enum = .{
                         .name = enum_decl.name,
-                        .variants = try variants.toOwnedSlice(self.allocator),
+                        .variants = variants_slice,
                     },
                 };
 
@@ -1419,25 +1427,56 @@ pub const TypeChecker = struct {
     }
 };
 
+/// Tracked allocation info for proper cleanup
+const TrackedAlloc = struct {
+    ptr: *anyopaque,
+    len: usize,
+    alignment: u8,
+    elem_size: usize,
+};
+
 pub const TypeEnvironment = struct {
     bindings: std.StringHashMap(Type),
     parent: ?*TypeEnvironment,
     allocator: std.mem.Allocator,
+    /// Track allocated slices for proper cleanup (avoids double-free)
+    allocated_slices: std.ArrayList(TrackedAlloc),
 
     pub fn init(allocator: std.mem.Allocator) TypeEnvironment {
         return .{
             .bindings = std.StringHashMap(Type).init(allocator),
             .parent = null,
             .allocator = allocator,
+            .allocated_slices = std.ArrayList(TrackedAlloc){},
         };
     }
 
     pub fn deinit(self: *TypeEnvironment) void {
+        // Free tracked slices (struct fields, enum variants)
+        for (self.allocated_slices.items) |alloc| {
+            const byte_ptr: [*]u8 = @ptrCast(alloc.ptr);
+            const byte_slice = byte_ptr[0 .. alloc.len * alloc.elem_size];
+            self.allocator.rawFree(byte_slice, @enumFromInt(alloc.alignment), @returnAddress());
+        }
+        self.allocated_slices.deinit(self.allocator);
+
+        // Free the keys
         var it = self.bindings.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
         }
         self.bindings.deinit();
+    }
+
+    /// Track an allocated slice for cleanup in deinit
+    pub fn trackAllocation(self: *TypeEnvironment, slice: anytype) !void {
+        const T = @TypeOf(slice[0]);
+        try self.allocated_slices.append(self.allocator, .{
+            .ptr = @ptrCast(@constCast(slice.ptr)),
+            .len = slice.len,
+            .alignment = std.math.log2(@as(u8, @alignOf(T))),
+            .elem_size = @sizeOf(T),
+        });
     }
 
     pub fn define(self: *TypeEnvironment, name: []const u8, typ: Type) !void {
