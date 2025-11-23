@@ -31,6 +31,8 @@ pub const ModuleResolver = struct {
     module_cache: std.StringHashMap(ResolvedModule),
     /// Home packages root directory
     packages_root: []const u8,
+    /// Source file root directory (for resolving relative imports)
+    source_root: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) !ModuleResolver {
         // Auto-detect Home packages directory
@@ -45,7 +47,45 @@ pub const ModuleResolver = struct {
             .allocator = allocator,
             .module_cache = std.StringHashMap(ResolvedModule).init(allocator),
             .packages_root = try packages_path.toOwnedSlice(allocator),
+            .source_root = null,
         };
+    }
+
+    /// Set the source root directory based on the main source file being compiled
+    pub fn setSourceRoot(self: *ModuleResolver, source_file: []const u8) !void {
+        // Find the project root by looking for src/ directory or use file's parent
+        var dir_path = std.ArrayList(u8){};
+        defer dir_path.deinit(self.allocator);
+
+        // Get the directory containing the source file
+        if (std.mem.lastIndexOf(u8, source_file, "/")) |last_slash| {
+            try dir_path.appendSlice(self.allocator, source_file[0..last_slash]);
+        } else {
+            try dir_path.appendSlice(self.allocator, ".");
+        }
+
+        // Check if we're in a src/ directory and go up to project root
+        const dir_str = dir_path.items;
+        if (std.mem.endsWith(u8, dir_str, "/src") or std.mem.endsWith(u8, dir_str, "/src/math") or
+            std.mem.indexOf(u8, dir_str, "/src/") != null)
+        {
+            // Find the project root (parent of src/)
+            if (std.mem.indexOf(u8, dir_str, "/src")) |src_pos| {
+                if (self.source_root) |old| self.allocator.free(old);
+                self.source_root = try self.allocator.dupe(u8, dir_str[0..src_pos]);
+                return;
+            }
+        }
+
+        // Use the file's directory as root
+        if (self.source_root) |old| self.allocator.free(old);
+        self.source_root = try dir_path.toOwnedSlice(self.allocator);
+    }
+
+    /// Set the source root directly (without extracting from a file path)
+    pub fn setSourceRootDirect(self: *ModuleResolver, root: []const u8) !void {
+        if (self.source_root) |old| self.allocator.free(old);
+        self.source_root = try self.allocator.dupe(u8, root);
     }
 
     pub fn deinit(self: *ModuleResolver) void {
@@ -63,6 +103,7 @@ pub const ModuleResolver = struct {
 
         self.module_cache.deinit();
         self.allocator.free(self.packages_root);
+        if (self.source_root) |root| self.allocator.free(root);
     }
 
     /// Resolve a module path to an actual file
@@ -94,8 +135,7 @@ pub const ModuleResolver = struct {
             return module;
         }
 
-        // Free cache_key only if module not found
-        self.allocator.free(cache_key);
+        // Module not found - errdefer will free cache_key
         return error.ModuleNotFound;
     }
 
@@ -188,6 +228,38 @@ pub const ModuleResolver = struct {
         // Prefixes to search for local modules (current dir, src/, lib/)
         const search_prefixes = [_][]const u8{ "", "src/", "lib/" };
 
+        // First, try searching relative to the source root (if set)
+        if (self.source_root) |root| {
+            for (search_prefixes) |prefix| {
+                // Try .home extension
+                const home_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}{s}.home", .{ root, prefix, path_buf.items });
+                defer self.allocator.free(home_path);
+
+                if (try self.fileExists(home_path)) {
+                    return ResolvedModule{
+                        .path = path_segments,
+                        .file_path = try self.allocator.dupe(u8, home_path),
+                        .name = path_segments[path_segments.len - 1],
+                        .is_zig = false,
+                    };
+                }
+
+                // Try .hm extension
+                const hm_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}{s}.hm", .{ root, prefix, path_buf.items });
+                defer self.allocator.free(hm_path);
+
+                if (try self.fileExists(hm_path)) {
+                    return ResolvedModule{
+                        .path = path_segments,
+                        .file_path = try self.allocator.dupe(u8, hm_path),
+                        .name = path_segments[path_segments.len - 1],
+                        .is_zig = false,
+                    };
+                }
+            }
+        }
+
+        // Then try searching relative to current working directory
         for (search_prefixes) |prefix| {
             // Try .home extension
             const home_path = try std.fmt.allocPrint(self.allocator, "{s}{s}.home", .{ prefix, path_buf.items });

@@ -904,6 +904,8 @@ pub const TypeChecker = struct {
             .SafeNavExpr => |safe_nav| try self.inferSafeNavExpression(safe_nav),
             .SpreadExpr => |spread| try self.inferSpreadExpression(spread),
             .TupleExpr => |tuple| try self.inferTupleExpression(tuple),
+            .StructLiteral => |struct_lit| try self.inferStructLiteral(struct_lit),
+            .UnaryExpr => |unary| try self.inferUnaryExpression(unary),
             else => Type.Void,
         };
     }
@@ -1123,6 +1125,77 @@ pub const TypeChecker = struct {
         try self.addError(err_msg, member.node.loc);
         self.allocator.free(err_msg);
         return error.TypeMismatch;
+    }
+
+    fn inferStructLiteral(self: *TypeChecker, struct_lit: *const ast.StructLiteralExpr) TypeError!Type {
+        // Look up the struct type in the environment
+        const type_name = struct_lit.type_name;
+        const struct_type = self.env.get(type_name) orelse {
+            const err_msg = try std.fmt.allocPrint(
+                self.allocator,
+                "Unknown struct type '{s}'",
+                .{type_name},
+            );
+            try self.addError(err_msg, struct_lit.node.loc);
+            self.allocator.free(err_msg);
+            return error.UndefinedVariable;
+        };
+
+        if (struct_type != .Struct) {
+            const err_msg = try std.fmt.allocPrint(
+                self.allocator,
+                "'{s}' is not a struct type",
+                .{type_name},
+            );
+            try self.addError(err_msg, struct_lit.node.loc);
+            self.allocator.free(err_msg);
+            return error.TypeMismatch;
+        }
+
+        // Validate field types (optional: check each field against struct definition)
+        for (struct_lit.fields) |field| {
+            _ = try self.inferExpression(field.value);
+        }
+
+        return struct_type;
+    }
+
+    fn inferUnaryExpression(self: *TypeChecker, unary: *const ast.UnaryExpr) TypeError!Type {
+        const operand_type = try self.inferExpression(unary.operand);
+
+        return switch (unary.op) {
+            .Not => {
+                if (!operand_type.equals(Type.Bool)) {
+                    try self.addError("Logical not requires boolean operand", unary.node.loc);
+                    return error.TypeMismatch;
+                }
+                return Type.Bool;
+            },
+            .Neg => {
+                if (!operand_type.equals(Type.Int) and !operand_type.equals(Type.Float)) {
+                    try self.addError("Negation requires numeric operand", unary.node.loc);
+                    return error.TypeMismatch;
+                }
+                return operand_type;
+            },
+            .BitNot => {
+                if (!operand_type.equals(Type.Int)) {
+                    try self.addError("Bitwise not requires integer operand", unary.node.loc);
+                    return error.TypeMismatch;
+                }
+                return Type.Int;
+            },
+            .Deref => {
+                // Dereference returns the pointed-to type
+                // For now, just return the operand type (pointer semantics not fully implemented)
+                return operand_type;
+            },
+            .AddressOf => {
+                // Address-of returns a pointer to the operand type
+                // For now, just return the operand type (pointer semantics not fully implemented)
+                return operand_type;
+            },
+        };
     }
 
     fn inferTernaryExpression(self: *TypeChecker, ternary: *const ast.TernaryExpr) TypeError!Type {

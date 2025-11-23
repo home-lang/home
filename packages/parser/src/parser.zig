@@ -669,6 +669,17 @@ pub const Parser = struct {
 
         if (!self.check(.RightParen)) {
             while (true) {
+                // Handle shorthand self parameters: &self, mut self
+                var is_ref_self = false;
+                var is_mut_self = false;
+
+                if (self.match(&.{.Ampersand})) {
+                    is_ref_self = true;
+                }
+                if (self.match(&.{.Mut})) {
+                    is_mut_self = true;
+                }
+
                 // Accept both Identifier and 'self' keyword as parameter names
                 const param_name = if (self.check(.Identifier))
                     try self.expect(.Identifier, "Expected parameter name")
@@ -678,8 +689,16 @@ pub const Parser = struct {
                     try self.reportError("Expected parameter name");
                     return error.UnexpectedToken;
                 };
-                _ = try self.expect(.Colon, "Expected ':' after parameter name");
-                const param_type = try self.parseTypeAnnotation();
+
+                // For shorthand self (&self or mut self), infer the type
+                var param_type: []const u8 = undefined;
+                if ((is_ref_self or is_mut_self) and std.mem.eql(u8, param_name.lexeme, "self")) {
+                    // Use "Self" as the type for shorthand self parameters
+                    param_type = try self.allocator.dupe(u8, "Self");
+                } else {
+                    _ = try self.expect(.Colon, "Expected ':' after parameter name");
+                    param_type = try self.parseTypeAnnotation();
+                }
 
                 // Check for default value
                 var default_value: ?*ast.Expr = null;
@@ -1101,22 +1120,33 @@ pub const Parser = struct {
 
     /// Parse a type annotation (supports arrays, generics, nullable, etc.)
     fn parseTypeAnnotation(self: *Parser) ![]const u8 {
-        // Check for array type: [T] or [size]T
+        // Check for array type: [T], [T; N], or []T
         if (self.match(&.{.LeftBracket})) {
-            // For now, skip size if present and just get element type
-            if (self.peek().type != .RightBracket) {
-                // Has size or element type inside brackets
-                const inner = try self.expect(.Identifier, "Expected type in array");
-                _ = try self.expect(.RightBracket, "Expected ']'");
-                // Return [element_type] as string
-                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner.lexeme});
-                return arr_type;
-            } else {
+            if (self.peek().type == .RightBracket) {
+                // Empty brackets: []T - dynamic array
                 _ = try self.expect(.RightBracket, "Expected ']'");
                 const elem_type = try self.expect(.Identifier, "Expected element type after '[]'");
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{elem_type.lexeme});
                 return arr_type;
             }
+
+            // Has something inside brackets - either [T] or [T; N]
+            const inner = try self.expect(.Identifier, "Expected type in array");
+
+            // Check for semicolon (fixed-size array: [T; N])
+            if (self.match(&.{.Semicolon})) {
+                // Parse the size
+                const size_token = try self.expect(.Integer, "Expected array size");
+                _ = try self.expect(.RightBracket, "Expected ']'");
+                // Return [T; N] as string
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner.lexeme, size_token.lexeme });
+                return arr_type;
+            }
+
+            // Just [T] - element type inside brackets
+            _ = try self.expect(.RightBracket, "Expected ']'");
+            const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner.lexeme});
+            return arr_type;
         }
 
         // Regular type (identifier)
@@ -3176,12 +3206,14 @@ pub const Parser = struct {
         }
 
         // Unary expressions
-        if (self.match(&.{ .Bang, .Minus, .Tilde })) {
+        if (self.match(&.{ .Bang, .Minus, .Tilde, .Star, .Ampersand })) {
             const op_token = self.previous();
             const op: ast.UnaryOp = switch (op_token.type) {
                 .Bang => .Not,
                 .Minus => .Neg,
                 .Tilde => .BitNot,
+                .Star => .Deref,
+                .Ampersand => .AddressOf,
                 else => unreachable,
             };
             const operand = try self.parsePrecedence(.Unary);

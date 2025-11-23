@@ -506,6 +506,10 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
 
     // Type check (unless disabled or kernel mode)
@@ -584,6 +588,9 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
         var codegen = NativeCodegen.init(allocator, program);
         defer codegen.deinit();
+
+        // Set source root for import resolution
+        try codegen.setSourceRoot(file_path);
 
         try codegen.writeExecutable(out_path);
 

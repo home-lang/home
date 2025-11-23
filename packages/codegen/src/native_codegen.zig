@@ -78,6 +78,8 @@ pub const FieldInfo = struct {
     offset: usize,
     /// Size of field in bytes
     size: usize,
+    /// Type name of the field (for nested member access)
+    type_name: []const u8 = "",
 };
 
 /// Enum variant information.
@@ -610,6 +612,14 @@ pub const NativeCodegen = struct {
     /// Borrow checker for reference lifetime analysis
     borrow_checker: ?BorrowChecker,
 
+    // Source file location
+    /// Root directory for resolving imports (project root)
+    source_root: ?[]const u8,
+
+    // Import tracking
+    /// Set of already-imported module paths to prevent duplicate imports
+    imported_modules: std.StringHashMap(void),
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -636,7 +646,26 @@ pub const NativeCodegen = struct {
             .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
             .borrow_checker = null, // Initialized on demand
+            .source_root = null, // Set via setSourceRoot
+            .imported_modules = std.StringHashMap(void).init(allocator),
         };
+    }
+
+    /// Set the source root directory for resolving imports
+    pub fn setSourceRoot(self: *NativeCodegen, source_file: []const u8) !void {
+        // Find the project root by looking for src/ directory
+        // For absolute paths like /path/to/project/src/math/file.home -> /path/to/project
+        // For relative paths like src/math/file.home -> . (current directory)
+        if (std.mem.indexOf(u8, source_file, "/src/")) |src_pos| {
+            // Absolute path with /src/ in it
+            self.source_root = try self.allocator.dupe(u8, source_file[0..src_pos]);
+        } else if (std.mem.startsWith(u8, source_file, "src/")) {
+            // Relative path starting with src/ - project root is current directory
+            self.source_root = try self.allocator.dupe(u8, ".");
+        } else if (std.mem.lastIndexOf(u8, source_file, "/")) |last_slash| {
+            // Other path - use parent directory
+            self.source_root = try self.allocator.dupe(u8, source_file[0..last_slash]);
+        }
     }
 
     /// Clean up codegen resources.
@@ -645,6 +674,11 @@ pub const NativeCodegen = struct {
     /// variable maps, and struct layouts.
     pub fn deinit(self: *NativeCodegen) void {
         self.assembler.deinit();
+
+        // Free source_root if allocated
+        if (self.source_root) |root| {
+            self.allocator.free(root);
+        }
 
         // Free duplicated strings in locals HashMap (keys only, type_name points to AST or literals)
         {
@@ -684,25 +718,35 @@ pub const NativeCodegen = struct {
 
         // Free struct_layouts memory
         {
+            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
             var struct_iter = self.struct_layouts.iterator();
             while (struct_iter.next()) |entry| {
                 const key = entry.key_ptr.*;
                 const layout = entry.value_ptr.*;
 
-                // Free field names
+                // Free field names and type names
                 for (layout.fields) |field| {
-                    if (field.name.len > 0) {
+                    // Check for sentinel value indicating freed/uninitialized memory
+                    const name_ptr = @intFromPtr(field.name.ptr);
+                    const type_ptr = @intFromPtr(field.type_name.ptr);
+
+                    if (field.name.len > 0 and name_ptr != sentinel and name_ptr != 0) {
                         self.allocator.free(field.name);
+                    }
+                    if (field.type_name.len > 0 and type_ptr != sentinel and type_ptr != 0) {
+                        self.allocator.free(field.type_name);
                     }
                 }
 
                 // Free fields array
-                if (layout.fields.len > 0) {
+                const fields_ptr = @intFromPtr(layout.fields.ptr);
+                if (layout.fields.len > 0 and fields_ptr != sentinel and fields_ptr != 0) {
                     self.allocator.free(layout.fields);
                 }
 
                 // Free struct name (key and layout.name are the same pointer)
-                if (key.len > 0) {
+                const key_ptr_val = @intFromPtr(key.ptr);
+                if (key.len > 0 and key_ptr_val != sentinel and key_ptr_val != 0) {
                     self.allocator.free(key);
                 }
             }
@@ -711,6 +755,7 @@ pub const NativeCodegen = struct {
 
         // Free enum_layouts memory
         {
+            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
             var enum_iter = self.enum_layouts.iterator();
             while (enum_iter.next()) |entry| {
                 const key = entry.key_ptr.*;
@@ -718,23 +763,27 @@ pub const NativeCodegen = struct {
 
                 // Free variant names and data types
                 for (layout.variants) |variant| {
-                    if (variant.name.len > 0) {
+                    const vname_ptr = @intFromPtr(variant.name.ptr);
+                    if (variant.name.len > 0 and vname_ptr != sentinel and vname_ptr != 0) {
                         self.allocator.free(variant.name);
                     }
                     if (variant.data_type) |dt| {
-                        if (dt.len > 0) {
+                        const dt_ptr = @intFromPtr(dt.ptr);
+                        if (dt.len > 0 and dt_ptr != sentinel and dt_ptr != 0) {
                             self.allocator.free(dt);
                         }
                     }
                 }
 
                 // Free variants array
-                if (layout.variants.len > 0) {
+                const variants_ptr = @intFromPtr(layout.variants.ptr);
+                if (layout.variants.len > 0 and variants_ptr != sentinel and variants_ptr != 0) {
                     self.allocator.free(layout.variants);
                 }
 
                 // Free enum name (key and layout.name are the same pointer)
-                if (key.len > 0) {
+                const enum_key_ptr = @intFromPtr(key.ptr);
+                if (key.len > 0 and enum_key_ptr != sentinel and enum_key_ptr != 0) {
                     self.allocator.free(key);
                 }
             }
@@ -746,6 +795,19 @@ pub const NativeCodegen = struct {
 
         self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
+
+        // Free imported_modules keys and hashmap
+        {
+            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
+            var import_iter = self.imported_modules.keyIterator();
+            while (import_iter.next()) |key_ptr| {
+                const import_key_ptr = @intFromPtr(key_ptr.*.ptr);
+                if (key_ptr.*.len > 0 and import_key_ptr != sentinel and import_key_ptr != 0) {
+                    self.allocator.free(key_ptr.*);
+                }
+            }
+            self.imported_modules.deinit();
+        }
 
         // Free type integration if initialized
         if (self.type_integration) |*ti| {
@@ -2042,12 +2104,167 @@ pub const NativeCodegen = struct {
         try self.assembler.addRegImm32(.rsp, @intCast(bytes_to_remove));
     }
 
+    /// Infer the type of an expression for let declarations
+    fn inferExprType(self: *NativeCodegen, expr: *ast.Expr) CodegenError!?[]const u8 {
+        switch (expr.*) {
+            .StructLiteral => |lit| return lit.type_name,
+            .Identifier => |id| {
+                // Look up variable type
+                if (self.locals.get(id.name)) |local_info| {
+                    return local_info.type_name;
+                }
+                return null;
+            },
+            .UnaryExpr => |unary| {
+                switch (unary.op) {
+                    .Deref => {
+                        // Dereference: get the type of what we're dereferencing
+                        // If operand is a variable of type T (where T is a struct), result is T
+                        return try self.inferExprType(unary.operand);
+                    },
+                    .AddressOf => {
+                        // Address-of: &expr returns a pointer to the type of expr
+                        const inner_type = try self.inferExprTypeForMember(unary.operand);
+                        if (inner_type) |t| {
+                            // Create a pointer type string like "&[Vec4; 4]"
+                            // For now, just return the inner type - the code will handle it as a reference
+                            return t;
+                        }
+                        return null;
+                    },
+                    else => return null,
+                }
+            },
+            .CallExpr => |call| {
+                // Check for enum constructor (EnumType.Variant(...))
+                // or static struct method (StructType.method())
+                if (call.callee.* == .MemberExpr) {
+                    const field = call.callee.MemberExpr;
+                    if (field.object.* == .Identifier) {
+                        const type_name = field.object.Identifier.name;
+                        // Check if this is an enum type
+                        if (self.enum_layouts.contains(type_name)) {
+                            return type_name;
+                        }
+                        // Check if this is a struct type (static method call)
+                        if (self.struct_layouts.contains(type_name)) {
+                            // For now, assume static methods on structs return the struct type
+                            // This is a simplification - ideally we'd check return type
+                            return type_name;
+                        }
+                    }
+                }
+                return null;
+            },
+            .MemberExpr => |member| {
+                // For method calls like q.normalized(), infer from object type
+                if (member.object.* == .Identifier) {
+                    const obj_name = member.object.Identifier.name;
+                    if (self.locals.get(obj_name)) |local_info| {
+                        // Check if this looks like a method that returns the same type
+                        // Methods named 'normalized', 'negate', 'conjugate', 'inverse'
+                        // typically return the same type
+                        if (self.struct_layouts.contains(local_info.type_name)) {
+                            return local_info.type_name;
+                        }
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// Infer the type of an expression specifically for member access
+    /// This is used for nested member assignments like self.rows[row].x = value
+    /// where we need to know that self.rows[row] returns a Vector4
+    fn inferExprTypeForMember(self: *NativeCodegen, expr: *ast.Expr) CodegenError!?[]const u8 {
+        switch (expr.*) {
+            .Identifier => |id| {
+                // Look up variable type
+                if (self.locals.get(id.name)) |local_info| {
+                    return local_info.type_name;
+                }
+                return null;
+            },
+            .IndexExpr => |index| {
+                // For array[index], get the element type from the array
+                // First get the array type
+                const array_type = try self.inferExprTypeForMember(index.array);
+                if (array_type == null) return null;
+
+                // If it's an array type like [Vector4], extract element type
+                if (array_type.?.len > 2 and array_type.?[0] == '[') {
+                    // Find the element type between [ and ]
+                    // Could be [T] or [T; N]
+                    var end_idx: usize = 1;
+                    var depth: usize = 1;
+                    while (end_idx < array_type.?.len and depth > 0) {
+                        if (array_type.?[end_idx] == '[') depth += 1;
+                        if (array_type.?[end_idx] == ']') depth -= 1;
+                        end_idx += 1;
+                    }
+                    // Extract just the type name without array syntax
+                    const inner = array_type.?[1 .. end_idx - 1];
+                    // Handle [T; N] format - extract just T
+                    if (std.mem.indexOf(u8, inner, ";")) |semi_idx| {
+                        const result = std.mem.trim(u8, inner[0..semi_idx], " ");
+                        return result;
+                    }
+                    return inner;
+                }
+                return null;
+            },
+            .MemberExpr => |member| {
+                // For expr.field, get the field type from the struct
+                if (member.object.* == .Identifier) {
+                    // Simple case: identifier.field - look up type directly from locals
+                    const obj_name = member.object.Identifier.name;
+                    const local_info = self.locals.get(obj_name) orelse return null;
+                    const struct_layout = self.struct_layouts.get(local_info.type_name) orelse return null;
+
+                    // Find field type in struct layout
+                    for (struct_layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, member.member)) {
+                            return field.type_name;
+                        }
+                    }
+                    return null;
+                } else {
+                    // Nested case: recursively get type of object expression
+                    const obj_type = try self.inferExprTypeForMember(member.object);
+                    if (obj_type == null) return null;
+
+                    // Look up struct layout to find field type
+                    const struct_layout = self.struct_layouts.get(obj_type.?) orelse return null;
+
+                    // Find field type in struct layout
+                    for (struct_layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, member.member)) {
+                            return field.type_name;
+                        }
+                    }
+                    return null;
+                }
+            },
+            else => return null,
+        }
+    }
+
     /// Get the size of a type in bytes
     fn getTypeSize(self: *NativeCodegen, type_name: []const u8) CodegenError!usize {
         // Primitive types
         if (std.mem.eql(u8, type_name, "int")) return 8;  // Default int is i64 on x64
         if (std.mem.eql(u8, type_name, "i32")) return 8;  // i64 on x64
         if (std.mem.eql(u8, type_name, "i64")) return 8;
+        if (std.mem.eql(u8, type_name, "usize")) return 8; // usize is 8 bytes on x64
+        if (std.mem.eql(u8, type_name, "isize")) return 8; // isize is 8 bytes on x64
+        if (std.mem.eql(u8, type_name, "u8")) return 1;
+        if (std.mem.eql(u8, type_name, "u16")) return 2;
+        if (std.mem.eql(u8, type_name, "u32")) return 4;
+        if (std.mem.eql(u8, type_name, "u64")) return 8;
+        if (std.mem.eql(u8, type_name, "i8")) return 1;
+        if (std.mem.eql(u8, type_name, "i16")) return 2;
         if (std.mem.eql(u8, type_name, "bool")) return 8;
         if (std.mem.eql(u8, type_name, "float")) return 8;  // Default float is f64
         if (std.mem.eql(u8, type_name, "f32")) return 4;
@@ -2542,6 +2759,11 @@ pub const NativeCodegen = struct {
                 }
             },
             .StructDecl => |struct_decl| {
+                // Skip if struct already registered (from previous import)
+                if (self.struct_layouts.contains(struct_decl.name)) {
+                    return;
+                }
+
                 // Calculate struct layout
                 var fields = std.ArrayList(FieldInfo){};
                 defer fields.deinit(self.allocator);
@@ -2556,35 +2778,50 @@ pub const NativeCodegen = struct {
                     const field_name_copy = try self.allocator.dupe(u8, field.name);
                     errdefer self.allocator.free(field_name_copy);
 
+                    const field_type_copy = try self.allocator.dupe(u8, field.type_name);
+                    errdefer self.allocator.free(field_type_copy);
+
                     try fields.append(self.allocator, .{
                         .name = field_name_copy,
                         .offset = offset,
                         .size = field_size,
+                        .type_name = field_type_copy,
                     });
                     offset += field_size;
                 }
 
                 // Store struct layout
-                const name_copy = try self.allocator.dupe(u8, struct_decl.name);
-                errdefer self.allocator.free(name_copy);
-
+                // First get fields_slice, then name_copy to ensure proper cleanup order
                 const fields_slice = try fields.toOwnedSlice(self.allocator);
-                errdefer {
-                    // Free field names and array if put fails
+
+                const name_copy = self.allocator.dupe(u8, struct_decl.name) catch |err| {
+                    // Clean up fields_slice on name_copy allocation failure
                     for (fields_slice) |field| {
-                        if (field.name.len > 0) {
-                            self.allocator.free(field.name);
-                        }
+                        if (field.name.len > 0) self.allocator.free(field.name);
+                        if (field.type_name.len > 0) self.allocator.free(field.type_name);
                     }
                     self.allocator.free(fields_slice);
-                }
+                    return err;
+                };
 
                 const layout = StructLayout{
                     .name = name_copy,  // Reuse the same copied name
                     .fields = fields_slice,
                     .total_size = offset,
                 };
-                try self.struct_layouts.put(name_copy, layout);
+
+                // Once put succeeds, ownership transfers to the hash map (deinit will cleanup)
+                // If put fails, we need to manually clean up
+                self.struct_layouts.put(name_copy, layout) catch |err| {
+                    // Clean up on put failure
+                    for (fields_slice) |field| {
+                        if (field.name.len > 0) self.allocator.free(field.name);
+                        if (field.type_name.len > 0) self.allocator.free(field.type_name);
+                    }
+                    self.allocator.free(fields_slice);
+                    self.allocator.free(name_copy);
+                    return err;
+                };
 
                 // First pass: Pre-register all mangled method names with placeholder positions
                 // This enables methods to call other methods on the same struct
@@ -2604,8 +2841,8 @@ pub const NativeCodegen = struct {
                     const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_decl.name, method.name });
                     defer self.allocator.free(mangled_name);
 
-                    // Generate the method like a regular function
-                    try self.generateFnDecl(method);
+                    // Generate the method with mangled name to avoid collisions
+                    try self.generateFnDeclWithName(method, mangled_name);
 
                     // Update the function map with correct position for mangled name
                     // (the pre-registered name already exists, just update the position)
@@ -2615,57 +2852,71 @@ pub const NativeCodegen = struct {
                 }
             },
             .EnumDecl => |enum_decl| {
-                // Store enum layout for variant value resolution
-                var variant_infos = try self.allocator.alloc(EnumVariantInfo, enum_decl.variants.len);
-                errdefer {
-                    // Free any already-allocated variant data on error
-                    for (variant_infos) |variant| {
-                        if (variant.name.len > 0) {
-                            self.allocator.free(variant.name);
-                        }
-                        if (variant.data_type) |dt| {
-                            if (dt.len > 0) {
-                                self.allocator.free(dt);
-                            }
-                        }
-                    }
-                    self.allocator.free(variant_infos);
+                // Skip if enum already registered
+                if (self.enum_layouts.contains(enum_decl.name)) {
+                    return;
                 }
 
+                // Store enum layout for variant value resolution
+                var variant_infos = try self.allocator.alloc(EnumVariantInfo, enum_decl.variants.len);
+                var num_initialized: usize = 0;
+
+                // Fill in variants, tracking how many we've initialized for error cleanup
                 for (enum_decl.variants, 0..) |variant, i| {
                     const data_type_copy = if (variant.data_type) |dt|
-                        try self.allocator.dupe(u8, dt)
+                        self.allocator.dupe(u8, dt) catch |err| {
+                            // Clean up already-initialized variants
+                            for (variant_infos[0..num_initialized]) |v| {
+                                if (v.name.len > 0) self.allocator.free(v.name);
+                                if (v.data_type) |dt2| self.allocator.free(dt2);
+                            }
+                            self.allocator.free(variant_infos);
+                            return err;
+                        }
                     else
                         null;
 
+                    const name_dup = self.allocator.dupe(u8, variant.name) catch |err| {
+                        if (data_type_copy) |dtc| self.allocator.free(dtc);
+                        for (variant_infos[0..num_initialized]) |v| {
+                            if (v.name.len > 0) self.allocator.free(v.name);
+                            if (v.data_type) |dt2| self.allocator.free(dt2);
+                        }
+                        self.allocator.free(variant_infos);
+                        return err;
+                    };
+
                     variant_infos[i] = EnumVariantInfo{
-                        .name = try self.allocator.dupe(u8, variant.name),
+                        .name = name_dup,
                         .data_type = data_type_copy,
                     };
+                    num_initialized += 1;
                 }
 
-                const name_copy = try self.allocator.dupe(u8, enum_decl.name);
-                errdefer {
-                    // Free variant data if name_copy succeeds but put fails
-                    for (variant_infos) |variant| {
-                        if (variant.name.len > 0) {
-                            self.allocator.free(variant.name);
-                        }
-                        if (variant.data_type) |dt| {
-                            if (dt.len > 0) {
-                                self.allocator.free(dt);
-                            }
-                        }
+                const name_copy = self.allocator.dupe(u8, enum_decl.name) catch |err| {
+                    for (variant_infos) |v| {
+                        if (v.name.len > 0) self.allocator.free(v.name);
+                        if (v.data_type) |dt| self.allocator.free(dt);
                     }
                     self.allocator.free(variant_infos);
-                    self.allocator.free(name_copy);
-                }
+                    return err;
+                };
 
                 const layout = EnumLayout{
                     .name = name_copy,  // Reuse the same copied name
                     .variants = variant_infos,
                 };
-                try self.enum_layouts.put(name_copy, layout);
+
+                // Once put succeeds, ownership transfers to hash map
+                self.enum_layouts.put(name_copy, layout) catch |err| {
+                    for (variant_infos) |v| {
+                        if (v.name.len > 0) self.allocator.free(v.name);
+                        if (v.data_type) |dt| self.allocator.free(dt);
+                    }
+                    self.allocator.free(variant_infos);
+                    self.allocator.free(name_copy);
+                    return err;
+                };
             },
             .UnionDecl, .TypeAliasDecl => {
                 // Type declarations - compile-time constructs
@@ -2781,27 +3032,70 @@ pub const NativeCodegen = struct {
     }
 
     fn handleImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) CodegenError!void {
+        // Build module key from path components
+        var key_list = std.ArrayList(u8){};
+        defer key_list.deinit(self.allocator);
+        for (import_decl.path, 0..) |component, i| {
+            if (i > 0) try key_list.append(self.allocator, '/');
+            try key_list.appendSlice(self.allocator, component);
+        }
+        const module_key = key_list.items;
+
+        // Check if already imported
+        if (self.imported_modules.contains(module_key)) {
+            return; // Already imported, skip
+        }
+
+        // Mark as imported (store a copy of the key)
+        const key_copy = try self.allocator.dupe(u8, module_key);
+        try self.imported_modules.put(key_copy, {});
+
         // Convert import path to file path
-        // For now, simple strategy: join path components with '/' and add '.home'
+        // Use source_root if available, otherwise use current directory
         var path_list = std.ArrayList(u8){};
         defer path_list.deinit(self.allocator);
 
+        // Add source root prefix if available (skip "." as it's redundant)
+        if (self.source_root) |root| {
+            if (!std.mem.eql(u8, root, ".")) {
+                try path_list.appendSlice(self.allocator, root);
+                try path_list.append(self.allocator, '/');
+            }
+        }
+
+        // Try src/ subdirectory first
+        try path_list.appendSlice(self.allocator, "src/");
         for (import_decl.path, 0..) |component, i| {
             if (i > 0) try path_list.append(self.allocator, '/');
             try path_list.appendSlice(self.allocator, component);
         }
         try path_list.appendSlice(self.allocator, ".home");
 
-        const module_path = path_list.items;
+        var module_path = path_list.items;
 
-        // Read and parse the module file
+        // Try to read from src/ first
         const module_source = std.fs.cwd().readFileAlloc(
             module_path,
             self.allocator,
             std.Io.Limit.limited(10 * 1024 * 1024), // 10MB max
-        ) catch |err| {
-            std.debug.print("Failed to read import file '{s}': {}\n", .{module_path, err});
-            return error.ImportFailed;
+        ) catch blk: {
+            // If src/ doesn't work, try without src/ prefix (just the path)
+            path_list.clearRetainingCapacity();
+            for (import_decl.path, 0..) |component, i| {
+                if (i > 0) try path_list.append(self.allocator, '/');
+                try path_list.appendSlice(self.allocator, component);
+            }
+            try path_list.appendSlice(self.allocator, ".home");
+            module_path = path_list.items;
+
+            break :blk std.fs.cwd().readFileAlloc(
+                module_path,
+                self.allocator,
+                std.Io.Limit.limited(10 * 1024 * 1024),
+            ) catch |err| {
+                std.debug.print("Failed to read import file '{s}': {}\n", .{ module_path, err });
+                return error.ImportFailed;
+            };
         };
         defer self.allocator.free(module_source);
 
@@ -2821,6 +3115,16 @@ pub const NativeCodegen = struct {
             std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;
         };
+        defer parser.deinit();
+
+        // Set source root for nested imports - use the same source root as the main module
+        if (self.source_root) |root| {
+            parser.module_resolver.setSourceRootDirect(root) catch {};
+        } else {
+            // Fall back to using the module path to determine source root
+            parser.module_resolver.setSourceRoot(module_path) catch {};
+        }
+
         const module_ast = parser.parse() catch |err| {
             std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
             return error.ImportFailed;
@@ -3174,6 +3478,13 @@ pub const NativeCodegen = struct {
     }
 
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
+        return self.generateFnDeclWithName(func, null);
+    }
+
+    fn generateFnDeclWithName(self: *NativeCodegen, func: *ast.FnDecl, override_name: ?[]const u8) !void {
+        // Use override name if provided (for struct methods with mangled names)
+        const effective_name = override_name orelse func.name;
+
         // Reset local variable tracking for new function
         self.next_local_offset = 0;
 
@@ -3186,31 +3497,39 @@ pub const NativeCodegen = struct {
 
         // Record function position
         const func_pos = self.assembler.getPosition();
-        const name_copy = try self.allocator.dupe(u8, func.name);
-        errdefer self.allocator.free(name_copy);
-        try self.functions.put(name_copy, func_pos);
-
-        // Store function info with parameter defaults
-        var param_infos = try self.allocator.alloc(FunctionParamInfo, func.params.len);
-        errdefer self.allocator.free(param_infos);
-
-        var required_params: usize = 0;
-        for (func.params, 0..) |param, i| {
-            param_infos[i] = .{
-                .name = param.name,
-                .type_name = param.type_name,
-                .default_value = param.default_value,
-            };
-            if (param.default_value == null) {
-                required_params += 1;
-            }
+        // Only put if not pre-registered (methods are pre-registered with mangled names)
+        if (!self.functions.contains(effective_name)) {
+            const name_copy = try self.allocator.dupe(u8, effective_name);
+            errdefer self.allocator.free(name_copy);
+            try self.functions.put(name_copy, func_pos);
         }
 
-        try self.function_info.put(func.name, .{
-            .position = func_pos,
-            .params = param_infos,
-            .required_params = required_params,
-        });
+        // Store function info with parameter defaults
+        // Only register function_info if not already registered
+        if (!self.function_info.contains(effective_name)) {
+            var param_infos = try self.allocator.alloc(FunctionParamInfo, func.params.len);
+            errdefer self.allocator.free(param_infos);
+
+            var required_params: usize = 0;
+            for (func.params, 0..) |param, i| {
+                param_infos[i] = .{
+                    .name = param.name,
+                    .type_name = param.type_name,
+                    .default_value = param.default_value,
+                };
+                if (param.default_value == null) {
+                    required_params += 1;
+                }
+            }
+
+            const info_name_copy = try self.allocator.dupe(u8, effective_name);
+            errdefer self.allocator.free(info_name_copy);
+            try self.function_info.put(info_name_copy, .{
+                .position = func_pos,
+                .params = param_infos,
+                .required_params = required_params,
+            });
+        }
 
         // Function prologue
         try self.assembler.pushReg(.rbp);
@@ -3307,20 +3626,11 @@ pub const NativeCodegen = struct {
         }
 
         if (decl.value) |value| {
-            // Infer type from enum constructor if no type annotation
+            // Infer type from expression if no type annotation
             var inferred_type_name: ?[]const u8 = decl.type_name;
-            if (inferred_type_name == null and value.* == .CallExpr) {
-                const call = value.CallExpr;
-                if (call.callee.* == .MemberExpr) {
-                    const field = call.callee.MemberExpr;
-                    if (field.object.* == .Identifier) {
-                        const enum_name = field.object.Identifier.name;
-                        // Check if this is an enum type
-                        if (self.enum_layouts.contains(enum_name)) {
-                            inferred_type_name = enum_name;
-                        }
-                    }
-                }
+            if (inferred_type_name == null) {
+                // Try to infer type from the value expression
+                inferred_type_name = try self.inferExprType(value);
             }
 
             const type_name = inferred_type_name orelse "i32";
@@ -3741,9 +4051,17 @@ pub const NativeCodegen = struct {
                         // Bitwise NOT: not rax
                         try self.assembler.notReg(.rax);
                     },
-                    .Deref, .AddressOf => {
-                        std.debug.print("Pointer operations not yet implemented in native codegen\n", .{});
-                        return error.UnsupportedFeature;
+                    .Deref => {
+                        // Dereference: rax contains a pointer, load the value it points to
+                        // mov rax, [rax]
+                        try self.assembler.movRegMem(.rax, .rax, 0);
+                    },
+                    .AddressOf => {
+                        // Address-of: rax should contain the address of the operand
+                        // If operand is already a pointer/address (from generateExpr), keep it
+                        // This typically happens when operand is a struct or array
+                        // For identifiers, generateExpr already returns address for structs
+                        // No additional operation needed - rax already has the address
                     },
                 }
             },
@@ -4113,6 +4431,64 @@ pub const NativeCodegen = struct {
                                 return;
                             } else if (std.mem.eql(u8, func_name, "tan")) {
                                 // tan: placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "acos")) {
+                                // acos: placeholder - arc cosine
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "asin")) {
+                                // asin: placeholder - arc sine
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "atan")) {
+                                // atan: placeholder - arc tangent
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "atan2")) {
+                                // atan2: placeholder - two-argument arc tangent
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "sinh")) {
+                                // sinh: hyperbolic sine - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "cosh")) {
+                                // cosh: hyperbolic cosine - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "tanh")) {
+                                // tanh: hyperbolic tangent - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "exp")) {
+                                // exp: e^x - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "ln")) {
+                                // ln: natural logarithm - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "log")) {
+                                // log: natural logarithm (alias) - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "log10")) {
+                                // log10: base-10 logarithm - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "log2")) {
+                                // log2: base-2 logarithm - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "pow")) {
+                                // pow: x^y - placeholder
+                                // Note: takes two arguments but we only loaded the first
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "floor")) {
+                                // floor: round down - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "ceil")) {
+                                // ceil: round up - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "round")) {
+                                // round: round to nearest - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "trunc")) {
+                                // trunc: truncate toward zero - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "fmod")) {
+                                // fmod: floating point modulo - placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "copysign")) {
+                                // copysign: copy sign of y to x - placeholder
                                 return;
                             } else if (std.mem.eql(u8, func_name, "abs")) {
                                 // abs: absolute value
@@ -4569,62 +4945,102 @@ pub const NativeCodegen = struct {
                     }
                 } else if (assign.target.* == .MemberExpr) {
                     // Member assignment: obj.field = value or self.field = value
+                    // Also supports nested: self.rows[row].x = value
                     const member = assign.target.MemberExpr;
 
-                    if (member.object.* != .Identifier) {
-                        std.debug.print("Member assignment only supported on identifiers\n", .{});
-                        return error.UnsupportedFeature;
-                    }
-
-                    const obj_name = member.object.Identifier.name;
-
-                    // Save value in rbx
+                    // Save value in rbx first
                     try self.assembler.movRegReg(.rbx, .rax);
 
-                    const local_info = self.locals.get(obj_name) orelse {
-                        std.debug.print("Undefined variable in member assignment: {s}\n", .{obj_name});
-                        return error.UndefinedVariable;
-                    };
+                    if (member.object.* == .Identifier) {
+                        // Simple case: identifier.field = value
+                        const obj_name = member.object.Identifier.name;
 
-                    // Look up struct layout from type
-                    const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
-                        std.debug.print("Type {s} is not a struct\n", .{local_info.type_name});
-                        return error.UnsupportedFeature;
-                    };
+                        const local_info = self.locals.get(obj_name) orelse {
+                            std.debug.print("Undefined variable in member assignment: {s}\n", .{obj_name});
+                            return error.UndefinedVariable;
+                        };
 
-                    // Find field offset in struct layout
-                    var field_offset: ?usize = null;
-                    for (struct_layout.fields) |field| {
-                        if (std.mem.eql(u8, field.name, member.member)) {
-                            field_offset = field.offset;
-                            break;
+                        // Look up struct layout from type
+                        const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
+                            std.debug.print("Type {s} is not a struct (obj_name={s}, member={s})\n", .{ local_info.type_name, obj_name, member.member });
+                            return error.UnsupportedFeature;
+                        };
+
+                        // Find field offset in struct layout
+                        var field_offset: ?usize = null;
+                        for (struct_layout.fields) |field| {
+                            if (std.mem.eql(u8, field.name, member.member)) {
+                                field_offset = field.offset;
+                                break;
+                            }
                         }
-                    }
 
-                    if (field_offset == null) {
-                        std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, local_info.type_name });
-                        return error.UnsupportedFeature;
-                    }
+                        if (field_offset == null) {
+                            std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, local_info.type_name });
+                            return error.UnsupportedFeature;
+                        }
 
-                    // Check if this is a pointer to struct (size 8 but type is a struct)
-                    // This happens for 'self' parameter in methods
-                    if (local_info.size == 8 and struct_layout.total_size > 8) {
-                        // Local contains a pointer to the struct
-                        // First load the pointer from stack
-                        const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
-                        try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
-                        // Then store the value to the field in the pointed struct
+                        // Check if this is a pointer to struct (size 8 but type is a struct)
+                        // This happens for 'self' parameter in methods
+                        if (local_info.size == 8 and struct_layout.total_size > 8) {
+                            // Local contains a pointer to the struct
+                            // First load the pointer from stack
+                            const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                            try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
+                            // Then store the value to the field in the pointed struct
+                            // Stack grows downward, so field at offset N is at [pointer - N]
+                            const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
+                            try self.assembler.movMemReg(.rax, field_access_offset, .rbx);
+                        } else {
+                            // Struct is stored inline on stack
+                            // Calculate address of field on stack
+                            const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                            const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
+
+                            // Store value to field on stack
+                            try self.assembler.movMemReg(.rbp, field_stack_offset, .rbx);
+                        }
+                    } else {
+                        // Nested case: expr.field = value (e.g., self.rows[row].x = value)
+                        // Evaluate the base expression to get a pointer to the struct
+                        // Save rbx (value) on stack since generateExpr will use registers
+                        try self.assembler.pushReg(.rbx);
+                        try self.generateExpr(member.object);
+                        // rax now has pointer to the struct (from index/member expression)
+                        // Restore value from stack into rbx
+                        try self.assembler.popReg(.rbx);
+
+                        // We need to know the type of the object to find the field offset
+                        // Try to infer the type from the expression
+                        const obj_type = try self.inferExprTypeForMember(member.object);
+                        if (obj_type == null) {
+                            std.debug.print("Cannot infer type for nested member assignment\n", .{});
+                            return error.UnsupportedFeature;
+                        }
+
+                        const struct_layout = self.struct_layouts.get(obj_type.?) orelse {
+                            std.debug.print("Type {s} is not a struct for nested member assignment\n", .{obj_type.?});
+                            return error.UnsupportedFeature;
+                        };
+
+                        // Find field offset in struct layout
+                        var field_offset: ?usize = null;
+                        for (struct_layout.fields) |field| {
+                            if (std.mem.eql(u8, field.name, member.member)) {
+                                field_offset = field.offset;
+                                break;
+                            }
+                        }
+
+                        if (field_offset == null) {
+                            std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, obj_type.? });
+                            return error.UnsupportedFeature;
+                        }
+
+                        // rax has pointer to the struct, store rbx at field offset
                         // Stack grows downward, so field at offset N is at [pointer - N]
                         const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
                         try self.assembler.movMemReg(.rax, field_access_offset, .rbx);
-                    } else {
-                        // Struct is stored inline on stack
-                        // Calculate address of field on stack
-                        const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
-                        const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
-
-                        // Store value to field on stack
-                        try self.assembler.movMemReg(.rbp, field_stack_offset, .rbx);
                     }
                 } else {
                     std.debug.print("Assignment target must be an identifier or member expression\n", .{});
@@ -4632,12 +5048,24 @@ pub const NativeCodegen = struct {
                 }
             },
 
-            .ArrayLiteral => {
-                // Array literals should only appear in let declarations
-                // where they are handled specially. If we encounter one here,
-                // it's likely being used in an unsupported context.
-                std.debug.print("Array literals are only supported in let declarations\n", .{});
-                return error.UnsupportedFeature;
+            .ArrayLiteral => |array_lit| {
+                // Array literal as an expression - allocate on stack and push elements
+                const num_elements = array_lit.elements.len;
+
+                // Push each element onto the stack in reverse order
+                // so the first element is at the lowest address
+                var i: usize = num_elements;
+                while (i > 0) {
+                    i -= 1;
+                    try self.generateExpr(array_lit.elements[i]);
+                    try self.assembler.pushReg(.rax);
+                }
+
+                // Return pointer to start of array (rsp points to first element)
+                try self.assembler.movRegReg(.rax, .rsp);
+
+                // Track stack usage
+                self.next_local_offset +|= @as(u8, @intCast(num_elements));
             },
 
             .StructLiteral => |struct_lit| {
@@ -4675,6 +5103,7 @@ pub const NativeCodegen = struct {
 
             .IndexExpr => |index| {
                 // array[index]
+                // Returns a POINTER to the element (for use in nested member access)
                 // Evaluate array expression (get pointer in rax)
                 try self.generateExpr(index.array);
                 try self.assembler.pushReg(.rax); // Save array pointer
@@ -4686,105 +5115,156 @@ pub const NativeCodegen = struct {
                 // Pop array pointer into rcx
                 try self.assembler.popReg(.rcx);
 
-                // Calculate offset: index * 8
-                try self.assembler.imulRegImm32(.rax, 8);
+                // Calculate offset: index * element_size
+                // For structs, use struct size; for primitives use 8
+                const array_type = try self.inferExprTypeForMember(index.array);
+                var elem_size: i32 = 8;
+                if (array_type) |arr_type| {
+                    if (arr_type.len > 2 and arr_type[0] == '[') {
+                        // Extract element type from [T] or [T; N]
+                        const inner = arr_type[1 .. arr_type.len - 1];
+                        const elem_type = if (std.mem.indexOf(u8, inner, ";")) |semi_idx|
+                            inner[0..semi_idx]
+                        else
+                            inner;
+                        // Get element size
+                        if (self.struct_layouts.get(elem_type)) |layout| {
+                            elem_size = @intCast(layout.total_size);
+                        }
+                    }
+                }
+
+                try self.assembler.imulRegImm32(.rax, elem_size);
 
                 // Subtract from base pointer (stack grows down)
                 // rcx - rax gives us the address of element at index
                 try self.assembler.subRegReg(.rcx, .rax);
 
-                // Load value from [rcx]
-                try self.assembler.movRegMem(.rax, .rcx, 0);
+                // Return pointer to element in rax (don't load the value)
+                try self.assembler.movRegReg(.rax, .rcx);
             },
 
             .MemberExpr => |member| {
-                // Can be: struct.field or Enum.Variant
-                if (member.object.* != .Identifier) {
-                    std.debug.print("Member access only supported on identifiers for now\n", .{});
-                    return error.UnsupportedFeature;
-                }
+                // Can be: struct.field, Enum.Variant, or nested expr.field
+                if (member.object.* == .Identifier) {
+                    const type_or_var_name = member.object.Identifier.name;
 
-                const type_or_var_name = member.object.Identifier.name;
+                    // Check if this is an enum value (Enum.Variant)
+                    if (self.enum_layouts.get(type_or_var_name)) |enum_layout| {
+                        // Find variant index
+                        var variant_index: ?usize = null;
+                        for (enum_layout.variants, 0..) |variant_info, i| {
+                            if (std.mem.eql(u8, variant_info.name, member.member)) {
+                                variant_index = i;
+                                break;
+                            }
+                        }
 
-                // Check if this is an enum value (Enum.Variant)
-                if (self.enum_layouts.get(type_or_var_name)) |enum_layout| {
-                    // Find variant index
-                    var variant_index: ?usize = null;
-                    for (enum_layout.variants, 0..) |variant_info, i| {
-                        if (std.mem.eql(u8, variant_info.name, member.member)) {
-                            variant_index = i;
+                        if (variant_index == null) {
+                            std.debug.print("Variant {s} not found in enum {s}\n", .{ member.member, type_or_var_name });
+                            return error.UnsupportedFeature;
+                        }
+
+                        // Create enum value on stack (same as CallExpr for enums)
+                        // Layout: [tag (8 bytes)][data (8 bytes)]
+                        // No-argument variants have data = 0
+
+                        // Push data (always 0 for no-argument variants)
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.pushReg(.rax);
+
+                        // Push tag (variant index)
+                        try self.assembler.movRegImm64(.rax, @intCast(variant_index.?));
+                        try self.assembler.pushReg(.rax);
+
+                        // Return pointer to enum on stack
+                        try self.assembler.movRegReg(.rax, .rsp);
+                        return;
+                    }
+
+                    // Otherwise, it's struct field access
+                    const local_info = self.locals.get(type_or_var_name) orelse {
+                        std.debug.print("Undefined variable in member access: {s}\n", .{type_or_var_name});
+                        return error.UndefinedVariable;
+                    };
+
+                    // Look up struct layout from type
+                    const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
+                        std.debug.print("Type {s} is not a struct (var={s}, member={s})\n", .{ local_info.type_name, type_or_var_name, member.member });
+                        return error.UnsupportedFeature;
+                    };
+
+                    // Find field offset in struct layout
+                    var field_offset: ?usize = null;
+                    for (struct_layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, member.member)) {
+                            field_offset = field.offset;
                             break;
                         }
                     }
 
-                    if (variant_index == null) {
-                        std.debug.print("Variant {s} not found in enum {s}\n", .{member.member, type_or_var_name});
+                    if (field_offset == null) {
+                        std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, local_info.type_name });
                         return error.UnsupportedFeature;
                     }
 
-                    // Create enum value on stack (same as CallExpr for enums)
-                    // Layout: [tag (8 bytes)][data (8 bytes)]
-                    // No-argument variants have data = 0
+                    // Check if this is a pointer to struct (size 8 but type is a struct)
+                    // This happens for 'self' parameter in methods
+                    if (local_info.size == 8 and struct_layout.total_size > 8) {
+                        // Local contains a pointer to the struct
+                        // First load the pointer from stack
+                        const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
+                        // Then load the field from the pointed struct
+                        // Stack grows downward, so field at offset N is at [pointer - N] not [pointer + N]
+                        const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
+                        try self.assembler.movRegMem(.rax, .rax, field_access_offset);
+                    } else {
+                        // Struct is stored inline on stack
+                        // Calculate address of field on stack
+                        // Struct fields are stored in order, so field offset is struct_base + field.offset
+                        const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
 
-                    // Push data (always 0 for no-argument variants)
-                    try self.assembler.movRegImm64(.rax, 0);
-                    try self.assembler.pushReg(.rax);
-
-                    // Push tag (variant index)
-                    try self.assembler.movRegImm64(.rax, @intCast(variant_index.?));
-                    try self.assembler.pushReg(.rax);
-
-                    // Return pointer to enum on stack
-                    try self.assembler.movRegReg(.rax, .rsp);
-                    return;
-                }
-
-                // Otherwise, it's struct field access
-                const local_info = self.locals.get(type_or_var_name) orelse {
-                    std.debug.print("Undefined variable in member access: {s}\n", .{type_or_var_name});
-                    return error.UndefinedVariable;
-                };
-
-                // Look up struct layout from type
-                const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
-                    std.debug.print("Type {s} is not a struct\n", .{local_info.type_name});
-                    return error.UnsupportedFeature;
-                };
-
-                // Find field offset in struct layout
-                var field_offset: ?usize = null;
-                for (struct_layout.fields) |field| {
-                    if (std.mem.eql(u8, field.name, member.member)) {
-                        field_offset = field.offset;
-                        break;
+                        // Load field value directly from stack
+                        try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
                     }
-                }
+                } else {
+                    // Nested expression: expr.field (e.g., self.rows[row].x)
+                    // Evaluate the base expression to get a pointer to the struct
+                    try self.generateExpr(member.object);
+                    // rax now has pointer to the struct
 
-                if (field_offset == null) {
-                    std.debug.print("Field {s} not found in struct {s}\n", .{member.member, local_info.type_name});
-                    return error.UnsupportedFeature;
-                }
+                    // Infer the type of the object to find the field offset
+                    const obj_type = try self.inferExprTypeForMember(member.object);
+                    if (obj_type == null) {
+                        std.debug.print("Cannot infer type for nested member access: .{s}\n", .{member.member});
+                        return error.UnsupportedFeature;
+                    }
 
-                // Check if this is a pointer to struct (size 8 but type is a struct)
-                // This happens for 'self' parameter in methods
-                if (local_info.size == 8 and struct_layout.total_size > 8) {
-                    // Local contains a pointer to the struct
-                    // First load the pointer from stack
-                    const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
-                    try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
-                    // Then load the field from the pointed struct
-                    // Stack grows downward, so field at offset N is at [pointer - N] not [pointer + N]
+                    const struct_layout = self.struct_layouts.get(obj_type.?) orelse {
+                        std.debug.print("Type {s} is not a struct for nested member access\n", .{obj_type.?});
+                        return error.UnsupportedFeature;
+                    };
+
+                    // Find field offset in struct layout
+                    var field_offset: ?usize = null;
+                    for (struct_layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, member.member)) {
+                            field_offset = field.offset;
+                            break;
+                        }
+                    }
+
+                    if (field_offset == null) {
+                        std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, obj_type.? });
+                        return error.UnsupportedFeature;
+                    }
+
+                    // rax has pointer to the struct, load field from [rax - field_offset]
+                    // Stack grows downward, so field at offset N is at [pointer - N]
                     const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
                     try self.assembler.movRegMem(.rax, .rax, field_access_offset);
-                } else {
-                    // Struct is stored inline on stack
-                    // Calculate address of field on stack
-                    // Struct fields are stored in order, so field offset is struct_base + field.offset
-                    const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
-                    const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
-
-                    // Load field value directly from stack
-                    try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
                 }
             },
 
