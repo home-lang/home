@@ -438,6 +438,15 @@ pub const Assembler = struct {
         try self.code.appendSlice(self.allocator, &bytes);
     }
 
+    /// jns rel32 (jump if not sign / jump if positive)
+    pub fn jnsRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x89); // JNS opcode
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
     /// call rel32 (relative call)
     pub fn callRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0xE8);
@@ -522,6 +531,13 @@ pub const Assembler = struct {
     /// Patch a jl rel32 instruction at a specific position
     pub fn patchJlRel32(self: *Assembler, pos: usize, offset: i32) !void {
         // jl is 6 bytes: 0F 8C [rel32]
+        // The rel32 starts at pos + 2
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
+    /// Patch a jns rel32 instruction at a specific position
+    pub fn patchJnsRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jns is 6 bytes: 0F 89 [rel32]
         // The rel32 starts at pos + 2
         std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
     }

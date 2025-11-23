@@ -1071,6 +1071,25 @@ pub const ReflectExpr = struct {
         Truncate, // @truncate(value) - truncate to smaller type
         As, // @as(Type, value) - explicit type cast
         BitCast, // @bitCast(value) - reinterpret bits as different type
+        // Type casting builtins
+        IntCast, // @intCast(type, value) - cast to int type
+        FloatCast, // @floatCast(type, value) - cast to float type
+        PtrCast, // @ptrCast(type, ptr) - cast pointer type
+        PtrToInt, // @ptrToInt(ptr) - convert pointer to integer
+        IntToFloat, // @intToFloat(value) - convert int to float
+        FloatToInt, // @floatToInt(value) - convert float to int
+        EnumToInt, // @enumToInt(enum) - convert enum to int
+        IntToEnum, // @intToEnum(type, int) - convert int to enum
+        // Memory builtins
+        MemSet, // @memset(ptr, value, len) - set memory
+        MemCpy, // @memcpy(dest, src, len) - copy memory
+        // Math builtins
+        Sqrt, // @sqrt(value) - square root
+        Sin, // @sin(value) - sine
+        Cos, // @cos(value) - cosine
+        Tan, // @tan(value) - tangent
+        Acos, // @acos(value) - arc cosine
+        Abs, // @abs(value) - absolute value
     };
 
     pub fn init(

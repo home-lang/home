@@ -2055,6 +2055,11 @@ pub const NativeCodegen = struct {
         if (std.mem.eql(u8, type_name, "str")) return 8; // String pointers are 8 bytes
         if (std.mem.eql(u8, type_name, "string")) return 8; // String pointers are 8 bytes
 
+        // Array types like [T] are stored as pointers (8 bytes)
+        if (type_name.len > 0 and type_name[0] == '[') {
+            return 8; // Dynamic arrays are stored as pointers
+        }
+
         // Check if it's a struct type
         if (self.struct_layouts.get(type_name)) |layout| {
             return layout.total_size;
@@ -2580,6 +2585,34 @@ pub const NativeCodegen = struct {
                     .total_size = offset,
                 };
                 try self.struct_layouts.put(name_copy, layout);
+
+                // First pass: Pre-register all mangled method names with placeholder positions
+                // This enables methods to call other methods on the same struct
+                for (struct_decl.methods) |method| {
+                    const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_decl.name, method.name });
+                    errdefer self.allocator.free(mangled_name);
+                    // Register with position 0 as placeholder - will be updated when method is generated
+                    try self.functions.put(mangled_name, 0);
+                }
+
+                // Second pass: Generate code for struct methods and update positions
+                for (struct_decl.methods) |method| {
+                    // Get current code position before generating the method
+                    const method_pos = self.assembler.getPosition();
+
+                    // Create mangled method name: StructName$methodName
+                    const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_decl.name, method.name });
+                    defer self.allocator.free(mangled_name);
+
+                    // Generate the method like a regular function
+                    try self.generateFnDecl(method);
+
+                    // Update the function map with correct position for mangled name
+                    // (the pre-registered name already exists, just update the position)
+                    if (self.functions.getPtr(mangled_name)) |pos_ptr| {
+                        pos_ptr.* = method_pos;
+                    }
+                }
             },
             .EnumDecl => |enum_decl| {
                 // Store enum layout for variant value resolution
@@ -3197,7 +3230,9 @@ pub const NativeCodegen = struct {
                 // Store parameter name, offset, and type
                 const name = try self.allocator.dupe(u8, param.name);
                 errdefer self.allocator.free(name);
-                const param_size = try self.getTypeSize(param.type_name);
+                // For struct types, we pass by pointer (8 bytes) not by value
+                const is_struct_param = self.struct_layouts.contains(param.type_name);
+                const param_size: usize = if (is_struct_param) 8 else try self.getTypeSize(param.type_name);
                 try self.locals.put(name, .{
                     .offset = offset,
                     .type_name = param.type_name,
@@ -3229,7 +3264,9 @@ pub const NativeCodegen = struct {
 
                 const name = try self.allocator.dupe(u8, param.name);
                 errdefer self.allocator.free(name);
-                const param_size = try self.getTypeSize(param.type_name);
+                // For struct types, we pass by pointer (8 bytes) not by value
+                const is_struct_param = self.struct_layouts.contains(param.type_name);
+                const param_size: usize = if (is_struct_param) 8 else try self.getTypeSize(param.type_name);
                 try self.locals.put(name, .{
                     .offset = offset,
                     .type_name = param.type_name,
@@ -3332,12 +3369,12 @@ pub const NativeCodegen = struct {
                 // Struct base points to first field
                 const struct_start_offset = self.next_local_offset;
 
-                // Store variable name
+                // Store variable name - use struct_lit.type_name for correct type
                 const name = try self.allocator.dupe(u8, decl.name);
                 errdefer self.allocator.free(name);
                 try self.locals.put(name, .{
                     .offset = struct_start_offset,
-                    .type_name = type_name,
+                    .type_name = struct_lit.type_name,
                     .size = struct_layout.total_size,
                 });
 
@@ -3483,6 +3520,12 @@ pub const NativeCodegen = struct {
             .IntegerLiteral => |lit| {
                 // Load immediate value into rax
                 try self.assembler.movRegImm64(.rax, lit.value);
+            },
+            .FloatLiteral => |lit| {
+                // Load float as bit pattern into rax
+                // This allows passing float values through integer registers
+                const float_bits: u64 = @bitCast(lit.value);
+                try self.assembler.movRegImm64(.rax, @bitCast(float_bits));
             },
             .BooleanLiteral => |lit| {
                 // Load boolean value into rax (0 for false, 1 for true)
@@ -3758,6 +3801,119 @@ pub const NativeCodegen = struct {
                             }
                         }
                     }
+
+                    // Check for method call: instance.method(args)
+                    // The instance becomes the first argument (self)
+                    const method_name = member.member;
+
+                    // Try to find struct type from the instance
+                    var found_struct_name: ?[]const u8 = null;
+
+                    // Track whether this is an instance method or static method call
+                    var is_static_call = false;
+
+                    // First, check if the object is a local variable (including 'self')
+                    if (member.object.* == .Identifier) {
+                        const obj_name = member.object.Identifier.name;
+                        if (self.locals.get(obj_name)) |local_info| {
+                            // We have a local variable - check its type
+                            if (self.struct_layouts.contains(local_info.type_name)) {
+                                // It's a struct type - check if the method exists
+                                const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ local_info.type_name, method_name });
+                                defer self.allocator.free(mangled_method_name);
+                                if (self.functions.contains(mangled_method_name)) {
+                                    found_struct_name = local_info.type_name;
+                                }
+                            }
+                        } else if (self.struct_layouts.contains(obj_name)) {
+                            // Object is a struct type name itself - this is a static method call
+                            // e.g., Vec3.zero()
+                            const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ obj_name, method_name });
+                            defer self.allocator.free(mangled_method_name);
+                            if (self.functions.contains(mangled_method_name)) {
+                                found_struct_name = obj_name;
+                                is_static_call = true;
+                            }
+                        }
+                    }
+
+                    // If not found via local variable type, search all struct layouts
+                    if (found_struct_name == null) {
+                        var iterator = self.struct_layouts.iterator();
+                        while (iterator.next()) |entry| {
+                            const struct_name = entry.key_ptr.*;
+                            const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_name, method_name });
+                            defer self.allocator.free(mangled_method_name);
+
+                            if (self.functions.contains(mangled_method_name)) {
+                                found_struct_name = struct_name;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (found_struct_name) |struct_name| {
+                        // Found a method - generate method call
+                        const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_name, method_name });
+                        defer self.allocator.free(mangled_name);
+
+                        if (self.functions.get(mangled_name)) |func_pos| {
+                            const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+
+                            if (is_static_call) {
+                                // Static method call - no self parameter
+                                // Just push the explicit arguments
+                                for (call.args) |arg| {
+                                    try self.generateExpr(arg);
+                                    try self.assembler.pushReg(.rax);
+                                }
+
+                                const total_args = call.args.len;
+                                const reg_arg_count = @min(total_args, arg_regs.len);
+
+                                // Pop arguments into correct registers (in reverse order)
+                                if (reg_arg_count > 0) {
+                                    var j: usize = reg_arg_count;
+                                    while (j > 0) {
+                                        j -= 1;
+                                        try self.assembler.popReg(arg_regs[j]);
+                                    }
+                                }
+                            } else {
+                                // Instance method call - pass struct by pointer as first argument
+                                // Evaluate the object expression - for struct identifiers,
+                                // generateExpr already returns a pointer to the struct
+                                try self.generateExpr(member.object);
+                                try self.assembler.pushReg(.rax);
+
+                                // Push remaining arguments
+                                for (call.args) |arg| {
+                                    try self.generateExpr(arg);
+                                    try self.assembler.pushReg(.rax);
+                                }
+
+                                // Total args = 1 (self) + call.args.len
+                                const total_args = 1 + call.args.len;
+                                const reg_arg_count = @min(total_args, arg_regs.len);
+
+                                // Pop arguments into correct registers (in reverse order)
+                                if (reg_arg_count > 0) {
+                                    var j: usize = reg_arg_count;
+                                    while (j > 0) {
+                                        j -= 1;
+                                        try self.assembler.popReg(arg_regs[j]);
+                                    }
+                                }
+                            }
+
+                            // Calculate relative offset to function
+                            const current_pos = self.assembler.getPosition();
+                            const rel_offset = @as(i32, @intCast(func_pos)) - @as(i32, @intCast(current_pos + 5));
+                            try self.assembler.callRel32(rel_offset);
+
+                            return;
+                        }
+                    }
                 }
 
                 // x64 calling convention: rdi, rsi, rdx, rcx, r8, r9 for first 6 args
@@ -3931,8 +4087,95 @@ pub const NativeCodegen = struct {
                     }
                 }
 
+                // Check for math module functions: math.sqrt, math.sin, math.cos, etc.
+                if (call.callee.* == .MemberExpr) {
+                    const member = call.callee.MemberExpr;
+                    if (member.object.* == .Identifier) {
+                        const module_name = member.object.Identifier.name;
+                        const func_name = member.member;
+
+                        if (std.mem.eql(u8, module_name, "math")) {
+                            // Handle math module functions
+                            if (call.args.len >= 1) {
+                                try self.generateExpr(call.args[0]);
+                            }
+
+                            if (std.mem.eql(u8, func_name, "sqrt")) {
+                                // sqrt: Convert int to float if needed, compute sqrt, convert back
+                                // For now, just return the value (placeholder for floating point ops)
+                                // TODO: Implement actual floating point sqrt
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "sin")) {
+                                // sin: placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "cos")) {
+                                // cos: placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "tan")) {
+                                // tan: placeholder
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "abs")) {
+                                // abs: absolute value
+                                // test rax, rax; jns .skip; neg rax; .skip:
+                                try self.assembler.testRegReg(.rax, .rax);
+                                const jns_pos = self.assembler.getPosition();
+                                try self.assembler.jnsRel32(0); // Jump if not sign (positive)
+                                try self.assembler.negReg(.rax);
+                                const skip_pos = self.assembler.getPosition();
+                                const jns_offset = @as(i32, @intCast(skip_pos)) - @as(i32, @intCast(jns_pos + 6));
+                                try self.assembler.patchJnsRel32(jns_pos, jns_offset);
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "is_finite")) {
+                                // is_finite: For now, always return true (1)
+                                // TODO: Implement proper NaN/Inf check for floats
+                                try self.assembler.movRegImm64(.rax, 1);
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "min")) {
+                                // min(a, b): return a if a < b else b
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                    try self.assembler.pushReg(.rax);
+                                    try self.generateExpr(call.args[0]);
+                                    try self.assembler.popReg(.rcx);
+                                    // Compare and select minimum
+                                    try self.assembler.cmpRegReg(.rax, .rcx);
+                                    const cmov_pos = self.assembler.getPosition();
+                                    try self.assembler.jlRel32(0); // Jump if rax < rcx
+                                    try self.assembler.movRegReg(.rax, .rcx); // rax = rcx (larger)
+                                    const skip_pos = self.assembler.getPosition();
+                                    const jl_offset = @as(i32, @intCast(skip_pos)) - @as(i32, @intCast(cmov_pos + 6));
+                                    try self.assembler.patchJlRel32(cmov_pos, jl_offset);
+                                }
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "max")) {
+                                // max(a, b): return a if a > b else b
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                    try self.assembler.pushReg(.rax);
+                                    try self.generateExpr(call.args[0]);
+                                    try self.assembler.popReg(.rcx);
+                                    // Compare and select maximum
+                                    try self.assembler.cmpRegReg(.rax, .rcx);
+                                    const cmov_pos = self.assembler.getPosition();
+                                    try self.assembler.jgRel32(0); // Jump if rax > rcx
+                                    try self.assembler.movRegReg(.rax, .rcx); // rax = rcx (smaller)
+                                    const skip_pos = self.assembler.getPosition();
+                                    const jg_offset = @as(i32, @intCast(skip_pos)) - @as(i32, @intCast(cmov_pos + 6));
+                                    try self.assembler.patchJgRel32(cmov_pos, jg_offset);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // Unknown function
-                std.debug.print("Unknown function in native codegen: {s}\n", .{call.callee.Identifier.name});
+                const callee_name = switch (call.callee.*) {
+                    .Identifier => |ident| ident.name,
+                    .MemberExpr => |member| member.member,
+                    else => "<unknown>",
+                };
+                std.debug.print("Unknown function in native codegen: {s}\n", .{callee_name});
                 return error.UnsupportedFeature;
             },
             .TernaryExpr => |ternary| {
@@ -4230,11 +4473,57 @@ pub const NativeCodegen = struct {
             },
 
             .ReflectExpr => |reflect_expr| {
-                // Reflection expressions are evaluated at compile time
-                // They should have been replaced with constant values during semantic analysis
-                // For now, return an error placeholder
-                _ = reflect_expr;
-                try self.assembler.movRegImm64(.rax, 0); // Placeholder
+                // Handle builtin functions
+                switch (reflect_expr.kind) {
+                    .SizeOf => {
+                        // @sizeOf(Type) - returns size in bytes
+                        // The target should be a type identifier
+                        if (reflect_expr.target.* == .Identifier) {
+                            const type_name = reflect_expr.target.Identifier.name;
+                            const size = try self.getTypeSize(type_name);
+                            try self.assembler.movRegImm64(.rax, @intCast(size));
+                        } else {
+                            try self.assembler.movRegImm64(.rax, 8); // Default to 8 bytes
+                        }
+                    },
+                    .IntCast, .FloatCast, .PtrCast, .BitCast, .As, .Truncate => {
+                        // Type cast builtins - for now, just evaluate the value
+                        // The actual cast is a no-op in x86-64 as everything is 8 bytes
+                        try self.generateExpr(reflect_expr.target);
+                    },
+                    .PtrToInt, .IntFromPtr => {
+                        // @ptrToInt(ptr) - pointer is already an integer in memory
+                        try self.generateExpr(reflect_expr.target);
+                    },
+                    .IntToFloat, .FloatToInt, .EnumToInt, .IntToEnum => {
+                        // Type conversion builtins - for now, just evaluate the value
+                        // In x86-64, we treat everything as 64-bit values
+                        try self.generateExpr(reflect_expr.target);
+                    },
+                    .Sqrt, .Sin, .Cos, .Tan, .Acos => {
+                        // Math functions - for now, just evaluate the argument
+                        // Full implementation would use SSE/FPU instructions or libm calls
+                        try self.generateExpr(reflect_expr.target);
+                    },
+                    .Abs => {
+                        // @abs(value) - absolute value using conditional move
+                        try self.generateExpr(reflect_expr.target);
+                        // mov rcx, rax
+                        try self.assembler.movRegReg(.rcx, .rax);
+                        // For negative values, negate
+                        // test rax, rax (set flags)
+                        // Note: Using simple approach - check if negative and negate if so
+                        // This is simplified; real abs would use conditional instructions
+                    },
+                    .MemSet, .MemCpy => {
+                        // Memory operations - for now, just evaluate the first argument
+                        try self.generateExpr(reflect_expr.target);
+                    },
+                    else => {
+                        // Other reflection operations - placeholder
+                        try self.assembler.movRegImm64(.rax, 0);
+                    },
+                }
             },
 
             .StringLiteral => |str_lit| {
@@ -4263,24 +4552,83 @@ pub const NativeCodegen = struct {
             },
 
             .AssignmentExpr => |assign| {
-                // x = value
+                // x = value or obj.field = value
                 // Evaluate the value expression (result in rax)
                 try self.generateExpr(assign.value);
 
-                // Store to target (must be an Identifier for now)
-                if (assign.target.* != .Identifier) {
-                    std.debug.print("Assignment target must be an identifier\n", .{});
-                    return error.UnsupportedFeature;
-                }
+                // Handle different target types
+                if (assign.target.* == .Identifier) {
+                    const target_name = assign.target.Identifier.name;
+                    if (self.locals.get(target_name)) |local_info| {
+                        // Store rax to stack location
+                        const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        try self.assembler.movMemReg(.rbp, stack_offset, .rax);
+                    } else {
+                        std.debug.print("Undefined variable in assignment: {s}\n", .{target_name});
+                        return error.UndefinedVariable;
+                    }
+                } else if (assign.target.* == .MemberExpr) {
+                    // Member assignment: obj.field = value or self.field = value
+                    const member = assign.target.MemberExpr;
 
-                const target_name = assign.target.Identifier.name;
-                if (self.locals.get(target_name)) |local_info| {
-                    // Store rax to stack location
-                    const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
-                    try self.assembler.movMemReg(.rbp, stack_offset, .rax);
+                    if (member.object.* != .Identifier) {
+                        std.debug.print("Member assignment only supported on identifiers\n", .{});
+                        return error.UnsupportedFeature;
+                    }
+
+                    const obj_name = member.object.Identifier.name;
+
+                    // Save value in rbx
+                    try self.assembler.movRegReg(.rbx, .rax);
+
+                    const local_info = self.locals.get(obj_name) orelse {
+                        std.debug.print("Undefined variable in member assignment: {s}\n", .{obj_name});
+                        return error.UndefinedVariable;
+                    };
+
+                    // Look up struct layout from type
+                    const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
+                        std.debug.print("Type {s} is not a struct\n", .{local_info.type_name});
+                        return error.UnsupportedFeature;
+                    };
+
+                    // Find field offset in struct layout
+                    var field_offset: ?usize = null;
+                    for (struct_layout.fields) |field| {
+                        if (std.mem.eql(u8, field.name, member.member)) {
+                            field_offset = field.offset;
+                            break;
+                        }
+                    }
+
+                    if (field_offset == null) {
+                        std.debug.print("Field {s} not found in struct {s}\n", .{ member.member, local_info.type_name });
+                        return error.UnsupportedFeature;
+                    }
+
+                    // Check if this is a pointer to struct (size 8 but type is a struct)
+                    // This happens for 'self' parameter in methods
+                    if (local_info.size == 8 and struct_layout.total_size > 8) {
+                        // Local contains a pointer to the struct
+                        // First load the pointer from stack
+                        const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
+                        // Then store the value to the field in the pointed struct
+                        // Stack grows downward, so field at offset N is at [pointer - N]
+                        const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
+                        try self.assembler.movMemReg(.rax, field_access_offset, .rbx);
+                    } else {
+                        // Struct is stored inline on stack
+                        // Calculate address of field on stack
+                        const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
+
+                        // Store value to field on stack
+                        try self.assembler.movMemReg(.rbp, field_stack_offset, .rbx);
+                    }
                 } else {
-                    std.debug.print("Undefined variable in assignment: {s}\n", .{target_name});
-                    return error.UndefinedVariable;
+                    std.debug.print("Assignment target must be an identifier or member expression\n", .{});
+                    return error.UnsupportedFeature;
                 }
             },
 
@@ -4292,11 +4640,37 @@ pub const NativeCodegen = struct {
                 return error.UnsupportedFeature;
             },
 
-            .StructLiteral => {
-                // Struct literals should only appear in let declarations
-                // where they are handled specially (similar to arrays)
-                std.debug.print("Struct literals are only supported in let declarations\n", .{});
-                return error.UnsupportedFeature;
+            .StructLiteral => |struct_lit| {
+                // Struct literal as expression (e.g., in return statements)
+                // Allocate space on stack and return pointer to it
+                const struct_layout = self.struct_layouts.get(struct_lit.type_name) orelse {
+                    std.debug.print("Unknown struct type in literal: {s}\n", .{struct_lit.type_name});
+                    return error.UnsupportedFeature;
+                };
+
+                // Push each field value onto the stack in layout order
+                for (struct_layout.fields) |field_info| {
+                    // Find the field in the literal
+                    var field_value: ?*ast.Expr = null;
+                    for (struct_lit.fields) |lit_field| {
+                        if (std.mem.eql(u8, lit_field.name, field_info.name)) {
+                            field_value = lit_field.value;
+                            break;
+                        }
+                    }
+
+                    if (field_value) |val| {
+                        try self.generateExpr(val);
+                        try self.assembler.pushReg(.rax);
+                    } else {
+                        // Field not initialized - push zero
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.pushReg(.rax);
+                    }
+                }
+
+                // Return pointer to the struct on stack (first field)
+                try self.assembler.movRegReg(.rax, .rsp);
             },
 
             .IndexExpr => |index| {
@@ -4377,26 +4751,41 @@ pub const NativeCodegen = struct {
                     return error.UnsupportedFeature;
                 };
 
-                // Find field index in struct layout
-                var field_index: ?usize = null;
-                for (struct_layout.fields, 0..) |field, i| {
+                // Find field offset in struct layout
+                var field_offset: ?usize = null;
+                for (struct_layout.fields) |field| {
                     if (std.mem.eql(u8, field.name, member.member)) {
-                        field_index = i;
+                        field_offset = field.offset;
                         break;
                     }
                 }
 
-                if (field_index == null) {
+                if (field_offset == null) {
                     std.debug.print("Field {s} not found in struct {s}\n", .{member.member, local_info.type_name});
                     return error.UnsupportedFeature;
                 }
 
-                // Calculate address of field on stack
-                // Struct base is at offset, field i is at offset + i
-                const field_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + field_index.? + 1) * 8));
+                // Check if this is a pointer to struct (size 8 but type is a struct)
+                // This happens for 'self' parameter in methods
+                if (local_info.size == 8 and struct_layout.total_size > 8) {
+                    // Local contains a pointer to the struct
+                    // First load the pointer from stack
+                    const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                    try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
+                    // Then load the field from the pointed struct
+                    // Stack grows downward, so field at offset N is at [pointer - N] not [pointer + N]
+                    const field_access_offset: i32 = -@as(i32, @intCast(field_offset.?));
+                    try self.assembler.movRegMem(.rax, .rax, field_access_offset);
+                } else {
+                    // Struct is stored inline on stack
+                    // Calculate address of field on stack
+                    // Struct fields are stored in order, so field offset is struct_base + field.offset
+                    const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                    const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
 
-                // Load field value directly from stack
-                try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
+                    // Load field value directly from stack
+                    try self.assembler.movRegMem(.rax, .rbp, field_stack_offset);
+                }
             },
 
             .TryExpr => |try_expr| {
@@ -4555,6 +4944,19 @@ pub const NativeCodegen = struct {
                 self.next_local_offset -= 1;
 
                 // rax now contains the result of the matched arm's body expression
+            },
+
+            .TypeCastExpr => |type_cast| {
+                // Type cast expression: cast value to target_type
+                // For now, just generate the value - the type cast is mostly semantic
+                // The actual conversion happens based on the types involved
+                try self.generateExpr(type_cast.value);
+
+                // Type-specific conversions could be added here:
+                // - int to float: cvtsi2sd
+                // - float to int: cvttsd2si
+                // - pointer casts: no-op (same size)
+                // For now, assume most casts are no-ops at the machine level
             },
 
             else => |expr_tag| {

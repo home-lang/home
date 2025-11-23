@@ -669,7 +669,15 @@ pub const Parser = struct {
 
         if (!self.check(.RightParen)) {
             while (true) {
-                const param_name = try self.expect(.Identifier, "Expected parameter name");
+                // Accept both Identifier and 'self' keyword as parameter names
+                const param_name = if (self.check(.Identifier))
+                    try self.expect(.Identifier, "Expected parameter name")
+                else if (self.check(.SelfValue))
+                    try self.expect(.SelfValue, "Expected parameter name")
+                else {
+                    try self.reportError("Expected parameter name");
+                    return error.UnexpectedToken;
+                };
                 _ = try self.expect(.Colon, "Expected ':' after parameter name");
                 const param_type = try self.parseTypeAnnotation();
 
@@ -2749,6 +2757,25 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "truncate")) break :blk .Truncate;
                 if (std.mem.eql(u8, name, "as")) break :blk .As;
                 if (std.mem.eql(u8, name, "bitCast")) break :blk .BitCast;
+                // Type casting builtins
+                if (std.mem.eql(u8, name, "intCast")) break :blk .IntCast;
+                if (std.mem.eql(u8, name, "floatCast")) break :blk .FloatCast;
+                if (std.mem.eql(u8, name, "ptrCast")) break :blk .PtrCast;
+                if (std.mem.eql(u8, name, "ptrToInt")) break :blk .PtrToInt;
+                if (std.mem.eql(u8, name, "intToFloat")) break :blk .IntToFloat;
+                if (std.mem.eql(u8, name, "floatToInt")) break :blk .FloatToInt;
+                if (std.mem.eql(u8, name, "enumToInt")) break :blk .EnumToInt;
+                if (std.mem.eql(u8, name, "intToEnum")) break :blk .IntToEnum;
+                // Memory builtins
+                if (std.mem.eql(u8, name, "memset")) break :blk .MemSet;
+                if (std.mem.eql(u8, name, "memcpy")) break :blk .MemCpy;
+                // Math builtins
+                if (std.mem.eql(u8, name, "sqrt")) break :blk .Sqrt;
+                if (std.mem.eql(u8, name, "sin")) break :blk .Sin;
+                if (std.mem.eql(u8, name, "cos")) break :blk .Cos;
+                if (std.mem.eql(u8, name, "tan")) break :blk .Tan;
+                if (std.mem.eql(u8, name, "acos")) break :blk .Acos;
+                if (std.mem.eql(u8, name, "abs")) break :blk .Abs;
 
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
@@ -3115,6 +3142,16 @@ pub const Parser = struct {
             }
 
             // Regular identifier
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
+        // 'self' keyword in expressions (for method bodies)
+        if (self.match(&.{.SelfValue})) {
+            const token = self.previous();
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
                 .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
