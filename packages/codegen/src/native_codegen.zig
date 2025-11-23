@@ -2762,6 +2762,12 @@ pub const NativeCodegen = struct {
 
                 // Pop the iterator value (cleanup stack after loop)
                 try self.assembler.popReg(.rax);
+
+                // Clean up the iterator variable from locals and restore offset
+                if (self.locals.fetchRemove(for_stmt.iterator)) |old_entry| {
+                    self.allocator.free(old_entry.key);
+                }
+                self.next_local_offset -= 1;
             },
             .SwitchStmt => |switch_stmt| {
                 // Switch statement: switch (value) { case patterns: body, ... }
