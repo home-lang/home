@@ -1073,8 +1073,37 @@ pub const Parser = struct {
 
         _ = try self.expect(.Equal, "Expected '=' after type alias name");
 
-        const target_type_token = try self.expect(.Identifier, "Expected target type");
-        const target_type = target_type_token.lexeme;
+        // Check if this is a function type alias: type Foo = fn(...)
+        var target_type: []const u8 = undefined;
+        if (self.check(.Fn)) {
+            // Parse function type: fn(params): return_type
+            _ = self.advance(); // consume 'fn'
+            _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in function type");
+
+            // Skip parameter list - we just need to get past this for now
+            var paren_depth: usize = 1;
+            while (paren_depth > 0 and !self.isAtEnd()) {
+                if (self.check(.LeftParen)) {
+                    paren_depth += 1;
+                } else if (self.check(.RightParen)) {
+                    paren_depth -= 1;
+                }
+                if (paren_depth > 0) _ = self.advance();
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after function parameters");
+
+            // Optional return type after ':'
+            if (self.match(&.{.Colon})) {
+                // Skip the return type
+                _ = self.advance(); // consume return type identifier
+            }
+
+            // Store as "fn" to indicate function type - actual type will be handled by type system
+            target_type = "fn";
+        } else {
+            const target_type_token = try self.expect(.Identifier, "Expected target type");
+            target_type = target_type_token.lexeme;
+        }
 
         const type_alias_decl = try ast.TypeAliasDecl.init(
             self.allocator,

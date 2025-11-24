@@ -97,6 +97,12 @@ pub const TrackInfo = mp4.TrackInfo;
 pub const TrackType = mp4.TrackType;
 pub const SampleTable = mp4.SampleTable;
 
+pub const mp4_muxer = @import("containers/mp4_muxer.zig");
+pub const Mp4Muxer = mp4_muxer.Mp4Muxer;
+pub const VideoTrackConfig = mp4_muxer.VideoTrackConfig;
+pub const AudioTrackConfig = mp4_muxer.AudioTrackConfig;
+pub const MuxerSample = mp4_muxer.Sample;
+
 // ============================================================================
 // Audio Codecs
 // ============================================================================
@@ -119,6 +125,38 @@ pub const AudioSpecificConfig = aac.AudioSpecificConfig;
 pub const AdtsHeader = aac.AdtsHeader;
 pub const AdtsParser = aac.AdtsParser;
 pub const AudioObjectType = aac.AudioObjectType;
+
+// ============================================================================
+// Video Codecs
+// ============================================================================
+
+pub const h264 = @import("codecs/video/h264.zig");
+pub const H264NalIterator = h264.H264NalIterator;
+pub const H264NalUnitType = h264.NalUnitType;
+pub const H264NalUnitHeader = h264.NalUnitHeader;
+pub const H264Sps = h264.Sps;
+pub const H264Pps = h264.Pps;
+pub const AvcDecoderConfigRecord = h264.AvcDecoderConfigRecord;
+
+pub const hevc = @import("codecs/video/hevc.zig");
+pub const HevcNalIterator = hevc.HevcNalIterator;
+pub const HevcNalUnitType = hevc.NalUnitType;
+pub const HevcNalUnitHeader = hevc.NalUnitHeader;
+pub const HevcVps = hevc.Vps;
+pub const HevcSps = hevc.Sps;
+pub const HevcPps = hevc.Pps;
+pub const HvccRecord = hevc.HvccRecord;
+
+pub const vp9 = @import("codecs/video/vp9.zig");
+pub const Vp9Profile = vp9.Profile;
+pub const Vp9ColorSpace = vp9.ColorSpace;
+pub const Vp9FrameType = vp9.FrameType;
+pub const Vp9FrameParser = vp9.FrameParser;
+pub const Vp9UncompressedHeader = vp9.UncompressedHeader;
+pub const Vp9SuperframeIndex = vp9.SuperframeIndex;
+pub const Vp9SuperframeIterator = vp9.SuperframeIterator;
+pub const VpcCRecord = vp9.VpcCRecord;
+pub const parseSuperframeIndex = vp9.parseSuperframeIndex;
 
 // ============================================================================
 // Utilities
@@ -298,8 +336,12 @@ test "Video library imports" {
     _ = target;
     _ = wav;
     _ = mp4;
+    _ = mp4_muxer;
     _ = pcm;
     _ = aac;
+    _ = h264;
+    _ = hevc;
+    _ = vp9;
     _ = bitstream;
 }
 

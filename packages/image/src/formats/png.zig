@@ -32,7 +32,43 @@ const ChunkType = enum(u32) {
     sPLT = 0x73504C54,
     hIST = 0x68495354,
     tIME = 0x74494D45,
+    // APNG chunks
+    acTL = 0x6163544C, // Animation control
+    fcTL = 0x6663544C, // Frame control
+    fdAT = 0x66644154, // Frame data
     _,
+};
+
+// APNG frame dispose operations
+const APNGDisposeOp = enum(u8) {
+    none = 0,
+    background = 1,
+    previous = 2,
+};
+
+// APNG frame blend operations
+const APNGBlendOp = enum(u8) {
+    source = 0,
+    over = 1,
+};
+
+// APNG animation control
+const APNGAnimationControl = struct {
+    num_frames: u32,
+    num_plays: u32, // 0 = infinite
+};
+
+// APNG frame control
+const APNGFrameControl = struct {
+    sequence_number: u32,
+    width: u32,
+    height: u32,
+    x_offset: u32,
+    y_offset: u32,
+    delay_num: u16,
+    delay_den: u16,
+    dispose_op: APNGDisposeOp,
+    blend_op: APNGBlendOp,
 };
 
 const ColorType = enum(u8) {
@@ -78,13 +114,27 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
         return error.InvalidDimensions;
     }
 
-    // Collect all IDAT chunks and palette
+    // Collect all IDAT chunks, palette, and APNG data
     var idat_data = std.ArrayList(u8).init(allocator);
     defer idat_data.deinit();
 
     var palette: ?[]Color = null;
     var transparency: ?[]u8 = null;
     defer if (transparency) |t| allocator.free(t);
+
+    // APNG support
+    var anim_ctrl: ?APNGAnimationControl = null;
+    var frame_controls = std.ArrayList(APNGFrameControl).init(allocator);
+    defer frame_controls.deinit();
+    var frame_data_chunks = std.ArrayList(std.ArrayList(u8)).init(allocator);
+    defer {
+        for (frame_data_chunks.items) |*fd| {
+            fd.deinit();
+        }
+        frame_data_chunks.deinit();
+    }
+    var current_frame_data: ?*std.ArrayList(u8) = null;
+    var first_frame_is_default = false;
 
     while (true) {
         const chunk = reader.readChunk() catch |err| {
@@ -97,6 +147,10 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
         switch (chunk_type) {
             .IDAT => {
                 try idat_data.appendSlice(chunk.data);
+                // If first frame uses default image, add to first frame data too
+                if (anim_ctrl != null and first_frame_is_default and current_frame_data != null) {
+                    try current_frame_data.?.appendSlice(chunk.data);
+                }
             },
             .PLTE => {
                 if (chunk.data.len % 3 != 0) return error.InvalidFormat;
@@ -120,6 +174,47 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                     for (0..@min(transparency.?.len, pal.len)) |i| {
                         pal[i].a = transparency.?[i];
                     }
+                }
+            },
+            .acTL => {
+                // APNG animation control
+                if (chunk.data.len >= 8) {
+                    anim_ctrl = APNGAnimationControl{
+                        .num_frames = std.mem.readInt(u32, chunk.data[0..4], .big),
+                        .num_plays = std.mem.readInt(u32, chunk.data[4..8], .big),
+                    };
+                }
+            },
+            .fcTL => {
+                // APNG frame control
+                if (chunk.data.len >= 26) {
+                    const fc = APNGFrameControl{
+                        .sequence_number = std.mem.readInt(u32, chunk.data[0..4], .big),
+                        .width = std.mem.readInt(u32, chunk.data[4..8], .big),
+                        .height = std.mem.readInt(u32, chunk.data[8..12], .big),
+                        .x_offset = std.mem.readInt(u32, chunk.data[12..16], .big),
+                        .y_offset = std.mem.readInt(u32, chunk.data[16..20], .big),
+                        .delay_num = std.mem.readInt(u16, chunk.data[20..22], .big),
+                        .delay_den = std.mem.readInt(u16, chunk.data[22..24], .big),
+                        .dispose_op = @enumFromInt(chunk.data[24]),
+                        .blend_op = @enumFromInt(chunk.data[25]),
+                    };
+                    try frame_controls.append(fc);
+
+                    // Create new frame data buffer
+                    try frame_data_chunks.append(std.ArrayList(u8).init(allocator));
+                    current_frame_data = &frame_data_chunks.items[frame_data_chunks.items.len - 1];
+
+                    // Check if first frame uses default image
+                    if (frame_controls.items.len == 1 and fc.sequence_number == 0) {
+                        first_frame_is_default = true;
+                    }
+                }
+            },
+            .fdAT => {
+                // APNG frame data (skip 4-byte sequence number)
+                if (chunk.data.len > 4 and current_frame_data != null) {
+                    try current_frame_data.?.appendSlice(chunk.data[4..]);
                 }
             },
             .IEND => break,
@@ -167,6 +262,90 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Unfilter scanlines
     try unfilterImage(&img, decompressed.items, header);
+
+    // Handle APNG frames
+    if (anim_ctrl != null and frame_controls.items.len > 0) {
+        img.loop_count = anim_ctrl.?.num_plays;
+
+        // Decode animation frames
+        var frames = try allocator.alloc(Image.Frame, frame_controls.items.len);
+        errdefer {
+            for (frames) |f| {
+                allocator.free(f.pixels);
+            }
+            allocator.free(frames);
+        }
+
+        for (frame_controls.items, 0..) |fc, i| {
+            // Calculate delay in milliseconds
+            var delay_ms: u32 = 100; // Default
+            if (fc.delay_den != 0) {
+                delay_ms = (@as(u32, fc.delay_num) * 1000) / @as(u32, fc.delay_den);
+            } else if (fc.delay_num != 0) {
+                delay_ms = @as(u32, fc.delay_num) * 10; // 1/100th second
+            }
+
+            // Allocate frame pixels
+            const frame_size = @as(usize, fc.width) * @as(usize, fc.height) * output_format.bytesPerPixel();
+            const frame_pixels = try allocator.alloc(u8, frame_size);
+
+            // Decompress frame data
+            if (i < frame_data_chunks.items.len and frame_data_chunks.items[i].items.len > 0) {
+                var frame_decompressed = std.ArrayList(u8).init(allocator);
+                defer frame_decompressed.deinit();
+
+                var frame_stream = std.io.fixedBufferStream(frame_data_chunks.items[i].items);
+                var frame_decompressor = std.compress.zlib.decompressor(frame_stream.reader());
+
+                while (true) {
+                    var buf: [4096]u8 = undefined;
+                    const n = frame_decompressor.read(&buf) catch break;
+                    if (n == 0) break;
+                    try frame_decompressed.appendSlice(buf[0..n]);
+                }
+
+                // Create temp image for unfiltering
+                var temp_img = try Image.init(allocator, fc.width, fc.height, output_format);
+                defer temp_img.deinit();
+
+                const temp_header = PngHeader{
+                    .width = fc.width,
+                    .height = fc.height,
+                    .bit_depth = header.bit_depth,
+                    .color_type = header.color_type,
+                    .compression = 0,
+                    .filter = 0,
+                    .interlace = 0,
+                };
+
+                unfilterImage(&temp_img, frame_decompressed.items, temp_header) catch {};
+                @memcpy(frame_pixels, temp_img.pixels);
+            } else if (first_frame_is_default and i == 0) {
+                // First frame uses default image
+                @memcpy(frame_pixels, img.pixels);
+            } else {
+                @memset(frame_pixels, 0);
+            }
+
+            frames[i] = Image.Frame{
+                .pixels = frame_pixels,
+                .delay_ms = delay_ms,
+                .x_offset = fc.x_offset,
+                .y_offset = fc.y_offset,
+                .dispose_op = switch (fc.dispose_op) {
+                    .none => .none,
+                    .background => .background,
+                    .previous => .previous,
+                },
+                .blend_op = switch (fc.blend_op) {
+                    .source => .source,
+                    .over => .over,
+                },
+            };
+        }
+
+        img.frames = frames;
+    }
 
     return img;
 }
@@ -353,6 +532,17 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     ihdr_data[12] = 0; // Interlace
     try writeChunk(&output, .IHDR, &ihdr_data);
 
+    // Check if this is an animated PNG
+    const is_apng = img.frames != null and img.frames.?.len > 0;
+
+    // Write acTL chunk for APNG
+    if (is_apng) {
+        var actl_data: [8]u8 = undefined;
+        std.mem.writeInt(u32, actl_data[0..4], @intCast(img.frames.?.len), .big);
+        std.mem.writeInt(u32, actl_data[4..8], img.loop_count, .big);
+        try writeChunk(&output, .acTL, &actl_data);
+    }
+
     // Write PLTE chunk for indexed images
     if (color_type == .indexed and img.palette != null) {
         var plte_data = try allocator.alloc(u8, img.palette.?.len * 3);
@@ -417,8 +607,79 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     }
     try compressor.finish();
 
+    // For APNG, write fcTL for first frame before IDAT
+    var sequence_number: u32 = 0;
+    if (is_apng) {
+        const first_frame = img.frames.?[0];
+        try writeFcTL(&output, sequence_number, img.width, img.height, 0, 0, first_frame.delay_ms, first_frame.dispose_op, first_frame.blend_op);
+        sequence_number += 1;
+    }
+
     // Write IDAT chunk(s)
     try writeChunk(&output, .IDAT, compressed.items);
+
+    // Write additional APNG frames
+    if (is_apng) {
+        for (img.frames.?[1..]) |frame| {
+            // Get frame dimensions (use full image size if frame is full size)
+            const frame_width = img.width;
+            const frame_height = img.height;
+
+            // Write fcTL
+            try writeFcTL(&output, sequence_number, frame_width, frame_height, frame.x_offset, frame.y_offset, frame.delay_ms, frame.dispose_op, frame.blend_op);
+            sequence_number += 1;
+
+            // Compress frame data
+            const frame_scanline_width = @as(usize, frame_width) * bytes_per_pixel;
+            const frame_raw_size = @as(usize, frame_height) * (frame_scanline_width + 1);
+
+            var frame_raw = try allocator.alloc(u8, frame_raw_size);
+            defer allocator.free(frame_raw);
+
+            // Copy frame pixels with filter byte
+            var fy: u32 = 0;
+            while (fy < frame_height) : (fy += 1) {
+                const out_idx = @as(usize, fy) * (frame_scanline_width + 1);
+                frame_raw[out_idx] = 0; // No filter
+
+                var fx: u32 = 0;
+                while (fx < frame_width) : (fx += 1) {
+                    const src_idx = (@as(usize, fy) * @as(usize, frame_width) + @as(usize, fx)) * img.format.bytesPerPixel();
+                    const dst_idx = out_idx + 1 + @as(usize, fx) * bytes_per_pixel;
+
+                    for (0..bytes_per_pixel) |b| {
+                        if (src_idx + b < frame.pixels.len) {
+                            frame_raw[dst_idx + b] = frame.pixels[src_idx + b];
+                        }
+                    }
+                }
+            }
+
+            // Compress frame
+            var frame_compressed = std.ArrayList(u8).init(allocator);
+            defer frame_compressed.deinit();
+
+            var frame_fbs = std.io.fixedBufferStream(frame_raw);
+            var frame_compressor = try std.compress.zlib.compressor(frame_compressed.writer(), .{});
+            const frame_reader = frame_fbs.reader();
+
+            while (true) {
+                var buf: [4096]u8 = undefined;
+                const n = try frame_reader.read(&buf);
+                if (n == 0) break;
+                _ = try frame_compressor.write(buf[0..n]);
+            }
+            try frame_compressor.finish();
+
+            // Write fdAT (sequence number + compressed data)
+            var fdat = try allocator.alloc(u8, 4 + frame_compressed.items.len);
+            defer allocator.free(fdat);
+            std.mem.writeInt(u32, fdat[0..4], sequence_number, .big);
+            @memcpy(fdat[4..], frame_compressed.items);
+            try writeChunk(&output, .fdAT, fdat);
+            sequence_number += 1;
+        }
+    }
 
     // Write IEND chunk
     try writeChunk(&output, .IEND, &[_]u8{});
@@ -450,6 +711,33 @@ fn writeChunk(output: *std.ArrayList(u8), chunk_type: ChunkType, data: []const u
     var crc_buf: [4]u8 = undefined;
     std.mem.writeInt(u32, &crc_buf, crc, .big);
     try output.appendSlice(&crc_buf);
+}
+
+fn writeFcTL(output: *std.ArrayList(u8), seq: u32, width: u32, height: u32, x_off: u32, y_off: u32, delay_ms: u32, dispose: Image.DisposeOp, blend: Image.BlendOp) !void {
+    var fctl_data: [26]u8 = undefined;
+    std.mem.writeInt(u32, fctl_data[0..4], seq, .big);
+    std.mem.writeInt(u32, fctl_data[4..8], width, .big);
+    std.mem.writeInt(u32, fctl_data[8..12], height, .big);
+    std.mem.writeInt(u32, fctl_data[12..16], x_off, .big);
+    std.mem.writeInt(u32, fctl_data[16..20], y_off, .big);
+
+    // Convert delay_ms to delay_num/delay_den
+    const delay_num: u16 = @intCast(@min(delay_ms, 65535));
+    const delay_den: u16 = 1000;
+    std.mem.writeInt(u16, fctl_data[20..22], delay_num, .big);
+    std.mem.writeInt(u16, fctl_data[22..24], delay_den, .big);
+
+    fctl_data[24] = switch (dispose) {
+        .none => 0,
+        .background => 1,
+        .previous => 2,
+    };
+    fctl_data[25] = switch (blend) {
+        .source => 0,
+        .over => 1,
+    };
+
+    try writeChunk(output, .fcTL, &fctl_data);
 }
 
 // ============================================================================

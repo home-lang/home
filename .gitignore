@@ -21,3 +21,4 @@ packages/.DS_Store
 /packages/collections/.zig-cache
 /packages/io/.zig-cache
 /packages/video/.zig-cache
+/packages/audio/.zig-cache

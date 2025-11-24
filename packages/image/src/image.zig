@@ -12,6 +12,14 @@ const heic = @import("formats/heic.zig");
 const jp2 = @import("formats/jp2.zig");
 const tiff = @import("formats/tiff.zig");
 const svg = @import("formats/svg.zig");
+const ico = @import("formats/ico.zig");
+const tga = @import("formats/tga.zig");
+const ppm = @import("formats/ppm.zig");
+const qoi = @import("formats/qoi.zig");
+const hdr = @import("formats/hdr.zig");
+const dds = @import("formats/dds.zig");
+const psd = @import("formats/psd.zig");
+const exr = @import("formats/exr.zig");
 
 // ============================================================================
 // Core Types
@@ -58,6 +66,13 @@ pub const ImageFormat = enum {
     jp2, // JPEG 2000
     svg,
     ico,
+    tga,
+    ppm,
+    qoi,
+    hdr,
+    dds,
+    psd,
+    exr,
     unknown,
 
     pub fn fromExtension(ext: []const u8) ImageFormat {
@@ -71,7 +86,14 @@ pub const ImageFormat = enum {
         if (std.mem.eql(u8, ext, ".heic") or std.mem.eql(u8, ext, ".heif")) return .heic;
         if (std.mem.eql(u8, ext, ".jp2") or std.mem.eql(u8, ext, ".j2k") or std.mem.eql(u8, ext, ".jpx")) return .jp2;
         if (std.mem.eql(u8, ext, ".svg")) return .svg;
-        if (std.mem.eql(u8, ext, ".ico")) return .ico;
+        if (std.mem.eql(u8, ext, ".ico") or std.mem.eql(u8, ext, ".cur")) return .ico;
+        if (std.mem.eql(u8, ext, ".tga") or std.mem.eql(u8, ext, ".targa")) return .tga;
+        if (std.mem.eql(u8, ext, ".ppm") or std.mem.eql(u8, ext, ".pgm") or std.mem.eql(u8, ext, ".pbm") or std.mem.eql(u8, ext, ".pnm")) return .ppm;
+        if (std.mem.eql(u8, ext, ".qoi")) return .qoi;
+        if (std.mem.eql(u8, ext, ".hdr") or std.mem.eql(u8, ext, ".rgbe")) return .hdr;
+        if (std.mem.eql(u8, ext, ".dds")) return .dds;
+        if (std.mem.eql(u8, ext, ".psd") or std.mem.eql(u8, ext, ".psb")) return .psd;
+        if (std.mem.eql(u8, ext, ".exr")) return .exr;
         return .unknown;
     }
 
@@ -153,6 +175,47 @@ pub const ImageFormat = enum {
             }
         }
 
+        // ICO: 00 00 01 00 (icon) or 00 00 02 00 (cursor)
+        if (data.len >= 4 and data[0] == 0 and data[1] == 0 and (data[2] == 1 or data[2] == 2) and data[3] == 0) {
+            return .ico;
+        }
+
+        // QOI: qoif magic
+        if (data.len >= 4 and data[0] == 'q' and data[1] == 'o' and data[2] == 'i' and data[3] == 'f') {
+            return .qoi;
+        }
+
+        // DDS: DDS magic
+        if (data.len >= 4 and data[0] == 'D' and data[1] == 'D' and data[2] == 'S' and data[3] == ' ') {
+            return .dds;
+        }
+
+        // PSD: 8BPS magic
+        if (data.len >= 4 and data[0] == '8' and data[1] == 'B' and data[2] == 'P' and data[3] == 'S') {
+            return .psd;
+        }
+
+        // EXR: 76 2F 31 01
+        if (data.len >= 4 and data[0] == 0x76 and data[1] == 0x2F and data[2] == 0x31 and data[3] == 0x01) {
+            return .exr;
+        }
+
+        // HDR/RGBE: #?RADIANCE or #?RGBE
+        if (data.len >= 10 and std.mem.eql(u8, data[0..10], "#?RADIANCE")) {
+            return .hdr;
+        }
+        if (data.len >= 6 and std.mem.eql(u8, data[0..6], "#?RGBE")) {
+            return .hdr;
+        }
+
+        // PPM/PGM/PBM: P1-P6
+        if (data.len >= 2 and data[0] == 'P' and data[1] >= '1' and data[1] <= '7') {
+            return .ppm;
+        }
+
+        // TGA: Complex - check for valid header structure (no magic, detect by header validity)
+        // TGA has no magic bytes, so it's last resort and detected by file extension primarily
+
         return .unknown;
     }
 
@@ -169,6 +232,13 @@ pub const ImageFormat = enum {
             .jp2 => "image/jp2",
             .svg => "image/svg+xml",
             .ico => "image/x-icon",
+            .tga => "image/x-tga",
+            .ppm => "image/x-portable-anymap",
+            .qoi => "image/qoi",
+            .hdr => "image/vnd.radiance",
+            .dds => "image/vnd.ms-dds",
+            .psd => "image/vnd.adobe.photoshop",
+            .exr => "image/x-exr",
             .unknown => "application/octet-stream",
         };
     }
@@ -344,6 +414,14 @@ pub const Image = struct {
             .jp2 => jp2.decode(allocator, data),
             .tiff => tiff.decode(allocator, data),
             .svg => svg.decode(allocator, data),
+            .ico => ico.decode(allocator, data),
+            .tga => tga.decode(allocator, data),
+            .ppm => ppm.decode(allocator, data),
+            .qoi => qoi.decode(allocator, data),
+            .hdr => hdr.decode(allocator, data),
+            .dds => dds.decode(allocator, data),
+            .psd => psd.decode(allocator, data),
+            .exr => exr.decode(allocator, data),
             else => error.UnsupportedFormat,
         };
     }
@@ -377,6 +455,14 @@ pub const Image = struct {
             .jp2 => jp2.encode(self.allocator, self),
             .tiff => tiff.encode(self.allocator, self),
             .svg => svg.encode(self.allocator, self),
+            .ico => ico.encode(self.allocator, self),
+            .tga => tga.encode(self.allocator, self),
+            .ppm => ppm.encodePPM(self.allocator, self),
+            .qoi => qoi.encode(self.allocator, self),
+            .hdr => hdr.encode(self.allocator, self),
+            .dds => dds.encode(self.allocator, self),
+            .psd => psd.encode(self.allocator, self),
+            .exr => exr.encode(self.allocator, self),
             else => error.UnsupportedFormat,
         };
     }
@@ -547,6 +633,14 @@ pub const Heic = heic;
 pub const Jp2 = jp2;
 pub const Tiff = tiff;
 pub const Svg = svg;
+pub const Ico = ico;
+pub const Tga = tga;
+pub const Ppm = ppm;
+pub const Qoi = qoi;
+pub const Hdr = hdr;
+pub const Dds = dds;
+pub const Psd = psd;
+pub const Exr = exr;
 
 // ============================================================================
 // Tests
