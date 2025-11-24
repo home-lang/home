@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
+    const http_pkg = createPackage(b, "packages/http/src/http.zig", target, optimize, zig_test_framework);
 
     // Graphics packages (for games)
     const opengl_pkg = createPackage(b, "packages/graphics/src/opengl.zig", target, optimize, zig_test_framework);
@@ -190,6 +191,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("json", json_pkg);
     exe.root_module.addImport("file", file_pkg);
     exe.root_module.addImport("network", network_pkg);
+    exe.root_module.addImport("http", http_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -889,6 +891,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("json", json_pkg);
     debug_exe.root_module.addImport("file", file_pkg);
     debug_exe.root_module.addImport("network", network_pkg);
+    debug_exe.root_module.addImport("http", http_pkg);
     debug_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
@@ -922,6 +925,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("json", json_pkg);
     release_safe_exe.root_module.addImport("file", file_pkg);
     release_safe_exe.root_module.addImport("network", network_pkg);
+    release_safe_exe.root_module.addImport("http", http_pkg);
     release_safe_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
@@ -955,6 +959,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("json", json_pkg);
     release_small_exe.root_module.addImport("file", file_pkg);
     release_small_exe.root_module.addImport("network", network_pkg);
+    release_small_exe.root_module.addImport("http", http_pkg);
     release_small_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
