@@ -146,6 +146,17 @@ pub const Assembler = struct {
         try self.code.appendSlice(self.allocator, &bytes);
     }
 
+    /// mov reg, imm32 (zero-extended to 64-bit)
+    pub fn movRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
+        // B8 + rd + imm32 (no REX prefix needed, zero-extends to 64-bit)
+        try self.code.append(self.allocator, 0xB8 + dst.encodeModRM());
+
+        // Write i32 in little endian
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
     /// mov reg, reg
     pub fn movRegReg(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 89 /r
@@ -670,6 +681,14 @@ pub const Assembler = struct {
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0xFF);
         try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    /// dec reg (decrement register by 1)
+    pub fn decReg(self: *Assembler, dst: Register) !void {
+        // REX.W + FF /1
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xFF);
+        try self.emitModRM(0b11, 1, @intFromEnum(dst));
     }
 
     /// Patch jg rel32 at position

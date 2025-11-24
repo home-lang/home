@@ -477,9 +477,30 @@ pub const Parser = struct {
         var attrs = std.ArrayList(ast.Attribute){ .items = &.{}, .capacity = 0 };
         defer attrs.deinit(self.allocator);
 
-        while (self.match(&.{.At})) {
-            const name_token = try self.expect(.Identifier, "Expected attribute name after '@'");
+        while (self.check(.At)) {
+            // Peek ahead to see if this is an attribute or a builtin function call
+            // Attributes: @test, @inline
+            // Builtins: @memset(...), @ptrCast(...), @TypeOf(...)
+            const at_pos = self.current;
+            _ = self.advance(); // consume @
+
+            if (!self.check(.Identifier)) {
+                // Not an identifier after @, backtrack
+                self.current = at_pos;
+                break;
+            }
+
+            const name_token = self.advance();
             const name = name_token.lexeme;
+
+            // Check if this looks like a builtin function call
+            // Builtins are followed by '(' immediately
+            if (self.check(.LeftParen)) {
+                // This is a builtin call like @memset(...), not an attribute
+                // Backtrack and stop parsing attributes
+                self.current = at_pos;
+                break;
+            }
 
             var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
             defer args.deinit(self.allocator);
@@ -2641,9 +2662,9 @@ pub const Parser = struct {
     fn assignment(self: *Parser, target: *ast.Expr) !*ast.Expr {
         const assign_token = self.previous();
 
-        // Validate that the target is a valid lvalue (identifier, index, or member access)
+        // Validate that the target is a valid lvalue (identifier, index, member access, or dereference)
         switch (target.*) {
-            .Identifier, .IndexExpr, .MemberExpr => {},
+            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr => {},
             else => {
                 try self.reportError("Invalid assignment target");
                 return ParseError.UnexpectedToken;
@@ -2673,7 +2694,7 @@ pub const Parser = struct {
 
         // Validate that the target is a valid lvalue
         switch (target.*) {
-            .Identifier, .IndexExpr, .MemberExpr => {},
+            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr => {},
             else => {
                 try self.reportError("Invalid assignment target");
                 return ParseError.UnexpectedToken;
@@ -2900,6 +2921,20 @@ pub const Parser = struct {
             );
             const result = try self.allocator.create(ast.Expr);
             result.* = ast.Expr{ .TryExpr = try_expr };
+            return result;
+        }
+
+        // Check for .* pointer dereference syntax (* token follows the dot)
+        if (self.match(&.{.Star})) {
+            // Create a UnaryExpr for pointer dereference
+            const unary_expr = try ast.UnaryExpr.init(
+                self.allocator,
+                .Deref,
+                object,
+                ast.SourceLocation.fromToken(dot_token),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .UnaryExpr = unary_expr };
             return result;
         }
 
@@ -3543,9 +3578,16 @@ pub const Parser = struct {
 
             // Parse second argument for two-arg builtins like @atan2, @min, @max, @pow
             var second_arg: ?*ast.Expr = null;
-            if (kind == .Atan2 or kind == .Min or kind == .Max or kind == .Pow) {
+            if (kind == .Atan2 or kind == .Min or kind == .Max or kind == .Pow or kind == .MemCpy or kind == .MemSet) {
                 _ = try self.expect(.Comma, "Expected ',' between arguments");
                 second_arg = try self.expression();
+            }
+
+            // Parse third argument for three-arg builtins like @memcpy, @memset
+            var third_arg: ?*ast.Expr = null;
+            if (kind == .MemCpy or kind == .MemSet) {
+                _ = try self.expect(.Comma, "Expected ',' between arguments");
+                third_arg = try self.expression();
             }
 
             // Parse optional field name for @offsetOf, @fieldType
@@ -3564,6 +3606,7 @@ pub const Parser = struct {
                 kind,
                 target,
                 second_arg,
+                third_arg,
                 field_name,
                 target_type,
                 ast.SourceLocation.fromToken(at_token),

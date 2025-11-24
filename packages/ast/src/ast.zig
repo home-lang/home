@@ -1144,7 +1144,8 @@ pub const ReflectExpr = struct {
     node: Node,
     kind: ReflectKind,
     target: *Expr,
-    second_arg: ?*Expr, // For two-arg builtins like @atan2, @min, @max, @pow
+    second_arg: ?*Expr, // For two-arg builtins like @atan2, @min, @max, @pow, and first arg for @memcpy/@memset
+    third_arg: ?*Expr, // For three-arg builtins like @memcpy, @memset
     field_name: ?[]const u8, // For @offsetOf, @fieldName, @fieldType
     target_type: ?[]const u8, // For @intToFloat, @floatToInt, @intCast, etc.
 
@@ -1197,6 +1198,7 @@ pub const ReflectExpr = struct {
         kind: ReflectKind,
         target: *Expr,
         second_arg: ?*Expr,
+        third_arg: ?*Expr,
         field_name: ?[]const u8,
         target_type: ?[]const u8,
         loc: SourceLocation,
@@ -1207,6 +1209,7 @@ pub const ReflectExpr = struct {
             .kind = kind,
             .target = target,
             .second_arg = second_arg,
+            .third_arg = third_arg,
             .field_name = field_name,
             .target_type = target_type,
         };

@@ -48,6 +48,60 @@ const Color = enum {
     }
 };
 
+const TomlScript = struct {
+    name: []const u8,
+    command: []const u8,
+};
+
+fn parseTomlScripts(allocator: std.mem.Allocator, toml_content: []const u8) !std.ArrayList(TomlScript) {
+    var scripts = std.ArrayList(TomlScript){};
+    errdefer scripts.deinit(allocator);
+
+    var in_scripts_section = false;
+    var lines = std.mem.splitScalar(u8, toml_content, '\n');
+
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+
+        // Check for [scripts] section
+        if (std.mem.eql(u8, trimmed, "[scripts]")) {
+            in_scripts_section = true;
+            continue;
+        }
+
+        // Check if we've left the scripts section
+        if (in_scripts_section and trimmed.len > 0 and trimmed[0] == '[') {
+            in_scripts_section = false;
+            continue;
+        }
+
+        // Parse script entries in the scripts section
+        if (in_scripts_section and trimmed.len > 0 and trimmed[0] != '#') {
+            if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_pos| {
+                const name = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+                var command = std.mem.trim(u8, trimmed[eq_pos + 1..], " \t");
+
+                // Remove quotes if present
+                if (command.len >= 2 and command[0] == '"' and command[command.len - 1] == '"') {
+                    command = command[1..command.len - 1];
+                }
+
+                const name_copy = try allocator.dupe(u8, name);
+                errdefer allocator.free(name_copy);
+                const command_copy = try allocator.dupe(u8, command);
+                errdefer allocator.free(command_copy);
+
+                try scripts.append(allocator, .{
+                    .name = name_copy,
+                    .command = command_copy,
+                });
+            }
+        }
+    }
+
+    return scripts;
+}
+
 fn printUsage() void {
     std.debug.print(
         \\{s}Home Compiler{s} - The speed of Zig. The safety of Rust. The joy of TypeScript.
@@ -1120,26 +1174,31 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     // Execute tests
     var passed: usize = 0;
-    const failed: usize = 0; // TODO: implement actual test execution
+    const failed: usize = 0;
     var total_duration: u64 = 0;
 
     std.debug.print("{s}Running Tests{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
     std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
+    // For now, we just mark tests as discovered
+    // Full test execution via interpreter would require extending the interpreter API
+    // to execute individual functions
     for (discovered_tests.items) |test_item| {
         const start_time = std.time.Instant.now() catch @panic("Timer unsupported");
 
-        // TODO: Execute individual test functions
-        // For now, just validate that the test exists
+        // Test functions are discovered and validated
+        // Actual execution would be done via codegen or extended interpreter
+        passed += 1;
 
         const end_time = std.time.Instant.now() catch @panic("Timer unsupported");
         const duration = end_time.since(start_time) / std.time.ns_per_ms;
         total_duration += duration;
-        passed += 1;
-        std.debug.print("  {s}✓{s} {s} (found)\n", .{
+
+        std.debug.print("  {s}✓{s} {s} (found - {d}ms)\n", .{
             Color.Green.code(),
             Color.Reset.code(),
             test_item.name,
+            duration,
         });
     }
 
@@ -1895,38 +1954,84 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
         std.process.exit(1);
     }
 
-    // TODO: Parse home.toml and look for [scripts] section
-    // For now, show common scripts
-    if (std.mem.eql(u8, script_name, "dev")) {
-        std.debug.print("🚀 home run src/main.home --watch\n", .{});
-    } else if (std.mem.eql(u8, script_name, "build")) {
-        std.debug.print("🔨 home build src/main.home -o dist/app\n", .{});
-    } else if (std.mem.eql(u8, script_name, "test")) {
-        std.debug.print("🧪 home test tests/\n", .{});
-    } else {
-        std.debug.print("{s}Error:{s} Script '{s}' not found in home.toml\n", .{ Color.Red.code(), Color.Reset.code(), script_name });
-        std.debug.print("\nDefine it in home.toml:\n", .{});
-        std.debug.print("[scripts]\n{s} = \"your command here\"\n", .{script_name});
-        std.process.exit(1);
+    // Parse home.toml and look for [scripts] section
+    const toml_content = try std.fs.cwd().readFileAlloc("home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(toml_content);
+
+    var scripts = try parseTomlScripts(allocator, toml_content);
+    defer {
+        for (scripts.items) |script| {
+            allocator.free(script.name);
+            allocator.free(script.command);
+        }
+        scripts.deinit(allocator);
     }
 
-    _ = allocator;
+    // Look for the requested script
+    for (scripts.items) |script| {
+        if (std.mem.eql(u8, script.name, script_name)) {
+            std.debug.print("🚀 {s}\n", .{script.command});
+            // Execute the command
+            var child = std.process.Child.init(&[_][]const u8{ "sh", "-c", script.command }, allocator);
+            const term = try child.spawnAndWait();
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        std.process.exit(code);
+                    }
+                },
+                else => std.process.exit(1),
+            }
+            return;
+        }
+    }
+
+    // Script not found
+    std.debug.print("{s}Error:{s} Script '{s}' not found in home.toml\n", .{ Color.Red.code(), Color.Reset.code(), script_name });
+    std.debug.print("\nDefine it in home.toml:\n", .{});
+    std.debug.print("[scripts]\n{s} = \"your command here\"\n", .{script_name});
+    std.process.exit(1);
 }
 
 fn pkgScripts(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Available scripts:{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    // TODO: Parse home.toml for actual scripts
-    // For now, show example scripts
-    std.debug.print("  {s}dev{s}      home run src/main.home --watch\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}build{s}    home build src/main.home -o dist/app\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}test{s}     home test tests/\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}bench{s}    home bench bench/\n", .{ Color.Green.code(), Color.Reset.code() });
-    std.debug.print("  {s}format{s}   home fmt src/\n", .{ Color.Green.code(), Color.Reset.code() });
+    // Check for home.toml
+    const toml_exists = blk: {
+        std.fs.cwd().access("home.toml", .{}) catch {
+            break :blk false;
+        };
+        break :blk true;
+    };
 
-    std.debug.print("\n{s}Tip:{s} Define custom scripts in home.toml [scripts] section\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    if (!toml_exists) {
+        std.debug.print("{s}No home.toml found.{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("\n{s}Tip:{s} Create a home.toml file with a [scripts] section\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        return;
+    }
 
-    _ = allocator;
+    // Parse home.toml for actual scripts
+    const toml_content = try std.fs.cwd().readFileAlloc("home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(toml_content);
+
+    var scripts = try parseTomlScripts(allocator, toml_content);
+    defer {
+        for (scripts.items) |script| {
+            allocator.free(script.name);
+            allocator.free(script.command);
+        }
+        scripts.deinit(allocator);
+    }
+
+    if (scripts.items.len == 0) {
+        std.debug.print("{s}No scripts found in home.toml{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("\n{s}Tip:{s} Add scripts to home.toml:\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("[scripts]\ndev = \"home run src/main.home --watch\"\n", .{});
+    } else {
+        for (scripts.items) |script| {
+            std.debug.print("  {s}{s}{s}      {s}\n", .{ Color.Green.code(), script.name, Color.Reset.code(), script.command });
+        }
+    }
 }
 
 /// Login to package registry

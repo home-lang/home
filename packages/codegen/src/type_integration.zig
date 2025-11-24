@@ -115,15 +115,15 @@ pub const TypeIntegration = struct {
 
         // Add parameter types to environment
         for (fn_decl.params) |param| {
-            // For now, use annotated types if available
-            // TODO: Implement full parameter type inference
-            if (param.type_annotation) |_| {
-                // Type is annotated, use it
-            } else {
+            const param_ty = if (param.type_expr) |type_expr|
+                // Type is annotated, convert it to Type
+                try self.typeExprToType(type_expr, &fn_env)
+            else
                 // Generate fresh type variable
-                const param_ty = try self.inferencer.freshTypeVar();
-                try self.var_types.put(param.name, param_ty);
-            }
+                try self.inferencer.freshTypeVar();
+
+            try self.var_types.put(param.name, param_ty);
+            try fn_env.extend(param.name, param_ty);
         }
 
         // Infer function body
@@ -208,5 +208,66 @@ pub const TypeIntegration = struct {
         }
 
         std.debug.print("======================\n\n", .{});
+    }
+
+    /// Convert AST TypeExpr to Type
+    fn typeExprToType(self: *TypeIntegration, type_expr: *const ast.TypeExpr, env: *type_system.TypeEnvironment) !*Type {
+        _ = env;
+
+        return switch (type_expr.*) {
+            .Named => |name| {
+                // Convert named types to Type instances
+                const ty = try self.allocator.create(Type);
+                ty.* = switch (std.mem.eql(u8, name, "i8")) {
+                    true => Type.I8,
+                    false => if (std.mem.eql(u8, name, "i16"))
+                        Type.I16
+                    else if (std.mem.eql(u8, name, "i32"))
+                        Type.I32
+                    else if (std.mem.eql(u8, name, "i64"))
+                        Type.I64
+                    else if (std.mem.eql(u8, name, "u8"))
+                        Type.U8
+                    else if (std.mem.eql(u8, name, "u16"))
+                        Type.U16
+                    else if (std.mem.eql(u8, name, "u32"))
+                        Type.U32
+                    else if (std.mem.eql(u8, name, "u64"))
+                        Type.U64
+                    else if (std.mem.eql(u8, name, "f32"))
+                        Type.F32
+                    else if (std.mem.eql(u8, name, "f64"))
+                        Type.F64
+                    else if (std.mem.eql(u8, name, "bool"))
+                        Type.Bool
+                    else if (std.mem.eql(u8, name, "String"))
+                        Type.String
+                    else
+                        // Unknown type - create a type variable
+                        Type{ .TypeVar = .{ .id = self.inferencer.next_type_var_id, .name = name } },
+                };
+                return ty;
+            },
+            .Generic => {
+                // For now, create a fresh type variable for generics
+                return try self.inferencer.freshTypeVar();
+            },
+            .Function => {
+                // For now, create a fresh type variable for function types
+                return try self.inferencer.freshTypeVar();
+            },
+            .Tuple => {
+                // For now, create a fresh type variable for tuples
+                return try self.inferencer.freshTypeVar();
+            },
+            .Reference => {
+                // For now, create a fresh type variable for references
+                return try self.inferencer.freshTypeVar();
+            },
+            .MutableReference => {
+                // For now, create a fresh type variable for mutable references
+                return try self.inferencer.freshTypeVar();
+            },
+        };
     }
 };

@@ -88,9 +88,9 @@ A comprehensive, dependency-free video processing library for the Home language,
   - [ ] Chapter markers
   - [ ] Attachment support (fonts, etc.)
   - [ ] Multiple subtitle tracks
-- [ ] **AVI** (.avi) - Legacy container
-  - [ ] RIFF chunk parsing
-  - [ ] OpenDML extensions for >2GB files
+- [x] **AVI** (.avi) - Legacy container
+  - [x] RIFF chunk parsing
+  - [x] OpenDML extensions for >2GB files
 
 ### 2.2 Audio Containers (Read & Write)
 - [ ] **MP3** (.mp3) - MPEG Audio Layer III
@@ -142,10 +142,10 @@ A comprehensive, dependency-free video processing library for the Home language,
   - [ ] OBU parsing
 
 ### 3.2 Legacy Codecs (Decode priority, Encode optional)
-- [ ] **VP8** - WebM legacy codec
+- [x] **VP8** - WebM legacy codec
 - [ ] **MPEG-4 Part 2** - DivX/Xvid compatibility
-- [ ] **MPEG-2** - DVD video
-- [ ] **MJPEG** - Motion JPEG
+- [x] **MPEG-2** - DVD video
+- [x] **MJPEG** - Motion JPEG
 - [ ] **ProRes** (decode only) - Apple intermediate codec
 
 ### 3.3 Codec Configuration
@@ -174,15 +174,15 @@ A comprehensive, dependency-free video processing library for the Home language,
 - [ ] **Opus** - Modern open codec
   - [ ] Voice and music modes
   - [ ] Variable bitrate
-- [ ] **MP3** - MPEG Layer 3
-  - [ ] CBR and VBR encoding
-  - [ ] Layer I/II/III decoding
-- [ ] **Vorbis** - Open audio in Ogg
+- [x] **MP3** - MPEG Layer 3
+  - [x] CBR and VBR encoding
+  - [x] Layer I/II/III decoding
+- [x] **Vorbis** - Open audio in Ogg
 - [ ] **FLAC** - Lossless compression
   - [ ] Compression levels 0-8
   - [ ] Seeking support
-- [ ] **AC3/E-AC3** - Dolby Digital
-- [ ] **DTS** (decode only) - DTS audio
+- [x] **AC3/E-AC3** - Dolby Digital
+- [x] **DTS** (decode only) - DTS audio
 
 ### 4.2 PCM Audio (Always supported, no external deps)
 - [ ] **PCM signed** - s8, s16le, s16be, s24le, s24be, s32le, s32be
@@ -213,8 +213,8 @@ A comprehensive, dependency-free video processing library for the Home language,
   - [ ] Positioning and effects
 
 ### 5.2 Image-based Subtitles (decode only)
-- [ ] **PGS** - Blu-ray subtitles
-- [ ] **VobSub** - DVD subtitles
+- [x] **PGS** - Blu-ray subtitles
+- [x] **VobSub** - DVD subtitles
 
 ### 5.3 Subtitle Operations
 - [ ] Timing adjustment (offset, scale)
@@ -343,57 +343,57 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 9. Conversion Pipeline
 
 ### 9.1 High-Level Conversion API
-- [ ] `convert()` - One-shot file conversion
-- [ ] `ConversionOptions` struct with all parameters
-- [ ] Progress tracking (0.0 - 1.0)
-- [ ] Cancellation with cleanup
-- [ ] Error recovery options
+- [x] `convert()` - One-shot file conversion
+- [x] `ConversionOptions` struct with all parameters
+- [x] Progress tracking (0.0 - 1.0)
+- [x] Cancellation with cleanup
+- [x] Error recovery options
 
 ### 9.2 Conversion Modes
-- [ ] **Transmux** - Change container, keep codec (fast)
-- [ ] **Transcode** - Re-encode media
-- [ ] **Passthrough** - Copy specific streams without re-encoding
-- [ ] **Mixed** - Transcode some streams, passthrough others
+- [x] **Transmux** - Change container, keep codec (fast)
+- [x] **Transcode** - Re-encode media
+- [x] **Passthrough** - Copy specific streams without re-encoding
+- [x] **Mixed** - Transcode some streams, passthrough others
 
 ### 9.3 Conversion Options
-- [ ] Video codec selection and configuration
-- [ ] Audio codec selection and configuration
-- [ ] Subtitle handling (copy, burn-in, discard)
-- [ ] Metadata handling (copy, transform, discard)
-- [ ] Two-pass encoding support
-- [ ] Target file size encoding
+- [x] Video codec selection and configuration
+- [x] Audio codec selection and configuration
+- [x] Subtitle handling (copy, burn-in, discard)
+- [x] Metadata handling (copy, transform, discard)
+- [x] Two-pass encoding support
+- [x] Target file size encoding
 
 ### 9.4 Batch Processing
-- [ ] Multiple file conversion
-- [ ] Parallel processing
-- [ ] Queue management
-- [ ] Per-file and overall progress
+- [x] Multiple file conversion
+- [x] Parallel processing
+- [x] Queue management
+- [x] Per-file and overall progress
 
 ---
 
 ## 10. Media Sources & Sinks
 
 ### 10.1 Video Sources (for creating video)
-- [ ] **ImageSequenceSource** - Create video from images
-- [ ] **CanvasSource** - Frame-by-frame procedural generation
-- [ ] **RawVideoSource** - From raw pixel buffers
-- [ ] **EncodedPacketSource** - From pre-encoded packets
+- [x] **ImageSequenceSource** - Create video from images
+- [x] **CanvasSource** - Frame-by-frame procedural generation
+- [x] **RawVideoSource** - From raw pixel buffers
+- [x] **EncodedPacketSource** - From pre-encoded packets
 
 ### 10.2 Audio Sources (for creating audio)
-- [ ] **RawAudioSource** - From raw sample buffers
-- [ ] **ToneGeneratorSource** - Synthesize test tones
-- [ ] **SilenceSource** - Generate silence
-- [ ] **EncodedPacketSource** - From pre-encoded packets
+- [x] **RawAudioSource** - From raw sample buffers
+- [x] **ToneGeneratorSource** - Synthesize test tones
+- [x] **SilenceSource** - Generate silence
+- [x] **EncodedPacketSource** - From pre-encoded packets
 
 ### 10.3 Video Sinks (for extracting video)
-- [ ] **VideoFrameSink** - Get decoded frames
-- [ ] **ImageSequenceSink** - Export as image files
-- [ ] **EncodedPacketSink** - Get raw packets
+- [x] **VideoFrameSink** - Get decoded frames
+- [x] **ImageSequenceSink** - Export as image files
+- [x] **EncodedPacketSink** - Get raw packets
 
 ### 10.4 Audio Sinks (for extracting audio)
-- [ ] **AudioSampleSink** - Get decoded samples
-- [ ] **WaveformSink** - Generate waveform data
-- [ ] **EncodedPacketSink** - Get raw packets
+- [x] **AudioSampleSink** - Get decoded samples
+- [x] **WaveformSink** - Generate waveform data
+- [x] **EncodedPacketSink** - Get raw packets
 
 ---
 
@@ -734,35 +734,35 @@ packages/video/
 ## 17. Timeline & Editing
 
 ### 17.1 Timeline Structure
-- [ ] `Timeline` - Multi-track editing container
-- [ ] `Track` - Video, audio, or subtitle track lane
-- [ ] `Clip` - Media segment on a track
-- [ ] `Transition` - Effect between clips
+- [x] `Timeline` - Multi-track editing container
+- [x] `Track` - Video, audio, or subtitle track lane
+- [x] `Clip` - Media segment on a track
+- [x] `Transition` - Effect between clips
 
 ### 17.2 Non-Linear Editing (NLE) Operations
-- [ ] **Insert clip** at position
-- [ ] **Overwrite clip** at position
-- [ ] **Ripple delete** - Remove and shift subsequent clips
-- [ ] **Roll edit** - Adjust cut point between clips
-- [ ] **Slip edit** - Move media within clip boundaries
-- [ ] **Slide edit** - Move clip while adjusting neighbors
-- [ ] **Razor/split** - Cut clip at position
+- [x] **Insert clip** at position
+- [x] **Overwrite clip** at position
+- [x] **Ripple delete** - Remove and shift subsequent clips
+- [x] **Roll edit** - Adjust cut point between clips
+- [x] **Slip edit** - Move media within clip boundaries
+- [x] **Slide edit** - Move clip while adjusting neighbors
+- [x] **Razor/split** - Cut clip at position
 
 ### 17.3 Multi-Track Support
-- [ ] Unlimited video tracks with layering/compositing
-- [ ] Unlimited audio tracks with mixing
-- [ ] Track enable/disable (solo, mute)
-- [ ] Track opacity and blend modes
+- [x] Unlimited video tracks with layering/compositing
+- [x] Unlimited audio tracks with mixing
+- [x] Track enable/disable (solo, mute)
+- [x] Track opacity and blend modes
 
 ### 17.4 Timeline Export
-- [ ] Render timeline to single output file
-- [ ] Progress reporting during render
-- [ ] Preview render (lower quality, faster)
-- [ ] Render queue for batch exports
+- [x] Render timeline to single output file
+- [x] Progress reporting during render
+- [x] Preview render (lower quality, faster)
+- [x] Render queue for batch exports
 
 ### 17.5 Project Serialization
-- [ ] Save/load timeline projects (JSON or custom format)
-- [ ] EDL (Edit Decision List) export
+- [x] Save/load timeline projects (JSON or custom format)
+- [x] EDL (Edit Decision List) export
 - [ ] XML export (Final Cut Pro XML, etc.)
 
 ---
@@ -770,30 +770,30 @@ packages/video/
 ## 18. GIF Support
 
 ### 18.1 GIF Container
-- [ ] **GIF reader** - Parse GIF87a/GIF89a
-  - [ ] Frame extraction
-  - [ ] Global/local color tables
-  - [ ] Animation timing (delay)
-  - [ ] Disposal methods
-  - [ ] Transparency
-- [ ] **GIF writer** - Generate animated GIFs
-  - [ ] Color quantization (median cut, octree)
-  - [ ] Dithering (Floyd-Steinberg, ordered)
-  - [ ] Frame optimization (delta frames)
-  - [ ] Loop count control
+- [x] **GIF reader** - Parse GIF87a/GIF89a
+  - [x] Frame extraction
+  - [x] Global/local color tables
+  - [x] Animation timing (delay)
+  - [x] Disposal methods
+  - [x] Transparency
+- [x] **GIF writer** - Generate animated GIFs
+  - [x] Color quantization (median cut, octree)
+  - [x] Dithering (Floyd-Steinberg, ordered)
+  - [x] Frame optimization (delta frames)
+  - [x] Loop count control
 
 ### 18.2 GIF Operations
-- [ ] `video.to_gif()` - Convert video to GIF
-- [ ] `gif.to_video()` - Convert GIF to video format
-- [ ] Quality/size tradeoff options
-- [ ] Max colors configuration (2-256)
-- [ ] Frame rate reduction for smaller files
+- [x] `video.to_gif()` - Convert video to GIF
+- [x] `gif.to_video()` - Convert GIF to video format
+- [x] Quality/size tradeoff options
+- [x] Max colors configuration (2-256)
+- [x] Frame rate reduction for smaller files
 
 ### 18.3 GIF Optimization
-- [ ] Lossy compression (color reduction)
-- [ ] Transparency optimization
-- [ ] Frame coalescing
-- [ ] Global vs local palette selection
+- [x] Lossy compression (color reduction)
+- [x] Transparency optimization
+- [x] Frame coalescing
+- [x] Global vs local palette selection
 
 ---
 
@@ -842,22 +842,22 @@ packages/video/
 ## 20. Audio Visualization
 
 ### 20.1 Waveform Generation
-- [ ] `audio.waveform(width, height)` - Generate waveform image
-- [ ] `audio.waveform_data()` - Get raw waveform data points
-- [ ] Multiple styles (bars, line, filled)
-- [ ] Color customization
-- [ ] Stereo (dual channel) display
+- [x] `audio.waveform(width, height)` - Generate waveform image
+- [x] `audio.waveform_data()` - Get raw waveform data points
+- [x] Multiple styles (bars, line, filled)
+- [x] Color customization
+- [x] Stereo (dual channel) display
 
 ### 20.2 Spectrum Visualization
-- [ ] FFT-based frequency analysis
-- [ ] Spectrogram generation (time vs frequency)
-- [ ] Real-time spectrum data for visualizers
+- [x] FFT-based frequency analysis
+- [x] Spectrogram generation (time vs frequency)
+- [x] Real-time spectrum data for visualizers
 
 ### 20.3 Audio Meters
-- [ ] Peak level metering
-- [ ] RMS level metering
-- [ ] LUFS loudness metering
-- [ ] Phase correlation meter
+- [x] Peak level metering
+- [x] RMS level metering
+- [x] LUFS loudness metering
+- [x] Phase correlation meter
 
 ---
 

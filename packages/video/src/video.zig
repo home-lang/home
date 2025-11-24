@@ -165,6 +165,18 @@ pub const FlacPicture = flac.Picture;
 pub const FlacPictureType = flac.PictureType;
 pub const isFlac = flac.isFlac;
 
+pub const mp3 = @import("codecs/audio/mp3.zig");
+pub const Mp3 = mp3.Mp3;
+pub const Mp3Parser = mp3.Mp3Parser;
+pub const Mp3Reader = mp3.Mp3Reader;
+pub const isMp3 = mp3.isMp3;
+
+pub const vorbis = @import("codecs/audio/vorbis.zig");
+pub const Vorbis = vorbis.Vorbis;
+pub const VorbisParser = vorbis.VorbisParser;
+pub const VorbisDecoder = vorbis.VorbisDecoder;
+pub const VorbisEncoder = vorbis.VorbisEncoder;
+
 // ============================================================================
 // Video Codecs
 // ============================================================================
@@ -218,6 +230,19 @@ pub const VvcVps = vvc.Vps;
 pub const VvcSps = vvc.Sps;
 pub const VvcPps = vvc.Pps;
 pub const VvcCRecord = vvc.VvcCRecord;
+
+pub const vp8 = @import("codecs/video/vp8.zig");
+pub const Vp8 = vp8.Vp8;
+pub const Vp8FrameParser = vp8.Vp8FrameParser;
+
+pub const mjpeg = @import("codecs/video/mjpeg.zig");
+pub const Mjpeg = mjpeg.Mjpeg;
+pub const MjpegParser = mjpeg.MjpegParser;
+pub const MjpegDecoder = mjpeg.MjpegDecoder;
+
+pub const mpeg2 = @import("codecs/video/mpeg2.zig");
+pub const Mpeg2 = mpeg2.Mpeg2;
+pub const Mpeg2Parser = mpeg2.Mpeg2Parser;
 
 // ============================================================================
 // Utilities
@@ -676,6 +701,127 @@ pub const DcpEssence = dcp.DcpEssence;
 pub const DcpUtils = dcp.DcpUtils;
 
 // ============================================================================
+// Timeline / NLE
+// ============================================================================
+
+pub const timeline = @import("timeline/timeline.zig");
+pub const Timeline = timeline.Timeline;
+pub const Track = timeline.Track;
+pub const Clip = timeline.Clip;
+pub const Transition = timeline.Transition;
+pub const TimelineRenderer = timeline.TimelineRenderer;
+pub const EdlExporter = timeline.EdlExporter;
+
+// ============================================================================
+// GIF Support
+// ============================================================================
+
+pub const gif = @import("containers/gif.zig");
+pub const Gif = gif.Gif;
+pub const GifReader = gif.GifReader;
+pub const GifWriter = gif.GifWriter;
+pub const isGif = gif.isGif;
+
+// ============================================================================
+// Audio Visualization
+// ============================================================================
+
+pub const audio_viz = @import("audio/visualization.zig");
+pub const WaveformGenerator = audio_viz.WaveformGenerator;
+pub const SpectrogramGenerator = audio_viz.SpectrogramGenerator;
+pub const SpectrumAnalyzer = audio_viz.SpectrumAnalyzer;
+pub const AudioMeter = audio_viz.AudioMeter;
+
+// ============================================================================
+// Image-based Subtitles
+// ============================================================================
+
+pub const pgs = @import("subtitles/pgs.zig");
+pub const Pgs = pgs.Pgs;
+pub const PgsParser = pgs.PgsParser;
+pub const PgsDecoder = pgs.PgsDecoder;
+pub const isPgs = pgs.isPgs;
+
+pub const vobsub = @import("subtitles/vobsub.zig");
+pub const VobSub = vobsub.VobSub;
+pub const VobSubIdx = vobsub.VobSubIdx;
+pub const VobSubParser = vobsub.VobSubParser;
+pub const VobSubDecoder = vobsub.VobSubDecoder;
+
+// ============================================================================
+// Additional Containers
+// ============================================================================
+
+pub const avi = @import("containers/avi.zig");
+pub const Avi = avi.Avi;
+pub const AviReader = avi.AviReader;
+pub const isAvi = avi.isAvi;
+
+// ============================================================================
+// Additional Audio Codecs
+// ============================================================================
+
+pub const ac3 = @import("codecs/audio/ac3.zig");
+pub const Ac3 = ac3.Ac3;
+pub const Ac3Parser = ac3.Ac3Parser;
+pub const Ac3Decoder = ac3.Ac3Decoder;
+pub const isAc3OrEac3 = ac3.isAc3OrEac3;
+
+pub const dts = @import("codecs/audio/dts.zig");
+pub const Dts = dts.Dts;
+pub const DtsParser = dts.DtsParser;
+pub const DtsDecoder = dts.DtsDecoder;
+pub const isDts = dts.isDts;
+
+// ============================================================================
+// Conversion Pipeline
+// ============================================================================
+
+pub const conversion = @import("conversion/conversion.zig");
+pub const ConversionMode = conversion.ConversionMode;
+pub const ConversionOptions = conversion.ConversionOptions;
+pub const ConversionResult = conversion.ConversionResult;
+pub const VideoEncodingOptions = conversion.VideoEncodingOptions;
+pub const AudioEncodingOptions = conversion.AudioEncodingOptions;
+pub const StreamAction = conversion.StreamAction;
+pub const SubtitleAction = conversion.SubtitleAction;
+pub const Converter = conversion.Converter;
+pub const BatchConverter = conversion.BatchConverter;
+pub const Presets = conversion.Presets;
+pub const ProgressCallback = conversion.ProgressCallback;
+pub const CancellationToken = conversion.CancellationToken;
+
+// ============================================================================
+// Media Sources
+// ============================================================================
+
+pub const sources = @import("sources/sources.zig");
+pub const VideoSource = sources.VideoSource;
+pub const AudioSource = sources.AudioSource;
+pub const ImageSequenceSource = sources.ImageSequenceSource;
+pub const CanvasSource = sources.CanvasSource;
+pub const ToneGeneratorSource = sources.ToneGeneratorSource;
+pub const SilenceSource = sources.SilenceSource;
+pub const RawVideoSource = sources.RawVideoSource;
+pub const RawAudioSource = sources.RawAudioSource;
+
+// ============================================================================
+// Media Sinks
+// ============================================================================
+
+pub const sinks = @import("sinks/sinks.zig");
+pub const VideoSink = sinks.VideoSink;
+pub const AudioSink = sinks.AudioSink;
+pub const VideoFrameSink = sinks.VideoFrameSink;
+pub const ImageSequenceSink = sinks.ImageSequenceSink;
+pub const EncodedPacketSink = sinks.EncodedPacketSink;
+pub const AudioSampleSink = sinks.AudioSampleSink;
+pub const WaveformSink = sinks.WaveformSink;
+pub const NullSink = sinks.NullSink;
+pub const FileSink = sinks.FileSink;
+pub const BufferSink = sinks.BufferSink;
+
+// ============================================================================
 // Conversion Utilities
 // ============================================================================
 
@@ -950,6 +1096,15 @@ test "Video library imports" {
     _ = dnxhd;
     _ = imf;
     _ = dcp;
+    // Phase 4 modules
+    _ = pgs;
+    _ = vobsub;
+    _ = avi;
+    _ = ac3;
+    _ = dts;
+    _ = conversion;
+    _ = sources;
+    _ = sinks;
 }
 
 test "Timestamp basic" {

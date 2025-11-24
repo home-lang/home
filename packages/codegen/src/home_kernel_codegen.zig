@@ -11,6 +11,12 @@ const ModuleResolver = parser_mod.ModuleResolver;
 const Symbol = parser_mod.Symbol;
 const kernel_codegen = @import("kernel_codegen.zig");
 
+/// String literal entry for .rodata section
+const StringLiteral = struct {
+    label: usize,
+    content: []const u8,
+};
+
 /// Kernel code generator with Home language support
 pub const HomeKernelCodegen = struct {
     allocator: std.mem.Allocator,
@@ -22,6 +28,12 @@ pub const HomeKernelCodegen = struct {
     output: std.ArrayList(u8),
     /// Kernel codegen options
     kernel_opts: kernel_codegen.KernelCodegenOptions,
+    /// Local variable tracking: name -> stack offset (in bytes from %rbp)
+    locals: std.StringHashMap(i32),
+    /// Current stack offset for allocating new variables
+    stack_offset: i32,
+    /// String literals to emit in .rodata section: (label_num, content)
+    string_literals: std.ArrayList(StringLiteral),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -34,11 +46,16 @@ pub const HomeKernelCodegen = struct {
         result.module_resolver = module_resolver;
         result.output = .{ .items = &[_]u8{}, .capacity = 0 };
         result.kernel_opts = kernel_codegen.KernelCodegenOptions{};
+        result.locals = std.StringHashMap(i32).init(allocator);
+        result.stack_offset = -8; // Start at -8 from %rbp (first local variable)
+        result.string_literals = .{ .items = &[_]StringLiteral{}, .capacity = 0 };
         return result;
     }
 
     pub fn deinit(self: *HomeKernelCodegen) void {
         self.output.deinit(self.allocator);
+        self.locals.deinit();
+        self.string_literals.deinit(self.allocator);
     }
 
     /// Helper to write string to output
@@ -67,6 +84,16 @@ pub const HomeKernelCodegen = struct {
         // Generate code for each statement
         for (program.statements) |stmt| {
             try self.generateStmt(stmt);
+        }
+
+        // Emit .rodata section with string literals
+        if (self.string_literals.items.len > 0) {
+            try self.writeAll("\n.section .rodata\n");
+
+            for (self.string_literals.items) |str_lit| {
+                try self.print(".L_str_{d}:\n", .{str_lit.label});
+                try self.print("    .asciz \"{s}\"\n", .{str_lit.content});
+            }
         }
 
         return self.output.items;
@@ -117,8 +144,17 @@ pub const HomeKernelCodegen = struct {
             .LetDecl => |decl| {
                 // Variable declaration
                 if (decl.value) |value| {
+                    // Generate the initial value expression (result in %rax)
                     try self.generateExpr(value);
-                    // TODO: Store in local variable on stack
+
+                    // Push the value onto the stack
+                    try self.writeAll("    pushq %rax\n");
+
+                    // Track this variable's stack offset
+                    try self.locals.put(decl.name, self.stack_offset);
+
+                    // Update stack offset for next variable (stack grows downward)
+                    self.stack_offset -= 8; // 8 bytes for a 64-bit value
                 }
             },
             .IfStmt => |if_stmt| {
@@ -205,8 +241,11 @@ pub const HomeKernelCodegen = struct {
                 const label_num = @intFromPtr(lit.value.ptr);
                 try self.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
 
-                // We'll emit the string data at the end
-                // TODO: Collect string literals and emit in .rodata section
+                // Collect this string literal for emission later
+                try self.string_literals.append(self.allocator, .{
+                    .label = label_num,
+                    .content = lit.value,
+                });
             },
             .CallExpr => |call| {
                 // Check if this is a module member call (e.g., serial.init())
@@ -294,9 +333,15 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .Identifier => |id| {
-                // Load variable
-                // TODO: Track variable offsets on stack
-                try self.print("    # Load variable {s}\n", .{id.name});
+                // Load variable from stack
+                if (self.locals.get(id.name)) |offset| {
+                    // Load from stack at offset from %rbp into %rax
+                    try self.print("    movq {d}(%rbp), %rax\n", .{offset});
+                } else {
+                    // Variable not found in locals - might be global or parameter
+                    // For now, just emit a comment
+                    try self.print("    # Load variable {s} (not in locals)\n", .{id.name});
+                }
             },
             else => {
                 // Unsupported expression - skip

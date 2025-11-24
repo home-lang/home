@@ -94,7 +94,16 @@ pub const LLVMBackend = struct {
             .FunctionDecl => |func_decl| try self.generateFunction(func_decl),
             .StructDecl => |struct_decl| try self.generateStruct(struct_decl),
             .EnumDecl => |enum_decl| try self.generateEnum(enum_decl),
-            else => {}, // TODO: Handle other statements
+            .LetDecl => |let_decl| try self.generateLetDecl(let_decl),
+            .ConstDecl => |const_decl| try self.generateConstDecl(const_decl),
+            .ReturnStmt => |ret_stmt| try self.generateReturn(ret_stmt),
+            .IfStmt => |if_stmt| try self.generateIf(if_stmt),
+            .WhileStmt => |while_stmt| try self.generateWhile(while_stmt),
+            .ForStmt => |for_stmt| try self.generateFor(for_stmt),
+            .ExprStmt => |expr_stmt| try self.generateExprStmt(expr_stmt),
+            .TypeAliasDecl, .TraitDecl, .ImplDecl => {}, // Type-level declarations, no codegen needed
+            .ImportDecl => {}, // Handled during module resolution
+            else => {}, // Other statements not yet implemented
         }
     }
 
@@ -124,9 +133,12 @@ pub const LLVMBackend = struct {
         try self.emitLine("entry:");
         self.indent_level += 1;
 
-        // TODO: Generate body statements
+        // Generate body statements
+        for (func.body.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
 
-        // Return
+        // Default return if function doesn't explicitly return
         if (func.return_type == .Void) {
             try self.emitLine("ret void");
         }
@@ -154,9 +166,31 @@ pub const LLVMBackend = struct {
     }
 
     fn generateEnum(self: *LLVMBackend, enum_decl: *const ast.EnumDecl) !void {
-        _ = enum_decl;
         // Enums are represented as tagged unions in LLVM
-        // TODO: Implement enum generation
+        // Structure: { i32 tag, union { variant payloads } }
+
+        try self.emit("%");
+        try self.emit(enum_decl.name);
+        try self.emitLine(" = type { i32, %union_payload }");
+
+        // Generate union type for variant payloads
+        try self.emit("%");
+        try self.emit(enum_decl.name);
+        try self.emit("_union = type { ");
+
+        // Find largest variant payload
+        for (enum_decl.variants, 0..) |variant, i| {
+            if (i > 0) try self.emit(", ");
+            if (variant.value_type) |value_type| {
+                const llvm_type = try self.toLLVMType(value_type);
+                try self.emit(llvm_type);
+            } else {
+                try self.emit("i8"); // Unit variant
+            }
+        }
+
+        try self.emitLine(" }");
+        try self.emitLine("");
     }
 
     /// Convert Home type to LLVM type string
@@ -271,5 +305,51 @@ pub const Compiler = struct {
 
         // Link (would use ld or lld)
         // link object file + runtime library -> executable
+    }
+
+    // Statement generation functions (placeholder implementations)
+
+    fn generateLetDecl(self: *LLVMBackend, decl: *const ast.LetDecl) !void {
+        // Allocate local variable on stack
+        // For now, just emit a comment
+        try self.emit("; let ");
+        try self.emit(decl.name);
+        try self.emitLine("");
+    }
+
+    fn generateConstDecl(self: *LLVMBackend, decl: *const ast.ConstDecl) !void {
+        // Constants are typically inlined or made global
+        try self.emit("; const ");
+        try self.emit(decl.name);
+        try self.emitLine("");
+    }
+
+    fn generateReturn(self: *LLVMBackend, ret: *const ast.ReturnStmt) !void {
+        if (ret.value) |_| {
+            // TODO: Generate return value expression
+            try self.emitLine("; ret <value>");
+        } else {
+            try self.emitLine("ret void");
+        }
+    }
+
+    fn generateIf(self: *LLVMBackend, if_stmt: *const ast.IfStmt) !void {
+        // TODO: Generate condition, branches, labels
+        try self.emitLine("; if statement");
+    }
+
+    fn generateWhile(self: *LLVMBackend, while_stmt: *const ast.WhileStmt) !void {
+        // TODO: Generate loop labels and condition
+        try self.emitLine("; while loop");
+    }
+
+    fn generateFor(self: *LLVMBackend, for_stmt: *const ast.ForStmt) !void {
+        // TODO: Generate for loop
+        try self.emitLine("; for loop");
+    }
+
+    fn generateExprStmt(self: *LLVMBackend, expr: *const ast.Expr) !void {
+        // TODO: Generate expression and discard result
+        try self.emitLine("; expression statement");
     }
 };

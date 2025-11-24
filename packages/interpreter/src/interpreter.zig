@@ -16,7 +16,14 @@ pub const InterpreterError = error{
     Return, // Used for control flow
     Break, // Used for break statements
     Continue, // Used for continue statements
+    LabelNotFound, // Used for labeled break/continue
 } || std.mem.Allocator.Error;
+
+/// Target for break/continue with label
+pub const LoopTarget = struct {
+    label: ?[]const u8,
+    found: bool,
+};
 
 /// Home language interpreter
 ///
@@ -47,6 +54,12 @@ pub const Interpreter = struct {
     debugger: ?*Debugger,
     debug_enabled: bool,
     source_file: []const u8,
+    /// Stack of loop labels for labeled break/continue
+    loop_labels: std.ArrayList(?[]const u8),
+    /// Current break target (label or null for any loop)
+    break_target: ?LoopTarget,
+    /// Current continue target (label or null for any loop)
+    continue_target: ?LoopTarget,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Interpreter {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -61,6 +74,9 @@ pub const Interpreter = struct {
             .debugger = null,
             .debug_enabled = false,
             .source_file = "",
+            .loop_labels = .{ .items = &.{}, .capacity = 0 },
+            .break_target = null,
+            .continue_target = null,
         };
     }
 
@@ -82,6 +98,7 @@ pub const Interpreter = struct {
         // Arena allocator frees all allocated memory at once
         // This includes all strings, arrays, struct fields, AND the environment's HashMap
         // We don't need to call global_env.deinit() because the arena owns everything
+        self.loop_labels.deinit(self.allocator);
         self.arena.deinit();
     }
 
@@ -159,6 +176,10 @@ pub const Interpreter = struct {
                 // Arena allocator will clean up
             },
             .WhileStmt => |while_stmt| {
+                // Push loop onto stack (no labels in AST yet)
+                try self.loop_labels.append(self.allocator, null);
+                defer _ = self.loop_labels.pop();
+
                 while (true) {
                     const condition = try self.evaluateExpression(while_stmt.condition, env);
                     const should_continue = condition.isTrue();
@@ -169,8 +190,24 @@ pub const Interpreter = struct {
                     for (while_stmt.body.statements) |body_stmt| {
                         self.executeStatement(body_stmt, env) catch |err| {
                             if (err == error.Return) return err;
-                            if (err == error.Break) break;
-                            if (err == error.Continue) break; // Continue to next iteration
+                            if (err == error.Break) {
+                                // Check if break targets this loop
+                                if (try self.shouldBreakHere(null)) {
+                                    break;
+                                } else {
+                                    // Propagate to outer loop
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                // Check if continue targets this loop
+                                if (try self.shouldContinueHere(null)) {
+                                    break; // Continue to next iteration
+                                } else {
+                                    // Propagate to outer loop
+                                    return err;
+                                }
+                            }
                             return err;
                         };
                     }
@@ -368,13 +405,23 @@ pub const Interpreter = struct {
                 // Type checking handles this
             },
             .BreakStmt => |break_stmt| {
-                // TODO: Handle labeled breaks
-                _ = break_stmt.label;
+                // Handle labeled breaks
+                if (break_stmt.label) |label| {
+                    // Set break target and return
+                    self.break_target = LoopTarget{ .label = label, .found = false };
+                } else {
+                    self.break_target = null;
+                }
                 return error.Break;
             },
             .ContinueStmt => |continue_stmt| {
-                // TODO: Handle labeled continues
-                _ = continue_stmt.label;
+                // Handle labeled continues
+                if (continue_stmt.label) |label| {
+                    // Set continue target and return
+                    self.continue_target = LoopTarget{ .label = label, .found = false };
+                } else {
+                    self.continue_target = null;
+                }
                 return error.Continue;
             },
             else => {
@@ -1754,5 +1801,47 @@ pub const Interpreter = struct {
             },
             .Void => "void",
         };
+    }
+
+    /// Check if break should target this loop
+    fn shouldBreakHere(self: *Interpreter, loop_label: ?[]const u8) !bool {
+        if (self.break_target) |target| {
+            if (target.label) |label| {
+                // Labeled break - check if this loop matches
+                if (loop_label) |ll| {
+                    if (std.mem.eql(u8, label, ll)) {
+                        // Found target loop, clear break_target
+                        self.break_target = null;
+                        return true;
+                    }
+                }
+                // Not the target loop, continue propagating
+                return false;
+            }
+        }
+        // Unlabeled break or no target - break innermost loop
+        self.break_target = null;
+        return true;
+    }
+
+    /// Check if continue should target this loop
+    fn shouldContinueHere(self: *Interpreter, loop_label: ?[]const u8) !bool {
+        if (self.continue_target) |target| {
+            if (target.label) |label| {
+                // Labeled continue - check if this loop matches
+                if (loop_label) |ll| {
+                    if (std.mem.eql(u8, label, ll)) {
+                        // Found target loop, clear continue_target
+                        self.continue_target = null;
+                        return true;
+                    }
+                }
+                // Not the target loop, continue propagating
+                return false;
+            }
+        }
+        // Unlabeled continue or no target - continue innermost loop
+        self.continue_target = null;
+        return true;
     }
 };

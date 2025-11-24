@@ -14,16 +14,27 @@ pub const TypeGuidedOptimizer = struct {
     allocator: std.mem.Allocator,
     /// Map from variable names to their inferred types
     type_map: std.StringHashMap(*Type),
+    /// Map from variable names to known constant values (for constant propagation)
+    const_values: std.StringHashMap(ConstValue),
+
+    pub const ConstValue = union(enum) {
+        int: i64,
+        float: f64,
+        bool: bool,
+        string: []const u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) TypeGuidedOptimizer {
         return .{
             .allocator = allocator,
             .type_map = std.StringHashMap(*Type).init(allocator),
+            .const_values = std.StringHashMap(ConstValue).init(allocator),
         };
     }
 
     pub fn deinit(self: *TypeGuidedOptimizer) void {
         self.type_map.deinit();
+        self.const_values.deinit();
     }
 
     /// Add type information for a variable
@@ -45,8 +56,9 @@ pub const TypeGuidedOptimizer = struct {
             },
             .Identifier => |ident| {
                 // Check if variable has known constant value
-                _ = ident;
-                // TODO: Track constant values in addition to types
+                if (self.const_values.get(ident.name)) |_| {
+                    return true; // Variable has constant value
+                }
                 return false;
             },
             else => false,
@@ -88,19 +100,54 @@ pub const TypeGuidedOptimizer = struct {
 
     /// Check if a branch is statically known (dead code)
     pub fn isStaticBranch(self: *TypeGuidedOptimizer, condition: *const ast.Expr) ?bool {
-        _ = self;
-
         return switch (condition.*) {
             .BoolLiteral => |val| val,
             .BinaryExpr => |bin| {
                 // Check for comparisons with constants
                 if (bin.op == .Eq or bin.op == .NotEq) {
-                    // TODO: Check if both sides are equal constants
-                    _ = bin;
+                    const left_const = self.getConstValue(bin.left);
+                    const right_const = self.getConstValue(bin.right);
+
+                    if (left_const != null and right_const != null) {
+                        const are_equal = self.areConstantsEqual(left_const.?, right_const.?);
+                        return if (bin.op == .Eq) are_equal else !are_equal;
+                    }
                 }
                 return null;
             },
             else => null,
+        };
+    }
+
+    /// Get constant value from an expression
+    pub fn getConstValue(self: *TypeGuidedOptimizer, expr: *const ast.Expr) ?ConstValue {
+        return switch (expr.*) {
+            .IntLiteral => |val| ConstValue{ .int = val },
+            .FloatLiteral => |val| ConstValue{ .float = val },
+            .BoolLiteral => |val| ConstValue{ .bool = val },
+            .StringLiteral => |val| ConstValue{ .string = val },
+            .Identifier => |ident| {
+                // Look up in const_values map
+                return self.const_values.get(ident.name);
+            },
+            else => null,
+        };
+    }
+
+    /// Compare two constant values for equality
+    pub fn areConstantsEqual(self: *TypeGuidedOptimizer, left: ConstValue, right: ConstValue) bool {
+        _ = self;
+
+        // Must be same type
+        if (@as(std.meta.Tag(ConstValue), left) != @as(std.meta.Tag(ConstValue), right)) {
+            return false;
+        }
+
+        return switch (left) {
+            .int => |left_val| left_val == right.int,
+            .float => |left_val| left_val == right.float,
+            .bool => |left_val| left_val == right.bool,
+            .string => |left_val| std.mem.eql(u8, left_val, right.string),
         };
     }
 
@@ -157,9 +204,14 @@ pub const TypeGuidedOptimizer = struct {
             },
             .Function => 8, // Function pointer
             .Struct => |s| {
-                // TODO: Calculate struct size based on fields
-                _ = s;
-                return 8; // Default pointer size
+                // Calculate struct size based on fields
+                var total_size: usize = 0;
+                for (s.fields) |field| {
+                    // For simplicity, assume no padding (real implementation would need alignment)
+                    const field_size = self.getTypeSize(&field.type);
+                    total_size += field_size;
+                }
+                return total_size;
             },
             else => 8, // Default to pointer size
         };
