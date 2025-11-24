@@ -1,0 +1,19 @@
+// Test enhanced error messages
+
+fn main() {
+    // Test 1: Type mismatch - int vs float
+    let x: int = 3.14;  // ERROR: Type mismatch
+
+    // Test 2: Type mismatch - bool vs int
+    let is_valid: bool = 42;  // ERROR: Type mismatch
+
+    // Test 3: Type mismatch - string vs int
+    let name: string = 123;  // ERROR: Type mismatch
+
+    // Test 4: Use after move
+    let s1 = "hello";
+    let s2 = s1;
+    // let s3 = s1;  // ERROR: Use of moved value
+
+    println(x);
+}

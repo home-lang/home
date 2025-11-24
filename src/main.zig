@@ -386,19 +386,118 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const passed = try type_checker.check();
 
     if (!passed) {
-        // Convert type checker errors to rich diagnostics
+        // Display rich type errors with enhanced formatting
         for (type_checker.errors.items) |err_info| {
-            const suggestion = getSuggestion(err_info.message);
-            try reporter.addError(err_info.message, err_info.loc, suggestion);
+            try printEnhancedError(file_path, source, err_info);
         }
-    }
-
-    if (reporter.hasErrors()) {
-        reporter.report(file_path);
         std.process.exit(1);
     } else {
         std.debug.print("{s}Success:{s} Type checking passed ✓\n", .{ Color.Green.code(), Color.Reset.code() });
     }
+}
+
+/// Print an enhanced error message with colors, context, and suggestions
+fn printEnhancedError(file_path: []const u8, source: []const u8, err_info: TypeChecker.TypeErrorInfo) !void {
+    // Error header with bold red "error:"
+    std.debug.print("{s}{s}error{s}{s}: {s}\n", .{
+        Color.Bold.code(),
+        Color.Red.code(),
+        Color.Reset.code(),
+        Color.Bold.code(),
+        err_info.message,
+    });
+    std.debug.print("{s}\n", .{Color.Reset.code()});
+
+    // If we have expected/actual types, show them
+    if (err_info.expected != null and err_info.actual != null) {
+        std.debug.print("  {s}expected:{s} {s}{s}{s}\n", .{
+            Color.Cyan.code(),
+            Color.Reset.code(),
+            Color.Green.code(),
+            err_info.expected.?,
+            Color.Reset.code(),
+        });
+        std.debug.print("  {s}   found:{s} {s}{s}{s}\n", .{
+            Color.Cyan.code(),
+            Color.Reset.code(),
+            Color.Red.code(),
+            err_info.actual.?,
+            Color.Reset.code(),
+        });
+        std.debug.print("\n", .{});
+    }
+
+    // Location: --> file:line:column
+    std.debug.print("  {s}-->{s} {s}:{d}:{d}\n", .{
+        Color.Blue.code(),
+        Color.Reset.code(),
+        file_path,
+        err_info.loc.line,
+        err_info.loc.column,
+    });
+
+    // Extract and display source line
+    const source_line = getSourceLine(source, err_info.loc.line);
+    if (source_line) |line| {
+        // Line gutter
+        std.debug.print("   {s}|{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+        // Source line with line number
+        std.debug.print(" {s}{d:3}{s} {s}|{s} {s}\n", .{
+            Color.Blue.code(),
+            err_info.loc.line,
+            Color.Reset.code(),
+            Color.Blue.code(),
+            Color.Reset.code(),
+            line,
+        });
+
+        // Caret pointing to error
+        std.debug.print("   {s}|{s} ", .{ Color.Blue.code(), Color.Reset.code() });
+
+        var i: usize = 0;
+        while (i < err_info.loc.column) : (i += 1) {
+            std.debug.print(" ", .{});
+        }
+        std.debug.print("{s}^{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+    }
+
+    // Suggestion if available
+    if (err_info.suggestion) |suggestion| {
+        std.debug.print("   {s}|{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+        std.debug.print("   {s}={s} {s}help:{s} {s}\n", .{
+            Color.Cyan.code(),
+            Color.Reset.code(),
+            Color.Bold.code(),
+            Color.Reset.code(),
+            suggestion,
+        });
+    }
+
+    std.debug.print("\n", .{});
+}
+
+/// Extract a specific line from source code
+fn getSourceLine(source: []const u8, target_line: usize) ?[]const u8 {
+    var line: usize = 1;
+    var line_start: usize = 0;
+
+    for (source, 0..) |c, i| {
+        if (c == '\n') {
+            if (line == target_line) {
+                return source[line_start..i];
+            }
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    // Last line (no trailing newline)
+    if (line == target_line) {
+        return source[line_start..];
+    }
+
+    return null;
 }
 
 fn getSuggestion(error_message: []const u8) ?[]const u8 {

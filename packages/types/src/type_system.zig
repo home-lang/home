@@ -416,6 +416,11 @@ pub const TypeChecker = struct {
     pub const TypeErrorInfo = struct {
         message: []const u8,
         loc: ast.SourceLocation,
+        // Enhanced error information
+        expected: ?[]const u8 = null,
+        actual: ?[]const u8 = null,
+        suggestion: ?[]const u8 = null,
+        context: ?[]const u8 = null,
     };
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) TypeChecker {
@@ -442,6 +447,10 @@ pub const TypeChecker = struct {
         self.env.deinit();
         for (self.errors.items) |err_info| {
             self.allocator.free(err_info.message);
+            if (err_info.expected) |expected| self.allocator.free(expected);
+            if (err_info.actual) |actual| self.allocator.free(actual);
+            if (err_info.suggestion) |suggestion| self.allocator.free(suggestion);
+            if (err_info.context) |context| self.allocator.free(context);
         }
         self.errors.deinit(self.allocator);
 
@@ -972,7 +981,7 @@ pub const TypeChecker = struct {
     fn checkExpression(self: *TypeChecker, expr: *const ast.Expr, expected: Type) TypeError!void {
         const actual = try self.synthesizeExpression(expr);
         if (!actual.equals(expected)) {
-            try self.addError("Type mismatch", expr.getLocation());
+            try self.addTypeMismatchError(expected, actual, expr.getLocation());
             return error.TypeMismatch;
         }
     }
@@ -1527,6 +1536,92 @@ pub const TypeChecker = struct {
         const msg = try self.allocator.dupe(u8, message);
         errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+    }
+
+    /// Add a type mismatch error with expected and actual types
+    fn addTypeMismatchError(
+        self: *TypeChecker,
+        expected: Type,
+        actual: Type,
+        loc: ast.SourceLocation,
+    ) !void {
+        const expected_str = try self.typeToString(expected);
+        const actual_str = try self.typeToString(actual);
+
+        const msg = try std.fmt.allocPrint(
+            self.allocator,
+            "Type mismatch",
+            .{},
+        );
+        errdefer self.allocator.free(msg);
+
+        try self.errors.append(self.allocator, .{
+            .message = msg,
+            .loc = loc,
+            .expected = expected_str,
+            .actual = actual_str,
+            .suggestion = try self.suggestTypeFix(expected, actual),
+        });
+    }
+
+    /// Convert a type to a readable string
+    fn typeToString(self: *TypeChecker, typ: Type) ![]const u8 {
+        return switch (typ) {
+            .Int => try self.allocator.dupe(u8, "int"),
+            .Float => try self.allocator.dupe(u8, "float"),
+            .Bool => try self.allocator.dupe(u8, "bool"),
+            .String => try self.allocator.dupe(u8, "string"),
+            .Void => try self.allocator.dupe(u8, "void"),
+            .Array => |arr| {
+                const elem_str = try self.typeToString(arr.element_type.*);
+                defer self.allocator.free(elem_str);
+                return try std.fmt.allocPrint(self.allocator, "[{s}]", .{elem_str});
+            },
+            .Function => |func| {
+                // Build parameter list
+                var params_str = std.ArrayList(u8).init(self.allocator);
+                defer params_str.deinit();
+
+                try params_str.appendSlice("fn(");
+                for (func.params, 0..) |param, i| {
+                    if (i > 0) try params_str.appendSlice(", ");
+                    const param_str = try self.typeToString(param.*);
+                    defer self.allocator.free(param_str);
+                    try params_str.appendSlice(param_str);
+                }
+                try params_str.appendSlice(") -> ");
+
+                const ret_str = try self.typeToString(func.return_type.*);
+                defer self.allocator.free(ret_str);
+                try params_str.appendSlice(ret_str);
+
+                return try self.allocator.dupe(u8, params_str.items);
+            },
+            else => try std.fmt.allocPrint(self.allocator, "{}", .{typ}),
+        };
+    }
+
+    /// Suggest a fix for a type mismatch
+    fn suggestTypeFix(self: *TypeChecker, expected: Type, actual: Type) !?[]const u8 {
+        // Int <-> Float conversion
+        if (expected == .Int and actual == .Float) {
+            return try self.allocator.dupe(u8, "use .int() to convert float to int");
+        }
+        if (expected == .Float and actual == .Int) {
+            return try self.allocator.dupe(u8, "use .float() to convert int to float");
+        }
+
+        // Bool <-> Int
+        if (expected == .Bool and actual == .Int) {
+            return try self.allocator.dupe(u8, "use comparison operators (==, !=, <, >) instead of int");
+        }
+
+        // String suggestions
+        if (expected == .String and actual == .Int) {
+            return try self.allocator.dupe(u8, "use .toString() to convert int to string");
+        }
+
+        return null;
     }
 };
 
