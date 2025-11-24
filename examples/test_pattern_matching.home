@@ -1,0 +1,443 @@
+// ============================================================================
+// Pattern Matching Test Suite - Home Language
+// ============================================================================
+// Comprehensive examples demonstrating pattern matching capabilities
+//
+// Features:
+// - Enum variant matching
+// - Struct destructuring
+// - Tuple destructuring
+// - Array patterns
+// - Guard clauses
+// - Nested patterns
+// - Exhaustiveness checking
+// - Irrefutable patterns
+// ============================================================================
+
+// ============================================================================
+// Example 1: Basic Enum Pattern Matching
+// ============================================================================
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Some(value) => value,
+        None => default,
+    }
+}
+
+fn example_basic_enum() {
+    print("=== Basic Enum Pattern Matching ===");
+    
+    let some_value = Option::Some(42);
+    let none_value = Option::None;
+    
+    let result1 = unwrap_or(some_value, 0);
+    let result2 = unwrap_or(none_value, 0);
+    
+    print("Result 1: ", result1);  // 42
+    print("Result 2: ", result2);  // 0
+}
+
+// ============================================================================
+// Example 2: Result Type Pattern Matching
+// ============================================================================
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+fn divide(a: i32, b: i32) -> Result<i32, string> {
+    if b == 0 {
+        return Result::Err("Division by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+fn example_result_matching() {
+    print("=== Result Type Pattern Matching ===");
+    
+    let result1 = divide(10, 2);
+    let result2 = divide(10, 0);
+    
+    match result1 {
+        Ok(value) => print("Success: ", value),
+        Err(error) => print("Error: ", error),
+    }
+    
+    match result2 {
+        Ok(value) => print("Success: ", value),
+        Err(error) => print("Error: ", error),
+    }
+}
+
+// ============================================================================
+// Example 3: Struct Destructuring
+// ============================================================================
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn example_struct_destructuring() {
+    print("=== Struct Destructuring ===");
+    
+    let point = Point { x: 10, y: 20 };
+    
+    // Destructure in match
+    match point {
+        Point { x: 0, y: 0 } => print("Origin"),
+        Point { x, y: 0 } => print("On X axis: ", x),
+        Point { x: 0, y } => print("On Y axis: ", y),
+        Point { x, y } => print("Point: (", x, ", ", y, ")"),
+    }
+    
+    // Destructure in let binding
+    let Point { x, y } = point;
+    print("X: ", x, ", Y: ", y);
+}
+
+// ============================================================================
+// Example 4: Tuple Destructuring
+// ============================================================================
+
+fn example_tuple_destructuring() {
+    print("=== Tuple Destructuring ===");
+    
+    let tuple = (1, "hello", true);
+    
+    // Match on tuple
+    match tuple {
+        (0, _, _) => print("First is zero"),
+        (1, s, b) => {
+            print("First is one");
+            print("String: ", s);
+            print("Bool: ", b);
+        },
+        (_, _, _) => print("Other"),
+    }
+    
+    // Destructure in let
+    let (num, text, flag) = tuple;
+    print("Num: ", num, ", Text: ", text, ", Flag: ", flag);
+}
+
+// ============================================================================
+// Example 5: Guard Clauses
+// ============================================================================
+
+fn example_guards() {
+    print("=== Guard Clauses ===");
+    
+    let numbers = [1, 5, 10, 15, 20];
+    
+    for num in numbers {
+        match num {
+            n if n < 5 => print(n, " is small"),
+            n if n < 15 => print(n, " is medium"),
+            n => print(n, " is large"),
+        }
+    }
+}
+
+// ============================================================================
+// Example 6: Nested Patterns
+// ============================================================================
+
+enum Shape {
+    Circle(i32),  // radius
+    Rectangle(i32, i32),  // width, height
+    Composite(Shape, Shape),
+}
+
+fn area(shape: Shape) -> i32 {
+    match shape {
+        Circle(r) => 3 * r * r,  // Simplified π
+        Rectangle(w, h) => w * h,
+        Composite(s1, s2) => area(s1) + area(s2),
+    }
+}
+
+fn example_nested_patterns() {
+    print("=== Nested Patterns ===");
+    
+    let circle = Shape::Circle(5);
+    let rect = Shape::Rectangle(4, 6);
+    let composite = Shape::Composite(circle, rect);
+    
+    print("Circle area: ", area(circle));
+    print("Rectangle area: ", area(rect));
+    print("Composite area: ", area(composite));
+}
+
+// ============================================================================
+// Example 7: Array Patterns
+// ============================================================================
+
+fn example_array_patterns() {
+    print("=== Array Patterns ===");
+    
+    let arr1 = [];
+    let arr2 = [1];
+    let arr3 = [1, 2];
+    let arr4 = [1, 2, 3, 4, 5];
+    
+    fn describe(arr: [i32]) -> string {
+        match arr {
+            [] => "Empty array",
+            [x] => "Single element",
+            [x, y] => "Two elements",
+            [first, ...rest] => "Multiple elements",  // rest pattern
+        }
+    }
+    
+    print(describe(arr1));
+    print(describe(arr2));
+    print(describe(arr3));
+    print(describe(arr4));
+}
+
+// ============================================================================
+// Example 8: Or Patterns
+// ============================================================================
+
+fn example_or_patterns() {
+    print("=== Or Patterns ===");
+    
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    
+    for num in numbers {
+        match num {
+            1 | 2 | 3 => print(num, " is low"),
+            4 | 5 | 6 => print(num, " is mid"),
+            7 | 8 | 9 => print(num, " is high"),
+            _ => print(num, " is out of range"),
+        }
+    }
+}
+
+// ============================================================================
+// Example 9: @ Binding Pattern
+// ============================================================================
+
+fn example_at_binding() {
+    print("=== @ Binding Pattern ===");
+    
+    let point = Point { x: 5, y: 10 };
+    
+    match point {
+        p @ Point { x: 0..10, y: 0..10 } => {
+            print("Point in range: ", p.x, ", ", p.y);
+        },
+        Point { x, y } => {
+            print("Point out of range: ", x, ", ", y);
+        },
+    }
+}
+
+// ============================================================================
+// Example 10: Exhaustiveness Checking
+// ============================================================================
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn example_exhaustiveness() {
+    print("=== Exhaustiveness Checking ===");
+    
+    let color = Color::Red;
+    
+    // This is exhaustive - all variants covered
+    match color {
+        Red => print("Red color"),
+        Green => print("Green color"),
+        Blue => print("Blue color"),
+    }
+    
+    // This is also exhaustive - wildcard covers all
+    match color {
+        Red => print("Red"),
+        _ => print("Not red"),
+    }
+    
+    // This would be a compile error - missing Blue:
+    // match color {
+    //     Red => print("Red"),
+    //     Green => print("Green"),
+    // }
+}
+
+// ============================================================================
+// Example 11: Match as Expression
+// ============================================================================
+
+fn example_match_expression() {
+    print("=== Match as Expression ===");
+    
+    let number = 42;
+    
+    let description = match number {
+        0 => "zero",
+        1..10 => "small",
+        10..100 => "medium",
+        _ => "large",
+    };
+    
+    print("Number ", number, " is ", description);
+    
+    // Match in function return
+    fn classify(n: i32) -> string {
+        return match n {
+            n if n < 0 => "negative",
+            0 => "zero",
+            n if n > 0 => "positive",
+        };
+    }
+    
+    print("10 is ", classify(10));
+    print("-5 is ", classify(-5));
+}
+
+// ============================================================================
+// Example 12: Complex Nested Matching
+// ============================================================================
+
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(i32),
+    String(string),
+    Array([JsonValue]),
+    Object([(string, JsonValue)]),
+}
+
+fn example_complex_matching() {
+    print("=== Complex Nested Matching ===");
+    
+    let json = JsonValue::Object([
+        ("name", JsonValue::String("John")),
+        ("age", JsonValue::Number(30)),
+        ("active", JsonValue::Bool(true)),
+    ]);
+    
+    match json {
+        Null => print("Null value"),
+        Bool(b) => print("Boolean: ", b),
+        Number(n) => print("Number: ", n),
+        String(s) => print("String: ", s),
+        Array(arr) => print("Array with ", arr.len(), " elements"),
+        Object(fields) => {
+            print("Object with ", fields.len(), " fields");
+            for (key, value) in fields {
+                print("  ", key, ": ", value);
+            }
+        },
+    }
+}
+
+// ============================================================================
+// Example 13: Wildcard and Identifier Patterns
+// ============================================================================
+
+fn example_wildcards() {
+    print("=== Wildcard and Identifier Patterns ===");
+    
+    let tuple = (1, 2, 3);
+    
+    match tuple {
+        (_, _, 3) => print("Third is 3"),
+        (1, _, _) => print("First is 1"),
+        _ => print("Other"),
+    }
+    
+    // Identifier binds the whole value
+    match tuple {
+        coords => print("Coordinates: ", coords),
+    }
+}
+
+// ============================================================================
+// Example 14: Range Patterns
+// ============================================================================
+
+fn example_range_patterns() {
+    print("=== Range Patterns ===");
+    
+    for age in [5, 15, 25, 35, 65, 75] {
+        let category = match age {
+            0..13 => "child",
+            13..20 => "teenager",
+            20..65 => "adult",
+            65..120 => "senior",
+            _ => "invalid",
+        };
+        
+        print("Age ", age, ": ", category);
+    }
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+
+fn main() {
+    print("╔═══════════════════════════════════════════════════════════╗");
+    print("║       Home Language - Pattern Matching Test Suite        ║");
+    print("╚═══════════════════════════════════════════════════════════╝");
+    print("");
+    
+    example_basic_enum();
+    print("");
+    
+    example_result_matching();
+    print("");
+    
+    example_struct_destructuring();
+    print("");
+    
+    example_tuple_destructuring();
+    print("");
+    
+    example_guards();
+    print("");
+    
+    example_nested_patterns();
+    print("");
+    
+    example_array_patterns();
+    print("");
+    
+    example_or_patterns();
+    print("");
+    
+    example_at_binding();
+    print("");
+    
+    example_exhaustiveness();
+    print("");
+    
+    example_match_expression();
+    print("");
+    
+    example_complex_matching();
+    print("");
+    
+    example_wildcards();
+    print("");
+    
+    example_range_patterns();
+    print("");
+    
+    print("╔═══════════════════════════════════════════════════════════╗");
+    print("║         All Pattern Matching Tests Complete!             ║");
+    print("╚═══════════════════════════════════════════════════════════╝");
+}

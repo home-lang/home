@@ -10,6 +10,9 @@ const ComptimeIntegration = comptime_mod.integration.ComptimeIntegration;
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 const ownership = @import("ownership.zig");
 const OwnershipTracker = ownership.OwnershipTracker;
+const pattern_checker = @import("pattern_checker.zig");
+pub const PatternChecker = pattern_checker.PatternChecker;
+pub const PatternMatcher = pattern_checker.PatternMatcher;
 
 /// Home's static type system with support for advanced features.
 ///
@@ -412,6 +415,7 @@ pub const TypeChecker = struct {
     allocated_slices: std.ArrayList([]Type),
     comptime_store: ?*ComptimeValueStore,
     ownership_tracker: OwnershipTracker,
+    pattern_checker: PatternChecker,
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -433,6 +437,7 @@ pub const TypeChecker = struct {
             .allocated_slices = std.ArrayList([]Type){},
             .comptime_store = null,
             .ownership_tracker = OwnershipTracker.init(allocator),
+            .pattern_checker = PatternChecker.init(allocator),
         };
     }
 
@@ -467,6 +472,7 @@ pub const TypeChecker = struct {
         self.allocated_slices.deinit(self.allocator);
 
         self.ownership_tracker.deinit();
+        self.pattern_checker.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {
