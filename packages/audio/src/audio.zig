@@ -204,6 +204,11 @@ pub const convolution = @import("processing/convolution.zig");
 pub const vocoder = @import("processing/vocoder.zig");
 pub const crossfade = @import("processing/crossfade.zig");
 pub const gapless = @import("processing/gapless.zig");
+pub const multiband = @import("processing/multiband.zig");
+pub const modulation = @import("processing/modulation.zig");
+pub const sidechain = @import("processing/sidechain.zig");
+pub const tape = @import("processing/tape.zig");
+pub const phasevocoder = @import("processing/phasevocoder.zig");
 
 // Effects types
 pub const ParametricEQ = equalizer.ParametricEQ;
@@ -233,6 +238,22 @@ pub const CrossfadeDetector = crossfade.CrossfadeDetector;
 pub const GaplessPlayer = gapless.GaplessPlayer;
 pub const GapAnalyzer = gapless.GapAnalyzer;
 pub const GapInfo = gapless.GapInfo;
+pub const MultibandCompressor = multiband.MultibandCompressor;
+pub const BandConfig = multiband.BandConfig;
+pub const MultibandPreset = multiband.MultibandPreset;
+pub const Tremolo = modulation.Tremolo;
+pub const Vibrato = modulation.Vibrato;
+pub const RingModulator = modulation.RingModulator;
+pub const Flanger = modulation.Flanger;
+pub const Phaser = modulation.Phaser;
+pub const SidechainCompressor = sidechain.SidechainCompressor;
+pub const SidechainGate = sidechain.SidechainGate;
+pub const DuckingPreset = sidechain.DuckingPreset;
+pub const TapeSaturation = tape.TapeSaturation;
+pub const TapePreset = tape.TapePreset;
+pub const TubeSaturation = tape.TubeSaturation;
+pub const PhaseVocoder = phasevocoder.PhaseVocoder;
+pub const SimpleTimeStretcher = phasevocoder.SimpleTimeStretcher;
 
 // ============================================================================
 // I/O Modules
@@ -264,6 +285,28 @@ pub const SilenceRemover = analysis.SilenceRemover;
 pub const AudioFingerprinter = analysis.AudioFingerprinter;
 pub const FingerprintDatabase = analysis.FingerprintDatabase;
 pub const AudioFingerprint = analysis.AudioFingerprint;
+
+// Chord/key detection
+pub const chords = @import("analysis/chords.zig");
+pub const PitchClass = chords.PitchClass;
+pub const ChordQuality = chords.ChordQuality;
+pub const Chord = chords.Chord;
+pub const Key = chords.Key;
+pub const Chromagram = chords.Chromagram;
+pub const ChordDetector = chords.ChordDetector;
+pub const KeyDetector = chords.KeyDetector;
+
+// ============================================================================
+// Synthesis Modules
+// ============================================================================
+
+pub const synthesis = @import("synthesis/synth.zig");
+pub const Waveform = synthesis.Waveform;
+pub const Envelope = synthesis.Envelope;
+pub const Voice = synthesis.Voice;
+pub const Synthesizer = synthesis.Synthesizer;
+pub const FMSynth = synthesis.FMSynth;
+pub const midiToFreq = synthesis.midiToFreq;
 
 // ============================================================================
 // Encoding Modules
@@ -664,4 +707,15 @@ test "SampleFormat" {
 test "ChannelLayout" {
     try std.testing.expectEqual(@as(u8, 2), ChannelLayout.stereo.channelCount());
     try std.testing.expectEqual(@as(u8, 6), ChannelLayout.surround_51.channelCount());
+}
+
+// Import tests from all new modules
+test {
+    _ = multiband;
+    _ = modulation;
+    _ = sidechain;
+    _ = tape;
+    _ = phasevocoder;
+    _ = chords;
+    _ = synthesis;
 }

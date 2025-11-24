@@ -135,14 +135,14 @@ pub const ComptimeIntegration = struct {
     pub fn processStatement(self: *ComptimeIntegration, stmt: *ast.Stmt) !void {
         switch (stmt.*) {
             .LetDecl => |let_decl| {
-                if (let_decl.initializer) |init| {
-                    try self.processExpression(init);
+                if (let_decl.initializer) |initializer| {
+                    try self.processExpression(initializer);
                 }
             },
 
             .ConstDecl => |const_decl| {
-                if (const_decl.initializer) |init| {
-                    try self.processExpression(init);
+                if (const_decl.initializer) |initializer| {
+                    try self.processExpression(initializer);
                 }
             },
 
@@ -192,8 +192,8 @@ pub const ComptimeIntegration = struct {
                 },
 
                 .ConstDecl => |const_decl| {
-                    if (const_decl.initializer) |init| {
-                        try self.processExpression(init);
+                    if (const_decl.initializer) |initializer| {
+                        try self.processExpression(initializer);
                     }
                 },
 
@@ -209,25 +209,25 @@ pub const ComptimeIntegration = struct {
 // Usage Example / Integration Guide
 // ============================================================================
 
-/// Example of how to integrate comptime into the compilation pipeline:
-///
-/// ```zig
-/// // In main.zig or type checker:
-///
-/// // 1. Create value store (lives for entire compilation)
-/// var comptime_store = ComptimeValueStore.init(allocator);
-/// defer comptime_store.deinit();
-///
-/// // 2. After parsing, before codegen:
-/// var comptime_integration = try ComptimeIntegration.init(allocator, &comptime_store);
-/// defer comptime_integration.deinit();
-///
-/// // 3. Process the AST to evaluate all comptime expressions
-/// try comptime_integration.processProgram(program);
-///
-/// // 4. Pass comptime_store to codegen
-/// var codegen = try NativeCodegen.init(allocator, program, &comptime_store);
-/// ```
+// Example of how to integrate comptime into the compilation pipeline:
+//
+// ```zig
+// // In main.zig or type checker:
+// //
+// // 1. Create value store (lives for entire compilation)
+// var comptime_store = ComptimeValueStore.init(allocator);
+// defer comptime_store.deinit();
+//
+// // 2. After parsing, before codegen:
+// var comptime_integration = try ComptimeIntegration.init(allocator, &comptime_store);
+// defer comptime_integration.deinit();
+//
+// // 3. Process the AST to evaluate all comptime expressions
+// try comptime_integration.processProgram(program);
+//
+// // 4. Pass comptime_store to codegen
+// var codegen = try NativeCodegen.init(allocator, program, &comptime_store);
+// ```
 
 // ============================================================================
 // Tests

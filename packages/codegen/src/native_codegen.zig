@@ -5300,22 +5300,22 @@ pub const NativeCodegen = struct {
                         switch (value) {
                             .int => |int_val| {
                                 // Load integer constant
-                                try self.assembler.movImm64(rax, @intCast(int_val));
+                                try self.assembler.movRegImm64(.rax, @intCast(int_val));
                             },
                             .float => |float_val| {
                                 // For float constants, we need to load from memory
                                 // Store in data section and load address
                                 const int_bits: u64 = @bitCast(float_val);
-                                try self.assembler.movImm64(rax, int_bits);
+                                try self.assembler.movRegImm64(.rax, int_bits);
                             },
                             .bool => |bool_val| {
                                 // Load boolean constant (0 or 1)
-                                try self.assembler.movImm64(rax, if (bool_val) 1 else 0);
+                                try self.assembler.movRegImm64(.rax, if (bool_val) 1 else 0);
                             },
                             .string => |str_val| {
                                 // String constants need to be in data section
                                 const str_offset = try self.addStringLiteral(str_val);
-                                try self.assembler.lea(rax, x64.MemoryOperand.ripRelative(@intCast(str_offset)));
+                                try self.assembler.leaRegMem(.rax, .rip, @intCast(str_offset));
                             },
                             .array => {
                                 // For arrays, fall back to evaluating the expression
@@ -5334,7 +5334,7 @@ pub const NativeCodegen = struct {
                             .type => {
                                 // Type values - these are compile-time only, should not generate runtime code
                                 // This is likely an error, but we'll generate 0 as a placeholder
-                                try self.assembler.movImm64(rax, 0);
+                                try self.assembler.movRegImm64(.rax, 0);
                             },
                         }
                         return;
