@@ -60,6 +60,16 @@ const text_ops = @import("text.zig");
 const utils_ops = @import("utils.zig");
 const format_utils_ops = @import("format_utils.zig");
 
+// New advanced modules
+const gpu_ops = @import("gpu.zig");
+const effects_ops = @import("effects.zig");
+const selection_ops = @import("selection.zig");
+const curves_ops = @import("curves.zig");
+const raw_processing = @import("raw.zig");
+const hdr_processing = @import("hdr.zig");
+const history_ops = @import("history.zig");
+const sprite_ops = @import("sprite.zig");
+
 // ============================================================================
 // Core Types
 // ============================================================================
@@ -1036,6 +1046,95 @@ pub const AnimationFrame = format_utils_ops.AnimationFrame;
 pub const MultiPageDocument = format_utils_ops.MultiPageDocument;
 pub const ICCConversionOptions = format_utils_ops.ICCConversionOptions;
 pub const RenderingIntent = format_utils_ops.RenderingIntent;
+
+// New advanced module exports
+pub const GPU = gpu_ops;
+pub const Effects = effects_ops;
+pub const Selection = selection_ops;
+pub const Curves = curves_ops;
+pub const RawProcessing = raw_processing;
+pub const HDR = hdr_processing;
+pub const History = history_ops;
+pub const Sprite = sprite_ops;
+
+// Re-export common types from GPU module
+pub const GPUBackend = gpu_ops.Backend;
+pub const GPUContext = gpu_ops.GPUContext;
+pub const GPUBuffer = gpu_ops.GPUBuffer;
+pub const GPUImage = gpu_ops.GPUImage;
+pub const ComputeKernel = gpu_ops.ComputeKernel;
+pub const GPUOps = gpu_ops.GPUOps;
+pub const HardwareDecode = gpu_ops.HardwareDecode;
+
+// Re-export common types from Effects module
+pub const NoiseType = effects_ops.NoiseType;
+pub const NoiseOptions = effects_ops.NoiseOptions;
+pub const GradientType = effects_ops.GradientType;
+pub const GradientStop = effects_ops.GradientStop;
+pub const GradientOptions = effects_ops.GradientOptions;
+pub const PatternType = effects_ops.PatternType;
+pub const PatternOptions = effects_ops.PatternOptions;
+pub const ShadowOptions = effects_ops.ShadowOptions;
+pub const GlowOptions = effects_ops.GlowOptions;
+pub const BevelType = effects_ops.BevelType;
+pub const BevelOptions = effects_ops.BevelOptions;
+pub const PerspectiveCorners = effects_ops.PerspectiveCorners;
+pub const Transform3D = effects_ops.Transform3D;
+pub const StrokeOptions = effects_ops.StrokeOptions;
+
+// Re-export common types from Selection module
+pub const SelectionMask = selection_ops.Selection;
+pub const SelectionOp = selection_ops.SelectionOp;
+pub const MagicWandOptions = selection_ops.MagicWandOptions;
+pub const ColorRangeOptions = selection_ops.ColorRangeOptions;
+pub const LassoPoint = selection_ops.LassoPoint;
+
+// Re-export common types from Curves module
+pub const Histogram = curves_ops.Histogram;
+pub const Curve = curves_ops.Curve;
+pub const CurvePoint = curves_ops.CurvePoint;
+pub const CurvePreset = curves_ops.CurvePreset;
+pub const CurvesAdjustment = curves_ops.CurvesAdjustment;
+pub const LevelsAdjustment = curves_ops.LevelsAdjustment;
+pub const ChannelMixer = curves_ops.ChannelMixer;
+pub const ChannelMixerPreset = curves_ops.ChannelMixerPreset;
+pub const SelectiveColor = curves_ops.SelectiveColor;
+pub const ColorBalance = curves_ops.ColorBalance;
+pub const HueSaturation = curves_ops.HueSaturation;
+pub const ExposureAdjustment = curves_ops.ExposureAdjustment;
+
+// Re-export common types from RAW processing module
+pub const BayerPattern = raw_processing.BayerPattern;
+pub const RawImage = raw_processing.RawImage;
+pub const DemosaicAlgorithm = raw_processing.DemosaicAlgorithm;
+pub const WhiteBalanceMethod = raw_processing.WhiteBalanceMethod;
+pub const HighlightRecoveryMethod = raw_processing.HighlightRecoveryMethod;
+pub const RawNoiseReductionOptions = raw_processing.RawNoiseReductionOptions;
+
+// Re-export common types from HDR module
+pub const HDRImage = hdr_processing.HDRImage;
+pub const ToneMapOperator = hdr_processing.ToneMapOperator;
+pub const ToneMapOptions = hdr_processing.ToneMapOptions;
+pub const BracketedImage = hdr_processing.BracketedImage;
+pub const HDRMergeMethod = hdr_processing.HDRMergeMethod;
+pub const HDRToSDROptions = hdr_processing.HDRToSDROptions;
+
+// Re-export common types from History module
+pub const HistoryState = history_ops.HistoryState;
+pub const HistoryManager = history_ops.HistoryManager;
+pub const Snapshot = history_ops.Snapshot;
+pub const SnapshotManager = history_ops.SnapshotManager;
+pub const EditOperation = history_ops.EditOperation;
+pub const EditStack = history_ops.EditStack;
+
+// Re-export common types from Sprite module
+pub const SpriteData = sprite_ops.Sprite;
+pub const AtlasOptions = sprite_ops.AtlasOptions;
+pub const PackingAlgorithm = sprite_ops.PackingAlgorithm;
+pub const AtlasRect = sprite_ops.AtlasRect;
+pub const TextureAtlas = sprite_ops.TextureAtlas;
+pub const NineSlice = sprite_ops.NineSlice;
+pub const SpriteAnimation = sprite_ops.SpriteAnimation;
 
 // ============================================================================
 // Tests

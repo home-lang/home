@@ -339,6 +339,181 @@ pub const DashRepresentation = dash.Representation;
 pub const isDash = dash.isDash;
 
 // ============================================================================
+// Additional Container Formats
+// ============================================================================
+
+pub const mpegts = @import("containers/mpegts.zig");
+pub const MpegTsReader = mpegts.TsReader;
+pub const MpegTsPacketHeader = mpegts.PacketHeader;
+pub const MpegTsStreamType = mpegts.StreamType;
+pub const MpegTsPatEntry = mpegts.PatEntry;
+pub const MpegTsPmtStream = mpegts.PmtStream;
+pub const MpegTsAdaptationField = mpegts.AdaptationField;
+pub const isMpegTs = mpegts.isMpegTs;
+
+pub const flv = @import("containers/flv.zig");
+pub const FlvDemuxer = flv.FlvDemuxer;
+pub const FlvMuxer = flv.FlvMuxer;
+pub const FlvHeader = flv.FlvHeader;
+pub const FlvTag = flv.FlvTag;
+pub const FlvTagType = flv.FlvTagType;
+pub const FlvVideoData = flv.FlvVideoData;
+pub const FlvAudioData = flv.FlvAudioData;
+pub const FlvMetadata = flv.FlvMetadata;
+pub const FlvVideoCodec = flv.FlvVideoCodec;
+pub const FlvAudioCodec = flv.FlvAudioCodec;
+
+pub const mxf = @import("containers/mxf.zig");
+pub const MxfDemuxer = mxf.MxfDemuxer;
+pub const MxfPartitionPack = mxf.PartitionPack;
+pub const MxfKLV = mxf.KLV;
+pub const MxfTrack = mxf.MxfTrack;
+pub const MxfMetadata = mxf.MxfMetadata;
+pub const MxfEssenceType = mxf.EssenceType;
+pub const MxfOperationalPattern = mxf.OperationalPattern;
+pub const isValidMxf = mxf.isValidMxf;
+
+// ============================================================================
+// Metadata
+// ============================================================================
+
+pub const id3 = @import("metadata/id3.zig");
+pub const Id3v1Tag = id3.Id3v1Tag;
+pub const Id3v2Header = id3.Id3v2Header;
+pub const Id3v2Frame = id3.Id3v2Frame;
+pub const Id3Tag = id3.Id3Tag;
+pub const parseId3v1 = id3.parseId3v1;
+pub const parseId3v2 = id3.parseId3v2;
+pub const hasId3v2 = id3.hasId3v2;
+pub const hasId3v1 = id3.hasId3v1;
+
+pub const mp4meta = @import("metadata/mp4meta.zig");
+pub const Mp4Metadata = mp4meta.Mp4Metadata;
+pub const Mp4AtomType = mp4meta.AtomType;
+pub const parseMp4Metadata = mp4meta.parseMetadata;
+
+pub const matroska_tags = @import("metadata/matroska_tags.zig");
+pub const MatroskaTag = matroska_tags.Tag;
+pub const MatroskaSimpleTag = matroska_tags.SimpleTag;
+pub const MatroskaTagTarget = matroska_tags.TagTarget;
+pub const parseMatroskaTags = matroska_tags.parseTags;
+
+// ============================================================================
+// Chapters
+// ============================================================================
+
+pub const chapters = @import("chapters/chapters.zig");
+pub const Chapter = chapters.Chapter;
+pub const ChapterEdition = chapters.ChapterEdition;
+pub const ChapterTrack = chapters.ChapterTrack;
+pub const parseMp4Chapters = chapters.parseMp4Chapters;
+pub const parseMatroskaChapters = chapters.parseMatroskaChapters;
+pub const parseOggChapters = chapters.parseOggChapters;
+pub const formatChapterTime = chapters.formatChapterTime;
+
+// ============================================================================
+// HDR Metadata
+// ============================================================================
+
+pub const hdr = @import("hdr/hdr.zig");
+pub const HdrFormat = hdr.HdrFormat;
+pub const HdrMetadata = hdr.HdrMetadata;
+pub const MasteringDisplayColorVolume = hdr.MasteringDisplayColorVolume;
+pub const ContentLightLevel = hdr.ContentLightLevel;
+pub const Hdr10PlusMetadata = hdr.Hdr10PlusMetadata;
+pub const DolbyVisionConfiguration = hdr.DolbyVisionConfiguration;
+pub const DolbyVisionProfile = hdr.DolbyVisionProfile;
+pub const DolbyVisionLevel = hdr.DolbyVisionLevel;
+pub const HdrPresets = hdr.HdrPresets;
+pub const parseHdr10Plus = hdr.parseHdr10Plus;
+pub const parseDolbyVisionConfig = hdr.parseDolbyVisionConfig;
+pub const parseMasteringDisplaySei = hdr.parseMasteringDisplaySei;
+pub const parseContentLightLevelSei = hdr.parseContentLightLevelSei;
+
+// ============================================================================
+// Audio Metering
+// ============================================================================
+
+pub const metering = @import("audio/metering.zig");
+pub const LoudnessMeter = metering.LoudnessMeter;
+pub const TruePeakMeter = metering.TruePeakMeter;
+pub const LoudnessResult = metering.LoudnessResult;
+pub const LoudnessTarget = metering.LoudnessTarget;
+pub const measureLoudness = metering.measureLoudness;
+
+// ============================================================================
+// Timecode
+// ============================================================================
+
+pub const timecode = @import("timecode/timecode.zig");
+pub const Timecode = timecode.Timecode;
+pub const TimecodeFrameRate = timecode.FrameRate;
+pub const LtcFrame = timecode.LtcFrame;
+pub const LtcDecoder = timecode.LtcDecoder;
+pub const LtcEncoder = timecode.LtcEncoder;
+pub const TimecodeRange = timecode.TimecodeRange;
+
+// ============================================================================
+// DRM / Encryption
+// ============================================================================
+
+pub const drm = @import("drm/drm.zig");
+pub const DrmSystem = drm.DrmSystem;
+pub const EncryptionScheme = drm.EncryptionScheme;
+pub const PsshBox = drm.PsshBox;
+pub const TencBox = drm.TencBox;
+pub const ContentProtection = drm.ContentProtection;
+pub const parsePssh = drm.parsePssh;
+pub const parseTenc = drm.parseTenc;
+pub const DrmSystemIds = drm.SystemIds;
+
+// ============================================================================
+// Thumbnails
+// ============================================================================
+
+pub const thumbnail = @import("thumbnail/thumbnail.zig");
+pub const ThumbnailExtractor = thumbnail.ThumbnailExtractor;
+pub const ThumbnailOptions = thumbnail.ThumbnailOptions;
+pub const ThumbnailFormat = thumbnail.ThumbnailFormat;
+pub const ScaleMode = thumbnail.ScaleMode;
+pub const SpriteSheet = thumbnail.SpriteSheet;
+pub const SpriteSheetOptions = thumbnail.SpriteSheetOptions;
+
+// ============================================================================
+// Frame Seeking
+// ============================================================================
+
+pub const seeking = @import("seeking/seeking.zig");
+pub const FrameIndex = seeking.FrameIndex;
+pub const FrameIndexEntry = seeking.FrameIndexEntry;
+pub const FrameSeeker = seeking.FrameSeeker;
+pub const SeekTarget = seeking.SeekTarget;
+pub const SeekResult = seeking.SeekResult;
+pub const GopInfo = seeking.GopInfo;
+pub const SeekFrameType = seeking.FrameType;
+pub const AvcFrameParser = seeking.AvcFrameParser;
+pub const HevcFrameParser = seeking.HevcFrameParser;
+pub const Mpeg2FrameParser = seeking.Mpeg2FrameParser;
+pub const Vp9FrameParser = seeking.Vp9FrameParser;
+pub const Av1FrameParser = seeking.Av1FrameParser;
+
+// ============================================================================
+// Color LUT
+// ============================================================================
+
+pub const lut = @import("color/lut.zig");
+pub const Lut1D = lut.Lut1D;
+pub const Lut3D = lut.Lut3D;
+pub const LutType = lut.LutType;
+pub const LutColorSpace = lut.ColorSpace;
+pub const LutProcessor = lut.LutProcessor;
+pub const LutGenerator = lut.LutGenerator;
+pub const LutWriter = lut.LutWriter;
+pub const parseCube = lut.parseCube;
+pub const parse3dl = lut.parse3dl;
+pub const parseCsp = lut.parseCsp;
+
+// ============================================================================
 // Conversion Utilities
 // ============================================================================
 
@@ -576,6 +751,21 @@ test "Video library imports" {
     _ = pixel_convert;
     _ = nal_convert;
     _ = remux;
+    // New modules
+    _ = mpegts;
+    _ = flv;
+    _ = mxf;
+    _ = id3;
+    _ = mp4meta;
+    _ = matroska_tags;
+    _ = chapters;
+    _ = hdr;
+    _ = metering;
+    _ = timecode;
+    _ = drm;
+    _ = thumbnail;
+    _ = seeking;
+    _ = lut;
 }
 
 test "Timestamp basic" {

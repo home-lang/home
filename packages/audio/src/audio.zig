@@ -141,6 +141,12 @@ pub const wavpack = @import("formats/wavpack.zig");
 pub const WavPackReader = wavpack.WavPackReader;
 pub const WavPackFlags = wavpack.WavPackFlags;
 
+pub const midi = @import("formats/midi.zig");
+pub const MidiReader = midi.MidiReader;
+pub const MidiFormat = midi.MidiFormat;
+pub const MidiEvent = midi.MidiEvent;
+pub const MidiTrack = midi.MidiTrack;
+
 // ============================================================================
 // Processing Modules
 // ============================================================================
@@ -187,6 +193,107 @@ pub const ReplayGain = metadata.ReplayGain;
 pub const CueSheet = metadata.CueSheet;
 pub const CueTrack = metadata.CueTrack;
 pub const CueTimestamp = metadata.Timestamp;
+
+// Extended processing
+pub const equalizer = @import("processing/equalizer.zig");
+pub const limiter = @import("processing/limiter.zig");
+pub const deesser = @import("processing/deesser.zig");
+pub const stereo = @import("processing/stereo.zig");
+pub const noise = @import("processing/noise.zig");
+pub const convolution = @import("processing/convolution.zig");
+pub const vocoder = @import("processing/vocoder.zig");
+pub const crossfade = @import("processing/crossfade.zig");
+pub const gapless = @import("processing/gapless.zig");
+
+// Effects types
+pub const ParametricEQ = equalizer.ParametricEQ;
+pub const GraphicEQ = equalizer.GraphicEQ;
+pub const ParametricBand = equalizer.ParametricBand;
+pub const FilterType = equalizer.FilterType;
+pub const BrickwallLimiter = limiter.BrickwallLimiter;
+pub const LookAheadLimiter = limiter.LookAheadLimiter;
+pub const SoftKneeLimiter = limiter.SoftKneeLimiter;
+pub const Deesser = deesser.Deesser;
+pub const MultibandDeesser = deesser.MultibandDeesser;
+pub const StereoWidener = stereo.StereoWidener;
+pub const StereoBalance = stereo.StereoBalance;
+pub const MidSideProcessor = stereo.MidSideProcessor;
+pub const StereoCorrelation = stereo.StereoCorrelation;
+pub const HaasWidener = stereo.HaasWidener;
+pub const NoiseReductionGate = noise.NoiseGate;
+pub const Expander = noise.Expander;
+pub const SpectralNoiseReducer = noise.SpectralNoiseReducer;
+pub const ConvolutionReverb = convolution.ConvolutionReverb;
+pub const ReverbSpace = convolution.ReverbSpace;
+pub const Vocoder = vocoder.Vocoder;
+pub const VocoderPreset = vocoder.VocoderPreset;
+pub const Crossfader = crossfade.Crossfader;
+pub const CrossfadeCurve = crossfade.CrossfadeCurve;
+pub const CrossfadeDetector = crossfade.CrossfadeDetector;
+pub const GaplessPlayer = gapless.GaplessPlayer;
+pub const GapAnalyzer = gapless.GapAnalyzer;
+pub const GapInfo = gapless.GapInfo;
+
+// ============================================================================
+// I/O Modules
+// ============================================================================
+
+pub const io = @import("io/io.zig");
+pub const AudioOutput = io.AudioOutput;
+pub const CoreAudioOutput = io.CoreAudioOutput;
+pub const AlsaOutput = io.AlsaOutput;
+pub const WasapiOutput = io.WasapiOutput;
+pub const AudioRecorder = io.AudioRecorder;
+pub const RecordingState = io.RecordingState;
+pub const VoiceActivityDetector = io.VoiceActivityDetector;
+
+// ============================================================================
+// Analysis Modules
+// ============================================================================
+
+pub const analysis = @import("analysis/analysis.zig");
+pub const OnsetDetector = analysis.OnsetDetector;
+pub const TempoEstimator = analysis.TempoEstimator;
+pub const BeatTracker = analysis.BeatTracker;
+pub const WaveformGenerator = analysis.WaveformGenerator;
+pub const WaveformPoint = analysis.WaveformPoint;
+pub const WaveformStats = analysis.WaveformStats;
+pub const SilenceDetector = analysis.SilenceDetector;
+pub const AudioSplitter = analysis.AudioSplitter;
+pub const SilenceRemover = analysis.SilenceRemover;
+pub const AudioFingerprinter = analysis.AudioFingerprinter;
+pub const FingerprintDatabase = analysis.FingerprintDatabase;
+pub const AudioFingerprint = analysis.AudioFingerprint;
+
+// ============================================================================
+// Encoding Modules
+// ============================================================================
+
+pub const encoding = @import("encoding/encoding.zig");
+pub const Mp3Encoder = encoding.Mp3Encoder;
+pub const Mp3Quality = encoding.Mp3Quality;
+pub const Id3v2Writer = encoding.Id3v2Writer;
+pub const AacEncoder = encoding.AacEncoder;
+pub const AacQuality = encoding.AacQuality;
+pub const AacProfile = encoding.AacProfile;
+pub const OpusEncoder = encoding.OpusEncoder;
+pub const OpusQuality = encoding.OpusQuality;
+pub const OggOpusWriter = encoding.OggOpusWriter;
+
+// ============================================================================
+// Utility Modules
+// ============================================================================
+
+pub const utils = @import("utils/utils.zig");
+pub const Playlist = utils.Playlist;
+pub const PlaylistEntry = utils.PlaylistEntry;
+pub const M3uParser = utils.M3uParser;
+pub const PlsParser = utils.PlsParser;
+pub const M3uWriter = utils.M3uWriter;
+pub const PlsWriter = utils.PlsWriter;
+pub const BatchConverter = utils.BatchConverter;
+pub const BatchOptions = utils.BatchOptions;
+pub const ConversionPreset = utils.ConversionPreset;
 
 // ============================================================================
 // High-Level API
@@ -496,6 +603,7 @@ test "Audio library imports" {
     _ = ape;
     _ = tta;
     _ = wavpack;
+    _ = midi;
     _ = processing;
     _ = converter;
     _ = channels;
@@ -505,6 +613,19 @@ test "Audio library imports" {
     _ = timestretch;
     _ = reverb;
     _ = metadata;
+    _ = equalizer;
+    _ = limiter;
+    _ = deesser;
+    _ = stereo;
+    _ = noise;
+    _ = convolution;
+    _ = vocoder;
+    _ = crossfade;
+    _ = gapless;
+    _ = io;
+    _ = analysis;
+    _ = encoding;
+    _ = utils;
 }
 
 test "Format detection" {

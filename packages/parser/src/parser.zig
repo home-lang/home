@@ -2905,9 +2905,12 @@ pub const Parser = struct {
             return self.memberExpr(unwrapped);
         }
 
-        // Accept Identifier, 'default' keyword, or integer literal as field name
+        // Accept Identifier, 'default' keyword, 'type' keyword, or integer literal as field name
         // Integer literals support tuple field access like .0, .1, .2
+        // 'type' keyword support allows fields named 'type' (e.g., self.type)
         const member_token = if (self.match(&.{.Identifier}))
+            self.previous()
+        else if (self.match(&.{.Type}))
             self.previous()
         else if (self.match(&.{.Default}))
             self.previous()
@@ -3937,8 +3940,8 @@ pub const Parser = struct {
                     // Empty braces {} could be struct literal
                     if (self.check(.RightBrace)) break :blk true;
 
-                    // If next token is an identifier followed by :, it's a struct literal
-                    if (self.check(.Identifier)) {
+                    // If next token is an identifier (or 'type' keyword) followed by :, it's a struct literal
+                    if (self.check(.Identifier) or self.check(.Type)) {
                         const after_ident_pos = self.current + 1;
                         if (after_ident_pos < self.tokens.len) {
                             if (self.tokens[after_ident_pos].type == .Colon) {
