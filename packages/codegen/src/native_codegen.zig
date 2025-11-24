@@ -2925,12 +2925,12 @@ pub const NativeCodegen = struct {
                     self.allocator.free(old_entry.key);
                 }
                 const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
-                errdefer self.allocator.free(iterator_name_copy);
                 try self.locals.put(iterator_name_copy, .{
                     .offset = iterator_offset,
                     .type_name = "i32",  // For loop iterators are always i32
                     .size = 8,
                 });
+                // Note: HashMap now owns iterator_name_copy, will be freed in cleanup
 
                 // Push initial iterator value to stack
                 try self.assembler.movRegReg(.rax, .r8);

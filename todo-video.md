@@ -71,12 +71,12 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 2. Container Formats
 
 ### 2.1 Video Containers (Read & Write)
-- [ ] **MP4** (.mp4) - ISO Base Media File Format
-  - [ ] ftyp, moov, mdat box parsing
-  - [ ] Edit lists support
-  - [ ] Fragmented MP4 (fMP4) for streaming
-  - [ ] Fast-start (moov before mdat) option
-  - [ ] Multiple audio/video tracks
+- [x] **MP4** (.mp4) - ISO Base Media File Format
+  - [x] ftyp, moov, mdat box parsing
+  - [x] Edit lists support
+  - [x] Fragmented MP4 (fMP4) for streaming
+  - [x] Fast-start (moov before mdat) option
+  - [x] Multiple audio/video tracks
 - [ ] **QuickTime** (.mov) - Apple QuickTime format
   - [ ] Full moov atom support
   - [ ] ProRes marker handling
@@ -122,24 +122,28 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 3. Video Codecs
 
 ### 3.1 Modern Codecs (Encode & Decode)
-- [ ] **H.264/AVC** - Advanced Video Coding
-  - [ ] Baseline, Main, High profiles
-  - [ ] B-frame support
-  - [ ] CABAC/CAVLC entropy coding
-  - [ ] SPS/PPS handling
-  - [ ] NAL unit parsing
-- [ ] **H.265/HEVC** - High Efficiency Video Coding
-  - [ ] Main, Main10 profiles
-  - [ ] CTU size configuration
-  - [ ] VPS/SPS/PPS handling
-- [ ] **VP9** - Google's open codec
-  - [ ] Profile 0, 1, 2, 3
-  - [ ] Superframe parsing
-  - [ ] Alpha channel support
-- [ ] **AV1** - Alliance for Open Media
-  - [ ] Main, High profiles
-  - [ ] Film grain synthesis
-  - [ ] OBU parsing
+- [x] **H.264/AVC** - Advanced Video Coding (Encoder)
+  - [x] Baseline, Main, High profiles
+  - [x] B-frame support
+  - [x] CABAC/CAVLC entropy coding
+  - [x] SPS/PPS handling
+  - [x] NAL unit parsing
+  - [ ] Decoder
+- [x] **H.265/HEVC** - High Efficiency Video Coding (Encoder)
+  - [x] Main, Main10 profiles
+  - [x] CTU size configuration
+  - [x] VPS/SPS/PPS handling
+  - [ ] Decoder
+- [x] **VP9** - Google's open codec (Encoder)
+  - [x] Profile 0, 1, 2, 3
+  - [x] Superframe parsing
+  - [x] Alpha channel support
+  - [ ] Decoder
+- [x] **AV1** - Alliance for Open Media (Encoder)
+  - [x] Main, High, Professional profiles
+  - [x] Film grain synthesis
+  - [x] OBU parsing
+  - [ ] Decoder
 
 ### 3.2 Legacy Codecs (Decode priority, Encode optional)
 - [x] **VP8** - WebM legacy codec
@@ -202,15 +206,15 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 5. Subtitle Support
 
 ### 5.1 Text-based Subtitles
-- [ ] **WebVTT** (.vtt) - Web Video Text Tracks
-  - [ ] Cue timing and text
-  - [ ] Styling support
-  - [ ] Positioning
-- [ ] **SRT** (.srt) - SubRip format
-  - [ ] Basic formatting tags
-- [ ] **ASS/SSA** (.ass/.ssa) - Advanced SubStation Alpha
-  - [ ] Style definitions
-  - [ ] Positioning and effects
+- [x] **WebVTT** (.vtt) - Web Video Text Tracks
+  - [x] Cue timing and text
+  - [x] Styling support
+  - [x] Positioning
+- [x] **SRT** (.srt) - SubRip format
+  - [x] Basic formatting tags
+- [x] **ASS/SSA** (.ass/.ssa) - Advanced SubStation Alpha
+  - [x] Style definitions
+  - [x] Positioning and effects
 
 ### 5.2 Image-based Subtitles (decode only)
 - [x] **PGS** - Blu-ray subtitles
@@ -226,25 +230,25 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 6. Video Operations
 
 ### 6.1 Frame Transformations
-- [ ] **Resize** - Change resolution
-  - [ ] Fit modes: fill, contain, cover, stretch
-  - [ ] Scaling algorithms: nearest, bilinear, bicubic, lanczos
-  - [ ] Aspect ratio preservation options
-- [ ] **Crop** - Extract region (left, top, width, height)
-- [ ] **Pad** - Add borders with color
-- [ ] **Rotate** - 0°, 90°, 180°, 270° (with transpose)
-- [ ] **Flip** - Horizontal and vertical
-- [ ] **Transpose** - Diagonal flip
+- [x] **Resize** - Change resolution
+  - [x] Fit modes: fill, contain, cover, stretch
+  - [x] Scaling algorithms: nearest, bilinear, bicubic, lanczos
+  - [x] Aspect ratio preservation options
+- [x] **Crop** - Extract region (left, top, width, height)
+- [x] **Pad** - Add borders with color
+- [x] **Rotate** - 0°, 90°, 180°, 270° (with transpose)
+- [x] **Flip** - Horizontal and vertical
+- [x] **Transpose** - Diagonal flip
 
 ### 6.2 Color Operations
-- [ ] **Color space conversion** (BT.601 ↔ BT.709 ↔ BT.2020)
-- [ ] **Pixel format conversion** (YUV ↔ RGB, etc.)
-- [ ] **Brightness/Contrast adjustment**
-- [ ] **Saturation adjustment**
-- [ ] **Hue rotation**
-- [ ] **Gamma correction**
-- [ ] **Color curves**
-- [ ] **LUT application** (1D and 3D)
+- [x] **Color space conversion** (BT.601 ↔ BT.709 ↔ BT.2020)
+- [x] **Pixel format conversion** (YUV ↔ RGB, etc.)
+- [x] **Brightness/Contrast adjustment**
+- [x] **Saturation adjustment**
+- [x] **Hue rotation**
+- [x] **Gamma correction**
+- [x] **Color curves**
+- [x] **LUT application** (1D and 3D)
 
 ### 6.3 Temporal Operations
 - [ ] **Trim** - Cut start/end by timestamp
@@ -283,16 +287,16 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 7. Audio Operations
 
 ### 7.1 Sample Operations
-- [ ] **Resample** - Sample rate conversion
-  - [ ] Linear, sinc interpolation
-- [ ] **Channel mixing**
-  - [ ] Mono to stereo
-  - [ ] Stereo to mono
-  - [ ] Upmix/downmix (5.1 ↔ stereo)
-  - [ ] Custom channel matrices
-- [ ] **Sample format conversion**
-- [ ] **Volume adjustment** - Gain in dB
-- [ ] **Normalization** - Peak and loudness (EBU R128)
+- [x] **Resample** - Sample rate conversion
+  - [x] Linear, sinc interpolation
+- [x] **Channel mixing**
+  - [x] Mono to stereo
+  - [x] Stereo to mono
+  - [x] Upmix/downmix (5.1 ↔ stereo)
+  - [x] Custom channel matrices
+- [x] **Sample format conversion**
+- [x] **Volume adjustment** - Gain in dB
+- [x] **Normalization** - Peak and loudness (EBU R128)
 
 ### 7.2 Temporal Operations
 - [ ] **Trim** - Cut by timestamp
@@ -400,33 +404,33 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 11. Metadata System
 
 ### 11.1 Container Metadata
-- [ ] Duration
-- [ ] Bitrate (overall and per-stream)
-- [ ] Creation date
-- [ ] Modification date
-- [ ] MIME type with codec string
+- [x] Duration
+- [x] Bitrate (overall and per-stream)
+- [x] Creation date
+- [x] Modification date
+- [x] MIME type with codec string
 
 ### 11.2 Track/Stream Metadata
-- [ ] Codec name and parameters
-- [ ] Resolution (video)
-- [ ] Frame rate (video)
-- [ ] Sample rate, channels (audio)
-- [ ] Language code (ISO 639-2)
-- [ ] Track name
-- [ ] Track disposition (default, forced, hearing_impaired, etc.)
+- [x] Codec name and parameters
+- [x] Resolution (video)
+- [x] Frame rate (video)
+- [x] Sample rate, channels (audio)
+- [x] Language code (ISO 639-2)
+- [x] Track name
+- [x] Track disposition (default, forced, hearing_impaired, etc.)
 
 ### 11.3 Descriptive Metadata (ID3, Vorbis Comments, etc.)
-- [ ] Title, Artist, Album
-- [ ] Album Artist
-- [ ] Track number / Total tracks
-- [ ] Disc number / Total discs
-- [ ] Genre
-- [ ] Release date / Year
-- [ ] Composer, Lyricist
-- [ ] Copyright
-- [ ] Comments
-- [ ] Lyrics
-- [ ] Cover art (multiple: front, back, etc.)
+- [x] Title, Artist, Album
+- [x] Album Artist
+- [x] Track number / Total tracks
+- [x] Disc number / Total discs
+- [x] Genre
+- [x] Release date / Year
+- [x] Composer, Lyricist
+- [x] Copyright
+- [x] Comments
+- [x] Lyrics
+- [x] Cover art (multiple: front, back, etc.)
 
 ### 11.4 Technical Metadata
 - [ ] Color space and primaries

@@ -1066,3 +1066,383 @@ test "Mp4Muxer finalize" {
     }
     try std.testing.expect(found_moov);
 }
+
+// ============================================================================
+// Fragmented MP4 (fMP4) Support for Streaming
+// ============================================================================
+
+pub const FragmentedMp4Muxer = struct {
+    allocator: std.mem.Allocator,
+    tracks: std.ArrayList(TrackConfig),
+    sequence_number: u32 = 1,
+    fragment_duration: u32, // In timescale units
+    current_fragment: std.ArrayList(u8),
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, fragment_duration: u32) Self {
+        return .{
+            .allocator = allocator,
+            .tracks = std.ArrayList(TrackConfig).init(allocator),
+            .fragment_duration = fragment_duration,
+            .current_fragment = std.ArrayList(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.tracks.deinit();
+        self.current_fragment.deinit();
+    }
+
+    pub fn addVideoTrack(self: *Self, config: VideoTrackConfig) !u32 {
+        const track_id: u32 = @intCast(self.tracks.items.len + 1);
+        try self.tracks.append(.{ .video = config });
+        return track_id;
+    }
+
+    pub fn addAudioTrack(self: *Self, config: AudioTrackConfig) !u32 {
+        const track_id: u32 = @intCast(self.tracks.items.len + 1);
+        try self.tracks.append(.{ .audio = config });
+        return track_id;
+    }
+
+    /// Write initialization segment (ftyp + moov)
+    pub fn writeInitSegment(self: *Self) ![]u8 {
+        var output = std.ArrayList(u8).init(self.allocator);
+        errdefer output.deinit();
+
+        // Write ftyp for fragmented MP4
+        try writeU32Be(&output, self.allocator, 24); // Size
+        try output.appendSlice("ftyp");
+        try output.appendSlice("iso5"); // Major brand for fMP4
+        try writeU32Be(&output, self.allocator, 512); // Minor version
+        try output.appendSlice("iso5");
+        try output.appendSlice("iso6");
+        try output.appendSlice("mp41");
+
+        // Write moov with mvex (movie extends)
+        const moov_start = output.items.len;
+        try writeU32Be(&output, self.allocator, 0); // Placeholder
+        try output.appendSlice("moov");
+
+        // mvhd
+        try self.writeMvhd(&output);
+
+        // For each track: trak
+        for (self.tracks.items, 0..) |track, i| {
+            const track_id: u32 = @intCast(i + 1);
+            try self.writeTrak(&output, track, track_id);
+        }
+
+        // mvex (movie extends)
+        const mvex_start = output.items.len;
+        try writeU32Be(&output, self.allocator, 0);
+        try output.appendSlice("mvex");
+
+        // trex for each track
+        for (0..self.tracks.items.len) |i| {
+            const track_id: u32 = @intCast(i + 1);
+            try self.writeTrex(&output, track_id);
+        }
+
+        // Update mvex size
+        const mvex_size: u32 = @intCast(output.items.len - mvex_start);
+        std.mem.writeInt(u32, output.items[mvex_start..][0..4], mvex_size, .big);
+
+        // Update moov size
+        const moov_size: u32 = @intCast(output.items.len - moov_start);
+        std.mem.writeInt(u32, output.items[moov_start..][0..4], moov_size, .big);
+
+        return output.toOwnedSlice();
+    }
+
+    /// Write media fragment (moof + mdat)
+    pub fn writeFragment(self: *Self, track_id: u32, samples: []const Sample) ![]u8 {
+        var output = std.ArrayList(u8).init(self.allocator);
+        errdefer output.deinit();
+
+        // moof (movie fragment)
+        const moof_start = output.items.len;
+        try writeU32Be(&output, self.allocator, 0);
+        try output.appendSlice("moof");
+
+        // mfhd (movie fragment header)
+        try writeU32Be(&output, self.allocator, 16);
+        try output.appendSlice("mfhd");
+        try writeU32Be(&output, self.allocator, 0); // Version/flags
+        try writeU32Be(&output, self.allocator, self.sequence_number);
+
+        // traf (track fragment)
+        const traf_start = output.items.len;
+        try writeU32Be(&output, self.allocator, 0);
+        try output.appendSlice("traf");
+
+        // tfhd (track fragment header)
+        try writeU32Be(&output, self.allocator, 24);
+        try output.appendSlice("tfhd");
+        try writeU32Be(&output, self.allocator, 0x020000); // default-base-is-moof
+        try writeU32Be(&output, self.allocator, track_id);
+
+        // tfdt (track fragment decode time)
+        try writeU32Be(&output, self.allocator, 20);
+        try output.appendSlice("tfdt");
+        try writeU32Be(&output, self.allocator, 0x01000000); // Version 1
+        try writeU64Be(&output, self.allocator, 0); // Base media decode time
+
+        // trun (track fragment run)
+        try self.writeTrun(&output, samples);
+
+        // Update traf size
+        const traf_size: u32 = @intCast(output.items.len - traf_start);
+        std.mem.writeInt(u32, output.items[traf_start..][0..4], traf_size, .big);
+
+        // Update moof size
+        const moof_size: u32 = @intCast(output.items.len - moof_start);
+        std.mem.writeInt(u32, output.items[moof_start..][0..4], moof_size, .big);
+
+        // mdat (media data)
+        var mdat_size: u32 = 8;
+        for (samples) |sample| {
+            mdat_size += @intCast(sample.data.len);
+        }
+        try writeU32Be(&output, self.allocator, mdat_size);
+        try output.appendSlice("mdat");
+
+        for (samples) |sample| {
+            try output.appendSlice(sample.data);
+        }
+
+        self.sequence_number += 1;
+
+        return output.toOwnedSlice();
+    }
+
+    fn writeMvhd(self: *Self, output: *std.ArrayList(u8)) !void {
+        try writeU32Be(output, self.allocator, 108);
+        try output.appendSlice("mvhd");
+        try writeU32Be(output, self.allocator, 0); // Version 0
+        try writeU32Be(output, self.allocator, 0); // Creation time
+        try writeU32Be(output, self.allocator, 0); // Modification time
+        try writeU32Be(output, self.allocator, 1000); // Timescale
+        try writeU32Be(output, self.allocator, 0); // Duration (unknown for live)
+        try writeU32Be(output, self.allocator, 0x00010000); // Rate 1.0
+        try writeU16Be(output, self.allocator, 0x0100); // Volume 1.0
+        try writeU16Be(output, self.allocator, 0); // Reserved
+        try writeU32Be(output, self.allocator, 0); // Reserved
+        try writeU32Be(output, self.allocator, 0); // Reserved
+
+        // Matrix
+        const unity_matrix = [_]u32{ 0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000 };
+        for (unity_matrix) |val| {
+            try writeU32Be(output, self.allocator, val);
+        }
+
+        // Pre-defined
+        for (0..6) |_| {
+            try writeU32Be(output, self.allocator, 0);
+        }
+
+        try writeU32Be(output, self.allocator, @intCast(self.tracks.items.len + 1)); // Next track ID
+    }
+
+    fn writeTrak(self: *Self, output: *std.ArrayList(u8), track: TrackConfig, track_id: u32) !void {
+        const trak_start = output.items.len;
+        try writeU32Be(output, self.allocator, 0);
+        try output.appendSlice("trak");
+
+        // tkhd
+        try self.writeTkhd(output, track, track_id);
+
+        // mdia
+        try self.writeMdia(output, track);
+
+        const trak_size: u32 = @intCast(output.items.len - trak_start);
+        std.mem.writeInt(u32, output.items[trak_start..][0..4], trak_size, .big);
+    }
+
+    fn writeTkhd(self: *Self, output: *std.ArrayList(u8), track: TrackConfig, track_id: u32) !void {
+        try writeU32Be(output, self.allocator, 92);
+        try output.appendSlice("tkhd");
+        try writeU32Be(output, self.allocator, 0x00000007); // Enabled, in movie, in preview
+        try writeU32Be(output, self.allocator, 0); // Creation time
+        try writeU32Be(output, self.allocator, 0); // Modification time
+        try writeU32Be(output, self.allocator, track_id);
+        try writeU32Be(output, self.allocator, 0); // Reserved
+        try writeU32Be(output, self.allocator, 0); // Duration
+
+        try writeU32Be(output, self.allocator, 0); // Reserved
+        try writeU32Be(output, self.allocator, 0); // Reserved
+        try writeU16Be(output, self.allocator, 0); // Layer
+        try writeU16Be(output, self.allocator, 0); // Alternate group
+
+        const volume: u16 = switch (track) {
+            .audio => 0x0100, // 1.0
+            .video => 0x0000, // 0.0
+        };
+        try writeU16Be(output, self.allocator, volume);
+        try writeU16Be(output, self.allocator, 0); // Reserved
+
+        // Matrix
+        const unity_matrix = [_]u32{ 0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000 };
+        for (unity_matrix) |val| {
+            try writeU32Be(output, self.allocator, val);
+        }
+
+        const width: u32 = switch (track) {
+            .video => |v| @as(u32, v.width) << 16,
+            .audio => 0,
+        };
+        const height: u32 = switch (track) {
+            .video => |v| @as(u32, v.height) << 16,
+            .audio => 0,
+        };
+        try writeU32Be(output, self.allocator, width);
+        try writeU32Be(output, self.allocator, height);
+    }
+
+    fn writeMdia(self: *Self, output: *std.ArrayList(u8), track: TrackConfig) !void {
+        _ = self;
+        _ = track;
+        const mdia_start = output.items.len;
+        try writeU32Be(output, self.allocator, 0);
+        try output.appendSlice("mdia");
+
+        // Simplified - just placeholder
+        try writeU32Be(output, self.allocator, 32);
+        try output.appendSlice("mdhd");
+        try writeU32Be(output, self.allocator, 0);
+        try writeU32Be(output, self.allocator, 0);
+        try writeU32Be(output, self.allocator, 0);
+        try writeU32Be(output, self.allocator, 1000);
+        try writeU32Be(output, self.allocator, 0);
+        try writeU32Be(output, self.allocator, 0x55c40000);
+
+        const mdia_size: u32 = @intCast(output.items.len - mdia_start);
+        std.mem.writeInt(u32, output.items[mdia_start..][0..4], mdia_size, .big);
+    }
+
+    fn writeTrex(self: *Self, output: *std.ArrayList(u8), track_id: u32) !void {
+        try writeU32Be(output, self.allocator, 32);
+        try output.appendSlice("trex");
+        try writeU32Be(output, self.allocator, 0); // Version/flags
+        try writeU32Be(output, self.allocator, track_id);
+        try writeU32Be(output, self.allocator, 1); // Default sample description index
+        try writeU32Be(output, self.allocator, 0); // Default sample duration
+        try writeU32Be(output, self.allocator, 0); // Default sample size
+        try writeU32Be(output, self.allocator, 0); // Default sample flags
+    }
+
+    fn writeTrun(self: *Self, output: *std.ArrayList(u8), samples: []const Sample) !void {
+        const flags: u32 = 0x00000F01; // data-offset, duration, size, flags, composition-offset
+        const trun_start = output.items.len;
+        try writeU32Be(output, self.allocator, 0);
+        try output.appendSlice("trun");
+        try writeU32Be(output, self.allocator, flags);
+        try writeU32Be(output, self.allocator, @intCast(samples.len));
+
+        // Data offset (to be filled)
+        const data_offset_pos = output.items.len;
+        try writeU32Be(output, self.allocator, 0);
+
+        // Samples
+        for (samples) |sample| {
+            try writeU32Be(output, self.allocator, sample.duration);
+            try writeU32Be(output, self.allocator, @intCast(sample.data.len));
+            const sample_flags: u32 = if (sample.is_keyframe) 0x02000000 else 0x01010000;
+            try writeU32Be(output, self.allocator, sample_flags);
+            try writeI32Be(output, self.allocator, sample.composition_offset);
+        }
+
+        const trun_size: u32 = @intCast(output.items.len - trun_start);
+        std.mem.writeInt(u32, output.items[trun_start..][0..4], trun_size, .big);
+
+        // Calculate and write data offset
+        const data_offset: u32 = @intCast(output.items.len);
+        std.mem.writeInt(u32, output.items[data_offset_pos..][0..4], data_offset, .big);
+    }
+};
+
+fn writeI32Be(output: *std.ArrayList(u8), allocator: std.mem.Allocator, val: i32) !void {
+    var buf: [4]u8 = undefined;
+    std.mem.writeInt(i32, &buf, val, .big);
+    try output.appendSlice(allocator, &buf);
+}
+
+fn writeU64Be(output: *std.ArrayList(u8), allocator: std.mem.Allocator, val: u64) !void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, val, .big);
+    try output.appendSlice(allocator, &buf);
+}
+
+// ============================================================================
+// Fast-Start MP4 (moov before mdat)
+// ============================================================================
+
+pub const FastStartMp4Muxer = struct {
+    inner: Mp4Muxer,
+    moov_reserved_size: usize = 1048576, // 1MB reserved for moov
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .inner = Mp4Muxer.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.inner.deinit();
+    }
+
+    pub fn addVideoTrack(self: *Self, config: VideoTrackConfig) !u32 {
+        return self.inner.addVideoTrack(config);
+    }
+
+    pub fn addAudioTrack(self: *Self, config: AudioTrackConfig) !u32 {
+        return self.inner.addAudioTrack(config);
+    }
+
+    pub fn writeSample(self: *Self, track_id: u32, sample: Sample) !void {
+        return self.inner.writeSample(track_id, sample);
+    }
+
+    /// Finalize with moov-before-mdat layout for fast start
+    pub fn finalize(self: *Self) ![]u8 {
+        // First, generate moov
+        const moov_data = try self.inner.buildMoov();
+        defer self.inner.allocator.free(moov_data);
+
+        // Build output: ftyp + moov + mdat
+        var output = std.ArrayList(u8).init(self.inner.allocator);
+        errdefer output.deinit();
+
+        // Write ftyp
+        try writeU32Be(&output, self.inner.allocator, 24);
+        try output.appendSlice(self.inner.allocator, "ftyp");
+        try output.appendSlice(self.inner.allocator, &self.inner.brand);
+        try writeU32Be(&output, self.inner.allocator, self.inner.minor_version);
+        try output.appendSlice(self.inner.allocator, &self.inner.brand);
+
+        // Write moov FIRST (fast-start)
+        try output.appendSlice(self.inner.allocator, moov_data);
+
+        // Write mdat
+        const mdat_size: u64 = self.inner.mdat_size + 8;
+        if (mdat_size > std.math.maxInt(u32)) {
+            // Extended size
+            try writeU32Be(&output, self.inner.allocator, 1);
+            try output.appendSlice(self.inner.allocator, "mdat");
+            try writeU64Be(&output, self.inner.allocator, mdat_size);
+        } else {
+            try writeU32Be(&output, self.inner.allocator, @intCast(mdat_size));
+            try output.appendSlice(self.inner.allocator, "mdat");
+        }
+
+        // Copy mdat content (already in buffer)
+        const mdat_start = self.inner.mdat_start;
+        const mdat_end = mdat_start + self.inner.mdat_size;
+        try output.appendSlice(self.inner.allocator, self.inner.buffer.items[mdat_start..mdat_end]);
+
+        return output.toOwnedSlice();
+    }
+};
