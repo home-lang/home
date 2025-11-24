@@ -5,13 +5,19 @@
 // Supported formats:
 // - WAV  (read/write) - Waveform Audio File Format
 // - MP3  (read)       - MPEG Audio Layer III
-// - FLAC (read)       - Free Lossless Audio Codec
+// - FLAC (read/write) - Free Lossless Audio Codec
 // - OGG  (read)       - Ogg Vorbis
 // - AAC  (read)       - Advanced Audio Coding (ADTS)
 // - AIFF (read/write) - Audio Interchange File Format
 // - Opus (read)       - Opus Audio Codec (in OGG container)
 // - WMA  (read)       - Windows Media Audio (ASF container)
 // - M4A  (read)       - MPEG-4 Audio (AAC/ALAC in MP4 container)
+// - MKA  (read)       - Matroska Audio / WebM
+// - CAF  (read)       - Core Audio Format (Apple)
+// - DSD  (read)       - Direct Stream Digital (DSF/DSDIFF)
+// - APE  (read)       - Monkey's Audio
+// - TTA  (read)       - True Audio
+// - WavPack (read)    - WavPack hybrid lossless
 
 const std = @import("std");
 
@@ -107,6 +113,34 @@ pub const WmaFormat = wma.WmaFormat;
 pub const m4a = @import("formats/m4a.zig");
 pub const M4aReader = m4a.M4aReader;
 
+pub const flac_writer = @import("formats/flac_writer.zig");
+pub const FlacWriter = flac_writer.FlacWriter;
+
+pub const matroska = @import("formats/matroska.zig");
+pub const MatroskaReader = matroska.MatroskaReader;
+pub const MatroskaCodec = matroska.MatroskaCodec;
+
+pub const caf = @import("formats/caf.zig");
+pub const CafReader = caf.CafReader;
+pub const CafFormatCode = caf.CafFormatCode;
+
+pub const dsd = @import("formats/dsd.zig");
+pub const DsfReader = dsd.DsfReader;
+pub const DsdiffReader = dsd.DsdiffReader;
+pub const DsdRate = dsd.DsdRate;
+
+pub const ape = @import("formats/ape.zig");
+pub const ApeReader = ape.ApeReader;
+pub const ApeCompression = ape.ApeCompression;
+
+pub const tta = @import("formats/tta.zig");
+pub const TtaReader = tta.TtaReader;
+pub const TtaFormat = tta.TtaFormat;
+
+pub const wavpack = @import("formats/wavpack.zig");
+pub const WavPackReader = wavpack.WavPackReader;
+pub const WavPackFlags = wavpack.WavPackFlags;
+
 // ============================================================================
 // Processing Modules
 // ============================================================================
@@ -122,6 +156,37 @@ pub const NoiseGate = processing.NoiseGate;
 pub const Delay = processing.Delay;
 pub const Chorus = processing.Chorus;
 pub const LFO = processing.LFO;
+
+// Extended processing
+pub const converter = @import("processing/converter.zig");
+pub const channels = @import("processing/channels.zig");
+pub const loudness = @import("processing/loudness.zig");
+pub const fft = @import("processing/fft.zig");
+pub const pitch = @import("processing/pitch.zig");
+pub const timestretch = @import("processing/timestretch.zig");
+pub const reverb = @import("processing/reverb.zig");
+
+// Processing types
+pub const LoudnessMeter = loudness.LoudnessMeter;
+pub const LoudnessResult = loudness.LoudnessResult;
+pub const SpectrumAnalyzer = fft.SpectrumAnalyzer;
+pub const WindowType = fft.WindowType;
+pub const PitchDetector = pitch.PitchDetector;
+pub const Note = pitch.Note;
+pub const TimeStretcher = timestretch.TimeStretcher;
+pub const Reverb = reverb.Reverb;
+pub const ReverbPreset = reverb.ReverbPreset;
+pub const DownmixCoefficients = channels.DownmixCoefficients;
+
+// ============================================================================
+// Metadata Modules
+// ============================================================================
+
+pub const metadata = @import("metadata/metadata.zig");
+pub const ReplayGain = metadata.ReplayGain;
+pub const CueSheet = metadata.CueSheet;
+pub const CueTrack = metadata.CueTrack;
+pub const CueTimestamp = metadata.Timestamp;
 
 // ============================================================================
 // High-Level API
@@ -424,7 +489,22 @@ test "Audio library imports" {
     _ = opus;
     _ = wma;
     _ = m4a;
+    _ = flac_writer;
+    _ = matroska;
+    _ = caf;
+    _ = dsd;
+    _ = ape;
+    _ = tta;
+    _ = wavpack;
     _ = processing;
+    _ = converter;
+    _ = channels;
+    _ = loudness;
+    _ = fft;
+    _ = pitch;
+    _ = timestretch;
+    _ = reverb;
+    _ = metadata;
 }
 
 test "Format detection" {

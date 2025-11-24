@@ -4290,7 +4290,7 @@ pub const Parser = struct {
 
             // Skip format specifier if present (e.g., :30, :7.3, :.2f)
             // Format specifiers start with : and contain digits, dots, and format chars
-            while (self.check(.Colon) and !self.check(.StringInterpolationMid) and !self.check(.StringInterpolationEnd)) {
+            if (self.check(.Colon)) {
                 _ = self.advance(); // consume :
                 // Consume format specifier tokens (Integer, Float, Dot, Identifier for things like "f")
                 while (self.check(.Integer) or self.check(.Float) or self.check(.Dot) or self.check(.Identifier)) {

@@ -44,6 +44,22 @@ const transform_ops = @import("ops/transform.zig");
 const color_ops = @import("ops/color.zig");
 const filter_ops = @import("ops/filter.zig");
 
+// Drawing and effects modules
+const draw_ops = @import("draw.zig");
+const blend_ops = @import("blend.zig");
+const compare_ops = @import("compare.zig");
+const watermark_ops = @import("watermark.zig");
+const dither_ops = @import("dither.zig");
+
+// Advanced modules
+const analysis_ops = @import("analysis.zig");
+const filters_ops = @import("filters.zig");
+const colorspace_ops = @import("colorspace.zig");
+const compose_ops = @import("compose.zig");
+const text_ops = @import("text.zig");
+const utils_ops = @import("utils.zig");
+const format_utils_ops = @import("format_utils.zig");
+
 // ============================================================================
 // Core Types
 // ============================================================================
@@ -669,53 +685,6 @@ pub const Image = struct {
     }
 
     // ========================================================================
-    // Clone / Copy
-    // ========================================================================
-
-    /// Create a deep copy of the image
-    pub fn clone(self: *const Self) !Self {
-        const new_pixels = try self.allocator.alloc(u8, self.pixels.len);
-        @memcpy(new_pixels, self.pixels);
-
-        // Clone palette if present
-        var new_palette: ?[]Color = null;
-        if (self.palette) |pal| {
-            new_palette = try self.allocator.alloc(Color, pal.len);
-            @memcpy(new_palette.?, pal);
-        }
-
-        // Clone frames if present
-        var new_frames: ?[]Frame = null;
-        if (self.frames) |frames| {
-            new_frames = try self.allocator.alloc(Frame, frames.len);
-            for (frames, 0..) |frame, i| {
-                const frame_pixels = try self.allocator.alloc(u8, frame.pixels.len);
-                @memcpy(frame_pixels, frame.pixels);
-                new_frames.?[i] = Frame{
-                    .pixels = frame_pixels,
-                    .delay_ms = frame.delay_ms,
-                    .x_offset = frame.x_offset,
-                    .y_offset = frame.y_offset,
-                    .width = frame.width,
-                    .height = frame.height,
-                    .dispose_op = frame.dispose_op,
-                    .blend_op = frame.blend_op,
-                };
-            }
-        }
-
-        return Self{
-            .width = self.width,
-            .height = self.height,
-            .pixels = new_pixels,
-            .format = self.format,
-            .allocator = self.allocator,
-            .palette = new_palette,
-            .frames = new_frames,
-        };
-    }
-
-    // ========================================================================
     // SIMD-Optimized Operations
     // ========================================================================
 
@@ -975,12 +944,98 @@ pub const FitMode = resize_ops.FitMode;
 pub const Region = crop_ops.Region;
 pub const ExtendOptions = crop_ops.ExtendOptions;
 pub const TrimOptions = crop_ops.TrimOptions;
-pub const BlendMode = crop_ops.BlendMode;
+pub const CropBlendMode = crop_ops.BlendMode;
 pub const RotateMode = transform_ops.RotateMode;
 pub const AffineMatrix = transform_ops.AffineMatrix;
 pub const HSL = color_ops.HSL;
 pub const HSV = color_ops.HSV;
 pub const Kernel = filter_ops.Kernel;
+
+// Drawing and effects exports
+pub const Draw = draw_ops;
+pub const Blend = blend_ops;
+pub const Compare = compare_ops;
+pub const Watermark = watermark_ops;
+pub const Dither = dither_ops;
+
+// Re-export common types from drawing/effects modules
+pub const BlendMode = blend_ops.BlendMode;
+pub const PorterDuff = blend_ops.PorterDuff;
+pub const WatermarkPosition = watermark_ops.Position;
+pub const WatermarkConfig = watermark_ops.WatermarkConfig;
+pub const TextWatermarkConfig = watermark_ops.TextWatermarkConfig;
+pub const DitherAlgorithm = dither_ops.Algorithm;
+pub const DitherConfig = dither_ops.DitherConfig;
+pub const Palettes = dither_ops.Palettes;
+
+// Advanced module exports
+pub const Analysis = analysis_ops;
+pub const Filters = filters_ops;
+pub const ColorSpace = colorspace_ops;
+pub const Compose = compose_ops;
+pub const Text = text_ops;
+pub const Utils = utils_ops;
+pub const FormatUtils = format_utils_ops;
+
+// Re-export common types from analysis module
+pub const ImageStats = analysis_ops.ImageStats;
+pub const ChannelStats = analysis_ops.ChannelStats;
+pub const DominantColor = analysis_ops.DominantColor;
+pub const ColorCluster = analysis_ops.ColorCluster;
+pub const BlurResult = analysis_ops.BlurResult;
+pub const Feature = analysis_ops.Feature;
+pub const BoundingBox = analysis_ops.BoundingBox;
+
+// Re-export common types from filters module
+pub const StructuringElement = filters_ops.StructuringElement;
+pub const UnsharpMaskParams = filters_ops.UnsharpMaskParams;
+pub const VignetteParams = filters_ops.VignetteParams;
+pub const LensDistortionParams = filters_ops.LensDistortionParams;
+pub const ChromaticAberrationParams = filters_ops.ChromaticAberrationParams;
+
+// Re-export common types from colorspace module
+pub const ColorSpaceType = colorspace_ops.ColorSpace;
+pub const CMYK = colorspace_ops.CMYK;
+pub const XYZ = colorspace_ops.XYZ;
+pub const LAB = colorspace_ops.LAB;
+pub const LCH = colorspace_ops.LCH;
+pub const LUT3D = colorspace_ops.LUT3D;
+pub const LUT1D = colorspace_ops.LUT1D;
+pub const ColorGrade = colorspace_ops.ColorGrade;
+
+// Re-export common types from compose module
+pub const Layer = compose_ops.Layer;
+pub const Mask = compose_ops.Mask;
+pub const Composition = compose_ops.Composition;
+pub const ClippingPath = compose_ops.ClippingPath;
+pub const SmartObject = compose_ops.SmartObject;
+pub const AdjustmentLayer = compose_ops.AdjustmentLayer;
+pub const Shapes = compose_ops.Shapes;
+
+// Re-export common types from text module
+pub const Font = text_ops.Font;
+pub const TextOptions = text_ops.TextOptions;
+pub const TextAlign = text_ops.TextAlign;
+pub const TextMetrics = text_ops.TextMetrics;
+
+// Re-export common types from utils module
+pub const DiffMode = utils_ops.DiffMode;
+pub const DiffOptions = utils_ops.DiffOptions;
+pub const BatchOperation = utils_ops.BatchOperation;
+pub const BatchOptions = utils_ops.BatchOptions;
+pub const BatchResult = utils_ops.BatchResult;
+pub const ImagePool = utils_ops.ImagePool;
+pub const PooledImage = utils_ops.PooledImage;
+pub const ProgressCallback = utils_ops.ProgressCallback;
+pub const OperationContext = utils_ops.OperationContext;
+
+// Re-export common types from format_utils module
+pub const Orientation = format_utils_ops.Orientation;
+pub const AnimationTimeline = format_utils_ops.AnimationTimeline;
+pub const AnimationFrame = format_utils_ops.AnimationFrame;
+pub const MultiPageDocument = format_utils_ops.MultiPageDocument;
+pub const ICCConversionOptions = format_utils_ops.ICCConversionOptions;
+pub const RenderingIntent = format_utils_ops.RenderingIntent;
 
 // ============================================================================
 // Tests

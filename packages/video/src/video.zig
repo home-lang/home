@@ -208,6 +208,17 @@ pub const Av1ObuIterator = av1.ObuIterator;
 pub const Av1SequenceHeader = av1.SequenceHeader;
 pub const Av1CRecord = av1.Av1CRecord;
 
+pub const vvc = @import("codecs/video/vvc.zig");
+pub const VvcNalIterator = vvc.VvcNalIterator;
+pub const VvcNalUnitType = vvc.NalUnitType;
+pub const VvcNalUnitHeader = vvc.NalUnitHeader;
+pub const VvcProfile = vvc.Profile;
+pub const VvcLevel = vvc.Level;
+pub const VvcVps = vvc.Vps;
+pub const VvcSps = vvc.Sps;
+pub const VvcPps = vvc.Pps;
+pub const VvcCRecord = vvc.VvcCRecord;
+
 // ============================================================================
 // Utilities
 // ============================================================================
@@ -278,6 +289,100 @@ pub const VttWriter = vtt.VttWriter;
 pub const VttCue = vtt.Cue;
 pub const VttCueSettings = vtt.CueSettings;
 pub const isVtt = vtt.isVtt;
+
+pub const ass = @import("subtitles/ass.zig");
+pub const AssParser = ass.AssParser;
+pub const AssWriter = ass.AssWriter;
+pub const AssDialogue = ass.Dialogue;
+pub const AssStyle = ass.Style;
+pub const AssScriptInfo = ass.ScriptInfo;
+pub const isAss = ass.isAss;
+
+pub const ttml = @import("subtitles/ttml.zig");
+pub const TtmlParser = ttml.TtmlParser;
+pub const TtmlWriter = ttml.TtmlWriter;
+pub const TtmlCue = ttml.Cue;
+pub const TtmlStyle = ttml.Style;
+pub const TtmlRegion = ttml.Region;
+pub const isTtml = ttml.isTtml;
+
+pub const subtitle_convert = @import("subtitles/convert.zig");
+pub const SubtitleFormatType = subtitle_convert.SubtitleFormat;
+pub const UniversalCue = subtitle_convert.UniversalCue;
+pub const UniversalSubtitle = subtitle_convert.UniversalSubtitle;
+pub const UniversalStyle = subtitle_convert.UniversalStyle;
+pub const detectSubtitleFormat = subtitle_convert.detectFormat;
+pub const srtToVtt = subtitle_convert.srtToVtt;
+pub const vttToSrt = subtitle_convert.vttToSrt;
+pub const srtToAss = subtitle_convert.srtToAss;
+pub const assToSrt = subtitle_convert.assToSrt;
+pub const convertSubtitle = subtitle_convert.convert;
+
+// ============================================================================
+// Streaming
+// ============================================================================
+
+pub const hls = @import("streaming/hls.zig");
+pub const HlsPlaylist = hls.Playlist;
+pub const HlsPlaylistType = hls.PlaylistType;
+pub const HlsVariantStream = hls.VariantStream;
+pub const HlsSegment = hls.Segment;
+pub const HlsRendition = hls.Rendition;
+pub const isHls = hls.isHls;
+
+pub const dash = @import("streaming/dash.zig");
+pub const DashManifest = dash.Manifest;
+pub const DashManifestType = dash.ManifestType;
+pub const DashPeriod = dash.Period;
+pub const DashAdaptationSet = dash.AdaptationSet;
+pub const DashRepresentation = dash.Representation;
+pub const isDash = dash.isDash;
+
+// ============================================================================
+// Conversion Utilities
+// ============================================================================
+
+pub const sample_convert = @import("core/sample_convert.zig");
+pub const SampleConvertFormat = sample_convert.SampleFormat;
+pub const readSampleNormalized = sample_convert.readSampleNormalized;
+pub const writeSampleNormalized = sample_convert.writeSampleNormalized;
+pub const convertAudioSamples = sample_convert.convertSamples;
+pub const convertAudioChannels = sample_convert.convertChannels;
+pub const resampleAudio = sample_convert.resample;
+pub const applyAudioGain = sample_convert.applyGain;
+pub const normalizeAudio = sample_convert.normalize;
+pub const AudioChannelLayout = sample_convert.ChannelLayout;
+
+pub const pixel_convert = @import("core/pixel_convert.zig");
+pub const PixelConvertFormat = pixel_convert.PixelFormat;
+pub const ConvertColorSpace = pixel_convert.ColorSpace;
+pub const ConvertColorRange = pixel_convert.ColorRange;
+pub const ConvertFrame = pixel_convert.Frame;
+pub const convertPixelFormat = pixel_convert.convert;
+pub const convertPixelFormatInPlace = pixel_convert.convertInPlace;
+
+pub const nal_convert = @import("core/nal_convert.zig");
+pub const NalFormat = nal_convert.NalFormat;
+pub const NalCodecType = nal_convert.CodecType;
+pub const NalUnit = nal_convert.NalUnit;
+pub const parseAnnexB = nal_convert.parseAnnexB;
+pub const parseLengthPrefixed = nal_convert.parseLengthPrefixed;
+pub const annexBToLengthPrefixed = nal_convert.annexBToLengthPrefixed;
+pub const lengthPrefixedToAnnexB = nal_convert.lengthPrefixedToAnnexB;
+pub const extractParameterSets = nal_convert.extractParameterSets;
+
+pub const remux = @import("core/remux.zig");
+pub const RemuxStreamType = remux.StreamType;
+pub const RemuxVideoCodec = remux.VideoCodec;
+pub const RemuxAudioCodec = remux.AudioCodec;
+pub const RemuxSubtitleCodec = remux.SubtitleCodec;
+pub const RemuxStream = remux.Stream;
+pub const RemuxPacket = remux.Packet;
+pub const ContainerFormat = remux.ContainerFormat;
+pub const RemuxContext = remux.RemuxContext;
+pub const convertTimestamp = remux.convertTimestamp;
+pub const StreamSelection = remux.StreamSelection;
+pub const selectStreams = remux.selectStreams;
 
 // ============================================================================
 // High-Level API
@@ -456,11 +561,21 @@ test "Video library imports" {
     _ = hevc;
     _ = vp9;
     _ = av1;
+    _ = vvc;
     _ = bitstream;
     _ = video_filters;
     _ = audio_filters;
     _ = srt;
     _ = vtt;
+    _ = ass;
+    _ = ttml;
+    _ = hls;
+    _ = dash;
+    _ = subtitle_convert;
+    _ = sample_convert;
+    _ = pixel_convert;
+    _ = nal_convert;
+    _ = remux;
 }
 
 test "Timestamp basic" {
