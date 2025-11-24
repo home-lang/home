@@ -119,14 +119,18 @@ pub const TokenType = enum {
     SelfValue,
     Struct,
     Switch,
+    Test,
     Trait,
     True,
     Try,
     Type,
     Union,
     Unsafe,
+    Var, // var keyword for mutable module-level variables
     Where,
     While,
+    Assert,
+    Export, // export keyword for exported functions
 
     // Special
     Eof,
@@ -246,8 +250,12 @@ pub const TokenType = enum {
             .Type => "type",
             .Union => "union",
             .Unsafe => "unsafe",
+            .Var => "var",
             .Where => "where",
             .While => "while",
+            .Test => "test",
+            .Assert => "assert",
+            .Export => "export",
             .Eof => "eof",
             .Invalid => "invalid",
         };
@@ -374,4 +382,8 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "unsafe", .Unsafe },
     .{ "where", .Where },
     .{ "while", .While },
+    .{ "test", .Test },
+    .{ "assert", .Assert },
+    .{ "var", .Var },
+    .{ "export", .Export },
 });

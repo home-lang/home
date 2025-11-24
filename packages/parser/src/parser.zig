@@ -171,6 +171,8 @@ pub const Parser = struct {
     module_resolver: ModuleResolver,
     /// Symbol table for tracking imported modules and symbols
     symbol_table: SymbolTable,
+    /// Track pending > from >> in nested generics
+    pending_greater: bool,
 
     /// Maximum allowed recursion depth to prevent stack overflow
     const MAX_RECURSION_DEPTH: usize = 256;
@@ -198,6 +200,7 @@ pub const Parser = struct {
             .source_file = null,
             .module_resolver = try ModuleResolver.init(allocator),
             .symbol_table = SymbolTable.init(allocator),
+            .pending_greater = false,
         };
     }
 
@@ -513,8 +516,9 @@ pub const Parser = struct {
         // Parse any attributes first
         const attributes = try self.parseAttributes();
 
-        // Check for pub modifier
+        // Check for pub or export modifier
         const is_pub = self.match(&.{.Pub});
+        const is_export = self.match(&.{.Export});
 
         // Check if @test attribute exists for backward compatibility
         var is_test = false;
@@ -577,7 +581,8 @@ pub const Parser = struct {
 
         if (self.match(&.{.Fn})) {
             var stmt = try self.functionDeclaration(is_test);
-            if (is_pub) stmt.FnDecl.is_public = true;
+            if (is_pub or is_export) stmt.FnDecl.is_public = true;
+            if (is_export) stmt.FnDecl.is_exported = true;
             stmt.FnDecl.attributes = attributes;
             return stmt;
         }
@@ -594,9 +599,21 @@ pub const Parser = struct {
             return stmt;
         }
 
+        // var at module level (mutable global variable)
+        if (self.match(&.{.Var})) {
+            var stmt = try self.varDeclaration();
+            if (is_pub) stmt.LetDecl.is_public = true;
+            return stmt;
+        }
+
         // Check for it('description') { body } test syntax
         if (self.match(&.{.It})) {
             return try self.itTestDeclaration();
+        }
+
+        // Check for test "description" { body } test syntax (Zig-style)
+        if (self.match(&.{.Test})) {
+            return try self.testBlockDeclaration();
         }
 
         // Check for @it "description" { body } syntax (block without keyword)
@@ -644,7 +661,21 @@ pub const Parser = struct {
         // Check for async keyword before function name
         const is_async = self.match(&.{.Async});
 
-        const name_token = try self.expect(.Identifier, "Expected function name");
+        // Accept both Identifier and certain keywords as function names (e.g., 'default', 'type', 'match')
+        const name_token = if (self.check(.Identifier))
+            try self.expect(.Identifier, "Expected function name")
+        else if (self.check(.Default))
+            self.advance()
+        else if (self.check(.Type))
+            self.advance()
+        else if (self.check(.Match))
+            self.advance()
+        else if (self.check(.Test))
+            self.advance()
+        else {
+            try self.reportError("Expected function name");
+            return error.UnexpectedToken;
+        };
         const name = name_token.lexeme;
 
         // Parse generic type parameters if present: fn name<T, U>()
@@ -690,9 +721,12 @@ pub const Parser = struct {
                     return error.UnexpectedToken;
                 };
 
-                // For shorthand self (&self or mut self), infer the type
+                // For shorthand self (&self, mut self, or plain self), infer the type
                 var param_type: []const u8 = undefined;
-                if ((is_ref_self or is_mut_self) and std.mem.eql(u8, param_name.lexeme, "self")) {
+                const is_self_param = std.mem.eql(u8, param_name.lexeme, "self");
+                // Check if this is a shorthand self (no colon follows)
+                const has_colon = self.check(.Colon);
+                if (is_self_param and (is_ref_self or is_mut_self or !has_colon)) {
                     // Use "Self" as the type for shorthand self parameters
                     param_type = try self.allocator.dupe(u8, "Self");
                 } else {
@@ -714,6 +748,8 @@ pub const Parser = struct {
                 });
 
                 if (!self.match(&.{.Comma})) break;
+                // Handle trailing comma: if next token is ), we're done
+                if (self.check(.RightParen)) break;
             }
         }
 
@@ -783,6 +819,28 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .ItTestDecl = it_decl };
+    }
+
+    /// Parse a test block declaration (Zig-style: test "name" { ... })
+    fn testBlockDeclaration(self: *Parser) ParseError!ast.Stmt {
+        const test_token = self.previous();
+
+        // Expect string description
+        const description_token = try self.expect(.String, "Expected test description string");
+        const description = description_token.lexeme;
+
+        // Parse the test body block
+        const body = try self.blockStatement();
+
+        // Reuse ItTestDecl for test blocks since they have the same structure
+        const test_decl = try ast.ItTestDecl.init(
+            self.allocator,
+            description,
+            body,
+            ast.SourceLocation.fromToken(test_token),
+        );
+
+        return ast.Stmt{ .ItTestDecl = test_decl };
     }
 
     /// Parse a struct declaration
@@ -1139,18 +1197,133 @@ pub const Parser = struct {
 
     /// Parse a type annotation (supports arrays, generics, nullable, etc.)
     fn parseTypeAnnotation(self: *Parser) ![]const u8 {
-        // Check for array type: [T], [T; N], or []T
+        // Check for mut type modifier: mut T
+        if (self.match(&.{.Mut})) {
+            const inner_type = try self.parseTypeAnnotation();
+            return try std.fmt.allocPrint(self.allocator, "mut {s}", .{inner_type});
+        }
+
+        // Check for unit type () or tuple type (T1, T2, ...)
+        if (self.match(&.{.LeftParen})) {
+            // Check for unit type ()
+            if (self.check(.RightParen)) {
+                _ = self.advance(); // consume )
+                return try self.allocator.dupe(u8, "()");
+            }
+
+            // Parse tuple types (T1, T2, ...)
+            var types = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            defer types.deinit(self.allocator);
+
+            while (!self.check(.RightParen) and !self.isAtEnd()) {
+                const elem_type = try self.parseTypeAnnotation();
+                try types.append(self.allocator, elem_type);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+
+            _ = try self.expect(.RightParen, "Expected ')' for tuple type");
+
+            // Build tuple type string
+            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer result.deinit(self.allocator);
+            try result.append(self.allocator, '(');
+            for (types.items, 0..) |t, i| {
+                if (i > 0) {
+                    try result.appendSlice(self.allocator, ", ");
+                }
+                try result.appendSlice(self.allocator, t);
+            }
+            try result.append(self.allocator, ')');
+            return try self.allocator.dupe(u8, result.items);
+        }
+
+        // Check for function type: fn(T1, T2): ReturnType
+        if (self.match(&.{.Fn})) {
+            _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in function type");
+
+            var param_types = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            defer param_types.deinit(self.allocator);
+
+            while (!self.check(.RightParen) and !self.isAtEnd()) {
+                const param_type = try self.parseTypeAnnotation();
+                try param_types.append(self.allocator, param_type);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+
+            _ = try self.expect(.RightParen, "Expected ')' in function type");
+
+            // Parse optional return type
+            var return_type: []const u8 = "()";
+            if (self.match(&.{.Colon})) {
+                return_type = try self.parseTypeAnnotation();
+            }
+
+            // Build function type string: fn(T1, T2): ReturnType
+            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer result.deinit(self.allocator);
+            try result.appendSlice(self.allocator, "fn(");
+            for (param_types.items, 0..) |t, i| {
+                if (i > 0) {
+                    try result.appendSlice(self.allocator, ", ");
+                }
+                try result.appendSlice(self.allocator, t);
+            }
+            try result.appendSlice(self.allocator, "): ");
+            try result.appendSlice(self.allocator, return_type);
+            return try self.allocator.dupe(u8, result.items);
+        }
+
+        // Check for reference type: &T or &mut T
+        if (self.match(&.{.Ampersand})) {
+            const is_mut = self.match(&.{.Mut});
+            const inner_type = try self.parseTypeAnnotation();
+            if (is_mut) {
+                return try std.fmt.allocPrint(self.allocator, "&mut {s}", .{inner_type});
+            } else {
+                return try std.fmt.allocPrint(self.allocator, "&{s}", .{inner_type});
+            }
+        }
+
+        // Check for nullable prefix: ?T
+        if (self.match(&.{.Question})) {
+            const inner_type = try self.parseTypeAnnotation();
+            return try std.fmt.allocPrint(self.allocator, "?{s}", .{inner_type});
+        }
+
+        // Check for pointer type: *T or *const T
+        if (self.match(&.{.Star})) {
+            const is_const = self.match(&.{.Const});
+            const inner_type = try self.parseTypeAnnotation();
+            if (is_const) {
+                return try std.fmt.allocPrint(self.allocator, "*const {s}", .{inner_type});
+            } else {
+                return try std.fmt.allocPrint(self.allocator, "*{s}", .{inner_type});
+            }
+        }
+
+        // Check for array type: [T], [T; N], [N]T, or []T
         if (self.match(&.{.LeftBracket})) {
             if (self.peek().type == .RightBracket) {
                 // Empty brackets: []T - dynamic array
                 _ = try self.expect(.RightBracket, "Expected ']'");
-                const elem_type = try self.expect(.Identifier, "Expected element type after '[]'");
-                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{elem_type.lexeme});
+                const elem_type = try self.parseTypeAnnotation();
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[]{s}", .{elem_type});
+                return arr_type;
+            }
+
+            // Check for [N]T syntax (size followed by ]T)
+            if (self.check(.Integer)) {
+                const size_token = self.advance();
+                _ = try self.expect(.RightBracket, "Expected ']' after array size");
+                const elem_type = try self.parseTypeAnnotation();
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, elem_type });
                 return arr_type;
             }
 
             // Has something inside brackets - either [T] or [T; N]
-            const inner = try self.expect(.Identifier, "Expected type in array");
+            const inner = try self.parseTypeAnnotation();
 
             // Check for semicolon (fixed-size array: [T; N])
             if (self.match(&.{.Semicolon})) {
@@ -1158,33 +1331,53 @@ pub const Parser = struct {
                 const size_token = try self.expect(.Integer, "Expected array size");
                 _ = try self.expect(.RightBracket, "Expected ']'");
                 // Return [T; N] as string
-                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner.lexeme, size_token.lexeme });
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_token.lexeme });
                 return arr_type;
             }
 
             // Just [T] - element type inside brackets
             _ = try self.expect(.RightBracket, "Expected ']'");
-            const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner.lexeme});
+            const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner});
             return arr_type;
         }
 
-        // Regular type (identifier)
+        // Regular type (identifier, possibly with module path like std.fs.File)
         const type_token = try self.expect(.Identifier, "Expected type name");
         var result = try self.allocator.dupe(u8, type_token.lexeme);
+
+        // Handle module path: foo.bar.Type or foo::bar::Type
+        while (self.match(&.{.Dot}) or self.match(&.{.ColonColon})) {
+            const separator = self.previous().lexeme;
+            const next = try self.expect(.Identifier, "Expected type name after path separator");
+            const new_result = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ result, separator, next.lexeme });
+            self.allocator.free(result);
+            result = new_result;
+        }
 
         // Check for generic type arguments: Type<Arg1, Arg2, ...>
         if (self.match(&.{.Less})) {
             var args = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
             defer args.deinit(self.allocator);
 
-            while (!self.check(.Greater) and !self.isAtEnd()) {
+            while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
                 const arg_type = try self.parseTypeAnnotation();
                 try args.append(self.allocator, arg_type);
 
                 if (!self.match(&.{.Comma})) break;
             }
 
-            _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
+            // Handle both > and >> (for nested generics like HashMap<A, Vec<B>>)
+            if (self.check(.RightShift)) {
+                // >> means we're closing two generics at once
+                // Split the >> by marking that we owe a > to the outer generic
+                self.pending_greater = true;
+                _ = self.advance(); // consume >>
+            } else if (self.pending_greater) {
+                // We already consumed a > from a previous >>
+                self.pending_greater = false;
+            } else {
+                _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
+            }
 
             // Build the full generic type string: "Type<Arg1, Arg2>"
             var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
@@ -1214,7 +1407,52 @@ pub const Parser = struct {
     fn letDeclaration(self: *Parser, is_const: bool) !ast.Stmt {
         _ = is_const;
         const is_mutable = self.match(&.{.Mut});
-        const name_token = try self.expect(.Identifier, "Expected variable name");
+
+        // Check for tuple destructuring: let (a, b) = expr
+        if (self.match(&.{.LeftParen})) {
+            const start_token = self.previous();
+            var names = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            defer names.deinit(self.allocator);
+
+            // Parse first name
+            const first_name = try self.expect(.Identifier, "Expected variable name in tuple destructure");
+            try names.append(self.allocator, first_name.lexeme);
+
+            // Parse remaining names
+            while (self.match(&.{.Comma})) {
+                const name = try self.expect(.Identifier, "Expected variable name in tuple destructure");
+                try names.append(self.allocator, name.lexeme);
+            }
+
+            _ = try self.expect(.RightParen, "Expected ')' after tuple destructure");
+            _ = try self.expect(.Equal, "Expected '=' after tuple destructure");
+
+            const value = try self.expression();
+
+            const names_slice = try self.allocator.alloc([]const u8, names.items.len);
+            @memcpy(names_slice, names.items);
+
+            const decl = try ast.TupleDestructureDecl.init(
+                self.allocator,
+                names_slice,
+                value,
+                is_mutable,
+                ast.SourceLocation.fromToken(start_token),
+            );
+
+            try self.optionalSemicolon();
+            return ast.Stmt{ .TupleDestructureDecl = decl };
+        }
+
+        // Accept Identifier or 'default' keyword as variable name
+        const name_token = if (self.match(&.{.Identifier}))
+            self.previous()
+        else if (self.match(&.{.Default}))
+            self.previous()
+        else blk: {
+            try self.reportError("Expected variable name");
+            break :blk self.previous(); // Return something to satisfy type system
+        };
 
         // Optional type annotation
         var type_name: ?[]const u8 = null;
@@ -1243,8 +1481,47 @@ pub const Parser = struct {
         return ast.Stmt{ .LetDecl = decl };
     }
 
+    /// Parse a var declaration (module-level mutable variable)
+    /// Syntax: var name: Type = value
+    fn varDeclaration(self: *Parser) !ast.Stmt {
+        // Accept Identifier as variable name
+        const name_token = if (self.match(&.{.Identifier}))
+            self.previous()
+        else blk: {
+            try self.reportError("Expected variable name");
+            break :blk self.previous();
+        };
+
+        // Type annotation is required for var
+        var type_name: ?[]const u8 = null;
+        if (self.match(&.{.Colon})) {
+            type_name = try self.parseTypeAnnotation();
+        }
+
+        // Optional initializer
+        var value: ?*ast.Expr = null;
+        if (self.match(&.{.Equal})) {
+            value = try self.expression();
+        }
+
+        const decl = try ast.LetDecl.init(
+            self.allocator,
+            name_token.lexeme,
+            type_name,
+            value,
+            true, // var is always mutable
+            ast.SourceLocation.fromToken(name_token),
+        );
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
+        return ast.Stmt{ .LetDecl = decl };
+    }
+
     /// Parse a statement
     fn statement(self: *Parser) !ast.Stmt {
+        if (self.match(&.{.Assert})) return self.assertStatement();
         if (self.match(&.{.Return})) return self.returnStatement();
         if (self.match(&.{.If})) return self.ifStatement();
         if (self.match(&.{.While})) return self.whileStatement();
@@ -1262,6 +1539,34 @@ pub const Parser = struct {
             return ast.Stmt{ .BlockStmt = block };
         }
         return self.expressionStatement();
+    }
+
+    /// Parse an assert statement
+    /// Grammar: assert condition
+    /// Grammar: assert condition, message
+    fn assertStatement(self: *Parser) !ast.Stmt {
+        const assert_token = self.previous();
+
+        // Parse the condition expression
+        const condition = try self.expression();
+
+        // Check for optional message
+        var message: ?*ast.Expr = null;
+        if (self.match(&.{.Comma})) {
+            message = try self.expression();
+        }
+
+        const stmt = try ast.AssertStmt.init(
+            self.allocator,
+            condition,
+            message,
+            ast.SourceLocation.fromToken(assert_token),
+        );
+
+        // Consume optional semicolon
+        try self.optionalSemicolon();
+
+        return ast.Stmt{ .AssertStmt = stmt };
     }
 
     /// Parse a return statement
@@ -1294,12 +1599,10 @@ pub const Parser = struct {
             return self.ifLetStatement(if_token);
         }
 
-        // Parentheses are optional: both "if (cond)" and "if cond" work
-        const has_paren = self.match(&.{.LeftParen});
+        // Parse condition - let expression() handle all grouping naturally
+        // This supports both `if x > 0 {` and `if (x > 0) {` as well as
+        // complex conditions like `if (a > b) != (c > d) && e {`
         const condition = try self.expression();
-        if (has_paren) {
-            _ = try self.expect(.RightParen, "Expected ')' after if condition");
-        }
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const then_block = try self.blockStatement();
@@ -1387,12 +1690,10 @@ pub const Parser = struct {
     /// Parse a while statement
     fn whileStatement(self: *Parser) !ast.Stmt {
         const while_token = self.previous();
-        // Parentheses are optional: both "while (cond)" and "while cond" work
-        const has_paren = self.match(&.{.LeftParen});
+        // Parse condition - let expression() handle all grouping naturally
+        // This supports both `while x > 0 {` and `while (x > 0) {` as well as
+        // complex conditions like `while (a > b) != (c > d) && e {`
         const condition = try self.expression();
-        if (has_paren) {
-            _ = try self.expect(.RightParen, "Expected ')' after while condition");
-        }
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const body = try self.blockStatement();
@@ -1626,15 +1927,32 @@ pub const Parser = struct {
             // Expect => arrow
             _ = try self.expect(.FatArrow, "Expected '=>' after match pattern");
 
-            // Parse arm body (just parse as expression, blocks are expressions too)
-            const body = try self.expression();
+            // Parse arm body - can be expression, block, or return statement
+            var body: *ast.Expr = undefined;
+            if (self.check(.LeftBrace)) {
+                // Parse block body - use blockExprParse which handles statements properly
+                _ = self.advance(); // consume '{'
+                body = try self.blockExprParse();
+            } else if (self.check(.Return)) {
+                // Parse return as an expression wrapper
+                _ = self.advance(); // consume 'return'
+                const return_value = if (!self.check(.Comma) and !self.check(.RightBrace))
+                    try self.expression()
+                else
+                    null;
+                // Wrap return in a special expression
+                const return_expr = try ast.ReturnExpr.init(self.allocator, return_value, ast.SourceLocation.fromToken(self.previous()));
+                body = try self.allocator.create(ast.Expr);
+                body.* = ast.Expr{ .ReturnExpr = return_expr };
+            } else {
+                body = try self.expression();
+            }
 
             errdefer ast.Program.deinitExpr(body, self.allocator);
 
-            // Expect comma or closing brace
-            if (!self.check(.RightBrace)) {
-                _ = try self.expect(.Comma, "Expected ',' after match arm");
-            }
+            // Comma is optional - newline separation is allowed
+            // Just consume any comma that's present
+            _ = self.match(&.{.Comma});
 
             const arm = try ast.MatchArm.init(
                 self.allocator,
@@ -1664,11 +1982,29 @@ pub const Parser = struct {
         const pattern = try self.allocator.create(ast.Pattern);
         errdefer self.allocator.destroy(pattern);
 
-        // Integer literal pattern
+        // Integer literal pattern (or range pattern)
         if (self.match(&.{.Integer})) {
             const token = self.previous();
-            const value = try std.fmt.parseInt(i64, token.lexeme, 10);
-            pattern.* = ast.Pattern{ .IntLiteral = value };
+            const start_value = try std.fmt.parseInt(i64, token.lexeme, 10);
+
+            // Check for range pattern: N..M or N..=M
+            if (self.match(&.{.DotDot})) {
+                const inclusive = self.match(&.{.Equal}); // ..= for inclusive
+                const end_token = try self.expect(.Integer, "Expected end value in range pattern");
+                const end_value = try std.fmt.parseInt(i64, end_token.lexeme, 10);
+
+                // Create IntLiteral expressions for start and end
+                const start_expr = try self.allocator.create(ast.Expr);
+                start_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(start_value, ast.SourceLocation.fromToken(token)) };
+
+                const end_expr = try self.allocator.create(ast.Expr);
+                end_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(end_value, ast.SourceLocation.fromToken(end_token)) };
+
+                pattern.* = ast.Pattern{ .Range = .{ .start = start_expr, .end = end_expr, .inclusive = inclusive } };
+                return pattern;
+            }
+
+            pattern.* = ast.Pattern{ .IntLiteral = start_value };
             return pattern;
         }
 
@@ -1822,10 +2158,15 @@ pub const Parser = struct {
             const name_token = self.previous();
             var name = name_token.lexeme;
 
-            // Check for qualified name: Type::Variant
+            // Check for qualified name: Type::Variant or Type.Variant
             if (self.match(&.{.ColonColon})) {
                 const variant_token = try self.expect(.Identifier, "Expected variant name after '::'");
                 // Combine into qualified name
+                const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ name, variant_token.lexeme });
+                name = qualified;
+            } else if (self.match(&.{.Dot})) {
+                const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
+                // Combine into qualified name (use :: internally for consistency)
                 const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ name, variant_token.lexeme });
                 name = qualified;
             }
@@ -2472,10 +2813,51 @@ pub const Parser = struct {
         return result;
     }
 
-    /// Parse a member access expression (struct.field)
+    /// Parse a member access expression (struct.field) or optional unwrap (value.?)
     fn memberExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
         const dot_token = self.previous();
-        const member_token = try self.expect(.Identifier, "Expected field name after '.'");
+
+        // Check for .? optional unwrap syntax (? token follows the dot)
+        if (self.match(&.{.Question})) {
+            // Create a TryExpr for optional unwrap (reusing TryExpr semantics)
+            const try_expr = try ast.TryExpr.init(
+                self.allocator,
+                object,
+                ast.SourceLocation.fromToken(dot_token),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .TryExpr = try_expr };
+            return result;
+        }
+
+        // Check for .?. syntax: QuestionDot token follows the dot (lexer combined ?. into one token)
+        // This handles the case where we have value.?.field (the ?. became QuestionDot)
+        if (self.match(&.{.QuestionDot})) {
+            // First create the unwrap (TryExpr) for the .? part
+            const try_expr = try ast.TryExpr.init(
+                self.allocator,
+                object,
+                ast.SourceLocation.fromToken(dot_token),
+            );
+            const unwrapped = try self.allocator.create(ast.Expr);
+            unwrapped.* = ast.Expr{ .TryExpr = try_expr };
+
+            // Now parse the member access that follows (the . part of ?.)
+            return self.memberExpr(unwrapped);
+        }
+
+        // Accept Identifier, 'default' keyword, or integer literal as field name
+        // Integer literals support tuple field access like .0, .1, .2
+        const member_token = if (self.match(&.{.Identifier}))
+            self.previous()
+        else if (self.match(&.{.Default}))
+            self.previous()
+        else if (self.match(&.{.Integer}))
+            self.previous()
+        else blk: {
+            try self.reportError("Expected field name after '.'");
+            break :blk self.previous();
+        };
 
         const member_expr = try ast.MemberExpr.init(
             self.allocator,
@@ -2615,21 +2997,31 @@ pub const Parser = struct {
         return result;
     }
 
-    /// Parse an if expression: if (condition) { expr } else { expr }
+    /// Parse an if expression: if condition { expr } else { expr }
+    /// Parentheses around the condition are optional
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
-        _ = try self.expect(.LeftParen, "Expected '(' after 'if'");
+        // Parse condition - let expression() handle all grouping naturally
+        // This supports both `if x > 0 {` and `if (x > 0) {` as well as
+        // complex conditions like `if (a > b) != (c > d) && e {`
         const condition = try self.expression();
-        _ = try self.expect(.RightParen, "Expected ')' after if condition");
 
         _ = try self.expect(.LeftBrace, "Expected '{' after if condition");
         const then_branch = try self.expression();
         _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
 
         _ = try self.expect(.Else, "If expression requires 'else' branch");
-        _ = try self.expect(.LeftBrace, "Expected '{' after 'else'");
-        const else_branch = try self.expression();
-        _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
+
+        // Handle else if as a nested if expression
+        var else_branch: *ast.Expr = undefined;
+        if (self.match(&.{.If})) {
+            // Recursively parse else if as another if expression
+            else_branch = try self.ifExpr();
+        } else {
+            _ = try self.expect(.LeftBrace, "Expected '{' after 'else'");
+            else_branch = try self.expression();
+            _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
+        }
 
         const if_expr = try ast.IfExpr.init(
             self.allocator,
@@ -2815,6 +3207,51 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Parse a block expression: { stmt1; stmt2; ... }
+    /// The opening brace should already be consumed
+    fn blockExprParse(self: *Parser) !*ast.Expr {
+        const brace_token = self.previous();
+
+        var statements = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+        defer statements.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            if (self.declaration()) |stmt| {
+                try statements.append(self.allocator, stmt);
+                self.panic_mode = false;
+            } else |err| {
+                if (err == error.OutOfMemory) return err;
+
+                // Skip tokens until we find a statement boundary or block end
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const current = self.peek();
+                    if (current.type == .Let or current.type == .Const or
+                        current.type == .If or current.type == .While or
+                        current.type == .For or current.type == .Return)
+                    {
+                        break;
+                    }
+                    _ = self.advance();
+                }
+                self.panic_mode = false;
+            }
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after block");
+
+        const statements_slice = try statements.toOwnedSlice(self.allocator);
+
+        const block_expr = try ast.BlockExpr.init(
+            self.allocator,
+            statements_slice,
+            ast.SourceLocation.fromToken(brace_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .BlockExpr = block_expr };
+        return result;
+    }
+
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
         // Inline assembly
@@ -2870,6 +3307,12 @@ pub const Parser = struct {
             return try self.matchExpr();
         }
 
+        // Block expression: { stmt1; stmt2; expr }
+        // Only parse as block if it's a bare '{' not preceded by type name
+        if (self.match(&.{.LeftBrace})) {
+            return try self.blockExprParse();
+        }
+
         // Reflection expression (@TypeOf, @sizeOf, etc.)
         if (self.match(&.{.At})) {
             const at_token = self.previous();
@@ -2908,7 +3351,17 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "cos")) break :blk .Cos;
                 if (std.mem.eql(u8, name, "tan")) break :blk .Tan;
                 if (std.mem.eql(u8, name, "acos")) break :blk .Acos;
+                if (std.mem.eql(u8, name, "asin")) break :blk .Asin;
+                if (std.mem.eql(u8, name, "atan")) break :blk .Atan;
+                if (std.mem.eql(u8, name, "atan2")) break :blk .Atan2;
                 if (std.mem.eql(u8, name, "abs")) break :blk .Abs;
+                if (std.mem.eql(u8, name, "min")) break :blk .Min;
+                if (std.mem.eql(u8, name, "max")) break :blk .Max;
+                if (std.mem.eql(u8, name, "floor")) break :blk .Floor;
+                if (std.mem.eql(u8, name, "ceil")) break :blk .Ceil;
+                if (std.mem.eql(u8, name, "pow")) break :blk .Pow;
+                if (std.mem.eql(u8, name, "exp")) break :blk .Exp;
+                if (std.mem.eql(u8, name, "log")) break :blk .Log;
 
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
@@ -2922,8 +3375,26 @@ pub const Parser = struct {
 
             _ = try self.expect(.LeftParen, "Expected '(' after reflection function name");
 
+            // Some builtins take a type as the first argument
+            var target_type: ?[]const u8 = null;
+            if (kind == .IntToFloat or kind == .FloatToInt or kind == .IntCast or
+                kind == .FloatCast or kind == .PtrCast or kind == .IntToEnum or
+                kind == .Truncate or kind == .BitCast)
+            {
+                // Parse type argument first
+                target_type = try self.parseTypeAnnotation();
+                _ = try self.expect(.Comma, "Expected ',' after type argument");
+            }
+
             // Parse target expression
             const target = try self.expression();
+
+            // Parse second argument for two-arg builtins like @atan2, @min, @max, @pow
+            var second_arg: ?*ast.Expr = null;
+            if (kind == .Atan2 or kind == .Min or kind == .Max or kind == .Pow) {
+                _ = try self.expect(.Comma, "Expected ',' between arguments");
+                second_arg = try self.expression();
+            }
 
             // Parse optional field name for @offsetOf, @fieldType
             var field_name: ?[]const u8 = null;
@@ -2940,7 +3411,9 @@ pub const Parser = struct {
                 self.allocator,
                 kind,
                 target,
+                second_arg,
                 field_name,
+                target_type,
                 ast.SourceLocation.fromToken(at_token),
             );
             const expr = try self.allocator.create(ast.Expr);
@@ -3130,9 +3603,50 @@ pub const Parser = struct {
         if (self.match(&.{.Identifier})) {
             const token = self.previous();
 
-            // Check for static method call (Type::method())
+            // Check for static method call or module path (Type::method() or module::Type::method())
             if (self.match(&.{.ColonColon})) {
-                const method_token = try self.expect(.Identifier, "Expected method name after '::'");
+                // Build full path: a::b::c::method() where last segment might be a method call
+                var path_parts = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                defer path_parts.deinit(self.allocator);
+                try path_parts.append(self.allocator, token.lexeme);
+
+                // Keep consuming identifier::identifier until we see ( or end of path
+                while (true) {
+                    // Accept Identifier or 'default' keyword as next segment
+                    const next_token = if (self.match(&.{.Identifier}))
+                        self.previous()
+                    else if (self.match(&.{.Default}))
+                        self.previous()
+                    else {
+                        try self.reportError("Expected identifier after '::'");
+                        return error.UnexpectedToken;
+                    };
+
+                    try path_parts.append(self.allocator, next_token.lexeme);
+
+                    // Check if there's another ::
+                    if (!self.match(&.{.ColonColon})) {
+                        break;
+                    }
+                }
+
+                // Build type_name from all but last part
+                const parts = path_parts.items;
+                const method_name = parts[parts.len - 1];
+
+                // Build full type path from all parts except the last one
+                var type_name: []const u8 = undefined;
+                if (parts.len == 2) {
+                    type_name = parts[0];
+                } else {
+                    var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                    defer full_type.deinit(self.allocator);
+                    for (parts[0 .. parts.len - 1], 0..) |part, i| {
+                        if (i > 0) try full_type.appendSlice(self.allocator, "::");
+                        try full_type.appendSlice(self.allocator, part);
+                    }
+                    type_name = try full_type.toOwnedSlice(self.allocator);
+                }
 
                 // Parse arguments if followed by parentheses
                 if (self.match(&.{.LeftParen})) {
@@ -3151,8 +3665,8 @@ pub const Parser = struct {
 
                     const static_call = try ast.StaticCallExpr.init(
                         self.allocator,
-                        token.lexeme,
-                        method_token.lexeme,
+                        type_name,
+                        method_name,
                         try args.toOwnedSlice(self.allocator),
                         ast.SourceLocation.fromToken(token),
                     );
@@ -3165,14 +3679,14 @@ pub const Parser = struct {
                     // Treat as member expression on type
                     const type_id = try self.allocator.create(ast.Expr);
                     type_id.* = ast.Expr{
-                        .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+                        .Identifier = ast.Identifier.init(type_name, ast.SourceLocation.fromToken(token)),
                     };
 
                     const member_expr = try ast.MemberExpr.init(
                         self.allocator,
                         type_id,
-                        method_token.lexeme,
-                        ast.SourceLocation.fromToken(method_token),
+                        method_name,
+                        ast.SourceLocation.fromToken(token),
                     );
 
                     const expr = try self.allocator.create(ast.Expr);
@@ -3211,6 +3725,129 @@ pub const Parser = struct {
                 const expr = try self.allocator.create(ast.Expr);
                 expr.* = ast.Expr{ .MacroExpr = macro_expr };
                 return expr;
+            }
+
+            // Check for generic type with struct literal: Type<T1, T2>{}
+            // e.g., Vec<i32>{} or HashMap<String, Int>{}
+            // Only try to parse generics if the identifier starts with uppercase (type convention)
+            // and is followed by < and then an identifier (not an expression like "x < y")
+            if (self.check(.Less) and token.lexeme.len > 0 and
+                token.lexeme[0] >= 'A' and token.lexeme[0] <= 'Z')
+            {
+                // Look ahead to see if this looks like generic args (identifier after <)
+                const checkpoint = self.current;
+                _ = self.advance(); // consume <
+
+                const looks_like_generics = self.check(.Identifier) or self.check(.Question) or
+                    self.check(.Ampersand) or self.check(.Star) or self.check(.LeftBracket) or
+                    self.check(.LeftParen) or self.check(.Fn);
+
+                if (looks_like_generics) {
+                    var type_name = try self.allocator.dupe(u8, token.lexeme);
+
+                    // Parse generic type arguments
+                    var type_args = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                    defer type_args.deinit(self.allocator);
+
+                    while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
+                        const arg_type = try self.parseTypeAnnotation();
+                        try type_args.append(self.allocator, arg_type);
+
+                        if (!self.match(&.{.Comma})) break;
+                    }
+
+                    // Handle closing > or >>
+                    if (self.check(.RightShift)) {
+                        self.pending_greater = true;
+                        _ = self.advance();
+                    } else if (self.pending_greater) {
+                        self.pending_greater = false;
+                    } else {
+                        _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
+                    }
+
+                    // Build full generic type name
+                    var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                    defer full_type.deinit(self.allocator);
+                    try full_type.appendSlice(self.allocator, type_name);
+                    try full_type.append(self.allocator, '<');
+                    for (type_args.items, 0..) |arg, i| {
+                        if (i > 0) try full_type.appendSlice(self.allocator, ", ");
+                        try full_type.appendSlice(self.allocator, arg);
+                    }
+                    try full_type.append(self.allocator, '>');
+                    self.allocator.free(type_name);
+                    type_name = try full_type.toOwnedSlice(self.allocator);
+
+                    // Now check for struct literal {}
+                    if (self.check(.LeftBrace)) {
+                        const checkpoint2 = self.current;
+                        _ = self.advance(); // consume '{'
+
+                        const is_struct_literal = blk: {
+                            // Empty braces {} is struct literal
+                            if (self.check(.RightBrace)) break :blk true;
+                            // If next token is identifier followed by :, it's struct literal
+                            if (self.check(.Identifier)) {
+                                const after_ident_pos = self.current + 1;
+                                if (after_ident_pos < self.tokens.len) {
+                                    if (self.tokens[after_ident_pos].type == .Colon) {
+                                        break :blk true;
+                                    }
+                                }
+                            }
+                            break :blk false;
+                        };
+
+                        if (is_struct_literal) {
+                            var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                            defer fields.deinit(self.allocator);
+
+                            while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                                const field_name_token = try self.expect(.Identifier, "Expected field name");
+                                _ = try self.expect(.Colon, "Expected ':' after field name");
+                                const field_value = try self.expression();
+
+                                try fields.append(self.allocator, ast.FieldInit{
+                                    .name = field_name_token.lexeme,
+                                    .value = field_value,
+                                    .is_shorthand = false,
+                                    .loc = ast.SourceLocation.fromToken(field_name_token),
+                                });
+
+                                _ = self.match(&.{.Comma});
+                                if (self.check(.RightBrace)) break;
+                            }
+
+                            _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+
+                            const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
+                            struct_lit.* = ast.StructLiteralExpr.init(
+                                type_name,
+                                try fields.toOwnedSlice(self.allocator),
+                                false,
+                                ast.SourceLocation.fromToken(token),
+                            );
+
+                            const expr = try self.allocator.create(ast.Expr);
+                            expr.* = ast.Expr{ .StructLiteral = struct_lit };
+                            return expr;
+                        }
+
+                        // Not a struct literal, restore position
+                        self.current = checkpoint2;
+                    }
+
+                    // Return as a type identifier expression for generic type
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{
+                        .Identifier = ast.Identifier.init(type_name, ast.SourceLocation.fromToken(token)),
+                    };
+                    return expr;
+                } else {
+                    // Not generics, restore position (< is comparison operator)
+                    self.current = checkpoint;
+                }
             }
 
             // Check for struct literal: TypeName { field: value, ... }
@@ -3264,7 +3901,11 @@ pub const Parser = struct {
                         .loc = ast.SourceLocation.fromToken(field_name_token),
                     });
 
-                    if (!self.match(&.{.Comma})) break;
+                    // Comma is optional - newline separation is allowed
+                    // Continue if we have a comma OR if next token is an identifier (another field)
+                    _ = self.match(&.{.Comma});
+                    // Allow trailing comma before }
+                    if (self.check(.RightBrace)) break;
                 }
 
                 _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
@@ -3384,20 +4025,87 @@ pub const Parser = struct {
             return expr;
         }
 
-        // Array literals
+        // Array literals - includes typed array literals like [16]f32{ 1.0, 2.0, ... }
         if (self.match(&.{.LeftBracket})) {
             const bracket_token = self.previous();
+
+            // Check for typed array literal: [N]Type{ values }
+            if (self.check(.Integer)) {
+                const size_token = self.advance();
+                if (self.match(&.{.RightBracket})) {
+                    // We have [N] - now check for type followed by {
+                    if (self.check(.Identifier)) {
+                        const type_token = self.advance();
+                        if (self.match(&.{.LeftBrace})) {
+                            // This is a typed array literal: [N]Type{ values }
+                            var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                            defer elements.deinit(self.allocator);
+
+                            if (!self.check(.RightBrace)) {
+                                while (true) {
+                                    const elem = try self.expression();
+                                    try elements.append(self.allocator, elem);
+
+                                    if (!self.match(&.{.Comma})) break;
+                                    // Allow trailing comma
+                                    if (self.check(.RightBrace)) break;
+                                }
+                            }
+
+                            _ = try self.expect(.RightBrace, "Expected '}' after typed array elements");
+
+                            // Create typed array literal with size and element type
+                            const array_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, type_token.lexeme });
+                            const array_literal = try ast.ArrayLiteral.init(
+                                self.allocator,
+                                try elements.toOwnedSlice(self.allocator),
+                                ast.SourceLocation.fromToken(bracket_token),
+                            );
+                            // Store the explicit type in the array literal
+                            array_literal.explicit_type = array_type;
+
+                            const expr = try self.allocator.create(ast.Expr);
+                            expr.* = ast.Expr{ .ArrayLiteral = array_literal };
+                            return expr;
+                        }
+                    }
+                }
+                // Not a typed array literal - this is an error in the syntax
+                // Fall through to error handling
+            }
+
+            // Regular array literal: [a, b, c] or repeat syntax: [value; count]
             var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
             defer elements.deinit(self.allocator);
 
             if (!self.check(.RightBracket)) {
-                while (true) {
-                    const elem = try self.expression();
-                    try elements.append(self.allocator, elem);
+                const first_elem = try self.expression();
+                try elements.append(self.allocator, first_elem);
 
-                    if (!self.match(&.{.Comma})) break;
+                // Check for repeat syntax: [value; count]
+                if (self.match(&.{.Semicolon})) {
+                    const count_token = try self.expect(.Integer, "Expected count after ';' in array repeat");
+                    _ = try self.expect(.RightBracket, "Expected ']' after array repeat count");
+
+                    // Create ArrayRepeat expression
+                    const repeat_expr = try ast.ArrayRepeat.init(
+                        self.allocator,
+                        first_elem,
+                        count_token.lexeme,
+                        ast.SourceLocation.fromToken(bracket_token),
+                    );
+
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .ArrayRepeat = repeat_expr };
+                    return expr;
+                }
+
+                // Continue parsing remaining elements
+                while (self.match(&.{.Comma})) {
                     // Allow trailing comma
                     if (self.check(.RightBracket)) break;
+                    const elem = try self.expression();
+                    try elements.append(self.allocator, elem);
                 }
             }
 
@@ -3469,7 +4177,7 @@ pub const Parser = struct {
             return first_expr;
         }
 
-        std.debug.print("Parse error at line {d}: Unexpected token '{s}'\n", .{ self.peek().line, self.peek().lexeme });
+        // Note: Removed verbose debug print to avoid huge output when parsing fails
         return error.UnexpectedToken;
     }
 

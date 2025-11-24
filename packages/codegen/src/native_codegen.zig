@@ -2544,6 +2544,7 @@ pub const NativeCodegen = struct {
     fn generateStmt(self: *NativeCodegen, stmt: ast.Stmt) CodegenError!void {
         switch (stmt) {
             .LetDecl => |decl| try self.generateLetDecl(decl),
+            .TupleDestructureDecl => |decl| try self.generateTupleDestructure(decl),
             .ExprStmt => |expr| {
                 _ = try self.generateExpr(expr);
             },
@@ -3259,6 +3260,15 @@ pub const NativeCodegen = struct {
             .ContinueStmt => {
                 // TODO: Implement proper continue by tracking loop start positions
                 // For now, this is a no-op which may cause incorrect behavior
+            },
+            .AssertStmt => {
+                // TODO: Implement proper assertion with runtime check
+                // For now, skip assertions in release mode (no-op)
+                // In debug mode, we'd want to check condition and abort if false
+            },
+            .ItTestDecl => {
+                // Test blocks are skipped during normal compilation
+                // They're only executed when running in test mode
             },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
@@ -4068,6 +4078,75 @@ pub const NativeCodegen = struct {
                 try self.assembler.pushReg(.rax);
             }
         }
+    }
+
+    /// Generate tuple destructuring: let (a, b) = expr
+    fn generateTupleDestructure(self: *NativeCodegen, decl: *ast.TupleDestructureDecl) !void {
+        // Evaluate the tuple expression - result will be pointer to tuple in rax
+        try self.generateExpr(decl.value);
+
+        // TupleExpr pushed to stack in this order (first push = highest stack address):
+        //   1. Push elem[n-1] (last element)
+        //   2. Push elem[n-2]
+        //   ...
+        //   n. Push elem[0] (first element)
+        //   n+1. Push count
+        //
+        // So stack looks like (from high to low address):
+        //   [rbp - 8]           = elem[n-1]  (offset n-1 in locals)
+        //   [rbp - 16]          = elem[n-2]  (offset n-2)
+        //   ...
+        //   [rbp - n*8]         = elem[0]    (offset 0... wait no)
+        //   [rbp - (n+1)*8]     = count
+        //   rsp points here
+        //
+        // Using next_local_offset system where offset 0 = [rbp - 8]:
+        //   offset 0 -> [rbp - 8] = elem[n-1]
+        //   offset 1 -> [rbp - 16] = elem[n-2]
+        //   ...
+        //   offset n-1 -> elem[0]
+        //   offset n -> count
+        //
+        // For let (a, b) = (1, 2) where a=elem[0]=1, b=elem[1]=2:
+        //   Stack after TupleExpr: elem[1]=2 at offset 0, elem[0]=1 at offset 1, count at offset 2
+        //   a (elem[0]) should map to offset n-1 = 1
+        //   b (elem[1]) should map to offset n-2 = 0
+
+        const n = decl.names.len;
+
+        // First, reserve all the slots for the tuple (count + elements)
+        // We need to assign offsets in reverse order for the elements
+        // The stack has already been modified by TupleExpr - we're just updating tracking
+
+        // Element i (0-indexed) is at rbp-offset where the offset position is (n-1-i) in our local scheme
+        // because elem[0] was pushed last (lowest address) and elem[n-1] was pushed first (highest address)
+
+        // Assign names to their corresponding stack slots
+        for (decl.names, 0..) |name, i| {
+            if (self.next_local_offset + n >= MAX_LOCALS) {
+                return error.TooManyVariables;
+            }
+
+            // Element i is at stack position (n-1-i) from the top of the elements
+            // Since elements were pushed in reverse, elem[0] is at the deepest position
+            const elem_offset: u8 = @intCast(n - 1 - i);
+
+            // Free old key if variable exists (shadowing)
+            if (self.locals.fetchRemove(name)) |old_entry| {
+                self.allocator.free(old_entry.key);
+            }
+
+            const var_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(var_name);
+            try self.locals.put(var_name, .{
+                .offset = elem_offset,
+                .type_name = "i64", // Default type for tuple elements
+                .size = 8,
+            });
+        }
+
+        // Update next_local_offset to account for all tuple slots (elements + count)
+        self.next_local_offset += @as(u8, @intCast(n + 1));
     }
 
     /// Try to fold constant expressions at compile-time
@@ -5897,6 +5976,60 @@ pub const NativeCodegen = struct {
                     }
                     try self.assembler.movRegImm64(.rax, 0);
                 }
+            },
+
+            .ReturnExpr => |return_expr| {
+                // Generate return expression (for match arms)
+                if (return_expr.value) |value| {
+                    try self.generateExpr(value);
+                } else {
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
+                // Generate epilogue and return
+                try self.assembler.movRegReg(.rsp, .rbp);
+                try self.assembler.popReg(.rbp);
+                try self.assembler.ret();
+            },
+
+            .IfExpr => |if_expr| {
+                // Generate if expression: evaluate condition, branch, and return result
+                // Evaluate condition (result in rax)
+                try self.generateExpr(if_expr.condition);
+
+                // Compare rax to 0 (false)
+                try self.assembler.cmpRegImm(.rax, 0);
+
+                // Jump to else branch if zero (je) - placeholder offset
+                const else_jump_pos = try self.assembler.jeRel8(0);
+
+                // Then branch
+                try self.generateExpr(if_expr.then_branch);
+
+                // Jump over else branch - placeholder offset
+                const end_jump_pos = try self.assembler.jmpRel8(0);
+
+                // Patch else jump target
+                const else_pos = self.assembler.getPosition();
+                const else_offset = @as(i8, @intCast(@as(i32, @intCast(else_pos)) - @as(i32, @intCast(else_jump_pos)) - 2));
+                self.assembler.patchJe8(else_jump_pos, else_offset);
+
+                // Else branch
+                try self.generateExpr(if_expr.else_branch);
+
+                // Patch end jump target
+                const end_pos = self.assembler.getPosition();
+                const end_offset = @as(i8, @intCast(@as(i32, @intCast(end_pos)) - @as(i32, @intCast(end_jump_pos)) - 2));
+                self.assembler.patchJmp8(end_jump_pos, end_offset);
+            },
+
+            .BlockExpr => |block_expr| {
+                // Block expression: execute statements in sequence
+                // The last expression's value (if any) becomes the block's value
+                for (block_expr.statements) |stmt| {
+                    try self.generateStmt(stmt);
+                }
+                // If block is empty or last statement was not an expression,
+                // the result in rax is undefined (caller should handle this)
             },
 
             else => |expr_tag| {

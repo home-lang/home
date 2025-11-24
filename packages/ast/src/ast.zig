@@ -116,6 +116,7 @@ pub const NodeType = enum {
     BooleanLiteral,
     NullLiteral,
     ArrayLiteral,
+    ArrayRepeat,
     MapLiteral,
 
     // Identifiers
@@ -141,6 +142,7 @@ pub const NodeType = enum {
     ElvisExpr,
     SafeIndexExpr,
     IfExpr,
+    ReturnExpr,
     MatchExpr,
     TupleExpr,
     GenericTypeExpr,
@@ -150,6 +152,7 @@ pub const NodeType = enum {
     MacroExpr,
     InlineAsm,
     ClosureExpr,
+    BlockExpr,
     StructLiteral,
     TupleStructLiteral,
     AnonymousStruct,
@@ -166,6 +169,7 @@ pub const NodeType = enum {
     // Statements
     ImportDecl,
     LetDecl,
+    TupleDestructureDecl,
     ConstDecl,
     FnDecl,
     ItTestDecl,
@@ -175,6 +179,7 @@ pub const NodeType = enum {
     UnionDecl,
     TraitDecl,
     ImplDecl,
+    AssertStmt,
     ReturnStmt,
     IfStmt,
     IfLetStmt,
@@ -726,12 +731,31 @@ pub const TryExpr = struct {
 pub const ArrayLiteral = struct {
     node: Node,
     elements: []const *Expr,
+    explicit_type: ?[]const u8 = null, // For typed array literals like [16]f32{ ... }
 
     pub fn init(allocator: std.mem.Allocator, elements: []const *Expr, loc: SourceLocation) !*ArrayLiteral {
         const expr = try allocator.create(ArrayLiteral);
         expr.* = .{
             .node = .{ .type = .ArrayLiteral, .loc = loc },
             .elements = elements,
+            .explicit_type = null,
+        };
+        return expr;
+    }
+};
+
+/// Array repeat expression [value; count]
+pub const ArrayRepeat = struct {
+    node: Node,
+    value: *Expr,
+    count: []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, count: []const u8, loc: SourceLocation) !*ArrayRepeat {
+        const expr = try allocator.create(ArrayRepeat);
+        expr.* = .{
+            .node = .{ .type = .ArrayRepeat, .loc = loc },
+            .value = value,
+            .count = count,
         };
         return expr;
     }
@@ -992,6 +1016,37 @@ pub const IfExpr = struct {
     }
 };
 
+/// Block expression - a sequence of statements as an expression
+/// Example: { let x = 1; x + 1 }
+pub const BlockExpr = struct {
+    node: Node,
+    statements: []const Stmt,
+
+    pub fn init(allocator: std.mem.Allocator, statements: []const Stmt, loc: SourceLocation) !*BlockExpr {
+        const expr = try allocator.create(BlockExpr);
+        expr.* = .{
+            .node = .{ .type = .BlockExpr, .loc = loc },
+            .statements = statements,
+        };
+        return expr;
+    }
+};
+
+/// Return expression (for use in match arms and other expression contexts)
+pub const ReturnExpr = struct {
+    node: Node,
+    value: ?*Expr,
+
+    pub fn init(allocator: std.mem.Allocator, value: ?*Expr, loc: SourceLocation) !*ReturnExpr {
+        const expr = try allocator.create(ReturnExpr);
+        expr.* = .{
+            .node = .{ .type = .ReturnExpr, .loc = loc },
+            .value = value,
+        };
+        return expr;
+    }
+};
+
 /// Match arm for match expressions
 pub const MatchExprArm = struct {
     pattern: *Expr,
@@ -1085,7 +1140,9 @@ pub const ReflectExpr = struct {
     node: Node,
     kind: ReflectKind,
     target: *Expr,
+    second_arg: ?*Expr, // For two-arg builtins like @atan2, @min, @max, @pow
     field_name: ?[]const u8, // For @offsetOf, @fieldName, @fieldType
+    target_type: ?[]const u8, // For @intToFloat, @floatToInt, @intCast, etc.
 
     pub const ReflectKind = enum {
         TypeOf, // @TypeOf(expr) - returns type of expression
@@ -1118,14 +1175,26 @@ pub const ReflectExpr = struct {
         Cos, // @cos(value) - cosine
         Tan, // @tan(value) - tangent
         Acos, // @acos(value) - arc cosine
+        Asin, // @asin(value) - arc sine
+        Atan, // @atan(value) - arc tangent
+        Atan2, // @atan2(y, x) - two-argument arc tangent
         Abs, // @abs(value) - absolute value
+        Min, // @min(a, b) - minimum
+        Max, // @max(a, b) - maximum
+        Floor, // @floor(value) - floor
+        Ceil, // @ceil(value) - ceiling
+        Pow, // @pow(base, exp) - power
+        Exp, // @exp(value) - exponential
+        Log, // @log(value) - natural log
     };
 
     pub fn init(
         allocator: std.mem.Allocator,
         kind: ReflectKind,
         target: *Expr,
+        second_arg: ?*Expr,
         field_name: ?[]const u8,
+        target_type: ?[]const u8,
         loc: SourceLocation,
     ) !*ReflectExpr {
         const expr = try allocator.create(ReflectExpr);
@@ -1133,7 +1202,9 @@ pub const ReflectExpr = struct {
             .node = .{ .type = .ReflectExpr, .loc = loc },
             .kind = kind,
             .target = target,
+            .second_arg = second_arg,
             .field_name = field_name,
+            .target_type = target_type,
         };
         return expr;
     }
@@ -1172,6 +1243,7 @@ pub const Expr = union(NodeType) {
     BooleanLiteral: BooleanLiteral,
     NullLiteral: NullLiteral,
     ArrayLiteral: *ArrayLiteral,
+    ArrayRepeat: *ArrayRepeat,
     MapLiteral: *MapLiteral,
     Identifier: Identifier,
     BinaryExpr: *BinaryExpr,
@@ -1193,6 +1265,7 @@ pub const Expr = union(NodeType) {
     ElvisExpr: *ElvisExpr,
     SafeIndexExpr: *SafeIndexExpr,
     IfExpr: *IfExpr,
+    ReturnExpr: *ReturnExpr,
     MatchExpr: *MatchExpr,
     TupleExpr: *TupleExpr,
     GenericTypeExpr: *GenericTypeExpr,
@@ -1202,6 +1275,7 @@ pub const Expr = union(NodeType) {
     MacroExpr: *MacroExpr,
     InlineAsm: InlineAsm,
     ClosureExpr: *ClosureExpr,
+    BlockExpr: *BlockExpr,
     StructLiteral: *StructLiteralExpr,
     TupleStructLiteral: void,
     AnonymousStruct: void,
@@ -1216,6 +1290,7 @@ pub const Expr = union(NodeType) {
     DispatchCall: void,
     ImportDecl: void,
     LetDecl: void,
+    TupleDestructureDecl: void,
     ConstDecl: void,
     FnDecl: void,
     ItTestDecl: void,
@@ -1225,6 +1300,7 @@ pub const Expr = union(NodeType) {
     UnionDecl: void,
     TraitDecl: void,
     ImplDecl: void,
+    AssertStmt: void,
     ReturnStmt: void,
     IfStmt: void,
     IfLetStmt: void,
@@ -1277,6 +1353,7 @@ pub const Expr = union(NodeType) {
             .GenericTypeExpr => |expr| expr.node.loc,
             .AwaitExpr => |expr| expr.node.loc,
             .ClosureExpr => |expr| expr.node.loc,
+            .BlockExpr => |expr| expr.node.loc,
             else => std.debug.panic("getLocation called on non-expression variant: {s}", .{@tagName(self)}),
         };
     }
@@ -1333,6 +1410,42 @@ pub const LetDecl = struct {
             .is_mutable = is_mutable,
         };
         return decl;
+    }
+};
+
+/// Tuple destructuring declaration: let (a, b) = expr
+pub const TupleDestructureDecl = struct {
+    node: Node,
+    names: []const []const u8,
+    value: *Expr,
+    is_mutable: bool,
+
+    pub fn init(allocator: std.mem.Allocator, names: []const []const u8, value: *Expr, is_mutable: bool, loc: SourceLocation) !*TupleDestructureDecl {
+        const decl = try allocator.create(TupleDestructureDecl);
+        decl.* = .{
+            .node = .{ .type = .TupleDestructureDecl, .loc = loc },
+            .names = names,
+            .value = value,
+            .is_mutable = is_mutable,
+        };
+        return decl;
+    }
+};
+
+/// Assert statement
+pub const AssertStmt = struct {
+    node: Node,
+    condition: *Expr,
+    message: ?*Expr, // Optional message expression
+
+    pub fn init(allocator: std.mem.Allocator, condition: *Expr, message: ?*Expr, loc: SourceLocation) !*AssertStmt {
+        const stmt = try allocator.create(AssertStmt);
+        stmt.* = .{
+            .node = .{ .type = .AssertStmt, .loc = loc },
+            .condition = condition,
+            .message = message,
+        };
+        return stmt;
     }
 };
 
@@ -1708,6 +1821,7 @@ pub const Stmt = union(NodeType) {
     BooleanLiteral: void,
     NullLiteral: void,
     ArrayLiteral: void,
+    ArrayRepeat: void,
     MapLiteral: void,
     Identifier: void,
     BinaryExpr: void,
@@ -1729,6 +1843,7 @@ pub const Stmt = union(NodeType) {
     ElvisExpr: void,
     SafeIndexExpr: void,
     IfExpr: void,
+    ReturnExpr: void,
     MatchExpr: void,
     TupleExpr: void,
     GenericTypeExpr: void,
@@ -1738,6 +1853,7 @@ pub const Stmt = union(NodeType) {
     MacroExpr: void,
     InlineAsm: void,
     ClosureExpr: void,
+    BlockExpr: void,
     StructLiteral: void,  // Handled via pointer deinit
     TupleStructLiteral: void,
     AnonymousStruct: void,
@@ -1754,6 +1870,7 @@ pub const Stmt = union(NodeType) {
     // Statement variants (order must match NodeType enum)
     ImportDecl: *ImportDecl,
     LetDecl: *LetDecl,
+    TupleDestructureDecl: *TupleDestructureDecl,
     ConstDecl: void,
     FnDecl: *FnDecl,
     ItTestDecl: *ItTestDecl,
@@ -1763,6 +1880,7 @@ pub const Stmt = union(NodeType) {
     UnionDecl: *UnionDecl,
     TraitDecl: *TraitDecl,
     ImplDecl: *ImplDecl,
+    AssertStmt: *AssertStmt,
     ReturnStmt: *ReturnStmt,
     IfStmt: *IfStmt,
     IfLetStmt: *IfLetStmt,
@@ -1924,6 +2042,7 @@ pub const FnDecl = struct {
     type_params: []const []const u8,
     is_test: bool = false,
     is_public: bool = false,
+    is_exported: bool = false, // export keyword for C ABI exports
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
 
