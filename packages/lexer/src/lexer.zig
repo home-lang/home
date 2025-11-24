@@ -699,10 +699,60 @@ pub const Lexer = struct {
                 _ = self.advance();
             }
 
+            // Check for exponent (scientific notation)
+            if (self.peek() == 'e' or self.peek() == 'E') {
+                _ = self.advance(); // Consume 'e' or 'E'
+
+                // Optional +/- sign
+                if (self.peek() == '+' or self.peek() == '-') {
+                    _ = self.advance();
+                }
+
+                // Exponent digits (required)
+                if (!std.ascii.isDigit(self.peek())) {
+                    // Invalid scientific notation - but we already consumed the 'e',
+                    // so just continue and let parser deal with it
+                } else {
+                    while (std.ascii.isDigit(self.peek()) or self.peek() == '_') {
+                        if (self.peek() == '_') {
+                            _ = self.advance();
+                            continue;
+                        }
+                        _ = self.advance();
+                    }
+                }
+            }
+
             // Check for float type suffix (f32, f64)
             self.parseTypeSuffix();
 
             return self.makeToken(.Float);
+        }
+
+        // Check for scientific notation in integer (e.g., 1e10)
+        if (self.peek() == 'e' or self.peek() == 'E') {
+            _ = self.advance(); // Consume 'e' or 'E'
+
+            // Optional +/- sign
+            if (self.peek() == '+' or self.peek() == '-') {
+                _ = self.advance();
+            }
+
+            // Exponent digits (required)
+            if (std.ascii.isDigit(self.peek())) {
+                while (std.ascii.isDigit(self.peek()) or self.peek() == '_') {
+                    if (self.peek() == '_') {
+                        _ = self.advance();
+                        continue;
+                    }
+                    _ = self.advance();
+                }
+
+                // Check for float type suffix (f32, f64)
+                self.parseTypeSuffix();
+
+                return self.makeToken(.Float);
+            }
         }
 
         // Check for integer type suffix
