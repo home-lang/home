@@ -108,7 +108,7 @@ const Precedence = enum(u8) {
             .Plus, .Minus => .Term,
             .Star, .Slash, .Percent, .TildeSlash => .Factor,
             .StarStar => .Power,
-            .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
+            .LeftParen, .LeftBracket, .Dot, .ColonColon, .QuestionDot => .Call,
             else => .None,
         };
     }
@@ -945,6 +945,15 @@ pub const Parser = struct {
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
 
+            // Check if this is a constant (has = value)
+            if (self.match(&.{.Equal})) {
+                // Skip the constant value expression
+                _ = try self.expression();
+                // Optional comma after constant
+                _ = self.match(&.{.Comma});
+                continue; // Don't add constants as fields
+            }
+
             try fields.append(self.allocator, .{
                 .name = field_name.lexeme,
                 .type_name = field_type_name,
@@ -1454,7 +1463,15 @@ pub const Parser = struct {
             defer args.deinit(self.allocator);
 
             while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
-                const arg_type = try self.parseTypeAnnotation();
+                // Check if this is a const generic parameter (integer literal or identifier constant)
+                const arg_type = if (self.check(.Integer) or self.check(.Float)) blk: {
+                    // Const generic parameter (e.g., Array<T, 16>)
+                    const lit_token = self.advance();
+                    break :blk try self.allocator.dupe(u8, lit_token.lexeme);
+                } else blk: {
+                    // Regular type parameter
+                    break :blk try self.parseTypeAnnotation();
+                };
                 try args.append(self.allocator, arg_type);
 
                 if (!self.match(&.{.Comma})) break;
@@ -2585,6 +2602,8 @@ pub const Parser = struct {
                 expr = try self.indexExpr(expr);
             } else if (self.match(&.{.Dot})) {
                 expr = try self.memberExpr(expr);
+            } else if (self.match(&.{.ColonColon})) {
+                expr = try self.scopeAccessExpr(expr);
             } else if (self.match(&.{.QuestionDot})) {
                 expr = try self.safeNavExpr(expr);
             } else if (self.match(&.{.Question})) {
@@ -3031,6 +3050,8 @@ pub const Parser = struct {
             self.previous()
         else if (self.match(&.{.Null}))
             self.previous()
+        else if (self.match(&.{.Test}))
+            self.previous()
         else blk: {
             try self.reportError("Expected field name after '.'");
             break :blk self.previous();
@@ -3041,6 +3062,26 @@ pub const Parser = struct {
             object,
             member_token.lexeme,
             ast.SourceLocation.fromToken(dot_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .MemberExpr = member_expr };
+        return result;
+    }
+
+    /// Parse a scope access expression (Type::variant or Type::method)
+    fn scopeAccessExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
+        const colon_colon_token = self.previous();
+
+        // The next token must be an identifier
+        const member_token = try self.expect(.Identifier, "Expected identifier after '::'");
+
+        // Create a MemberExpr - codegen will handle :: as static/enum access
+        const member_expr = try ast.MemberExpr.init(
+            self.allocator,
+            object,
+            member_token.lexeme,
+            ast.SourceLocation.fromToken(colon_colon_token),
         );
 
         const result = try self.allocator.create(ast.Expr);

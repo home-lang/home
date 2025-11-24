@@ -549,24 +549,32 @@ pub const AacEncoder = struct {
 
     /// Encode audio frame to AAC
     pub fn encode(self: *Self, audio_frame: *const AudioFrame) ![]u8 {
-        _ = audio_frame;
-        _ = self;
+        // Use full encoder implementation
+        const aac_full = @import("aac_encoder.zig");
+        var full_encoder = aac_full.AacFullEncoder.init(
+            self.allocator,
+            self.config.sample_rate,
+            self.config.channels,
+            self.bitrate,
+        );
+        defer full_encoder.deinit();
 
-        // Full AAC encoding requires:
-        // 1. Psychoacoustic model
-        // 2. Filterbank (MDCT)
-        // 3. Quantization
-        // 4. Huffman coding
-        // 5. Bitstream formatting
-
-        return VideoError.NotImplemented;
+        return try full_encoder.encode(audio_frame);
     }
 
     /// Encode with ADTS header
     pub fn encodeAdts(self: *Self, audio_frame: *const AudioFrame) ![]u8 {
-        _ = audio_frame;
-        _ = self;
-        return VideoError.NotImplemented;
+        // Use full encoder implementation
+        const aac_full = @import("aac_encoder.zig");
+        var full_encoder = aac_full.AacFullEncoder.init(
+            self.allocator,
+            self.config.sample_rate,
+            self.config.channels,
+            self.bitrate,
+        );
+        defer full_encoder.deinit();
+
+        return try full_encoder.encodeAdts(audio_frame);
     }
 
     /// Get AudioSpecificConfig bytes

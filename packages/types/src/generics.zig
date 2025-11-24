@@ -120,16 +120,17 @@ pub const GenericHandler = struct {
             return existing.monomorphic_name;
         }
 
-        // TODO: Actually create monomorphized AST
-        // For now, just register the monomorphization
+        // Create monomorphized AST by cloning and substituting types
+        const mono_fn = try self.createMonomorphizedFunction(generic_fn, type_args, mono_name);
+
         const info = MonomorphizationInfo{
             .generic_name = generic_fn.name,
-            .type_args = type_args,
+            .type_args = try self.allocator.dupe(Type, type_args),
             .monomorphic_name = mono_name,
-            .concrete_item = .{ .Function = generic_fn },
+            .concrete_item = .{ .Function = mono_fn },
         };
 
-        try self.monomorphizations.put(mono_name, info);
+        try self.monomorphizations.put(try self.allocator.dupe(u8, mono_name), info);
 
         _ = loc;
         return mono_name;
@@ -169,6 +170,189 @@ pub const GenericHandler = struct {
             .Enum => |e| try buf.appendSlice(e.name),
             else => try buf.appendSlice("T"),
         }
+    }
+
+    /// Create a monomorphized copy of a generic function with concrete types
+    fn createMonomorphizedFunction(
+        self: *GenericHandler,
+        generic_fn: *ast.FunctionDecl,
+        type_args: []const Type,
+        mono_name: []const u8,
+    ) !*ast.FunctionDecl {
+        // Allocate new function declaration
+        const mono_fn = try self.allocator.create(ast.FunctionDecl);
+
+        // Copy basic properties
+        mono_fn.* = .{
+            .name = try self.allocator.dupe(u8, mono_name),
+            .type_params = &.{}, // No type params in monomorphized version
+            .params = try self.cloneParameters(generic_fn.params, generic_fn.type_params, type_args),
+            .return_type = if (generic_fn.return_type) |ret_type|
+                try self.substituteType(ret_type, generic_fn.type_params, type_args)
+            else
+                null,
+            .body = try self.cloneBlock(&generic_fn.body, generic_fn.type_params, type_args),
+            .is_public = generic_fn.is_public,
+            .is_async = generic_fn.is_async,
+            .attributes = generic_fn.attributes,
+            .node = generic_fn.node,
+        };
+
+        return mono_fn;
+    }
+
+    /// Clone function parameters with type substitution
+    fn cloneParameters(
+        self: *GenericHandler,
+        params: []const ast.FunctionParam,
+        type_params: []const TypeParameter,
+        type_args: []const Type,
+    ) ![]ast.FunctionParam {
+        var new_params = try self.allocator.alloc(ast.FunctionParam, params.len);
+
+        for (params, 0..) |param, i| {
+            new_params[i] = .{
+                .name = try self.allocator.dupe(u8, param.name),
+                .type_annotation = if (param.type_annotation) |type_ann|
+                    try self.substituteType(type_ann, type_params, type_args)
+                else
+                    null,
+                .default_value = if (param.default_value) |default|
+                    try self.cloneExpr(default, type_params, type_args)
+                else
+                    null,
+                .is_mut = param.is_mut,
+            };
+        }
+
+        return new_params;
+    }
+
+    /// Clone a block statement with type substitution
+    fn cloneBlock(
+        self: *GenericHandler,
+        block: *const ast.BlockStmt,
+        type_params: []const TypeParameter,
+        type_args: []const Type,
+    ) !ast.BlockStmt {
+        var new_stmts = try self.allocator.alloc(ast.Stmt, block.statements.len);
+
+        for (block.statements, 0..) |stmt, i| {
+            new_stmts[i] = try self.cloneStmt(&stmt, type_params, type_args);
+        }
+
+        return ast.BlockStmt{
+            .statements = new_stmts,
+        };
+    }
+
+    /// Clone a statement with type substitution
+    fn cloneStmt(
+        self: *GenericHandler,
+        stmt: *const ast.Stmt,
+        type_params: []const TypeParameter,
+        type_args: []const Type,
+    ) !ast.Stmt {
+        return switch (stmt.*) {
+            .LetDecl => |let_decl| ast.Stmt{
+                .LetDecl = .{
+                    .name = try self.allocator.dupe(u8, let_decl.name),
+                    .type_annotation = if (let_decl.type_annotation) |type_ann|
+                        try self.substituteType(type_ann, type_params, type_args)
+                    else
+                        null,
+                    .initializer = if (let_decl.initializer) |init_expr|
+                        try self.cloneExpr(init_expr, type_params, type_args)
+                    else
+                        null,
+                    .is_mut = let_decl.is_mut,
+                    .node = let_decl.node,
+                },
+            },
+            .ReturnStmt => |ret_stmt| ast.Stmt{
+                .ReturnStmt = .{
+                    .expression = if (ret_stmt.expression) |expr|
+                        try self.cloneExpr(expr, type_params, type_args)
+                    else
+                        null,
+                    .node = ret_stmt.node,
+                },
+            },
+            .ExprStmt => |expr| ast.Stmt{
+                .ExprStmt = try self.cloneExpr(expr, type_params, type_args),
+            },
+            .IfStmt => |if_stmt| ast.Stmt{
+                .IfStmt = .{
+                    .condition = try self.cloneExpr(if_stmt.condition, type_params, type_args),
+                    .then_block = try self.cloneBlock(&if_stmt.then_block, type_params, type_args),
+                    .else_block = if (if_stmt.else_block) |else_block|
+                        try self.cloneBlock(&else_block, type_params, type_args)
+                    else
+                        null,
+                    .node = if_stmt.node,
+                },
+            },
+            // For other statement types, return a simple copy for now
+            else => stmt.*,
+        };
+    }
+
+    /// Clone an expression with type substitution
+    fn cloneExpr(
+        self: *GenericHandler,
+        expr: *ast.Expr,
+        type_params: []const TypeParameter,
+        type_args: []const Type,
+    ) !*ast.Expr {
+        const new_expr = try self.allocator.create(ast.Expr);
+
+        new_expr.* = switch (expr.*) {
+            .Identifier => |id| ast.Expr{
+                .Identifier = .{
+                    .name = try self.allocator.dupe(u8, id.name),
+                    .node = id.node,
+                },
+            },
+            .IntegerLiteral => |lit| ast.Expr{
+                .IntegerLiteral = .{
+                    .value = lit.value,
+                    .node = lit.node,
+                },
+            },
+            .BinaryExpr => |bin| ast.Expr{
+                .BinaryExpr = .{
+                    .operator = bin.operator,
+                    .left = try self.cloneExpr(bin.left, type_params, type_args),
+                    .right = try self.cloneExpr(bin.right, type_params, type_args),
+                    .node = bin.node,
+                },
+            },
+            .CallExpr => |call| blk: {
+                var new_args = try self.allocator.alloc(*ast.Expr, call.arguments.len);
+                for (call.arguments, 0..) |arg, i| {
+                    new_args[i] = try self.cloneExpr(arg, type_params, type_args);
+                }
+
+                break :blk ast.Expr{
+                    .CallExpr = .{
+                        .callee = try self.cloneExpr(call.callee, type_params, type_args),
+                        .arguments = new_args,
+                        .type_args = if (call.type_args) |t_args| blk2: {
+                            var new_type_args = try self.allocator.alloc(Type, t_args.len);
+                            for (t_args, 0..) |t_arg, j| {
+                                new_type_args[j] = try self.substituteType(t_arg, type_params, type_args);
+                            }
+                            break :blk2 new_type_args;
+                        } else null,
+                        .node = call.node,
+                    },
+                };
+            },
+            // For other expression types, return a simple copy for now
+            else => expr.*,
+        };
+
+        return new_expr;
     }
 
     /// Substitute type parameters with concrete types

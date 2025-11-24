@@ -346,11 +346,16 @@ pub const VorbisEncoder = struct {
     }
 
     pub fn encodeAudio(self: *VorbisEncoder, samples: []const f32) ![]u8 {
-        _ = self;
-        _ = samples;
+        // Use full encoder implementation
+        const vorbis_full = @import("vorbis_encoder.zig");
+        var full_encoder = vorbis_full.VorbisFullEncoder.init(
+            self.allocator,
+            self.sample_rate,
+            self.channels,
+            self.quality,
+        );
+        defer full_encoder.deinit();
 
-        // Vorbis encoding is complex
-        // Placeholder
-        return error.NotImplemented;
+        return try full_encoder.encodeAudio(samples);
     }
 };

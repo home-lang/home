@@ -167,30 +167,138 @@ pub const LLVMBackend = struct {
 
     fn generateEnum(self: *LLVMBackend, enum_decl: *const ast.EnumDecl) !void {
         // Enums are represented as tagged unions in LLVM
-        // Structure: { i32 tag, union { variant payloads } }
+        // Structure: { i32 tag, [N x i8] payload }
+        // Where N is the size of the largest variant
 
-        try self.emit("%");
-        try self.emit(enum_decl.name);
-        try self.emitLine(" = type { i32, %union_payload }");
-
-        // Generate union type for variant payloads
-        try self.emit("%");
-        try self.emit(enum_decl.name);
-        try self.emit("_union = type { ");
-
-        // Find largest variant payload
-        for (enum_decl.variants, 0..) |variant, i| {
-            if (i > 0) try self.emit(", ");
+        // First, find the largest variant payload size
+        var max_size: usize = 1; // Minimum 1 byte for unit variants
+        for (enum_decl.variants) |variant| {
             if (variant.value_type) |value_type| {
-                const llvm_type = try self.toLLVMType(value_type);
-                try self.emit(llvm_type);
-            } else {
-                try self.emit("i8"); // Unit variant
+                const size = try self.getTypeSize(value_type);
+                if (size > max_size) max_size = size;
             }
         }
 
-        try self.emitLine(" }");
+        // Generate the enum type: { i32 tag, [N x i8] payload }
+        try self.emit("%");
+        try self.emit(enum_decl.name);
+        try self.emit(" = type { i32, [");
+        const size_str = try std.fmt.allocPrint(self.allocator, "{d}", .{max_size});
+        defer self.allocator.free(size_str);
+        try self.emit(size_str);
+        try self.emitLine(" x i8] }");
         try self.emitLine("");
+
+        // Generate constructor functions for each variant
+        for (enum_decl.variants, 0..) |variant, tag| {
+            try self.generateEnumConstructor(enum_decl.name, variant.name, @intCast(tag), variant.value_type, max_size);
+        }
+    }
+
+    fn generateEnumConstructor(
+        self: *LLVMBackend,
+        enum_name: []const u8,
+        variant_name: []const u8,
+        tag: i32,
+        value_type: ?Type,
+        payload_size: usize,
+    ) !void {
+        // Generate a constructor function: @EnumName_VariantName(value) -> %EnumName
+        try self.emit("define %");
+        try self.emit(enum_name);
+        try self.emit(" @");
+        try self.emit(enum_name);
+        try self.emit("_");
+        try self.emit(variant_name);
+        try self.emit("(");
+
+        if (value_type) |val_type| {
+            const llvm_type = try self.toLLVMType(val_type);
+            try self.emit(llvm_type);
+            try self.emit(" %value");
+        }
+
+        try self.emitLine(") {");
+        try self.emitLine("entry:");
+
+        // Allocate enum on stack
+        try self.emit("  %result = alloca %");
+        try self.emit(enum_name);
+        try self.emitLine("");
+
+        // Set the tag
+        try self.emit("  %tag_ptr = getelementptr %");
+        try self.emit(enum_name);
+        try self.emit(", %");
+        try self.emit(enum_name);
+        try self.emitLine("* %result, i32 0, i32 0");
+
+        const tag_str = try std.fmt.allocPrint(self.allocator, "{d}", .{tag});
+        defer self.allocator.free(tag_str);
+        try self.emit("  store i32 ");
+        try self.emit(tag_str);
+        try self.emitLine(", i32* %tag_ptr");
+
+        // If there's a value, store it in the payload
+        if (value_type) |val_type| {
+            try self.emit("  %payload_ptr = getelementptr %");
+            try self.emit(enum_name);
+            try self.emit(", %");
+            try self.emit(enum_name);
+            try self.emitLine("* %result, i32 0, i32 1");
+
+            const llvm_type = try self.toLLVMType(val_type);
+            try self.emit("  %payload_cast = bitcast [");
+            const size_str = try std.fmt.allocPrint(self.allocator, "{d}", .{payload_size});
+            defer self.allocator.free(size_str);
+            try self.emit(size_str);
+            try self.emit(" x i8]* %payload_ptr to ");
+            try self.emit(llvm_type);
+            try self.emitLine("*");
+
+            try self.emit("  store ");
+            try self.emit(llvm_type);
+            try self.emit(" %value, ");
+            try self.emit(llvm_type);
+            try self.emitLine("* %payload_cast");
+        }
+
+        // Load and return the enum value
+        try self.emit("  %enum_val = load %");
+        try self.emit(enum_name);
+        try self.emit(", %");
+        try self.emit(enum_name);
+        try self.emitLine("* %result");
+        try self.emit("  ret %");
+        try self.emit(enum_name);
+        try self.emitLine(" %enum_val");
+
+        try self.emitLine("}");
+        try self.emitLine("");
+    }
+
+    fn getTypeSize(self: *LLVMBackend, typ: Type) !usize {
+        _ = self;
+        return switch (typ) {
+            .Void => 0,
+            .Bool, .I8, .U8 => 1,
+            .I16, .U16 => 2,
+            .I32, .U32, .Int, .F32, .Float => 4,
+            .I64, .U64, .F64, .Double => 8,
+            .I128, .U128 => 16,
+            .String, .Array, .Tuple, .Function, .Pointer, .Reference, .MutableReference => 8, // Pointers
+            .Struct => |s| blk: {
+                // Sum of field sizes (simplified, doesn't account for alignment)
+                var total: usize = 0;
+                for (s.fields) |field| {
+                    total += try self.getTypeSize(field.typ);
+                }
+                break :blk total;
+            },
+            .Option => 9, // 1 byte tag + 8 bytes max payload
+            .Result => 9, // 1 byte tag + 8 bytes max payload
+            else => 8, // Default to pointer size
+        };
     }
 
     /// Convert Home type to LLVM type string

@@ -34,37 +34,37 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 1. Core Architecture
 
 ### 1.1 Foundation Types
-- [ ] `VideoFormat` enum (mp4, mov, webm, mkv, avi, etc.)
-- [ ] `AudioFormat` enum (mp3, aac, ogg, wav, flac, etc.)
-- [ ] `PixelFormat` enum (yuv420p, yuv422p, yuv444p, rgb24, rgba32, nv12, etc.)
-- [ ] `SampleFormat` enum (s16, s24, s32, f32, f64, u8, etc.)
-- [ ] `Timestamp` struct with microsecond precision internally, second-based API
-- [ ] `Duration` struct with conversion utilities
-- [ ] `Rational` struct for frame rates and time bases (num/denom)
-- [ ] `ColorSpace` enum (bt601, bt709, bt2020, srgb, etc.)
-- [ ] `ColorRange` enum (limited, full)
-- [ ] `ChromaLocation` enum (left, center, topleft, etc.)
+- [x] `VideoFormat` enum (mp4, mov, webm, mkv, avi, etc.)
+- [x] `AudioFormat` enum (mp3, aac, ogg, wav, flac, etc.)
+- [x] `PixelFormat` enum (yuv420p, yuv422p, yuv444p, rgb24, rgba32, nv12, etc.)
+- [x] `SampleFormat` enum (s16, s24, s32, f32, f64, u8, etc.)
+- [x] `Timestamp` struct with microsecond precision internally, second-based API
+- [x] `Duration` struct with conversion utilities
+- [x] `Rational` struct for frame rates and time bases (num/denom)
+- [x] `ColorSpace` enum (bt601, bt709, bt2020, srgb, etc.)
+- [x] `ColorRange` enum (limited, full)
+- [x] `ChromaLocation` enum (left, center, topleft, etc.)
 
 ### 1.2 Core Structures
-- [ ] `VideoFrame` - raw decoded video frame with pixel data
-- [ ] `AudioFrame` - raw decoded audio samples
-- [ ] `Packet` - encoded compressed data unit
-- [ ] `Stream` - track within a container (video/audio/subtitle)
-- [ ] `MediaFile` - container holding multiple streams
-- [ ] `CodecContext` - encoder/decoder state and configuration
-- [ ] `FormatContext` - muxer/demuxer state
+- [x] `VideoFrame` - raw decoded video frame with pixel data
+- [x] `AudioFrame` - raw decoded audio samples
+- [x] `Packet` - encoded compressed data unit
+- [x] `Stream` - track within a container (video/audio/subtitle)
+- [x] `MediaFile` - container holding multiple streams
+- [x] `CodecContext` - encoder/decoder state and configuration
+- [x] `FormatContext` - muxer/demuxer state
 
 ### 1.3 Memory Management
-- [ ] Custom allocator support throughout
-- [ ] Frame pools for efficient reuse
-- [ ] Zero-copy operations where possible
-- [ ] Reference counting for shared buffers
-- [ ] Lazy evaluation for reduced memory footprint
+- [x] Custom allocator support throughout
+- [x] Frame pools for efficient reuse
+- [x] Zero-copy operations where possible
+- [x] Reference counting for shared buffers
+- [x] Lazy evaluation for reduced memory footprint
 
 ### 1.4 Error Handling
-- [ ] `VideoError` comprehensive error set
-- [ ] Detailed error messages with context
-- [ ] Recovery suggestions where applicable
+- [x] `VideoError` comprehensive error set
+- [x] Detailed error messages with context
+- [x] Recovery suggestions where applicable
 
 ---
 
@@ -168,9 +168,9 @@ A comprehensive, dependency-free video processing library for the Home language,
 ## 4. Audio Codecs
 
 ### 4.1 Compressed Audio (Encode & Decode)
-- [ ] **AAC** - Advanced Audio Coding
-  - [ ] LC, HE-AAC, HE-AACv2 profiles
-  - [ ] ADTS wrapping
+- [x] **AAC** - Advanced Audio Coding
+  - [x] LC, HE-AAC, HE-AACv2 profiles
+  - [x] ADTS wrapping
 - [ ] **Opus** - Modern open codec
   - [ ] Voice and music modes
   - [ ] Variable bitrate

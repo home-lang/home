@@ -97,6 +97,10 @@ pub const Debugger = struct {
     stop_on_entry: bool,
     command_queue: std.ArrayList(DebugCommand),
     event_queue: std.ArrayList(DebugEvent),
+    /// Stack depth when step over/out was initiated
+    step_target_depth: ?usize,
+    /// Line number when step over was initiated
+    step_over_line: ?usize,
 
     /// Initialize the debugger
     pub fn init(allocator: std.mem.Allocator) Debugger {
@@ -110,6 +114,8 @@ pub const Debugger = struct {
             .stop_on_entry = false,
             .command_queue = std.ArrayList(DebugCommand).init(allocator),
             .event_queue = std.ArrayList(DebugEvent).init(allocator),
+            .step_target_depth = null,
+            .step_over_line = null,
         };
     }
 
@@ -155,6 +161,36 @@ pub const Debugger = struct {
     /// Check if we should stop at the current location
     pub fn shouldStop(self: *Debugger, file: []const u8, line: usize) bool {
         if (self.state != .Running) return false;
+
+        // Check step operations first
+        const current_depth = self.call_stack.items.len;
+
+        // Step over: stop when we're on a different line at same or shallower depth
+        if (self.step_over_line) |target_line| {
+            if (self.step_target_depth) |target_depth| {
+                if (current_depth <= target_depth and line != target_line) {
+                    return true;
+                }
+            }
+        }
+
+        // Step out: stop when stack depth is shallower than target
+        if (self.step_target_depth) |target_depth| {
+            if (self.step_over_line == null) {
+                // Only for step out (not step over)
+                if (current_depth <= target_depth) {
+                    return true;
+                }
+            }
+        }
+
+        // Step in: stop at any new line (handled by always stopping if no target set)
+        if (self.step_target_depth == null and self.step_over_line == null) {
+            // Step in mode - stop at first line change
+            if (line != self.current_line or !std.mem.eql(u8, file, self.current_file)) {
+                return true;
+            }
+        }
 
         // Check breakpoints
         for (self.breakpoints.items) |*bp| {
@@ -257,32 +293,116 @@ pub const Debugger = struct {
         switch (command) {
             .Continue => {
                 self.state = .Running;
+                self.step_target_depth = null;
+                self.step_over_line = null;
             },
             .StepOver => {
-                // TODO: Implement step over logic
+                // Step over: execute until next line at same or shallower stack depth
+                // Don't enter function calls
                 self.state = .Running;
+                self.step_target_depth = self.call_stack.items.len;
+                self.step_over_line = self.current_line;
             },
             .StepIn => {
-                // TODO: Implement step in logic
+                // Step in: execute one statement, entering function calls
+                // Simply stop at the very next line
                 self.state = .Running;
+                self.step_target_depth = null;
+                self.step_over_line = null;
             },
             .StepOut => {
-                // TODO: Implement step out logic
+                // Step out: execute until we return from current function
+                // Stop when stack depth decreases
                 self.state = .Running;
+                if (self.call_stack.items.len > 0) {
+                    self.step_target_depth = self.call_stack.items.len - 1;
+                } else {
+                    self.step_target_depth = 0;
+                }
+                self.step_over_line = null;
             },
             .Pause => {
                 self.state = .Paused;
             },
-            .Evaluate => {
-                // TODO: Implement expression evaluation
+            .Evaluate => |expr| {
+                // Evaluate expression in current context
+                try self.evaluateExpression(expr);
             },
-            .GetVariable => {
-                // TODO: Implement variable retrieval
+            .GetVariable => |var_name| {
+                // Get variable value from current environment
+                try self.getVariable(var_name);
             },
-            .SetVariable => {
-                // TODO: Implement variable modification
+            .SetVariable => |set_var| {
+                // Set variable value in current environment
+                try self.setVariable(set_var.name, set_var.value);
             },
         }
+    }
+
+    /// Evaluate an expression in the current debugging context
+    fn evaluateExpression(self: *Debugger, expr: []const u8) !void {
+        // Get current stack frame environment
+        if (self.call_stack.items.len == 0) {
+            std.debug.print("No stack frame available for evaluation\n", .{});
+            return;
+        }
+
+        const frame = self.call_stack.items[self.call_stack.items.len - 1];
+
+        // For now, just try to look up as a variable
+        if (frame.environment.get(expr)) |value| {
+            std.debug.print("Eval: {s} = {any}\n", .{ expr, value });
+        } else {
+            std.debug.print("Eval: {s} = <undefined>\n", .{expr});
+        }
+
+        // In a full implementation, this would:
+        // 1. Parse the expression string into AST
+        // 2. Evaluate using the interpreter with current environment
+        // 3. Return the result value
+    }
+
+    /// Get a variable value from the current environment
+    fn getVariable(self: *Debugger, var_name: []const u8) !void {
+        if (self.call_stack.items.len == 0) {
+            std.debug.print("Variable {s}: <no stack frame>\n", .{var_name});
+            return;
+        }
+
+        const frame = self.call_stack.items[self.call_stack.items.len - 1];
+
+        if (frame.environment.get(var_name)) |value| {
+            std.debug.print("Variable {s} = {any}\n", .{ var_name, value });
+        } else {
+            std.debug.print("Variable {s}: <undefined>\n", .{var_name});
+        }
+    }
+
+    /// Set a variable value in the current environment
+    fn setVariable(self: *Debugger, var_name: []const u8, value_str: []const u8) !void {
+        if (self.call_stack.items.len == 0) {
+            std.debug.print("Cannot set {s}: no stack frame\n", .{var_name});
+            return;
+        }
+
+        const frame = self.call_stack.items[self.call_stack.items.len - 1];
+
+        // Parse the value string (simplified - just handle integers for now)
+        const value = std.fmt.parseInt(i64, value_str, 10) catch {
+            std.debug.print("Cannot parse value: {s}\n", .{value_str});
+            return;
+        };
+
+        // Create a Value and store it
+        const val = Value{ .Integer = value };
+        try frame.environment.set(var_name, val);
+
+        std.debug.print("Set {s} = {d}\n", .{ var_name, value });
+
+        // In a full implementation, this would:
+        // 1. Parse the value string into appropriate Value type
+        // 2. Support all value types (strings, bools, floats, etc.)
+        // 3. Validate type compatibility with existing variable
     }
 
     /// Wait for debugger command (blocking)

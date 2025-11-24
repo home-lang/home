@@ -337,16 +337,190 @@ pub const TimelineProject = struct {
     created_date: i64,
 
     pub fn save(self: *const TimelineProject, allocator: std.mem.Allocator) ![]u8 {
-        _ = self;
-        _ = allocator;
-        // Would serialize to JSON
-        return error.NotImplemented;
+        // Serialize timeline project to JSON
+        var output = std.ArrayList(u8).init(allocator);
+        errdefer output.deinit();
+
+        const writer = output.writer();
+
+        try writer.writeAll("{");
+
+        // Project metadata
+        try writer.print("\"project_name\":\"{s}\",", .{self.project_name});
+        try writer.print("\"created_date\":{d},", .{self.created_date});
+
+        // Timeline properties
+        try writer.writeAll("\"timeline\":{");
+        try writer.print("\"frame_rate\":{{\"num\":{d},\"den\":{d}}},", .{ self.timeline.frame_rate.num, self.timeline.frame_rate.den });
+        try writer.print("\"duration_us\":{d},", .{self.timeline.duration_us});
+        try writer.print("\"width\":{d},", .{self.timeline.width});
+        try writer.print("\"height\":{d},", .{self.timeline.height});
+
+        // Video tracks
+        try writer.writeAll("\"video_tracks\":[");
+        for (self.timeline.video_tracks.items, 0..) |*track, i| {
+            if (i > 0) try writer.writeAll(",");
+            try serializeTrack(writer, track);
+        }
+        try writer.writeAll("],");
+
+        // Audio tracks
+        try writer.writeAll("\"audio_tracks\":[");
+        for (self.timeline.audio_tracks.items, 0..) |*track, i| {
+            if (i > 0) try writer.writeAll(",");
+            try serializeTrack(writer, track);
+        }
+        try writer.writeAll("],");
+
+        // Subtitle tracks
+        try writer.writeAll("\"subtitle_tracks\":[");
+        for (self.timeline.subtitle_tracks.items, 0..) |*track, i| {
+            if (i > 0) try writer.writeAll(",");
+            try serializeTrack(writer, track);
+        }
+        try writer.writeAll("]");
+
+        try writer.writeAll("}"); // End timeline
+        try writer.writeAll("}"); // End project
+
+        return output.toOwnedSlice();
+    }
+
+    fn serializeTrack(writer: anytype, track: *const Track) !void {
+        try writer.writeAll("{");
+        try writer.print("\"name\":\"{s}\",", .{track.name});
+        try writer.print("\"track_type\":\"{s}\",", .{@tagName(track.track_type)});
+        try writer.print("\"enabled\":{},", .{track.enabled});
+        try writer.print("\"muted\":{},", .{track.muted});
+        try writer.print("\"opacity\":{d},", .{track.opacity});
+        try writer.print("\"blend_mode\":\"{s}\",", .{@tagName(track.blend_mode)});
+
+        try writer.writeAll("\"clips\":[");
+        for (track.clips.items, 0..) |*clip, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("{");
+            try writer.print("\"source_path\":\"{s}\",", .{clip.source_path});
+            try writer.print("\"source_in\":{d},", .{clip.source_in});
+            try writer.print("\"source_out\":{d},", .{clip.source_out});
+            try writer.print("\"timeline_in\":{d},", .{clip.timeline_in});
+            try writer.print("\"timeline_out\":{d},", .{clip.timeline_out});
+            try writer.print("\"speed\":{d},", .{clip.speed});
+            try writer.print("\"volume\":{d}", .{clip.volume});
+            try writer.writeAll("}");
+        }
+        try writer.writeAll("]");
+
+        try writer.writeAll("}");
     }
 
     pub fn load(data: []const u8, allocator: std.mem.Allocator) !TimelineProject {
-        _ = data;
-        _ = allocator;
-        // Would deserialize from JSON
-        return error.NotImplemented;
+        // Parse JSON timeline project
+        // Using std.json for parsing
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+
+        // Extract project metadata
+        const project_name_val = root.get("project_name") orelse return error.InvalidJson;
+        const project_name = try allocator.dupe(u8, project_name_val.string);
+
+        const created_date = root.get("created_date") orelse return error.InvalidJson;
+
+        // Extract timeline
+        const timeline_obj = (root.get("timeline") orelse return error.InvalidJson).object;
+
+        // Parse frame rate
+        const frame_rate_obj = (timeline_obj.get("frame_rate") orelse return error.InvalidJson).object;
+        const frame_rate = types.Rational{
+            .num = @intCast((frame_rate_obj.get("num") orelse return error.InvalidJson).integer),
+            .den = @intCast((frame_rate_obj.get("den") orelse return error.InvalidJson).integer),
+        };
+
+        const width: u32 = @intCast((timeline_obj.get("width") orelse return error.InvalidJson).integer);
+        const height: u32 = @intCast((timeline_obj.get("height") orelse return error.InvalidJson).integer);
+
+        var timeline = Timeline.init(allocator, width, height, frame_rate);
+        errdefer timeline.deinit();
+
+        timeline.duration_us = @intCast((timeline_obj.get("duration_us") orelse return error.InvalidJson).integer);
+
+        // Load video tracks
+        const video_tracks_arr = (timeline_obj.get("video_tracks") orelse return error.InvalidJson).array;
+        for (video_tracks_arr.items) |track_val| {
+            const track = try deserializeTrack(allocator, track_val.object);
+            try timeline.video_tracks.append(track);
+        }
+
+        // Load audio tracks
+        const audio_tracks_arr = (timeline_obj.get("audio_tracks") orelse return error.InvalidJson).array;
+        for (audio_tracks_arr.items) |track_val| {
+            const track = try deserializeTrack(allocator, track_val.object);
+            try timeline.audio_tracks.append(track);
+        }
+
+        // Load subtitle tracks
+        const subtitle_tracks_arr = (timeline_obj.get("subtitle_tracks") orelse return error.InvalidJson).array;
+        for (subtitle_tracks_arr.items) |track_val| {
+            const track = try deserializeTrack(allocator, track_val.object);
+            try timeline.subtitle_tracks.append(track);
+        }
+
+        return TimelineProject{
+            .timeline = timeline,
+            .project_name = project_name,
+            .created_date = created_date.integer,
+        };
+    }
+
+    fn deserializeTrack(allocator: std.mem.Allocator, track_obj: std.json.ObjectMap) !Track {
+        const name = try allocator.dupe(u8, (track_obj.get("name") orelse return error.InvalidJson).string);
+
+        const track_type_str = (track_obj.get("track_type") orelse return error.InvalidJson).string;
+        const track_type: Track.TrackType = if (std.mem.eql(u8, track_type_str, "video"))
+            .video
+        else if (std.mem.eql(u8, track_type_str, "audio"))
+            .audio
+        else
+            .subtitle;
+
+        var track = Track.init(allocator, track_type, name);
+
+        track.enabled = (track_obj.get("enabled") orelse return error.InvalidJson).bool;
+        track.muted = (track_obj.get("muted") orelse return error.InvalidJson).bool;
+
+        const opacity_val = track_obj.get("opacity") orelse return error.InvalidJson;
+        track.opacity = @floatCast(opacity_val.float);
+
+        const blend_mode_str = (track_obj.get("blend_mode") orelse return error.InvalidJson).string;
+        track.blend_mode = std.meta.stringToEnum(Track.BlendMode, blend_mode_str) orelse .normal;
+
+        // Load clips
+        const clips_arr = (track_obj.get("clips") orelse return error.InvalidJson).array;
+        for (clips_arr.items) |clip_val| {
+            const clip_obj = clip_val.object;
+
+            const source_path = try allocator.dupe(u8, (clip_obj.get("source_path") orelse return error.InvalidJson).string);
+
+            const speed_val = clip_obj.get("speed") orelse return error.InvalidJson;
+            const volume_val = clip_obj.get("volume") orelse return error.InvalidJson;
+
+            const clip = Clip{
+                .allocator = allocator,
+                .source_path = source_path,
+                .source_in = @intCast((clip_obj.get("source_in") orelse return error.InvalidJson).integer),
+                .source_out = @intCast((clip_obj.get("source_out") orelse return error.InvalidJson).integer),
+                .timeline_in = @intCast((clip_obj.get("timeline_in") orelse return error.InvalidJson).integer),
+                .timeline_out = @intCast((clip_obj.get("timeline_out") orelse return error.InvalidJson).integer),
+                .speed = @floatCast(speed_val.float),
+                .volume = @floatCast(volume_val.float),
+                .transition_in = null,
+                .transition_out = null,
+            };
+
+            try track.clips.append(clip);
+        }
+
+        return track;
     }
 };

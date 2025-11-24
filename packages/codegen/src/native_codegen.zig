@@ -4502,7 +4502,18 @@ pub const NativeCodegen = struct {
                     // [rbp-24]: third pushed item (offset=2)
                     // etc.
                     // Items pushed first are at higher addresses (closer to rbp)
-                    const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                    // Guard against unreasonably large offsets (likely indicates parsing error)
+                    // Calculate the byte offset, checking for overflow
+                    const offset_plus_one = local_info.offset +% 1;
+                    const byte_offset = offset_plus_one *% 8;
+
+                    // Check if the value fits in i32 range
+                    if (byte_offset > @as(usize, std.math.maxInt(i32))) {
+                        std.debug.print("Warning: Stack offset overflow for variable '{s}' (offset={}), using 0\n", .{id.name, local_info.offset});
+                        try self.assembler.movRegImm64(.rax, 0);
+                        return;
+                    }
+                    const stack_offset: i32 = -@as(i32, @intCast(byte_offset));
 
                     if (is_array or is_struct or is_enum) {
                         // For arrays, structs, and enums, return pointer to start

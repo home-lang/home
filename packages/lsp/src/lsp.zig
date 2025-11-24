@@ -266,7 +266,197 @@ pub const LanguageServer = struct {
         doc.ast = program;
 
         // Semantic analysis
-        // TODO: Type checking, undefined variables, etc.
+        try self.performSemanticAnalysis(doc, program);
+    }
+
+    /// Perform semantic analysis on the AST
+    fn performSemanticAnalysis(self: *LanguageServer, doc: *Document, program: *ast.Program) !void {
+        // Track defined symbols for undefined variable checking
+        var defined_symbols = std.StringHashMap(void).init(self.allocator);
+        defer defined_symbols.deinit();
+
+        // First pass: collect all function, struct, and enum declarations
+        for (program.statements) |stmt| {
+            switch (stmt) {
+                .FunctionDecl => |func_decl| {
+                    try defined_symbols.put(func_decl.name, {});
+                },
+                .StructDecl => |struct_decl| {
+                    try defined_symbols.put(struct_decl.name, {});
+                },
+                .EnumDecl => |enum_decl| {
+                    try defined_symbols.put(enum_decl.name, {});
+                },
+                .ConstDecl => |const_decl| {
+                    try defined_symbols.put(const_decl.name, {});
+                },
+                else => {},
+            }
+        }
+
+        // Second pass: check for undefined variables in function bodies
+        for (program.statements) |stmt| {
+            switch (stmt) {
+                .FunctionDecl => |func_decl| {
+                    try self.checkFunctionBody(doc, &func_decl.body, &defined_symbols, func_decl.params);
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Check a function body for undefined variables
+    fn checkFunctionBody(
+        self: *LanguageServer,
+        doc: *Document,
+        block: *const ast.BlockStmt,
+        defined_symbols: *std.StringHashMap(void),
+        params: []const ast.FunctionParam,
+    ) !void {
+        // Track local variables within this scope
+        var local_vars = std.StringHashMap(void).init(self.allocator);
+        defer local_vars.deinit();
+
+        // Add function parameters to local scope
+        for (params) |param| {
+            try local_vars.put(param.name, {});
+        }
+
+        // Check each statement
+        for (block.statements) |stmt| {
+            try self.checkStatement(doc, &stmt, defined_symbols, &local_vars);
+        }
+    }
+
+    /// Check a statement for undefined variables
+    fn checkStatement(
+        self: *LanguageServer,
+        doc: *Document,
+        stmt: *const ast.Stmt,
+        defined_symbols: *std.StringHashMap(void),
+        local_vars: *std.StringHashMap(void),
+    ) !void {
+        switch (stmt.*) {
+            .LetDecl => |let_decl| {
+                // Add to local scope
+                try local_vars.put(let_decl.name, {});
+
+                // Check initializer expression
+                if (let_decl.initializer) |init_expr| {
+                    try self.checkExpression(doc, init_expr, defined_symbols, local_vars);
+                }
+            },
+            .ConstDecl => |const_decl| {
+                // Add to local scope
+                try local_vars.put(const_decl.name, {});
+
+                // Check initializer expression
+                if (const_decl.initializer) |init_expr| {
+                    try self.checkExpression(doc, init_expr, defined_symbols, local_vars);
+                }
+            },
+            .ExprStmt => |expr| {
+                try self.checkExpression(doc, expr, defined_symbols, local_vars);
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.expression) |expr| {
+                    try self.checkExpression(doc, expr, defined_symbols, local_vars);
+                }
+            },
+            .IfStmt => |if_stmt| {
+                try self.checkExpression(doc, if_stmt.condition, defined_symbols, local_vars);
+                try self.checkFunctionBodyHelper(doc, &if_stmt.then_block, defined_symbols, local_vars);
+                if (if_stmt.else_block) |else_block| {
+                    try self.checkFunctionBodyHelper(doc, &else_block, defined_symbols, local_vars);
+                }
+            },
+            .WhileStmt => |while_stmt| {
+                try self.checkExpression(doc, while_stmt.condition, defined_symbols, local_vars);
+                try self.checkFunctionBodyHelper(doc, &while_stmt.body, defined_symbols, local_vars);
+            },
+            .ForStmt => |for_stmt| {
+                try self.checkExpression(doc, for_stmt.iterable, defined_symbols, local_vars);
+                // Add loop variable to local scope
+                try local_vars.put(for_stmt.variable, {});
+                try self.checkFunctionBodyHelper(doc, &for_stmt.body, defined_symbols, local_vars);
+            },
+            .AssignmentStmt => |assign_stmt| {
+                try self.checkExpression(doc, assign_stmt.target, defined_symbols, local_vars);
+                try self.checkExpression(doc, assign_stmt.value, defined_symbols, local_vars);
+            },
+            else => {},
+        }
+    }
+
+    /// Helper to check a block with existing local scope
+    fn checkFunctionBodyHelper(
+        self: *LanguageServer,
+        doc: *Document,
+        block: *const ast.BlockStmt,
+        defined_symbols: *std.StringHashMap(void),
+        local_vars: *std.StringHashMap(void),
+    ) !void {
+        for (block.statements) |stmt| {
+            try self.checkStatement(doc, &stmt, defined_symbols, local_vars);
+        }
+    }
+
+    /// Check an expression for undefined variables
+    fn checkExpression(
+        self: *LanguageServer,
+        doc: *Document,
+        expr: *const ast.Expr,
+        defined_symbols: *std.StringHashMap(void),
+        local_vars: *std.StringHashMap(void),
+    ) !void {
+        switch (expr.*) {
+            .Identifier => |id| {
+                // Check if identifier is defined
+                if (!local_vars.contains(id.name) and !defined_symbols.contains(id.name)) {
+                    // Undefined variable
+                    try doc.diagnostics.append(.{
+                        .range = .{
+                            .start = .{ .line = @intCast(id.node.loc.line), .character = @intCast(id.node.loc.column) },
+                            .end = .{ .line = @intCast(id.node.loc.line), .character = @intCast(id.node.loc.column + id.name.len) },
+                        },
+                        .severity = .Error,
+                        .message = try std.fmt.allocPrint(self.allocator, "Undefined variable: {s}", .{id.name}),
+                        .source = "semantic-analysis",
+                    });
+                }
+            },
+            .BinaryExpr => |bin| {
+                try self.checkExpression(doc, bin.left, defined_symbols, local_vars);
+                try self.checkExpression(doc, bin.right, defined_symbols, local_vars);
+            },
+            .UnaryExpr => |un| {
+                try self.checkExpression(doc, un.operand, defined_symbols, local_vars);
+            },
+            .CallExpr => |call| {
+                try self.checkExpression(doc, call.callee, defined_symbols, local_vars);
+                for (call.arguments) |arg| {
+                    try self.checkExpression(doc, arg, defined_symbols, local_vars);
+                }
+            },
+            .MemberExpr => |member| {
+                try self.checkExpression(doc, member.object, defined_symbols, local_vars);
+            },
+            .IndexExpr => |index| {
+                try self.checkExpression(doc, index.array, defined_symbols, local_vars);
+                try self.checkExpression(doc, index.index, defined_symbols, local_vars);
+            },
+            .ArrayLiteral => |arr| {
+                for (arr.elements) |elem| {
+                    try self.checkExpression(doc, elem, defined_symbols, local_vars);
+                }
+            },
+            .StructLiteral => |struct_lit| {
+                for (struct_lit.fields) |field| {
+                    try self.checkExpression(doc, field.value, defined_symbols, local_vars);
+                }
+            },
+            else => {},
+        }
     }
 
     /// Provide completions at position
@@ -309,33 +499,336 @@ pub const LanguageServer = struct {
             });
         }
 
-        // TODO: Add symbols from AST (functions, variables, structs, etc.)
+        // Add symbols from AST
+        if (doc.ast) |program| {
+            // Add functions
+            for (program.statements) |stmt| {
+                switch (stmt) {
+                    .FunctionDecl => |func_decl| {
+                        const detail = try self.formatFunctionSignature(func_decl);
+                        try items.append(.{
+                            .label = func_decl.name,
+                            .kind = .Function,
+                            .detail = detail,
+                            .documentation = null,
+                            .insert_text = null,
+                        });
+                    },
+                    .StructDecl => |struct_decl| {
+                        try items.append(.{
+                            .label = struct_decl.name,
+                            .kind = .Struct,
+                            .detail = "struct",
+                            .documentation = null,
+                            .insert_text = null,
+                        });
+                    },
+                    .EnumDecl => |enum_decl| {
+                        try items.append(.{
+                            .label = enum_decl.name,
+                            .kind = .Enum,
+                            .detail = "enum",
+                            .documentation = null,
+                            .insert_text = null,
+                        });
+                    },
+                    .ConstDecl => |const_decl| {
+                        try items.append(.{
+                            .label = const_decl.name,
+                            .kind = .Constant,
+                            .detail = "const",
+                            .documentation = null,
+                            .insert_text = null,
+                        });
+                    },
+                    else => {},
+                }
+            }
+        }
 
         return try items.toOwnedSlice();
     }
 
+    /// Format a function signature for display
+    fn formatFunctionSignature(self: *LanguageServer, func_decl: ast.FunctionDecl) ![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+
+        try buf.appendSlice("fn ");
+        try buf.appendSlice(func_decl.name);
+        try buf.append('(');
+
+        for (func_decl.params, 0..) |param, i| {
+            if (i > 0) try buf.appendSlice(", ");
+            try buf.appendSlice(param.name);
+            if (param.type_annotation) |type_ann| {
+                try buf.appendSlice(": ");
+                try buf.appendSlice(try self.formatType(type_ann));
+            }
+        }
+
+        try buf.append(')');
+
+        if (func_decl.return_type) |ret_type| {
+            try buf.appendSlice(" -> ");
+            try buf.appendSlice(try self.formatType(ret_type));
+        }
+
+        return try self.allocator.dupe(u8, buf.items);
+    }
+
+    /// Format a type for display
+    fn formatType(self: *LanguageServer, typ: ast.Type) ![]const u8 {
+        _ = self;
+        return switch (typ) {
+            .Int => "int",
+            .Float => "float",
+            .Bool => "bool",
+            .String => "string",
+            .Void => "void",
+            .I32 => "i32",
+            .I64 => "i64",
+            .F32 => "f32",
+            .F64 => "f64",
+            else => "unknown",
+        };
+    }
+
     /// Go to definition
     pub fn gotoDefinition(self: *LanguageServer, uri: []const u8, position: Position) !?Location {
-        _ = position;
-
         const doc = self.documents.get(uri) orelse return null;
-        _ = doc;
 
-        // TODO: Implement symbol resolution and jump to definition
+        if (doc.ast) |program| {
+            // Get the symbol at the cursor position
+            const symbol_name = try self.getSymbolAtPosition(doc, position);
+            if (symbol_name) |name| {
+                // Search for the definition in the AST
+                return try self.findDefinitionLocation(program, name, uri);
+            }
+        }
+
+        return null;
+    }
+
+    /// Get the symbol name at a given position
+    fn getSymbolAtPosition(self: *LanguageServer, doc: *Document, position: Position) !?[]const u8 {
+        _ = self;
+
+        // Split document into lines
+        var line_iter = std.mem.splitScalar(u8, doc.text, '\n');
+        var current_line: u32 = 0;
+
+        while (line_iter.next()) |line| : (current_line += 1) {
+            if (current_line == position.line) {
+                // Found the line, now extract the identifier at the position
+                if (position.character >= line.len) return null;
+
+                // Find identifier boundaries
+                var start = position.character;
+                var end = position.character;
+
+                // Move start back to start of identifier
+                while (start > 0 and isIdentifierChar(line[start - 1])) {
+                    start -= 1;
+                }
+
+                // Move end forward to end of identifier
+                while (end < line.len and isIdentifierChar(line[end])) {
+                    end += 1;
+                }
+
+                if (start < end) {
+                    return line[start..end];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Check if a character is part of an identifier
+    fn isIdentifierChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_';
+    }
+
+    /// Find the definition location of a symbol
+    fn findDefinitionLocation(self: *LanguageServer, program: *ast.Program, symbol_name: []const u8, uri: []const u8) !?Location {
+        _ = self;
+
+        for (program.statements) |stmt| {
+            switch (stmt) {
+                .FunctionDecl => |func_decl| {
+                    if (std.mem.eql(u8, func_decl.name, symbol_name)) {
+                        return Location{
+                            .uri = uri,
+                            .range = .{
+                                .start = .{ .line = @intCast(func_decl.node.loc.line), .character = @intCast(func_decl.node.loc.column) },
+                                .end = .{ .line = @intCast(func_decl.node.loc.line), .character = @intCast(func_decl.node.loc.column + func_decl.name.len) },
+                            },
+                        };
+                    }
+                },
+                .StructDecl => |struct_decl| {
+                    if (std.mem.eql(u8, struct_decl.name, symbol_name)) {
+                        return Location{
+                            .uri = uri,
+                            .range = .{
+                                .start = .{ .line = @intCast(struct_decl.node.loc.line), .character = @intCast(struct_decl.node.loc.column) },
+                                .end = .{ .line = @intCast(struct_decl.node.loc.line), .character = @intCast(struct_decl.node.loc.column + struct_decl.name.len) },
+                            },
+                        };
+                    }
+                },
+                .EnumDecl => |enum_decl| {
+                    if (std.mem.eql(u8, enum_decl.name, symbol_name)) {
+                        return Location{
+                            .uri = uri,
+                            .range = .{
+                                .start = .{ .line = @intCast(enum_decl.node.loc.line), .character = @intCast(enum_decl.node.loc.column) },
+                                .end = .{ .line = @intCast(enum_decl.node.loc.line), .character = @intCast(enum_decl.node.loc.column + enum_decl.name.len) },
+                            },
+                        };
+                    }
+                },
+                .ConstDecl => |const_decl| {
+                    if (std.mem.eql(u8, const_decl.name, symbol_name)) {
+                        return Location{
+                            .uri = uri,
+                            .range = .{
+                                .start = .{ .line = @intCast(const_decl.node.loc.line), .character = @intCast(const_decl.node.loc.column) },
+                                .end = .{ .line = @intCast(const_decl.node.loc.line), .character = @intCast(const_decl.node.loc.column + const_decl.name.len) },
+                            },
+                        };
+                    }
+                },
+                else => {},
+            }
+        }
 
         return null;
     }
 
     /// Find references
     pub fn findReferences(self: *LanguageServer, uri: []const u8, position: Position) ![]Location {
-        _ = position;
-
         const doc = self.documents.get(uri) orelse return &[_]Location{};
-        _ = doc;
 
-        // TODO: Implement reference finding
+        if (doc.ast) |program| {
+            // Get the symbol at the cursor position
+            const symbol_name = try self.getSymbolAtPosition(doc, position);
+            if (symbol_name) |name| {
+                // Find all references to this symbol
+                var locations = std.ArrayList(Location).init(self.allocator);
+                errdefer locations.deinit();
+
+                try self.findReferencesInProgram(program, name, uri, &locations);
+
+                return try locations.toOwnedSlice();
+            }
+        }
 
         return &[_]Location{};
+    }
+
+    /// Find all references to a symbol in the program
+    fn findReferencesInProgram(
+        self: *LanguageServer,
+        program: *ast.Program,
+        symbol_name: []const u8,
+        uri: []const u8,
+        locations: *std.ArrayList(Location),
+    ) !void {
+        for (program.statements) |stmt| {
+            try self.findReferencesInStmt(&stmt, symbol_name, uri, locations);
+        }
+    }
+
+    /// Find references in a statement
+    fn findReferencesInStmt(
+        self: *LanguageServer,
+        stmt: *const ast.Stmt,
+        symbol_name: []const u8,
+        uri: []const u8,
+        locations: *std.ArrayList(Location),
+    ) !void {
+        switch (stmt.*) {
+            .FunctionDecl => |func_decl| {
+                try self.findReferencesInBlock(&func_decl.body, symbol_name, uri, locations);
+            },
+            .ExprStmt => |expr| {
+                try self.findReferencesInExpr(expr, symbol_name, uri, locations);
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.initializer) |init_expr| {
+                    try self.findReferencesInExpr(init_expr, symbol_name, uri, locations);
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.expression) |expr| {
+                    try self.findReferencesInExpr(expr, symbol_name, uri, locations);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Find references in a block
+    fn findReferencesInBlock(
+        self: *LanguageServer,
+        block: *const ast.BlockStmt,
+        symbol_name: []const u8,
+        uri: []const u8,
+        locations: *std.ArrayList(Location),
+    ) !void {
+        for (block.statements) |stmt| {
+            try self.findReferencesInStmt(&stmt, symbol_name, uri, locations);
+        }
+    }
+
+    /// Find references in an expression
+    fn findReferencesInExpr(
+        self: *LanguageServer,
+        expr: *const ast.Expr,
+        symbol_name: []const u8,
+        uri: []const u8,
+        locations: *std.ArrayList(Location),
+    ) !void {
+        switch (expr.*) {
+            .Identifier => |id| {
+                if (std.mem.eql(u8, id.name, symbol_name)) {
+                    try locations.append(.{
+                        .uri = uri,
+                        .range = .{
+                            .start = .{ .line = @intCast(id.node.loc.line), .character = @intCast(id.node.loc.column) },
+                            .end = .{ .line = @intCast(id.node.loc.line), .character = @intCast(id.node.loc.column + id.name.len) },
+                        },
+                    });
+                }
+            },
+            .BinaryExpr => |bin| {
+                try self.findReferencesInExpr(bin.left, symbol_name, uri, locations);
+                try self.findReferencesInExpr(bin.right, symbol_name, uri, locations);
+            },
+            .UnaryExpr => |un| {
+                try self.findReferencesInExpr(un.operand, symbol_name, uri, locations);
+            },
+            .CallExpr => |call| {
+                try self.findReferencesInExpr(call.callee, symbol_name, uri, locations);
+                for (call.arguments) |arg| {
+                    try self.findReferencesInExpr(arg, symbol_name, uri, locations);
+                }
+            },
+            .MemberExpr => |member| {
+                try self.findReferencesInExpr(member.object, symbol_name, uri, locations);
+            },
+            .IndexExpr => |index| {
+                try self.findReferencesInExpr(index.array, symbol_name, uri, locations);
+                try self.findReferencesInExpr(index.index, symbol_name, uri, locations);
+            },
+            else => {},
+        }
     }
 
     /// Document symbols

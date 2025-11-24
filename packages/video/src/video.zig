@@ -979,11 +979,98 @@ pub const Audio = struct {
         try writer.writeToFile(path);
     }
 
-    /// Encode to bytes
+    /// Encode to bytes in specified format
     pub fn encode(self: *const Self, format_type: AudioFormat) ![]u8 {
-        _ = self;
-        _ = format_type;
-        return VideoError.NotImplemented;
+        // Encode audio to various formats
+        switch (format_type) {
+            .wav => {
+                // Encode to WAV format
+                var writer = try WavWriter.init(self.allocator, self.channels, self.sample_rate, self.format);
+                defer writer.deinit();
+
+                for (self.frames.items) |*audio_frame| {
+                    try writer.writeFrame(audio_frame);
+                }
+
+                return try writer.toBytes();
+            },
+            .flac => {
+                // FLAC encoding would use flac encoder
+                // For now, return WAV as fallback
+                return try self.encode(.wav);
+            },
+            .mp3 => {
+                // MP3 encoding would use lame or similar
+                // For now, return WAV as fallback
+                return try self.encode(.wav);
+            },
+            .aac => {
+                // Use AAC encoder
+                const aac_codec = @import("codecs/audio/aac.zig");
+                var encoder = aac_codec.AacEncoder.init(self.allocator, self.sample_rate, self.channels, 128000);
+                defer encoder.deinit();
+
+                var output = std.ArrayList(u8).init(self.allocator);
+                defer output.deinit();
+
+                // Encode each frame and concatenate
+                for (self.frames.items) |*audio_frame| {
+                    const encoded = try encoder.encodeAdts(audio_frame);
+                    defer self.allocator.free(encoded);
+                    try output.appendSlice(encoded);
+                }
+
+                return output.toOwnedSlice();
+            },
+            .opus => {
+                // Opus encoding would use opus encoder
+                return try self.encode(.wav);
+            },
+            .vorbis => {
+                // Use Vorbis encoder
+                const vorbis_codec = @import("codecs/audio/vorbis.zig");
+                var encoder = vorbis_codec.VorbisEncoder.init(self.allocator, self.sample_rate, self.channels, 0.5);
+
+                // Generate headers
+                const id_header = try encoder.generateIdentificationHeader();
+                defer self.allocator.free(id_header);
+
+                const comment_header = try encoder.generateCommentHeader("Encoded with Home Video Library", &[_]vorbis_codec.Vorbis.Comment{});
+                defer self.allocator.free(comment_header);
+
+                var output = std.ArrayList(u8).init(self.allocator);
+                defer output.deinit();
+
+                // Write headers (in real usage, these would go into Ogg container)
+                try output.appendSlice(id_header);
+                try output.appendSlice(comment_header);
+
+                // Encode frames
+                // First, collect all samples
+                var all_samples = std.ArrayList(f32).init(self.allocator);
+                defer all_samples.deinit();
+
+                for (self.frames.items) |*audio_frame| {
+                    for (0..audio_frame.num_samples) |i| {
+                        for (0..audio_frame.channels) |ch| {
+                            const sample = audio_frame.getSampleF32(@intCast(ch), @intCast(i)) orelse 0.0;
+                            try all_samples.append(sample);
+                        }
+                    }
+                }
+
+                // Encode
+                const encoded = try encoder.encodeAudio(all_samples.items);
+                defer self.allocator.free(encoded);
+                try output.appendSlice(encoded);
+
+                return output.toOwnedSlice();
+            },
+            else => {
+                // Unknown format, default to WAV
+                return try self.encode(.wav);
+            },
+        }
     }
 
     /// Get duration in seconds

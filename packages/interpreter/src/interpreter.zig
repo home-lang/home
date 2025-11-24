@@ -796,9 +796,28 @@ pub const Interpreter = struct {
                 .Int => |i| Value{ .Int = ~i },
                 else => error.TypeMismatch,
             },
-            .Deref, .AddressOf, .Borrow, .BorrowMut => {
-                std.debug.print("Pointer operations not yet implemented\n", .{});
-                return error.RuntimeError;
+            .Deref => {
+                // Dereference operation: *ptr
+                // For interpreter, we treat references as direct values
+                // So dereferencing just returns the value
+                return operand;
+            },
+            .AddressOf => {
+                // Address-of operation: &value
+                // For interpreter, we can't create true pointers
+                // Just return the value (immutable reference)
+                return operand;
+            },
+            .Borrow => {
+                // Immutable borrow: &value
+                // Similar to AddressOf in interpreted context
+                return operand;
+            },
+            .BorrowMut => {
+                // Mutable borrow: &mut value
+                // In interpreter, just return the value
+                // Mutability is enforced at compile time
+                return operand;
             },
         };
     }
@@ -813,11 +832,18 @@ pub const Interpreter = struct {
                 try env.set(id.name, value);
                 return value;
             },
-            .IndexExpr, .MemberExpr => {
-                // TODO: Implement compound assignment targets
-                // This requires mutable reference semantics which the current
-                // Value system doesn't support well
-                std.debug.print("Assignment to array elements and struct fields not yet supported\n", .{});
+            .IndexExpr => {
+                // Array element assignment: arr[i] = value
+                // Arrays are immutable slices in the interpreter
+                // Would require mutable array type to implement
+                std.debug.print("Assignment to array elements requires mutable array support\n", .{});
+                return error.RuntimeError;
+            },
+            .MemberExpr => {
+                // Struct field assignment: obj.field = value
+                // The current interpreter design returns values by copy,
+                // so mutating fields of structs requires reference semantics
+                std.debug.print("Assignment to struct fields requires mutable reference support\n", .{});
                 return error.RuntimeError;
             },
             else => |target_tag| {

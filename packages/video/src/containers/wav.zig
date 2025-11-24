@@ -462,6 +462,12 @@ pub const WavWriter = struct {
         file.writeAll(data) catch return VideoError.WriteError;
     }
 
+    /// Get WAV data as bytes (finalizes if not already finalized)
+    pub fn toBytes(self: *Self) ![]u8 {
+        const data = try self.getData();
+        return try self.allocator.dupe(u8, data);
+    }
+
     pub fn deinit(self: *Self) void {
         self.buffer.deinit(self.allocator);
     }
