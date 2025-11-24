@@ -10,12 +10,23 @@ pub const OwnershipState = enum {
     MutBorrowed, // Value is mutably borrowed
 };
 
+/// A single borrow record
+pub const BorrowRecord = struct {
+    is_mutable: bool,
+    location: ast.SourceLocation,
+    scope_depth: usize,
+};
+
 /// Information about a variable's ownership
 pub const OwnershipInfo = struct {
     name: []const u8,
     state: OwnershipState,
     type: Type,
     location: ast.SourceLocation,
+    /// Track individual borrows (for better error messages and scope management)
+    borrows: std.ArrayList(BorrowRecord),
+    /// Track the current scope depth
+    scope_depth: usize,
 };
 
 pub const OwnershipError = error{
@@ -30,6 +41,8 @@ pub const OwnershipTracker = struct {
     allocator: std.mem.Allocator,
     variables: std.StringHashMap(OwnershipInfo),
     errors: std.ArrayList(OwnershipErrorInfo),
+    /// Current scope depth (increments on entering blocks, decrements on exit)
+    current_scope: usize,
 
     pub const OwnershipErrorInfo = struct {
         message: []const u8,
@@ -41,6 +54,7 @@ pub const OwnershipTracker = struct {
             .allocator = allocator,
             .variables = std.StringHashMap(OwnershipInfo).init(allocator),
             .errors = std.ArrayList(OwnershipErrorInfo){},
+            .current_scope = 0,
         };
     }
 
@@ -48,6 +62,7 @@ pub const OwnershipTracker = struct {
         var it = self.variables.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.borrows.deinit();
         }
         self.variables.deinit();
 
@@ -65,7 +80,51 @@ pub const OwnershipTracker = struct {
             .state = .Owned,
             .type = typ,
             .location = loc,
+            .borrows = std.ArrayList(BorrowRecord).init(self.allocator),
+            .scope_depth = self.current_scope,
         });
+    }
+
+    /// Enter a new scope (e.g., function, if block, loop)
+    pub fn enterScope(self: *OwnershipTracker) void {
+        self.current_scope += 1;
+    }
+
+    /// Exit a scope, releasing borrows from this scope
+    pub fn exitScope(self: *OwnershipTracker) void {
+        if (self.current_scope == 0) return;
+
+        var it = self.variables.iterator();
+        while (it.next()) |entry| {
+            const info = entry.value_ptr;
+
+            // Remove borrows from the current scope
+            var i: usize = 0;
+            while (i < info.borrows.items.len) {
+                if (info.borrows.items[i].scope_depth >= self.current_scope) {
+                    _ = info.borrows.orderedRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Update ownership state based on remaining borrows
+            if (info.borrows.items.len == 0) {
+                info.state = .Owned;
+            } else {
+                // Check if any remaining borrow is mutable
+                var has_mut = false;
+                for (info.borrows.items) |b| {
+                    if (b.is_mutable) {
+                        has_mut = true;
+                        break;
+                    }
+                }
+                info.state = if (has_mut) .MutBorrowed else .Borrowed;
+            }
+        }
+
+        self.current_scope -= 1;
     }
 
     /// Check if a variable can be used (not moved)
@@ -110,22 +169,32 @@ pub const OwnershipTracker = struct {
         switch (info.state) {
             .Owned, .Borrowed => {
                 // Can have multiple immutable borrows
+                try info.borrows.append(.{
+                    .is_mutable = false,
+                    .location = loc,
+                    .scope_depth = self.current_scope,
+                });
                 info.state = .Borrowed;
             },
             .MutBorrowed => {
-                const msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "Cannot borrow '{s}' as immutable while it is mutably borrowed",
-                    .{name},
-                );
-                try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
-                return error.BorrowWhileMutablyBorrowed;
+                // Check if there's an active mutable borrow
+                for (info.borrows.items) |b| {
+                    if (b.is_mutable) {
+                        const msg = try std.fmt.allocPrint(
+                            self.allocator,
+                            "Cannot borrow '{s}' as immutable while it is mutably borrowed at line {d}",
+                            .{ name, b.location.line },
+                        );
+                        try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+                        return error.BorrowWhileMutablyBorrowed;
+                    }
+                }
             },
             .Moved => {
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
-                    "Cannot borrow moved value '{s}'",
-                    .{name},
+                    "Cannot borrow moved value '{s}' (moved at line {d})",
+                    .{ name, info.location.line },
                 );
                 try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
                 return error.UseAfterMove;
@@ -139,47 +208,48 @@ pub const OwnershipTracker = struct {
 
         switch (info.state) {
             .Owned => {
+                // No existing borrows, safe to mutably borrow
+                try info.borrows.append(.{
+                    .is_mutable = true,
+                    .location = loc,
+                    .scope_depth = self.current_scope,
+                });
                 info.state = .MutBorrowed;
             },
             .Borrowed => {
+                // Report the first conflicting immutable borrow
+                const first_borrow = info.borrows.items[0];
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
-                    "Cannot borrow '{s}' as mutable while it is borrowed",
-                    .{name},
+                    "Cannot borrow '{s}' as mutable while it is borrowed at line {d}",
+                    .{ name, first_borrow.location.line },
                 );
                 try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
                 return error.MutBorrowWhileBorrowed;
             },
             .MutBorrowed => {
-                const msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "Cannot borrow '{s}' as mutable more than once",
-                    .{name},
-                );
-                try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
-                return error.MultipleMutableBorrows;
+                // Report the existing mutable borrow
+                for (info.borrows.items) |b| {
+                    if (b.is_mutable) {
+                        const msg = try std.fmt.allocPrint(
+                            self.allocator,
+                            "Cannot borrow '{s}' as mutable more than once (first mutable borrow at line {d})",
+                            .{ name, b.location.line },
+                        );
+                        try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+                        return error.MultipleMutableBorrows;
+                    }
+                }
             },
             .Moved => {
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
-                    "Cannot borrow moved value '{s}'",
-                    .{name},
+                    "Cannot borrow moved value '{s}' (moved at line {d})",
+                    .{ name, info.location.line },
                 );
                 try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
                 return error.UseAfterMove;
             },
-        }
-    }
-
-    /// End a scope, releasing borrows
-    pub fn endScope(self: *OwnershipTracker) void {
-        var it = self.variables.iterator();
-        while (it.next()) |entry| {
-            const info = entry.value_ptr;
-            // Release borrows at end of scope
-            if (info.state == .Borrowed or info.state == .MutBorrowed) {
-                info.state = .Owned;
-            }
         }
     }
 

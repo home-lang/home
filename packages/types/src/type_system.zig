@@ -641,6 +641,9 @@ pub const TypeChecker = struct {
                         // Continue checking to find more errors
                     };
                 }
+
+                // End function scope - release all borrows
+                self.ownership_tracker.endScope();
             },
             .IfStmt => |if_stmt| {
                 // Check condition is boolean
@@ -658,6 +661,8 @@ pub const TypeChecker = struct {
                         }
                     };
                 }
+                // Release borrows at end of then block
+                self.ownership_tracker.endScope();
 
                 // Check else block if present
                 if (if_stmt.else_block) |else_block| {
@@ -668,6 +673,8 @@ pub const TypeChecker = struct {
                             }
                         };
                     }
+                    // Release borrows at end of else block
+                    self.ownership_tracker.endScope();
                 }
             },
             .IfLetStmt => |if_let_stmt| {
@@ -1315,6 +1322,46 @@ pub const TypeChecker = struct {
                 // For now, just return the operand type (pointer semantics not fully implemented)
                 return operand_type;
             },
+            .Borrow => {
+                // Immutable borrow: &x
+                // Check if operand is an identifier (can only borrow variables)
+                if (unary.operand.* != .Identifier) {
+                    try self.addError("Can only borrow variables", unary.node.loc);
+                    return error.TypeMismatch;
+                }
+
+                const var_name = unary.operand.Identifier.name;
+
+                // Track the borrow in ownership system
+                try self.ownership_tracker.borrow(var_name, unary.node.loc);
+
+                // Return Reference type
+                const inner_type = try self.allocator.create(Type);
+                inner_type.* = operand_type;
+                try self.allocated_types.append(self.allocator, inner_type);
+
+                return Type{ .Reference = inner_type };
+            },
+            .BorrowMut => {
+                // Mutable borrow: &mut x
+                // Check if operand is an identifier
+                if (unary.operand.* != .Identifier) {
+                    try self.addError("Can only borrow variables", unary.node.loc);
+                    return error.TypeMismatch;
+                }
+
+                const var_name = unary.operand.Identifier.name;
+
+                // Track the mutable borrow in ownership system
+                try self.ownership_tracker.borrowMut(var_name, unary.node.loc);
+
+                // Return MutableReference type
+                const inner_type = try self.allocator.create(Type);
+                inner_type.* = operand_type;
+                try self.allocated_types.append(self.allocator, inner_type);
+
+                return Type{ .MutableReference = inner_type };
+            },
         };
     }
 
@@ -1596,6 +1643,16 @@ pub const TypeChecker = struct {
                 try params_str.appendSlice(ret_str);
 
                 return try self.allocator.dupe(u8, params_str.items);
+            },
+            .Reference => |ref| {
+                const inner_str = try self.typeToString(ref.*);
+                defer self.allocator.free(inner_str);
+                return try std.fmt.allocPrint(self.allocator, "&{s}", .{inner_str});
+            },
+            .MutableReference => |ref| {
+                const inner_str = try self.typeToString(ref.*);
+                defer self.allocator.free(inner_str);
+                return try std.fmt.allocPrint(self.allocator, "&mut {s}", .{inner_str});
             },
             else => try std.fmt.allocPrint(self.allocator, "{}", .{typ}),
         };

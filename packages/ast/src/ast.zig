@@ -608,6 +608,10 @@ pub const UnaryOp = enum {
     Deref,
     /// Address-of: `&var` (get address of variable)
     AddressOf,
+    /// Immutable borrow: `&x` (borrow without mutation)
+    Borrow,
+    /// Mutable borrow: `&mut x` (borrow with mutation)
+    BorrowMut,
 };
 
 /// Unary expression applying an operator to a single operand.

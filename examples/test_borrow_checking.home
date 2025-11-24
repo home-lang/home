@@ -1,0 +1,300 @@
+// ============================================================================
+// Borrow Checking and Aliasing Rules Test Suite
+// ============================================================================
+// This file demonstrates the complete borrow checking system in Home.
+//
+// The borrow checker enforces these rules:
+// 1. At any time, you can have EITHER:
+//    - One mutable reference (&mut T), OR
+//    - Any number of immutable references (&T)
+// 2. References must always be valid (no dangling pointers)
+// 3. Data cannot be moved while borrowed
+//
+// This prevents:
+// - Data races at compile time
+// - Use-after-free bugs
+// - Iterator invalidation
+// - Dangling pointers
+// ============================================================================
+
+fn test_multiple_immutable_borrows() {
+    print("=== Test: Multiple Immutable Borrows ===");
+    // Multiple readers are allowed simultaneously
+    let x = "hello";
+    let r1 = &x;      // First immutable borrow
+    let r2 = &x;      // Second immutable borrow - OK!
+    let r3 = &x;      // Third immutable borrow - OK!
+
+    print("r1: ", r1);
+    print("r2: ", r2);
+    print("r3: ", r3);
+    print("Original x: ", x);  // Can still read original
+}
+
+fn test_single_mutable_borrow() {
+    print("=== Test: Single Mutable Borrow ===");
+    // Only one writer allowed at a time
+    let mut y = 42;
+    let m1 = &mut y;  // Mutable borrow
+
+    // The following line would cause a compile error:
+    // let m2 = &mut y;  // ERROR: Cannot borrow 'y' as mutable more than once
+
+    print("m1: ", m1);
+}
+
+fn test_no_mixed_borrows() {
+    print("=== Test: No Mixed Borrows ===");
+    // Cannot have readers and writers at the same time
+    let mut z = 100;
+    let mz = &mut z;  // Mutable borrow
+
+    // The following line would cause a compile error:
+    // let rz = &z;  // ERROR: Cannot borrow 'z' as immutable while it is mutably borrowed
+
+    print("mz: ", mz);
+}
+
+fn test_scope_based_release() {
+    print("=== Test: Scope-Based Borrow Release ===");
+    let mut value = 10;
+
+    {
+        let r = &value;
+        print("Inner scope - immutable: ", r);
+    }  // Immutable borrow 'r' released here
+
+    // Now we can mutably borrow
+    let m = &mut value;
+    print("Outer scope - mutable: ", m);
+
+    // After this scope, mutable borrow is released
+}
+
+fn test_nested_scopes() {
+    print("=== Test: Nested Scopes ===");
+    let mut data = 42;
+
+    {
+        let r1 = &data;
+        print("Outer: ", r1);
+
+        {
+            let r2 = &data;
+            print("Inner: ", r2);
+        }  // r2 released
+
+        print("Back to outer: ", r1);
+    }  // r1 released
+
+    let m = &mut data;  // Now we can mutably borrow
+    print("Mutable: ", m);
+}
+
+fn test_borrow_after_move() {
+    print("=== Test: Borrow After Move (Should Error) ===");
+    let s = "world";
+    let s2 = s;       // s is moved to s2
+
+    // The following line would cause a compile error:
+    // let rs = &s;   // ERROR: Cannot borrow moved value 's'
+
+    print("s2: ", s2);  // OK - s2 owns the value
+}
+
+fn test_function_borrows(x: &int, y: &mut int) {
+    print("=== Test: Function Parameters with Borrows ===");
+    // x is immutable reference - can read but not modify
+    // y is mutable reference - can read and modify
+    print("Immutable param: ", x);
+    print("Mutable param: ", y);
+}
+
+fn test_return_borrow(data: &string) -> &string {
+    print("=== Test: Returning a Borrow ===");
+    // The returned reference has the same lifetime as the input
+    return data;
+}
+
+fn test_struct_borrows() {
+    print("=== Test: Borrowing Struct Fields ===");
+
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    let mut point = Point { x: 10, y: 20 };
+
+    // Borrow the entire struct immutably
+    let p_ref = &point;
+    print("Point: (", p_ref.x, ", ", p_ref.y, ")");
+
+    // After immutable borrow is released, we can borrow mutably
+    let p_mut = &mut point;
+    print("Mutable point ref");
+}
+
+fn test_borrowing_in_conditions() {
+    print("=== Test: Borrows in If/While Statements ===");
+    let mut count = 0;
+
+    // Borrow in condition
+    if &count == &0 {
+        print("Count is zero");
+    }
+
+    // After condition scope, we can borrow mutably
+    let c = &mut count;
+    print("Mutable count: ", c);
+}
+
+fn test_borrowing_array_elements() {
+    print("=== Test: Borrowing Array Elements ===");
+    let numbers = [1, 2, 3, 4, 5];
+
+    let first = &numbers[0];
+    let second = &numbers[1];
+
+    print("First: ", first);
+    print("Second: ", second);
+}
+
+fn test_complex_aliasing() {
+    print("=== Test: Complex Aliasing Scenarios ===");
+
+    let mut data = [1, 2, 3];
+
+    {
+        // Multiple immutable borrows in this scope
+        let r1 = &data;
+        let r2 = &data;
+        print("r1[0]: ", r1[0]);
+        print("r2[1]: ", r2[1]);
+    }  // All immutable borrows released
+
+    {
+        // Single mutable borrow in this scope
+        let m = &mut data;
+        print("Mutable borrow");
+    }  // Mutable borrow released
+
+    // Can create new borrows after previous ones are released
+    let r3 = &data;
+    print("New immutable borrow: ", r3[2]);
+}
+
+fn test_borrow_checker_prevents_races() {
+    print("=== Test: Prevents Data Races ===");
+    // The borrow checker prevents this scenario:
+    // Thread 1: reads data
+    // Thread 2: writes data
+    // Result: data race!
+
+    let mut shared = 100;
+
+    // This is safe - only immutable references
+    let reader1 = &shared;
+    let reader2 = &shared;
+    print("Safe: ", reader1, reader2);
+
+    // This would be caught at compile time:
+    // let reader = &shared;
+    // let writer = &mut shared;  // ERROR!
+}
+
+fn test_iterator_invalidation_prevention() {
+    print("=== Test: Prevents Iterator Invalidation ===");
+    // In languages without borrow checking, this is a common bug:
+    // for item in collection:
+    //     collection.push(new_item)  // Invalidates iterator!
+
+    let mut vec = [1, 2, 3];
+
+    // Iterating creates an immutable borrow
+    for item in &vec {
+        print("Item: ", item);
+        // vec.push(4);  // ERROR: Cannot modify while borrowed by iterator
+    }  // Iterator borrow released
+
+    // Now we can modify
+    // vec.push(4);  // OK
+}
+
+fn test_lifetime_basics() {
+    print("=== Test: Lifetime Basics ===");
+    // Lifetimes ensure references don't outlive the data they point to
+
+    let outer_data = "outer";
+
+    {
+        let inner_data = "inner";
+        let inner_ref = &inner_data;
+        print("Inner ref: ", inner_ref);
+    }  // inner_data and inner_ref dropped
+
+    let outer_ref = &outer_data;
+    print("Outer ref: ", outer_ref);
+    // outer_data and outer_ref still valid
+}
+
+// Main test runner
+fn main() {
+    print("╔════════════════════════════════════════════════════════════╗");
+    print("║         Home Language - Borrow Checker Test Suite          ║");
+    print("╚════════════════════════════════════════════════════════════╝");
+    print("");
+
+    test_multiple_immutable_borrows();
+    print("");
+
+    test_single_mutable_borrow();
+    print("");
+
+    test_no_mixed_borrows();
+    print("");
+
+    test_scope_based_release();
+    print("");
+
+    test_nested_scopes();
+    print("");
+
+    test_borrow_after_move();
+    print("");
+
+    let x = 42;
+    let mut y = 100;
+    test_function_borrows(&x, &mut y);
+    print("");
+
+    let message = "Hello, lifetimes!";
+    let result = test_return_borrow(&message);
+    print("Returned borrow: ", result);
+    print("");
+
+    test_struct_borrows();
+    print("");
+
+    test_borrowing_in_conditions();
+    print("");
+
+    test_borrowing_array_elements();
+    print("");
+
+    test_complex_aliasing();
+    print("");
+
+    test_borrow_checker_prevents_races();
+    print("");
+
+    test_iterator_invalidation_prevention();
+    print("");
+
+    test_lifetime_basics();
+    print("");
+
+    print("╔════════════════════════════════════════════════════════════╗");
+    print("║              All Borrow Checker Tests Complete!            ║");
+    print("╚════════════════════════════════════════════════════════════╝");
+}
