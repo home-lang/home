@@ -24,6 +24,26 @@ const jxl = @import("formats/jxl.zig");
 const flif = @import("formats/flif.zig");
 const raw = @import("formats/raw.zig");
 
+// Metadata modules
+const exif_metadata = @import("metadata/exif.zig");
+const icc_metadata = @import("metadata/icc.zig");
+const xmp_metadata = @import("metadata/xmp.zig");
+const iptc_metadata = @import("metadata/iptc.zig");
+
+// SIMD-optimized operations
+const simd_ops = @import("simd.zig");
+
+// Streaming and parallel processing
+const streaming_ops = @import("streaming.zig");
+const parallel_ops = @import("parallel.zig");
+
+// Operations modules
+const resize_ops = @import("ops/resize.zig");
+const crop_ops = @import("ops/crop.zig");
+const transform_ops = @import("ops/transform.zig");
+const color_ops = @import("ops/color.zig");
+const filter_ops = @import("ops/filter.zig");
+
 // ============================================================================
 // Core Types
 // ============================================================================
@@ -647,6 +667,232 @@ pub const Image = struct {
         }
         return 1;
     }
+
+    // ========================================================================
+    // Clone / Copy
+    // ========================================================================
+
+    /// Create a deep copy of the image
+    pub fn clone(self: *const Self) !Self {
+        const new_pixels = try self.allocator.alloc(u8, self.pixels.len);
+        @memcpy(new_pixels, self.pixels);
+
+        // Clone palette if present
+        var new_palette: ?[]Color = null;
+        if (self.palette) |pal| {
+            new_palette = try self.allocator.alloc(Color, pal.len);
+            @memcpy(new_palette.?, pal);
+        }
+
+        // Clone frames if present
+        var new_frames: ?[]Frame = null;
+        if (self.frames) |frames| {
+            new_frames = try self.allocator.alloc(Frame, frames.len);
+            for (frames, 0..) |frame, i| {
+                const frame_pixels = try self.allocator.alloc(u8, frame.pixels.len);
+                @memcpy(frame_pixels, frame.pixels);
+                new_frames.?[i] = Frame{
+                    .pixels = frame_pixels,
+                    .delay_ms = frame.delay_ms,
+                    .x_offset = frame.x_offset,
+                    .y_offset = frame.y_offset,
+                    .width = frame.width,
+                    .height = frame.height,
+                    .dispose_op = frame.dispose_op,
+                    .blend_op = frame.blend_op,
+                };
+            }
+        }
+
+        return Self{
+            .width = self.width,
+            .height = self.height,
+            .pixels = new_pixels,
+            .format = self.format,
+            .allocator = self.allocator,
+            .palette = new_palette,
+            .frames = new_frames,
+        };
+    }
+
+    // ========================================================================
+    // SIMD-Optimized Operations
+    // ========================================================================
+
+    /// Convert RGBA to BGRA in-place (useful for Windows/DirectX)
+    pub fn toBgra(self: *Self) void {
+        if (self.format != .rgba8) return;
+        simd_ops.rgbaToBgra(self.pixels);
+    }
+
+    /// Convert to grayscale (RGBA format with R=G=B)
+    pub fn toGrayscale(self: *Self) !void {
+        if (self.format != .rgba8) return;
+
+        const num_pixels = @as(usize, self.width) * @as(usize, self.height);
+        var gray_temp = try self.allocator.alloc(u8, num_pixels);
+        defer self.allocator.free(gray_temp);
+
+        simd_ops.rgbaToGrayscale(self.pixels, gray_temp);
+
+        // Write back as grayscale RGBA
+        for (0..num_pixels) |i| {
+            const g = gray_temp[i];
+            self.pixels[i * 4 + 0] = g;
+            self.pixels[i * 4 + 1] = g;
+            self.pixels[i * 4 + 2] = g;
+            // Alpha unchanged
+        }
+    }
+
+    /// Adjust brightness (-255 to 255)
+    pub fn adjustBrightness(self: *Self, adjustment: i16) void {
+        if (self.format != .rgba8) return;
+        simd_ops.adjustBrightness(self.pixels, adjustment);
+    }
+
+    /// Adjust contrast (0.0 = gray, 1.0 = unchanged, 2.0 = double)
+    pub fn adjustContrast(self: *Self, factor: f32) void {
+        if (self.format != .rgba8) return;
+        simd_ops.adjustContrast(self.pixels, factor);
+    }
+
+    /// Apply gamma correction
+    pub fn adjustGamma(self: *Self, gamma: f32) void {
+        if (self.format != .rgba8) return;
+        simd_ops.adjustGamma(self.pixels, gamma);
+    }
+
+    /// Invert colors
+    pub fn invert(self: *Self) void {
+        if (self.format != .rgba8) return;
+        simd_ops.invertColors(self.pixels);
+    }
+
+    /// Premultiply alpha
+    pub fn premultiplyAlpha(self: *Self) void {
+        if (self.format != .rgba8) return;
+        simd_ops.premultiplyAlpha(self.pixels);
+    }
+
+    /// Unpremultiply alpha
+    pub fn unpremultiplyAlpha(self: *Self) void {
+        if (self.format != .rgba8) return;
+        simd_ops.unpremultiplyAlpha(self.pixels);
+    }
+
+    /// Apply 3x3 convolution kernel (blur, sharpen, edge detect, etc.)
+    pub fn convolve(self: *Self, kernel: simd_ops.Kernel3x3) !void {
+        if (self.format != .rgba8) return;
+        if (self.width < 3 or self.height < 3) return;
+
+        const temp = try self.allocator.alloc(u8, self.pixels.len);
+        defer self.allocator.free(temp);
+
+        @memcpy(temp, self.pixels);
+        simd_ops.convolve3x3(temp, self.pixels, self.width, self.height, kernel);
+    }
+
+    /// Apply Gaussian blur
+    pub fn blur(self: *Self) !void {
+        return self.convolve(simd_ops.kernels.gaussian_blur);
+    }
+
+    /// Apply sharpening
+    pub fn sharpen(self: *Self) !void {
+        return self.convolve(simd_ops.kernels.sharpen);
+    }
+
+    /// Apply edge detection
+    pub fn edgeDetect(self: *Self) !void {
+        return self.convolve(simd_ops.kernels.edge_detect);
+    }
+
+    /// Apply emboss effect
+    pub fn emboss(self: *Self) !void {
+        return self.convolve(simd_ops.kernels.emboss);
+    }
+
+    /// Resize image using nearest neighbor (fast)
+    pub fn resizeNearest(self: *Self, new_width: u32, new_height: u32) !void {
+        if (self.format != .rgba8) return;
+        if (new_width == 0 or new_height == 0) return;
+
+        const new_size = @as(usize, new_width) * @as(usize, new_height) * 4;
+        const new_pixels = try self.allocator.alloc(u8, new_size);
+
+        simd_ops.scaleNearest(self.pixels, self.width, self.height, new_pixels, new_width, new_height);
+
+        self.allocator.free(self.pixels);
+        self.pixels = new_pixels;
+        self.width = new_width;
+        self.height = new_height;
+    }
+
+    /// Resize image using bilinear interpolation (smooth)
+    pub fn resizeBilinear(self: *Self, new_width: u32, new_height: u32) !void {
+        if (self.format != .rgba8) return;
+        if (new_width == 0 or new_height == 0) return;
+
+        const new_size = @as(usize, new_width) * @as(usize, new_height) * 4;
+        const new_pixels = try self.allocator.alloc(u8, new_size);
+
+        simd_ops.scaleBilinear(self.pixels, self.width, self.height, new_pixels, new_width, new_height);
+
+        self.allocator.free(self.pixels);
+        self.pixels = new_pixels;
+        self.width = new_width;
+        self.height = new_height;
+    }
+
+    /// Apply histogram equalization for contrast enhancement
+    pub fn equalizeHistogram(self: *Self) void {
+        if (self.format != .rgba8) return;
+        simd_ops.equalizeHistogram(self.pixels);
+    }
+
+    /// Get color histogram
+    pub fn histogram(self: *const Self) struct { r: [256]u32, g: [256]u32, b: [256]u32 } {
+        if (self.format != .rgba8) {
+            return .{ .r = [_]u32{0} ** 256, .g = [_]u32{0} ** 256, .b = [_]u32{0} ** 256 };
+        }
+        return simd_ops.computeHistogram(self.pixels);
+    }
+
+    /// Fill a rectangular region with a color
+    pub fn fillRect(self: *Self, x: u32, y: u32, w: u32, h: u32, color: Color) void {
+        if (self.format != .rgba8) return;
+        if (x >= self.width or y >= self.height) return;
+
+        const actual_w = @min(w, self.width - x);
+        const actual_h = @min(h, self.height - y);
+        const stride = self.width * 4;
+
+        simd_ops.fillRect(self.pixels, stride, x, y, actual_w, actual_h, .{ color.r, color.g, color.b, color.a });
+    }
+
+    /// Copy a region from another image
+    pub fn copyFrom(self: *Self, src: *const Self, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, w: u32, h: u32) void {
+        if (self.format != .rgba8 or src.format != .rgba8) return;
+        if (src_x >= src.width or src_y >= src.height) return;
+        if (dst_x >= self.width or dst_y >= self.height) return;
+
+        const actual_w = @min(w, @min(src.width - src_x, self.width - dst_x));
+        const actual_h = @min(h, @min(src.height - src_y, self.height - dst_y));
+
+        simd_ops.copyRect(
+            src.pixels,
+            src.width * 4,
+            src_x,
+            src_y,
+            self.pixels,
+            self.width * 4,
+            dst_x,
+            dst_y,
+            actual_w,
+            actual_h,
+        );
+    }
 };
 
 // ============================================================================
@@ -692,6 +938,49 @@ pub const Exr = exr;
 pub const Jxl = jxl;
 pub const Flif = flif;
 pub const Raw = raw;
+
+// Metadata exports
+pub const Exif = exif_metadata;
+pub const Icc = icc_metadata;
+pub const Xmp = xmp_metadata;
+pub const Iptc = iptc_metadata;
+
+// SIMD operations exports
+pub const Simd = simd_ops;
+
+// Streaming and parallel processing exports
+pub const Streaming = streaming_ops;
+pub const Parallel = parallel_ops;
+
+// Re-export common streaming types
+pub const Tile = streaming_ops.Tile;
+pub const TileIterator = streaming_ops.TileIterator;
+pub const Scanline = streaming_ops.Scanline;
+pub const ScanlineIterator = streaming_ops.ScanlineIterator;
+pub const StreamingReader = streaming_ops.StreamingReader;
+pub const StreamingWriter = streaming_ops.StreamingWriter;
+pub const MappedImage = streaming_ops.MappedImage;
+pub const ProgressiveLoader = streaming_ops.ProgressiveLoader;
+
+// Operations exports
+pub const Resize = resize_ops;
+pub const Crop = crop_ops;
+pub const Transform = transform_ops;
+pub const ColorOps = color_ops;
+pub const Filter = filter_ops;
+
+// Re-export common types from ops modules
+pub const ResizeAlgorithm = resize_ops.ResizeAlgorithm;
+pub const FitMode = resize_ops.FitMode;
+pub const Region = crop_ops.Region;
+pub const ExtendOptions = crop_ops.ExtendOptions;
+pub const TrimOptions = crop_ops.TrimOptions;
+pub const BlendMode = crop_ops.BlendMode;
+pub const RotateMode = transform_ops.RotateMode;
+pub const AffineMatrix = transform_ops.AffineMatrix;
+pub const HSL = color_ops.HSL;
+pub const HSV = color_ops.HSV;
+pub const Kernel = filter_ops.Kernel;
 
 // ============================================================================
 // Tests

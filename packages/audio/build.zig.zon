@@ -1,0 +1,16 @@
+.{
+    .fingerprint = 0x187d3695c14f9f15,
+    .name = .audio,
+    .version = "0.1.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+    },
+    .dependencies = .{
+        .@"zig-test-framework" = .{
+            .path = "../../../zig-test-framework",
+        },
+    },
+}

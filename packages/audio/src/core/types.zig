@@ -85,6 +85,17 @@ pub const AudioFormat = enum {
             return .aac;
         }
 
+        // WMA/ASF: ASF header GUID (30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C)
+        if (data.len >= 16) {
+            const asf_header: [16]u8 = .{
+                0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+                0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
+            };
+            if (std.mem.eql(u8, data[0..16], &asf_header)) {
+                return .wma;
+            }
+        }
+
         return .unknown;
     }
 

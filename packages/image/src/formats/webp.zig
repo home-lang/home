@@ -44,6 +44,20 @@ const Transform = enum(u2) {
 // WebP Decoder
 // ============================================================================
 
+// Animation frame info
+const AnimFrame = struct {
+    x_offset: u32,
+    y_offset: u32,
+    width: u32,
+    height: u32,
+    duration_ms: u32,
+    dispose_op: Image.DisposeOp,
+    blend_op: Image.BlendOp,
+    data_offset: usize,
+    data_len: usize,
+    is_lossless: bool,
+};
+
 pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (data.len < 12) return error.TruncatedData;
 
@@ -70,6 +84,11 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     var image_data: ?[]const u8 = null;
     var alpha_data: ?[]const u8 = null;
     var is_lossless = false;
+
+    // Animation data
+    var loop_count: u32 = 0;
+    var anim_frames = std.ArrayList(AnimFrame).init(allocator);
+    defer anim_frames.deinit();
 
     while (pos + 8 <= data.len) {
         const chunk_type = ChunkType.fromBytes(data[pos..][0..4]);
@@ -132,11 +151,66 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
             },
             .ANIM => {
                 // Animation parameters
-                // Skip for now - handle animation frames
+                if (chunk_size >= 6) {
+                    // Background color (4 bytes) + loop count (2 bytes)
+                    loop_count = std.mem.readInt(u16, chunk_data[4..6], .little);
+                }
             },
             .ANMF => {
-                // Animation frame
-                // TODO: Handle animated WebP
+                // Animation frame header (16 bytes minimum)
+                if (chunk_size >= 16) {
+                    const frame_x = (@as(u32, chunk_data[0]) | (@as(u32, chunk_data[1]) << 8) | (@as(u32, chunk_data[2]) << 16)) * 2;
+                    const frame_y = (@as(u32, chunk_data[3]) | (@as(u32, chunk_data[4]) << 8) | (@as(u32, chunk_data[5]) << 16)) * 2;
+                    const frame_width = (@as(u32, chunk_data[6]) | (@as(u32, chunk_data[7]) << 8) | (@as(u32, chunk_data[8]) << 16)) + 1;
+                    const frame_height = (@as(u32, chunk_data[9]) | (@as(u32, chunk_data[10]) << 8) | (@as(u32, chunk_data[11]) << 16)) + 1;
+                    const duration = @as(u32, chunk_data[12]) | (@as(u32, chunk_data[13]) << 8) | (@as(u32, chunk_data[14]) << 16);
+                    const flags = chunk_data[15];
+
+                    const dispose_method = (flags >> 0) & 1; // 0 = don't dispose, 1 = dispose to bg
+                    const blending_method = (flags >> 1) & 1; // 0 = alpha blend, 1 = don't blend
+
+                    // Find VP8/VP8L sub-chunk in ANMF data
+                    var frame_pos: usize = 16;
+                    var frame_is_lossless = false;
+                    var frame_data_offset: usize = 0;
+                    var frame_data_len: usize = 0;
+
+                    while (frame_pos + 8 <= chunk_size) {
+                        const sub_type = ChunkType.fromBytes(chunk_data[frame_pos..][0..4]);
+                        const sub_size = std.mem.readInt(u32, chunk_data[frame_pos + 4 ..][0..4], .little);
+                        frame_pos += 8;
+
+                        if (sub_type == .VP8L) {
+                            frame_is_lossless = true;
+                            frame_data_offset = pos + frame_pos;
+                            frame_data_len = sub_size;
+                            break;
+                        } else if (sub_type == .VP8) {
+                            frame_is_lossless = false;
+                            frame_data_offset = pos + frame_pos;
+                            frame_data_len = sub_size;
+                            break;
+                        }
+
+                        frame_pos += sub_size;
+                        if (sub_size % 2 != 0) frame_pos += 1;
+                    }
+
+                    if (frame_data_len > 0) {
+                        try anim_frames.append(AnimFrame{
+                            .x_offset = frame_x,
+                            .y_offset = frame_y,
+                            .width = frame_width,
+                            .height = frame_height,
+                            .duration_ms = duration,
+                            .dispose_op = if (dispose_method == 1) .background else .none,
+                            .blend_op = if (blending_method == 0) .over else .source,
+                            .data_offset = frame_data_offset,
+                            .data_len = frame_data_len,
+                            .is_lossless = frame_is_lossless,
+                        });
+                    }
+                }
             },
             else => {},
         }
@@ -156,7 +230,62 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     errdefer img.deinit();
 
     // Decode image data
-    if (image_data) |img_data| {
+    if (is_animated and anim_frames.items.len > 0) {
+        // Animated WebP
+        img.loop_count = loop_count;
+
+        // Decode first frame as main image
+        const first_frame = anim_frames.items[0];
+        if (first_frame.data_offset + first_frame.data_len <= data.len) {
+            const frame_data = data[first_frame.data_offset..][0..first_frame.data_len];
+            if (first_frame.is_lossless) {
+                try decodeVP8L(&img, frame_data, allocator);
+            } else {
+                try decodeVP8(&img, frame_data, null, allocator);
+            }
+        }
+
+        // Allocate frames array
+        var frames = try allocator.alloc(Image.Frame, anim_frames.items.len);
+        errdefer {
+            for (frames) |f| {
+                allocator.free(f.pixels);
+            }
+            allocator.free(frames);
+        }
+
+        // Decode each animation frame
+        for (anim_frames.items, 0..) |anim_frame, i| {
+            const frame_size = @as(usize, anim_frame.width) * @as(usize, anim_frame.height) * format.bytesPerPixel();
+            const frame_pixels = try allocator.alloc(u8, frame_size);
+
+            // Create temp image for decoding
+            var temp_img = try Image.init(allocator, anim_frame.width, anim_frame.height, format);
+            defer temp_img.deinit();
+
+            if (anim_frame.data_offset + anim_frame.data_len <= data.len) {
+                const frame_data = data[anim_frame.data_offset..][0..anim_frame.data_len];
+                if (anim_frame.is_lossless) {
+                    decodeVP8L(&temp_img, frame_data, allocator) catch {};
+                } else {
+                    decodeVP8(&temp_img, frame_data, null, allocator) catch {};
+                }
+            }
+
+            @memcpy(frame_pixels, temp_img.pixels);
+
+            frames[i] = Image.Frame{
+                .pixels = frame_pixels,
+                .delay_ms = anim_frame.duration_ms,
+                .x_offset = anim_frame.x_offset,
+                .y_offset = anim_frame.y_offset,
+                .dispose_op = anim_frame.dispose_op,
+                .blend_op = anim_frame.blend_op,
+            };
+        }
+
+        img.frames = frames;
+    } else if (image_data) |img_data| {
         if (is_lossless) {
             try decodeVP8L(&img, img_data, allocator);
         } else {

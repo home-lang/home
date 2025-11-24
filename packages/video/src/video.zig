@@ -103,6 +103,17 @@ pub const VideoTrackConfig = mp4_muxer.VideoTrackConfig;
 pub const AudioTrackConfig = mp4_muxer.AudioTrackConfig;
 pub const MuxerSample = mp4_muxer.Sample;
 
+pub const webm = @import("containers/webm.zig");
+pub const WebmReader = webm.WebmReader;
+pub const WebmElementId = webm.ElementId;
+pub const WebmTrackType = webm.TrackType;
+pub const WebmTrackInfo = webm.TrackInfo;
+pub const WebmSegmentInfo = webm.SegmentInfo;
+pub const WebmCuePoint = webm.CuePoint;
+pub const WebmCodecId = webm.CodecId;
+pub const isWebm = webm.isWebm;
+pub const isMatroska = webm.isMatroska;
+
 // ============================================================================
 // Audio Codecs
 // ============================================================================
@@ -125,6 +136,25 @@ pub const AudioSpecificConfig = aac.AudioSpecificConfig;
 pub const AdtsHeader = aac.AdtsHeader;
 pub const AdtsParser = aac.AdtsParser;
 pub const AudioObjectType = aac.AudioObjectType;
+
+pub const opus = @import("codecs/audio/opus.zig");
+pub const OpusIdHeader = opus.IdHeader;
+pub const OpusCommentHeader = opus.CommentHeader;
+pub const OpusPacketToc = opus.PacketToc;
+pub const OpusDOpsBox = opus.DOpsBox;
+pub const OpusBandwidth = opus.Bandwidth;
+pub const OpusFrameDuration = opus.FrameDuration;
+pub const OpusChannelMappingFamily = opus.ChannelMappingFamily;
+
+pub const flac = @import("codecs/audio/flac.zig");
+pub const FlacReader = flac.FlacReader;
+pub const FlacStreamInfo = flac.StreamInfo;
+pub const FlacMetadataBlockHeader = flac.MetadataBlockHeader;
+pub const FlacBlockType = flac.BlockType;
+pub const FlacSeekPoint = flac.SeekPoint;
+pub const FlacPicture = flac.Picture;
+pub const FlacPictureType = flac.PictureType;
+pub const isFlac = flac.isFlac;
 
 // ============================================================================
 // Video Codecs
@@ -158,6 +188,17 @@ pub const Vp9SuperframeIterator = vp9.SuperframeIterator;
 pub const VpcCRecord = vp9.VpcCRecord;
 pub const parseSuperframeIndex = vp9.parseSuperframeIndex;
 
+pub const av1 = @import("codecs/video/av1.zig");
+pub const Av1ObuType = av1.ObuType;
+pub const Av1Profile = av1.Profile;
+pub const Av1Level = av1.Level;
+pub const Av1FrameType = av1.FrameType;
+pub const Av1ObuHeader = av1.ObuHeader;
+pub const Av1ObuParser = av1.ObuParser;
+pub const Av1ObuIterator = av1.ObuIterator;
+pub const Av1SequenceHeader = av1.SequenceHeader;
+pub const Av1CRecord = av1.Av1CRecord;
+
 // ============================================================================
 // Utilities
 // ============================================================================
@@ -182,6 +223,19 @@ pub const ColorFilter = video_filters.ColorFilter;
 pub const ColorAdjustment = video_filters.ColorAdjustment;
 pub const InvertFilter = video_filters.InvertFilter;
 pub const GrayscaleFilter = video_filters.GrayscaleFilter;
+pub const ColorSpaceConverter = video_filters.ColorSpaceConverter;
+pub const ColorStandard = video_filters.ColorStandard;
+pub const RotateFilter = video_filters.RotateFilter;
+pub const RotationAngle = video_filters.RotationAngle;
+pub const FlipFilter = video_filters.FlipFilter;
+pub const FlipDirection = video_filters.FlipDirection;
+pub const TransposeFilter = video_filters.TransposeFilter;
+pub const BlurFilter = video_filters.BlurFilter;
+pub const SharpenFilter = video_filters.SharpenFilter;
+pub const EdgeDetectionFilter = video_filters.EdgeDetectionFilter;
+pub const ConvolutionFilter = video_filters.ConvolutionFilter;
+pub const Kernel = video_filters.Kernel;
+pub const Kernels = video_filters.Kernels;
 
 // ============================================================================
 // Audio Filters
@@ -190,6 +244,9 @@ pub const GrayscaleFilter = video_filters.GrayscaleFilter;
 pub const audio_filters = @import("filters/audio.zig");
 pub const VolumeFilter = audio_filters.VolumeFilter;
 pub const NormalizeFilter = audio_filters.NormalizeFilter;
+pub const ResampleFilter = audio_filters.ResampleFilter;
+pub const ResampleQuality = audio_filters.ResampleQuality;
+pub const ChannelMixer = audio_filters.ChannelMixer;
 
 // ============================================================================
 // High-Level API
@@ -358,11 +415,15 @@ test "Video library imports" {
     _ = wav;
     _ = mp4;
     _ = mp4_muxer;
+    _ = webm;
     _ = pcm;
     _ = aac;
+    _ = opus;
+    _ = flac;
     _ = h264;
     _ = hevc;
     _ = vp9;
+    _ = av1;
     _ = bitstream;
     _ = video_filters;
     _ = audio_filters;

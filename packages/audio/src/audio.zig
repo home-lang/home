@@ -9,6 +9,9 @@
 // - OGG  (read)       - Ogg Vorbis
 // - AAC  (read)       - Advanced Audio Coding (ADTS)
 // - AIFF (read/write) - Audio Interchange File Format
+// - Opus (read)       - Opus Audio Codec (in OGG container)
+// - WMA  (read)       - Windows Media Audio (ASF container)
+// - M4A  (read)       - MPEG-4 Audio (AAC/ALAC in MP4 container)
 
 const std = @import("std");
 
@@ -92,6 +95,33 @@ pub const aiff = @import("formats/aiff.zig");
 pub const AiffReader = aiff.AiffReader;
 pub const AiffWriter = aiff.AiffWriter;
 pub const AiffHeader = aiff.AiffHeader;
+
+pub const opus = @import("formats/opus.zig");
+pub const OpusReader = opus.OpusReader;
+pub const OpusHeader = opus.OpusHeader;
+
+pub const wma = @import("formats/wma.zig");
+pub const WmaReader = wma.WmaReader;
+pub const WmaFormat = wma.WmaFormat;
+
+pub const m4a = @import("formats/m4a.zig");
+pub const M4aReader = m4a.M4aReader;
+
+// ============================================================================
+// Processing Modules
+// ============================================================================
+
+pub const processing = @import("processing/processing.zig");
+pub const Resampler = processing.Resampler;
+pub const ResampleQuality = processing.ResampleQuality;
+pub const Mixer = processing.Mixer;
+pub const PanLaw = processing.PanLaw;
+pub const BiquadFilter = processing.BiquadFilter;
+pub const Compressor = processing.Compressor;
+pub const NoiseGate = processing.NoiseGate;
+pub const Delay = processing.Delay;
+pub const Chorus = processing.Chorus;
+pub const LFO = processing.LFO;
 
 // ============================================================================
 // High-Level API
@@ -349,7 +379,7 @@ pub fn formatFromMagic(data: []const u8) AudioFormat {
 /// Check if format is supported for reading
 pub fn canRead(format_type: AudioFormat) bool {
     return switch (format_type) {
-        .wav, .mp3, .flac, .ogg, .aac, .m4a, .aiff => true,
+        .wav, .mp3, .flac, .ogg, .aac, .m4a, .aiff, .opus, .wma => true,
         else => false,
     };
 }
@@ -391,6 +421,10 @@ test "Audio library imports" {
     _ = ogg;
     _ = aac;
     _ = aiff;
+    _ = opus;
+    _ = wma;
+    _ = m4a;
+    _ = processing;
 }
 
 test "Format detection" {
