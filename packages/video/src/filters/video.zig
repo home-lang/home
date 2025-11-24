@@ -7,6 +7,8 @@ pub const color = @import("video/color.zig");
 pub const colorspace = @import("video/colorspace.zig");
 pub const transform = @import("video/transform.zig");
 pub const convolution = @import("video/convolution.zig");
+pub const deinterlace = @import("video/deinterlace.zig");
+pub const denoise = @import("video/denoise.zig");
 
 // Scale filter
 pub const ScaleFilter = scale.ScaleFilter;
@@ -44,6 +46,16 @@ pub const SharpenFilter = convolution.SharpenFilter;
 pub const EdgeDetectionFilter = convolution.EdgeDetectionFilter;
 pub const EdgeDetectionMode = convolution.EdgeDetectionMode;
 
+// Deinterlace filters
+pub const DeinterlaceFilter = deinterlace.DeinterlaceFilter;
+pub const DeinterlaceMethod = deinterlace.DeinterlaceMethod;
+pub const FieldOrder = deinterlace.FieldOrder;
+pub const FieldSeparator = deinterlace.FieldSeparator;
+
+// Denoise filters
+pub const DenoiseFilter = denoise.DenoiseFilter;
+pub const DenoiseMethod = denoise.DenoiseMethod;
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -55,4 +67,6 @@ test "Video filters imports" {
     _ = colorspace;
     _ = transform;
     _ = convolution;
+    _ = deinterlace;
+    _ = denoise;
 }

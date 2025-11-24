@@ -114,6 +114,15 @@ pub const WebmCodecId = webm.CodecId;
 pub const isWebm = webm.isWebm;
 pub const isMatroska = webm.isMatroska;
 
+pub const ogg = @import("containers/ogg.zig");
+pub const OggReader = ogg.OggReader;
+pub const OggWriter = ogg.OggWriter;
+pub const OggPageHeader = ogg.PageHeader;
+pub const OggStreamType = ogg.StreamType;
+pub const OggStreamInfo = ogg.StreamInfo;
+pub const OggVorbisInfo = ogg.VorbisInfo;
+pub const isOgg = ogg.isOgg;
+
 // ============================================================================
 // Audio Codecs
 // ============================================================================
@@ -236,6 +245,12 @@ pub const EdgeDetectionFilter = video_filters.EdgeDetectionFilter;
 pub const ConvolutionFilter = video_filters.ConvolutionFilter;
 pub const Kernel = video_filters.Kernel;
 pub const Kernels = video_filters.Kernels;
+pub const DeinterlaceFilter = video_filters.DeinterlaceFilter;
+pub const DeinterlaceMethod = video_filters.DeinterlaceMethod;
+pub const FieldOrder = video_filters.FieldOrder;
+pub const FieldSeparator = video_filters.FieldSeparator;
+pub const DenoiseFilter = video_filters.DenoiseFilter;
+pub const DenoiseMethod = video_filters.DenoiseMethod;
 
 // ============================================================================
 // Audio Filters
@@ -247,6 +262,22 @@ pub const NormalizeFilter = audio_filters.NormalizeFilter;
 pub const ResampleFilter = audio_filters.ResampleFilter;
 pub const ResampleQuality = audio_filters.ResampleQuality;
 pub const ChannelMixer = audio_filters.ChannelMixer;
+
+// ============================================================================
+// Subtitles
+// ============================================================================
+
+pub const srt = @import("subtitles/srt.zig");
+pub const SrtParser = srt.SrtParser;
+pub const SrtWriter = srt.SrtWriter;
+pub const SrtCue = srt.Cue;
+
+pub const vtt = @import("subtitles/vtt.zig");
+pub const VttParser = vtt.VttParser;
+pub const VttWriter = vtt.VttWriter;
+pub const VttCue = vtt.Cue;
+pub const VttCueSettings = vtt.CueSettings;
+pub const isVtt = vtt.isVtt;
 
 // ============================================================================
 // High-Level API
@@ -416,6 +447,7 @@ test "Video library imports" {
     _ = mp4;
     _ = mp4_muxer;
     _ = webm;
+    _ = ogg;
     _ = pcm;
     _ = aac;
     _ = opus;
@@ -427,6 +459,8 @@ test "Video library imports" {
     _ = bitstream;
     _ = video_filters;
     _ = audio_filters;
+    _ = srt;
+    _ = vtt;
 }
 
 test "Timestamp basic" {
