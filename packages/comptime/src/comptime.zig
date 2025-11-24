@@ -30,7 +30,6 @@ pub const ComptimeValue = union(enum) {
         writer: anytype,
     ) !void {
         _ = fmt;
-        _ = options;
 
         switch (self) {
             .int => |v| try writer.print("{d}", .{v}),
@@ -508,8 +507,8 @@ pub const ComptimeExecutor = struct {
     fn execStatement(self: *ComptimeExecutor, stmt: *ast.Stmt) !void {
         switch (stmt.*) {
             .LetDecl => |decl| {
-                const value = if (decl.initializer) |init|
-                    try self.eval(init)
+                const value = if (decl.initializer) |initializer|
+                    try self.eval(initializer)
                 else
                     ComptimeValue{ .@"undefined" = {} };
 
