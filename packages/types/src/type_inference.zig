@@ -88,7 +88,46 @@ pub const TypeInferencer = struct {
         return ty;
     }
 
+    // ============================================================================
+    // BIDIRECTIONAL TYPE CHECKING
+    // ============================================================================
+
+    /// Check mode: Type flows DOWN from context to expression
+    /// This is used when we know what type an expression should have (e.g., from annotation)
+    /// and want to verify that the expression conforms to that type.
+    ///
+    /// Example:
+    /// ```
+    /// let x: int = <expr>;  // We check that <expr> has type int
+    /// ```
+    pub fn checkExpression(self: *TypeInferencer, expr: *const ast.Expr, expected: *Type, env: *type_system.TypeEnvironment) !void {
+        // Synthesize the actual type of the expression
+        const actual = try self.synthesizeExpression(expr, env);
+
+        // Unify with expected type
+        try self.unify(actual, expected);
+    }
+
+    /// Synthesis mode: Type flows UP from expression to context
+    /// This is used when we don't know what type an expression has and need to infer it.
+    ///
+    /// Example:
+    /// ```
+    /// let x = <expr>;  // We synthesize the type of <expr>
+    /// ```
+    pub fn synthesizeExpression(self: *TypeInferencer, expr: *const ast.Expr, env: *type_system.TypeEnvironment) !*Type {
+        // This is essentially the same as inferExpression, but with a more explicit name
+        return try self.inferExpressionInternal(expr, env, null);
+    }
+
+    /// Internal inference with optional expected type for better error messages
+    fn inferExpressionInternal(self: *TypeInferencer, expr: *const ast.Expr, env: *type_system.TypeEnvironment, expected: ?*Type) !*Type {
+        _ = expected; // Reserved for future use in error messages
+        return try self.inferExpression(expr, env);
+    }
+
     /// Infer the type of an expression
+    /// This is the legacy function that will gradually be replaced by synthesizeExpression
     pub fn inferExpression(self: *TypeInferencer, expr: *const ast.Expr, env: *type_system.TypeEnvironment) !*Type {
         return switch (expr.*) {
             .IntegerLiteral => |lit| {
@@ -227,41 +266,65 @@ pub const TypeInferencer = struct {
         }
     }
 
-    /// Infer type of function call
+    /// Infer type of function call (with bidirectional checking)
     fn inferCallExpr(self: *TypeInferencer, call: *const ast.CallExpr, env: *type_system.TypeEnvironment) !*Type {
-        const func_ty = try self.inferExpression(&call.callee, env);
+        // Synthesize the type of the callee
+        const func_ty = try self.synthesizeExpression(&call.callee, env);
 
-        // Generate fresh type variables for parameters and return type
-        var param_types = std.ArrayList(*Type){ .items = &.{}, .capacity = 0 };
-        defer param_types.deinit(self.allocator);
+        // Try to extract function type information
+        const resolved_func_ty = try self.substitution.apply(func_ty, self.allocator);
 
-        for (call.arguments) |_| {
-            const param_ty = try self.freshTypeVar();
-            try param_types.append(self.allocator, param_ty);
+        if (resolved_func_ty.* == .Function) {
+            // We know the parameter types! Use CHECK mode for arguments
+            const func_info = resolved_func_ty.Function;
+
+            if (call.arguments.len != func_info.params.len) {
+                return error.ArgumentCountMismatch;
+            }
+
+            // CHECK each argument against its expected parameter type
+            for (call.arguments, func_info.params) |arg, param_ty| {
+                try self.checkExpression(&arg, @constCast(param_ty), env);
+            }
+
+            // Return type is known
+            return @constCast(func_info.return_type);
+        } else {
+            // Function type is not yet known (still a type variable)
+            // Fall back to synthesis mode with fresh type variables
+
+            // Generate fresh type variables for parameters and return type
+            var param_types = std.ArrayList(*Type){ .items = &.{}, .capacity = 0 };
+            defer param_types.deinit(self.allocator);
+
+            for (call.arguments) |_| {
+                const param_ty = try self.freshTypeVar();
+                try param_types.append(self.allocator, param_ty);
+            }
+
+            const return_ty = try self.freshTypeVar();
+
+            // Create function type
+            const expected_func_ty = try self.allocator.create(Type);
+            expected_func_ty.* = Type{ .Function = .{
+                .params = try param_types.toOwnedSlice(self.allocator),
+                .return_type = return_ty,
+            } };
+
+            // Constrain callee to be a function with these types
+            try self.addConstraint(.{ .Equality = .{ .lhs = func_ty, .rhs = expected_func_ty } });
+
+            // SYNTHESIZE argument types and constrain them
+            for (call.arguments, 0..) |arg, i| {
+                const arg_ty = try self.synthesizeExpression(&arg, env);
+                try self.addConstraint(.{ .Equality = .{ .lhs = arg_ty, .rhs = expected_func_ty.Function.params[i] } });
+            }
+
+            return return_ty;
         }
-
-        const return_ty = try self.freshTypeVar();
-
-        // Create function type
-        const expected_func_ty = try self.allocator.create(Type);
-        expected_func_ty.* = Type{ .Function = .{
-            .params = try param_types.toOwnedSlice(self.allocator),
-            .return_type = return_ty,
-        } };
-
-        // Constrain callee to be a function with these types
-        try self.addConstraint(.{ .Equality = .{ .lhs = func_ty, .rhs = expected_func_ty } });
-
-        // Constrain arguments
-        for (call.arguments, 0..) |arg, i| {
-            const arg_ty = try self.inferExpression(&arg, env);
-            try self.addConstraint(.{ .Equality = .{ .lhs = arg_ty, .rhs = expected_func_ty.Function.params[i] } });
-        }
-
-        return return_ty;
     }
 
-    /// Infer type of array literal
+    /// Infer type of array literal (with bidirectional checking)
     fn inferArrayLiteral(self: *TypeInferencer, arr: *const ast.ArrayLiteral, env: *type_system.TypeEnvironment) !*Type {
         if (arr.elements.len == 0) {
             // Empty array: create fresh type variable for element type
@@ -271,13 +334,12 @@ pub const TypeInferencer = struct {
             return arr_ty;
         }
 
-        // Infer type from first element
-        const first_ty = try self.inferExpression(&arr.elements[0], env);
+        // SYNTHESIZE type from first element
+        const first_ty = try self.synthesizeExpression(&arr.elements[0], env);
 
-        // All elements must have the same type
+        // CHECK that all other elements have the same type
         for (arr.elements[1..]) |elem| {
-            const elem_ty = try self.inferExpression(&elem, env);
-            try self.addConstraint(.{ .Equality = .{ .lhs = first_ty, .rhs = elem_ty } });
+            try self.checkExpression(&elem, first_ty, env);
         }
 
         const arr_ty = try self.allocator.create(Type);
@@ -316,17 +378,16 @@ pub const TypeInferencer = struct {
 
     /// Infer type of ternary expression
     fn inferTernaryExpr(self: *TypeInferencer, tern: *const ast.TernaryExpr, env: *type_system.TypeEnvironment) !*Type {
-        const cond_ty = try self.inferExpression(&tern.condition, env);
-        const then_ty = try self.inferExpression(&tern.then_expr, env);
-        const else_ty = try self.inferExpression(&tern.else_expr, env);
-
-        // Condition must be Bool
+        // CHECK that condition is Bool
         const bool_ty = try self.allocator.create(Type);
         bool_ty.* = Type.Bool;
-        try self.addConstraint(.{ .Equality = .{ .lhs = cond_ty, .rhs = bool_ty } });
+        try self.checkExpression(&tern.condition, bool_ty, env);
 
-        // Both branches must have the same type
-        try self.addConstraint(.{ .Equality = .{ .lhs = then_ty, .rhs = else_ty } });
+        // SYNTHESIZE type from then branch
+        const then_ty = try self.synthesizeExpression(&tern.then_expr, env);
+
+        // CHECK that else branch matches then branch
+        try self.checkExpression(&tern.else_expr, then_ty, env);
 
         return then_ty;
     }

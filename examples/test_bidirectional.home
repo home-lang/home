@@ -1,0 +1,31 @@
+// Test bidirectional type checking
+
+fn main() {
+    // CHECK mode: type annotation guides checking
+    let x: int = 42;              // ✓ CHECK that 42 has type int
+    let y: int = 10 + 20;         // ✓ CHECK that expression has type int
+
+    // SYNTHESIS mode: no annotation, infer from value
+    let z = 100;                   // ✓ SYNTHESIZE int from literal
+    let w = 5 + 10;               // ✓ SYNTHESIZE int from expression
+
+    // Function calls with bidirectional checking
+    // When function signature is known, arguments are CHECKed
+    println(x);                    // ✓ CHECK that x matches println's parameter type
+
+    // Array literals with bidirectional checking
+    let arr: [int] = [1, 2, 3];   // ✓ First element synthesized, rest checked
+
+    // Ternary with bidirectional checking
+    let cond = true;
+    let result = cond ? 1 : 2;    // ✓ Then branch synthesized, else checked
+}
+
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+fn test_function_args() {
+    // Function signature known → arguments are CHECKed, not synthesized
+    let sum = add(5, 10);         // ✓ Arguments checked against parameter types
+}

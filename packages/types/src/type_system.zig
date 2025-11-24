@@ -575,15 +575,17 @@ pub const TypeChecker = struct {
         switch (stmt) {
             .LetDecl => |decl| {
                 if (decl.value) |value| {
-                    const value_type = try self.inferExpression(value);
-
-                    if (decl.type_name) |type_name| {
+                    // BIDIRECTIONAL CHECKING: If type annotation exists, CHECK the value
+                    // Otherwise, SYNTHESIZE the type from the value
+                    const value_type = if (decl.type_name) |type_name| blk: {
                         const declared_type = try self.parseTypeName(type_name);
-                        if (!value_type.equals(declared_type)) {
-                            try self.addError("Type mismatch in let declaration", decl.node.loc);
-                            return error.TypeMismatch;
-                        }
-                    }
+                        // CHECK mode: value must have declared_type
+                        try self.checkExpression(value, declared_type);
+                        break :blk declared_type;
+                    } else blk: {
+                        // SYNTHESIS mode: infer type from value
+                        break :blk try self.synthesizeExpression(value);
+                    };
 
                     // If the value is an identifier, mark it as moved (if movable)
                     if (value.* == .Identifier) {
@@ -964,6 +966,25 @@ pub const TypeChecker = struct {
         }
     }
 
+    // ============================================================================
+    // BIDIRECTIONAL TYPE CHECKING
+    // ============================================================================
+
+    /// Check mode: Verify that an expression has the expected type
+    fn checkExpression(self: *TypeChecker, expr: *const ast.Expr, expected: Type) TypeError!void {
+        const actual = try self.synthesizeExpression(expr);
+        if (!actual.equals(expected)) {
+            try self.addError("Type mismatch", expr.getLocation());
+            return error.TypeMismatch;
+        }
+    }
+
+    /// Synthesis mode: Infer the type of an expression
+    fn synthesizeExpression(self: *TypeChecker, expr: *const ast.Expr) TypeError!Type {
+        return try self.inferExpression(expr);
+    }
+
+    /// Legacy inference method (will gradually migrate to synthesizeExpression)
     fn inferExpression(self: *TypeChecker, expr: *const ast.Expr) TypeError!Type {
         return switch (expr.*) {
             .IntegerLiteral => Type.Int,
