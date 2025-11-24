@@ -367,26 +367,24 @@ pub const AiffReader = struct {
 // ============================================================================
 
 pub const AiffWriter = struct {
-    buffer: std.ArrayList(u8),
+    buffer: std.array_list.AlignedManaged(u8, null),
     channels: u8,
     sample_rate: u32,
     bits_per_sample: u8,
     samples_written: u64,
     ssnd_size_offset: usize,
-    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Initialize a new AIFF writer
     pub fn init(allocator: std.mem.Allocator, channels: u8, sample_rate: u32, bits_per_sample: u8) !Self {
         var writer = Self{
-            .buffer = .init(allocator),
+            .buffer = std.array_list.AlignedManaged(u8, null).init(allocator),
             .channels = channels,
             .sample_rate = sample_rate,
             .bits_per_sample = bits_per_sample,
             .samples_written = 0,
             .ssnd_size_offset = 0,
-            .allocator = allocator,
         };
 
         try writer.writeHeader();
@@ -498,13 +496,13 @@ pub const AiffWriter = struct {
         const ssnd_data_size: u32 = @intCast(data.len - self.ssnd_size_offset - 4);
         std.mem.writeInt(u32, data[self.ssnd_size_offset..][0..4], ssnd_data_size, .big);
 
-        return try self.allocator.dupe(u8, data);
+        return try self.buffer.allocator.dupe(u8, data);
     }
 
     /// Write to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
         const data = try self.finalize();
-        defer self.allocator.free(data);
+        defer self.buffer.allocator.free(data);
 
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();

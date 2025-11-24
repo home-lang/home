@@ -171,6 +171,27 @@ pub const addEmulationPrevention = bitstream.addEmulationPrevention;
 pub const findStartCode = bitstream.findStartCode;
 
 // ============================================================================
+// Video Filters
+// ============================================================================
+
+pub const video_filters = @import("filters/video.zig");
+pub const ScaleFilter = video_filters.ScaleFilter;
+pub const ScaleAlgorithm = video_filters.ScaleAlgorithm;
+pub const CropFilter = video_filters.CropFilter;
+pub const ColorFilter = video_filters.ColorFilter;
+pub const ColorAdjustment = video_filters.ColorAdjustment;
+pub const InvertFilter = video_filters.InvertFilter;
+pub const GrayscaleFilter = video_filters.GrayscaleFilter;
+
+// ============================================================================
+// Audio Filters
+// ============================================================================
+
+pub const audio_filters = @import("filters/audio.zig");
+pub const VolumeFilter = audio_filters.VolumeFilter;
+pub const NormalizeFilter = audio_filters.NormalizeFilter;
+
+// ============================================================================
 // High-Level API
 // ============================================================================
 
@@ -343,6 +364,8 @@ test "Video library imports" {
     _ = hevc;
     _ = vp9;
     _ = bitstream;
+    _ = video_filters;
+    _ = audio_filters;
 }
 
 test "Timestamp basic" {

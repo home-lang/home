@@ -20,6 +20,9 @@ const hdr = @import("formats/hdr.zig");
 const dds = @import("formats/dds.zig");
 const psd = @import("formats/psd.zig");
 const exr = @import("formats/exr.zig");
+const jxl = @import("formats/jxl.zig");
+const flif = @import("formats/flif.zig");
+const raw = @import("formats/raw.zig");
 
 // ============================================================================
 // Core Types
@@ -73,6 +76,9 @@ pub const ImageFormat = enum {
     dds,
     psd,
     exr,
+    jxl,
+    flif,
+    raw, // DNG, CR2, NEF, ARW
     unknown,
 
     pub fn fromExtension(ext: []const u8) ImageFormat {
@@ -94,6 +100,9 @@ pub const ImageFormat = enum {
         if (std.mem.eql(u8, ext, ".dds")) return .dds;
         if (std.mem.eql(u8, ext, ".psd") or std.mem.eql(u8, ext, ".psb")) return .psd;
         if (std.mem.eql(u8, ext, ".exr")) return .exr;
+        if (std.mem.eql(u8, ext, ".jxl")) return .jxl;
+        if (std.mem.eql(u8, ext, ".flif")) return .flif;
+        if (std.mem.eql(u8, ext, ".dng") or std.mem.eql(u8, ext, ".cr2") or std.mem.eql(u8, ext, ".nef") or std.mem.eql(u8, ext, ".arw") or std.mem.eql(u8, ext, ".raw")) return .raw;
         return .unknown;
     }
 
@@ -213,6 +222,36 @@ pub const ImageFormat = enum {
             return .ppm;
         }
 
+        // JXL: Container or naked codestream
+        if (data.len >= 12 and data[0] == 0x00 and data[1] == 0x00 and data[2] == 0x00 and data[3] == 0x0C and
+            data[4] == 0x4A and data[5] == 0x58 and data[6] == 0x4C and data[7] == 0x20)
+        {
+            return .jxl;
+        }
+        if (data.len >= 2 and data[0] == 0xFF and data[1] == 0x0A) {
+            return .jxl;
+        }
+
+        // FLIF: FLIF magic
+        if (data.len >= 4 and std.mem.eql(u8, data[0..4], "FLIF")) {
+            return .flif;
+        }
+
+        // RAW camera formats (TIFF-based): II or MM marker with magic 42
+        // But NOT regular TIFF - check for camera-specific markers
+        if (data.len >= 10) {
+            const is_le = data[0] == 'I' and data[1] == 'I';
+            const is_be = data[0] == 'M' and data[1] == 'M';
+            if (is_le or is_be) {
+                // Check for CR2 (Canon)
+                if (data[8] == 'C' and data[9] == 'R') {
+                    return .raw;
+                }
+                // For DNG, NEF, ARW - need more sophisticated detection
+                // These are detected by extension primarily
+            }
+        }
+
         // TGA: Complex - check for valid header structure (no magic, detect by header validity)
         // TGA has no magic bytes, so it's last resort and detected by file extension primarily
 
@@ -239,6 +278,9 @@ pub const ImageFormat = enum {
             .dds => "image/vnd.ms-dds",
             .psd => "image/vnd.adobe.photoshop",
             .exr => "image/x-exr",
+            .jxl => "image/jxl",
+            .flif => "image/flif",
+            .raw => "image/x-dcraw",
             .unknown => "application/octet-stream",
         };
     }
@@ -422,6 +464,9 @@ pub const Image = struct {
             .dds => dds.decode(allocator, data),
             .psd => psd.decode(allocator, data),
             .exr => exr.decode(allocator, data),
+            .jxl => jxl.decode(allocator, data),
+            .flif => flif.decode(allocator, data),
+            .raw => raw.decode(allocator, data),
             else => error.UnsupportedFormat,
         };
     }
@@ -463,6 +508,9 @@ pub const Image = struct {
             .dds => dds.encode(self.allocator, self),
             .psd => psd.encode(self.allocator, self),
             .exr => exr.encode(self.allocator, self),
+            .jxl => jxl.encode(self.allocator, self),
+            .flif => flif.encode(self.allocator, self),
+            .raw => raw.encode(self.allocator, self),
             else => error.UnsupportedFormat,
         };
     }
@@ -641,6 +689,9 @@ pub const Hdr = hdr;
 pub const Dds = dds;
 pub const Psd = psd;
 pub const Exr = exr;
+pub const Jxl = jxl;
+pub const Flif = flif;
+pub const Raw = raw;
 
 // ============================================================================
 // Tests

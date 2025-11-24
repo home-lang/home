@@ -288,24 +288,22 @@ pub const WavReader = struct {
 // ============================================================================
 
 pub const WavWriter = struct {
-    buffer: std.ArrayList(u8),
+    buffer: std.array_list.AlignedManaged(u8, null),
     channels: u8,
     sample_rate: u32,
     format: SampleFormat,
     samples_written: u64,
-    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Initialize a new WAV writer
     pub fn init(allocator: std.mem.Allocator, channels: u8, sample_rate: u32, format: SampleFormat) !Self {
         var writer = Self{
-            .buffer = .init(allocator),
+            .buffer = std.array_list.AlignedManaged(u8, null).init(allocator),
             .channels = channels,
             .sample_rate = sample_rate,
             .format = format,
             .samples_written = 0,
-            .allocator = allocator,
         };
 
         // Write placeholder header (will be updated on finalize)
@@ -427,13 +425,13 @@ pub const WavWriter = struct {
         const data_size: u32 = @intCast(data.len - 44);
         std.mem.writeInt(u32, data[40..44], data_size, .little);
 
-        return try self.allocator.dupe(u8, data);
+        return try self.buffer.allocator.dupe(u8, data);
     }
 
     /// Write to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
         const data = try self.finalize();
-        defer self.allocator.free(data);
+        defer self.buffer.allocator.free(data);
 
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();

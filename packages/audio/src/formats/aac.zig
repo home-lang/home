@@ -18,7 +18,7 @@ pub const AudioError = err.AudioError;
 // ============================================================================
 
 /// Audio Object Types
-pub const AudioObjectType = enum(u5) {
+pub const AudioObjectType = enum(u6) {
     null = 0,
     aac_main = 1,
     aac_lc = 2, // Low Complexity (most common)
@@ -178,7 +178,7 @@ pub const AdtsHeader = struct {
 
     /// Get audio object type
     pub fn getAudioObjectType(self: Self) AudioObjectType {
-        return @enumFromInt(self.profile + 1);
+        return @enumFromInt(@as(u6, self.profile) + 1);
     }
 
     /// Get samples per frame (always 1024 for AAC)
@@ -260,7 +260,7 @@ pub const AudioSpecificConfig = struct {
         if (aot == 31) {
             aot = 32 + readBits(data, &bit_pos, 6);
         }
-        config.audio_object_type = @enumFromInt(@as(u5, @truncate(aot)));
+        config.audio_object_type = @enumFromInt(@as(u6, @truncate(aot)));
 
         // Sample Rate Index (4 bits)
         config.sample_rate_index = @truncate(readBits(data, &bit_pos, 4));

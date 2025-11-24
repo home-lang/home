@@ -103,13 +103,11 @@ pub const StreamInfo = struct {
 
     /// Get sample format
     pub fn getSampleFormat(self: Self) SampleFormat {
-        return switch (self.bits_per_sample + 1) {
-            1...8 => .u8,
-            9...16 => .s16le,
-            17...24 => .s24le,
-            25...32 => .s32le,
-            else => .s16le,
-        };
+        const bps = @as(u8, self.bits_per_sample) + 1;
+        if (bps <= 8) return .u8;
+        if (bps <= 16) return .s16le;
+        if (bps <= 24) return .s24le;
+        return .s32le;
     }
 
     /// Get channel count
