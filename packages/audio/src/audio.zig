@@ -168,6 +168,7 @@ pub const converter = @import("processing/converter.zig");
 pub const channels = @import("processing/channels.zig");
 pub const loudness = @import("processing/loudness.zig");
 pub const fft = @import("processing/fft.zig");
+pub const simd_fft = @import("dsp/simd_fft.zig");
 pub const pitch = @import("processing/pitch.zig");
 pub const timestretch = @import("processing/timestretch.zig");
 pub const reverb = @import("processing/reverb.zig");
@@ -177,6 +178,8 @@ pub const LoudnessMeter = loudness.LoudnessMeter;
 pub const LoudnessResult = loudness.LoudnessResult;
 pub const SpectrumAnalyzer = fft.SpectrumAnalyzer;
 pub const WindowType = fft.WindowType;
+pub const FFT = simd_fft.FFT;
+pub const RealFFT = simd_fft.RealFFT;
 pub const PitchDetector = pitch.PitchDetector;
 pub const Note = pitch.Note;
 pub const TimeStretcher = timestretch.TimeStretcher;
@@ -307,6 +310,26 @@ pub const Voice = synthesis.Voice;
 pub const Synthesizer = synthesis.Synthesizer;
 pub const FMSynth = synthesis.FMSynth;
 pub const midiToFreq = synthesis.midiToFreq;
+
+// ============================================================================
+// Streaming Modules
+// ============================================================================
+
+pub const streaming = @import("streaming/http_stream.zig");
+pub const StreamingClient = streaming.StreamingClient;
+pub const StreamMetadata = streaming.StreamMetadata;
+pub const StreamState = streaming.StreamState;
+pub const RingBuffer = streaming.RingBuffer;
+
+// ============================================================================
+// Codec Modules (Full Decoders)
+// ============================================================================
+
+pub const codecs = @import("codecs/codecs.zig");
+pub const Mp3Decoder = codecs.Mp3Decoder;
+pub const AacDecoder = codecs.AacDecoder;
+pub const VorbisDecoder = codecs.VorbisDecoder;
+pub const OpusDecoder = codecs.OpusDecoder;
 
 // ============================================================================
 // Encoding Modules
@@ -718,4 +741,7 @@ test {
     _ = phasevocoder;
     _ = chords;
     _ = synthesis;
+    _ = simd_fft;
+    _ = streaming;
+    _ = codecs;
 }

@@ -492,17 +492,17 @@ pub const TypeChecker = struct {
 
         // Evaluate comptime expressions if store provided
         if (self.comptime_store) |store| {
-            var integration = ComptimeIntegration.init(self.allocator, store) catch |err| {
-                // If comptime init fails, continue without comptime support
-                std.debug.print("Warning: comptime initialization failed: {}\n", .{err});
-                self.comptime_store = null;
-            };
-            if (self.comptime_store != null) {
+            if (ComptimeIntegration.init(self.allocator, store)) |integration_value| {
+                var integration = integration_value;
                 defer integration.deinit();
                 // Process all comptime expressions in the program
                 integration.processProgram(@constCast(self.program)) catch |err| {
                     std.debug.print("Warning: comptime evaluation failed: {}\n", .{err});
                 };
+            } else |err| {
+                // If comptime init fails, continue without comptime support
+                std.debug.print("Warning: comptime initialization failed: {}\n", .{err});
+                self.comptime_store = null;
             }
         }
 

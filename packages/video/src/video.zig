@@ -514,6 +514,168 @@ pub const parse3dl = lut.parse3dl;
 pub const parseCsp = lut.parseCsp;
 
 // ============================================================================
+// Captions (CEA-608/CEA-708)
+// ============================================================================
+
+pub const cea608 = @import("captions/cea608.zig");
+pub const Cea608Decoder = cea608.Cea608Decoder;
+pub const Cea608CaptionMode = cea608.CaptionMode;
+pub const Cea608CaptionStyle = cea608.CaptionStyle;
+pub const Cea608ControlCode = cea608.ControlCode;
+
+pub const cea708 = @import("captions/cea708.zig");
+pub const Cea708Decoder = cea708.Cea708Decoder;
+pub const Cea708Service = cea708.Service;
+pub const Cea708Window = cea708.Window;
+
+// ============================================================================
+// Quality Analysis
+// ============================================================================
+
+pub const quality = @import("analysis/quality.zig");
+pub const QualityMetrics = quality.QualityMetrics;
+pub const PsnrResult = quality.PsnrResult;
+pub const SsimResult = quality.SsimResult;
+pub const VmafScore = quality.VmafScore;
+pub const calculatePsnr = quality.calculatePsnr;
+pub const calculateSsim = quality.calculateSsim;
+pub const calculateVmaf = quality.calculateVmaf;
+
+pub const detection = @import("analysis/detection.zig");
+pub const BlackFrameDetector = detection.BlackFrameDetector;
+pub const FreezeFrameDetector = detection.FreezeFrameDetector;
+pub const SilenceDetector = detection.SilenceDetector;
+
+pub const scenecut = @import("analysis/scenecut.zig");
+pub const ScenecutDetector = scenecut.ScenecutDetector;
+pub const ScenecutMethod = scenecut.ScenecutMethod;
+pub const ScenecutOptions = scenecut.ScenecutOptions;
+
+// ============================================================================
+// Streaming Protocols
+// ============================================================================
+
+pub const rtmp = @import("streaming/rtmp.zig");
+pub const RtmpConnection = rtmp.RtmpConnection;
+pub const RtmpHandshake = rtmp.RtmpHandshake;
+pub const RtmpChunk = rtmp.RtmpChunk;
+pub const RtmpMessage = rtmp.RtmpMessage;
+
+pub const rtp = @import("streaming/rtp.zig");
+pub const RtpHeader = rtp.RtpHeader;
+pub const RtpPacket = rtp.RtpPacket;
+pub const RtcpSenderReport = rtp.RtcpSenderReport;
+pub const RtspRequest = rtp.RtspRequest;
+pub const RtspResponse = rtp.RtspResponse;
+pub const SdpSession = rtp.SdpSession;
+
+// ============================================================================
+// Overlay and Burn-in
+// ============================================================================
+
+pub const overlay = @import("overlay/overlay.zig");
+pub const TextOverlay = overlay.TextOverlay;
+pub const TextStyle = overlay.TextStyle;
+pub const TimecodeOverlay = overlay.TimecodeOverlay;
+pub const ImageOverlay = overlay.ImageOverlay;
+
+// ============================================================================
+// Advanced Audio Processing
+// ============================================================================
+
+pub const audio_processing = @import("audio/processing.zig");
+pub const Ducker = audio_processing.Ducker;
+pub const Compressor = audio_processing.Compressor;
+pub const ParametricEq = audio_processing.ParametricEq;
+pub const GraphicEq = audio_processing.GraphicEq;
+pub const AudioNormalizer = audio_processing.AudioNormalizer;
+pub const PitchShifter = audio_processing.PitchShifter;
+
+// ============================================================================
+// Video Stabilization
+// ============================================================================
+
+pub const stabilization = @import("stabilization/stabilization.zig");
+pub const VideoStabilizer = stabilization.VideoStabilizer;
+pub const FeatureDetector = stabilization.FeatureDetector;
+pub const FeatureTracker = stabilization.FeatureTracker;
+pub const TransformSmoother = stabilization.TransformSmoother;
+
+// ============================================================================
+// Broadcast Standards
+// ============================================================================
+
+pub const scte35 = @import("broadcast/scte35.zig");
+pub const Scte35 = scte35.Scte35;
+pub const Scte35Parser = scte35.Scte35Parser;
+pub const SpliceInfoSection = scte35.Scte35.SpliceInfoSection;
+pub const SpliceInsert = scte35.Scte35.SpliceInsert;
+
+pub const teletext = @import("broadcast/teletext.zig");
+pub const Teletext = teletext.Teletext;
+pub const TeletextDecoder = teletext.TeletextDecoder;
+pub const TeletextPage = teletext.Teletext.Page;
+
+pub const afd = @import("broadcast/afd.zig");
+pub const Afd = afd.Afd;
+pub const AfdParser = afd.AfdParser;
+pub const AfdDetector = afd.AfdDetector;
+
+pub const wss = @import("broadcast/wss.zig");
+pub const Wss = wss.Wss;
+pub const WssDecoder = wss.WssDecoder;
+pub const WssDetector = wss.WssDetector;
+
+// ============================================================================
+// Codec Analysis
+// ============================================================================
+
+pub const h264_analysis = @import("codec/h264_analysis.zig");
+pub const H264Analysis = h264_analysis.H264Analysis;
+pub const SpsParser = h264_analysis.SpsParser;
+pub const PpsParser = h264_analysis.PpsParser;
+pub const SliceHeaderParser = h264_analysis.SliceHeaderParser;
+pub const ExpGolomb = h264_analysis.ExpGolomb;
+
+pub const hevc_analysis = @import("codec/hevc_analysis.zig");
+pub const HevcAnalysis = hevc_analysis.HevcAnalysis;
+pub const HevcVpsParser = hevc_analysis.VpsParser;
+pub const HevcSpsParser = hevc_analysis.SpsParser;
+pub const HevcPpsParser = hevc_analysis.PpsParser;
+
+pub const bitrate = @import("codec/bitrate.zig");
+pub const BitrateAnalyzer = bitrate.BitrateAnalyzer;
+pub const BitrateStats = bitrate.BitrateAnalyzer.BitrateStats;
+pub const VbvSimulator = bitrate.VbvSimulator;
+pub const GopAnalyzer = bitrate.GopAnalyzer;
+
+// ============================================================================
+// Professional Formats
+// ============================================================================
+
+pub const prores = @import("formats/prores.zig");
+pub const ProRes = prores.ProRes;
+pub const ProResParser = prores.ProResParser;
+pub const ProResRecommendations = prores.ProResRecommendations;
+
+pub const dnxhd = @import("formats/dnxhd.zig");
+pub const DnxHd = dnxhd.DnxHd;
+pub const DnxParser = dnxhd.DnxParser;
+pub const DnxRecommendations = dnxhd.DnxRecommendations;
+
+pub const imf = @import("formats/imf.zig");
+pub const Imf = imf.Imf;
+pub const ImfPackage = imf.ImfPackage;
+pub const ImfEssence = imf.ImfEssence;
+pub const ImfUtils = imf.ImfUtils;
+
+pub const dcp = @import("formats/dcp.zig");
+pub const Dcp = dcp.Dcp;
+pub const DcpPackage = dcp.DcpPackage;
+pub const DcpEssence = dcp.DcpEssence;
+pub const DcpUtils = dcp.DcpUtils;
+
+// ============================================================================
 // Conversion Utilities
 // ============================================================================
 
@@ -766,6 +928,28 @@ test "Video library imports" {
     _ = thumbnail;
     _ = seeking;
     _ = lut;
+    // Phase 3 modules
+    _ = cea608;
+    _ = cea708;
+    _ = quality;
+    _ = detection;
+    _ = scenecut;
+    _ = rtmp;
+    _ = rtp;
+    _ = overlay;
+    _ = audio_processing;
+    _ = stabilization;
+    _ = scte35;
+    _ = teletext;
+    _ = afd;
+    _ = wss;
+    _ = h264_analysis;
+    _ = hevc_analysis;
+    _ = bitrate;
+    _ = prores;
+    _ = dnxhd;
+    _ = imf;
+    _ = dcp;
 }
 
 test "Timestamp basic" {

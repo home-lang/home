@@ -70,6 +70,18 @@ const hdr_processing = @import("hdr.zig");
 const history_ops = @import("history.zig");
 const sprite_ops = @import("sprite.zig");
 
+// Latest advanced modules
+const vector_ops = @import("vector.zig");
+const ocr_ops = @import("ocr.zig");
+const barcode_ops = @import("barcode.zig");
+const forensics_ops = @import("forensics.zig");
+const steganography_ops = @import("steganography.zig");
+const morphing_ops = @import("morphing.zig");
+const panorama_ops = @import("panorama.zig");
+const focus_stack_ops = @import("focus_stack.zig");
+const color_blindness_ops = @import("color_blindness.zig");
+const print_prep_ops = @import("print_prep.zig");
+
 // ============================================================================
 // Core Types
 // ============================================================================
@@ -1135,6 +1147,96 @@ pub const AtlasRect = sprite_ops.AtlasRect;
 pub const TextureAtlas = sprite_ops.TextureAtlas;
 pub const NineSlice = sprite_ops.NineSlice;
 pub const SpriteAnimation = sprite_ops.SpriteAnimation;
+
+// Latest advanced module exports
+pub const Vector = vector_ops;
+pub const OCR = ocr_ops;
+pub const Barcode = barcode_ops;
+pub const Forensics = forensics_ops;
+pub const Steganography = steganography_ops;
+pub const Morphing = morphing_ops;
+pub const Panorama = panorama_ops;
+pub const FocusStack = focus_stack_ops;
+pub const ColorBlindness = color_blindness_ops;
+pub const PrintPrep = print_prep_ops;
+
+// Re-export common types from Vector module
+pub const Point2D = vector_ops.Point;
+pub const BezierCurve = vector_ops.BezierCurve;
+pub const Path = vector_ops.Path;
+pub const StrokeStyle = vector_ops.StrokeStyle;
+pub const FillStyle = vector_ops.FillStyle;
+pub const LineCap = vector_ops.LineCap;
+pub const LineJoin = vector_ops.LineJoin;
+pub const VectorGradient = vector_ops.Gradient;
+
+// Re-export common types from OCR module
+pub const TextRegion = ocr_ops.TextRegion;
+pub const TextDetectionOptions = ocr_ops.TextDetectionOptions;
+pub const Line = ocr_ops.Line;
+
+// Re-export common types from Barcode module
+pub const QRCode = barcode_ops.QRCode;
+pub const ErrorCorrection = barcode_ops.ErrorCorrection;
+pub const BarcodeType = barcode_ops.BarcodeType;
+
+// Re-export common types from Forensics module
+pub const ELAResult = forensics_ops.ELAResult;
+pub const ELAOptions = forensics_ops.ELAOptions;
+pub const SuspiciousRegion = forensics_ops.SuspiciousRegion;
+pub const CopyMoveResult = forensics_ops.CopyMoveResult;
+pub const CopyMoveOptions = forensics_ops.CopyMoveOptions;
+pub const MatchedRegion = forensics_ops.MatchedRegion;
+pub const JPEGArtifactResult = forensics_ops.JPEGArtifactResult;
+pub const BlockArtifact = forensics_ops.BlockArtifact;
+
+// Re-export common types from Steganography module
+pub const LSBOptions = steganography_ops.LSBOptions;
+pub const WatermarkResult = steganography_ops.WatermarkResult;
+pub const WatermarkLocation = steganography_ops.WatermarkLocation;
+pub const WatermarkDetectionOptions = steganography_ops.WatermarkDetectionOptions;
+pub const EmbeddingStrength = steganography_ops.EmbeddingStrength;
+
+// Re-export common types from Morphing module
+pub const Point2DMorph = morphing_ops.Point2D;
+pub const ControlPoint = morphing_ops.ControlPoint;
+pub const WarpMesh = morphing_ops.WarpMesh;
+pub const WarpOptions = morphing_ops.WarpOptions;
+pub const MorphOptions = morphing_ops.MorphOptions;
+pub const MorphSequence = morphing_ops.MorphSequence;
+pub const RBFWarp = morphing_ops.RBFWarp;
+
+// Re-export common types from Panorama module
+pub const PanoramaFeature = panorama_ops.Feature;
+pub const FeatureMatch = panorama_ops.FeatureMatch;
+pub const FeatureDetectionOptions = panorama_ops.FeatureDetectionOptions;
+pub const Homography = panorama_ops.Homography;
+pub const RANSACOptions = panorama_ops.RANSACOptions;
+pub const StitchOptions = panorama_ops.StitchOptions;
+pub const PanoramaResult = panorama_ops.PanoramaResult;
+
+// Re-export common types from FocusStack module
+pub const FocusStackOptions = focus_stack_ops.FocusStackOptions;
+pub const FocusStackResult = focus_stack_ops.FocusStackResult;
+pub const FocusQuality = focus_stack_ops.FocusQuality;
+
+// Re-export common types from ColorBlindness module
+pub const ColorBlindnessType = color_blindness_ops.ColorBlindnessType;
+pub const SimulationOptions = color_blindness_ops.SimulationOptions;
+pub const AccessibilityReport = color_blindness_ops.AccessibilityReport;
+pub const ColorPair = color_blindness_ops.ColorPair;
+pub const SimulationSet = color_blindness_ops.SimulationSet;
+
+// Re-export common types from PrintPrep module
+pub const CMYKColor = print_prep_ops.CMYK;
+pub const SeparationPlates = print_prep_ops.SeparationPlates;
+pub const SeparationOptions = print_prep_ops.SeparationOptions;
+pub const PrintMarks = print_prep_ops.PrintMarks;
+pub const PrintDimensions = print_prep_ops.PrintDimensions;
+pub const PrintReadyImage = print_prep_ops.PrintReadyImage;
+pub const Resolution = print_prep_ops.Resolution;
+pub const ResolutionCheck = print_prep_ops.ResolutionCheck;
+pub const TrappingOptions = print_prep_ops.TrappingOptions;
 
 // ============================================================================
 // Tests

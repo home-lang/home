@@ -187,6 +187,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("macros", macros_pkg);
     exe.root_module.addImport("traits", traits_pkg);
     exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    exe.root_module.addImport("comptime", comptime_pkg);
     exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     exe.root_module.addImport("queue", queue_pkg);
     exe.root_module.addImport("database", database_pkg);
@@ -887,6 +888,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("macros", macros_pkg);
     debug_exe.root_module.addImport("traits", traits_pkg);
     debug_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    debug_exe.root_module.addImport("comptime", comptime_pkg);
     debug_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     debug_exe.root_module.addImport("queue", queue_pkg);
     debug_exe.root_module.addImport("database", database_pkg);
@@ -921,6 +923,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("linter", linter_pkg);
     release_safe_exe.root_module.addImport("traits", traits_pkg);
     release_safe_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    release_safe_exe.root_module.addImport("comptime", comptime_pkg);
     release_safe_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_safe_exe.root_module.addImport("queue", queue_pkg);
     release_safe_exe.root_module.addImport("database", database_pkg);
@@ -955,6 +958,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("linter", linter_pkg);
     release_small_exe.root_module.addImport("traits", traits_pkg);
     release_small_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    release_small_exe.root_module.addImport("comptime", comptime_pkg);
     release_small_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
     release_small_exe.root_module.addImport("queue", queue_pkg);
     release_small_exe.root_module.addImport("database", database_pkg);

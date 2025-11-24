@@ -183,9 +183,9 @@ pub const ComptimeIntegration = struct {
 
     /// Process an entire program for comptime expressions
     pub fn processProgram(self: *ComptimeIntegration, program: *ast.Program) !void {
-        for (program.declarations) |decl| {
-            switch (decl.*) {
-                .FunctionDecl => |func_decl| {
+        for (program.statements) |decl| {
+            switch (decl) {
+                .FnDecl => |func_decl| {
                     if (func_decl.body) |body| {
                         try self.processStatement(body);
                     }

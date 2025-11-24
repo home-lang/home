@@ -749,7 +749,7 @@ pub const Interpreter = struct {
                 .Int => |i| Value{ .Int = ~i },
                 else => error.TypeMismatch,
             },
-            .Deref, .AddressOf => {
+            .Deref, .AddressOf, .Borrow, .BorrowMut => {
                 std.debug.print("Pointer operations not yet implemented\n", .{});
                 return error.RuntimeError;
             },
