@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
     const diagnostics_pkg = createPackage(b, "packages/diagnostics/src/diagnostics.zig", target, optimize, zig_test_framework);
     const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize, zig_test_framework);
     const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize, zig_test_framework);
+    const comptime_pkg = createPackage(b, "packages/comptime/src/comptime.zig", target, optimize, zig_test_framework);
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
     const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize, zig_test_framework);
@@ -148,10 +149,13 @@ pub fn build(b: *std.Build) void {
     types_pkg.addImport("traits", traits_pkg);
     traits_pkg.addImport("ast", ast_pkg);
     interpreter_pkg.addImport("ast", ast_pkg);
+    comptime_pkg.addImport("ast", ast_pkg);
+    types_pkg.addImport("comptime", comptime_pkg);
     codegen_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("lexer", lexer_pkg);
     codegen_pkg.addImport("parser", parser_pkg);
     codegen_pkg.addImport("types", types_pkg);
+    codegen_pkg.addImport("comptime", comptime_pkg);
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);

@@ -1,0 +1,7 @@
+// Test comptime integration
+fn main() {
+    let x: int = comptime 5 + 10;
+    let y: int = comptime 3 * 7;
+    let result: int = x + y;
+    println(result);  // Should print 36 (15 + 21)
+}

@@ -9,6 +9,8 @@ const codegen_mod = @import("codegen");
 const NativeCodegen = codegen_mod.NativeCodegen;
 const HomeKernelCodegen = codegen_mod.HomeKernelCodegen;
 const TypeChecker = @import("types").TypeChecker;
+const comptime_mod = @import("comptime");
+const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
 const pkg_manager_mod = @import("pkg_manager");
@@ -371,8 +373,12 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var parser = try Parser.init(arena_allocator, tokens.items);
     const program = try parser.parse();
 
+    // Create comptime value store for compile-time evaluation
+    var comptime_store = ComptimeValueStore.init(allocator);
+    defer comptime_store.deinit();
+
     // Type check
-    var type_checker = TypeChecker.init(allocator, program);
+    var type_checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
     defer type_checker.deinit();
 
     std.debug.print("{s}Checking:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -521,11 +527,15 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         });
     }
 
+    // Create comptime value store for compile-time evaluation
+    var comptime_store = ComptimeValueStore.init(allocator);
+    defer comptime_store.deinit();
+
     // Type check (unless disabled or kernel mode)
     if (!kernel_mode) {
         std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-        var type_checker = TypeChecker.init(allocator, program);
+        var type_checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
         defer type_checker.deinit();
 
         const type_check_passed = try type_checker.check();
@@ -599,7 +609,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
         std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
-        var codegen = NativeCodegen.init(allocator, program);
+        var codegen = NativeCodegen.init(allocator, program, &comptime_store);
         defer codegen.deinit();
 
         // Set source root for import resolution

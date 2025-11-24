@@ -12,6 +12,8 @@ const move_checker_mod = @import("move_checker.zig");
 pub const MoveChecker = move_checker_mod.MoveChecker;
 const borrow_checker_mod = @import("borrow_checker.zig");
 pub const BorrowChecker = borrow_checker_mod.BorrowChecker;
+const comptime_mod = @import("comptime");
+const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 
 /// Error set for code generation operations.
 ///
@@ -608,6 +610,10 @@ pub const NativeCodegen = struct {
     /// Move semantics checker for ownership and borrow checking
     move_checker: ?MoveChecker,
 
+    // Comptime support
+    /// Store for compile-time computed values
+    comptime_store: ?*ComptimeValueStore,
+
     // Borrow checking
     /// Borrow checker for reference lifetime analysis
     borrow_checker: ?BorrowChecker,
@@ -632,7 +638,7 @@ pub const NativeCodegen = struct {
     ///   - program: AST program to compile
     ///
     /// Returns: Initialized NativeCodegen
-    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) NativeCodegen {
+    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program, comptime_store: ?*ComptimeValueStore) NativeCodegen {
         return .{
             .allocator = allocator,
             .assembler = x64.Assembler.init(allocator),
@@ -654,6 +660,7 @@ pub const NativeCodegen = struct {
             .source_root = null, // Set via setSourceRoot
             .imported_modules = std.StringHashMap(void).init(allocator),
             .module_sources = std.ArrayList([]const u8){},
+            .comptime_store = comptime_store,
         };
     }
 
@@ -5286,9 +5293,55 @@ pub const NativeCodegen = struct {
 
             .ComptimeExpr => |comptime_expr| {
                 // Comptime expression: evaluated at compile time
-                // The inner expression should have been evaluated by the comptime executor
-                // during semantic analysis. For codegen, we just evaluate the inner expression.
-                // In a full implementation, this would look up the precomputed value.
+                // Look up the precomputed value from semantic analysis
+                if (self.comptime_store) |store| {
+                    if (store.get(comptime_expr.expression)) |value| {
+                        // Generate code for the precomputed constant value
+                        switch (value) {
+                            .int => |int_val| {
+                                // Load integer constant
+                                try self.assembler.movImm64(rax, @intCast(int_val));
+                            },
+                            .float => |float_val| {
+                                // For float constants, we need to load from memory
+                                // Store in data section and load address
+                                const int_bits: u64 = @bitCast(float_val);
+                                try self.assembler.movImm64(rax, int_bits);
+                            },
+                            .bool => |bool_val| {
+                                // Load boolean constant (0 or 1)
+                                try self.assembler.movImm64(rax, if (bool_val) 1 else 0);
+                            },
+                            .string => |str_val| {
+                                // String constants need to be in data section
+                                const str_offset = try self.addStringLiteral(str_val);
+                                try self.assembler.lea(rax, x64.MemoryOperand.ripRelative(@intCast(str_offset)));
+                            },
+                            .array => {
+                                // For arrays, fall back to evaluating the expression
+                                // TODO: Could optimize by generating array literal directly
+                                try self.generateExpr(comptime_expr.expression);
+                            },
+                            .@"struct" => {
+                                // For structs, fall back to evaluating the expression
+                                // TODO: Could optimize by generating struct literal directly
+                                try self.generateExpr(comptime_expr.expression);
+                            },
+                            .function => {
+                                // Function values in comptime context
+                                try self.generateExpr(comptime_expr.expression);
+                            },
+                            .type => {
+                                // Type values - these are compile-time only, should not generate runtime code
+                                // This is likely an error, but we'll generate 0 as a placeholder
+                                try self.assembler.movImm64(rax, 0);
+                            },
+                        }
+                        return;
+                    }
+                }
+
+                // Fallback: if no precomputed value found, evaluate the expression normally
                 try self.generateExpr(comptime_expr.expression);
             },
 

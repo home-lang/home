@@ -5,6 +5,9 @@ const traits_mod = @import("traits");
 const TraitSystem = traits_mod.TraitSystem;
 const trait_checker = @import("trait_checker.zig");
 pub const TraitChecker = trait_checker.TraitChecker;
+const comptime_mod = @import("comptime");
+const ComptimeIntegration = comptime_mod.integration.ComptimeIntegration;
+const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 
 /// Home's static type system with support for advanced features.
 ///
@@ -405,6 +408,7 @@ pub const TypeChecker = struct {
     errors: std.ArrayList(TypeErrorInfo),
     allocated_types: std.ArrayList(*Type),
     allocated_slices: std.ArrayList([]Type),
+    comptime_store: ?*ComptimeValueStore,
     // ownership_tracker: ownership.OwnershipTracker, // TODO: Implement ownership tracking
 
     pub const TypeErrorInfo = struct {
@@ -420,8 +424,16 @@ pub const TypeChecker = struct {
             .errors = std.ArrayList(TypeErrorInfo){},
             .allocated_types = std.ArrayList(*Type){},
             .allocated_slices = std.ArrayList([]Type){},
+            .comptime_store = null,
             // .ownership_tracker = ownership.OwnershipTracker.init(allocator), // TODO: Implement
         };
+    }
+
+    /// Initialize with comptime support
+    pub fn initWithComptime(allocator: std.mem.Allocator, program: *const ast.Program, comptime_store: *ComptimeValueStore) TypeChecker {
+        var checker = init(allocator, program);
+        checker.comptime_store = comptime_store;
+        return checker;
     }
 
     pub fn deinit(self: *TypeChecker) void {
@@ -449,6 +461,22 @@ pub const TypeChecker = struct {
     pub fn check(self: *TypeChecker) !bool {
         // Register built-in types
         try self.registerBuiltins();
+
+        // Evaluate comptime expressions if store provided
+        if (self.comptime_store) |store| {
+            var integration = ComptimeIntegration.init(self.allocator, store) catch |err| {
+                // If comptime init fails, continue without comptime support
+                std.debug.print("Warning: comptime initialization failed: {}\n", .{err});
+                self.comptime_store = null;
+            };
+            if (self.comptime_store != null) {
+                defer integration.deinit();
+                // Process all comptime expressions in the program
+                integration.processProgram(@constCast(self.program)) catch |err| {
+                    std.debug.print("Warning: comptime evaluation failed: {}\n", .{err});
+                };
+            }
+        }
 
         // First pass: collect function signatures
         for (self.program.statements) |stmt| {

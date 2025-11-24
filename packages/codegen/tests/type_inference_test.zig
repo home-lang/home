@@ -31,7 +31,7 @@ test "type inference: simple let binding" {
         allocator.destroy(program);
     }
 
-    var native_codegen = codegen.NativeCodegen.init(allocator, program);
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null);
     defer native_codegen.deinit();
 
     // Run type inference
@@ -68,7 +68,7 @@ test "type inference: array literal" {
         allocator.destroy(program);
     }
 
-    var native_codegen = codegen.NativeCodegen.init(allocator, program);
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null);
     defer native_codegen.deinit();
 
     // Run type inference
@@ -105,7 +105,7 @@ test "type inference: boolean literal" {
         allocator.destroy(program);
     }
 
-    var native_codegen = codegen.NativeCodegen.init(allocator, program);
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null);
     defer native_codegen.deinit();
 
     // Run type inference
@@ -142,7 +142,7 @@ test "type inference: binary expression" {
         allocator.destroy(program);
     }
 
-    var native_codegen = codegen.NativeCodegen.init(allocator, program);
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null);
     defer native_codegen.deinit();
 
     // Run type inference
@@ -179,7 +179,7 @@ test "type inference: function parameter propagation" {
         allocator.destroy(program);
     }
 
-    var native_codegen = codegen.NativeCodegen.init(allocator, program);
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null);
     defer native_codegen.deinit();
 
     // Run type inference

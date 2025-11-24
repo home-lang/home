@@ -530,3 +530,6 @@ pub const ComptimeExecutor = struct {
         }
     }
 };
+
+// Export integration module for use in semantic analysis and codegen
+pub const integration = @import("integration.zig");
