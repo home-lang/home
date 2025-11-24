@@ -1,0 +1,27 @@
+// Comprehensive comptime integration test
+fn main() {
+    // Basic arithmetic at compile time
+    let a: int = comptime 10 + 20;
+    let b: int = comptime 5 * 6;
+    let c: int = comptime 100 - 25;
+    let d: int = comptime 50 / 2;
+
+    // Nested comptime expressions
+    let nested: int = comptime (3 + 7) * (4 - 2);
+
+    // Boolean comptime
+    let is_true: bool = comptime 5 > 3;
+    let is_false: bool = comptime 2 > 10;
+
+    // Mix comptime and runtime
+    let runtime_val: int = 42;
+    let mixed: int = a + runtime_val;
+
+    // Print results to verify
+    println(a);      // Should print 30
+    println(b);      // Should print 30
+    println(c);      // Should print 75
+    println(d);      // Should print 25
+    println(nested); // Should print 20
+    println(mixed);  // Should print 72 (30 + 42)
+}
