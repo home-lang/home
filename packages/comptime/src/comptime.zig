@@ -1,6 +1,23 @@
 const std = @import("std");
 const ast = @import("ast");
 
+/// Errors that can occur during compile-time evaluation
+pub const ComptimeError = error{
+    UndefinedVariable,
+    TypeMismatch,
+    DivisionByZero,
+    NotAFunction,
+    ArgumentCountMismatch,
+    UnknownType,
+    UnsupportedComptimeExpression,
+    UnsupportedBinaryOp,
+    ExpectedType,
+    MissingFieldName,
+    NoFields,
+    FieldNotFound,
+    OutOfMemory,
+};
+
 /// Compile-time value representation
 pub const ComptimeValue = union(enum) {
     int: i64,
@@ -194,7 +211,7 @@ pub const ComptimeExecutor = struct {
     }
 
     /// Execute an expression at compile time
-    pub fn eval(self: *ComptimeExecutor, expr: *ast.Expr) !ComptimeValue {
+    pub fn eval(self: *ComptimeExecutor, expr: *ast.Expr) ComptimeError!ComptimeValue {
         return switch (expr.*) {
             .IntegerLiteral => |lit| ComptimeValue{ .int = lit.value },
             .FloatLiteral => |lit| ComptimeValue{ .float = lit.value },
@@ -218,7 +235,7 @@ pub const ComptimeExecutor = struct {
         };
     }
 
-    fn evalBinaryExpr(self: *ComptimeExecutor, expr: *ast.BinaryExpr) !ComptimeValue {
+    fn evalBinaryExpr(self: *ComptimeExecutor, expr: *ast.BinaryExpr) ComptimeError!ComptimeValue {
         const left = try self.eval(expr.left);
         const right = try self.eval(expr.right);
 
@@ -232,7 +249,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .Subtract => blk: {
+            .Sub => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .int = left.int - right.int };
                 }
@@ -241,7 +258,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .Multiply => blk: {
+            .Mul => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .int = left.int * right.int };
                 }
@@ -250,7 +267,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .Divide => blk: {
+            .Div => blk: {
                 if (left == .int and right == .int) {
                     if (right.int == 0) return error.DivisionByZero;
                     break :blk ComptimeValue{ .int = @divTrunc(left.int, right.int) };
@@ -261,7 +278,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .Modulo => blk: {
+            .Mod => blk: {
                 if (left == .int and right == .int) {
                     if (right.int == 0) return error.DivisionByZero;
                     break :blk ComptimeValue{ .int = @rem(left.int, right.int) };
@@ -288,7 +305,7 @@ pub const ComptimeExecutor = struct {
                 };
                 break :blk ComptimeValue{ .bool = result };
             },
-            .LessThan => blk: {
+            .Less => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .bool = left.int < right.int };
                 }
@@ -297,7 +314,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .LessEqual => blk: {
+            .LessEq => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .bool = left.int <= right.int };
                 }
@@ -306,7 +323,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .GreaterThan => blk: {
+            .Greater => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .bool = left.int > right.int };
                 }
@@ -315,7 +332,7 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .GreaterEqual => blk: {
+            .GreaterEq => blk: {
                 if (left == .int and right == .int) {
                     break :blk ComptimeValue{ .bool = left.int >= right.int };
                 }
@@ -324,13 +341,13 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
-            .LogicalAnd => blk: {
+            .And => blk: {
                 if (left == .bool and right == .bool) {
                     break :blk ComptimeValue{ .bool = left.bool and right.bool };
                 }
                 return error.TypeMismatch;
             },
-            .LogicalOr => blk: {
+            .Or => blk: {
                 if (left == .bool and right == .bool) {
                     break :blk ComptimeValue{ .bool = left.bool or right.bool };
                 }
@@ -340,7 +357,7 @@ pub const ComptimeExecutor = struct {
         };
     }
 
-    fn evalUnaryExpr(self: *ComptimeExecutor, expr: *ast.UnaryExpr) !ComptimeValue {
+    fn evalUnaryExpr(self: *ComptimeExecutor, expr: *ast.UnaryExpr) ComptimeError!ComptimeValue {
         const operand = try self.eval(expr.operand);
 
         return switch (expr.op) {
@@ -359,10 +376,11 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.TypeMismatch;
             },
+            .BitNot, .Deref, .AddressOf, .Borrow, .BorrowMut => error.UnsupportedComptimeExpression,
         };
     }
 
-    fn evalCallExpr(self: *ComptimeExecutor, expr: *ast.CallExpr) !ComptimeValue {
+    fn evalCallExpr(self: *ComptimeExecutor, expr: *ast.CallExpr) ComptimeError!ComptimeValue {
         const callee = try self.eval(expr.callee);
 
         if (callee != .function) {
@@ -372,12 +390,12 @@ pub const ComptimeExecutor = struct {
         const func = callee.function;
 
         // Evaluate arguments
-        var args = try std.ArrayList(ComptimeValue).initCapacity(self.allocator, expr.arguments.len);
-        defer args.deinit();
+        var args = try std.ArrayList(ComptimeValue).initCapacity(self.allocator, expr.args.len);
+        defer args.deinit(self.allocator);
 
-        for (expr.arguments) |arg| {
+        for (expr.args) |arg| {
             const value = try self.eval(arg);
-            try args.append(value);
+            try args.append(self.allocator, value);
         }
 
         // Create new scope for function execution
@@ -402,7 +420,7 @@ pub const ComptimeExecutor = struct {
         return try self.eval(func.body);
     }
 
-    fn evalReflectExpr(self: *ComptimeExecutor, expr: *ast.ReflectExpr) !ComptimeValue {
+    fn evalReflectExpr(self: *ComptimeExecutor, expr: *ast.ReflectExpr) ComptimeError!ComptimeValue {
         return switch (expr.kind) {
             .TypeOf => blk: {
                 const value = try self.eval(expr.target);
@@ -494,6 +512,9 @@ pub const ComptimeExecutor = struct {
                 }
                 return error.FieldNotFound;
             },
+
+            // All other reflect operations not yet supported at comptime
+            else => error.UnsupportedComptimeExpression,
         };
     }
 

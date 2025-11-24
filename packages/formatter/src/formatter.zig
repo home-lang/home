@@ -266,6 +266,8 @@ pub const Formatter = struct {
             .BitNot => "~",
             .Deref => "*",
             .AddressOf => "&",
+            .Borrow => "&",
+            .BorrowMut => "&mut ",
         };
         try self.output.appendSlice(self.allocator, op_str);
     }

@@ -353,7 +353,7 @@ pub const Type = union(enum) {
         };
     }
 
-    pub fn format(self: Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: Type, comptime fmt: []const u8, options: anytype, writer: anytype) !void {
         _ = fmt;
         _ = options;
         switch (self) {
@@ -378,7 +378,7 @@ pub const Type = union(enum) {
                 try writer.writeAll("fn(");
                 for (f.params, 0..) |param, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try writer.print("{}", .{param});
+                    try writer.print("{any}", .{param});
                 }
                 try writer.print(") -> {}", .{f.return_type.*});
             },
@@ -389,7 +389,7 @@ pub const Type = union(enum) {
                 try writer.writeAll("(");
                 for (t.element_types, 0..) |elem, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try writer.print("{}", .{elem});
+                    try writer.print("{any}", .{elem});
                 }
                 try writer.writeAll(")");
             },
@@ -660,7 +660,7 @@ pub const TypeChecker = struct {
                 }
 
                 // End function scope - release all borrows
-                self.ownership_tracker.endScope();
+                self.ownership_tracker.exitScope();
             },
             .IfStmt => |if_stmt| {
                 // Check condition is boolean
@@ -679,7 +679,7 @@ pub const TypeChecker = struct {
                     };
                 }
                 // Release borrows at end of then block
-                self.ownership_tracker.endScope();
+                self.ownership_tracker.exitScope();
 
                 // Check else block if present
                 if (if_stmt.else_block) |else_block| {
@@ -691,7 +691,7 @@ pub const TypeChecker = struct {
                         };
                     }
                     // Release borrows at end of else block
-                    self.ownership_tracker.endScope();
+                    self.ownership_tracker.exitScope();
                 }
             },
             .IfLetStmt => |if_let_stmt| {
@@ -1643,21 +1643,21 @@ pub const TypeChecker = struct {
             },
             .Function => |func| {
                 // Build parameter list
-                var params_str = std.ArrayList(u8).init(self.allocator);
-                defer params_str.deinit();
+                var params_str = std.ArrayList(u8){};
+                defer params_str.deinit(self.allocator);
 
-                try params_str.appendSlice("fn(");
+                try params_str.appendSlice(self.allocator,"fn(");
                 for (func.params, 0..) |param, i| {
-                    if (i > 0) try params_str.appendSlice(", ");
-                    const param_str = try self.typeToString(param.*);
+                    if (i > 0) try params_str.appendSlice(self.allocator, ", ");
+                    const param_str = try self.typeToString(param);
                     defer self.allocator.free(param_str);
-                    try params_str.appendSlice(param_str);
+                    try params_str.appendSlice(self.allocator,param_str);
                 }
-                try params_str.appendSlice(") -> ");
+                try params_str.appendSlice(self.allocator,") -> ");
 
                 const ret_str = try self.typeToString(func.return_type.*);
                 defer self.allocator.free(ret_str);
-                try params_str.appendSlice(ret_str);
+                try params_str.appendSlice(self.allocator,ret_str);
 
                 return try self.allocator.dupe(u8, params_str.items);
             },
@@ -1671,7 +1671,7 @@ pub const TypeChecker = struct {
                 defer self.allocator.free(inner_str);
                 return try std.fmt.allocPrint(self.allocator, "&mut {s}", .{inner_str});
             },
-            else => try std.fmt.allocPrint(self.allocator, "{}", .{typ}),
+            else => try std.fmt.allocPrint(self.allocator, "{any}", .{typ}),
         };
     }
 

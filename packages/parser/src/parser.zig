@@ -723,8 +723,15 @@ pub const Parser = struct {
                     is_mut_self = true;
                 }
 
-                // Accept Identifier, 'self' keyword, and 'type' keyword as parameter names
-                const param_name = if (self.match(&.{ .Identifier, .SelfValue, .Type }))
+                // Accept Identifier and keywords as parameter names (to support C&C Generals codebase)
+                const param_name = if (self.match(&.{
+                    .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
+                    .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
+                    .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
+                    .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
+                    .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
+                    .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                }))
                     self.previous()
                 else {
                     try self.reportError("Expected parameter name");
@@ -900,8 +907,15 @@ pub const Parser = struct {
                 continue;
             }
 
-            // Allow 'type' keyword as a field name (common in game code)
-            const field_name = if (self.match(&.{ .Identifier, .Type }))
+            // Allow keywords as field names (common in game code like C&C Generals)
+            const field_name = if (self.match(&.{
+                .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
+                .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
+                .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
+                .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
+                .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
+                .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+            }))
                 self.previous()
             else {
                 try self.reportError("Expected field name");

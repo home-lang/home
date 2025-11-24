@@ -74,7 +74,7 @@ pub const ComptimeIntegration = struct {
     }
 
     /// Walk an expression tree and evaluate all comptime sub-expressions
-    pub fn processExpression(self: *ComptimeIntegration, expr: *ast.Expr) !void {
+    pub fn processExpression(self: *ComptimeIntegration, expr: *ast.Expr) anyerror!void {
         switch (expr.*) {
             .ComptimeExpr => |comptime_expr| {
                 _ = try self.evaluateComptimeExpr(comptime_expr);
@@ -91,7 +91,7 @@ pub const ComptimeIntegration = struct {
 
             .CallExpr => |call_expr| {
                 try self.processExpression(call_expr.callee);
-                for (call_expr.arguments) |arg| {
+                for (call_expr.args) |arg| {
                     try self.processExpression(arg);
                 }
             },
@@ -111,19 +111,23 @@ pub const ComptimeIntegration = struct {
             .IfExpr => |if_expr| {
                 try self.processExpression(if_expr.condition);
                 try self.processExpression(if_expr.then_branch);
-                if (if_expr.else_branch) |else_br| {
-                    try self.processExpression(else_br);
-                }
+                try self.processExpression(if_expr.else_branch);
             },
 
             .BlockExpr => |block_expr| {
                 for (block_expr.statements) |stmt| {
-                    try self.processStatement(stmt);
+                    try self.processStatement(&stmt);
                 }
             },
 
             // Leaf nodes - no sub-expressions
-            .Literal, .Identifier => {},
+            .IntegerLiteral,
+            .FloatLiteral,
+            .StringLiteral,
+            .CharLiteral,
+            .BooleanLiteral,
+            .NullLiteral,
+            .Identifier => {},
 
             else => {
                 // TODO: Handle other expression types as needed
@@ -132,22 +136,16 @@ pub const ComptimeIntegration = struct {
     }
 
     /// Process a statement for comptime expressions
-    pub fn processStatement(self: *ComptimeIntegration, stmt: *ast.Stmt) !void {
+    pub fn processStatement(self: *ComptimeIntegration, stmt: *const ast.Stmt) anyerror!void {
         switch (stmt.*) {
             .LetDecl => |let_decl| {
-                if (let_decl.initializer) |initializer| {
-                    try self.processExpression(initializer);
-                }
-            },
-
-            .ConstDecl => |const_decl| {
-                if (const_decl.initializer) |initializer| {
-                    try self.processExpression(initializer);
+                if (let_decl.value) |value| {
+                    try self.processExpression(value);
                 }
             },
 
             .ExprStmt => |expr_stmt| {
-                try self.processExpression(expr_stmt.expression);
+                try self.processExpression(expr_stmt);
             },
 
             .ReturnStmt => |ret_stmt| {
@@ -158,20 +156,26 @@ pub const ComptimeIntegration = struct {
 
             .IfStmt => |if_stmt| {
                 try self.processExpression(if_stmt.condition);
-                try self.processStatement(if_stmt.then_branch);
-                if (if_stmt.else_branch) |else_br| {
-                    try self.processStatement(else_br);
+                for (if_stmt.then_block.statements) |s| {
+                    try self.processStatement(&s);
+                }
+                if (if_stmt.else_block) |else_block| {
+                    for (else_block.statements) |s| {
+                        try self.processStatement(&s);
+                    }
                 }
             },
 
             .WhileStmt => |while_stmt| {
                 try self.processExpression(while_stmt.condition);
-                try self.processStatement(while_stmt.body);
+                for (while_stmt.body.statements) |s| {
+                    try self.processStatement(&s);
+                }
             },
 
             .BlockStmt => |block_stmt| {
                 for (block_stmt.statements) |s| {
-                    try self.processStatement(s);
+                    try self.processStatement(&s);
                 }
             },
 
@@ -186,14 +190,9 @@ pub const ComptimeIntegration = struct {
         for (program.statements) |decl| {
             switch (decl) {
                 .FnDecl => |func_decl| {
-                    if (func_decl.body) |body| {
-                        try self.processStatement(body);
-                    }
-                },
-
-                .ConstDecl => |const_decl| {
-                    if (const_decl.initializer) |initializer| {
-                        try self.processExpression(initializer);
+                    // Process statements in the function body directly
+                    for (func_decl.body.statements) |stmt| {
+                        try self.processStatement(&stmt);
                     }
                 },
 

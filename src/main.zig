@@ -398,15 +398,12 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 /// Print an enhanced error message with colors, context, and suggestions
 fn printEnhancedError(file_path: []const u8, source: []const u8, err_info: TypeChecker.TypeErrorInfo) !void {
-    // Error header with bold red "error:"
-    std.debug.print("{s}{s}error{s}{s}: {s}\n", .{
-        Color.Bold.code(),
+    // Error header with red "error:"
+    std.debug.print("{s}error{s}: {s}\n", .{
         Color.Red.code(),
         Color.Reset.code(),
-        Color.Bold.code(),
         err_info.message,
     });
-    std.debug.print("{s}\n", .{Color.Reset.code()});
 
     // If we have expected/actual types, show them
     if (err_info.expected != null and err_info.actual != null) {
@@ -465,10 +462,9 @@ fn printEnhancedError(file_path: []const u8, source: []const u8, err_info: TypeC
     // Suggestion if available
     if (err_info.suggestion) |suggestion| {
         std.debug.print("   {s}|{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
-        std.debug.print("   {s}={s} {s}help:{s} {s}\n", .{
+        std.debug.print("   {s}={s} help:{s} {s}\n", .{
             Color.Cyan.code(),
             Color.Reset.code(),
-            Color.Bold.code(),
             Color.Reset.code(),
             suggestion,
         });

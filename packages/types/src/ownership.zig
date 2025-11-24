@@ -62,7 +62,7 @@ pub const OwnershipTracker = struct {
         var it = self.variables.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.borrows.deinit();
+            entry.value_ptr.borrows.deinit(self.allocator);
         }
         self.variables.deinit();
 
@@ -80,7 +80,7 @@ pub const OwnershipTracker = struct {
             .state = .Owned,
             .type = typ,
             .location = loc,
-            .borrows = std.ArrayList(BorrowRecord).init(self.allocator),
+            .borrows = std.ArrayList(BorrowRecord){},
             .scope_depth = self.current_scope,
         });
     }
@@ -169,7 +169,7 @@ pub const OwnershipTracker = struct {
         switch (info.state) {
             .Owned, .Borrowed => {
                 // Can have multiple immutable borrows
-                try info.borrows.append(.{
+                try info.borrows.append(self.allocator, .{
                     .is_mutable = false,
                     .location = loc,
                     .scope_depth = self.current_scope,
@@ -209,7 +209,7 @@ pub const OwnershipTracker = struct {
         switch (info.state) {
             .Owned => {
                 // No existing borrows, safe to mutably borrow
-                try info.borrows.append(.{
+                try info.borrows.append(self.allocator, .{
                     .is_mutable = true,
                     .location = loc,
                     .scope_depth = self.current_scope,

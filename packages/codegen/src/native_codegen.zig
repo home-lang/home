@@ -4450,6 +4450,10 @@ pub const NativeCodegen = struct {
                         // For identifiers, generateExpr already returns address for structs
                         // No additional operation needed - rax already has the address
                     },
+                    .Borrow, .BorrowMut => {
+                        // Borrow operations - placeholder for future ownership tracking
+                        // For now, treat as address-of
+                    },
                 }
             },
             .CallExpr => |call| {
@@ -5306,16 +5310,17 @@ pub const NativeCodegen = struct {
                                 // For float constants, we need to load from memory
                                 // Store in data section and load address
                                 const int_bits: u64 = @bitCast(float_val);
-                                try self.assembler.movRegImm64(.rax, int_bits);
+                                try self.assembler.movRegImm64(.rax, @bitCast(int_bits));
                             },
                             .bool => |bool_val| {
                                 // Load boolean constant (0 or 1)
                                 try self.assembler.movRegImm64(.rax, if (bool_val) 1 else 0);
                             },
-                            .string => |str_val| {
+                            .string => |_| {
                                 // String constants need to be in data section
-                                const str_offset = try self.addStringLiteral(str_val);
-                                try self.assembler.leaRegMem(.rax, .rip, @intCast(str_offset));
+                                // TODO: Implement string literal support
+                                // For now, fall back to evaluating the expression
+                                try self.generateExpr(comptime_expr.expression);
                             },
                             .array => {
                                 // For arrays, fall back to evaluating the expression
@@ -5331,9 +5336,17 @@ pub const NativeCodegen = struct {
                                 // Function values in comptime context
                                 try self.generateExpr(comptime_expr.expression);
                             },
-                            .type => {
+                            .type_info => {
                                 // Type values - these are compile-time only, should not generate runtime code
                                 // This is likely an error, but we'll generate 0 as a placeholder
+                                try self.assembler.movRegImm64(.rax, 0);
+                            },
+                            .@"null" => {
+                                // Null value
+                                try self.assembler.movRegImm64(.rax, 0);
+                            },
+                            .@"undefined" => {
+                                // Undefined value - generate 0 as placeholder
                                 try self.assembler.movRegImm64(.rax, 0);
                             },
                         }
