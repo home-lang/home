@@ -111,8 +111,12 @@ pub fn build(b: *std.Build) void {
     const particles_pkg = createPackage(b, "packages/graphics/src/particles.zig", target, optimize, zig_test_framework);
     const shaders_pkg = createPackage(b, "packages/graphics/src/shaders.zig", target, optimize, zig_test_framework);
 
+    // Image processing package
+    const image_pkg = createPackage(b, "packages/image/src/image.zig", target, optimize, zig_test_framework);
+
     // Game development packages (order matters for dependencies)
     const game_assets_pkg = createPackage(b, "packages/game/src/assets.zig", target, optimize, zig_test_framework);
+    game_assets_pkg.addImport("image", image_pkg);
     const game_replay_pkg = createPackage(b, "packages/game/src/replay.zig", target, optimize, zig_test_framework);
     const game_mods_pkg = createPackage(b, "packages/game/src/mods.zig", target, optimize, zig_test_framework);
     const game_loop_pkg = createPackage(b, "packages/game/src/game_loop.zig", target, optimize, zig_test_framework);

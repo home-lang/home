@@ -527,3 +527,210 @@ Enables:
 - ✅ Memory management: proper allocation and deallocation
 
 **The compiler now supports 95% of planned Phase 1 features!**
+
+---
+
+# Image Processing Roadmap
+
+Native image format support for building apps with sharp-like image manipulation capabilities.
+
+## Phase 1: Core Image Formats (Essential)
+
+### PNG Support
+- [x] PNG decoder (read support) - lossless, alpha channel
+- [x] PNG encoder (write support) - compression levels
+- [ ] PNG optimization (file size reduction)
+
+### JPEG Support
+- [x] JPEG decoder (read support) - baseline DCT
+- [x] JPEG encoder (write support) - basic encoding
+- [ ] EXIF metadata parsing
+
+### WebP Support
+- [x] WebP decoder (lossy & lossless basics)
+- [x] WebP encoder (basic support)
+- [ ] WebP animation support (partial)
+
+### GIF Support
+- [x] GIF decoder with animation frames
+- [x] GIF encoder with animation
+- [x] Color palette optimization (basic)
+
+### BMP Support
+- [x] BMP decoder (8/24/32-bit, RLE8)
+- [x] BMP encoder
+
+## Phase 2: Modern Formats
+
+### AVIF Support
+- [ ] AVIF decoder (AV1-based, excellent compression)
+- [ ] AVIF encoder
+
+### HEIC/HEIF Support
+- [ ] HEIC decoder (Apple's format)
+- [ ] HEIC encoder
+
+### TIFF Support
+- [ ] TIFF decoder (multi-page, various compressions)
+- [ ] TIFF encoder
+
+### ICO Support
+- [ ] ICO decoder (Windows icons)
+- [ ] ICO encoder (multi-resolution)
+
+## Phase 3: Image Manipulation (Sharp-like API)
+
+### Resizing Operations
+- [x] resize(width, height) - with various algorithms
+- [x] Lanczos resampling (Lanczos2, Lanczos3)
+- [x] Bilinear interpolation
+- [x] Bicubic interpolation (Mitchell-Netravali)
+- [x] Nearest neighbor
+- [x] fit/cover/contain modes
+
+### Cropping & Composition
+- [x] crop(x, y, width, height)
+- [x] extract(region)
+- [x] extend(padding, background)
+- [x] composite(overlay, blend_mode) - 9 blend modes
+- [ ] tile(pattern)
+
+### Transformations
+- [x] rotate(degrees) - arbitrary rotation with bilinear interpolation
+- [x] flip() - vertical
+- [x] flop() - horizontal
+- [x] affine(matrix) - arbitrary transform
+- [x] trim() - auto-crop whitespace/transparency
+
+### Color Operations
+- [x] grayscale()
+- [x] tint(color)
+- [x] modulate(brightness, saturation, hue)
+- [x] normalize() - contrast stretching
+- [x] gamma(value)
+- [x] negate()
+- [x] threshold(value)
+- [x] linear(a, b) - linear transform
+- [x] sepia()
+- [x] recomb(matrix) - color matrix transform
+
+### Filters & Effects
+- [x] blur(sigma) - Gaussian blur (separable, optimized)
+- [x] sharpen(sigma, flat, jagged) - unsharp mask
+- [x] median(size) - noise reduction
+- [x] convolve(kernel) - custom convolution
+- [x] edge detection (Sobel)
+- [x] emboss
+- [ ] clahe() - adaptive histogram equalization
+
+### Color Space
+- [x] RGB <-> RGBA conversion
+- [x] RGB <-> Grayscale
+- [x] RGB <-> HSL
+- [x] RGB <-> HSV
+- [ ] RGB <-> CMYK
+- [ ] RGB <-> LAB
+- [ ] ICC profile support
+
+## Phase 4: Advanced Features
+
+### Metadata
+- [ ] EXIF read/write
+- [ ] IPTC support
+- [ ] XMP support
+- [ ] ICC color profiles
+
+### Performance
+- [ ] SIMD acceleration (SSE, AVX, NEON)
+- [ ] Multi-threaded processing
+- [ ] Streaming for large images
+- [ ] Memory-mapped file support
+
+### Format Detection
+- [ ] Magic byte detection
+- [ ] Auto-format detection from extension
+- [ ] MIME type support
+
+## Implementation Notes
+
+### Architecture
+```
+packages/image/
+├── src/
+│   ├── image.zig          # Core Image type and operations
+│   ├── formats/
+│   │   ├── png.zig        # PNG codec
+│   │   ├── jpeg.zig       # JPEG codec
+│   │   ├── webp.zig       # WebP codec
+│   │   ├── gif.zig        # GIF codec
+│   │   ├── bmp.zig        # BMP codec
+│   │   ├── avif.zig       # AVIF codec
+│   │   └── tiff.zig       # TIFF codec
+│   ├── ops/
+│   │   ├── resize.zig     # Resizing algorithms
+│   │   ├── crop.zig       # Cropping operations
+│   │   ├── transform.zig  # Rotate, flip, affine
+│   │   ├── color.zig      # Color adjustments
+│   │   └── filter.zig     # Blur, sharpen, etc.
+│   ├── color/
+│   │   ├── spaces.zig     # Color space conversions
+│   │   └── icc.zig        # ICC profile handling
+│   └── simd/
+│       ├── x86.zig        # SSE/AVX implementations
+│       └── arm.zig        # NEON implementations
+├── tests/
+└── examples/
+```
+
+### API Design Goals
+```zig
+// Load and manipulate images
+const img = try Image.load("photo.jpg");
+defer img.deinit();
+
+// Chain operations (Sharp-like)
+try img
+    .resize(800, 600, .lanczos)
+    .crop(100, 100, 600, 400)
+    .grayscale()
+    .sharpen(1.0)
+    .save("output.webp", .{ .quality = 85 });
+```
+
+## Progress Tracking
+
+| Format | Decode | Encode | Status |
+|--------|--------|--------|--------|
+| PNG    | ✅     | ✅     | Complete |
+| JPEG   | ✅     | ✅     | Complete |
+| WebP   | ✅     | ✅     | Complete |
+| GIF    | ✅     | ✅     | Complete |
+| BMP    | ✅     | ✅     | Complete |
+| AVIF   | ⬜     | ⬜     | Future |
+| HEIC   | ⬜     | ⬜     | Future |
+| TIFF   | ⬜     | ⬜     | Future |
+
+### Image Operations Progress
+
+| Operation | Status |
+|-----------|--------|
+| Resize (Nearest, Bilinear, Bicubic, Lanczos) | ✅ Complete |
+| Crop / Extract | ✅ Complete |
+| Extend / Padding | ✅ Complete |
+| Trim (Auto-crop) | ✅ Complete |
+| Composite (Blend modes) | ✅ Complete |
+| Rotate (90/180/270 + arbitrary) | ✅ Complete |
+| Flip / Flop | ✅ Complete |
+| Affine Transform | ✅ Complete |
+| Grayscale | ✅ Complete |
+| Brightness / Contrast / Saturation | ✅ Complete |
+| Gamma / Normalize | ✅ Complete |
+| Threshold | ✅ Complete |
+| Tint / Sepia | ✅ Complete |
+| RGB <-> HSL/HSV conversion | ✅ Complete |
+| Gaussian Blur | ✅ Complete |
+| Sharpen (Unsharp Mask) | ✅ Complete |
+| Median Filter | ✅ Complete |
+| Edge Detection (Sobel) | ✅ Complete |
+| Emboss | ✅ Complete |
+| Convolution (custom kernels) | ✅ Complete |

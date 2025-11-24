@@ -42,6 +42,8 @@ pub const ParseError = error{
     ModuleNotFound,
     /// Symbol not found in imported module
     SymbolNotFound,
+    /// Expected array size (integer or identifier)
+    ExpectedArraySize,
 };
 
 /// Operator precedence levels for expression parsing.
@@ -606,6 +608,16 @@ pub const Parser = struct {
             return stmt;
         }
 
+        // static local variable (static mut seed: u32 = 12345)
+        // Parse as a mutable variable declaration with static storage
+        if (self.match(&.{.Static})) {
+            // Expect 'mut' after 'static' for now (static mut pattern)
+            _ = self.match(&.{.Mut}); // Optional mut, but we treat static as always mutable storage
+            var stmt = try self.varDeclaration();
+            if (is_pub) stmt.LetDecl.is_public = true;
+            return stmt;
+        }
+
         // Check for it('description') { body } test syntax
         if (self.match(&.{.It})) {
             return try self.itTestDeclaration();
@@ -711,11 +723,9 @@ pub const Parser = struct {
                     is_mut_self = true;
                 }
 
-                // Accept both Identifier and 'self' keyword as parameter names
-                const param_name = if (self.check(.Identifier))
-                    try self.expect(.Identifier, "Expected parameter name")
-                else if (self.check(.SelfValue))
-                    try self.expect(.SelfValue, "Expected parameter name")
+                // Accept Identifier, 'self' keyword, and 'type' keyword as parameter names
+                const param_name = if (self.match(&.{ .Identifier, .SelfValue, .Type }))
+                    self.previous()
                 else {
                     try self.reportError("Expected parameter name");
                     return error.UnexpectedToken;
@@ -890,7 +900,13 @@ pub const Parser = struct {
                 continue;
             }
 
-            const field_name = try self.expect(.Identifier, "Expected field name");
+            // Allow 'type' keyword as a field name (common in game code)
+            const field_name = if (self.match(&.{ .Identifier, .Type }))
+                self.previous()
+            else {
+                try self.reportError("Expected field name");
+                return error.UnexpectedToken;
+            };
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
 
@@ -1327,11 +1343,20 @@ pub const Parser = struct {
 
             // Check for semicolon (fixed-size array: [T; N])
             if (self.match(&.{.Semicolon})) {
-                // Parse the size
-                const size_token = try self.expect(.Integer, "Expected array size");
+                // Parse the size - can be an integer literal or a constant identifier
+                const size_lexeme = blk: {
+                    if (self.match(&.{.Integer})) {
+                        break :blk self.previous().lexeme;
+                    } else if (self.match(&.{.Identifier})) {
+                        break :blk self.previous().lexeme;
+                    } else {
+                        try self.reportError("Expected array size");
+                        return error.ExpectedArraySize;
+                    }
+                };
                 _ = try self.expect(.RightBracket, "Expected ']'");
                 // Return [T; N] as string
-                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_token.lexeme });
+                const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_lexeme });
                 return arr_type;
             }
 
@@ -1339,6 +1364,11 @@ pub const Parser = struct {
             _ = try self.expect(.RightBracket, "Expected ']'");
             const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]", .{inner});
             return arr_type;
+        }
+
+        // Check for Self type (refers to the current impl type)
+        if (self.match(&.{.SelfType})) {
+            return try self.allocator.dupe(u8, "Self");
         }
 
         // Regular type (identifier, possibly with module path like std.fs.File)
@@ -3106,6 +3136,16 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Handle 'self' keyword
+        if (self.match(&.{.SelfValue})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
         if (self.match(&.{.Integer})) {
             const token = self.previous();
             const value = std.fmt.parseInt(i64, token.lexeme, 10) catch 0;
@@ -3787,8 +3827,8 @@ pub const Parser = struct {
                         const is_struct_literal = blk: {
                             // Empty braces {} is struct literal
                             if (self.check(.RightBrace)) break :blk true;
-                            // If next token is identifier followed by :, it's struct literal
-                            if (self.check(.Identifier)) {
+                            // If next token is identifier (or 'type' keyword) followed by :, it's struct literal
+                            if (self.check(.Identifier) or self.check(.Type)) {
                                 const after_ident_pos = self.current + 1;
                                 if (after_ident_pos < self.tokens.len) {
                                     if (self.tokens[after_ident_pos].type == .Colon) {
@@ -3804,7 +3844,13 @@ pub const Parser = struct {
                             defer fields.deinit(self.allocator);
 
                             while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                                const field_name_token = try self.expect(.Identifier, "Expected field name");
+                                // Allow 'type' keyword as field name
+                                const field_name_token = if (self.match(&.{ .Identifier, .Type }))
+                                    self.previous()
+                                else {
+                                    try self.reportError("Expected field name");
+                                    return error.UnexpectedToken;
+                                };
                                 _ = try self.expect(.Colon, "Expected ':' after field name");
                                 const field_value = try self.expression();
 
@@ -3890,7 +3936,13 @@ pub const Parser = struct {
                 defer fields.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                    const field_name_token = try self.expect(.Identifier, "Expected field name");
+                    // Allow 'type' keyword as field name
+                    const field_name_token = if (self.match(&.{ .Identifier, .Type }))
+                        self.previous()
+                    else {
+                        try self.reportError("Expected field name");
+                        return error.UnexpectedToken;
+                    };
                     _ = try self.expect(.Colon, "Expected ':' after field name");
                     const field_value = try self.expression();
 
@@ -3958,10 +4010,10 @@ pub const Parser = struct {
         }
 
         // Unary expressions
-        if (self.match(&.{ .Bang, .Minus, .Tilde, .Star, .Ampersand })) {
+        if (self.match(&.{ .Bang, .Not, .Minus, .Tilde, .Star, .Ampersand })) {
             const op_token = self.previous();
             const op: ast.UnaryOp = switch (op_token.type) {
-                .Bang => .Not,
+                .Bang, .Not => .Not,
                 .Minus => .Neg,
                 .Tilde => .BitNot,
                 .Star => .Deref,

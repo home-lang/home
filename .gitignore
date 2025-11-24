@@ -20,3 +20,4 @@ packages/.DS_Store
 /pantry_modules
 /packages/collections/.zig-cache
 /packages/io/.zig-cache
+/packages/video/.zig-cache
