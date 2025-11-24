@@ -1,0 +1,35 @@
+// Test move semantics and ownership tracking
+
+fn main() {
+    // Test 1: Basic move - should work
+    let s1: string = "hello";
+    let s2 = s1;  // s1 is moved to s2
+
+    // Test 2: Use after move - should ERROR
+    // let s3 = s1;  // ERROR: use of moved value 's1'
+
+    // Test 3: Copy types (primitives) - should work
+    let x: int = 42;
+    let y = x;     // x is copied (not moved) because int is Copy
+    let z = x;     // Should still work - x wasn't moved
+
+    // Test 4: Multiple moves in sequence
+    let msg = "world";
+    let msg2 = msg;
+    // let msg3 = msg;  // ERROR: use of moved value 'msg'
+
+    println(s2);
+    println(y);
+    println(z);
+    println(msg2);
+}
+
+fn test_function_moves() {
+    let data = "test data";
+    consume(data);      // data is moved into function
+    // let x = data;    // ERROR: use of moved value 'data'
+}
+
+fn consume(s: string) {
+    println(s);
+}

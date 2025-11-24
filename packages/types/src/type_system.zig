@@ -8,6 +8,8 @@ pub const TraitChecker = trait_checker.TraitChecker;
 const comptime_mod = @import("comptime");
 const ComptimeIntegration = comptime_mod.integration.ComptimeIntegration;
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
+const ownership = @import("ownership.zig");
+const OwnershipTracker = ownership.OwnershipTracker;
 
 /// Home's static type system with support for advanced features.
 ///
@@ -409,7 +411,7 @@ pub const TypeChecker = struct {
     allocated_types: std.ArrayList(*Type),
     allocated_slices: std.ArrayList([]Type),
     comptime_store: ?*ComptimeValueStore,
-    // ownership_tracker: ownership.OwnershipTracker, // TODO: Implement ownership tracking
+    ownership_tracker: OwnershipTracker,
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -425,7 +427,7 @@ pub const TypeChecker = struct {
             .allocated_types = std.ArrayList(*Type){},
             .allocated_slices = std.ArrayList([]Type){},
             .comptime_store = null,
-            // .ownership_tracker = ownership.OwnershipTracker.init(allocator), // TODO: Implement
+            .ownership_tracker = OwnershipTracker.init(allocator),
         };
     }
 
@@ -455,7 +457,7 @@ pub const TypeChecker = struct {
         }
         self.allocated_slices.deinit(self.allocator);
 
-        // self.ownership_tracker.deinit();
+        self.ownership_tracker.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {
@@ -498,11 +500,10 @@ pub const TypeChecker = struct {
         }
 
         // Collect ownership errors into main error list
-        // TODO: Implement ownership tracking
-        // for (self.ownership_tracker.errors.items) |err_info| {
-        //     const msg = try self.allocator.dupe(u8, err_info.message);
-        //     try self.errors.append(self.allocator, .{ .message = msg, .loc = err_info.loc });
-        // }
+        for (self.ownership_tracker.errors.items) |err_info| {
+            const msg = try self.allocator.dupe(u8, err_info.message);
+            try self.errors.append(self.allocator, .{ .message = msg, .loc = err_info.loc });
+        }
 
         return self.errors.items.len == 0;
     }
@@ -589,20 +590,17 @@ pub const TypeChecker = struct {
 
                     // If the value is an identifier, mark it as moved (if movable)
                     if (value.* == .Identifier) {
-                        _ = value.Identifier.name;
-                        // TODO: Implement ownership tracking
-                        // try self.ownership_tracker.markMoved(id_name);
+                        const id_name = value.Identifier.name;
+                        try self.ownership_tracker.markMoved(id_name);
                     }
 
                     try self.env.define(decl.name, value_type);
                     // Track ownership of the new variable
-                    // TODO: Implement ownership tracking
-                    // try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
+                    try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
                 } else if (decl.type_name) |type_name| {
                     const var_type = try self.parseTypeName(type_name);
                     try self.env.define(decl.name, var_type);
-                    // TODO: Implement ownership tracking
-                    // try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
+                    try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
                 }
             },
             .FnDecl => |fn_decl| {
@@ -994,11 +992,10 @@ pub const TypeChecker = struct {
             .ArrayLiteral => |array| try self.inferArrayLiteral(array),
             .Identifier => |id| {
                 // Check ownership before use
-                // TODO: Implement ownership tracking
-                // self.ownership_tracker.checkUse(id.name, id.node.loc) catch |err| {
-                //     if (err != error.UseAfterMove) return err;
-                //     // Error already added to ownership tracker
-                // };
+                self.ownership_tracker.checkUse(id.name, id.node.loc) catch |err| {
+                    if (err != error.UseAfterMove) return err;
+                    // Error already added to ownership tracker, continue type checking
+                };
 
                 return self.env.get(id.name) orelse {
                     try self.addError("Undefined variable", id.node.loc);
