@@ -286,8 +286,15 @@ pub const LinkerScript = struct {
 
             // Parse ENTRY
             if (std.mem.startsWith(u8, trimmed, "ENTRY(")) {
-                // Extract entry point
-                // TODO: Actual parsing
+                // Extract entry point from: ENTRY(symbol_name)
+                if (std.mem.indexOf(u8, trimmed, "(")) |paren_start| {
+                    if (std.mem.indexOf(u8, trimmed[paren_start + 1 ..], ")")) |paren_end_rel| {
+                        const entry_symbol = std.mem.trim(u8, trimmed[paren_start + 1 .. paren_start + 1 + paren_end_rel], " \t");
+                        if (entry_symbol.len > 0) {
+                            result.entry_point = try allocator.dupe(u8, entry_symbol);
+                        }
+                    }
+                }
             }
 
             // Parse MEMORY

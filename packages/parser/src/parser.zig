@@ -928,20 +928,36 @@ pub const Parser = struct {
                 continue;
             }
 
-            // Allow keywords as field names (common in game code like C&C Generals)
-            const field_name = if (self.match(&.{
-                .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
-                .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
-                .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
-                .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
-                .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
-                .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
-            }))
-                self.previous()
-            else {
-                try self.reportError("Expected field name");
-                return error.UnexpectedToken;
+            // Check if we have a potential field name followed by a colon
+            // This prevents mistaking statement keywords for field names
+            const checkpoint = self.current;
+            const has_field = blk: {
+                // Try to match a potential field name
+                if (self.match(&.{
+                    .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
+                    .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
+                    .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
+                    .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
+                    .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
+                    .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                })) {
+                    // Check if next token is a colon (indicating a field)
+                    if (self.check(.Colon)) {
+                        break :blk true;
+                    }
+                }
+                // Not a field, restore position
+                self.current = checkpoint;
+                break :blk false;
             };
+
+            if (!has_field) {
+                // Not a field, must be end of struct or parse error
+                break;
+            }
+
+            // Now actually consume the field name (we know it's valid)
+            const field_name = self.advance();
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
 

@@ -116,6 +116,41 @@ pub const CacheEntry = struct {
 };
 
 // ============================================================================
+// JSON Serialization Types
+// ============================================================================
+
+/// JSON representation of cache entry
+const EntryJson = struct {
+    key: []const u8,
+    module_name: []const u8,
+    source_path: []const u8,
+    source_mtime: i128,
+    dependencies: []const []const u8,
+    ir_path: []const u8,
+    object_path: []const u8,
+    created_at: i64,
+    last_accessed: i64,
+    hit_count: u32,
+    compile_time_ms: i64,
+};
+
+/// JSON representation of cache stats
+const StatsJson = struct {
+    cache_hits: u64,
+    cache_misses: u64,
+    cache_stores: u64,
+    cache_invalidations: u64,
+    cache_evictions: u64,
+};
+
+/// JSON metadata file format
+const MetadataJson = struct {
+    version: u32,
+    entries: []const EntryJson,
+    stats: StatsJson,
+};
+
+// ============================================================================
 // IR Cache Implementation
 // ============================================================================
 
@@ -379,25 +414,200 @@ pub const IRCache = struct {
     }
 
     fn loadMetadata(self: *IRCache) !void {
-        const data = try std.fs.cwd().readFileAlloc(self.metadata_file, self.allocator, std.Io.Limit.limited(100 * 1024 * 1024));
+        const data = fs.cwd().readFileAlloc(self.metadata_file, self.allocator, .limited(100 * 1024 * 1024)) catch |err| {
+            // If file doesn't exist, start with empty cache
+            if (err == error.FileNotFound) return;
+            return err;
+        };
         defer self.allocator.free(data);
-        // TODO: Parse JSON metadata
-        // For now, just note that we attempted to load
+
+        // Parse JSON metadata
+        const parsed = std.json.parseFromSlice(
+            MetadataJson,
+            self.allocator,
+            data,
+            .{ .ignore_unknown_fields = true },
+        ) catch |err| {
+            std.debug.print("Warning: Failed to parse cache metadata: {}\n", .{err});
+            return;
+        };
+        defer parsed.deinit();
+
+        const metadata = parsed.value;
+
+        // Restore cache entries
+        for (metadata.entries) |entry_json| {
+            // Parse cache hash from hex string
+            var cache_hash: CacheHash = undefined;
+            _ = std.fmt.hexToBytes(&cache_hash, entry_json.key) catch continue;
+
+            // Parse dependency hashes
+            var dependencies = try self.allocator.alloc(CacheHash, entry_json.dependencies.len);
+            var dep_count: usize = 0;
+            for (entry_json.dependencies) |dep_hex| {
+                var dep_hash: CacheHash = undefined;
+                if (std.fmt.hexToBytes(&dep_hash, dep_hex)) |_| {
+                    dependencies[dep_count] = dep_hash;
+                    dep_count += 1;
+                } else |_| {}
+            }
+            const final_dependencies = dependencies[0..dep_count];
+
+            const entry = CacheEntry{
+                .key = cache_hash,
+                .module_name = try self.allocator.dupe(u8, entry_json.module_name),
+                .source_path = try self.allocator.dupe(u8, entry_json.source_path),
+                .source_mtime = entry_json.source_mtime,
+                .dependencies = try self.allocator.dupe(CacheHash, final_dependencies),
+                .ir_path = try self.allocator.dupe(u8, entry_json.ir_path),
+                .object_path = try self.allocator.dupe(u8, entry_json.object_path),
+                .created_at = entry_json.created_at,
+                .last_accessed = entry_json.last_accessed,
+                .hit_count = @intCast(entry_json.hit_count),
+                .compile_time_ms = entry_json.compile_time_ms,
+            };
+
+            self.allocator.free(dependencies);
+
+            try self.entries.put(cache_hash, entry);
+        }
+
+        // Restore stats
+        self.stats.cache_hits = metadata.stats.cache_hits;
+        self.stats.cache_misses = metadata.stats.cache_misses;
+        self.stats.cache_stores = metadata.stats.cache_stores;
+        self.stats.cache_invalidations = metadata.stats.cache_invalidations;
+        self.stats.cache_evictions = metadata.stats.cache_evictions;
     }
 
     fn saveMetadata(self: *IRCache) !void {
         const file = try fs.cwd().createFile(self.metadata_file, .{});
         defer file.close();
 
-        // TODO: Serialize entries to JSON
-        // For now, save basic stats
-        const data = try std.fmt.allocPrint(self.allocator, "{{ \"entries\": {}, \"hits\": {}, \"misses\": {} }}\n", .{
-            self.entries.count(),
-            self.stats.cache_hits,
-            self.stats.cache_misses,
-        });
-        defer self.allocator.free(data);
-        try file.writeAll(data);
+        // Serialize entries to JSON
+        const entry_count = self.entries.count();
+        var entries_json_array = try self.allocator.alloc(EntryJson, entry_count);
+        defer self.allocator.free(entries_json_array);
+
+        var idx: usize = 0;
+        var entry_iter = self.entries.iterator();
+        while (entry_iter.next()) |kv| : (idx += 1) {
+            const entry = kv.value_ptr.*;
+
+            // Convert cache hash to hex string
+            var key_buf: [64]u8 = undefined;
+            const key_hex = hashToHex(entry.key, &key_buf);
+
+            // Convert dependency hashes to hex strings
+            const deps_hex = try self.allocator.alloc([]const u8, entry.dependencies.len);
+            for (entry.dependencies, 0..) |dep_hash, dep_idx| {
+                const dep_buf = try self.allocator.alloc(u8, 64);
+                const dep_hex = hashToHex(dep_hash, dep_buf);
+                deps_hex[dep_idx] = try self.allocator.dupe(u8, dep_hex);
+            }
+
+            entries_json_array[idx] = EntryJson{
+                .key = try self.allocator.dupe(u8, key_hex),
+                .module_name = entry.module_name,
+                .source_path = entry.source_path,
+                .source_mtime = entry.source_mtime,
+                .dependencies = deps_hex,
+                .ir_path = entry.ir_path,
+                .object_path = entry.object_path,
+                .created_at = entry.created_at,
+                .last_accessed = entry.last_accessed,
+                .hit_count = entry.hit_count,
+                .compile_time_ms = entry.compile_time_ms,
+            };
+        }
+
+        // Write JSON to file using simple manual JSON serialization
+        // Format: { "version": 1, "entries": [...], "stats": {...} }
+
+        try file.writeAll("{");
+        try file.writeAll("\n  \"version\": 1,\n  \"entries\": [\n");
+
+        // Write entries
+        for (entries_json_array, 0..) |entry, i| {
+            try file.writeAll("    {\n");
+
+            const key_line = try std.fmt.allocPrint(self.allocator, "      \"key\": \"{s}\",\n", .{entry.key});
+            defer self.allocator.free(key_line);
+            try file.writeAll(key_line);
+
+            const module_line = try std.fmt.allocPrint(self.allocator, "      \"module_name\": \"{s}\",\n", .{entry.module_name});
+            defer self.allocator.free(module_line);
+            try file.writeAll(module_line);
+
+            const source_line = try std.fmt.allocPrint(self.allocator, "      \"source_path\": \"{s}\",\n", .{entry.source_path});
+            defer self.allocator.free(source_line);
+            try file.writeAll(source_line);
+
+            const mtime_line = try std.fmt.allocPrint(self.allocator, "      \"source_mtime\": {},\n", .{entry.source_mtime});
+            defer self.allocator.free(mtime_line);
+            try file.writeAll(mtime_line);
+
+            try file.writeAll("      \"dependencies\": [");
+            for (entry.dependencies, 0..) |dep, j| {
+                const dep_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{dep});
+                defer self.allocator.free(dep_str);
+                try file.writeAll(dep_str);
+                if (j < entry.dependencies.len - 1) try file.writeAll(", ");
+            }
+            try file.writeAll("],\n");
+
+            const ir_line = try std.fmt.allocPrint(self.allocator, "      \"ir_path\": \"{s}\",\n", .{entry.ir_path});
+            defer self.allocator.free(ir_line);
+            try file.writeAll(ir_line);
+
+            const obj_line = try std.fmt.allocPrint(self.allocator, "      \"object_path\": \"{s}\",\n", .{entry.object_path});
+            defer self.allocator.free(obj_line);
+            try file.writeAll(obj_line);
+
+            const created_line = try std.fmt.allocPrint(self.allocator, "      \"created_at\": {},\n", .{entry.created_at});
+            defer self.allocator.free(created_line);
+            try file.writeAll(created_line);
+
+            const accessed_line = try std.fmt.allocPrint(self.allocator, "      \"last_accessed\": {},\n", .{entry.last_accessed});
+            defer self.allocator.free(accessed_line);
+            try file.writeAll(accessed_line);
+
+            const hits_line = try std.fmt.allocPrint(self.allocator, "      \"hit_count\": {},\n", .{entry.hit_count});
+            defer self.allocator.free(hits_line);
+            try file.writeAll(hits_line);
+
+            const compile_line = try std.fmt.allocPrint(self.allocator, "      \"compile_time_ms\": {}\n", .{entry.compile_time_ms});
+            defer self.allocator.free(compile_line);
+            try file.writeAll(compile_line);
+
+            try file.writeAll("    }");
+            if (i < entries_json_array.len - 1) try file.writeAll(",");
+            try file.writeAll("\n");
+        }
+
+        try file.writeAll("  ],\n  \"stats\": {\n");
+
+        const hits_line = try std.fmt.allocPrint(self.allocator, "    \"cache_hits\": {},\n", .{self.stats.cache_hits});
+        defer self.allocator.free(hits_line);
+        try file.writeAll(hits_line);
+
+        const misses_line = try std.fmt.allocPrint(self.allocator, "    \"cache_misses\": {},\n", .{self.stats.cache_misses});
+        defer self.allocator.free(misses_line);
+        try file.writeAll(misses_line);
+
+        const stores_line = try std.fmt.allocPrint(self.allocator, "    \"cache_stores\": {},\n", .{self.stats.cache_stores});
+        defer self.allocator.free(stores_line);
+        try file.writeAll(stores_line);
+
+        const inval_line = try std.fmt.allocPrint(self.allocator, "    \"cache_invalidations\": {},\n", .{self.stats.cache_invalidations});
+        defer self.allocator.free(inval_line);
+        try file.writeAll(inval_line);
+
+        const evict_line = try std.fmt.allocPrint(self.allocator, "    \"cache_evictions\": {}\n", .{self.stats.cache_evictions});
+        defer self.allocator.free(evict_line);
+        try file.writeAll(evict_line);
+
+        try file.writeAll("  }\n}\n");
     }
 };
 

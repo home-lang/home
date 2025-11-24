@@ -77,80 +77,106 @@ A comprehensive, dependency-free video processing library for the Home language,
   - [x] Fragmented MP4 (fMP4) for streaming
   - [x] Fast-start (moov before mdat) option
   - [x] Multiple audio/video tracks
-- [ ] **QuickTime** (.mov) - Apple QuickTime format
-  - [ ] Full moov atom support
-  - [ ] ProRes marker handling
-- [ ] **WebM** (.webm) - Matroska subset for web
-  - [ ] EBML parsing
-  - [ ] Cluster-based seeking
-  - [ ] Append-only streaming mode
-- [ ] **Matroska** (.mkv) - Full container support
-  - [ ] Chapter markers
-  - [ ] Attachment support (fonts, etc.)
-  - [ ] Multiple subtitle tracks
+- [x] **QuickTime** (.mov) - Apple QuickTime format
+  - [x] Full moov atom support
+  - [x] ProRes marker handling
+  - [x] trak/mdia/minf structure
+- [x] **WebM** (.webm) - Matroska subset for web
+  - [x] EBML parsing
+  - [x] Cluster-based seeking
+  - [x] Append-only streaming mode
+  - [x] SimpleBlock encoding
+- [x] **Matroska** (.mkv) - Full container support
+  - [x] Chapter markers
+  - [x] Attachment support (fonts, etc.)
+  - [x] Multiple subtitle tracks
+  - [x] Tags and metadata
+  - [x] SeekHead and Cues
 - [x] **AVI** (.avi) - Legacy container
   - [x] RIFF chunk parsing
   - [x] OpenDML extensions for >2GB files
 
 ### 2.2 Audio Containers (Read & Write)
-- [ ] **MP3** (.mp3) - MPEG Audio Layer III
-  - [ ] ID3v1 and ID3v2 tags
-  - [ ] Xing/VBRI headers for VBR
-- [ ] **Ogg** (.ogg) - Ogg container
-  - [ ] Page structure parsing
-  - [ ] Vorbis comment metadata
-- [ ] **WAV** (.wav) - RIFF WAVE
-  - [ ] PCM and compressed formats
-  - [ ] Broadcast WAV extensions
-  - [ ] RF64 for >4GB files
-- [ ] **FLAC** (.flac) - Free Lossless Audio Codec container
-  - [ ] Metadata blocks
-  - [ ] Seek table support
-- [ ] **AAC/ADTS** (.aac) - Raw AAC stream
-  - [ ] ADTS header parsing
-  - [ ] LATM support
+- [x] **MP3** (.mp3) - MPEG Audio Layer III
+  - [x] ID3v1 and ID3v2 tags
+  - [x] Xing/VBRI headers for VBR
+  - [x] Frame header parsing
+- [x] **Ogg** (.ogg) - Ogg container
+  - [x] Page structure parsing
+  - [x] Vorbis comment metadata
+  - [x] CRC validation
+  - [x] Segment table encoding
+- [x] **WAV** (.wav) - RIFF WAVE
+  - [x] PCM and compressed formats
+  - [x] Broadcast WAV extensions
+  - [x] RF64 for >4GB files
+  - [x] UMID and loudness metadata
+- [x] **FLAC** (.flac) - Free Lossless Audio Codec container
+  - [x] Metadata blocks
+  - [x] Seek table support
+  - [x] Picture/cover art
+  - [x] Vorbis comments
+- [x] **AAC/ADTS** (.aac) - Raw AAC stream
+  - [x] ADTS header parsing
+  - [x] LATM support
+  - [x] CRC protection
 
 ### 2.3 Container Utilities
-- [ ] Format detection from magic bytes
-- [ ] Format detection from file extension
-- [ ] MIME type generation with codec strings
-- [ ] Container capability queries (supported codecs, track limits)
-- [ ] Metadata format options per container
+- [x] Format detection from magic bytes
+- [x] Format detection from file extension
+- [x] MIME type generation with codec strings
+- [x] Container capability queries (supported codecs, track limits)
+- [x] Metadata format options per container
 
 ---
 
 ## 3. Video Codecs
 
 ### 3.1 Modern Codecs (Encode & Decode)
-- [x] **H.264/AVC** - Advanced Video Coding (Encoder)
-  - [x] Baseline, Main, High profiles
-  - [x] B-frame support
-  - [x] CABAC/CAVLC entropy coding
-  - [x] SPS/PPS handling
-  - [x] NAL unit parsing
-  - [ ] Decoder
-- [x] **H.265/HEVC** - High Efficiency Video Coding (Encoder)
-  - [x] Main, Main10 profiles
-  - [x] CTU size configuration
-  - [x] VPS/SPS/PPS handling
-  - [ ] Decoder
-- [x] **VP9** - Google's open codec (Encoder)
-  - [x] Profile 0, 1, 2, 3
-  - [x] Superframe parsing
-  - [x] Alpha channel support
-  - [ ] Decoder
-- [x] **AV1** - Alliance for Open Media (Encoder)
-  - [x] Main, High, Professional profiles
-  - [x] Film grain synthesis
-  - [x] OBU parsing
-  - [ ] Decoder
+- [x] **H.264/AVC** - Advanced Video Coding
+  - [x] Encoder: Baseline, Main, High profiles
+  - [x] Encoder: B-frame support
+  - [x] Encoder: CABAC/CAVLC entropy coding
+  - [x] Encoder: SPS/PPS handling
+  - [x] Encoder: NAL unit parsing
+  - [x] Decoder: SPS/PPS parsing
+  - [x] Decoder: Slice decoding
+  - [x] Decoder: DPB management
+- [x] **H.265/HEVC** - High Efficiency Video Coding
+  - [x] Encoder: Main, Main10 profiles
+  - [x] Encoder: CTU size configuration
+  - [x] Encoder: VPS/SPS/PPS handling
+  - [x] Decoder: VPS/SPS/PPS parsing
+  - [x] Decoder: Tile decoding
+  - [x] Decoder: Reference frame management
+- [x] **VP9** - Google's open codec
+  - [x] Encoder: Profile 0, 1, 2, 3
+  - [x] Encoder: Superframe support
+  - [x] Encoder: Alpha channel support
+  - [x] Decoder: Superframe parsing
+  - [x] Decoder: Tile decoding
+  - [x] Decoder: Reference frame management
+- [x] **AV1** - Alliance for Open Media
+  - [x] Encoder: Main, High, Professional profiles
+  - [x] Encoder: Film grain synthesis
+  - [x] Encoder: OBU generation
+  - [x] Decoder: OBU parsing
+  - [x] Decoder: Sequence/Frame header parsing
+  - [x] Decoder: Tile group decoding
 
 ### 3.2 Legacy Codecs (Decode priority, Encode optional)
 - [x] **VP8** - WebM legacy codec
-- [ ] **MPEG-4 Part 2** - DivX/Xvid compatibility
+- [x] **MPEG-4 Part 2** - DivX/Xvid compatibility
+  - [x] VOL/VOP parsing
+  - [x] Sprite and data partitioning support
+  - [x] I/P/B-VOP decoding
 - [x] **MPEG-2** - DVD video
 - [x] **MJPEG** - Motion JPEG
-- [ ] **ProRes** (decode only) - Apple intermediate codec
+- [x] **ProRes** (decode only) - Apple intermediate codec
+  - [x] ProRes 422/422 HQ/422 LT/422 Proxy
+  - [x] ProRes 4444/4444 XQ
+  - [x] Alpha channel support
+  - [x] Slice-based decoding
 
 ### 3.3 Codec Configuration
 - [ ] Bitrate control (CBR, VBR, CRF, CQP)

@@ -254,16 +254,69 @@ pub const CoverageGuidedTesting = struct {
         self: *CoverageGuidedTesting,
         current_coverage: coverage.CoverageResult,
     ) ![]const []const u8 {
-        _ = self;
-        _ = current_coverage;
+        var suggestions = std.ArrayList([]const u8).init(self.allocator);
 
-        // TODO: Implement intelligent test suggestion based on:
-        // - Uncovered lines
-        // - Untested branches
-        // - Uncalled functions
-        // - Code complexity metrics
+        // Analyze uncovered lines
+        const line_coverage_pct = current_coverage.linePercentage();
+        if (line_coverage_pct < 80.0) {
+            const uncovered_lines = current_coverage.lines_total - current_coverage.lines_covered;
+            const suggestion = try std.fmt.allocPrint(
+                self.allocator,
+                "Line coverage is {d:.1}%. Add tests to cover {d} uncovered lines.",
+                .{ line_coverage_pct, uncovered_lines },
+            );
+            try suggestions.append(suggestion);
+        }
 
-        return &[_][]const u8{};
+        // Analyze untested functions
+        const func_coverage_pct = current_coverage.functionPercentage();
+        if (func_coverage_pct < 90.0) {
+            const uncovered_funcs = current_coverage.functions_total - current_coverage.functions_covered;
+            if (uncovered_funcs > 0) {
+                const suggestion = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Function coverage is {d:.1}%. Add tests for {d} untested functions.",
+                    .{ func_coverage_pct, uncovered_funcs },
+                );
+                try suggestions.append(suggestion);
+            }
+        }
+
+        // Analyze untested branches
+        const branch_coverage_pct = current_coverage.branchPercentage();
+        if (branch_coverage_pct < 75.0) {
+            const uncovered_branches = current_coverage.branches_total - current_coverage.branches_covered;
+            if (uncovered_branches > 0) {
+                const suggestion = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Branch coverage is {d:.1}%. Add tests for edge cases to cover {d} untested branches.",
+                    .{ branch_coverage_pct, uncovered_branches },
+                );
+                try suggestions.append(suggestion);
+            }
+        }
+
+        // Suggest focusing on complex untested code
+        if (suggestions.items.len > 0) {
+            const priority_suggestion = try std.fmt.allocPrint(
+                self.allocator,
+                "Priority: Focus on high-complexity functions with low coverage to maximize test effectiveness.",
+                .{},
+            );
+            try suggestions.append(priority_suggestion);
+        }
+
+        // If coverage is good, acknowledge it
+        if (line_coverage_pct >= 80.0 and func_coverage_pct >= 90.0 and branch_coverage_pct >= 75.0) {
+            const good_coverage = try std.fmt.allocPrint(
+                self.allocator,
+                "Coverage goals met! Line: {d:.1}%, Function: {d:.1}%, Branch: {d:.1}%",
+                .{ line_coverage_pct, func_coverage_pct, branch_coverage_pct },
+            );
+            try suggestions.append(good_coverage);
+        }
+
+        return try suggestions.toOwnedSlice();
     }
 
     /// Compare current coverage with previous to show improvements

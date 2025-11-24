@@ -133,8 +133,9 @@ pub const BuildPipeline = struct {
         for (self.config.sources) |source| {
             const module_name = std.fs.path.stem(source);
 
-            // TODO: Parse dependencies from source
-            const deps = &[_][]const u8{};
+            // Parse dependencies from source
+            const deps = try self.parseDependencies(source);
+            defer self.allocator.free(deps);
 
             try builder.addTask(module_name, source, deps);
         }
@@ -309,6 +310,55 @@ pub const BuildPipeline = struct {
     fn createDirectories(self: *BuildPipeline) !void {
         std.fs.cwd().makeDir(self.intermediate_dir) catch {};
         std.fs.cwd().makeDir(self.cache_dir) catch {};
+    }
+
+    /// Parse module dependencies from source file
+    fn parseDependencies(self: *BuildPipeline, source_path: []const u8) ![]const []const u8 {
+        // Read source file
+        const file_content = std.fs.cwd().readFileAlloc(
+            source_path,
+            self.allocator,
+            .limited(10 * 1024 * 1024),
+        ) catch |err| {
+            if (self.config.verbose) {
+                std.debug.print("Warning: Could not read {s} for dependency parsing: {}\n", .{ source_path, err });
+            }
+            return &[_][]const u8{};
+        };
+        defer self.allocator.free(file_content);
+
+        // Parse import statements
+        // Look for patterns like:
+        //   import "module_name"
+        //   from "module_name" import ...
+        var deps = std.ArrayList([]const u8).init(self.allocator);
+        defer deps.deinit();
+
+        var line_iter = std.mem.splitScalar(u8, file_content, '\n');
+        while (line_iter.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+
+            // Check for import statements
+            if (std.mem.startsWith(u8, trimmed, "import ")) {
+                // Extract module name from: import "module_name"
+                if (std.mem.indexOf(u8, trimmed, "\"")) |first_quote| {
+                    if (std.mem.indexOf(u8, trimmed[first_quote + 1 ..], "\"")) |second_quote_rel| {
+                        const module_name = trimmed[first_quote + 1 .. first_quote + 1 + second_quote_rel];
+                        try deps.append(try self.allocator.dupe(u8, module_name));
+                    }
+                }
+            } else if (std.mem.startsWith(u8, trimmed, "from ")) {
+                // Extract module name from: from "module_name" import ...
+                if (std.mem.indexOf(u8, trimmed, "\"")) |first_quote| {
+                    if (std.mem.indexOf(u8, trimmed[first_quote + 1 ..], "\"")) |second_quote_rel| {
+                        const module_name = trimmed[first_quote + 1 .. first_quote + 1 + second_quote_rel];
+                        try deps.append(try self.allocator.dupe(u8, module_name));
+                    }
+                }
+            }
+        }
+
+        return try deps.toOwnedSlice();
     }
 };
 
