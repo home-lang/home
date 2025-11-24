@@ -13,6 +13,14 @@ const OwnershipTracker = ownership.OwnershipTracker;
 const pattern_checker = @import("pattern_checker.zig");
 pub const PatternChecker = pattern_checker.PatternChecker;
 pub const PatternMatcher = pattern_checker.PatternMatcher;
+const error_handling = @import("error_handling.zig");
+pub const ErrorHandler = error_handling.ErrorHandler;
+pub const ErrorConversion = error_handling.ErrorConversion;
+pub const ResultUtils = error_handling.ResultUtils;
+const generics_mod = @import("generics.zig");
+pub const GenericHandler = generics_mod.GenericHandler;
+pub const TypeParameter = generics_mod.TypeParameter;
+pub const GenericUtils = generics_mod.GenericUtils;
 
 /// Home's static type system with support for advanced features.
 ///
@@ -416,6 +424,7 @@ pub const TypeChecker = struct {
     comptime_store: ?*ComptimeValueStore,
     ownership_tracker: OwnershipTracker,
     pattern_checker: PatternChecker,
+    error_handler: ErrorHandler,
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -438,6 +447,7 @@ pub const TypeChecker = struct {
             .comptime_store = null,
             .ownership_tracker = OwnershipTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
+            .error_handler = ErrorHandler.init(allocator),
         };
     }
 
@@ -473,6 +483,7 @@ pub const TypeChecker = struct {
 
         self.ownership_tracker.deinit();
         self.pattern_checker.deinit();
+        self.error_handler.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {

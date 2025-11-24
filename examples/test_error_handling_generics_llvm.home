@@ -1,0 +1,450 @@
+// ============================================================================
+// Comprehensive Test Suite: Error Handling, Generics & LLVM
+// ============================================================================
+// This file demonstrates three major features implemented together:
+// 1. Error Handling with ? operator
+// 2. Generic Types and Functions with Trait Bounds
+// 3. LLVM Native Code Generation
+// ============================================================================
+
+// ============================================================================
+// Part 1: Error Handling with ? Operator
+// ============================================================================
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+// Example 1: Basic ? operator usage
+fn divide(a: i32, b: i32) -> Result<i32, string> {
+    if b == 0 {
+        return Result::Err("Division by zero");
+    }
+    return Result::Ok(a / b);
+}
+
+fn calculate() -> Result<i32, string> {
+    // Use ? to propagate errors automatically
+    let x = divide(10, 2)?;   // Unwraps Ok or returns Err
+    let y = divide(x, 3)?;     // Chain multiple operations
+    let z = divide(y, 0)?;     // This will propagate the error
+    return Result::Ok(z);
+}
+
+fn test_error_propagation() {
+    print("=== Error Handling with ? Operator ===");
+    
+    match calculate() {
+        Ok(value) => print("Success: ", value),
+        Err(error) => print("Error: ", error),  // Will print "Division by zero"
+    }
+}
+
+// Example 2: Error type inference
+fn read_file(path: string) -> Result<string, string> {
+    if path == "" {
+        return Result::Err("Empty path");
+    }
+    return Result::Ok("file contents");
+}
+
+fn process_config() -> Result<(), string> {
+    let contents = read_file("config.txt")?;  // Auto-propagate
+    print("Loaded: ", contents);
+    return Result::Ok(());
+}
+
+// Example 3: Multiple error types with conversion
+enum FileError {
+    NotFound,
+    PermissionDenied,
+    InvalidFormat,
+}
+
+enum NetworkError {
+    Timeout,
+    ConnectionRefused,
+    InvalidResponse,
+}
+
+// Common error type
+enum AppError {
+    File(FileError),
+    Network(NetworkError),
+    Other(string),
+}
+
+fn load_remote_file(url: string) -> Result<string, AppError> {
+    // Simulate network request
+    if url == "" {
+        return Result::Err(AppError::Network(NetworkError::InvalidResponse));
+    }
+    return Result::Ok("data");
+}
+
+fn test_error_conversion() {
+    print("=== Error Type Conversion ===");
+    
+    match load_remote_file("https://example.com") {
+        Ok(data) => print("Loaded: ", data),
+        Err(AppError::Network(net_err)) => print("Network error"),
+        Err(AppError::File(file_err)) => print("File error"),
+        Err(AppError::Other(msg)) => print("Other error: ", msg),
+    }
+}
+
+// ============================================================================
+// Part 2: Generic Types and Functions
+// ============================================================================
+
+// Example 4: Generic Option type
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Some(value) => value,
+        None => default,
+    }
+}
+
+fn test_generic_option() {
+    print("=== Generic Option Type ===");
+    
+    let some_int: Option<i32> = Option::Some(42);
+    let none_int: Option<i32> = Option::None;
+    
+    print("Some: ", unwrap_or(some_int, 0));  // 42
+    print("None: ", unwrap_or(none_int, 0));  // 0
+    
+    let some_str: Option<string> = Option::Some("hello");
+    let none_str: Option<string> = Option::None;
+    
+    print("Some: ", unwrap_or(some_str, "default"));  // "hello"
+    print("None: ", unwrap_or(none_str, "default"));  // "default"
+}
+
+// Example 5: Generic Vector type
+struct Vec<T> {
+    data: [T],
+    len: i32,
+    capacity: i32,
+}
+
+impl<T> Vec<T> {
+    fn new() -> Vec<T> {
+        return Vec {
+            data: [],
+            len: 0,
+            capacity: 0,
+        };
+    }
+    
+    fn push(self: &mut Vec<T>, value: T) {
+        // Push implementation
+    }
+    
+    fn get(self: &Vec<T>, index: i32) -> Option<T> {
+        if index >= self.len {
+            return Option::None;
+        }
+        return Option::Some(self.data[index]);
+    }
+}
+
+fn test_generic_vec() {
+    print("=== Generic Vector ===");
+    
+    let mut numbers: Vec<i32> = Vec::new();
+    numbers.push(1);
+    numbers.push(2);
+    numbers.push(3);
+    
+    match numbers.get(1) {
+        Some(val) => print("numbers[1] = ", val),
+        None => print("Index out of bounds"),
+    }
+}
+
+// Example 6: Generic functions with trait bounds
+trait Comparable {
+    fn compare(self: &Self, other: &Self) -> i32;
+}
+
+fn max<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(&b) > 0 {
+        return a;
+    }
+    return b;
+}
+
+fn min<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(&b) < 0 {
+        return a;
+    }
+    return b;
+}
+
+// Implement Comparable for i32
+impl Comparable for i32 {
+    fn compare(self: &i32, other: &i32) -> i32 {
+        if *self > *other { return 1; }
+        if *self < *other { return -1; }
+        return 0;
+    }
+}
+
+fn test_generic_with_bounds() {
+    print("=== Generic Functions with Trait Bounds ===");
+    
+    let a = 10;
+    let b = 20;
+    
+    print("max(10, 20) = ", max(a, b));  // 20
+    print("min(10, 20) = ", min(a, b));  // 10
+}
+
+// Example 7: Multiple trait bounds
+trait Display {
+    fn display(self: &Self) -> string;
+}
+
+trait Clone {
+    fn clone(self: &Self) -> Self;
+}
+
+fn print_and_clone<T: Display + Clone>(value: T) -> T {
+    let displayed = value.display();
+    print("Value: ", displayed);
+    return value.clone();
+}
+
+// Example 8: Generic Result with monomorphization
+fn parse_int(s: string) -> Result<i32, string> {
+    // Simplified parsing
+    if s == "42" {
+        return Result::Ok(42);
+    }
+    return Result::Err("Parse error");
+}
+
+fn parse_float(s: string) -> Result<f64, string> {
+    // Simplified parsing
+    if s == "3.14" {
+        return Result::Ok(3.14);
+    }
+    return Result::Err("Parse error");
+}
+
+fn test_monomorphization() {
+    print("=== Monomorphization ===");
+    
+    // These generate different monomorphized versions:
+    // parse_int -> Result_i32_string
+    // parse_float -> Result_f64_string
+    
+    match parse_int("42") {
+        Ok(i) => print("Parsed int: ", i),
+        Err(e) => print("Error: ", e),
+    }
+    
+    match parse_float("3.14") {
+        Ok(f) => print("Parsed float: ", f),
+        Err(e) => print("Error: ", e),
+    }
+}
+
+// Example 9: Complex generic with multiple parameters
+struct HashMap<K, V> {
+    buckets: [[(K, V)]],
+    size: i32,
+}
+
+impl<K, V> HashMap<K, V> {
+    fn new() -> HashMap<K, V> {
+        return HashMap {
+            buckets: [],
+            size: 0,
+        };
+    }
+    
+    fn insert(self: &mut HashMap<K, V>, key: K, value: V) {
+        // Insert implementation
+    }
+    
+    fn get(self: &HashMap<K, V>, key: K) -> Option<V> {
+        // Lookup implementation
+        return Option::None;
+    }
+}
+
+fn test_complex_generics() {
+    print("=== Complex Generic Types ===");
+    
+    let mut map: HashMap<string, i32> = HashMap::new();
+    map.insert("one", 1);
+    map.insert("two", 2);
+    
+    match map.get("one") {
+        Some(val) => print("Found: ", val),
+        None => print("Not found"),
+    }
+}
+
+// ============================================================================
+// Part 3: LLVM Code Generation Examples
+// ============================================================================
+
+// Example 10: Simple function for LLVM
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+// LLVM IR Output:
+// define i32 @add(i32 %a, i32 %b) {
+// entry:
+//   %0 = add i32 %a, %b
+//   ret i32 %0
+// }
+
+// Example 11: Struct with LLVM
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn distance_squared(p: Point) -> i32 {
+    return p.x * p.x + p.y * p.y;
+}
+
+// LLVM IR Output:
+// %struct.Point = type { i32, i32 }
+// 
+// define i32 @distance_squared(%struct.Point %p) {
+// entry:
+//   %x = extractvalue %struct.Point %p, 0
+//   %y = extractvalue %struct.Point %p, 1
+//   %x_sq = mul i32 %x, %x
+//   %y_sq = mul i32 %y, %y
+//   %result = add i32 %x_sq, %y_sq
+//   ret i32 %result
+// }
+
+fn test_llvm_generation() {
+    print("=== LLVM Code Generation ===");
+    
+    let result = add(10, 20);
+    print("add(10, 20) = ", result);
+    
+    let p = Point { x: 3, y: 4 };
+    let dist_sq = distance_squared(p);
+    print("distance_squared = ", dist_sq);  // 25
+}
+
+// Example 12: Optimized code with LLVM
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+// LLVM with -O2 will optimize this with tail call elimination
+fn fibonacci_optimized(n: i32, a: i32, b: i32) -> i32 {
+    if n == 0 {
+        return a;
+    }
+    return fibonacci_optimized(n - 1, b, a + b);
+}
+
+fn test_llvm_optimization() {
+    print("=== LLVM Optimization ===");
+    
+    print("fibonacci(10) = ", fibonacci(10));
+    print("fibonacci_optimized(10) = ", fibonacci_optimized(10, 0, 1));
+}
+
+// Example 13: Integration - All three features together
+fn load_and_parse<T>(filename: string, parser: fn(string) -> Result<T, string>) -> Result<T, string> {
+    // Load file (with error propagation)
+    let contents = read_file(filename)?;
+    
+    // Parse contents (with generic parser)
+    let parsed = parser(contents)?;
+    
+    // Return success
+    return Result::Ok(parsed);
+    
+    // This will be compiled to optimized native code by LLVM!
+}
+
+fn test_integration() {
+    print("=== Integration Test: Error Handling + Generics + LLVM ===");
+    
+    // Parse an integer from a file
+    match load_and_parse("number.txt", parse_int) {
+        Ok(num) => print("Loaded number: ", num),
+        Err(e) => print("Error: ", e),
+    }
+    
+    // Parse a float from a file (different monomorphization!)
+    match load_and_parse("pi.txt", parse_float) {
+        Ok(num) => print("Loaded float: ", num),
+        Err(e) => print("Error: ", e),
+    }
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+
+fn main() {
+    print("╔══════════════════════════════════════════════════════════╗");
+    print("║  Home Language - Advanced Features Test Suite           ║");
+    print("║  * Error Handling (? operator)                          ║");
+    print("║  * Generics with Trait Bounds                           ║");
+    print("║  * LLVM Native Code Generation                          ║");
+    print("╚══════════════════════════════════════════════════════════╝");
+    print("");
+    
+    // Error Handling Tests
+    test_error_propagation();
+    print("");
+    
+    test_error_conversion();
+    print("");
+    
+    // Generic Tests
+    test_generic_option();
+    print("");
+    
+    test_generic_vec();
+    print("");
+    
+    test_generic_with_bounds();
+    print("");
+    
+    test_monomorphization();
+    print("");
+    
+    test_complex_generics();
+    print("");
+    
+    // LLVM Tests
+    test_llvm_generation();
+    print("");
+    
+    test_llvm_optimization();
+    print("");
+    
+    // Integration Test
+    test_integration();
+    print("");
+    
+    print("╔══════════════════════════════════════════════════════════╗");
+    print("║           All Advanced Feature Tests Complete!          ║");
+    print("╚══════════════════════════════════════════════════════════╝");
+}
