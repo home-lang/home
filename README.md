@@ -1,4 +1,4 @@
-# The Home Programming Language
+<p align="center"><img src="https://github.com/home-lang/home/blob/main/.github/art/banner.jpg?raw=true" alt="Social Card of this repo"></p>
 
 A modern programming language for systems, apps, and games. Combines the speed of Zig, the safety of Rust, and the joy of TypeScript.
 
@@ -6,7 +6,7 @@ A modern programming language for systems, apps, and games. Combines the speed o
 
 ```bash
 # Clone and build
-git clone https://github.com/stacksjs/home.git
+git clone https://github.com/home-lang/home.git
 cd home
 zig build
 
@@ -477,7 +477,3 @@ Contributions welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## License
 
 MIT License - see [LICENSE](./LICENSE)
-
----
-
-Built by the [Stacks.js](https://github.com/stacksjs) team.
