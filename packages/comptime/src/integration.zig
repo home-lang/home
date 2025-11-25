@@ -151,16 +151,16 @@ pub const ComptimeIntegration = struct {
 
             .TernaryExpr => |ternary_expr| {
                 try self.processExpression(ternary_expr.condition);
-                try self.processExpression(ternary_expr.true_expr);
-                try self.processExpression(ternary_expr.false_expr);
+                try self.processExpression(ternary_expr.true_val);
+                try self.processExpression(ternary_expr.false_val);
             },
 
             .TryExpr => |try_expr| {
-                try self.processExpression(try_expr.expression);
+                try self.processExpression(try_expr.operand);
             },
 
             .TypeCastExpr => |cast_expr| {
-                try self.processExpression(cast_expr.expression);
+                try self.processExpression(cast_expr.value);
             },
 
             .TupleExpr => |tuple_expr| {
@@ -170,7 +170,7 @@ pub const ComptimeIntegration = struct {
             },
 
             .MatchExpr => |match_expr| {
-                try self.processExpression(match_expr.target);
+                try self.processExpression(match_expr.value);
                 for (match_expr.arms) |arm| {
                     if (arm.guard) |guard| {
                         try self.processExpression(guard);
@@ -189,12 +189,19 @@ pub const ComptimeIntegration = struct {
             },
 
             .SafeNavExpr => |safe_nav| {
-                try self.processExpression(safe_nav.target);
+                try self.processExpression(safe_nav.object);
             },
 
             .ClosureExpr => |closure_expr| {
-                for (closure_expr.body.statements) |stmt| {
-                    try self.processStatement(&stmt);
+                switch (closure_expr.body) {
+                    .Expression => |body_expr| {
+                        try self.processExpression(body_expr);
+                    },
+                    .Block => |block| {
+                        for (block.statements) |stmt| {
+                            try self.processStatement(&stmt);
+                        }
+                    },
                 }
             },
 

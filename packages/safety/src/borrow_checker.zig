@@ -59,12 +59,15 @@ pub const BorrowChecker = struct {
     /// Check let declaration
     fn checkLetDecl(self: *BorrowChecker, decl: *ast.LetDecl) !void {
         // Check initializer expression
-        if (decl.initializer) |init| {
-            try self.checkExpression(init);
+        if (decl.value) |val| {
+            try self.checkExpression(val);
         }
 
         // Register variable in ownership tracker
-        const typ = Type.Int; // TODO: Get actual type from type system
+        const typ = if (decl.type_name) |type_name|
+            self.parseTypeName(type_name)
+        else
+            Type.Inferred; // Will be inferred from initializer
         try self.tracker.define(decl.name, typ, decl.node.loc);
     }
 
@@ -80,8 +83,8 @@ pub const BorrowChecker = struct {
 
         // Register parameters
         for (decl.params) |param| {
-            const typ = Type.Int; // TODO: Parse actual type
-            try self.tracker.define(param.name, typ, param.loc);
+            const typ = self.parseTypeExpr(param.type_expr);
+            try self.tracker.define(param.name, typ, param.type_expr.loc);
         }
 
         // Check function body
@@ -278,6 +281,46 @@ pub const BorrowChecker = struct {
     /// Check if there are any errors
     pub fn hasErrors(self: *BorrowChecker) bool {
         return self.errors.items.len > 0;
+    }
+
+    /// Parse type name string to Type enum
+    fn parseTypeName(self: *BorrowChecker, type_name: []const u8) Type {
+        _ = self;
+        // Basic type name parsing
+        if (std.mem.eql(u8, type_name, "i32") or std.mem.eql(u8, type_name, "i64") or
+            std.mem.eql(u8, type_name, "i8") or std.mem.eql(u8, type_name, "i16") or
+            std.mem.eql(u8, type_name, "isize") or std.mem.eql(u8, type_name, "int"))
+        {
+            return Type.Int;
+        } else if (std.mem.eql(u8, type_name, "f32") or std.mem.eql(u8, type_name, "f64") or
+            std.mem.eql(u8, type_name, "float"))
+        {
+            return Type.Float;
+        } else if (std.mem.eql(u8, type_name, "bool")) {
+            return Type.Bool;
+        } else if (std.mem.eql(u8, type_name, "str") or std.mem.eql(u8, type_name, "string")) {
+            return Type.String;
+        } else {
+            // For complex types, return a generic type for now
+            return Type.Custom;
+        }
+    }
+
+    /// Parse TypeExpr to Type enum
+    fn parseTypeExpr(self: *BorrowChecker, type_expr: *ast.TypeExpr) Type {
+        // Convert TypeExpr to type name string and parse it
+        switch (type_expr.*) {
+            .Simple => |simple| {
+                return self.parseTypeName(simple.name);
+            },
+            .Pointer, .MutablePointer, .Option, .Result, .Array, .Slice => {
+                // For complex types, return Custom for now
+                return Type.Custom;
+            },
+            else => {
+                return Type.Custom;
+            },
+        }
     }
 };
 

@@ -80,13 +80,13 @@ pub fn Set(comptime T: type) type {
             // Add all elements from this set
             var iter = self.iterator();
             while (iter.next()) |element| {
-                try result.add(element);
+                _ = try result.add(element);
             }
 
             // Add all elements from other set
             var other_iter = other.iterator();
             while (other_iter.next()) |element| {
-                try result.add(element);
+                _ = try result.add(element);
             }
 
             return result;
@@ -105,7 +105,7 @@ pub fn Set(comptime T: type) type {
             var iter = smaller.iterator();
             while (iter.next()) |element| {
                 if (larger.contains(element)) {
-                    try result.add(element);
+                    _ = try result.add(element);
                 }
             }
 
@@ -121,7 +121,7 @@ pub fn Set(comptime T: type) type {
             var iter = self.iterator();
             while (iter.next()) |element| {
                 if (!other.contains(element)) {
-                    try result.add(element);
+                    _ = try result.add(element);
                 }
             }
 

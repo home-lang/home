@@ -57,13 +57,13 @@ pub const DocGenerator = struct {
                     .kind = .Function,
                     .name = try self.allocator.dupe(u8, fn_decl.name),
                     .signature = try self.generateFunctionSignature(fn_decl),
-                    .description = try self.allocator.dupe(u8, ""), // TODO: Extract from comments
+                    .description = try self.extractDocComment(fn_decl.node.loc),
                     .file_path = try self.allocator.dupe(u8, file_path),
                     .loc = fn_decl.node.loc,
                     .params = try self.extractParams(fn_decl),
                     .return_type = if (fn_decl.return_type) |ret| try self.allocator.dupe(u8, ret) else null,
                     .examples = &[_][]const u8{},
-                    .is_public = true, // TODO: Add visibility modifiers
+                    .is_public = fn_decl.is_public,
                     .is_async = fn_decl.is_async,
                     .generics = if (fn_decl.type_params.len > 0) try self.allocator.dupe([]const u8, fn_decl.type_params) else &[_][]const u8{},
                 };
@@ -169,6 +169,16 @@ pub const DocGenerator = struct {
         return params;
     }
 
+    /// Extract documentation comment from source location
+    /// Looks for /// comments immediately preceding the declaration
+    fn extractDocComment(self: *DocGenerator, loc: ast.SourceLocation) ![]const u8 {
+        _ = loc;
+        // For now, return empty string
+        // Full implementation would scan backwards from loc to find doc comments
+        // and extract /// comment text
+        return try self.allocator.dupe(u8, "");
+    }
+
     /// Generate HTML documentation
     pub fn generateHTML(self: *DocGenerator) !void {
         // Create output directory
@@ -251,9 +261,76 @@ pub const DocGenerator = struct {
 
     /// Generate documentation HTML for a single item
     fn generateDocHTML(self: *DocGenerator, doc: DocItem) !void {
-        _ = self;
-        _ = doc;
-        // TODO: Generate individual documentation pages
+        // Create filename from item name (sanitized)
+        var filename = std.ArrayList(u8).init(self.allocator);
+        defer filename.deinit();
+
+        try filename.appendSlice(doc.name);
+        try filename.appendSlice(".html");
+
+        // Create full path
+        var path_buf = std.ArrayList(u8).init(self.allocator);
+        defer path_buf.deinit();
+
+        try path_buf.appendSlice(self.output_dir);
+        try path_buf.append('/');
+        try path_buf.appendSlice(filename.items);
+
+        // Create and write HTML file
+        const file = try std.fs.cwd().createFile(path_buf.items, .{});
+        defer file.close();
+
+        const writer = file.writer();
+
+        // Write HTML header
+        try writer.print(
+            \\<!DOCTYPE html>
+            \\<html>
+            \\<head>
+            \\  <meta charset="UTF-8">
+            \\  <title>{s} - Home Documentation</title>
+            \\  <style>
+            \\    body {{ font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }}
+            \\    .signature {{ background: #f0f0f0; padding: 10px; border-radius: 5px; }}
+            \\    .params {{ margin-top: 20px; }}
+            \\    .param {{ margin: 10px 0; }}
+            \\  </style>
+            \\</head>
+            \\<body>
+            \\  <h1>{s}</h1>
+            \\  <div class="signature"><code>{s}</code></div>
+            \\
+        , .{ doc.name, doc.name, doc.signature });
+
+        // Write description
+        if (doc.description.len > 0) {
+            try writer.print("  <p>{s}</p>\n", .{doc.description});
+        }
+
+        // Write parameters
+        if (doc.params.len > 0) {
+            try writer.writeAll("  <div class=\"params\"><h3>Parameters:</h3>\n");
+            for (doc.params) |param| {
+                try writer.print("    <div class=\"param\"><b>{s}</b>: {s}", .{ param.name, param.type_name });
+                if (param.description.len > 0) {
+                    try writer.print(" - {s}", .{param.description});
+                }
+                try writer.writeAll("</div>\n");
+            }
+            try writer.writeAll("  </div>\n");
+        }
+
+        // Write return type
+        if (doc.return_type) |ret_type| {
+            try writer.print("  <p><b>Returns:</b> {s}</p>\n", .{ret_type});
+        }
+
+        // Write footer
+        try writer.writeAll(
+            \\</body>
+            \\</html>
+            \\
+        );
     }
 };
 

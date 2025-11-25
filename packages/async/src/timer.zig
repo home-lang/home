@@ -202,18 +202,43 @@ pub const TimerWheel = struct {
 pub const SleepFuture = struct {
     duration_ns: u64,
     registered: bool,
+    deadline_ns: u64,
 
     pub fn poll(self: *SleepFuture, ctx: *Context) PollResult(void) {
         if (!self.registered) {
-            // Register with timer wheel
-            // TODO: Get timer wheel from context/runtime
-            // For now, just use actual sleep
-            std.posix.nanosleep(0, self.duration_ns);
-            self.registered = true;
+            // Try to get timer wheel from context
+            if (ctx.getTimerWheel()) |tw_opaque| {
+                // Cast opaque pointer back to TimerWheel
+                const tw: *TimerWheel = @ptrCast(@alignCast(tw_opaque));
+
+                // Calculate absolute deadline
+                self.deadline_ns = std.time.nanoTimestamp() + @as(i64, @intCast(self.duration_ns));
+
+                // Register timer with the wheel
+                tw.schedule(self.deadline_ns, ctx.waker) catch {
+                    // If registration fails, fall back to blocking sleep
+                    std.posix.nanosleep(0, self.duration_ns);
+                    self.registered = true;
+                    return .{ .Ready = {} };
+                };
+
+                self.registered = true;
+                return .{ .Pending = {} };
+            } else {
+                // No timer wheel available, fall back to blocking sleep
+                std.posix.nanosleep(0, self.duration_ns);
+                self.registered = true;
+                return .{ .Ready = {} };
+            }
+        }
+
+        // Check if deadline has passed
+        const now = std.time.nanoTimestamp();
+        if (now >= self.deadline_ns) {
             return .{ .Ready = {} };
         }
 
-        return .{ .Ready = {} };
+        return .{ .Pending = {} };
     }
 };
 
@@ -222,6 +247,7 @@ pub fn sleep(duration_ns: u64) SleepFuture {
     return SleepFuture{
         .duration_ns = duration_ns,
         .registered = false,
+        .deadline_ns = 0,
     };
 }
 

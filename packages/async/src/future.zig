@@ -24,15 +24,25 @@ pub fn PollResult(comptime T: type) type {
 /// Context passed to Future.poll()
 ///
 /// Contains the waker that should be called when the Future can make progress.
+/// Optionally contains a timer wheel for async timer support.
 pub const Context = struct {
     waker: Waker,
+    timer_wheel: ?*anyopaque = null, // Opaque pointer to TimerWheel to avoid circular dependency
 
     pub fn init(w: Waker) Context {
-        return .{ .waker = w };
+        return .{ .waker = w, .timer_wheel = null };
+    }
+
+    pub fn initWithTimer(w: Waker, tw: *anyopaque) Context {
+        return .{ .waker = w, .timer_wheel = tw };
     }
 
     pub fn getWaker(self: *const Context) *const Waker {
         return &self.waker;
+    }
+
+    pub fn getTimerWheel(self: *const Context) ?*anyopaque {
+        return self.timer_wheel;
     }
 };
 
