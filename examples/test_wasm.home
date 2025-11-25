@@ -1,0 +1,670 @@
+// Comprehensive test for WebAssembly code generation and runtime
+// Tests WASM compilation, module loading, and JS interop
+
+use std::wasm::{WasmCodeGen, WasmRuntime, JSInterop, Module, Value};
+use std::testing::{TestFramework, assert, assertEqual};
+
+// =============================================================================
+// 1. CODE GENERATION TESTS
+// =============================================================================
+
+fn test_simple_function_codegen() {
+    println("Testing simple function code generation...");
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    // Simple function that adds two numbers
+    let program = parse("
+        fn add(a: i32, b: i32) -> i32 {
+            return a + b;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    assert(wasm_bytes.len > 0, "should generate WASM bytes");
+
+    // Check WASM magic number
+    assertEqual(wasm_bytes[0], 0x00);
+    assertEqual(wasm_bytes[1], 0x61);
+    assertEqual(wasm_bytes[2], 0x73);
+    assertEqual(wasm_bytes[3], 0x6D);
+
+    // Check version
+    assertEqual(wasm_bytes[4], 0x01);
+    assertEqual(wasm_bytes[5], 0x00);
+    assertEqual(wasm_bytes[6], 0x00);
+    assertEqual(wasm_bytes[7], 0x00);
+
+    println("✓ Simple function code generation");
+}
+
+fn test_arithmetic_codegen() {
+    println("Testing arithmetic code generation...");
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn calculate() -> i32 {
+            return (10 + 5) * 2;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    assert(wasm_bytes.len > 0, "should generate WASM bytes");
+
+    println("✓ Arithmetic code generation");
+}
+
+fn test_control_flow_codegen() {
+    println("Testing control flow code generation...");
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn max(a: i32, b: i32) -> i32 {
+            if (a > b) {
+                return a;
+            } else {
+                return b;
+            }
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    assert(wasm_bytes.len > 0, "should generate WASM bytes");
+
+    println("✓ Control flow code generation");
+}
+
+fn test_loop_codegen() {
+    println("Testing loop code generation...");
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn sum_to_n(n: i32) -> i32 {
+            let mut sum = 0;
+            for i in 0..n {
+                sum += i;
+            }
+            return sum;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    assert(wasm_bytes.len > 0, "should generate WASM bytes");
+
+    println("✓ Loop code generation");
+}
+
+fn test_recursive_function_codegen() {
+    println("Testing recursive function code generation...");
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn factorial(n: i32) -> i32 {
+            if (n <= 1) {
+                return 1;
+            } else {
+                return n * factorial(n - 1);
+            }
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    assert(wasm_bytes.len > 0, "should generate WASM bytes");
+
+    println("✓ Recursive function code generation");
+}
+
+// =============================================================================
+// 2. RUNTIME TESTS
+// =============================================================================
+
+fn test_module_loading() {
+    println("Testing module loading...");
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    // Generate simple module
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn add(a: i32, b: i32) -> i32 {
+            return a + b;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    // Load module
+    runtime.loadModule("test_module", wasm_bytes)?;
+
+    let instance = runtime.getInstance("test_module");
+    assert(instance != null, "should load module");
+
+    println("✓ Module loading");
+}
+
+fn test_function_execution() {
+    println("Testing function execution...");
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    // Generate and load module
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn add(a: i32, b: i32) -> i32 {
+            return a + b;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    runtime.loadModule("math", wasm_bytes)?;
+
+    // Call function
+    let args = [
+        Value { .i32 = 10 },
+        Value { .i32 = 20 },
+    ];
+
+    let result = runtime.callFunction("math", "add", &args)?;
+    assertEqual(result.asI32()?, 30);
+
+    println("✓ Function execution");
+}
+
+fn test_memory_operations() {
+    println("Testing memory operations...");
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn write_and_read() -> i32 {
+            // Write to memory
+            let ptr = 0;
+            memory[ptr] = 42;
+
+            // Read from memory
+            return memory[ptr];
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    runtime.loadModule("mem_test", wasm_bytes)?;
+
+    let instance = runtime.getInstance("mem_test")?;
+    let memory = instance.memory?;
+
+    // Write to memory
+    let data = [1, 2, 3, 4];
+    memory.write(0, &data)?;
+
+    // Read from memory
+    let read_data = memory.read(0, 4)?;
+    assertEqual(read_data[0], 1);
+    assertEqual(read_data[3], 4);
+
+    println("✓ Memory operations");
+}
+
+fn test_memory_growth() {
+    println("Testing memory growth...");
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn grow_memory(pages: i32) -> i32 {
+            return memory.grow(pages);
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    runtime.loadModule("grow_test", wasm_bytes)?;
+
+    let instance = runtime.getInstance("grow_test")?;
+    let memory = instance.memory?;
+
+    let initial_size = memory.data.len;
+
+    // Grow memory by 1 page (64KB)
+    let old_pages = memory.grow(1)?;
+    assert(old_pages >= 0, "should return old page count");
+
+    let new_size = memory.data.len;
+    assertEqual(new_size, initial_size + 65536);
+
+    println("✓ Memory growth");
+}
+
+// =============================================================================
+// 3. JAVASCRIPT INTEROP TESTS
+// =============================================================================
+
+fn test_js_value_creation() {
+    println("Testing JS value creation...");
+
+    // Number
+    let num = JSValue { .number = 42.0 };
+    assertEqual(num.toNumber()?, 42.0);
+
+    // String
+    let str = JSValue { .string = "hello" };
+    let str_value = str.toString(allocator)?;
+    defer allocator.free(str_value);
+    assertEqual(str_value, "hello");
+
+    // Boolean
+    let bool_val = JSValue { .boolean = true };
+    assertEqual(bool_val.toBool()?, true);
+
+    // Null and undefined
+    let null_val = JSValue { .null = {} };
+    assert(null_val.isNull(), "should be null");
+
+    let undef = JSValue { .undefined = {} };
+    assert(undef.isUndefined(), "should be undefined");
+
+    println("✓ JS value creation");
+}
+
+fn test_js_object() {
+    println("Testing JS object...");
+
+    let mut obj = JSObject::init(allocator);
+    defer obj.deinit();
+
+    // Set properties
+    obj.set("name", JSValue { .string = "John" })?;
+    obj.set("age", JSValue { .number = 30.0 })?;
+    obj.set("active", JSValue { .boolean = true })?;
+
+    // Get properties
+    let name = obj.get("name")?;
+    let name_str = name.toString(allocator)?;
+    defer allocator.free(name_str);
+    assertEqual(name_str, "John");
+
+    let age = obj.get("age")?;
+    assertEqual(age.toNumber()?, 30.0);
+
+    // Check existence
+    assert(obj.has("name"), "should have 'name' property");
+    assert(!obj.has("missing"), "should not have 'missing' property");
+
+    // Get keys
+    let keys = obj.keys()?;
+    defer allocator.free(keys);
+    assert(keys.len == 3, "should have 3 keys");
+
+    println("✓ JS object");
+}
+
+fn test_js_array() {
+    println("Testing JS array...");
+
+    let mut arr = JSArray::init(allocator);
+    defer arr.deinit();
+
+    // Push elements
+    arr.push(JSValue { .number = 1.0 })?;
+    arr.push(JSValue { .number = 2.0 })?;
+    arr.push(JSValue { .number = 3.0 })?;
+
+    assertEqual(arr.length(), 3);
+
+    // Get elements
+    let first = arr.get(0)?;
+    assertEqual(first.toNumber()?, 1.0);
+
+    let last = arr.get(2)?;
+    assertEqual(last.toNumber()?, 3.0);
+
+    // Pop element
+    let popped = arr.pop()?;
+    assertEqual(popped.toNumber()?, 3.0);
+    assertEqual(arr.length(), 2);
+
+    println("✓ JS array");
+}
+
+fn test_js_function() {
+    println("Testing JS function...");
+
+    fn my_callback(args: []const JSValue) anyerror!JSValue {
+        if (args.len != 2) return error.InvalidArgumentCount;
+
+        let a = try args[0].toNumber();
+        let b = try args[1].toNumber();
+
+        return JSValue { .number = a + b };
+    }
+
+    let func = JSFunction::init(allocator, "add", my_callback)?;
+    defer func.deinit();
+
+    let args = [
+        JSValue { .number = 10.0 },
+        JSValue { .number = 20.0 },
+    ];
+
+    let result = func.call(&args)?;
+    assertEqual(result.toNumber()?, 30.0);
+
+    println("✓ JS function");
+}
+
+fn test_js_interop() {
+    println("Testing JS interop...");
+
+    let mut interop = JSInterop::init(allocator);
+    defer interop.deinit();
+
+    // Import function
+    fn console_log(args: []const JSValue) anyerror!JSValue {
+        for (args) |arg| {
+            let str = try arg.toString(allocator);
+            defer allocator.free(str);
+            println(str);
+        }
+        return JSValue { .undefined = {} };
+    }
+
+    interop.importFunction("console.log", console_log)?;
+
+    // Export value
+    interop.exportValue("myNumber", JSValue { .number = 42.0 })?;
+
+    // Get import
+    let import = interop.getImport("console.log")?;
+    assert(import.isFunction(), "should be a function");
+
+    // Get export
+    let export = interop.getExport("myNumber")?;
+    assertEqual(export.toNumber()?, 42.0);
+
+    println("✓ JS interop");
+}
+
+// =============================================================================
+// 4. BINDINGS GENERATION TESTS
+// =============================================================================
+
+fn test_js_bindings_generation() {
+    println("Testing JS bindings generation...");
+
+    let mut generator = JSBindingsGenerator::init(allocator);
+
+    let exports = [
+        JSBindingsGenerator.Export { .name = "add", .kind = .function },
+        JSBindingsGenerator.Export { .name = "multiply", .kind = .function },
+        JSBindingsGenerator.Export { .name = "memory", .kind = .memory },
+    ];
+
+    let bindings = generator.generate("MathModule", &exports)?;
+    defer allocator.free(bindings);
+
+    assert(bindings.len > 0, "should generate bindings");
+
+    // Check for key parts
+    assert(bindings.contains("class MathModule"), "should have class");
+    assert(bindings.contains("add(...args)"), "should have add method");
+    assert(bindings.contains("multiply(...args)"), "should have multiply method");
+    assert(bindings.contains("readString"), "should have helper methods");
+
+    println("✓ JS bindings generation");
+}
+
+// =============================================================================
+// 5. INTEGRATION TESTS
+// =============================================================================
+
+fn test_full_pipeline() {
+    println("Testing full WASM pipeline...");
+
+    // 1. Parse Home code
+    let source = "
+        fn fibonacci(n: i32) -> i32 {
+            if (n <= 1) {
+                return n;
+            }
+            return fibonacci(n - 1) + fibonacci(n - 2);
+        }
+    ";
+
+    let program = parse(source)?;
+
+    // 2. Generate WASM
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    // 3. Load and run
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    runtime.loadModule("fib", wasm_bytes)?;
+
+    let args = [Value { .i32 = 10 }];
+    let result = runtime.callFunction("fib", "fibonacci", &args)?;
+
+    assertEqual(result.asI32()?, 55); // fib(10) = 55
+
+    println("✓ Full WASM pipeline");
+}
+
+fn test_multiple_modules() {
+    println("Testing multiple modules...");
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    // Load math module
+    let mut codegen1 = WasmCodeGen::init(allocator);
+    defer codegen1.deinit();
+
+    let math_program = parse("
+        fn add(a: i32, b: i32) -> i32 {
+            return a + b;
+        }
+    ")?;
+
+    let math_bytes = codegen1.generate(&math_program)?;
+    defer allocator.free(math_bytes);
+
+    runtime.loadModule("math", math_bytes)?;
+
+    // Load string module
+    let mut codegen2 = WasmCodeGen::init(allocator);
+    defer codegen2.deinit();
+
+    let string_program = parse("
+        fn length(s: string) -> i32 {
+            return s.len();
+        }
+    ")?;
+
+    let string_bytes = codegen2.generate(&string_program)?;
+    defer allocator.free(string_bytes);
+
+    runtime.loadModule("string", string_bytes)?;
+
+    // Use both modules
+    let math_result = runtime.callFunction("math", "add", &[
+        Value { .i32 = 5 },
+        Value { .i32 = 10 },
+    ])?;
+    assertEqual(math_result.asI32()?, 15);
+
+    println("✓ Multiple modules");
+}
+
+// =============================================================================
+// 6. PERFORMANCE TESTS
+// =============================================================================
+
+fn benchmark_codegen() {
+    println("\n=== Code Generation Benchmark ===\n");
+
+    let source = "
+        fn complex_calculation(n: i32) -> i32 {
+            let mut result = 0;
+            for i in 0..n {
+                result += i * i;
+            }
+            return result;
+        }
+    ";
+
+    let program = parse(source)?;
+
+    let iterations = 1000;
+    let start = std::time::now();
+
+    for _ in 0..iterations {
+        let mut codegen = WasmCodeGen::init(allocator);
+        let wasm_bytes = codegen.generate(&program)?;
+        allocator.free(wasm_bytes);
+        codegen.deinit();
+    }
+
+    let elapsed = std::time::now() - start;
+    let avg_time = elapsed / iterations;
+
+    println("Iterations: {}", iterations);
+    println("Total time: {}ms", elapsed);
+    println("Average:    {}ms per generation", avg_time);
+}
+
+fn benchmark_execution() {
+    println("\n=== Execution Benchmark ===\n");
+
+    // Setup
+    let mut codegen = WasmCodeGen::init(allocator);
+    defer codegen.deinit();
+
+    let program = parse("
+        fn sum(n: i32) -> i32 {
+            let mut total = 0;
+            for i in 0..n {
+                total += i;
+            }
+            return total;
+        }
+    ")?;
+
+    let wasm_bytes = codegen.generate(&program)?;
+    defer allocator.free(wasm_bytes);
+
+    let mut runtime = WasmRuntime::init(allocator);
+    defer runtime.deinit();
+
+    runtime.loadModule("bench", wasm_bytes)?;
+
+    // Benchmark
+    let iterations = 10000;
+    let start = std::time::now();
+
+    for _ in 0..iterations {
+        let args = [Value { .i32 = 100 }];
+        _ = runtime.callFunction("bench", "sum", &args)?;
+    }
+
+    let elapsed = std::time::now() - start;
+    let avg_time = elapsed as f64 / iterations as f64;
+    let ops_per_sec = iterations * 1000 / elapsed;
+
+    println("Iterations:     {}", iterations);
+    println("Total time:     {}ms", elapsed);
+    println("Average:        {:.3}ms per call", avg_time);
+    println("Throughput:     {} ops/sec", ops_per_sec);
+}
+
+// =============================================================================
+// MAIN ENTRY POINT
+// =============================================================================
+
+fn main() {
+    println("\n=== Testing WebAssembly Functionality ===\n");
+
+    // Code generation tests
+    println("1. Code Generation Tests");
+    test_simple_function_codegen();
+    test_arithmetic_codegen();
+    test_control_flow_codegen();
+    test_loop_codegen();
+    test_recursive_function_codegen();
+
+    // Runtime tests
+    println("\n2. Runtime Tests");
+    test_module_loading();
+    test_function_execution();
+    test_memory_operations();
+    test_memory_growth();
+
+    // JS interop tests
+    println("\n3. JavaScript Interop Tests");
+    test_js_value_creation();
+    test_js_object();
+    test_js_array();
+    test_js_function();
+    test_js_interop();
+
+    // Bindings generation tests
+    println("\n4. Bindings Generation Tests");
+    test_js_bindings_generation();
+
+    // Integration tests
+    println("\n5. Integration Tests");
+    test_full_pipeline();
+    test_multiple_modules();
+
+    // Benchmarks
+    println("\n6. Performance Benchmarks");
+    benchmark_codegen();
+    benchmark_execution();
+
+    println("\n=== All WebAssembly Tests Passed! ===\n");
+}
+
+// Usage:
+// homecc --wasm test_wasm.home -o test.wasm
+// node test_wasm.js

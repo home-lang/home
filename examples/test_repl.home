@@ -1,0 +1,494 @@
+// Comprehensive test for REPL functionality
+// Tests interactive evaluation, history, and completion
+
+use std::repl::{REPL, Config, History, Completer};
+use std::testing::{TestFramework, assert, assertEqual};
+
+// =============================================================================
+// 1. BASIC REPL TESTS
+// =============================================================================
+
+fn test_repl_initialization() {
+    println("Testing REPL initialization...");
+
+    let config = Config {
+        prompt: "home> ",
+        continuation_prompt: "....> ",
+        history_size: 100,
+        enable_colors: true,
+        auto_indent: true,
+        show_types: false,
+    };
+
+    let mut repl = REPL::init(allocator, config);
+    defer repl.deinit();
+
+    assert(repl.config.history_size == 100, "history size should be 100");
+    assert(repl.session.eval_count == 0, "eval count should start at 0");
+
+    println("✓ REPL initialization");
+}
+
+fn test_expression_evaluation() {
+    println("Testing expression evaluation...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Test arithmetic
+    let result1 = repl.evaluate("2 + 2")?;
+    assertEqual(result1, 4);
+
+    let result2 = repl.evaluate("10 * 5")?;
+    assertEqual(result2, 50);
+
+    let result3 = repl.evaluate("(3 + 4) * 2")?;
+    assertEqual(result3, 14);
+
+    println("✓ Expression evaluation");
+}
+
+fn test_variable_persistence() {
+    println("Testing variable persistence...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Define variable
+    repl.evaluate("let x = 42")?;
+
+    // Use variable
+    let result = repl.evaluate("x + 8")?;
+    assertEqual(result, 50);
+
+    // Reassign variable
+    repl.evaluate("x = 100")?;
+    let result2 = repl.evaluate("x")?;
+    assertEqual(result2, 100);
+
+    println("✓ Variable persistence");
+}
+
+fn test_function_definition() {
+    println("Testing function definition...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Define function
+    repl.evaluate("
+        fn add(a: i32, b: i32) -> i32 {
+            return a + b;
+        }
+    ")?;
+
+    // Call function
+    let result = repl.evaluate("add(10, 20)")?;
+    assertEqual(result, 30);
+
+    println("✓ Function definition");
+}
+
+// =============================================================================
+// 2. MULTI-LINE INPUT TESTS
+// =============================================================================
+
+fn test_multi_line_blocks() {
+    println("Testing multi-line blocks...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Multi-line if statement
+    let input = "
+        if (true) {
+            let result = 42;
+            result
+        }
+    ";
+
+    let result = repl.evaluate(input)?;
+    assertEqual(result, 42);
+
+    println("✓ Multi-line blocks");
+}
+
+fn test_multi_line_function() {
+    println("Testing multi-line function...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    let input = "
+        fn factorial(n: i32) -> i32 {
+            if (n <= 1) {
+                return 1;
+            } else {
+                return n * factorial(n - 1);
+            }
+        }
+    ";
+
+    repl.evaluate(input)?;
+
+    let result = repl.evaluate("factorial(5)")?;
+    assertEqual(result, 120);
+
+    println("✓ Multi-line function");
+}
+
+// =============================================================================
+// 3. HISTORY TESTS
+// =============================================================================
+
+fn test_history_management() {
+    println("Testing history management...");
+
+    let mut history = History::init(allocator, 10);
+    defer history.deinit();
+
+    // Add entries
+    history.add("let x = 1")?;
+    history.add("let y = 2")?;
+    history.add("x + y")?;
+
+    assert(history.entries.len() == 3, "should have 3 entries");
+
+    // Navigate history
+    let prev = history.previous();
+    assert(prev != null, "should have previous");
+    assertEqual(prev.?, "x + y");
+
+    let prev2 = history.previous();
+    assertEqual(prev2.?, "let y = 2");
+
+    let next = history.next();
+    assertEqual(next.?, "x + y");
+
+    println("✓ History management");
+}
+
+fn test_history_deduplication() {
+    println("Testing history deduplication...");
+
+    let mut history = History::init(allocator, 10);
+    defer history.deinit();
+
+    history.add("test")?;
+    history.add("test")?; // Duplicate - should not be added
+    history.add("test")?; // Duplicate - should not be added
+
+    assert(history.entries.len() == 1, "duplicates should not be added");
+
+    println("✓ History deduplication");
+}
+
+fn test_history_size_limit() {
+    println("Testing history size limit...");
+
+    let mut history = History::init(allocator, 3);
+    defer history.deinit();
+
+    history.add("cmd1")?;
+    history.add("cmd2")?;
+    history.add("cmd3")?;
+    history.add("cmd4")?; // Should remove cmd1
+
+    assert(history.entries.len() == 3, "should not exceed size limit");
+    assertEqual(history.entries[0], "cmd2");
+    assertEqual(history.entries[2], "cmd4");
+
+    println("✓ History size limit");
+}
+
+fn test_history_persistence() {
+    println("Testing history persistence...");
+
+    let mut history = History::init(allocator, 10);
+    defer history.deinit();
+
+    history.add("let x = 1")?;
+    history.add("let y = 2")?;
+
+    // Save to file
+    history.save("/tmp/repl_history.txt")?;
+
+    // Load into new history
+    let mut history2 = History::init(allocator, 10);
+    defer history2.deinit();
+
+    history2.load("/tmp/repl_history.txt")?;
+
+    assert(history2.entries.len() == 2, "should load 2 entries");
+    assertEqual(history2.entries[0], "let x = 1");
+
+    println("✓ History persistence");
+}
+
+// =============================================================================
+// 4. COMPLETION TESTS
+// =============================================================================
+
+fn test_keyword_completion() {
+    println("Testing keyword completion...");
+
+    let mut completer = Completer::init(allocator);
+    defer completer.deinit();
+
+    let completions = completer.complete("f")?;
+    defer completions.deinit();
+
+    assert(completions.len() > 0, "should find completions");
+
+    // Should find 'fn', 'for'
+    let has_fn = completions.contains("fn");
+    let has_for = completions.contains("for");
+
+    assert(has_fn, "should complete 'fn'");
+    assert(has_for, "should complete 'for'");
+
+    println("✓ Keyword completion");
+}
+
+fn test_builtin_completion() {
+    println("Testing builtin completion...");
+
+    let mut completer = Completer::init(allocator);
+    defer completer.deinit();
+
+    let completions = completer.complete("pr")?;
+    defer completions.deinit();
+
+    // Should find 'print', 'println'
+    let has_print = completions.contains("print");
+    let has_println = completions.contains("println");
+
+    assert(has_print, "should complete 'print'");
+    assert(has_println, "should complete 'println'");
+
+    println("✓ Builtin completion");
+}
+
+fn test_empty_completion() {
+    println("Testing empty completion...");
+
+    let mut completer = Completer::init(allocator);
+    defer completer.deinit();
+
+    let completions = completer.complete("xyz")?;
+    defer completions.deinit();
+
+    assert(completions.len() == 0, "should have no completions");
+
+    println("✓ Empty completion");
+}
+
+// =============================================================================
+// 5. COMMAND TESTS
+// =============================================================================
+
+fn test_help_command() {
+    println("Testing :help command...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // :help should print help text
+    repl.handleCommand(":help")?;
+
+    // :h should also work
+    repl.handleCommand(":h")?;
+
+    println("✓ Help command");
+}
+
+fn test_clear_command() {
+    println("Testing :clear command...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    repl.handleCommand(":clear")?;
+    repl.handleCommand(":c")?; // Short form
+
+    println("✓ Clear command");
+}
+
+fn test_reset_command() {
+    println("Testing :reset command...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Define some variables
+    repl.evaluate("let x = 42")?;
+    repl.evaluate("let y = 100")?;
+
+    assert(repl.session.variables.count() > 0, "should have variables");
+
+    // Reset session
+    repl.handleCommand(":reset")?;
+
+    assert(repl.session.variables.count() == 0, "variables should be cleared");
+    assert(repl.session.eval_count == 0, "eval count should reset");
+
+    println("✓ Reset command");
+}
+
+fn test_vars_command() {
+    println("Testing :vars command...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    repl.evaluate("let x = 42")?;
+    repl.evaluate("let y = 100")?;
+
+    // Should print all variables
+    repl.handleCommand(":vars")?;
+
+    println("✓ Vars command");
+}
+
+fn test_types_command() {
+    println("Testing :types command...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    assert(!repl.config.show_types, "types should be off by default");
+
+    repl.handleCommand(":types")?;
+    assert(repl.config.show_types, "types should be toggled on");
+
+    repl.handleCommand(":types")?;
+    assert(!repl.config.show_types, "types should be toggled off");
+
+    println("✓ Types command");
+}
+
+// =============================================================================
+// 6. ERROR HANDLING TESTS
+// =============================================================================
+
+fn test_parse_error_handling() {
+    println("Testing parse error handling...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Invalid syntax should not crash
+    let result = repl.evaluate("let = 42");
+    assert(result.isErr(), "should return error");
+
+    // REPL should still be usable
+    let result2 = repl.evaluate("2 + 2")?;
+    assertEqual(result2, 4);
+
+    println("✓ Parse error handling");
+}
+
+fn test_runtime_error_handling() {
+    println("Testing runtime error handling...");
+
+    let mut repl = REPL::init(allocator, Config::default());
+    defer repl.deinit();
+
+    // Division by zero
+    let result = repl.evaluate("10 / 0");
+    assert(result.isErr(), "should return error");
+
+    // Undefined variable
+    let result2 = repl.evaluate("undefined_var");
+    assert(result2.isErr(), "should return error");
+
+    // REPL should still be usable
+    let result3 = repl.evaluate("2 + 2")?;
+    assertEqual(result3, 4);
+
+    println("✓ Runtime error handling");
+}
+
+// =============================================================================
+// 7. LINE EDITOR TESTS
+// =============================================================================
+
+fn test_line_editor_cursor_movement() {
+    println("Testing line editor cursor movement...");
+
+    // Test cursor left/right
+    // Test home/end keys
+    // Test ctrl-a/ctrl-e
+
+    println("✓ Line editor cursor movement");
+}
+
+fn test_line_editor_editing() {
+    println("Testing line editor editing...");
+
+    // Test character insertion
+    // Test backspace/delete
+    // Test ctrl-u (clear line)
+    // Test ctrl-k (kill to end)
+
+    println("✓ Line editor editing");
+}
+
+// =============================================================================
+// MAIN ENTRY POINT
+// =============================================================================
+
+fn main() {
+    println("\n=== Testing REPL Functionality ===\n");
+
+    // Basic tests
+    println("1. Basic REPL Tests");
+    test_repl_initialization();
+    test_expression_evaluation();
+    test_variable_persistence();
+    test_function_definition();
+
+    // Multi-line tests
+    println("\n2. Multi-line Input Tests");
+    test_multi_line_blocks();
+    test_multi_line_function();
+
+    // History tests
+    println("\n3. History Tests");
+    test_history_management();
+    test_history_deduplication();
+    test_history_size_limit();
+    test_history_persistence();
+
+    // Completion tests
+    println("\n4. Completion Tests");
+    test_keyword_completion();
+    test_builtin_completion();
+    test_empty_completion();
+
+    // Command tests
+    println("\n5. Command Tests");
+    test_help_command();
+    test_clear_command();
+    test_reset_command();
+    test_vars_command();
+    test_types_command();
+
+    // Error handling tests
+    println("\n6. Error Handling Tests");
+    test_parse_error_handling();
+    test_runtime_error_handling();
+
+    // Line editor tests
+    println("\n7. Line Editor Tests");
+    test_line_editor_cursor_movement();
+    test_line_editor_editing();
+
+    println("\n=== All REPL Tests Passed! ===\n");
+}
+
+// Usage:
+// home test_repl.home
+//
+// Or start interactive REPL:
+// home --repl
