@@ -2671,8 +2671,236 @@ pub const NativeCodegen = struct {
         return try self.assembler.getCode();
     }
 
+    /// PASS 1: Register all types from a statement without generating code
+    /// This recursively processes imports and registers enums/structs in the global registry
+    fn registerTypesFromStmt(self: *NativeCodegen, stmt: ast.Stmt) CodegenError!void {
+        switch (stmt) {
+            .EnumDecl => |enum_decl| {
+                // Register enum type without generating code
+                const name_copy = try self.allocator.dupe(u8, enum_decl.name);
+                errdefer self.allocator.free(name_copy);
+
+                var variants = try self.allocator.alloc(EnumVariantInfo, enum_decl.variants.len);
+                errdefer self.allocator.free(variants);
+
+                for (enum_decl.variants, 0..) |variant, i| {
+                    const variant_name = try self.allocator.dupe(u8, variant.name);
+                    const variant_data_type = if (variant.data_type) |dt|
+                        try self.allocator.dupe(u8, dt)
+                    else
+                        null;
+
+                    variants[i] = .{
+                        .name = variant_name,
+                        .data_type = variant_data_type,
+                    };
+                }
+
+                const layout = EnumLayout{
+                    .name = name_copy,
+                    .variants = variants,
+                };
+
+                // Register locally
+                try self.enum_layouts.put(name_copy, layout);
+
+                // Register globally
+                if (self.type_registry) |registry| {
+                    registry.registerEnum(layout) catch |err| {
+                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{layout.name, err});
+                    };
+                }
+            },
+            .StructDecl => |struct_decl| {
+                // Register struct type without generating code
+                const name_copy = try self.allocator.dupe(u8, struct_decl.name);
+                errdefer self.allocator.free(name_copy);
+
+                var fields = try self.allocator.alloc(FieldInfo, struct_decl.fields.len);
+                errdefer self.allocator.free(fields);
+
+                var offset: usize = 0;
+                for (struct_decl.fields, 0..) |field, i| {
+                    const field_name = try self.allocator.dupe(u8, field.name);
+                    const field_type_name = if (field.type_name.len > 0)
+                        try self.allocator.dupe(u8, field.type_name)
+                    else
+                        "";
+
+                    const field_size = if (field.type_name.len > 0)
+                        (self.getTypeSize(field.type_name) catch 8)
+                    else
+                        8;
+
+                    fields[i] = .{
+                        .name = field_name,
+                        .offset = offset,
+                        .size = field_size,
+                        .type_name = field_type_name,
+                    };
+                    offset += field_size;
+                }
+
+                const layout = StructLayout{
+                    .name = name_copy,
+                    .fields = fields,
+                    .total_size = offset,
+                };
+
+                // Register locally
+                try self.struct_layouts.put(name_copy, layout);
+
+                // Register globally
+                if (self.type_registry) |registry| {
+                    registry.registerStruct(layout) catch |err| {
+                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{layout.name, err});
+                    };
+                }
+            },
+            .ImportDecl => |import_decl| {
+                // Recursively process imports to register their types
+                self.registerTypesFromImport(import_decl);
+            },
+            else => {
+                // Other statement types don't define types, skip
+            },
+        }
+    }
+
+    /// PASS 1: Register types from an imported module (non-fatal - errors are logged as warnings)
+    fn registerTypesFromImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) void {
+        // Build module key from path components
+        var key_list = std.ArrayList(u8){};
+        defer key_list.deinit(self.allocator);
+        for (import_decl.path, 0..) |component, i| {
+            if (i > 0) key_list.append(self.allocator, '/') catch return;
+            key_list.appendSlice(self.allocator, component) catch return;
+        }
+        const module_key = key_list.items;
+
+        // Check if already imported
+        if (self.imported_modules.contains(module_key)) {
+            return; // Already imported, skip
+        }
+
+        // Mark as imported (store a copy of the key)
+        const key_copy = self.allocator.dupe(u8, module_key) catch return;
+        self.imported_modules.put(key_copy, {}) catch {
+            self.allocator.free(key_copy);
+            return;
+        };
+
+        // Convert import path to file path
+        var path_list = std.ArrayList(u8){};
+        defer path_list.deinit(self.allocator);
+
+        // Add source root prefix if available
+        if (self.source_root) |root| {
+            if (!std.mem.eql(u8, root, ".")) {
+                path_list.appendSlice(self.allocator, root) catch return;
+                path_list.append(self.allocator, '/') catch return;
+            }
+        }
+
+        // Try src/ subdirectory first
+        path_list.appendSlice(self.allocator, "src/") catch return;
+        for (import_decl.path, 0..) |component, i| {
+            if (i > 0) path_list.append(self.allocator, '/') catch return;
+            path_list.appendSlice(self.allocator, component) catch return;
+        }
+        path_list.appendSlice(self.allocator, ".home") catch return;
+
+        var module_path = path_list.items;
+
+        // Try to read from src/ first
+        const module_source = std.fs.cwd().readFileAlloc(
+            module_path,
+            self.allocator,
+            std.Io.Limit.limited(10 * 1024 * 1024),
+        ) catch blk: {
+            // If src/ doesn't work, try without src/ prefix
+            path_list.clearRetainingCapacity();
+            for (import_decl.path, 0..) |component, i| {
+                if (i > 0) path_list.append(self.allocator, '/') catch return;
+                path_list.appendSlice(self.allocator, component) catch return;
+            }
+            path_list.appendSlice(self.allocator, ".home") catch return;
+            module_path = path_list.items;
+
+            break :blk std.fs.cwd().readFileAlloc(
+                module_path,
+                self.allocator,
+                std.Io.Limit.limited(10 * 1024 * 1024),
+            ) catch |err| {
+                std.debug.print("Failed to read import file '{s}': {}\n", .{ module_path, err });
+                return;
+            };
+        };
+
+        // Store source in module_sources list
+        self.module_sources.append(self.allocator, module_source) catch { self.allocator.free(module_source); return; };
+
+        // Parse the module
+        const lexer_mod = @import("lexer");
+        const parser_mod = @import("parser");
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
+        var token_list = lexer.tokenize() catch |err| {
+            std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
+            return;
+        };
+        const tokens = token_list.items;
+
+        var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
+            std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
+            return;
+        };
+        defer parser.deinit();
+
+        // Set source root for nested imports
+        if (self.source_root) |root| {
+            parser.module_resolver.setSourceRootDirect(root) catch {};
+        } else {
+            parser.module_resolver.setSourceRoot(module_path) catch {};
+        }
+
+        const module_ast = parser.parse() catch |err| {
+            std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
+            return;
+        };
+
+        // Skip if there were parse errors
+        if (parser.errors.items.len > 0) {
+            std.debug.print("Skipping module '{s}' due to {d} parse error(s)\n", .{ module_path, parser.errors.items.len });
+            return;
+        }
+
+        // Register types from all statements in the imported module
+        for (module_ast.statements) |stmt| {
+            self.registerTypesFromStmt(stmt) catch |err| {
+                std.debug.print("Warning: Failed to register types from statement in module '{s}': {}\n", .{ module_path, err });
+                continue;
+            };
+        }
+    }
+
+    /// PASS 1: Register all types from the program and all imports
+    /// This ensures all types are available before code generation
+    fn registerAllTypes(self: *NativeCodegen) !void {
+        for (self.program.statements) |stmt| {
+            try self.registerTypesFromStmt(stmt);
+        }
+    }
+
     pub fn writeExecutable(self: *NativeCodegen, path: []const u8) !void {
-        // Generate code (this fills self.assembler.code)
+        // PASS 1: Register all types from this module and all imports
+        try self.registerAllTypes();
+
+        // PASS 2: Generate code (all types now available)
         for (self.program.statements) |stmt| {
             try self.generateStmt(stmt);
         }
@@ -3651,6 +3879,13 @@ pub const NativeCodegen = struct {
                 // Test blocks are skipped during normal compilation
                 // They're only executed when running in test mode
             },
+            .ImplDecl => |impl_decl| {
+                // Implementation blocks (trait impls and inherent impls)
+                // Generate code for each method in the impl block
+                for (impl_decl.methods) |method| {
+                    try self.generateStmt(ast.Stmt{ .FnDecl = method });
+                }
+            },
             else => {
                 std.debug.print("Unsupported statement in native codegen: {s}\n", .{@tagName(stmt)});
                 return error.UnsupportedFeature;
@@ -3721,7 +3956,7 @@ pub const NativeCodegen = struct {
                 std.Io.Limit.limited(10 * 1024 * 1024),
             ) catch |err| {
                 std.debug.print("Failed to read import file '{s}': {}\n", .{ module_path, err });
-                return error.ImportFailed;
+                return;
             };
         };
         // Store source in module_sources list - DON'T free it here!
@@ -3740,13 +3975,13 @@ pub const NativeCodegen = struct {
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
         var token_list = lexer.tokenize() catch |err| {
             std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
-            return error.ImportFailed;
+            return;
         };
         const tokens = token_list.items;
 
         var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
             std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
-            return error.ImportFailed;
+            return;
         };
         defer parser.deinit();
 
@@ -3760,7 +3995,7 @@ pub const NativeCodegen = struct {
 
         const module_ast = parser.parse() catch |err| {
             std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
-            return error.ImportFailed;
+            return;
         };
         // Arena allocator will free all AST memory when it's deinitialized
 
@@ -3768,7 +4003,7 @@ pub const NativeCodegen = struct {
         // Parse errors can leave invalid AST nodes with garbage pointers
         if (parser.errors.items.len > 0) {
             std.debug.print("Skipping module '{s}' due to {d} parse error(s)\n", .{ module_path, parser.errors.items.len });
-            return error.ImportFailed;
+            return;
         }
 
         // Generate code for all module statements

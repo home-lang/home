@@ -541,17 +541,17 @@
 
 | Priority | Location | Description |
 |----------|----------|-------------|
-| High | Line 238 | **Check if expression is iterable** - Splat validation incomplete |
-| High | Line 289 | **Implement desugaring** - Array splat desugaring not implemented |
-| High | Line 298 | **Implement desugaring** - Call splat desugaring not implemented |
-| High | Line 310 | **Implement desugaring** - Destructure splat desugaring not implemented |
+| High | Line 238 | ~~**Check if expression is iterable** - Splat validation incomplete~~ | ✅ DONE |
+| High | Line 289 | ~~**Implement desugaring** - Array splat desugaring not implemented~~ | ✅ DONE |
+| High | Line 298 | ~~**Implement desugaring** - Call splat desugaring not implemented~~ | ✅ DONE |
+| High | Line 310 | ~~**Implement desugaring** - Destructure splat desugaring not implemented~~ | ✅ DONE |
 
 ### `packages/ast/src/comprehension_nodes.zig`
 
 | Priority | Location | Description |
 |----------|----------|-------------|
-| High | Line 236 | **Implement desugaring** - Array comprehension desugaring not implemented |
-| High | Line 247 | **Implement desugaring** - Map comprehension desugaring not implemented |
+| High | Line 236 | ~~**Implement desugaring** - Array comprehension desugaring not implemented~~ | ✅ DONE |
+| High | Line 247 | ~~**Implement desugaring** - Map comprehension desugaring not implemented~~ | ✅ DONE |
 
 ### `packages/ast/src/dispatch_nodes.zig`
 
