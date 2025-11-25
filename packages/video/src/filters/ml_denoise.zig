@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const core = @import("../core/frame.zig");
+const ml_weights = @import("ml_weights.zig");
 
 pub const VideoFrame = core.VideoFrame;
 
@@ -34,14 +35,13 @@ pub const Conv2D = struct {
         const weights = try allocator.alloc(f32, weight_count);
         const bias = try allocator.alloc(f32, out_channels);
 
-        // He initialization
-        const std_dev = @sqrt(2.0 / @as(f32, @floatFromInt(in_channels * kernel_size * kernel_size)));
+        // Use proper He initialization from ml_weights
+        const fan_in = in_channels * kernel_size * kernel_size;
+        const fan_out = out_channels * kernel_size * kernel_size;
         var prng = std.rand.DefaultPrng.init(42);
-        const random = prng.random();
+        const seed = prng.random().int(u64);
 
-        for (weights) |*w| {
-            w.* = random.floatNorm(f32) * std_dev;
-        }
+        ml_weights.initWeights(weights, .he_normal, fan_in, fan_out, seed);
 
         for (bias) |*b| {
             b.* = 0.0;
@@ -133,13 +133,13 @@ pub const ConvTranspose2D = struct {
         const weights = try allocator.alloc(f32, weight_count);
         const bias = try allocator.alloc(f32, out_channels);
 
-        const std_dev = @sqrt(2.0 / @as(f32, @floatFromInt(in_channels * kernel_size * kernel_size)));
+        // Use proper He initialization from ml_weights
+        const fan_in = in_channels * kernel_size * kernel_size;
+        const fan_out = out_channels * kernel_size * kernel_size;
         var prng = std.rand.DefaultPrng.init(43);
-        const random = prng.random();
+        const seed = prng.random().int(u64);
 
-        for (weights) |*w| {
-            w.* = random.floatNorm(f32) * std_dev;
-        }
+        ml_weights.initWeights(weights, .he_normal, fan_in, fan_out, seed);
 
         for (bias) |*b| {
             b.* = 0.0;
@@ -402,6 +402,149 @@ pub const UNetDenoiser = struct {
         self.final_conv.deinit();
     }
 
+    /// Calculate total number of parameters in the network
+    pub fn getParamCount(self: *const Self) usize {
+        var count: usize = 0;
+        count += self.enc1.conv1.weights.len + self.enc1.conv1.bias.len;
+        count += self.enc1.conv2.weights.len + self.enc1.conv2.bias.len;
+        count += self.enc2.conv1.weights.len + self.enc2.conv1.bias.len;
+        count += self.enc2.conv2.weights.len + self.enc2.conv2.bias.len;
+        count += self.enc3.conv1.weights.len + self.enc3.conv1.bias.len;
+        count += self.enc3.conv2.weights.len + self.enc3.conv2.bias.len;
+        count += self.pool1.weights.len + self.pool1.bias.len;
+        count += self.pool2.weights.len + self.pool2.bias.len;
+        count += self.bottleneck.conv1.weights.len + self.bottleneck.conv1.bias.len;
+        count += self.bottleneck.conv2.weights.len + self.bottleneck.conv2.bias.len;
+        count += self.up1.weights.len + self.up1.bias.len;
+        count += self.up2.weights.len + self.up2.bias.len;
+        count += self.dec1.conv1.weights.len + self.dec1.conv1.bias.len;
+        count += self.dec1.conv2.weights.len + self.dec1.conv2.bias.len;
+        count += self.dec2.conv1.weights.len + self.dec2.conv1.bias.len;
+        count += self.dec2.conv2.weights.len + self.dec2.conv2.bias.len;
+        count += self.final_conv.weights.len + self.final_conv.bias.len;
+        return count;
+    }
+
+    /// Load pre-trained weights from file
+    pub fn loadWeights(self: *Self, file_path: []const u8) !void {
+        const param_count = self.getParamCount();
+        const weights_data = try ml_weights.loadWeights(
+            self.allocator,
+            file_path,
+            .unet_denoiser,
+            param_count,
+        );
+        defer self.allocator.free(weights_data);
+
+        var offset: usize = 0;
+
+        // Helper macro to copy weights
+        const copyLayer = struct {
+            fn copy(layer: anytype, data: []const f32, off: *usize) void {
+                @memcpy(layer.weights, data[off.* .. off.* + layer.weights.len]);
+                off.* += layer.weights.len;
+                @memcpy(layer.bias, data[off.* .. off.* + layer.bias.len]);
+                off.* += layer.bias.len;
+            }
+        }.copy;
+
+        copyLayer(&self.enc1.conv1, weights_data, &offset);
+        copyLayer(&self.enc1.conv2, weights_data, &offset);
+        copyLayer(&self.enc2.conv1, weights_data, &offset);
+        copyLayer(&self.enc2.conv2, weights_data, &offset);
+        copyLayer(&self.enc3.conv1, weights_data, &offset);
+        copyLayer(&self.enc3.conv2, weights_data, &offset);
+        copyLayer(&self.pool1, weights_data, &offset);
+        copyLayer(&self.pool2, weights_data, &offset);
+        copyLayer(&self.bottleneck.conv1, weights_data, &offset);
+        copyLayer(&self.bottleneck.conv2, weights_data, &offset);
+        copyLayer(&self.up1, weights_data, &offset);
+        copyLayer(&self.up2, weights_data, &offset);
+        copyLayer(&self.dec1.conv1, weights_data, &offset);
+        copyLayer(&self.dec1.conv2, weights_data, &offset);
+        copyLayer(&self.dec2.conv1, weights_data, &offset);
+        copyLayer(&self.dec2.conv2, weights_data, &offset);
+        copyLayer(&self.final_conv, weights_data, &offset);
+    }
+
+    /// Save weights to file
+    pub fn saveWeights(self: *const Self, file_path: []const u8) !void {
+        const param_count = self.getParamCount();
+        const weights_data = try self.allocator.alloc(f32, param_count);
+        defer self.allocator.free(weights_data);
+
+        var offset: usize = 0;
+
+        const collectLayer = struct {
+            fn collect(layer: anytype, data: []f32, off: *usize) void {
+                @memcpy(data[off.* .. off.* + layer.weights.len], layer.weights);
+                off.* += layer.weights.len;
+                @memcpy(data[off.* .. off.* + layer.bias.len], layer.bias);
+                off.* += layer.bias.len;
+            }
+        }.collect;
+
+        collectLayer(&self.enc1.conv1, weights_data, &offset);
+        collectLayer(&self.enc1.conv2, weights_data, &offset);
+        collectLayer(&self.enc2.conv1, weights_data, &offset);
+        collectLayer(&self.enc2.conv2, weights_data, &offset);
+        collectLayer(&self.enc3.conv1, weights_data, &offset);
+        collectLayer(&self.enc3.conv2, weights_data, &offset);
+        collectLayer(&self.pool1, weights_data, &offset);
+        collectLayer(&self.pool2, weights_data, &offset);
+        collectLayer(&self.bottleneck.conv1, weights_data, &offset);
+        collectLayer(&self.bottleneck.conv2, weights_data, &offset);
+        collectLayer(&self.up1, weights_data, &offset);
+        collectLayer(&self.up2, weights_data, &offset);
+        collectLayer(&self.dec1.conv1, weights_data, &offset);
+        collectLayer(&self.dec1.conv2, weights_data, &offset);
+        collectLayer(&self.dec2.conv1, weights_data, &offset);
+        collectLayer(&self.dec2.conv2, weights_data, &offset);
+        collectLayer(&self.final_conv, weights_data, &offset);
+
+        try ml_weights.saveWeights(file_path, .unet_denoiser, weights_data);
+    }
+
+    /// Initialize with sensible default weights (approximates edge-preserving filters)
+    pub fn initDefaultWeights(self: *Self) !void {
+        const param_count = self.getParamCount();
+        const default_weights = try ml_weights.generateDefaultWeights(
+            self.allocator,
+            .unet_denoiser,
+            param_count,
+        );
+        defer self.allocator.free(default_weights);
+
+        var offset: usize = 0;
+
+        const copyLayer = struct {
+            fn copy(layer: anytype, data: []const f32, off: *usize) void {
+                @memcpy(layer.weights, data[off.* .. off.* + layer.weights.len]);
+                off.* += layer.weights.len;
+                @memcpy(layer.bias, data[off.* .. off.* + layer.bias.len]);
+                off.* += layer.bias.len;
+            }
+        }.copy;
+
+        copyLayer(&self.enc1.conv1, default_weights, &offset);
+        copyLayer(&self.enc1.conv2, default_weights, &offset);
+        copyLayer(&self.enc2.conv1, default_weights, &offset);
+        copyLayer(&self.enc2.conv2, default_weights, &offset);
+        copyLayer(&self.enc3.conv1, default_weights, &offset);
+        copyLayer(&self.enc3.conv2, default_weights, &offset);
+        copyLayer(&self.pool1, default_weights, &offset);
+        copyLayer(&self.pool2, default_weights, &offset);
+        copyLayer(&self.bottleneck.conv1, default_weights, &offset);
+        copyLayer(&self.bottleneck.conv2, default_weights, &offset);
+        copyLayer(&self.up1, default_weights, &offset);
+        copyLayer(&self.up2, default_weights, &offset);
+        copyLayer(&self.dec1.conv1, default_weights, &offset);
+        copyLayer(&self.dec1.conv2, default_weights, &offset);
+        copyLayer(&self.dec2.conv1, default_weights, &offset);
+        copyLayer(&self.dec2.conv2, default_weights, &offset);
+        copyLayer(&self.final_conv, default_weights, &offset);
+    }
+
     pub fn forward(
         self: *const Self,
         input: []const f32, // [H, W, 3] normalized to [0, 1]
@@ -659,20 +802,46 @@ pub const MLDenoiseFilter = struct {
     network: UNetDenoiser,
     use_ml: bool,
     strength: f32, // 0.0 - 1.0
+    weights_path: ?[]const u8,
     allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, use_ml: bool, strength: f32) !Self {
-        const network = if (use_ml)
+    pub fn init(
+        allocator: std.mem.Allocator,
+        use_ml: bool,
+        strength: f32,
+        weights_path: ?[]const u8,
+    ) !Self {
+        var network = if (use_ml)
             try UNetDenoiser.init(allocator)
         else
             undefined;
+
+        // Load weights if path provided and file exists, otherwise use sensible defaults
+        if (use_ml) {
+            if (weights_path) |path| {
+                if (ml_weights.weightsFileExists(path, .unet_denoiser)) {
+                    network.loadWeights(path) catch |err| {
+                        // If loading fails, use default weights
+                        try network.initDefaultWeights();
+                        return err;
+                    };
+                } else {
+                    // No weights file, use sensible defaults
+                    try network.initDefaultWeights();
+                }
+            } else {
+                // No path provided, use sensible defaults
+                try network.initDefaultWeights();
+            }
+        }
 
         return .{
             .network = network,
             .use_ml = use_ml,
             .strength = std.math.clamp(strength, 0.0, 1.0),
+            .weights_path = weights_path,
             .allocator = allocator,
         };
     }

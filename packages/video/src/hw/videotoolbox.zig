@@ -143,6 +143,47 @@ extern "c" fn VTDecompressionSessionDecodeFrame(
 extern "c" fn VTDecompressionSessionInvalidate(session: VTDecompressionSessionRef) void;
 extern "c" fn VTDecompressionSessionWaitForAsynchronousFrames(session: VTDecompressionSessionRef) OSStatus;
 
+// CMSampleBuffer functions
+extern "c" fn CMSampleBufferCreate(
+    allocator: CFAllocatorRef,
+    dataBuffer: ?CMBlockBufferRef,
+    dataReady: bool,
+    makeDataReadyCallback: ?*const fn () callconv(.C) void,
+    makeDataReadyRefcon: ?*anyopaque,
+    formatDescription: ?CMFormatDescriptionRef,
+    numSamples: c_int,
+    numSampleTimingEntries: c_int,
+    sampleTimingArray: ?*const CMSampleTimingInfo,
+    numSampleSizeEntries: c_int,
+    sampleSizeArray: ?*const usize,
+    sampleBufferOut: *?CMSampleBufferRef,
+) OSStatus;
+
+extern "c" fn CMBlockBufferCreateWithMemoryBlock(
+    allocator: CFAllocatorRef,
+    memoryBlock: ?*anyopaque,
+    blockLength: usize,
+    blockAllocator: CFAllocatorRef,
+    customBlockSource: ?*anyopaque,
+    offsetToData: usize,
+    dataLength: usize,
+    flags: u32,
+    blockBufferOut: *?CMBlockBufferRef,
+) OSStatus;
+
+extern "c" fn CMVideoFormatDescriptionCreateFromH264ParameterSets(
+    allocator: CFAllocatorRef,
+    parameterSetCount: usize,
+    parameterSetPointers: [*]const [*]const u8,
+    parameterSetSizes: [*]const usize,
+    NALUnitHeaderLength: c_int,
+    formatDescriptionOut: *?CMVideoFormatDescriptionRef,
+) OSStatus;
+
+extern "c" fn CMSampleBufferGetImageBuffer(
+    sbuf: CMSampleBufferRef,
+) ?CVPixelBufferRef;
+
 // Core Foundation functions
 extern "c" fn CFStringCreateWithCString(
     alloc: CFAllocatorRef,
@@ -636,17 +677,23 @@ pub const VTDecoder = struct {
     config: VTDecoderConfig,
     allocator: std.mem.Allocator,
     session: ?VTDecompressionSessionRef = null,
+    format_description: ?CMFormatDescriptionRef = null,
+    decoded_frame: ?*core.VideoFrame = null,
+    decode_mutex: std.Thread.Mutex = .{},
 
     const Self = @This();
+
+    const DecoderCallbackContext = struct {
+        allocator: std.mem.Allocator,
+        decoded_frame: ?*core.VideoFrame,
+        mutex: std.Thread.Mutex,
+        config: VTDecoderConfig,
+    };
 
     pub fn init(allocator: std.mem.Allocator, config: VTDecoderConfig) !Self {
         if (builtin.os.tag != .macos) {
             return error.UnsupportedPlatform;
         }
-
-        // Note: Creating a decompression session requires a format description,
-        // which we typically get from the first frame's parameter sets.
-        // For now, we defer session creation until the first decode call.
 
         return .{
             .allocator = allocator,
@@ -660,29 +707,284 @@ pub const VTDecoder = struct {
             VTDecompressionSessionInvalidate(session);
             CFRelease(@ptrCast(session));
         }
+        if (self.format_description) |desc| {
+            CFRelease(@ptrCast(desc));
+        }
+        if (self.decoded_frame) |frame| {
+            frame.deinit();
+            self.allocator.destroy(frame);
+        }
+    }
+
+    fn decoderCallback(
+        _: ?*anyopaque,
+        sourceFrameRefCon: ?*anyopaque,
+        status: OSStatus,
+        _: VTDecodeInfoFlags,
+        imageBuffer: ?CVPixelBufferRef,
+        _: CMTime,
+        _: CMTime,
+    ) callconv(.C) void {
+        if (status != kVTSuccess or imageBuffer == null) {
+            return;
+        }
+
+        const ctx: *DecoderCallbackContext = @ptrCast(@alignCast(sourceFrameRefCon.?));
+        ctx.mutex.lock();
+        defer ctx.mutex.unlock();
+
+        // Convert CVPixelBuffer to VideoFrame
+        const pixel_buffer = imageBuffer.?;
+        _ = CVPixelBufferLockBaseAddress(pixel_buffer, 1); // Read-only
+        defer _ = CVPixelBufferUnlockBaseAddress(pixel_buffer, 1);
+
+        const width = CVPixelBufferGetWidth(pixel_buffer);
+        const height = CVPixelBufferGetHeight(pixel_buffer);
+
+        var frame = ctx.allocator.create(core.VideoFrame) catch return;
+        frame.* = core.VideoFrame.init(
+            ctx.allocator,
+            @intCast(width),
+            @intCast(height),
+            ctx.config.output_format,
+        ) catch return;
+
+        // Copy pixel data from CVPixelBuffer to VideoFrame
+        if (ctx.config.output_format == .yuv420p) {
+            // Y plane
+            const y_src = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0);
+            const y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+            if (y_src) |y_ptr| {
+                const y_src_slice: [*]const u8 = @ptrCast(@alignCast(y_ptr));
+                for (0..height) |row| {
+                    const src_offset = row * y_stride;
+                    const dst_offset = row * frame.stride[0];
+                    @memcpy(frame.data[0][dst_offset .. dst_offset + width], y_src_slice[src_offset .. src_offset + width]);
+                }
+            }
+
+            // UV plane (NV12 to I420 conversion)
+            const uv_src = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1);
+            const uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
+            if (uv_src) |uv_ptr| {
+                const uv_src_slice: [*]const u8 = @ptrCast(@alignCast(uv_ptr));
+                const uv_height = height / 2;
+                const uv_width = width / 2;
+
+                for (0..uv_height) |row| {
+                    for (0..uv_width) |col| {
+                        const src_idx = row * uv_stride + col * 2;
+                        const u_dst_idx = row * frame.stride[1] + col;
+                        const v_dst_idx = row * frame.stride[2] + col;
+
+                        frame.data[1][u_dst_idx] = uv_src_slice[src_idx]; // U
+                        frame.data[2][v_dst_idx] = uv_src_slice[src_idx + 1]; // V
+                    }
+                }
+            }
+        }
+
+        ctx.decoded_frame = frame;
     }
 
     pub fn decode(self: *Self, packet: *const EncodedPacket) !?*core.VideoFrame {
-        // In a full implementation, we would:
-        // 1. Create CMSampleBuffer from packet data
-        // 2. Call VTDecompressionSessionDecodeFrame
-        // 3. Wait for callback with decoded CVPixelBuffer
-        // 4. Convert CVPixelBuffer to VideoFrame
+        // Create format description on first frame (from SPS/PPS)
+        if (self.format_description == null) {
+            self.format_description = try self.createFormatDescription(packet);
+        }
 
-        // For now, return a placeholder frame
-        // (Full implementation requires CMSampleBuffer creation which is complex)
+        // Create decompression session if needed
+        if (self.session == null) {
+            var callback_ctx = try self.allocator.create(DecoderCallbackContext);
+            callback_ctx.* = .{
+                .allocator = self.allocator,
+                .decoded_frame = null,
+                .mutex = .{},
+                .config = self.config,
+            };
 
-        const frame = try self.allocator.create(core.VideoFrame);
-        frame.* = try core.VideoFrame.init(
-            self.allocator,
-            self.config.width,
-            self.config.height,
-            self.config.output_format,
+            const callback: *const fn (
+                ?*anyopaque,
+                ?*anyopaque,
+                OSStatus,
+                VTDecodeInfoFlags,
+                ?CVPixelBufferRef,
+                CMTime,
+                CMTime,
+            ) callconv(.C) void = decoderCallback;
+
+            var session: ?VTDecompressionSessionRef = null;
+            const status = VTDecompressionSessionCreate(
+                null,
+                self.format_description.?,
+                null,
+                null,
+                null,
+                callback,
+                callback_ctx,
+                &session,
+            );
+
+            if (status != kVTSuccess or session == null) {
+                return error.DecompressionSessionCreationFailed;
+            }
+
+            self.session = session;
+        }
+
+        // Create CMBlockBuffer from packet data
+        var block_buffer: ?CMBlockBufferRef = null;
+        const bb_status = CMBlockBufferCreateWithMemoryBlock(
+            null,
+            @constCast(packet.data.ptr),
+            packet.data.len,
+            null,
+            null,
+            0,
+            packet.data.len,
+            0,
+            &block_buffer,
         );
 
-        frame.pts = packet.pts;
+        if (bb_status != kVTSuccess or block_buffer == null) {
+            return error.BlockBufferCreationFailed;
+        }
+        defer CFRelease(@ptrCast(block_buffer.?));
+
+        // Create timing info
+        var timing = CMSampleTimingInfo{
+            .duration = kCMTimeInvalid,
+            .presentationTimeStamp = CMTime{
+                .value = packet.pts.toMicroseconds(),
+                .timescale = 1_000_000,
+                .flags = 1,
+                .epoch = 0,
+            },
+            .decodeTimeStamp = CMTime{
+                .value = packet.dts.toMicroseconds(),
+                .timescale = 1_000_000,
+                .flags = 1,
+                .epoch = 0,
+            },
+        };
+
+        // Create sample buffer
+        var sample_buffer: ?CMSampleBufferRef = null;
+        const sample_size = packet.data.len;
+        const sb_status = CMSampleBufferCreate(
+            null,
+            block_buffer,
+            true,
+            null,
+            null,
+            self.format_description,
+            1,
+            1,
+            &timing,
+            1,
+            &sample_size,
+            &sample_buffer,
+        );
+
+        if (sb_status != kVTSuccess or sample_buffer == null) {
+            return error.SampleBufferCreationFailed;
+        }
+        defer CFRelease(@ptrCast(sample_buffer.?));
+
+        // Decode frame
+        const decode_status = VTDecompressionSessionDecodeFrame(
+            self.session.?,
+            sample_buffer.?,
+            0,
+            null,
+            null,
+        );
+
+        if (decode_status != kVTSuccess) {
+            return error.DecodeFailed;
+        }
+
+        // Wait for async decode to complete
+        _ = VTDecompressionSessionWaitForAsynchronousFrames(self.session.?);
+
+        // Get decoded frame
+        self.decode_mutex.lock();
+        defer self.decode_mutex.unlock();
+
+        const frame = self.decoded_frame;
+        self.decoded_frame = null;
 
         return frame;
+    }
+
+    fn createFormatDescription(self: *Self, packet: *const EncodedPacket) !CMFormatDescriptionRef {
+        // Parse NAL units to extract SPS/PPS
+        // For H.264: look for NAL type 7 (SPS) and 8 (PPS)
+        // This is a simplified version - a full parser would be more robust
+
+        var sps_data: ?[]const u8 = null;
+        var pps_data: ?[]const u8 = null;
+
+        var i: usize = 0;
+        while (i < packet.data.len) {
+            // Find start code (0x00 0x00 0x00 0x01 or 0x00 0x00 0x01)
+            if (i + 3 < packet.data.len and
+                packet.data[i] == 0 and
+                packet.data[i + 1] == 0 and
+                packet.data[i + 2] == 1)
+            {
+                const nal_start = i + 3;
+                if (nal_start >= packet.data.len) break;
+
+                const nal_type = packet.data[nal_start] & 0x1F;
+
+                // Find next start code
+                var nal_end = nal_start + 1;
+                while (nal_end + 2 < packet.data.len) : (nal_end += 1) {
+                    if (packet.data[nal_end] == 0 and
+                        packet.data[nal_end + 1] == 0 and
+                        (packet.data[nal_end + 2] == 1 or
+                        (nal_end + 3 < packet.data.len and packet.data[nal_end + 2] == 0 and packet.data[nal_end + 3] == 1)))
+                    {
+                        break;
+                    }
+                }
+
+                if (nal_type == 7) { // SPS
+                    sps_data = packet.data[nal_start..nal_end];
+                } else if (nal_type == 8) { // PPS
+                    pps_data = packet.data[nal_start..nal_end];
+                }
+
+                i = nal_end;
+            } else {
+                i += 1;
+            }
+        }
+
+        if (sps_data == null or pps_data == null) {
+            return error.ParameterSetsNotFound;
+        }
+
+        // Create format description from parameter sets
+        const param_sets = [_][*]const u8{ sps_data.?.ptr, pps_data.?.ptr };
+        const param_sizes = [_]usize{ sps_data.?.len, pps_data.?.len };
+
+        var format_desc: ?CMVideoFormatDescriptionRef = null;
+        const status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+            null,
+            2,
+            &param_sets,
+            &param_sizes,
+            4, // NAL unit header length
+            &format_desc,
+        );
+
+        if (status != kVTSuccess or format_desc == null) {
+            return error.FormatDescriptionCreationFailed;
+        }
+
+        return @ptrCast(format_desc.?);
     }
 
     pub fn flush(self: *Self) !void {

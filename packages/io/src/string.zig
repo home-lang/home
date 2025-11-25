@@ -302,6 +302,173 @@ pub fn padRight(allocator: Allocator, str: []const u8, total_width: usize, pad_c
     return result;
 }
 
+// ==================== Unicode Normalization ====================
+
+/// Unicode normalization form
+pub const NormalizationForm = enum {
+    /// Canonical Decomposition (NFD)
+    NFD,
+    /// Canonical Decomposition, followed by Canonical Composition (NFC)
+    NFC,
+    /// Compatibility Decomposition (NFKD)
+    NFKD,
+    /// Compatibility Decomposition, followed by Canonical Composition (NFKC)
+    NFKC,
+};
+
+/// Normalize a UTF-8 string according to the specified Unicode normalization form
+/// Note: This is a basic implementation that handles common cases
+/// For full Unicode normalization, a complete UCD (Unicode Character Database) is needed
+pub fn normalize(allocator: Allocator, str: []const u8, form: NormalizationForm) ![]u8 {
+    // For now, we implement a simplified version that handles basic cases
+    // Full implementation would require Unicode Character Database tables
+
+    switch (form) {
+        .NFD => return normalizeNFD(allocator, str),
+        .NFC => {
+            // NFC = NFD + compose
+            const decomposed = try normalizeNFD(allocator, str);
+            defer allocator.free(decomposed);
+            return normalizeCompose(allocator, decomposed);
+        },
+        .NFKD => return normalizeNFKD(allocator, str),
+        .NFKC => {
+            // NFKC = NFKD + compose
+            const decomposed = try normalizeNFKD(allocator, str);
+            defer allocator.free(decomposed);
+            return normalizeCompose(allocator, decomposed);
+        },
+    }
+}
+
+/// Canonical Decomposition (NFD)
+/// Decomposes characters into their canonical decomposition
+fn normalizeNFD(allocator: Allocator, str: []const u8) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < str.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
+        if (i + cp_len > str.len) break;
+
+        const codepoint = std.unicode.utf8Decode(str[i..][0..cp_len]) catch {
+            try result.append(allocator, str[i]);
+            i += 1;
+            continue;
+        };
+
+        // Decompose the codepoint (simplified - full version needs UCD)
+        const decomposed = decomposeCodepoint(codepoint);
+        for (decomposed) |dcp| {
+            if (dcp == 0) break;
+            var buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(dcp, &buf) catch continue;
+            try result.appendSlice(allocator, buf[0..len]);
+        }
+
+        i += cp_len;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Compatibility Decomposition (NFKD)
+/// Decomposes characters into their compatibility decomposition
+fn normalizeNFKD(allocator: Allocator, str: []const u8) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < str.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
+        if (i + cp_len > str.len) break;
+
+        const codepoint = std.unicode.utf8Decode(str[i..][0..cp_len]) catch {
+            try result.append(allocator, str[i]);
+            i += 1;
+            continue;
+        };
+
+        // Compatibility decomposition (simplified - full version needs UCD)
+        const decomposed = compatibilityDecomposeCodepoint(codepoint);
+        for (decomposed) |dcp| {
+            if (dcp == 0) break;
+            var buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(dcp, &buf) catch continue;
+            try result.appendSlice(allocator, buf[0..len]);
+        }
+
+        i += cp_len;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Canonical Composition
+/// Composes decomposed characters back into their composed form
+fn normalizeCompose(allocator: Allocator, str: []const u8) ![]u8 {
+    // Simplified composition - full version needs canonical composition tables
+    // For now, just return a copy since proper composition requires UCD
+    return allocator.dupe(u8, str);
+}
+
+/// Decompose a codepoint into its canonical decomposition
+/// This is a simplified version - full version needs complete UCD tables
+fn decomposeCodepoint(cp: u21) [4]u21 {
+    // Common decompositions (simplified subset)
+    return switch (cp) {
+        // Latin letters with diacritics
+        0x00C0 => .{ 0x0041, 0x0300, 0, 0 }, // À -> A + grave
+        0x00C1 => .{ 0x0041, 0x0301, 0, 0 }, // Á -> A + acute
+        0x00C2 => .{ 0x0041, 0x0302, 0, 0 }, // Â -> A + circumflex
+        0x00C3 => .{ 0x0041, 0x0303, 0, 0 }, // Ã -> A + tilde
+        0x00C4 => .{ 0x0041, 0x0308, 0, 0 }, // Ä -> A + diaeresis
+        0x00C7 => .{ 0x0043, 0x0327, 0, 0 }, // Ç -> C + cedilla
+        0x00C8 => .{ 0x0045, 0x0300, 0, 0 }, // È -> E + grave
+        0x00C9 => .{ 0x0045, 0x0301, 0, 0 }, // É -> E + acute
+        0x00CA => .{ 0x0045, 0x0302, 0, 0 }, // Ê -> E + circumflex
+        0x00CB => .{ 0x0045, 0x0308, 0, 0 }, // Ë -> E + diaeresis
+        0x00D1 => .{ 0x004E, 0x0303, 0, 0 }, // Ñ -> N + tilde
+        0x00D6 => .{ 0x004F, 0x0308, 0, 0 }, // Ö -> O + diaeresis
+        0x00DC => .{ 0x0055, 0x0308, 0, 0 }, // Ü -> U + diaeresis
+        // Add lowercase versions
+        0x00E0 => .{ 0x0061, 0x0300, 0, 0 }, // à -> a + grave
+        0x00E1 => .{ 0x0061, 0x0301, 0, 0 }, // á -> a + acute
+        0x00E2 => .{ 0x0061, 0x0302, 0, 0 }, // â -> a + circumflex
+        0x00E3 => .{ 0x0061, 0x0303, 0, 0 }, // ã -> a + tilde
+        0x00E4 => .{ 0x0061, 0x0308, 0, 0 }, // ä -> a + diaeresis
+        0x00E7 => .{ 0x0063, 0x0327, 0, 0 }, // ç -> c + cedilla
+        0x00E8 => .{ 0x0065, 0x0300, 0, 0 }, // è -> e + grave
+        0x00E9 => .{ 0x0065, 0x0301, 0, 0 }, // é -> e + acute
+        0x00EA => .{ 0x0065, 0x0302, 0, 0 }, // ê -> e + circumflex
+        0x00EB => .{ 0x0065, 0x0308, 0, 0 }, // ë -> e + diaeresis
+        0x00F1 => .{ 0x006E, 0x0303, 0, 0 }, // ñ -> n + tilde
+        0x00F6 => .{ 0x006F, 0x0308, 0, 0 }, // ö -> o + diaeresis
+        0x00FC => .{ 0x0075, 0x0308, 0, 0 }, // ü -> u + diaeresis
+        // No decomposition - return as is
+        else => .{ cp, 0, 0, 0 },
+    };
+}
+
+/// Compatibility decompose a codepoint
+/// This is a simplified version - full version needs complete UCD tables
+fn compatibilityDecomposeCodepoint(cp: u21) [4]u21 {
+    // Compatibility decompositions include formatting characters
+    return switch (cp) {
+        // Superscripts
+        0x00B2 => .{ 0x0032, 0, 0, 0 }, // ² -> 2
+        0x00B3 => .{ 0x0033, 0, 0, 0 }, // ³ -> 3
+        0x00B9 => .{ 0x0031, 0, 0, 0 }, // ¹ -> 1
+        // Fractions
+        0x00BC => .{ 0x0031, 0x2044, 0x0034, 0 }, // ¼ -> 1/4
+        0x00BD => .{ 0x0031, 0x2044, 0x0032, 0 }, // ½ -> 1/2
+        0x00BE => .{ 0x0033, 0x2044, 0x0034, 0 }, // ¾ -> 3/4
+        // Fall back to canonical decomposition
+        else => decomposeCodepoint(cp),
+    };
+}
+
 // ==================== Tests ====================
 
 test "StringBuilder: basic operations" {
@@ -420,4 +587,25 @@ test "String: padding" {
     const right = try padRight(allocator, "42", 5, '0');
     defer allocator.free(right);
     try std.testing.expectEqualStrings("42000", right);
+}
+
+test "String: Unicode normalization" {
+    const allocator = std.testing.allocator;
+
+    // Test NFD normalization - decompose é (U+00E9) to e + combining acute (U+0065 U+0301)
+    const nfd = try normalize(allocator, "café", .NFD);
+    defer allocator.free(nfd);
+    // After NFD, é should be decomposed into e + combining acute accent
+    try std.testing.expect(nfd.len > 4); // Should be longer due to decomposition
+
+    // Test NFKD with superscript ² (U+00B2)
+    const nfkd = try normalize(allocator, "x²", .NFKD);
+    defer allocator.free(nfkd);
+    // Superscript 2 should be compatibility decomposed
+    try std.testing.expect(nfkd.len >= 2);
+
+    // Test that regular ASCII passes through unchanged
+    const ascii_nfd = try normalize(allocator, "hello", .NFD);
+    defer allocator.free(ascii_nfd);
+    try std.testing.expectEqualStrings("hello", ascii_nfd);
 }

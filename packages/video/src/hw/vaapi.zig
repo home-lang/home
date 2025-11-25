@@ -196,6 +196,15 @@ const VAImage = extern struct {
     component_order: [4]u8,
 };
 
+const VACodedBufferSegment = extern struct {
+    size: u32,
+    bit_offset: u32,
+    status: u32,
+    reserved: u32,
+    buf: *anyopaque,
+    next: ?*VACodedBufferSegment,
+};
+
 // External DRM functions for display connection
 extern "c" fn open(path: [*:0]const u8, flags: c_int) c_int;
 extern "c" fn close(fd: c_int) c_int;
@@ -564,11 +573,29 @@ pub const VAEncoder = struct {
         }
         defer _ = vaUnmapBuffer(display, self.coded_buf);
 
-        // Copy encoded data
-        // In a real implementation, coded_buf_ptr points to a VACodedBufferSegment
-        // For now, we'll create placeholder data
-        const encoded_data = try self.allocator.alloc(u8, 1024);
-        @memset(encoded_data, 0);
+        // Read VACodedBufferSegment to get encoded bitstream
+        const segment: *VACodedBufferSegment = @ptrCast(@alignCast(coded_buf_ptr));
+
+        // Calculate total size across all segments
+        var total_size: usize = 0;
+        var current_seg: ?*VACodedBufferSegment = segment;
+        while (current_seg) |seg| {
+            total_size += seg.size;
+            current_seg = seg.next;
+        }
+
+        // Allocate buffer and copy all segment data
+        const encoded_data = try self.allocator.alloc(u8, total_size);
+        errdefer self.allocator.free(encoded_data);
+
+        var offset: usize = 0;
+        current_seg = segment;
+        while (current_seg) |seg| {
+            const seg_data: [*]const u8 = @ptrCast(seg.buf);
+            @memcpy(encoded_data[offset .. offset + seg.size], seg_data[0..seg.size]);
+            offset += seg.size;
+            current_seg = seg.next;
+        }
 
         self.frame_count += 1;
         const is_keyframe = (self.frame_count % self.config.keyframe_interval) == 0;
@@ -690,6 +717,10 @@ pub const VADecoder = struct {
     device: *VADevice,
     config: VADecoderConfig,
     allocator: std.mem.Allocator,
+    config_id: VAConfigID = 0,
+    context_id: VAContextID = 0,
+    surfaces: []VASurfaceID,
+    current_surface: usize = 0,
 
     const Self = @This();
 
@@ -698,34 +729,171 @@ pub const VADecoder = struct {
             return error.UnsupportedPlatform;
         }
 
+        const display = device.display orelse return error.NoDisplay;
+
+        // Create config for decoding
+        const profile = config.profile.toVAProfile();
+        const entrypoint = VAEntrypointVLD;
+
+        var attrib = VAConfigAttrib{
+            .type = VAConfigAttribRTFormat,
+            .value = VA_RT_FORMAT_YUV420,
+        };
+
+        var config_id: VAConfigID = 0;
+        var status = vaCreateConfig(
+            display,
+            profile,
+            entrypoint,
+            &attrib,
+            1,
+            &config_id,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            return error.ConfigCreationFailed;
+        }
+
+        // Create surfaces for decoding
+        const num_surfaces = 16; // Reference frame pool
+        var surfaces = try allocator.alloc(VASurfaceID, num_surfaces);
+        errdefer allocator.free(surfaces);
+
+        status = vaCreateSurfaces(
+            display,
+            VA_RT_FORMAT_YUV420,
+            config.width,
+            config.height,
+            surfaces.ptr,
+            num_surfaces,
+            null,
+            0,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            _ = vaDestroyConfig(display, config_id);
+            return error.SurfaceCreationFailed;
+        }
+
+        // Create context
+        var context_id: VAContextID = 0;
+        status = vaCreateContext(
+            display,
+            config_id,
+            @intCast(config.width),
+            @intCast(config.height),
+            0,
+            surfaces.ptr,
+            @intCast(num_surfaces),
+            &context_id,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            _ = vaDestroySurfaces(display, surfaces.ptr, @intCast(num_surfaces));
+            _ = vaDestroyConfig(display, config_id);
+            return error.ContextCreationFailed;
+        }
+
         return .{
             .allocator = allocator,
             .device = device,
             .config = config,
+            .config_id = config_id,
+            .context_id = context_id,
+            .surfaces = surfaces,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        const display = self.device.display orelse return;
+
+        _ = vaDestroyContext(display, self.context_id);
+        _ = vaDestroySurfaces(display, self.surfaces.ptr, @intCast(self.surfaces.len));
+        _ = vaDestroyConfig(display, self.config_id);
+
+        self.allocator.free(self.surfaces);
     }
 
     pub fn decode(self: *Self, packet: *const EncodedPacket) !?*core.VideoFrame {
-        // Simplified decoder - full implementation would create surfaces and decode
-        const frame = try self.allocator.create(core.VideoFrame);
-        frame.* = try core.VideoFrame.init(
-            self.allocator,
-            self.config.width,
-            self.config.height,
-            self.config.output_format,
+        const display = self.device.display orelse return error.NoDisplay;
+
+        // Get next surface for decoding
+        const surface_id = self.surfaces[self.current_surface % self.surfaces.len];
+        self.current_surface += 1;
+
+        // Begin picture
+        var status = vaBeginPicture(display, self.context_id, surface_id);
+        if (status != VA_STATUS_SUCCESS) {
+            return error.BeginPictureFailed;
+        }
+
+        // In a full implementation, we would:
+        // 1. Parse bitstream to extract parameter sets (SPS/PPS for H.264)
+        // 2. Create parameter buffers (picture params, slice params, etc.)
+        // 3. Create bitstream buffer with encoded data
+        // 4. Submit all buffers via vaRenderPicture
+        //
+        // For now, we'll create a minimal bitstream buffer and submit it
+
+        // Create bitstream buffer
+        var bitstream_buf: VABufferID = 0;
+        status = vaCreateBuffer(
+            display,
+            self.context_id,
+            10, // VASliceDataBufferType
+            @intCast(packet.size),
+            1,
+            packet.data.ptr,
+            &bitstream_buf,
         );
 
+        if (status != VA_STATUS_SUCCESS) {
+            _ = vaEndPicture(display, self.context_id);
+            return error.BitstreamBufferCreationFailed;
+        }
+        defer _ = vaDestroyBuffer(display, bitstream_buf);
+
+        // Submit buffer
+        var buffers = [_]VABufferID{bitstream_buf};
+        status = vaRenderPicture(display, self.context_id, &buffers, buffers.len);
+        if (status != VA_STATUS_SUCCESS) {
+            _ = vaEndPicture(display, self.context_id);
+            return error.RenderPictureFailed;
+        }
+
+        // End picture
+        status = vaEndPicture(display, self.context_id);
+        if (status != VA_STATUS_SUCCESS) {
+            return error.EndPictureFailed;
+        }
+
+        // Wait for decode to complete
+        status = vaSyncSurface(display, surface_id);
+        if (status != VA_STATUS_SUCCESS) {
+            return error.SyncSurfaceFailed;
+        }
+
+        // Download decoded surface to VideoFrame
+        var surface = VASurface{
+            .allocator = self.allocator,
+            .device = self.device,
+            .width = self.config.width,
+            .height = self.config.height,
+            .format = self.config.output_format,
+            .surface_id = surface_id,
+        };
+
+        var frame_data = try surface.download();
+        const frame = try self.allocator.create(core.VideoFrame);
+        frame.* = frame_data;
         frame.pts = packet.pts;
 
         return frame;
     }
 
     pub fn flush(self: *Self) !void {
-        _ = self;
+        // Reset decoder state
+        self.current_surface = 0;
     }
 };
 
@@ -897,13 +1065,175 @@ pub const VASurface = struct {
     }
 
     pub fn upload(self: *Self, frame: *const core.VideoFrame) !void {
-        // Upload frame data to VA surface (similar to uploadFrameToSurface in encoder)
-        _ = self;
-        _ = frame;
+        const display = self.device.display orelse return error.NoDisplay;
+
+        // Create VAImage for upload
+        var image_format = VAImageFormat{
+            .fourcc = VA_FOURCC_NV12,
+            .byte_order = 1,
+            .bits_per_pixel = 12,
+            .depth = 0,
+            .red_mask = 0,
+            .green_mask = 0,
+            .blue_mask = 0,
+            .alpha_mask = 0,
+        };
+
+        var image: VAImage = undefined;
+        var status = vaCreateImage(
+            display,
+            &image_format,
+            @intCast(frame.width),
+            @intCast(frame.height),
+            &image,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            return error.ImageCreationFailed;
+        }
+        defer _ = vaDestroyImage(display, image.image_id);
+
+        // Map image buffer
+        var image_buf_ptr: *anyopaque = undefined;
+        status = vaMapBuffer(display, image.buf, &image_buf_ptr);
+        if (status != VA_STATUS_SUCCESS) {
+            return error.MapBufferFailed;
+        }
+        defer _ = vaUnmapBuffer(display, image.buf);
+
+        // Copy frame data to image buffer
+        const image_data: [*]u8 = @ptrCast(@alignCast(image_buf_ptr));
+
+        // Copy Y plane
+        for (0..frame.height) |y| {
+            const src_offset = y * frame.stride[0];
+            const dst_offset = y * image.pitches[0];
+            @memcpy(
+                image_data[dst_offset .. dst_offset + frame.width],
+                frame.data[0][src_offset .. src_offset + frame.width],
+            );
+        }
+
+        // Copy UV plane (interleaved for NV12)
+        const uv_offset = image.offsets[1];
+        const uv_height = frame.height / 2;
+        const uv_width = frame.width / 2;
+
+        for (0..uv_height) |y| {
+            for (0..uv_width) |x| {
+                const u_src = y * frame.stride[1] + x;
+                const v_src = y * frame.stride[2] + x;
+                const dst = uv_offset + y * image.pitches[1] + x * 2;
+
+                image_data[dst] = frame.data[1][u_src];
+                image_data[dst + 1] = frame.data[2][v_src];
+            }
+        }
+
+        // Upload image to surface
+        status = vaPutImage(
+            display,
+            self.surface_id,
+            image.image_id,
+            0,
+            0,
+            frame.width,
+            frame.height,
+            0,
+            0,
+            frame.width,
+            frame.height,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            return error.PutImageFailed;
+        }
     }
 
     pub fn download(self: *Self) !core.VideoFrame {
-        // Download surface data to VideoFrame
-        return try core.VideoFrame.init(self.allocator, self.width, self.height, self.format);
+        const display = self.device.display orelse return error.NoDisplay;
+
+        var frame = try core.VideoFrame.init(self.allocator, self.width, self.height, self.format);
+        errdefer frame.deinit();
+
+        // Create VAImage for download
+        var image_format = VAImageFormat{
+            .fourcc = VA_FOURCC_NV12,
+            .byte_order = 1,
+            .bits_per_pixel = 12,
+            .depth = 0,
+            .red_mask = 0,
+            .green_mask = 0,
+            .blue_mask = 0,
+            .alpha_mask = 0,
+        };
+
+        var image: VAImage = undefined;
+        var status = vaCreateImage(
+            display,
+            &image_format,
+            @intCast(self.width),
+            @intCast(self.height),
+            &image,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            return error.ImageCreationFailed;
+        }
+        defer _ = vaDestroyImage(display, image.image_id);
+
+        // Get image from surface
+        status = vaGetImage(
+            display,
+            self.surface_id,
+            0,
+            0,
+            self.width,
+            self.height,
+            image.image_id,
+        );
+
+        if (status != VA_STATUS_SUCCESS) {
+            return error.GetImageFailed;
+        }
+
+        // Map image buffer
+        var image_buf_ptr: *anyopaque = undefined;
+        status = vaMapBuffer(display, image.buf, &image_buf_ptr);
+        if (status != VA_STATUS_SUCCESS) {
+            return error.MapBufferFailed;
+        }
+        defer _ = vaUnmapBuffer(display, image.buf);
+
+        // Copy image data to frame
+        const image_data: [*]const u8 = @ptrCast(@alignCast(image_buf_ptr));
+
+        // Copy Y plane
+        for (0..self.height) |y| {
+            const src_offset = y * image.pitches[0];
+            const dst_offset = y * frame.stride[0];
+            @memcpy(
+                frame.data[0][dst_offset .. dst_offset + self.width],
+                image_data[src_offset .. src_offset + self.width],
+            );
+        }
+
+        // Copy UV plane (deinterleave NV12 to I420/YUV420P)
+        const uv_offset = image.offsets[1];
+        const uv_height = self.height / 2;
+        const uv_width = self.width / 2;
+
+        for (0..uv_height) |y| {
+            for (0..uv_width) |x| {
+                const src = uv_offset + y * image.pitches[1] + x * 2;
+                const u_dst = y * frame.stride[1] + x;
+                const v_dst = y * frame.stride[2] + x;
+
+                frame.data[1][u_dst] = image_data[src];
+                frame.data[2][v_dst] = image_data[src + 1];
+            }
+        }
+
+        return frame;
     }
 };

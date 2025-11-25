@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const core = @import("../core/frame.zig");
+const ml_weights = @import("ml_weights.zig");
 
 pub const VideoFrame = core.VideoFrame;
 
@@ -34,14 +35,13 @@ pub const Conv2D = struct {
         const weights = try allocator.alloc(f32, weight_count);
         const bias = try allocator.alloc(f32, out_channels);
 
-        // He initialization
-        const std_dev = @sqrt(2.0 / @as(f32, @floatFromInt(in_channels * kernel_size * kernel_size)));
+        // Use proper He initialization from ml_weights
+        const fan_in = in_channels * kernel_size * kernel_size;
+        const fan_out = out_channels * kernel_size * kernel_size;
         var prng = std.rand.DefaultPrng.init(42);
-        const random = prng.random();
+        const seed = prng.random().int(u64);
 
-        for (weights) |*w| {
-            w.* = random.floatNorm(f32) * std_dev;
-        }
+        ml_weights.initWeights(weights, .he_normal, fan_in, fan_out, seed);
 
         for (bias) |*b| {
             b.* = 0.0;
@@ -296,6 +296,174 @@ pub const ESRGANUpscaler = struct {
         self.conv_last.deinit();
     }
 
+    /// Calculate total number of parameters in the network
+    pub fn getParamCount(self: *const Self) usize {
+        var count: usize = 0;
+        count += self.conv_first.weights.len + self.conv_first.bias.len;
+        for (self.residual_blocks) |*block| {
+            count += block.conv1.weights.len + block.conv1.bias.len;
+            count += block.conv2.weights.len + block.conv2.bias.len;
+        }
+        count += self.upconv1.weights.len + self.upconv1.bias.len;
+        count += self.upconv2.weights.len + self.upconv2.bias.len;
+        count += self.conv_last.weights.len + self.conv_last.bias.len;
+        return count;
+    }
+
+    /// Load pre-trained weights from file
+    pub fn loadWeights(self: *Self, file_path: []const u8) !void {
+        const model_type: ml_weights.ModelType = if (self.upscale_factor == 2)
+            .esrgan_upscaler_2x
+        else
+            .esrgan_upscaler_4x;
+
+        const param_count = self.getParamCount();
+        const weights_data = try ml_weights.loadWeights(
+            self.allocator,
+            file_path,
+            model_type,
+            param_count,
+        );
+        defer self.allocator.free(weights_data);
+
+        // Copy weights to layers
+        var offset: usize = 0;
+
+        // conv_first
+        @memcpy(self.conv_first.weights, weights_data[offset .. offset + self.conv_first.weights.len]);
+        offset += self.conv_first.weights.len;
+        @memcpy(self.conv_first.bias, weights_data[offset .. offset + self.conv_first.bias.len]);
+        offset += self.conv_first.bias.len;
+
+        // residual blocks
+        for (self.residual_blocks) |*block| {
+            @memcpy(block.conv1.weights, weights_data[offset .. offset + block.conv1.weights.len]);
+            offset += block.conv1.weights.len;
+            @memcpy(block.conv1.bias, weights_data[offset .. offset + block.conv1.bias.len]);
+            offset += block.conv1.bias.len;
+
+            @memcpy(block.conv2.weights, weights_data[offset .. offset + block.conv2.weights.len]);
+            offset += block.conv2.weights.len;
+            @memcpy(block.conv2.bias, weights_data[offset .. offset + block.conv2.bias.len]);
+            offset += block.conv2.bias.len;
+        }
+
+        // upconv1
+        @memcpy(self.upconv1.weights, weights_data[offset .. offset + self.upconv1.weights.len]);
+        offset += self.upconv1.weights.len;
+        @memcpy(self.upconv1.bias, weights_data[offset .. offset + self.upconv1.bias.len]);
+        offset += self.upconv1.bias.len;
+
+        // upconv2
+        @memcpy(self.upconv2.weights, weights_data[offset .. offset + self.upconv2.weights.len]);
+        offset += self.upconv2.weights.len;
+        @memcpy(self.upconv2.bias, weights_data[offset .. offset + self.upconv2.bias.len]);
+        offset += self.upconv2.bias.len;
+
+        // conv_last
+        @memcpy(self.conv_last.weights, weights_data[offset .. offset + self.conv_last.weights.len]);
+        offset += self.conv_last.weights.len;
+        @memcpy(self.conv_last.bias, weights_data[offset .. offset + self.conv_last.bias.len]);
+    }
+
+    /// Save weights to file
+    pub fn saveWeights(self: *const Self, file_path: []const u8) !void {
+        const model_type: ml_weights.ModelType = if (self.upscale_factor == 2)
+            .esrgan_upscaler_2x
+        else
+            .esrgan_upscaler_4x;
+
+        const param_count = self.getParamCount();
+        const weights_data = try self.allocator.alloc(f32, param_count);
+        defer self.allocator.free(weights_data);
+
+        // Collect all weights
+        var offset: usize = 0;
+
+        @memcpy(weights_data[offset .. offset + self.conv_first.weights.len], self.conv_first.weights);
+        offset += self.conv_first.weights.len;
+        @memcpy(weights_data[offset .. offset + self.conv_first.bias.len], self.conv_first.bias);
+        offset += self.conv_first.bias.len;
+
+        for (self.residual_blocks) |*block| {
+            @memcpy(weights_data[offset .. offset + block.conv1.weights.len], block.conv1.weights);
+            offset += block.conv1.weights.len;
+            @memcpy(weights_data[offset .. offset + block.conv1.bias.len], block.conv1.bias);
+            offset += block.conv1.bias.len;
+
+            @memcpy(weights_data[offset .. offset + block.conv2.weights.len], block.conv2.weights);
+            offset += block.conv2.weights.len;
+            @memcpy(weights_data[offset .. offset + block.conv2.bias.len], block.conv2.bias);
+            offset += block.conv2.bias.len;
+        }
+
+        @memcpy(weights_data[offset .. offset + self.upconv1.weights.len], self.upconv1.weights);
+        offset += self.upconv1.weights.len;
+        @memcpy(weights_data[offset .. offset + self.upconv1.bias.len], self.upconv1.bias);
+        offset += self.upconv1.bias.len;
+
+        @memcpy(weights_data[offset .. offset + self.upconv2.weights.len], self.upconv2.weights);
+        offset += self.upconv2.weights.len;
+        @memcpy(weights_data[offset .. offset + self.upconv2.bias.len], self.upconv2.bias);
+        offset += self.upconv2.bias.len;
+
+        @memcpy(weights_data[offset .. offset + self.conv_last.weights.len], self.conv_last.weights);
+        offset += self.conv_last.weights.len;
+        @memcpy(weights_data[offset .. offset + self.conv_last.bias.len], self.conv_last.bias);
+
+        try ml_weights.saveWeights(file_path, model_type, weights_data);
+    }
+
+    /// Initialize with sensible default weights (approximates bicubic interpolation)
+    pub fn initDefaultWeights(self: *Self) !void {
+        const model_type: ml_weights.ModelType = if (self.upscale_factor == 2)
+            .esrgan_upscaler_2x
+        else
+            .esrgan_upscaler_4x;
+
+        const param_count = self.getParamCount();
+        const default_weights = try ml_weights.generateDefaultWeights(
+            self.allocator,
+            model_type,
+            param_count,
+        );
+        defer self.allocator.free(default_weights);
+
+        // Copy default weights to layers (same structure as loadWeights)
+        var offset: usize = 0;
+
+        @memcpy(self.conv_first.weights, default_weights[offset .. offset + self.conv_first.weights.len]);
+        offset += self.conv_first.weights.len;
+        @memcpy(self.conv_first.bias, default_weights[offset .. offset + self.conv_first.bias.len]);
+        offset += self.conv_first.bias.len;
+
+        for (self.residual_blocks) |*block| {
+            @memcpy(block.conv1.weights, default_weights[offset .. offset + block.conv1.weights.len]);
+            offset += block.conv1.weights.len;
+            @memcpy(block.conv1.bias, default_weights[offset .. offset + block.conv1.bias.len]);
+            offset += block.conv1.bias.len;
+
+            @memcpy(block.conv2.weights, default_weights[offset .. offset + block.conv2.weights.len]);
+            offset += block.conv2.weights.len;
+            @memcpy(block.conv2.bias, default_weights[offset .. offset + block.conv2.bias.len]);
+            offset += block.conv2.bias.len;
+        }
+
+        @memcpy(self.upconv1.weights, default_weights[offset .. offset + self.upconv1.weights.len]);
+        offset += self.upconv1.weights.len;
+        @memcpy(self.upconv1.bias, default_weights[offset .. offset + self.upconv1.bias.len]);
+        offset += self.upconv1.bias.len;
+
+        @memcpy(self.upconv2.weights, default_weights[offset .. offset + self.upconv2.weights.len]);
+        offset += self.upconv2.weights.len;
+        @memcpy(self.upconv2.bias, default_weights[offset .. offset + self.upconv2.bias.len]);
+        offset += self.upconv2.bias.len;
+
+        @memcpy(self.conv_last.weights, default_weights[offset .. offset + self.conv_last.weights.len]);
+        offset += self.conv_last.weights.len;
+        @memcpy(self.conv_last.bias, default_weights[offset .. offset + self.conv_last.bias.len]);
+    }
+
     pub fn forward(
         self: *const Self,
         input: []const f32, // [H, W, 3] normalized to [0, 1]
@@ -444,24 +612,55 @@ pub const MLUpscaleFilter = struct {
     network: ESRGANUpscaler,
     upscale_factor: u32,
     use_ml: bool,
+    weights_path: ?[]const u8,
     allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, upscale_factor: u32, use_ml: bool) !Self {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        upscale_factor: u32,
+        use_ml: bool,
+        weights_path: ?[]const u8,
+    ) !Self {
         if (upscale_factor != 2 and upscale_factor != 4) {
             return error.InvalidUpscaleFactor;
         }
 
-        const network = if (use_ml)
+        var network = if (use_ml)
             try ESRGANUpscaler.init(allocator, upscale_factor, 8) // 8 residual blocks
         else
             undefined;
+
+        // Load weights if path provided and file exists, otherwise use sensible defaults
+        if (use_ml) {
+            if (weights_path) |path| {
+                const model_type: ml_weights.ModelType = if (upscale_factor == 2)
+                    .esrgan_upscaler_2x
+                else
+                    .esrgan_upscaler_4x;
+
+                if (ml_weights.weightsFileExists(path, model_type)) {
+                    network.loadWeights(path) catch |err| {
+                        // If loading fails, use default weights
+                        try network.initDefaultWeights();
+                        return err;
+                    };
+                } else {
+                    // No weights file, use sensible defaults
+                    try network.initDefaultWeights();
+                }
+            } else {
+                // No path provided, use sensible defaults
+                try network.initDefaultWeights();
+            }
+        }
 
         return .{
             .network = network,
             .upscale_factor = upscale_factor,
             .use_ml = use_ml,
+            .weights_path = weights_path,
             .allocator = allocator,
         };
     }
