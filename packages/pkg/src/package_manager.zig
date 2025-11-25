@@ -887,14 +887,68 @@ pub const PackageConfig = struct {
         const is_json = std.mem.endsWith(u8, path, ".json");
 
         if (is_json) {
-            // Save as JSON - simplified for now
+            // Save as JSON
             var buf = std.ArrayList(u8){};
             defer buf.deinit(self.allocator);
 
             try buf.appendSlice(self.allocator, "{\n");
             try buf.appendSlice(self.allocator, try std.fmt.allocPrint(self.allocator, "  \"name\": \"{s}\",\n", .{self.name}));
-            try buf.appendSlice(self.allocator, try std.fmt.allocPrint(self.allocator, "  \"version\": \"{s}\"\n", .{self.version}));
-            // TODO: Add dependencies
+            try buf.appendSlice(self.allocator, try std.fmt.allocPrint(self.allocator, "  \"version\": \"{s}\"", .{self.version}));
+
+            // Add dependencies if any exist
+            if (self.dependencies.items.len > 0) {
+                try buf.appendSlice(self.allocator, ",\n  \"dependencies\": {\n");
+
+                for (self.dependencies.items, 0..) |dep, i| {
+                    const is_last = i == self.dependencies.items.len - 1;
+                    const comma = if (is_last) "" else ",";
+
+                    switch (dep.version) {
+                        .semantic => |sem| {
+                            const dep_line = try std.fmt.allocPrint(
+                                self.allocator,
+                                "    \"{s}\": \"{d}.{d}.{d}\"{s}\n",
+                                .{ dep.name, sem.major, sem.minor, sem.patch, comma },
+                            );
+                            defer self.allocator.free(dep_line);
+                            try buf.appendSlice(self.allocator, dep_line);
+                        },
+                        .git => |rev| switch (dep.source) {
+                            .Git => |git| {
+                                const dep_line = if (rev) |r|
+                                    try std.fmt.allocPrint(
+                                        self.allocator,
+                                        "    \"{s}\": {{ \"git\": \"{s}\", \"rev\": \"{s}\" }}{s}\n",
+                                        .{ dep.name, git.url, r, comma },
+                                    )
+                                else
+                                    try std.fmt.allocPrint(
+                                        self.allocator,
+                                        "    \"{s}\": {{ \"git\": \"{s}\" }}{s}\n",
+                                        .{ dep.name, git.url, comma },
+                                    );
+                                defer self.allocator.free(dep_line);
+                                try buf.appendSlice(self.allocator, dep_line);
+                            },
+                            else => {},
+                        },
+                        .url => |url| {
+                            const dep_line = try std.fmt.allocPrint(
+                                self.allocator,
+                                "    \"{s}\": {{ \"url\": \"{s}\" }}{s}\n",
+                                .{ dep.name, url, comma },
+                            );
+                            defer self.allocator.free(dep_line);
+                            try buf.appendSlice(self.allocator, dep_line);
+                        },
+                    }
+                }
+
+                try buf.appendSlice(self.allocator, "  }\n");
+            } else {
+                try buf.appendSlice(self.allocator, "\n");
+            }
+
             try buf.appendSlice(self.allocator, "}\n");
 
             try file.writeAll(buf.items);

@@ -1896,6 +1896,68 @@ pub const NativeCodegen = struct {
                     try self.assembler.movRegImm64(.rax, 1);
                 }
             },
+            .MemberExpr => |member_expr| {
+                // Handle patterns like Effect::Explosion (module::variant or enum::variant)
+                // The object is the enum type name, member is the variant name
+
+                // Check if this is an enum variant reference
+                if (member_expr.object.* == .Identifier) {
+                    const enum_name = member_expr.object.Identifier.name;
+                    const variant_name = member_expr.member;
+
+                    var is_enum_variant = false;
+                    var enum_tag: i64 = 0;
+
+                    // Look up the enum by name
+                    var enum_iter = self.enum_layouts.iterator();
+                    while (enum_iter.next()) |entry| {
+                        const layout_enum_name = entry.key_ptr.*;
+                        const enum_layout = entry.value_ptr.*;
+
+                        // Check if this is the right enum
+                        if (std.mem.eql(u8, layout_enum_name, enum_name)) {
+                            // Find the variant
+                            for (enum_layout.variants, 0..) |v, idx| {
+                                if (std.mem.eql(u8, v.name, variant_name)) {
+                                    is_enum_variant = true;
+                                    enum_tag = @intCast(idx);
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+
+                    if (is_enum_variant) {
+                        // Compare enum tag
+                        const needs_save = (value_reg == .rcx or value_reg == .rdx);
+                        const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+
+                        if (needs_save) {
+                            try self.assembler.movRegReg(saved_reg, value_reg);
+                        }
+
+                        // Load tag from enum value (first 8 bytes)
+                        const enum_reg = if (needs_save) saved_reg else value_reg;
+                        try self.assembler.movRegMem(.rcx, enum_reg, 0);
+                        // Compare with expected tag
+                        try self.assembler.movRegImm64(.rdx, enum_tag);
+                        try self.assembler.cmpRegReg(.rcx, .rdx);
+                        // Set rax based on comparison
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.jneRel32(10);
+                        try self.assembler.movRegImm64(.rax, 1);
+                    } else {
+                        // Not a known enum variant - no match
+                        std.debug.print("Unknown enum variant in pattern: {s}::{s}\n", .{enum_name, variant_name});
+                        try self.assembler.movRegImm64(.rax, 0);
+                    }
+                } else {
+                    // Complex member expression - unsupported
+                    std.debug.print("Unsupported complex MemberExpr in pattern matching\n", .{});
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
+            },
             else => {
                 // For other expressions, this is an unsupported pattern
                 // For now, try to evaluate and compare directly
@@ -2437,13 +2499,21 @@ pub const NativeCodegen = struct {
             return 16; // Optional = tag + value
         }
 
+        // Handle module-qualified types (e.g., kindof::KindOfMask, player::Player)
+        // Strip the module prefix and look up just the type name
+        var resolved_type_name = type_name;
+        if (std.mem.indexOf(u8, type_name, "::")) |sep_idx| {
+            // Type is module-qualified, extract just the type name part
+            resolved_type_name = type_name[sep_idx + 2 ..];
+        }
+
         // Check if it's a struct type
-        if (self.struct_layouts.get(type_name)) |layout| {
+        if (self.struct_layouts.get(resolved_type_name)) |layout| {
             return layout.total_size;
         }
 
-        // Check if it's an enum type
-        if (self.enum_layouts.get(type_name)) |enum_layout| {
+        // Check if it's an enum type (use resolved name to handle module-qualified types)
+        if (self.enum_layouts.get(resolved_type_name)) |enum_layout| {
             // Check if any variant has data
             var has_data = false;
             for (enum_layout.variants) |variant| {
@@ -6400,6 +6470,39 @@ pub const NativeCodegen = struct {
                 // They are not valid standalone expressions
                 std.debug.print("RangeExpr can only be used in for loop iterables, not as standalone expressions\n", .{});
                 return error.UnsupportedFeature;
+            },
+
+            .ArrayRepeat => |array_repeat| {
+                // Array repeat expression: [value; count]
+                // Allocate count elements on stack, all initialized to the same value
+
+                // Parse the count (it's stored as a string in the AST)
+                const count = std.fmt.parseInt(usize, array_repeat.count, 10) catch {
+                    std.debug.print("Invalid array repeat count: {s}\n", .{array_repeat.count});
+                    return error.UnsupportedFeature;
+                };
+
+                if (count == 0) {
+                    // Empty array - just return stack pointer
+                    try self.assembler.movRegReg(.rax, .rsp);
+                    return;
+                }
+
+                // Generate the value expression once
+                try self.generateExpr(array_repeat.value);
+
+                // rax now contains the value to repeat
+                // Push it onto the stack 'count' times
+                var i: usize = 0;
+                while (i < count) : (i += 1) {
+                    try self.assembler.pushReg(.rax);
+                }
+
+                // Return pointer to start of array (rsp points to first element)
+                try self.assembler.movRegReg(.rax, .rsp);
+
+                // Track stack usage
+                self.next_local_offset +|= @as(u8, @intCast(count));
             },
 
             else => |expr_tag| {

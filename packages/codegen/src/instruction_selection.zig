@@ -132,9 +132,21 @@ pub const InstructionSelector = struct {
                 }
 
                 // Check for shift + add (ARM64)
+                // ARM64 supports: ADD Xd, Xn, Xm, LSL #imm
+                // This would require analyzing if one operand comes from a shift instruction
+                // For now, we return the regular add pattern
+                // Full implementation would need:
+                // 1. Track instruction producers/consumers in a DAG
+                // 2. Check if op.lhs or op.rhs is produced by shl/shr
+                // 3. Verify the shift amount is a small immediate (0-63)
+                // 4. Combine into a single shifted-add instruction
                 if (self.target == .arm64) {
-                    // TODO: detect if one operand is a shift
-                    return Pattern{ .kind = .shift_add, .cost = 1, .mnemonic = "add" };
+                    // Check if this is a candidate for shift+add fusion
+                    // This is a placeholder - full pattern matching needs value tracking
+                    _ = op.lhs;
+                    _ = op.rhs;
+                    // Would need: if (self.isShiftProducer(op.lhs) or self.isShiftProducer(op.rhs))
+                    // return Pattern{ .kind = .shift_add, .cost = 1, .mnemonic = "add" };
                 }
 
                 // Default: register + register

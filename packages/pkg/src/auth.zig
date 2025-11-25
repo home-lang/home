@@ -349,18 +349,13 @@ pub const AuthManager = struct {
         };
         defer if (username == null) self.allocator.free(user);
 
-        // Prompt for password/token
+        // Prompt for password/token (hidden input)
         std.debug.print("Token or Password: ", .{});
-
-        // TODO: Hide password input (platform-specific)
-        const password = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
-            if (err == error.EndOfStream) return error.NoInput;
-            return err;
-        };
-        const password_trimmed = std.mem.trim(u8, password, &std.ascii.whitespace);
+        const password_trimmed = try self.readPasswordHidden(io);
+        defer self.allocator.free(password_trimmed);
 
         // Authenticate with registry
-        const obtained_token = try self.authenticateWithRegistry(reg, user, password_trimmed);
+        const obtained_token = try self.authenticateWithRegistry(reg, user, password_trimmed, io);
         defer self.allocator.free(obtained_token);
 
         // Store token
@@ -410,21 +405,76 @@ pub const AuthManager = struct {
         return self.token_store.listRegistries(self.allocator);
     }
 
+    /// Read password with hidden input (platform-specific)
+    fn readPasswordHidden(self: *AuthManager, io: std.Io) ![]const u8 {
+        const stdin = std.Io.File.stdin();
+
+        if (builtin.os.tag == .windows) {
+            // Windows: fallback to visible input (full Windows API would be needed)
+            var stdin_buf: [1024]u8 = undefined;
+            var stdin_reader = stdin.reader(io, &stdin_buf);
+            const input = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
+                if (err == error.EndOfStream) return error.NoInput;
+                return err;
+            };
+            std.debug.print("\n", .{});
+            return try self.allocator.dupe(u8, std.mem.trim(u8, input, &std.ascii.whitespace));
+        } else {
+            // Unix/POSIX: Use termios to disable echo
+            const fd = stdin.handle;
+
+            const original_termios = try std.posix.tcgetattr(fd);
+            var hidden_termios = original_termios;
+
+            hidden_termios.lflag.ECHO = false;
+            hidden_termios.lflag.ICANON = true;
+
+            try std.posix.tcsetattr(fd, .NOW, hidden_termios);
+
+            defer {
+                std.posix.tcsetattr(fd, .NOW, original_termios) catch {};
+                std.debug.print("\n", .{});
+            }
+
+            var buffer: [1024]u8 = undefined;
+            var stdin_reader = stdin.reader(io, &buffer);
+            const input = stdin_reader.interface.takeDelimiterExclusive('\n') catch |err| {
+                if (err == error.EndOfStream) return error.NoInput;
+                return err;
+            };
+
+            return try self.allocator.dupe(u8, std.mem.trim(u8, input, &std.ascii.whitespace));
+        }
+    }
+
     /// Authenticate with registry API
     ///
     /// Makes an HTTP request to the registry to obtain an auth token.
     /// Returns the token string on success.
-    fn authenticateWithRegistry(self: *AuthManager, registry: []const u8, username: []const u8, password: []const u8) ![]const u8 {
-        // TODO: Implement actual HTTP authentication
-        // For now, return the password as the token (for development/testing)
-        _ = username;
+    fn authenticateWithRegistry(self: *AuthManager, registry: []const u8, username: []const u8, password: []const u8, io: std.Io) ![]const u8 {
         _ = registry;
+        _ = username;
+        _ = io;
 
-        // In production, this would:
-        // 1. POST to {registry}/api/auth/login with credentials
-        // 2. Parse JSON response to get token
-        // 3. Return the token string
+        // TODO: Implement full HTTP POST authentication
+        //
+        // Production implementation should:
+        // 1. POST to {registry}/api/auth/login with JSON body: {"username": username, "password": password}
+        // 2. Parse JSON response to extract "token" field
+        // 3. Handle HTTP errors (network failures, 401, 500, etc.)
+        // 4. Support HTTPS with proper certificate validation
+        //
+        // Current limitation: Zig 0.16's std.http.Client API has breaking changes.
+        // The implementation requires:
+        // - std.http.Client with .io field from std.Io.Threaded
+        // - Use fetch() or open() methods (both have different signatures in 0.16)
+        // - Custom headers for Content-Type: application/json
+        // - Response body parsing with ArrayList
+        //
+        // For development/testing, we use the password directly as the token.
+        // This allows the package manager to work in local/offline mode.
 
+        std.debug.print("Note: Using password as token (dev mode - HTTP auth not yet implemented)\n", .{});
         return self.allocator.dupe(u8, password);
     }
 };

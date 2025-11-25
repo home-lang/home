@@ -931,7 +931,7 @@ pub const Parser = struct {
             // Check if we have a potential field name followed by a colon
             // This prevents mistaking statement keywords for field names
             const checkpoint = self.current;
-            const has_field = blk: {
+            const field_token = blk: {
                 // Try to match a potential field name
                 if (self.match(&.{
                     .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
@@ -941,23 +941,24 @@ pub const Parser = struct {
                     .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
                     .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
                 })) {
+                    const token = self.previous();
                     // Check if next token is a colon (indicating a field)
                     if (self.check(.Colon)) {
-                        break :blk true;
+                        break :blk token; // Valid field, return the token
                     }
                 }
                 // Not a field, restore position
                 self.current = checkpoint;
-                break :blk false;
+                break :blk null;
             };
 
-            if (!has_field) {
+            if (field_token == null) {
                 // Not a field, must be end of struct or parse error
                 break;
             }
 
-            // Now actually consume the field name (we know it's valid)
-            const field_name = self.advance();
+            // Now we have the field name token (already consumed)
+            const field_name = field_token.?;
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
 
@@ -1229,14 +1230,6 @@ pub const Parser = struct {
             try self.reportError(err_msg);
             return error.UnexpectedToken;  // Return a parse error
         };
-
-        // Log successful resolution (for debugging)
-        // TODO: Remove or make conditional on debug flag
-        std.debug.print("[Parser] Resolved {s} -> {s} (is_zig: {any})\n", .{
-            try self.pathToString(path),
-            resolved_module.file_path,
-            resolved_module.is_zig,
-        });
 
         // Register the module in the symbol table
         const module_path_str = try self.pathToString(path);
