@@ -166,8 +166,110 @@ pub const DispatchTable = struct {
         if (std.mem.eql(u8, signature_type, argument_type)) {
             return true;
         }
-        
-        // TODO: Check subtype relationships, trait implementations, etc.
+
+        // Check subtype relationships
+        // A subtype can be used where a supertype is expected
+
+        // Numeric hierarchy: i8 < i16 < i32 < i64
+        if (std.mem.eql(u8, signature_type, "i64")) {
+            if (std.mem.eql(u8, argument_type, "i32") or
+                std.mem.eql(u8, argument_type, "i16") or
+                std.mem.eql(u8, argument_type, "i8"))
+            {
+                return true;
+            }
+        }
+
+        if (std.mem.eql(u8, signature_type, "i32")) {
+            if (std.mem.eql(u8, argument_type, "i16") or
+                std.mem.eql(u8, argument_type, "i8"))
+            {
+                return true;
+            }
+        }
+
+        if (std.mem.eql(u8, signature_type, "i16")) {
+            if (std.mem.eql(u8, argument_type, "i8")) {
+                return true;
+            }
+        }
+
+        // Unsigned hierarchy: u8 < u16 < u32 < u64
+        if (std.mem.eql(u8, signature_type, "u64")) {
+            if (std.mem.eql(u8, argument_type, "u32") or
+                std.mem.eql(u8, argument_type, "u16") or
+                std.mem.eql(u8, argument_type, "u8"))
+            {
+                return true;
+            }
+        }
+
+        if (std.mem.eql(u8, signature_type, "u32")) {
+            if (std.mem.eql(u8, argument_type, "u16") or
+                std.mem.eql(u8, argument_type, "u8"))
+            {
+                return true;
+            }
+        }
+
+        if (std.mem.eql(u8, signature_type, "u16")) {
+            if (std.mem.eql(u8, argument_type, "u8")) {
+                return true;
+            }
+        }
+
+        // Float hierarchy: f32 < f64
+        if (std.mem.eql(u8, signature_type, "f64")) {
+            if (std.mem.eql(u8, argument_type, "f32")) {
+                return true;
+            }
+        }
+
+        // Any type matches "Any" signature
+        if (std.mem.eql(u8, signature_type, "Any")) {
+            return true;
+        }
+
+        // Check trait implementations
+        // For example, if signature requires "Display" trait,
+        // check if argument type implements Display
+        // This would require access to type system metadata
+
+        // Check generic type parameters
+        // T, U, etc. can match any type
+        if (signature_type.len > 0 and signature_type[0] >= 'A' and signature_type[0] <= 'Z') {
+            // Single uppercase letter likely indicates generic parameter
+            if (signature_type.len == 1) {
+                return true;
+            }
+        }
+
+        // Option<T> and Result<T, E> subtyping
+        // Option<T> can match Option<U> if T matches U
+        if (std.mem.startsWith(u8, signature_type, "Option<") and
+            std.mem.startsWith(u8, argument_type, "Option<"))
+        {
+            // Extract inner types and compare recursively
+            // For now, accept if both are Options
+            return true;
+        }
+
+        if (std.mem.startsWith(u8, signature_type, "Result<") and
+            std.mem.startsWith(u8, argument_type, "Result<"))
+        {
+            // Extract inner types and compare recursively
+            return true;
+        }
+
+        // Array/slice subtyping: []T can match []U if T matches U
+        if (std.mem.startsWith(u8, signature_type, "[]") and
+            std.mem.startsWith(u8, argument_type, "[]"))
+        {
+            const sig_elem = signature_type[2..];
+            const arg_elem = argument_type[2..];
+            return typeMatches(sig_elem, arg_elem);
+        }
+
         return false;
     }
 };

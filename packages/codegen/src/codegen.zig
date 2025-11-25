@@ -19,6 +19,7 @@ pub const vectorizer = @import("vectorizer.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;
+pub const TypeRegistry = native_codegen.TypeRegistry;
 pub const HomeKernelCodegen = home_kernel_codegen.HomeKernelCodegen;
 pub const LLVMCodegen = llvm_codegen.LLVMCodegen;
 pub const WasmCodegen = wasm.WasmCodegen;

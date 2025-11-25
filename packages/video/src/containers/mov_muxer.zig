@@ -591,7 +591,6 @@ pub const MovMuxer = struct {
     }
 
     fn buildStbl(self: *Self, track: *const Track) ![]u8 {
-        _ = track;
         var stbl = std.ArrayList(u8).init(self.allocator);
         errdefer stbl.deinit();
 
@@ -600,12 +599,335 @@ pub const MovMuxer = struct {
         try stbl.writer().writeInt(u32, 0, .big);
         try stbl.appendSlice("stbl");
 
-        // Simplified stbl - would contain stsd, stts, stsc, stsz, stco, stss
+        // stsd (Sample description)
+        const stsd_data = try self.buildStsd(track);
+        defer self.allocator.free(stsd_data);
+        try stbl.appendSlice(stsd_data);
+
+        // stts (Time-to-sample)
+        const stts_data = try self.buildStts(track);
+        defer self.allocator.free(stts_data);
+        try stbl.appendSlice(stts_data);
+
+        // stsc (Sample-to-chunk)
+        const stsc_data = try self.buildStsc(track);
+        defer self.allocator.free(stsc_data);
+        try stbl.appendSlice(stsc_data);
+
+        // stsz (Sample sizes)
+        const stsz_data = try self.buildStsz(track);
+        defer self.allocator.free(stsz_data);
+        try stbl.appendSlice(stsz_data);
+
+        // stco (Chunk offsets)
+        const stco_data = try self.buildStco(track);
+        defer self.allocator.free(stco_data);
+        try stbl.appendSlice(stco_data);
+
+        // stss (Sync samples) - only for video with non-sync frames
+        if (track.media_type == .video) {
+            const has_non_sync = for (track.samples.items) |sample| {
+                if (!sample.is_sync) break true;
+            } else false;
+
+            if (has_non_sync) {
+                const stss_data = try self.buildStss(track);
+                defer self.allocator.free(stss_data);
+                try stbl.appendSlice(stss_data);
+            }
+        }
+
+        // ctts (Composition offset) - if any samples have composition offset
+        const has_ctts = for (track.samples.items) |sample| {
+            if (sample.composition_offset != 0) break true;
+        } else false;
+
+        if (has_ctts) {
+            const ctts_data = try self.buildCtts(track);
+            defer self.allocator.free(ctts_data);
+            try stbl.appendSlice(ctts_data);
+        }
 
         const final_size: u32 = @intCast(stbl.items.len - stbl_start);
         std.mem.writeInt(u32, stbl.items[stbl_start..][0..4], final_size, .big);
 
         return stbl.toOwnedSlice();
+    }
+
+    fn buildStsd(self: *Self, track: *const Track) ![]u8 {
+        var stsd = std.ArrayList(u8).init(self.allocator);
+        errdefer stsd.deinit();
+
+        const stsd_start = stsd.items.len;
+
+        try stsd.writer().writeInt(u32, 0, .big);
+        try stsd.appendSlice("stsd");
+
+        // Version and flags
+        try stsd.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try stsd.writer().writeInt(u32, 1, .big);
+
+        // Sample description entry (simplified)
+        if (track.media_type == .video) {
+            try self.buildVideoSampleEntry(&stsd);
+        } else if (track.media_type == .audio) {
+            try self.buildAudioSampleEntry(&stsd);
+        }
+
+        const final_size: u32 = @intCast(stsd.items.len - stsd_start);
+        std.mem.writeInt(u32, stsd.items[stsd_start..][0..4], final_size, .big);
+
+        return stsd.toOwnedSlice();
+    }
+
+    fn buildVideoSampleEntry(self: *Self, stsd: *std.ArrayList(u8)) !void {
+        _ = self;
+        const writer = stsd.writer();
+
+        // Entry size (placeholder)
+        const entry_start = stsd.items.len;
+        try writer.writeInt(u32, 0, .big);
+
+        // Codec type (simplified - avc1 for H.264)
+        try stsd.appendSlice("avc1");
+
+        // Reserved (6 bytes)
+        try stsd.appendNTimes(0, 6);
+
+        // Data reference index
+        try writer.writeInt(u16, 1, .big);
+
+        // Video sample entry data
+        try writer.writeInt(u16, 0, .big); // Pre-defined
+        try writer.writeInt(u16, 0, .big); // Reserved
+        try writer.writeInt(u32, 0, .big); // Pre-defined
+        try writer.writeInt(u32, 0, .big);
+        try writer.writeInt(u32, 0, .big);
+
+        // Width and height
+        try writer.writeInt(u16, 1920, .big);
+        try writer.writeInt(u16, 1080, .big);
+
+        // Horizontal and vertical resolution (72 dpi)
+        try writer.writeInt(u32, 0x00480000, .big);
+        try writer.writeInt(u32, 0x00480000, .big);
+
+        // Data size
+        try writer.writeInt(u32, 0, .big);
+
+        // Frame count
+        try writer.writeInt(u16, 1, .big);
+
+        // Compressor name (32 bytes, Pascal string)
+        try stsd.appendNTimes(0, 32);
+
+        // Depth
+        try writer.writeInt(u16, 0x0018, .big);
+
+        // Pre-defined
+        try writer.writeInt(i16, -1, .big);
+
+        // Update entry size
+        const entry_size: u32 = @intCast(stsd.items.len - entry_start);
+        std.mem.writeInt(u32, stsd.items[entry_start..][0..4], entry_size, .big);
+    }
+
+    fn buildAudioSampleEntry(self: *Self, stsd: *std.ArrayList(u8)) !void {
+        _ = self;
+        const writer = stsd.writer();
+
+        // Entry size (placeholder)
+        const entry_start = stsd.items.len;
+        try writer.writeInt(u32, 0, .big);
+
+        // Codec type (simplified - mp4a for AAC)
+        try stsd.appendSlice("mp4a");
+
+        // Reserved (6 bytes)
+        try stsd.appendNTimes(0, 6);
+
+        // Data reference index
+        try writer.writeInt(u16, 1, .big);
+
+        // Audio sample entry data
+        try writer.writeInt(u16, 0, .big); // Version
+        try writer.writeInt(u16, 0, .big); // Revision level
+        try writer.writeInt(u32, 0, .big); // Vendor
+
+        // Channel count
+        try writer.writeInt(u16, 2, .big);
+
+        // Sample size (bits)
+        try writer.writeInt(u16, 16, .big);
+
+        // Pre-defined
+        try writer.writeInt(u16, 0, .big);
+
+        // Reserved
+        try writer.writeInt(u16, 0, .big);
+
+        // Sample rate (16.16 fixed point)
+        try writer.writeInt(u32, 48000 << 16, .big);
+
+        // Update entry size
+        const entry_size: u32 = @intCast(stsd.items.len - entry_start);
+        std.mem.writeInt(u32, stsd.items[entry_start..][0..4], entry_size, .big);
+    }
+
+    fn buildStts(self: *Self, track: *const Track) ![]u8 {
+        var stts = std.ArrayList(u8).init(self.allocator);
+        errdefer stts.deinit();
+
+        const size: u32 = @intCast(16 + track.samples.items.len * 8);
+        try stts.writer().writeInt(u32, size, .big);
+        try stts.appendSlice("stts");
+
+        // Version and flags
+        try stts.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try stts.writer().writeInt(u32, @intCast(track.samples.items.len), .big);
+
+        // Time-to-sample entries (sample count, sample delta)
+        for (track.samples.items) |sample| {
+            try stts.writer().writeInt(u32, 1, .big); // 1 sample
+            try stts.writer().writeInt(u32, sample.duration, .big);
+        }
+
+        return stts.toOwnedSlice();
+    }
+
+    fn buildStsc(self: *Self, track: *const Track) ![]u8 {
+        var stsc = std.ArrayList(u8).init(self.allocator);
+        errdefer stsc.deinit();
+
+        // Simplified: all samples in one chunk
+        const size: u32 = 28;
+        try stsc.writer().writeInt(u32, size, .big);
+        try stsc.appendSlice("stsc");
+
+        // Version and flags
+        try stsc.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try stsc.writer().writeInt(u32, 1, .big);
+
+        // First chunk
+        try stsc.writer().writeInt(u32, 1, .big);
+
+        // Samples per chunk
+        try stsc.writer().writeInt(u32, @intCast(track.samples.items.len), .big);
+
+        // Sample description index
+        try stsc.writer().writeInt(u32, 1, .big);
+
+        return stsc.toOwnedSlice();
+    }
+
+    fn buildStsz(self: *Self, track: *const Track) ![]u8 {
+        var stsz = std.ArrayList(u8).init(self.allocator);
+        errdefer stsz.deinit();
+
+        const size: u32 = @intCast(20 + track.samples.items.len * 4);
+        try stsz.writer().writeInt(u32, size, .big);
+        try stsz.appendSlice("stsz");
+
+        // Version and flags
+        try stsz.writer().writeInt(u32, 0, .big);
+
+        // Sample size (0 = variable)
+        try stsz.writer().writeInt(u32, 0, .big);
+
+        // Sample count
+        try stsz.writer().writeInt(u32, @intCast(track.samples.items.len), .big);
+
+        // Entry for each sample
+        for (track.samples.items) |sample| {
+            try stsz.writer().writeInt(u32, sample.size, .big);
+        }
+
+        return stsz.toOwnedSlice();
+    }
+
+    fn buildStco(self: *Self, track: *const Track) ![]u8 {
+        var stco = std.ArrayList(u8).init(self.allocator);
+        errdefer stco.deinit();
+
+        // Simplified: one chunk containing all samples
+        const size: u32 = 20;
+        try stco.writer().writeInt(u32, size, .big);
+        try stco.appendSlice("stco");
+
+        // Version and flags
+        try stco.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try stco.writer().writeInt(u32, 1, .big);
+
+        // Chunk offset (would be calculated based on mdat position)
+        // For now, placeholder - in real implementation would need to know mdat offset
+        var offset: u32 = 0;
+        for (track.samples.items) |sample| {
+            offset += sample.size;
+        }
+        try stco.writer().writeInt(u32, 32, .big); // Placeholder offset
+
+        return stco.toOwnedSlice();
+    }
+
+    fn buildStss(self: *Self, track: *const Track) ![]u8 {
+        var stss = std.ArrayList(u8).init(self.allocator);
+        errdefer stss.deinit();
+
+        // Count sync samples
+        var sync_count: usize = 0;
+        for (track.samples.items) |sample| {
+            if (sample.is_sync) sync_count += 1;
+        }
+
+        const size: u32 = @intCast(16 + sync_count * 4);
+        try stss.writer().writeInt(u32, size, .big);
+        try stss.appendSlice("stss");
+
+        // Version and flags
+        try stss.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try stss.writer().writeInt(u32, @intCast(sync_count), .big);
+
+        // Sync sample numbers (1-indexed)
+        for (track.samples.items, 1..) |sample, i| {
+            if (sample.is_sync) {
+                try stss.writer().writeInt(u32, @intCast(i), .big);
+            }
+        }
+
+        return stss.toOwnedSlice();
+    }
+
+    fn buildCtts(self: *Self, track: *const Track) ![]u8 {
+        var ctts = std.ArrayList(u8).init(self.allocator);
+        errdefer ctts.deinit();
+
+        const size: u32 = @intCast(16 + track.samples.items.len * 8);
+        try ctts.writer().writeInt(u32, size, .big);
+        try ctts.appendSlice("ctts");
+
+        // Version and flags
+        try ctts.writer().writeInt(u32, 0, .big);
+
+        // Entry count
+        try ctts.writer().writeInt(u32, @intCast(track.samples.items.len), .big);
+
+        // Composition offset entries (sample count, composition offset)
+        for (track.samples.items) |sample| {
+            try ctts.writer().writeInt(u32, 1, .big); // 1 sample
+            try ctts.writer().writeInt(i32, sample.composition_offset, .big);
+        }
+
+        return ctts.toOwnedSlice();
     }
 
     fn buildUdta(self: *Self) ![]u8 {

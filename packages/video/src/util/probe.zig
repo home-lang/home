@@ -198,24 +198,217 @@ pub const Prober = struct {
     }
 
     fn probeMP4(self: *Self, file: std.fs.File, info: *MediaInfo) !void {
-        _ = self;
-        _ = file;
-        _ = info;
-        // Placeholder - would parse MP4 atoms/boxes
+        // Reset to start
+        try file.seekTo(0);
+
+        var streams = std.ArrayList(StreamInfo).init(self.allocator);
+        errdefer streams.deinit();
+
+        var stream_index: u32 = 0;
+
+        // Parse MP4 boxes
+        var buf: [8]u8 = undefined;
+        while (true) {
+            const bytes_read = file.read(&buf) catch |err| {
+                if (err == error.EndOfStream) break;
+                return err;
+            };
+            if (bytes_read < 8) break;
+
+            const size = std.mem.readInt(u32, buf[0..4], .big);
+            const box_type = buf[4..8];
+
+            if (size == 0) break; // Extends to end of file
+            if (size == 1) {
+                // 64-bit size follows
+                var size64_buf: [8]u8 = undefined;
+                _ = try file.read(&size64_buf);
+                // Handle 64-bit box size
+                try file.seekBy(@intCast(std.mem.readInt(u64, &size64_buf, .big) - 16));
+                continue;
+            }
+
+            // Parse specific boxes
+            if (std.mem.eql(u8, box_type, "moov")) {
+                // Movie metadata box - contains track info
+                const moov_data = try self.allocator.alloc(u8, size - 8);
+                defer self.allocator.free(moov_data);
+                _ = try file.read(moov_data);
+
+                // Parse mvhd for duration and timescale
+                if (std.mem.indexOf(u8, moov_data, "mvhd")) |mvhd_pos| {
+                    if (mvhd_pos + 24 < moov_data.len) {
+                        const timescale = std.mem.readInt(u32, moov_data[mvhd_pos + 12 ..][0..4], .big);
+                        const duration_units = std.mem.readInt(u32, moov_data[mvhd_pos + 16 ..][0..4], .big);
+                        if (timescale > 0) {
+                            const duration_us = (@as(u64, duration_units) * 1_000_000) / timescale;
+                            info.duration = core.Duration.fromMicroseconds(duration_us);
+                        }
+                    }
+                }
+
+                // Parse trak boxes for streams
+                var search_pos: usize = 0;
+                while (std.mem.indexOfPos(u8, moov_data, search_pos, "trak")) |trak_pos| {
+                    var stream = StreamInfo{
+                        .index = stream_index,
+                        .type = .unknown,
+                        .codec = try self.allocator.dupe(u8, "unknown"),
+                    };
+
+                    // Determine if video or audio by looking for vmhd/smhd
+                    if (std.mem.indexOfPos(u8, moov_data, trak_pos, "vmhd")) |_| {
+                        stream.type = .video;
+                        stream.codec = try self.allocator.dupe(u8, "h264"); // Simplified
+
+                        // Try to extract resolution from tkhd
+                        if (std.mem.indexOfPos(u8, moov_data, trak_pos, "tkhd")) |tkhd_pos| {
+                            if (tkhd_pos + 84 < moov_data.len) {
+                                const width_fixed = std.mem.readInt(u32, moov_data[tkhd_pos + 76 ..][0..4], .big);
+                                const height_fixed = std.mem.readInt(u32, moov_data[tkhd_pos + 80 ..][0..4], .big);
+                                stream.width = width_fixed >> 16;
+                                stream.height = height_fixed >> 16;
+                            }
+                        }
+                    } else if (std.mem.indexOfPos(u8, moov_data, trak_pos, "smhd")) |_| {
+                        stream.type = .audio;
+                        stream.codec = try self.allocator.dupe(u8, "aac"); // Simplified
+                        stream.sample_rate = 48000; // Simplified
+                        stream.channels = 2; // Simplified
+                    }
+
+                    try streams.append(stream);
+                    stream_index += 1;
+                    search_pos = trak_pos + 4;
+                }
+            } else if (std.mem.eql(u8, box_type, "mdat")) {
+                // Media data - skip
+                try file.seekBy(@intCast(size - 8));
+            } else {
+                // Skip unknown box
+                try file.seekBy(@intCast(size - 8));
+            }
+        }
+
+        info.streams = try streams.toOwnedSlice();
     }
 
     fn probeMatroska(self: *Self, file: std.fs.File, info: *MediaInfo) !void {
-        _ = self;
-        _ = file;
-        _ = info;
-        // Placeholder - would parse EBML structure
+        try file.seekTo(0);
+
+        var streams = std.ArrayList(StreamInfo).init(self.allocator);
+        errdefer streams.deinit();
+
+        // Read EBML header
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        // Look for Segment element (0x18538067)
+        if (std.mem.indexOf(u8, header[0..header_len], &[_]u8{ 0x18, 0x53, 0x80, 0x67 })) |segment_pos| {
+            // Parse segment
+            var search_pos: usize = segment_pos + 4;
+
+            // Look for Duration element (0x4489)
+            if (std.mem.indexOfPos(u8, header[0..header_len], search_pos, &[_]u8{ 0x44, 0x89 })) |dur_pos| {
+                if (dur_pos + 10 < header_len) {
+                    const duration_ms_float = std.mem.readInt(u64, header[dur_pos + 3 ..][0..8], .big);
+                    const duration_float: f64 = @bitCast(duration_ms_float);
+                    info.duration = core.Duration.fromMicroseconds(@intFromFloat(duration_float * 1000.0));
+                }
+            }
+
+            // Look for Tracks element (0x1654AE6B)
+            if (std.mem.indexOfPos(u8, header[0..header_len], search_pos, &[_]u8{ 0x16, 0x54, 0xAE, 0x6B })) |_| {
+                // Simplified: assume one video and one audio track
+                var video_stream = StreamInfo{
+                    .index = 0,
+                    .type = .video,
+                    .codec = try self.allocator.dupe(u8, "vp9"),
+                    .width = 1920,
+                    .height = 1080,
+                };
+                try streams.append(video_stream);
+
+                var audio_stream = StreamInfo{
+                    .index = 1,
+                    .type = .audio,
+                    .codec = try self.allocator.dupe(u8, "opus"),
+                    .sample_rate = 48000,
+                    .channels = 2,
+                };
+                try streams.append(audio_stream);
+            }
+        }
+
+        info.streams = try streams.toOwnedSlice();
     }
 
     fn probeAVI(self: *Self, file: std.fs.File, info: *MediaInfo) !void {
-        _ = self;
-        _ = file;
-        _ = info;
-        // Placeholder - would parse RIFF chunks
+        try file.seekTo(0);
+
+        var streams = std.ArrayList(StreamInfo).init(self.allocator);
+        errdefer streams.deinit();
+
+        // Read RIFF header
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        if (header_len < 12) return error.InvalidAvi;
+
+        // Check for RIFF...AVI header
+        if (!std.mem.eql(u8, header[0..4], "RIFF")) return error.InvalidAvi;
+        if (!std.mem.eql(u8, header[8..12], "AVI ")) return error.InvalidAvi;
+
+        // Look for hdrl (header list)
+        if (std.mem.indexOf(u8, header[0..header_len], "hdrl")) |hdrl_pos| {
+            // Parse avih (AVI header)
+            if (std.mem.indexOfPos(u8, header[0..header_len], hdrl_pos, "avih")) |avih_pos| {
+                if (avih_pos + 40 < header_len) {
+                    const us_per_frame = std.mem.readInt(u32, header[avih_pos + 8 ..][0..4], .little);
+                    const total_frames = std.mem.readInt(u32, header[avih_pos + 16 ..][0..4], .little);
+                    const width = std.mem.readInt(u32, header[avih_pos + 32 ..][0..4], .little);
+                    const height = std.mem.readInt(u32, header[avih_pos + 36 ..][0..4], .little);
+
+                    // Calculate duration
+                    if (us_per_frame > 0) {
+                        const duration_us = @as(u64, total_frames) * us_per_frame;
+                        info.duration = core.Duration.fromMicroseconds(duration_us);
+                    }
+
+                    // Add video stream
+                    var video_stream = StreamInfo{
+                        .index = 0,
+                        .type = .video,
+                        .codec = try self.allocator.dupe(u8, "mjpeg"), // Simplified
+                        .width = width,
+                        .height = height,
+                    };
+                    if (us_per_frame > 0) {
+                        video_stream.fps = core.Rational{
+                            .num = 1_000_000,
+                            .den = us_per_frame,
+                        };
+                    }
+                    try streams.append(video_stream);
+                }
+            }
+
+            // Look for strl (stream list) for audio
+            if (std.mem.indexOfPos(u8, header[0..header_len], hdrl_pos, "strl")) |strl_pos| {
+                if (std.mem.indexOfPos(u8, header[0..header_len], strl_pos, "auds")) |_| {
+                    var audio_stream = StreamInfo{
+                        .index = 1,
+                        .type = .audio,
+                        .codec = try self.allocator.dupe(u8, "pcm"),
+                        .sample_rate = 44100, // Simplified
+                        .channels = 2, // Simplified
+                    };
+                    try streams.append(audio_stream);
+                }
+            }
+        }
+
+        info.streams = try streams.toOwnedSlice();
     }
 };
 
@@ -224,27 +417,149 @@ pub const QuickProbe = struct {
     const Self = @This();
 
     pub fn getResolution(file_path: []const u8) !struct { width: u32, height: u32 } {
-        _ = file_path;
-        // Placeholder - would scan for resolution info
-        return .{ .width = 1920, .height = 1080 };
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        // Read header
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        // Detect format and extract resolution
+        const detection = format_detection.detectFromMagicBytes(header[0..header_len]);
+
+        switch (detection.format) {
+            .mp4, .quicktime => {
+                // Look for tkhd box with resolution
+                if (std.mem.indexOf(u8, header[0..header_len], "tkhd")) |tkhd_pos| {
+                    if (tkhd_pos + 84 < header_len) {
+                        const width_fixed = std.mem.readInt(u32, header[tkhd_pos + 76 ..][0..4], .big);
+                        const height_fixed = std.mem.readInt(u32, header[tkhd_pos + 80 ..][0..4], .big);
+                        return .{
+                            .width = width_fixed >> 16,
+                            .height = height_fixed >> 16,
+                        };
+                    }
+                }
+            },
+            .avi => {
+                // Look for avih header
+                if (std.mem.indexOf(u8, header[0..header_len], "avih")) |avih_pos| {
+                    if (avih_pos + 40 < header_len) {
+                        const width = std.mem.readInt(u32, header[avih_pos + 32 ..][0..4], .little);
+                        const height = std.mem.readInt(u32, header[avih_pos + 36 ..][0..4], .little);
+                        return .{ .width = width, .height = height };
+                    }
+                }
+            },
+            else => {},
+        }
+
+        return .{ .width = 1920, .height = 1080 }; // Default fallback
     }
 
     pub fn getDuration(file_path: []const u8) !core.Duration {
-        _ = file_path;
-        // Placeholder - would extract duration
-        return core.Duration.fromMicroseconds(10_000_000); // 10 seconds
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        const detection = format_detection.detectFromMagicBytes(header[0..header_len]);
+
+        switch (detection.format) {
+            .mp4, .quicktime => {
+                // Look for mvhd box
+                if (std.mem.indexOf(u8, header[0..header_len], "mvhd")) |mvhd_pos| {
+                    if (mvhd_pos + 24 < header_len) {
+                        const timescale = std.mem.readInt(u32, header[mvhd_pos + 12 ..][0..4], .big);
+                        const duration_units = std.mem.readInt(u32, header[mvhd_pos + 16 ..][0..4], .big);
+                        if (timescale > 0) {
+                            const duration_us = (@as(u64, duration_units) * 1_000_000) / timescale;
+                            return core.Duration.fromMicroseconds(duration_us);
+                        }
+                    }
+                }
+            },
+            .avi => {
+                // Look for avih header
+                if (std.mem.indexOf(u8, header[0..header_len], "avih")) |avih_pos| {
+                    if (avih_pos + 24 < header_len) {
+                        const us_per_frame = std.mem.readInt(u32, header[avih_pos + 8 ..][0..4], .little);
+                        const total_frames = std.mem.readInt(u32, header[avih_pos + 16 ..][0..4], .little);
+                        if (us_per_frame > 0) {
+                            const duration_us = @as(u64, total_frames) * us_per_frame;
+                            return core.Duration.fromMicroseconds(duration_us);
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+
+        return core.Duration.fromMicroseconds(0);
     }
 
-    pub fn getCodec(file_path: []const u8) ![]const u8 {
-        _ = file_path;
-        // Placeholder - would identify codec
-        return "h264";
+    pub fn getCodec(allocator: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        const detection = format_detection.detectFromMagicBytes(header[0..header_len]);
+
+        switch (detection.format) {
+            .mp4, .quicktime => {
+                // Look for stsd box containing codec
+                if (std.mem.indexOf(u8, header[0..header_len], "avc1")) |_| {
+                    return try allocator.dupe(u8, "h264");
+                } else if (std.mem.indexOf(u8, header[0..header_len], "hvc1")) |_| {
+                    return try allocator.dupe(u8, "hevc");
+                } else if (std.mem.indexOf(u8, header[0..header_len], "av01")) |_| {
+                    return try allocator.dupe(u8, "av1");
+                }
+            },
+            .webm, .matroska => {
+                if (std.mem.indexOf(u8, header[0..header_len], "V_VP9")) |_| {
+                    return try allocator.dupe(u8, "vp9");
+                } else if (std.mem.indexOf(u8, header[0..header_len], "V_VP8")) |_| {
+                    return try allocator.dupe(u8, "vp8");
+                } else if (std.mem.indexOf(u8, header[0..header_len], "V_AV1")) |_| {
+                    return try allocator.dupe(u8, "av1");
+                }
+            },
+            else => {},
+        }
+
+        return try allocator.dupe(u8, "unknown");
     }
 
     pub fn getFrameCount(file_path: []const u8) !u64 {
-        _ = file_path;
-        // Placeholder - would count frames
-        return 240;
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        var header: [4096]u8 = undefined;
+        const header_len = try file.read(&header);
+
+        const detection = format_detection.detectFromMagicBytes(header[0..header_len]);
+
+        switch (detection.format) {
+            .avi => {
+                // Look for avih header
+                if (std.mem.indexOf(u8, header[0..header_len], "avih")) |avih_pos| {
+                    if (avih_pos + 20 < header_len) {
+                        const total_frames = std.mem.readInt(u32, header[avih_pos + 16 ..][0..4], .little);
+                        return total_frames;
+                    }
+                }
+            },
+            else => {
+                // For other formats, estimate from duration and fps
+                // This is simplified - real implementation would count frames
+            },
+        }
+
+        return 0;
     }
 };
 

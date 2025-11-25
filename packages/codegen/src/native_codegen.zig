@@ -14,6 +14,8 @@ const borrow_checker_mod = @import("borrow_checker.zig");
 pub const BorrowChecker = borrow_checker_mod.BorrowChecker;
 const comptime_mod = @import("comptime");
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
+const type_registry_mod = @import("type_registry.zig");
+pub const TypeRegistry = type_registry_mod.TypeRegistry;
 
 /// Error set for code generation operations.
 ///
@@ -653,6 +655,10 @@ pub const NativeCodegen = struct {
     /// Stack of loop contexts for break/continue statements
     loop_stack: std.ArrayList(LoopContext),
 
+    // Global type registry for cross-module type resolution
+    /// Global type registry shared across all compilation units
+    type_registry: ?*TypeRegistry,
+
     /// Create a new native code generator for the given program.
     ///
     /// Parameters:
@@ -660,7 +666,7 @@ pub const NativeCodegen = struct {
     ///   - program: AST program to compile
     ///
     /// Returns: Initialized NativeCodegen
-    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program, comptime_store: ?*ComptimeValueStore) NativeCodegen {
+    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program, comptime_store: ?*ComptimeValueStore, type_registry: ?*TypeRegistry) NativeCodegen {
         return .{
             .allocator = allocator,
             .assembler = x64.Assembler.init(allocator),
@@ -684,6 +690,7 @@ pub const NativeCodegen = struct {
             .module_sources = std.ArrayList([]const u8){},
             .comptime_store = comptime_store,
             .loop_stack = std.ArrayList(LoopContext){},
+            .type_registry = type_registry,
         };
     }
 
@@ -1908,7 +1915,7 @@ pub const NativeCodegen = struct {
                     var is_enum_variant = false;
                     var enum_tag: i64 = 0;
 
-                    // Look up the enum by name
+                    // First try local enum_layouts
                     var enum_iter = self.enum_layouts.iterator();
                     while (enum_iter.next()) |entry| {
                         const layout_enum_name = entry.key_ptr.*;
@@ -1925,6 +1932,22 @@ pub const NativeCodegen = struct {
                                 }
                             }
                             break;
+                        }
+                    }
+
+                    // If not found locally, check global type registry
+                    if (!is_enum_variant) {
+                        if (self.type_registry) |registry| {
+                            if (registry.getEnum(enum_name)) |enum_layout| {
+                                // Find the variant in the global layout
+                                for (enum_layout.variants, 0..) |v, idx| {
+                                    if (std.mem.eql(u8, v.name, variant_name)) {
+                                        is_enum_variant = true;
+                                        enum_tag = @intCast(idx);
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -3274,6 +3297,13 @@ pub const NativeCodegen = struct {
                     return err;
                 };
 
+                // Also register in global type registry for cross-module resolution
+                if (self.type_registry) |registry| {
+                    registry.registerStruct(layout) catch |err| {
+                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{layout.name, err});
+                    };
+                }
+
                 // First pass: Pre-register all mangled method names with placeholder positions
                 // This enables methods to call other methods on the same struct
                 for (struct_decl.methods) |method| {
@@ -3368,6 +3398,13 @@ pub const NativeCodegen = struct {
                     self.allocator.free(name_copy);
                     return err;
                 };
+
+                // Also register in global type registry for cross-module resolution
+                if (self.type_registry) |registry| {
+                    registry.registerEnum(layout) catch |err| {
+                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{layout.name, err});
+                    };
+                }
             },
             .UnionDecl, .TypeAliasDecl => {
                 // Type declarations - compile-time constructs
@@ -5889,8 +5926,16 @@ pub const NativeCodegen = struct {
                             return error.UndefinedVariable;
                         };
 
-                        // Look up struct layout from type
-                        const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
+                        // Look up struct layout from type - try local first, then global
+                        var maybe_struct_layout = self.struct_layouts.get(local_info.type_name);
+                        if (maybe_struct_layout == null) {
+                            // Try global type registry
+                            if (self.type_registry) |registry| {
+                                maybe_struct_layout = registry.getStruct(local_info.type_name);
+                            }
+                        }
+
+                        const struct_layout = maybe_struct_layout orelse {
                             // Type might be Self or another unresolved type alias
                             // For now, just store to the variable directly
                             const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));

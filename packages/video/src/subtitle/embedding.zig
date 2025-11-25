@@ -114,7 +114,42 @@ pub const MovTextEncoder = struct {
         // Write text
         try data.appendSlice(entry.text);
 
-        // TODO: Add style/formatting boxes if entry.style is set
+        // Add style/formatting boxes if entry.style is set
+        if (entry.style) |style| {
+            // Style record box ('styl')
+            const style_size: u32 = 12; // Fixed size for one style
+            try data.writer().writeInt(u32, style_size, .big);
+            try data.appendSlice("styl");
+
+            // Style entry count
+            try data.writer().writeInt(u16, 1, .big);
+
+            // Start char
+            try data.writer().writeInt(u16, 0, .big);
+
+            // End char
+            try data.writer().writeInt(u16, @intCast(entry.text.len), .big);
+
+            // Font ID
+            try data.writer().writeInt(u16, 1, .big);
+
+            // Face style flags (bold, italic, underline)
+            var face_style: u8 = 0;
+            if (style.bold) face_style |= 0x01;
+            if (style.italic) face_style |= 0x02;
+            if (style.underline) face_style |= 0x04;
+            try data.writer().writeByte(face_style);
+
+            // Font size
+            try data.writer().writeByte(@intCast(style.font_size));
+
+            // Color (RGBA)
+            const color = style.primary_color;
+            try data.writer().writeByte(color.r);
+            try data.writer().writeByte(color.g);
+            try data.writer().writeByte(color.b);
+            try data.writer().writeByte(color.a);
+        }
 
         const duration = Timestamp.fromMicroseconds(
             entry.end.toMicroseconds() - entry.start.toMicroseconds(),

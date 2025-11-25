@@ -307,13 +307,29 @@ pub const GifWriter = struct {
     }
 
     pub fn addFrame(self: *GifWriter, rgb_data: []const u8, delay_centiseconds: u16) !void {
-        // Quantize to palette (simplified - would use octree or median cut)
-        const indices = try self.allocator.alloc(u8, @as(usize, self.width) * self.height);
-        @memset(indices, 0); // Placeholder
+        // Quantize RGB data to 256 color palette using median cut
+        var quantizer = MedianCutQuantizer.init(self.allocator);
+        defer quantizer.deinit();
+
+        const pixel_count = @as(usize, self.width) * self.height;
+        const indices = try self.allocator.alloc(u8, pixel_count);
+        errdefer self.allocator.free(indices);
+
+        // Build color histogram and quantize
+        const palette = try quantizer.quantize(rgb_data, 256);
+        defer self.allocator.free(palette);
+
+        // Map pixels to palette indices
+        for (0..pixel_count) |i| {
+            const r = rgb_data[i * 3];
+            const g = rgb_data[i * 3 + 1];
+            const b = rgb_data[i * 3 + 2];
+            indices[i] = quantizer.findNearestColor(r, g, b);
+        }
 
         try self.frames.append(.{
             .indices = indices,
-            .palette = null,
+            .palette = try self.allocator.dupe(u8, palette),
             .delay_centiseconds = delay_centiseconds,
             .disposal_method = .restore_background,
         });
@@ -371,8 +387,6 @@ pub const GifWriter = struct {
     }
 
     fn writeFrame(self: *GifWriter, writer: anytype, frame: *const FrameData) !void {
-        _ = self;
-
         // Graphic control extension
         try writer.writeByte(0x21); // Extension
         try writer.writeByte(0xF9); // Graphic control
@@ -389,13 +403,126 @@ pub const GifWriter = struct {
         try writer.writeInt(u16, 0, .little); // Top
         try writer.writeInt(u16, self.width, .little);
         try writer.writeInt(u16, self.height, .little);
-        try writer.writeByte(0); // No local color table
 
-        // Image data (LZW compressed)
-        try writer.writeByte(8); // LZW minimum code size
-        // Simplified - would need LZW compression
-        try writer.writeByte(0); // Empty data block
+        // Use local color table if frame has palette
+        if (frame.palette != null) {
+            const palette_size_code: u8 = 7; // 256 colors = 2^(7+1)
+            const packed: u8 = 0x80 | palette_size_code; // Local color table flag
+            try writer.writeByte(packed);
+
+            // Write local color table
+            if (frame.palette) |pal| {
+                try writer.writeAll(pal);
+                // Pad to 256 colors if needed
+                const needed_size = 768; // 256 * 3
+                if (pal.len < needed_size) {
+                    var i: usize = pal.len;
+                    while (i < needed_size) : (i += 1) {
+                        try writer.writeByte(0);
+                    }
+                }
+            }
+        } else {
+            try writer.writeByte(0); // No local color table
+        }
+
+        // LZW compress and write image data
+        try self.writeLzwData(writer, frame.indices);
     }
+
+    fn writeLzwData(self: *GifWriter, writer: anytype, indices: []const u8) !void {
+        _ = self;
+        const min_code_size: u8 = 8;
+        try writer.writeByte(min_code_size);
+
+        // Simple LZW compression
+        var lzw = LzwEncoder.init(min_code_size);
+        const compressed = try lzw.encode(indices);
+        defer lzw.allocator.free(compressed);
+
+        // Write in data sub-blocks (max 255 bytes each)
+        var offset: usize = 0;
+        while (offset < compressed.len) {
+            const block_size = @min(255, compressed.len - offset);
+            try writer.writeByte(@intCast(block_size));
+            try writer.writeAll(compressed[offset .. offset + block_size]);
+            offset += block_size;
+        }
+
+        // Block terminator
+        try writer.writeByte(0);
+    }
+
+    const LzwEncoder = struct {
+        min_code_size: u8,
+        allocator: std.mem.Allocator,
+
+        fn init(min_code_size: u8) LzwEncoder {
+            return .{
+                .min_code_size = min_code_size,
+                .allocator = std.heap.page_allocator,
+            };
+        }
+
+        fn encode(self: *LzwEncoder, data: []const u8) ![]u8 {
+            // Simplified LZW: just write clear code, data, and end code
+            var output = std.ArrayList(u8).init(self.allocator);
+            errdefer output.deinit();
+
+            const clear_code: u16 = @as(u16, 1) << @intCast(self.min_code_size);
+            const end_code: u16 = clear_code + 1;
+            var next_code: u16 = end_code + 1;
+
+            var code_size: u8 = self.min_code_size + 1;
+            var bit_buffer: u32 = 0;
+            var bits_in_buffer: u8 = 0;
+
+            // Write clear code
+            try self.writeCode(&output, &bit_buffer, &bits_in_buffer, clear_code, code_size);
+
+            // Write data codes
+            for (data) |byte| {
+                try self.writeCode(&output, &bit_buffer, &bits_in_buffer, byte, code_size);
+
+                next_code += 1;
+                if (next_code >= (@as(u16, 1) << @intCast(code_size)) and code_size < 12) {
+                    code_size += 1;
+                }
+            }
+
+            // Write end code
+            try self.writeCode(&output, &bit_buffer, &bits_in_buffer, end_code, code_size);
+
+            // Flush remaining bits
+            if (bits_in_buffer > 0) {
+                try output.append(@truncate(bit_buffer));
+            }
+
+            return output.toOwnedSlice();
+        }
+
+        fn writeCode(
+            self: *LzwEncoder,
+            output: *std.ArrayList(u8),
+            bit_buffer: *u32,
+            bits_in_buffer: *u8,
+            code: u16,
+            code_size: u8,
+        ) !void {
+            _ = self;
+
+            // Add code to bit buffer
+            bit_buffer.* |= @as(u32, code) << @intCast(bits_in_buffer.*);
+            bits_in_buffer.* += code_size;
+
+            // Output bytes
+            while (bits_in_buffer.* >= 8) {
+                try output.append(@truncate(bit_buffer.*));
+                bit_buffer.* >>= 8;
+                bits_in_buffer.* -= 8;
+            }
+        }
+    };
 };
 
 /// Check if data is GIF
@@ -405,42 +532,229 @@ pub fn isGif(data: []const u8) bool {
         (std.mem.eql(u8, data[3..6], "87a") or std.mem.eql(u8, data[3..6], "89a"));
 }
 
-/// Color quantization using octree
-pub const OctreeQuantizer = struct {
-    const MAX_COLORS = 256;
-
-    root: ?*Node,
+/// Color quantization using median cut algorithm
+pub const MedianCutQuantizer = struct {
     allocator: std.mem.Allocator,
-    leaf_count: u32,
+    palette: []u8,
+    palette_size: usize,
 
-    const Node = struct {
-        red_sum: u32,
-        green_sum: u32,
-        blue_sum: u32,
-        pixel_count: u32,
-        palette_index: u8,
-        children: [8]?*Node,
-        level: u8,
-        is_leaf: bool,
+    const Color = struct {
+        r: u8,
+        g: u8,
+        b: u8,
     };
 
-    pub fn init(allocator: std.mem.Allocator) OctreeQuantizer {
+    const ColorBox = struct {
+        colors: std.ArrayList(Color),
+        min_r: u8,
+        max_r: u8,
+        min_g: u8,
+        max_g: u8,
+        min_b: u8,
+        max_b: u8,
+
+        fn init(allocator: std.mem.Allocator) ColorBox {
+            return .{
+                .colors = std.ArrayList(Color).init(allocator),
+                .min_r = 255,
+                .max_r = 0,
+                .min_g = 255,
+                .max_g = 0,
+                .min_b = 255,
+                .max_b = 0,
+            };
+        }
+
+        fn deinit(self: *ColorBox) void {
+            self.colors.deinit();
+        }
+
+        fn addColor(self: *ColorBox, c: Color) !void {
+            try self.colors.append(c);
+            if (c.r < self.min_r) self.min_r = c.r;
+            if (c.r > self.max_r) self.max_r = c.r;
+            if (c.g < self.min_g) self.min_g = c.g;
+            if (c.g > self.max_g) self.max_g = c.g;
+            if (c.b < self.min_b) self.min_b = c.b;
+            if (c.b > self.max_b) self.max_b = c.b;
+        }
+
+        fn longestAxis(self: *const ColorBox) u8 {
+            const r_range = self.max_r - self.min_r;
+            const g_range = self.max_g - self.min_g;
+            const b_range = self.max_b - self.min_b;
+
+            if (r_range >= g_range and r_range >= b_range) return 0; // Red
+            if (g_range >= b_range) return 1; // Green
+            return 2; // Blue
+        }
+
+        fn split(self: *ColorBox, allocator: std.mem.Allocator) !struct { ColorBox, ColorBox } {
+            const axis = self.longestAxis();
+            const median_idx = self.colors.items.len / 2;
+
+            // Sort colors by the longest axis
+            if (axis == 0) {
+                std.mem.sort(Color, self.colors.items, {}, struct {
+                    fn lessThan(_: void, a: Color, b: Color) bool {
+                        return a.r < b.r;
+                    }
+                }.lessThan);
+            } else if (axis == 1) {
+                std.mem.sort(Color, self.colors.items, {}, struct {
+                    fn lessThan(_: void, a: Color, b: Color) bool {
+                        return a.g < b.g;
+                    }
+                }.lessThan);
+            } else {
+                std.mem.sort(Color, self.colors.items, {}, struct {
+                    fn lessThan(_: void, a: Color, b: Color) bool {
+                        return a.b < b.b;
+                    }
+                }.lessThan);
+            }
+
+            // Create two new boxes
+            var box1 = ColorBox.init(allocator);
+            var box2 = ColorBox.init(allocator);
+
+            for (self.colors.items, 0..) |c, i| {
+                if (i < median_idx) {
+                    try box1.addColor(c);
+                } else {
+                    try box2.addColor(c);
+                }
+            }
+
+            return .{ box1, box2 };
+        }
+
+        fn averageColor(self: *const ColorBox) Color {
+            if (self.colors.items.len == 0) {
+                return .{ .r = 0, .g = 0, .b = 0 };
+            }
+
+            var sum_r: u32 = 0;
+            var sum_g: u32 = 0;
+            var sum_b: u32 = 0;
+
+            for (self.colors.items) |c| {
+                sum_r += c.r;
+                sum_g += c.g;
+                sum_b += c.b;
+            }
+
+            const count: u32 = @intCast(self.colors.items.len);
+            return .{
+                .r = @intCast(sum_r / count),
+                .g = @intCast(sum_g / count),
+                .b = @intCast(sum_b / count),
+            };
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator) MedianCutQuantizer {
         return .{
-            .root = null,
             .allocator = allocator,
-            .leaf_count = 0,
+            .palette = &[_]u8{},
+            .palette_size = 0,
         };
     }
 
-    pub fn addColor(self: *OctreeQuantizer, r: u8, g: u8, b: u8) !void {
-        _ = self;
-        _ = r;
-        _ = g;
-        _ = b;
-        // Would build octree
+    pub fn deinit(self: *MedianCutQuantizer) void {
+        if (self.palette.len > 0) {
+            self.allocator.free(self.palette);
+        }
     }
 
-    pub fn getPalette(self: *OctreeQuantizer) ![]u8 {
-        return try self.allocator.alloc(u8, MAX_COLORS * 3);
+    pub fn quantize(self: *MedianCutQuantizer, rgb_data: []const u8, max_colors: usize) ![]u8 {
+        // Build initial color box
+        var initial_box = ColorBox.init(self.allocator);
+        defer initial_box.deinit();
+
+        const pixel_count = rgb_data.len / 3;
+        for (0..pixel_count) |i| {
+            try initial_box.addColor(.{
+                .r = rgb_data[i * 3],
+                .g = rgb_data[i * 3 + 1],
+                .b = rgb_data[i * 3 + 2],
+            });
+        }
+
+        // Start with one box
+        var boxes = std.ArrayList(ColorBox).init(self.allocator);
+        defer {
+            for (boxes.items) |*box| box.deinit();
+            boxes.deinit();
+        }
+
+        try boxes.append(initial_box);
+
+        // Split boxes until we have desired number of colors
+        while (boxes.items.len < max_colors) {
+            // Find box with most colors to split
+            var largest_idx: usize = 0;
+            var largest_size: usize = 0;
+
+            for (boxes.items, 0..) |*box, i| {
+                if (box.colors.items.len > largest_size) {
+                    largest_size = box.colors.items.len;
+                    largest_idx = i;
+                }
+            }
+
+            // Stop if largest box has only one color
+            if (largest_size <= 1) break;
+
+            // Split the largest box
+            const box_to_split = boxes.orderedRemove(largest_idx);
+            const split_result = try box_to_split.split(self.allocator);
+
+            // Note: box_to_split will be deinitialized by boxes.deinit
+            // so we don't need to deinit it here
+
+            try boxes.append(split_result[0]);
+            try boxes.append(split_result[1]);
+        }
+
+        // Generate palette from boxes
+        const palette = try self.allocator.alloc(u8, boxes.items.len * 3);
+        for (boxes.items, 0..) |*box, i| {
+            const avg = box.averageColor();
+            palette[i * 3] = avg.r;
+            palette[i * 3 + 1] = avg.g;
+            palette[i * 3 + 2] = avg.b;
+        }
+
+        self.palette = palette;
+        self.palette_size = boxes.items.len;
+
+        return palette;
+    }
+
+    pub fn findNearestColor(self: *const MedianCutQuantizer, r: u8, g: u8, b: u8) u8 {
+        if (self.palette_size == 0) return 0;
+
+        var min_dist: u32 = std.math.maxInt(u32);
+        var best_idx: u8 = 0;
+
+        for (0..self.palette_size) |i| {
+            const pr = self.palette[i * 3];
+            const pg = self.palette[i * 3 + 1];
+            const pb = self.palette[i * 3 + 2];
+
+            const dr = @as(i32, r) - @as(i32, pr);
+            const dg = @as(i32, g) - @as(i32, pg);
+            const db = @as(i32, b) - @as(i32, pb);
+
+            const dist: u32 = @intCast(dr * dr + dg * dg + db * db);
+
+            if (dist < min_dist) {
+                min_dist = dist;
+                best_idx = @intCast(i);
+            }
+        }
+
+        return best_idx;
     }
 };

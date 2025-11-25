@@ -7,6 +7,7 @@ const ast = @import("ast");
 const Interpreter = @import("interpreter").Interpreter;
 const codegen_mod = @import("codegen");
 const NativeCodegen = codegen_mod.NativeCodegen;
+const TypeRegistry = codegen_mod.TypeRegistry;
 const HomeKernelCodegen = codegen_mod.HomeKernelCodegen;
 const TypeChecker = @import("types").TypeChecker;
 const comptime_mod = @import("comptime");
@@ -758,7 +759,11 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
         std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
-        var codegen = NativeCodegen.init(allocator, program, &comptime_store);
+        // Create global type registry for cross-module type resolution
+        var type_registry = TypeRegistry.init(allocator);
+        defer type_registry.deinit();
+
+        var codegen = NativeCodegen.init(allocator, program, &comptime_store, &type_registry);
         defer codegen.deinit();
 
         // Set source root for import resolution
