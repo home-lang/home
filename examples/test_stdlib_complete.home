@@ -1,0 +1,643 @@
+// Comprehensive test for Standard Library Completeness (Option 16)
+// Tests: HTTP/2, WebSocket, PostgreSQL, Redis, Compression, Serialization
+
+import http2;
+import websocket;
+import database;
+import compression;
+import serialization;
+
+// Test HTTP/2 Client
+fn test_http2_client() {
+    print("Testing HTTP/2 client...");
+
+    let allocator = std.heap.page_allocator;
+
+    // Connect to HTTP/2 server
+    let address = std.net.Address.parseIp("127.0.0.1", 8443);
+    let stream = std.net.tcpConnectToAddress(address);
+
+    let client = http2.HTTP2Client.init(allocator, stream);
+    defer client.deinit();
+
+    client.connect();
+
+    // Create request
+    let headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+    headers.put("content-type", "application/json");
+
+    let request = http2.HTTP2Client.Request {
+        method: "GET",
+        path: "/api/test",
+        headers: headers,
+        body: null,
+    };
+
+    // Send request and get response
+    let response = client.request(request);
+    defer response.deinit();
+
+    print("Status: {}", response.status);
+    print("Body: {s}", response.body);
+
+    assert(response.status == 200);
+}
+
+// Test HTTP/2 Stream Multiplexing
+fn test_http2_multiplexing() {
+    print("Testing HTTP/2 stream multiplexing...");
+
+    let allocator = std.heap.page_allocator;
+    let address = std.net.Address.parseIp("127.0.0.1", 8443);
+    let stream = std.net.tcpConnectToAddress(address);
+
+    let client = http2.HTTP2Client.init(allocator, stream);
+    defer client.deinit();
+
+    client.connect();
+
+    // Send multiple requests concurrently
+    let requests = [
+        http2.HTTP2Client.Request {
+            method: "GET",
+            path: "/api/users/1",
+            headers: std.StringHashMap([]const u8).init(allocator),
+            body: null,
+        },
+        http2.HTTP2Client.Request {
+            method: "GET",
+            path: "/api/users/2",
+            headers: std.StringHashMap([]const u8).init(allocator),
+            body: null,
+        },
+        http2.HTTP2Client.Request {
+            method: "GET",
+            path: "/api/users/3",
+            headers: std.StringHashMap([]const u8).init(allocator),
+            body: null,
+        },
+    ];
+
+    for (let i = 0; i < requests.len; i++) {
+        let response = client.request(requests[i]);
+        defer response.deinit();
+
+        print("Response {}: {}", i, response.status);
+        assert(response.status == 200);
+    }
+}
+
+// Test WebSocket Connection
+fn test_websocket_connect() {
+    print("Testing WebSocket connection...");
+
+    let allocator = std.heap.page_allocator;
+
+    // Connect to WebSocket server
+    let ws = websocket.WebSocket.connect(allocator, "ws://localhost:8080/ws");
+    defer ws.deinit();
+
+    // Send text message
+    ws.sendText("Hello, WebSocket!");
+
+    // Receive message
+    let message = ws.receive();
+    defer message.deinit();
+
+    print("Received: {s}", message.data);
+    assert(message.opcode == .text);
+}
+
+// Test WebSocket Ping/Pong
+fn test_websocket_ping() {
+    print("Testing WebSocket ping/pong...");
+
+    let allocator = std.heap.page_allocator;
+    let ws = websocket.WebSocket.connect(allocator, "ws://localhost:8080/ws");
+    defer ws.deinit();
+
+    // Send ping
+    ws.sendPing("ping");
+
+    // Server should automatically respond with pong
+    // and we should be able to continue communication
+    ws.sendText("After ping");
+
+    let message = ws.receive();
+    defer message.deinit();
+
+    print("Received after ping: {s}", message.data);
+}
+
+// Test WebSocket Binary Messages
+fn test_websocket_binary() {
+    print("Testing WebSocket binary messages...");
+
+    let allocator = std.heap.page_allocator;
+    let ws = websocket.WebSocket.connect(allocator, "ws://localhost:8080/ws");
+    defer ws.deinit();
+
+    // Send binary data
+    let data = [1, 2, 3, 4, 5];
+    ws.sendBinary(&data);
+
+    // Receive binary message
+    let message = ws.receive();
+    defer message.deinit();
+
+    assert(message.opcode == .binary);
+    assert(message.data.len == 5);
+}
+
+// Test PostgreSQL Connection
+fn test_postgresql_connect() {
+    print("Testing PostgreSQL connection...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.PostgreSQL.Config {
+        host: "localhost",
+        port: 5432,
+        database: "testdb",
+        user: "testuser",
+        password: "testpass",
+        ssl_mode: .prefer,
+    };
+
+    let pg = database.PostgreSQL.connect(allocator, config);
+    defer pg.deinit();
+
+    print("Connected to PostgreSQL");
+}
+
+// Test PostgreSQL Query
+fn test_postgresql_query() {
+    print("Testing PostgreSQL queries...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.PostgreSQL.Config {
+        host: "localhost",
+        port: 5432,
+        database: "testdb",
+        user: "testuser",
+        password: "testpass",
+    };
+
+    let pg = database.PostgreSQL.connect(allocator, config);
+    defer pg.deinit();
+
+    // Create table
+    let create_result = pg.query(
+        "CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT, email TEXT)"
+    );
+    defer create_result.deinit();
+
+    // Insert data
+    let insert_result = pg.query(
+        "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com') RETURNING id"
+    );
+    defer insert_result.deinit();
+
+    assert(insert_result.rows.items.len == 1);
+
+    // Select data
+    let select_result = pg.query("SELECT * FROM users WHERE name = 'Alice'");
+    defer select_result.deinit();
+
+    assert(select_result.rows.items.len >= 1);
+
+    let row = select_result.rows.items[0];
+    let name = row.get(1);
+    print("User name: {s}", name);
+}
+
+// Test PostgreSQL Transactions
+fn test_postgresql_transactions() {
+    print("Testing PostgreSQL transactions...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.PostgreSQL.Config {
+        host: "localhost",
+        port: 5432,
+        database: "testdb",
+        user: "testuser",
+        password: "testpass",
+    };
+
+    let pg = database.PostgreSQL.connect(allocator, config);
+    defer pg.deinit();
+
+    // Begin transaction
+    pg.begin();
+
+    // Insert within transaction
+    let result1 = pg.query("INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com')");
+    defer result1.deinit();
+
+    let result2 = pg.query("INSERT INTO users (name, email) VALUES ('Carol', 'carol@example.com')");
+    defer result2.deinit();
+
+    // Commit transaction
+    pg.commit();
+
+    print("Transaction committed");
+}
+
+// Test PostgreSQL Connection Pool
+fn test_postgresql_pool() {
+    print("Testing PostgreSQL connection pool...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.PostgreSQL.Config {
+        host: "localhost",
+        port: 5432,
+        database: "testdb",
+        user: "testuser",
+        password: "testpass",
+    };
+
+    let pool = database.ConnectionPool.init(allocator, config, 10);
+    defer pool.deinit();
+
+    // Acquire connections
+    let conn1 = pool.acquire();
+    let conn2 = pool.acquire();
+
+    // Use connections
+    let result1 = conn1.query("SELECT 1");
+    defer result1.deinit();
+
+    let result2 = conn2.query("SELECT 2");
+    defer result2.deinit();
+
+    // Release connections back to pool
+    pool.release(conn1);
+    pool.release(conn2);
+
+    print("Connection pool test passed");
+}
+
+// Test Redis Connection
+fn test_redis_connect() {
+    print("Testing Redis connection...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.Redis.Config {
+        host: "localhost",
+        port: 6379,
+        password: null,
+        database: 0,
+    };
+
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    print("Connected to Redis");
+}
+
+// Test Redis String Operations
+fn test_redis_strings() {
+    print("Testing Redis string operations...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = database.Redis.Config {
+        host: "localhost",
+        port: 6379,
+    };
+
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    // SET operation
+    redis.set("test_key", "test_value");
+
+    // GET operation
+    let value = redis.get("test_key");
+    assert(value != null);
+    print("Value: {s}", value.?);
+
+    // DEL operation
+    let deleted = redis.del(&[_][]const u8{"test_key"});
+    assert(deleted == 1);
+
+    // Verify deleted
+    let value2 = redis.get("test_key");
+    assert(value2 == null);
+}
+
+// Test Redis List Operations
+fn test_redis_lists() {
+    print("Testing Redis list operations...");
+
+    let allocator = std.heap.page_allocator;
+    let config = database.Redis.Config { host: "localhost", port: 6379 };
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    // LPUSH
+    let len = redis.lpush("mylist", &[_][]const u8{ "item1", "item2", "item3" });
+    assert(len == 3);
+
+    // LRANGE
+    let items = redis.lrange("mylist", 0, -1);
+    defer allocator.free(items);
+
+    assert(items.len == 3);
+    print("List items: {s}, {s}, {s}", items[0], items[1], items[2]);
+
+    // LPOP
+    let popped = redis.lpop("mylist");
+    assert(popped != null);
+    print("Popped: {s}", popped.?);
+}
+
+// Test Redis Hash Operations
+fn test_redis_hashes() {
+    print("Testing Redis hash operations...");
+
+    let allocator = std.heap.page_allocator;
+    let config = database.Redis.Config { host: "localhost", port: 6379 };
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    // HSET
+    redis.hset("user:1", "name", "Alice");
+    redis.hset("user:1", "email", "alice@example.com");
+
+    // HGET
+    let name = redis.hget("user:1", "name");
+    assert(name != null);
+    print("User name: {s}", name.?);
+
+    // HGETALL
+    let hash = redis.hgetall("user:1");
+    defer hash.deinit();
+
+    assert(hash.count() == 2);
+}
+
+// Test Redis Pub/Sub
+fn test_redis_pubsub() {
+    print("Testing Redis pub/sub...");
+
+    let allocator = std.heap.page_allocator;
+    let config = database.Redis.Config { host: "localhost", port: 6379 };
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    // Publish message
+    let subscribers = redis.publish("test_channel", "Hello, subscribers!");
+    print("Message sent to {} subscribers", subscribers);
+}
+
+// Test Redis Transactions
+fn test_redis_transactions() {
+    print("Testing Redis transactions...");
+
+    let allocator = std.heap.page_allocator;
+    let config = database.Redis.Config { host: "localhost", port: 6379 };
+    let redis = database.Redis.connect(allocator, config);
+    defer redis.deinit();
+
+    // Begin transaction
+    redis.multi();
+
+    // Queue commands
+    redis.set("tx_key1", "value1");
+    redis.set("tx_key2", "value2");
+    redis.get("tx_key1");
+
+    // Execute transaction
+    let results = redis.exec();
+    defer allocator.free(results);
+
+    print("Transaction executed, {} results", results.len);
+}
+
+// Test GZIP Compression
+fn test_gzip_compression() {
+    print("Testing GZIP compression...");
+
+    let allocator = std.heap.page_allocator;
+    let gzip = compression.Gzip.init(allocator, .balanced);
+
+    let original = "Hello, World! This is a test of GZIP compression. " ** 10;
+
+    // Compress
+    let compressed = gzip.compress(original);
+    defer allocator.free(compressed);
+
+    print("Original size: {}", original.len);
+    print("Compressed size: {}", compressed.len);
+
+    let ratio = @as(f64, @floatFromInt(compressed.len)) / @as(f64, @floatFromInt(original.len));
+    print("Compression ratio: {d:.2}%", ratio * 100.0);
+
+    // Decompress
+    let decompressed = gzip.decompress(compressed);
+    defer allocator.free(decompressed);
+
+    assert(std.mem.eql(u8, original, decompressed));
+    print("Decompression successful!");
+}
+
+// Test Zstandard Compression
+fn test_zstd_compression() {
+    print("Testing Zstandard compression...");
+
+    let allocator = std.heap.page_allocator;
+    let zstd = compression.Zstd.init(allocator, .balanced);
+
+    let original = "Zstandard compression test data. " ** 20;
+
+    // Compress
+    let compressed = zstd.compress(original);
+    defer allocator.free(compressed);
+
+    print("Original size: {}", original.len);
+    print("Compressed size: {}", compressed.len);
+
+    // Decompress
+    let decompressed = zstd.decompress(compressed);
+    defer allocator.free(decompressed);
+
+    assert(std.mem.eql(u8, original, decompressed));
+    print("Zstandard compression/decompression successful!");
+}
+
+// Test Zstandard with Dictionary
+fn test_zstd_dictionary() {
+    print("Testing Zstandard with dictionary...");
+
+    let allocator = std.heap.page_allocator;
+
+    // Create dictionary from sample data
+    let dict_data = "common prefix common suffix common pattern";
+    let dictionary = compression.Zstd.Dictionary.init(dict_data);
+
+    let zstd = compression.Zstd.initWithDictionary(allocator, .balanced, dictionary);
+
+    let original = "common prefix test data common suffix";
+
+    let compressed = zstd.compress(original);
+    defer allocator.free(compressed);
+
+    print("Compressed size with dictionary: {}", compressed.len);
+
+    let decompressed = zstd.decompress(compressed);
+    defer allocator.free(decompressed);
+
+    assert(std.mem.eql(u8, original, decompressed));
+}
+
+// Test MessagePack Serialization
+fn test_msgpack_serialization() {
+    print("Testing MessagePack serialization...");
+
+    let allocator = std.heap.page_allocator;
+    let msgpack = serialization.MessagePack.init(allocator);
+
+    // Create value
+    let value = serialization.MessagePack.Value {
+        map: std.StringHashMap(serialization.MessagePack.Value).init(allocator),
+    };
+
+    value.map.put("name", .{ string: "Alice" });
+    value.map.put("age", .{ unsigned: 30 });
+    value.map.put("active", .{ boolean: true });
+
+    // Serialize
+    let serialized = msgpack.serialize(value);
+    defer allocator.free(serialized);
+
+    print("Serialized size: {} bytes", serialized.len);
+
+    // Deserialize
+    let deserialized = msgpack.deserialize(serialized);
+    defer deserialized.deinit(allocator);
+
+    assert(deserialized.map.count() == 3);
+    print("MessagePack serialization successful!");
+}
+
+// Test Protocol Buffers
+fn test_protobuf() {
+    print("Testing Protocol Buffers...");
+
+    let allocator = std.heap.page_allocator;
+    let pb = serialization.Protobuf.init(allocator);
+
+    // Create message
+    let message = serialization.Protobuf.Message.init(allocator);
+    defer message.deinit(allocator);
+
+    message.addString(allocator, 1, "Alice");
+    message.addVarint(2, 30);
+    message.addBytes(allocator, 3, &[_]u8{ 1, 2, 3, 4 });
+
+    // Serialize
+    let serialized = pb.serialize(message);
+    defer allocator.free(serialized);
+
+    print("Protobuf serialized size: {} bytes", serialized.len);
+
+    // Deserialize
+    let deserialized = pb.deserialize(serialized);
+    defer deserialized.deinit(allocator);
+
+    let name = deserialized.getBytes(1);
+    let age = deserialized.getVarint(2);
+
+    assert(name != null);
+    assert(age == 30);
+
+    print("Name: {s}, Age: {}", name.?, age.?);
+}
+
+// Test Protocol Buffers Code Generation
+fn test_protobuf_codegen() {
+    print("Testing Protocol Buffers code generation...");
+
+    let allocator = std.heap.page_allocator;
+    let codegen = serialization.CodeGen.init(allocator);
+
+    // Define message
+    let msg_def = serialization.CodeGen.MessageDef {
+        name: "User",
+        fields: &[_]serialization.CodeGen.FieldDef{
+            .{
+                name: "id",
+                number: 1,
+                field_type: .uint64,
+                repeated: false,
+                optional: false,
+            },
+            .{
+                name: "name",
+                number: 2,
+                field_type: .string,
+                repeated: false,
+                optional: false,
+            },
+            .{
+                name: "emails",
+                number: 3,
+                field_type: .string,
+                repeated: true,
+                optional: false,
+            },
+        },
+    };
+
+    // Generate code
+    let code = codegen.generateCode(msg_def);
+    defer allocator.free(code);
+
+    print("Generated code ({} bytes):", code.len);
+    print("{s}", code);
+}
+
+fn main() {
+    print("=== Standard Library Completeness Tests ===\n");
+
+    // HTTP/2 tests
+    test_http2_client();
+    test_http2_multiplexing();
+
+    // WebSocket tests
+    test_websocket_connect();
+    test_websocket_ping();
+    test_websocket_binary();
+
+    // PostgreSQL tests
+    test_postgresql_connect();
+    test_postgresql_query();
+    test_postgresql_transactions();
+    test_postgresql_pool();
+
+    // Redis tests
+    test_redis_connect();
+    test_redis_strings();
+    test_redis_lists();
+    test_redis_hashes();
+    test_redis_pubsub();
+    test_redis_transactions();
+
+    // Compression tests
+    test_gzip_compression();
+    test_zstd_compression();
+    test_zstd_dictionary();
+
+    // Serialization tests
+    test_msgpack_serialization();
+    test_protobuf();
+    test_protobuf_codegen();
+
+    print("\n=== All tests passed! ===");
+}

@@ -1,0 +1,700 @@
+// Comprehensive test for profiler and instrumentation
+// Tests CPU profiling, memory profiling, flame graphs, and metrics
+
+use std::profiler::{CPUProfiler, MemoryProfiler, FlameGraph, Metrics};
+use std::testing::{TestFramework, assert, assertEqual};
+
+// =============================================================================
+// 1. CPU PROFILER TESTS
+// =============================================================================
+
+fn test_cpu_profiler_basic() {
+    println("Testing basic CPU profiler...");
+
+    let mut profiler = CPUProfiler::init(allocator, CPUProfiler.Config{
+        .sample_rate = 100,
+        .max_stack_depth = 32,
+        .per_thread = true,
+        .buffer_size = 1000,
+    });
+    defer profiler.deinit();
+
+    // Start profiling
+    profiler.start()?;
+
+    // Do some work
+    fibonacci_recursive(30);
+    bubble_sort_array(100);
+    matrix_multiply(50);
+
+    // Stop profiling
+    let result = profiler.stop()?;
+    defer result.deinit();
+
+    assert(result.total_samples > 0, "should have samples");
+    assert(result.duration_ms > 0, "should have duration");
+    assert(result.samples_per_second > 0.0, "should have sample rate");
+
+    // Print results
+    result.print(std::io::getStdOut().writer())?;
+
+    println("✓ Basic CPU profiler");
+}
+
+fn test_cpu_profiler_sampling() {
+    println("Testing CPU profiler sampling...");
+
+    let mut profiler = CPUProfiler::init(allocator, CPUProfiler.Config{
+        .sample_rate = 1000,
+        .max_stack_depth = 64,
+    });
+    defer profiler.deinit();
+
+    profiler.start()?;
+
+    // Run for 1 second
+    let start = std::time::milliTimestamp();
+    while (std::time::milliTimestamp() - start < 1000) {
+        // Busy work
+        let mut sum = 0;
+        for i in 0..10000 {
+            sum += i;
+        }
+    }
+
+    let result = profiler.stop()?;
+    defer result.deinit();
+
+    // Should have approximately 1000 samples (1 second * 1000 Hz)
+    let expected_samples = 900; // Allow some tolerance
+    assert(result.total_samples >= expected_samples, "should have enough samples");
+
+    println("✓ CPU profiler sampling");
+}
+
+fn test_call_graph_profiler() {
+    println("Testing call graph profiler...");
+
+    let mut profiler = CallGraphProfiler::init(allocator);
+    defer profiler.deinit();
+
+    profiler.enable();
+
+    // Instrument functions
+    profiler.enter("main")?;
+
+    profiler.enter("function_a")?;
+    std::time::sleep(10 * 1000 * 1000); // 10ms
+    profiler.exit("function_a")?;
+
+    profiler.enter("function_b")?;
+    std::time::sleep(20 * 1000 * 1000); // 20ms
+
+    profiler.enter("function_c")?;
+    std::time::sleep(15 * 1000 * 1000); // 15ms
+    profiler.exit("function_c")?;
+
+    profiler.exit("function_b")?;
+
+    profiler.exit("main")?;
+
+    profiler.disable();
+
+    // Print call graph
+    profiler.printReport(std::io::getStdOut().writer())?;
+
+    println("✓ Call graph profiler");
+}
+
+// =============================================================================
+// 2. MEMORY PROFILER TESTS
+// =============================================================================
+
+fn test_memory_profiler_basic() {
+    println("Testing basic memory profiler...");
+
+    let mut profiler = MemoryProfiler::init(allocator, MemoryProfiler.Config{
+        .track_stack_traces = true,
+        .max_stack_depth = 32,
+        .detect_leaks = true,
+    });
+    defer profiler.deinit();
+
+    profiler.enable();
+
+    // Allocate memory
+    let data1 = allocator.alloc(u8, 1024)?;
+    profiler.recordAllocation(@intFromPtr(data1.ptr), 1024, "test_site_1")?;
+
+    let data2 = allocator.alloc(u8, 2048)?;
+    profiler.recordAllocation(@intFromPtr(data2.ptr), 2048, "test_site_2")?;
+
+    // Check stats
+    let snapshot = profiler.snapshot();
+    assertEqual(snapshot.current_memory, 1024 + 2048);
+    assertEqual(snapshot.allocation_count, 2);
+
+    // Free one allocation
+    profiler.recordFree(@intFromPtr(data1.ptr))?;
+    allocator.free(data1);
+
+    let snapshot2 = profiler.snapshot();
+    assertEqual(snapshot2.current_memory, 2048);
+
+    // Print stats
+    profiler.printStats(std::io::getStdOut().writer())?;
+
+    // Cleanup
+    profiler.recordFree(@intFromPtr(data2.ptr))?;
+    allocator.free(data2);
+
+    println("✓ Basic memory profiler");
+}
+
+fn test_memory_leak_detection() {
+    println("Testing memory leak detection...");
+
+    let mut profiler = MemoryProfiler::init(allocator, MemoryProfiler.Config{
+        .detect_leaks = true,
+    });
+    defer profiler.deinit();
+
+    profiler.enable();
+
+    // Intentional leak
+    let leaked_data = allocator.alloc(u8, 512)?;
+    profiler.recordAllocation(@intFromPtr(leaked_data.ptr), 512, "intentional_leak")?;
+
+    // Another allocation that gets freed
+    let normal_data = allocator.alloc(u8, 256)?;
+    profiler.recordAllocation(@intFromPtr(normal_data.ptr), 256, "normal_alloc")?;
+    profiler.recordFree(@intFromPtr(normal_data.ptr))?;
+    allocator.free(normal_data);
+
+    // Check for leaks
+    let leak_report = profiler.checkLeaks()?;
+    defer leak_report.deinit();
+
+    assertEqual(leak_report.leaks.len(), 1);
+    assertEqual(leak_report.total_leaked, 512);
+
+    leak_report.print(std::io::getStdOut().writer())?;
+
+    // Cleanup the leak (for testing only!)
+    allocator.free(leaked_data);
+
+    println("✓ Memory leak detection");
+}
+
+fn test_allocation_hotspots() {
+    println("Testing allocation hotspots...");
+
+    let mut profiler = MemoryProfiler::init(allocator, MemoryProfiler.Config::default());
+    defer profiler.deinit();
+
+    profiler.enable();
+
+    // Simulate allocation-heavy code
+    for _ in 0..100 {
+        let data = allocator.alloc(u8, 1024)?;
+        profiler.recordAllocation(@intFromPtr(data.ptr), 1024, "loop_allocation")?;
+        profiler.recordFree(@intFromPtr(data.ptr))?;
+        allocator.free(data);
+    }
+
+    // Another allocation site
+    for _ in 0..50 {
+        let data = allocator.alloc(u8, 2048)?;
+        profiler.recordAllocation(@intFromPtr(data.ptr), 2048, "large_allocation")?;
+        profiler.recordFree(@intFromPtr(data.ptr))?;
+        allocator.free(data);
+    }
+
+    profiler.printStats(std::io::getStdOut().writer())?;
+
+    println("✓ Allocation hotspots");
+}
+
+fn test_tracking_allocator() {
+    println("Testing tracking allocator...");
+
+    let mut profiler = MemoryProfiler::init(allocator, MemoryProfiler.Config::default());
+    defer profiler.deinit();
+
+    profiler.enable();
+
+    let mut tracking = TrackingAllocator(std.mem.Allocator).init(allocator, &profiler);
+    let tracking_alloc = tracking.allocator();
+
+    // Use tracking allocator
+    let data = tracking_alloc.alloc(u8, 4096)?;
+    defer tracking_alloc.free(data);
+
+    // Check that it was recorded
+    let snapshot = profiler.snapshot();
+    assert(snapshot.allocation_count > 0, "should have allocations");
+
+    println("✓ Tracking allocator");
+}
+
+// =============================================================================
+// 3. FLAME GRAPH TESTS
+// =============================================================================
+
+fn test_flame_graph_generation() {
+    println("Testing flame graph generation...");
+
+    let mut flame = FlameGraph::init(allocator)?;
+    defer flame.deinit();
+
+    // Add sample stacks
+    flame.addStack(&.{"main", "process", "compute"})?;
+    flame.addStack(&.{"main", "process", "compute"})?;
+    flame.addStack(&.{"main", "process", "io"})?;
+    flame.addStack(&.{"main", "render", "draw"})?;
+
+    assert(flame.total_samples == 4, "should have 4 samples");
+
+    // Generate folded format
+    let folded = flame.generateFolded()?;
+    defer allocator.free(folded);
+
+    assert(folded.len > 0, "should generate folded format");
+    println("Folded format:\n{s}", folded);
+
+    println("✓ Flame graph generation");
+}
+
+fn test_flame_graph_svg() {
+    println("Testing flame graph SVG generation...");
+
+    let mut flame = FlameGraph::init(allocator)?;
+    defer flame.deinit();
+
+    // Add realistic stacks
+    flame.addStack(&.{"main", "event_loop", "handle_request", "parse_json"})?;
+    flame.addStack(&.{"main", "event_loop", "handle_request", "validate"})?;
+    flame.addStack(&.{"main", "event_loop", "handle_request", "process"})?;
+    flame.addStack(&.{"main", "event_loop", "handle_response", "serialize"})?;
+
+    // Generate SVG
+    let svg = flame.generateSVG(1200, 600)?;
+    defer allocator.free(svg);
+
+    assert(svg.len > 0, "should generate SVG");
+    assert(std::mem.contains(u8, svg, "<svg"), "should be valid SVG");
+
+    // Save to file for visualization
+    let file = std::fs::cwd().createFile("flamegraph.svg", .{})?;
+    defer file.close();
+    file.writeAll(svg)?;
+
+    println("✓ Flame graph SVG (saved to flamegraph.svg)");
+}
+
+fn test_flame_graph_json() {
+    println("Testing flame graph JSON generation...");
+
+    let mut flame = FlameGraph::init(allocator)?;
+    defer flame.deinit();
+
+    flame.addStack(&.{"root", "branch_a", "leaf_1"})?;
+    flame.addStack(&.{"root", "branch_a", "leaf_2"})?;
+    flame.addStack(&.{"root", "branch_b", "leaf_3"})?;
+
+    let json = flame.generateJSON()?;
+    defer allocator.free(json);
+
+    assert(json.len > 0, "should generate JSON");
+    println("JSON format:\n{s}", json);
+
+    println("✓ Flame graph JSON");
+}
+
+fn test_differential_flame_graph() {
+    println("Testing differential flame graph...");
+
+    // Create "before" profile
+    let mut before = FlameGraph::init(allocator)?;
+    defer before.deinit();
+
+    before.addStack(&.{"main", "slow_function"})?;
+    before.addStack(&.{"main", "slow_function"})?;
+    before.addStack(&.{"main", "fast_function"})?;
+
+    // Create "after" profile (after optimization)
+    let mut after = FlameGraph::init(allocator)?;
+    defer after.deinit();
+
+    after.addStack(&.{"main", "slow_function"})?; // Now faster!
+    after.addStack(&.{"main", "fast_function"})?;
+    after.addStack(&.{"main", "fast_function"})?;
+
+    // Generate diff
+    let mut diff = DiffFlameGraph::init(allocator, &before, &after);
+    let diff_output = diff.generate()?;
+    defer allocator.free(diff_output);
+
+    println("Differential output:\n{s}", diff_output);
+
+    println("✓ Differential flame graph");
+}
+
+// =============================================================================
+// 4. METRICS TESTS
+// =============================================================================
+
+fn test_counter_metrics() {
+    println("Testing counter metrics...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    let counter = metrics.counter("requests_total")?;
+
+    counter.increment();
+    counter.increment();
+    counter.add(5);
+
+    assertEqual(counter.get(), 7);
+
+    println("✓ Counter metrics");
+}
+
+fn test_gauge_metrics() {
+    println("Testing gauge metrics...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    let gauge = metrics.gauge("active_connections")?;
+
+    gauge.set(10);
+    assertEqual(gauge.get(), 10);
+
+    gauge.increment();
+    assertEqual(gauge.get(), 11);
+
+    gauge.decrement();
+    assertEqual(gauge.get(), 10);
+
+    gauge.add(-5);
+    assertEqual(gauge.get(), 5);
+
+    println("✓ Gauge metrics");
+}
+
+fn test_histogram_metrics() {
+    println("Testing histogram metrics...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    let buckets = [10.0, 50.0, 100.0, 500.0, 1000.0];
+    let histogram = metrics.histogram("request_duration_ms", &buckets)?;
+
+    histogram.observe(25.0);
+    histogram.observe(75.0);
+    histogram.observe(150.0);
+    histogram.observe(500.0);
+
+    assertEqual(histogram.getCount(), 4);
+    assertEqual(histogram.getSum(), 750.0);
+    assertEqual(histogram.getMean(), 187.5);
+
+    println("✓ Histogram metrics");
+}
+
+fn test_timer_metrics() {
+    println("Testing timer metrics...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    let timer = metrics.timer("operation_duration")?;
+
+    // Time an operation
+    {
+        let handle = timer.time();
+        defer handle.stop();
+
+        // Do some work
+        std::time::sleep(50 * 1000 * 1000); // 50ms
+    }
+
+    let hist = &timer.histogram;
+    assertEqual(hist.getCount(), 1);
+    assert(hist.getMean() >= 45.0 and hist.getMean() <= 55.0, "mean should be ~50ms");
+
+    println("✓ Timer metrics");
+}
+
+fn test_metrics_export_prometheus() {
+    println("Testing Prometheus export...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    // Add various metrics
+    let counter = metrics.counter("http_requests_total")?;
+    counter.add(1234);
+
+    let gauge = metrics.gauge("memory_usage_bytes")?;
+    gauge.set(104857600);
+
+    let buckets = [10.0, 50.0, 100.0, 500.0, 1000.0];
+    let histogram = metrics.histogram("http_request_duration_ms", &buckets)?;
+    histogram.observe(25.0);
+    histogram.observe(75.0);
+    histogram.observe(150.0);
+
+    // Export
+    let prometheus = metrics.exportPrometheus()?;
+    defer allocator.free(prometheus);
+
+    assert(prometheus.len > 0, "should generate Prometheus output");
+    assert(std::mem.contains(u8, prometheus, "# TYPE"), "should have type declarations");
+
+    println("Prometheus output:\n{s}", prometheus);
+
+    println("✓ Prometheus export");
+}
+
+fn test_metrics_export_json() {
+    println("Testing JSON export...");
+
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    let counter = metrics.counter("events")?;
+    counter.add(42);
+
+    let gauge = metrics.gauge("temperature")?;
+    gauge.set(72);
+
+    let json = metrics.exportJSON()?;
+    defer allocator.free(json);
+
+    assert(json.len > 0, "should generate JSON");
+    assert(std::mem.contains(u8, json, "\"counters\""), "should have counters");
+    assert(std::mem.contains(u8, json, "\"gauges\""), "should have gauges");
+
+    println("JSON output:\n{s}", json);
+
+    println("✓ JSON export");
+}
+
+fn test_global_metrics() {
+    println("Testing global metrics...");
+
+    // Use convenience functions
+    incrementCounter("global_counter")?;
+    incrementCounter("global_counter")?;
+
+    setGauge("global_gauge", 100)?;
+
+    observeHistogram("global_histogram", 42.0)?;
+
+    // Time an operation
+    {
+        let timer = timeOperation("global_operation")?;
+        defer timer.stop();
+
+        std::time::sleep(10 * 1000 * 1000); // 10ms
+    }
+
+    // Get global metrics and print
+    let metrics = getGlobalMetrics()?;
+    metrics.printReport(std::io::getStdOut().writer())?;
+
+    println("✓ Global metrics");
+}
+
+// =============================================================================
+// 5. INSTRUMENTATION TESTS
+// =============================================================================
+
+fn test_scoped_profiling() {
+    println("Testing scoped profiling...");
+
+    {
+        let _prof = ScopedProfile("test_function").init();
+        defer _prof.deinit();
+
+        // Do work
+        fibonacci_recursive(20);
+    }
+
+    println("✓ Scoped profiling");
+}
+
+fn test_manual_instrumentation() {
+    println("Testing manual instrumentation...");
+
+    Instrumentation.begin("phase_1");
+    fibonacci_recursive(15);
+    Instrumentation.end("phase_1");
+
+    Instrumentation.mark("checkpoint");
+
+    Instrumentation.begin("phase_2");
+    bubble_sort_array(50);
+    Instrumentation.end("phase_2");
+
+    Instrumentation.counter("operations", 100);
+
+    println("✓ Manual instrumentation");
+}
+
+// =============================================================================
+// 6. INTEGRATION TESTS
+// =============================================================================
+
+fn test_full_profiling_pipeline() {
+    println("Testing full profiling pipeline...");
+
+    // CPU profiler
+    let mut cpu_profiler = CPUProfiler::init(allocator, CPUProfiler.Config::default());
+    defer cpu_profiler.deinit();
+
+    // Memory profiler
+    let mut mem_profiler = MemoryProfiler::init(allocator, MemoryProfiler.Config::default());
+    defer mem_profiler.deinit();
+
+    // Metrics
+    let mut metrics = Metrics::init(allocator);
+    defer metrics.deinit();
+
+    // Start profiling
+    cpu_profiler.start()?;
+    mem_profiler.enable();
+
+    let counter = metrics.counter("operations")?;
+    let timer = metrics.timer("operation_time")?;
+
+    // Do work
+    for i in 0..10 {
+        let _time = timer.time();
+        defer _time.stop();
+
+        counter.increment();
+
+        let data = allocator.alloc(u8, 1024)?;
+        mem_profiler.recordAllocation(@intFromPtr(data.ptr), 1024, "loop")?;
+
+        fibonacci_recursive(20 + i);
+
+        mem_profiler.recordFree(@intFromPtr(data.ptr))?;
+        allocator.free(data);
+    }
+
+    // Stop profiling
+    let cpu_result = cpu_profiler.stop()?;
+    defer cpu_result.deinit();
+
+    // Generate reports
+    cpu_result.print(std::io::getStdOut().writer())?;
+    mem_profiler.printStats(std::io::getStdOut().writer())?;
+    metrics.printReport(std::io::getStdOut().writer())?;
+
+    // Generate flame graph
+    let flame_data = cpu_profiler.generateFlameGraph()?;
+    defer allocator.free(flame_data);
+
+    println("✓ Full profiling pipeline");
+}
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+fn fibonacci_recursive(n: i32) -> i32 {
+    if (n <= 1) return n;
+    return fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2);
+}
+
+fn bubble_sort_array(size: usize) {
+    let mut arr = allocator.alloc(i32, size)?;
+    defer allocator.free(arr);
+
+    // Fill with random numbers
+    for (arr) |*elem, i| {
+        elem.* = @intCast((i * 7) % 100);
+    }
+
+    // Bubble sort
+    for _ in 0..size {
+        for j in 0..(size - 1) {
+            if (arr[j] > arr[j + 1]) {
+                let temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+}
+
+fn matrix_multiply(size: usize) {
+    // Simplified matrix multiply
+    let mut sum = 0;
+    for _ in 0..size {
+        for j in 0..size {
+            sum += j;
+        }
+    }
+}
+
+// =============================================================================
+// MAIN ENTRY POINT
+// =============================================================================
+
+fn main() {
+    println("\n=== Testing Profiler & Instrumentation ===\n");
+
+    // CPU profiler tests
+    println("1. CPU Profiler Tests");
+    test_cpu_profiler_basic();
+    test_cpu_profiler_sampling();
+    test_call_graph_profiler();
+
+    // Memory profiler tests
+    println("\n2. Memory Profiler Tests");
+    test_memory_profiler_basic();
+    test_memory_leak_detection();
+    test_allocation_hotspots();
+    test_tracking_allocator();
+
+    // Flame graph tests
+    println("\n3. Flame Graph Tests");
+    test_flame_graph_generation();
+    test_flame_graph_svg();
+    test_flame_graph_json();
+    test_differential_flame_graph();
+
+    // Metrics tests
+    println("\n4. Metrics Tests");
+    test_counter_metrics();
+    test_gauge_metrics();
+    test_histogram_metrics();
+    test_timer_metrics();
+    test_metrics_export_prometheus();
+    test_metrics_export_json();
+    test_global_metrics();
+
+    // Instrumentation tests
+    println("\n5. Instrumentation Tests");
+    test_scoped_profiling();
+    test_manual_instrumentation();
+
+    // Integration tests
+    println("\n6. Integration Tests");
+    test_full_profiling_pipeline();
+
+    println("\n=== All Profiler Tests Passed! ===\n");
+}
+
+// Usage:
+// homecc test_profiler.home
+// home profile --cpu test_profiler.home
+// home profile --memory test_profiler.home
+// home profile --all test_profiler.home --flamegraph
