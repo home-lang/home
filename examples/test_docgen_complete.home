@@ -1,0 +1,425 @@
+// Comprehensive test for Documentation Generator (Option 11)
+// Tests: Parser, HTML, Markdown, Search, Syntax Highlighting
+
+import docgen;
+
+/// Sample documented function for testing
+/// This function adds two numbers together
+///
+/// @param a The first number to add
+/// @param b The second number to add
+/// @return The sum of a and b
+/// @example
+/// ```
+/// let result = add(5, 3);
+/// assert(result == 8);
+/// ```
+/// @since 1.0.0
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+/// Sample struct with documentation
+/// Represents a point in 2D space
+///
+/// @example
+/// ```
+/// let p = Point { x: 10, y: 20 };
+/// print("Point: ({}, {})", p.x, p.y);
+/// ```
+/// @since 1.0.0
+struct Point {
+    /// X coordinate
+    x: f64,
+    /// Y coordinate
+    y: f64,
+}
+
+// Test documentation parser
+fn test_parser() {
+    print("Testing documentation parser...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    // Parse this file
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    print("Found {} documented items", items.len);
+    assert(items.len >= 2); // add function and Point struct
+
+    for (items) |item| {
+        print("- {}: {}", item.name, item.description);
+
+        if (item.params.len > 0) {
+            print("  Parameters:");
+            for (item.params) |param| {
+                print("    - {}: {}", param.name, param.description);
+            }
+        }
+    }
+}
+
+// Test HTML generator
+fn test_html_generation() {
+    print("Testing HTML generation...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let html_gen = docgen.HTMLGenerator.init(allocator, "docs/html", "Test Documentation");
+    html_gen.generate(items);
+
+    print("HTML documentation generated in docs/html/");
+    print("Files created:");
+    print("- index.html");
+    print("- style.css");
+    print("- search.js");
+    print("- *.html (for each item)");
+}
+
+// Test Markdown generator
+fn test_markdown_generation() {
+    print("Testing Markdown generation...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let md_gen = docgen.MarkdownGenerator.init(allocator, "docs/markdown", "Test Documentation");
+    md_gen.generate(items);
+
+    print("Markdown documentation generated in docs/markdown/");
+    print("Files created:");
+    print("- README.md");
+    print("- SUMMARY.md");
+    print("- *.md (for each item)");
+}
+
+// Test API reference generator
+fn test_api_reference() {
+    print("Testing API reference generation...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let api_gen = docgen.APIReferenceGenerator.init(allocator);
+    let reference = api_gen.generateReference(items, "Test API");
+    defer allocator.free(reference);
+
+    print("API Reference generated ({} bytes)", reference.len);
+    print("Preview:");
+    print("{s}", reference[0..@min(500, reference.len)]);
+}
+
+// Test search indexer
+fn test_search_indexing() {
+    print("Testing search indexing...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let indexer = docgen.SearchIndexer.init(allocator);
+    defer indexer.deinit();
+
+    indexer.buildIndex(items);
+
+    // Test search
+    let results = indexer.search("add", 10);
+    defer allocator.free(results);
+
+    print("Search results for 'add': {}", results.len);
+    for (results) |result| {
+        let doc = indexer.documents.items[result.document_id];
+        print("- {} (score: {d:.2})", doc.name, result.score);
+    }
+
+    // Test autocomplete
+    let suggestions = indexer.autocomplete("ad", 5);
+    defer allocator.free(suggestions);
+
+    print("Autocomplete suggestions for 'ad':");
+    for (suggestions) |suggestion| {
+        print("- {s}", suggestion);
+    }
+}
+
+// Test fuzzy search
+fn test_fuzzy_search() {
+    print("Testing fuzzy search...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let indexer = docgen.SearchIndexer.init(allocator);
+    defer indexer.deinit();
+
+    indexer.buildIndex(items);
+
+    // Test with typo: "pont" instead of "point"
+    let results = indexer.search("pont", 10);
+    defer allocator.free(results);
+
+    print("Fuzzy search results for 'pont' (typo):");
+    for (results) |result| {
+        let doc = indexer.documents.items[result.document_id];
+        print("- {} (score: {d:.2})", doc.name, result.score);
+    }
+
+    assert(results.len > 0); // Should find "Point" despite typo
+}
+
+// Test syntax highlighter
+fn test_syntax_highlighting() {
+    print("Testing syntax highlighting...");
+
+    let allocator = std.heap.page_allocator;
+
+    let code =
+        \\fn greet(name: []const u8) void {
+        \\    // Print a greeting
+        \\    print("Hello, {}!", name);
+        \\}
+    ;
+
+    // Test with Home/Zig syntax
+    let highlighter = docgen.SyntaxHighlighter.init(allocator, .home);
+    highlighter.color_scheme = .github_light;
+
+    let tokens = highlighter.tokenize(code);
+    defer allocator.free(tokens);
+
+    print("Tokenized into {} tokens", tokens.len);
+
+    // Convert to HTML
+    let html = highlighter.toHTML(tokens);
+    defer allocator.free(html);
+
+    print("HTML output ({} bytes):", html.len);
+    print("{s}", html);
+
+    // Convert to ANSI
+    let ansi = highlighter.toANSI(tokens);
+    defer allocator.free(ansi);
+
+    print("\nANSI colored output:");
+    print("{s}", ansi);
+}
+
+// Test different color schemes
+fn test_color_schemes() {
+    print("Testing different color schemes...");
+
+    let allocator = std.heap.page_allocator;
+    let code = "const value: i32 = 42;";
+
+    let schemes = [_]docgen.SyntaxHighlighter.ColorScheme{
+        .github_light,
+        .github_dark,
+        .monokai,
+        .solarized_light,
+        .solarized_dark,
+    };
+
+    for (schemes) |scheme| {
+        print("\nColor scheme: {}", scheme);
+
+        let highlighter = docgen.SyntaxHighlighter.init(allocator, .home);
+        highlighter.color_scheme = scheme;
+
+        let css = highlighter.generateCSS();
+        defer allocator.free(css);
+
+        print("CSS rules:");
+        print("{s}", css[0..@min(200, css.len)]);
+    }
+}
+
+// Test code block highlighter
+fn test_code_block_highlighting() {
+    print("Testing code block highlighting...");
+
+    let allocator = std.heap.page_allocator;
+
+    let html_with_code =
+        \\<h1>Example</h1>
+        \\<code class="language-zig">
+        \\const x = 10;
+        \\</code>
+        \\<p>More text</p>
+    ;
+
+    let highlighter = docgen.CodeBlockHighlighter.init(allocator);
+    let processed = highlighter.processHTML(html_with_code);
+    defer allocator.free(processed);
+
+    print("Processed HTML:");
+    print("{s}", processed);
+}
+
+// Test complete documentation generation
+fn test_complete_generation() {
+    print("Testing complete documentation generation...");
+
+    let allocator = std.heap.page_allocator;
+
+    let config = docgen.DocumentationGenerator.Config{
+        .title = "Complete Test Documentation",
+        .output_dir = "docs/complete",
+        .generate_html = true,
+        .generate_markdown = true,
+        .enable_search = true,
+        .enable_syntax_highlighting = true,
+        .color_scheme = .github_light,
+    };
+
+    let doc_gen = docgen.DocumentationGenerator.init(allocator, config);
+    defer doc_gen.deinit();
+
+    // Generate from files
+    let files = [_][]const u8{
+        "examples/test_docgen_complete.home",
+    };
+
+    doc_gen.generateFromFiles(&files);
+
+    print("Complete documentation generated!");
+    print("Output directory: {s}", config.output_dir);
+    print("Generated files:");
+    print("- HTML documentation with search");
+    print("- Markdown documentation");
+    print("- Search index (JSON)");
+    print("- Enhanced search JavaScript");
+    print("- Syntax highlighting CSS");
+}
+
+// Test search index export
+fn test_search_export() {
+    print("Testing search index export...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let indexer = docgen.SearchIndexer.init(allocator);
+    defer indexer.deinit();
+
+    indexer.buildIndex(items);
+
+    let json = indexer.exportToJSON();
+    defer allocator.free(json);
+
+    print("Search index JSON ({} bytes):", json.len);
+    print("{s}", json[0..@min(500, json.len)]);
+}
+
+// Test changelog generation
+fn test_changelog() {
+    print("Testing changelog generation...");
+
+    let allocator = std.heap.page_allocator;
+    let parser = docgen.DocParser.init(allocator);
+    defer parser.deinit();
+
+    let items = parser.parseFile("examples/test_docgen_complete.home");
+    defer {
+        for (items) |item| {
+            item.deinit(allocator);
+        }
+        allocator.free(items);
+    }
+
+    let changelog_gen = docgen.ChangelogGenerator.init(allocator);
+    let changelog = changelog_gen.generateChangelog(items);
+    defer allocator.free(changelog);
+
+    print("Changelog generated ({} bytes):", changelog.len);
+    print("{s}", changelog);
+}
+
+fn main() {
+    print("=== Documentation Generator Complete Tests ===\n");
+
+    // Parser tests
+    test_parser();
+
+    // Generator tests
+    test_html_generation();
+    test_markdown_generation();
+    test_api_reference();
+
+    // Search tests
+    test_search_indexing();
+    test_fuzzy_search();
+    test_search_export();
+
+    // Syntax highlighting tests
+    test_syntax_highlighting();
+    test_color_schemes();
+    test_code_block_highlighting();
+
+    // Integration tests
+    test_complete_generation();
+    test_changelog();
+
+    print("\n=== All documentation generator tests passed! ===");
+}
