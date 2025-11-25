@@ -44,6 +44,8 @@ pub const CodegenError = error{
     ContinueOutsideLoop,
     /// Label not found for labeled break/continue
     LabelNotFound,
+    /// Stack offset calculation overflowed i32 bounds
+    StackOffsetOverflow,
 } || std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError;
 
 /// Maximum number of local variables per function.
@@ -3269,7 +3271,13 @@ pub const NativeCodegen = struct {
 
                 // Update the stack with current iterator value
                 // Stack offset calculation: [rbp - (offset + 1) * 8]
-                const stack_offset: i32 = -@as(i32, @intCast((iterator_offset + 1) * 8));
+                const offset_bytes = (iterator_offset + 1) * 8;
+                // Check for overflow before casting to i32
+                if (offset_bytes > std.math.maxInt(i31)) {
+                    std.debug.print("Stack offset too large: {d}\n", .{offset_bytes});
+                    return error.StackOffsetOverflow;
+                }
+                const stack_offset: i32 = -@as(i32, @intCast(offset_bytes));
                 try self.assembler.movMemReg(.rbp, stack_offset, .r8);
 
                 // Compare iterator (r8) with end (r9)
