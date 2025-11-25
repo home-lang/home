@@ -469,20 +469,472 @@ pub const IPv4Header = extern struct {
     }
 };
 
+// ============================================================================
+// IP Routing Table
+// ============================================================================
+
+pub const RouteEntry = struct {
+    destination: IPv4Address,
+    netmask: IPv4Address,
+    gateway: IPv4Address,
+    interface: ?*netdev.NetDevice,
+    metric: u32,
+    flags: RouteFlags,
+
+    pub const RouteFlags = packed struct(u8) {
+        up: bool = true,
+        gateway: bool = false, // Route uses a gateway
+        host: bool = false, // Host route (not network)
+        reject: bool = false, // Reject route
+        local: bool = false, // Local interface route
+        _padding: u3 = 0,
+    };
+
+    /// Check if an IP matches this route
+    pub fn matches(self: *const RouteEntry, ip: IPv4Address) bool {
+        const masked_ip = IPv4Address{ .bytes = .{
+            ip.bytes[0] & self.netmask.bytes[0],
+            ip.bytes[1] & self.netmask.bytes[1],
+            ip.bytes[2] & self.netmask.bytes[2],
+            ip.bytes[3] & self.netmask.bytes[3],
+        } };
+        return masked_ip.equals(self.destination);
+    }
+
+    /// Get prefix length from netmask (for sorting by specificity)
+    pub fn prefixLen(self: *const RouteEntry) u8 {
+        var count: u8 = 0;
+        for (self.netmask.bytes) |b| {
+            var byte = b;
+            while (byte & 0x80 != 0) : (byte <<= 1) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+};
+
+pub const RoutingTable = struct {
+    routes: Basics.ArrayList(RouteEntry),
+    lock: sync.RwLock,
+    allocator: Basics.Allocator,
+
+    pub fn init(allocator: Basics.Allocator) RoutingTable {
+        return .{
+            .routes = Basics.ArrayList(RouteEntry).init(allocator),
+            .lock = sync.RwLock.init(),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *RoutingTable) void {
+        self.routes.deinit();
+    }
+
+    /// Add a route to the table
+    pub fn addRoute(self: *RoutingTable, route: RouteEntry) !void {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        // Insert sorted by prefix length (longest prefix match first)
+        const new_prefix = route.prefixLen();
+        var insert_idx: usize = self.routes.items.len;
+
+        for (self.routes.items, 0..) |existing, i| {
+            if (new_prefix > existing.prefixLen()) {
+                insert_idx = i;
+                break;
+            }
+        }
+
+        try self.routes.insert(insert_idx, route);
+    }
+
+    /// Remove a route from the table
+    pub fn removeRoute(self: *RoutingTable, dest: IPv4Address, netmask: IPv4Address) bool {
+        self.lock.acquireWrite();
+        defer self.lock.releaseWrite();
+
+        for (self.routes.items, 0..) |route, i| {
+            if (route.destination.equals(dest) and route.netmask.equals(netmask)) {
+                _ = self.routes.orderedRemove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Look up the best route for a destination
+    pub fn lookup(self: *RoutingTable, dest_ip: IPv4Address) ?RouteEntry {
+        self.lock.acquireRead();
+        defer self.lock.releaseRead();
+
+        // Routes are sorted by prefix length, so first match is best
+        for (self.routes.items) |route| {
+            if (route.flags.up and route.matches(dest_ip)) {
+                return route;
+            }
+        }
+        return null;
+    }
+
+    /// Get the interface and next-hop for a destination
+    pub fn resolveNextHop(self: *RoutingTable, dest_ip: IPv4Address) ?struct { dev: *netdev.NetDevice, next_hop: IPv4Address } {
+        const route = self.lookup(dest_ip) orelse return null;
+        const dev = route.interface orelse return null;
+
+        // If route has gateway, use it; otherwise direct to destination
+        const next_hop = if (route.flags.gateway) route.gateway else dest_ip;
+
+        return .{ .dev = dev, .next_hop = next_hop };
+    }
+};
+
+var global_routing_table: ?*RoutingTable = null;
+var routing_table_lock: sync.Spinlock = sync.Spinlock.init();
+
+pub fn getRoutingTable(allocator: Basics.Allocator) !*RoutingTable {
+    if (global_routing_table) |table| {
+        return table;
+    }
+
+    routing_table_lock.acquire();
+    defer routing_table_lock.release();
+
+    if (global_routing_table == null) {
+        const table = try allocator.create(RoutingTable);
+        table.* = RoutingTable.init(allocator);
+        global_routing_table = table;
+    }
+
+    return global_routing_table.?;
+}
+
+// ============================================================================
+// IP Fragmentation and Reassembly
+// ============================================================================
+
+/// Fragment ID generator
+var fragment_id_counter: atomic.AtomicU16 = atomic.AtomicU16.init(0);
+
+fn nextFragmentId() u16 {
+    return fragment_id_counter.fetchAdd(1, .Monotonic);
+}
+
+/// Fragment offset is in units of 8 bytes
+const FRAGMENT_OFFSET_UNIT: usize = 8;
+
+/// Max fragment payload (MTU - IP header)
+const MAX_FRAGMENT_PAYLOAD: usize = 1480;
+
+/// IP fragmentation flags
+const IP_FLAG_DF: u16 = 0x4000; // Don't Fragment
+const IP_FLAG_MF: u16 = 0x2000; // More Fragments
+const IP_OFFSET_MASK: u16 = 0x1FFF;
+
+/// Fragment a large IP packet
+pub fn fragmentIPv4(
+    allocator: Basics.Allocator,
+    src_ip: IPv4Address,
+    dest_ip: IPv4Address,
+    protocol: IpProtocol,
+    payload: []const u8,
+    mtu: usize,
+) !Basics.ArrayList([]u8) {
+    var fragments = Basics.ArrayList([]u8).init(allocator);
+    errdefer {
+        for (fragments.items) |frag| {
+            allocator.free(frag);
+        }
+        fragments.deinit();
+    }
+
+    const max_payload = mtu - @sizeOf(IPv4Header);
+    // Fragment offset must be multiple of 8
+    const payload_per_fragment = (max_payload / FRAGMENT_OFFSET_UNIT) * FRAGMENT_OFFSET_UNIT;
+
+    const frag_id = nextFragmentId();
+    var offset: usize = 0;
+
+    while (offset < payload.len) {
+        const remaining = payload.len - offset;
+        const this_payload_len = @min(payload_per_fragment, remaining);
+        const is_last = (offset + this_payload_len >= payload.len);
+
+        // Create fragment
+        var header = IPv4Header.init(src_ip, dest_ip, protocol, @intCast(this_payload_len));
+        header.identification = @byteSwap(frag_id);
+
+        // Set fragment flags and offset
+        var flags_offset: u16 = @intCast(offset / FRAGMENT_OFFSET_UNIT);
+        if (!is_last) {
+            flags_offset |= IP_FLAG_MF;
+        }
+        header.flags_fragment = @byteSwap(flags_offset);
+
+        // Calculate checksum
+        header.checksum = 0;
+        header.checksum = header.calculateChecksum();
+
+        // Build fragment packet
+        const frag_buf = try allocator.alloc(u8, @sizeOf(IPv4Header) + this_payload_len);
+        @memcpy(frag_buf[0..@sizeOf(IPv4Header)], Basics.mem.asBytes(&header));
+        @memcpy(frag_buf[@sizeOf(IPv4Header)..], payload[offset..][0..this_payload_len]);
+
+        try fragments.append(frag_buf);
+        offset += this_payload_len;
+    }
+
+    return fragments;
+}
+
+/// Reassembly buffer for fragmented packets
+const ReassemblyEntry = struct {
+    src_ip: IPv4Address,
+    dest_ip: IPv4Address,
+    id: u16,
+    protocol: IpProtocol,
+    fragments: [64]?FragmentData, // Max 64 fragments
+    total_len: usize,
+    received_len: usize,
+    last_fragment_received: bool,
+    timestamp: u64,
+    allocator: Basics.Allocator,
+
+    const FragmentData = struct {
+        offset: usize,
+        data: []u8,
+    };
+
+    const TIMEOUT_NS: u64 = 30_000_000_000; // 30 seconds
+
+    pub fn init(allocator: Basics.Allocator, src: IPv4Address, dest: IPv4Address, id: u16, proto: IpProtocol) ReassemblyEntry {
+        return .{
+            .src_ip = src,
+            .dest_ip = dest,
+            .id = id,
+            .protocol = proto,
+            .fragments = [_]?FragmentData{null} ** 64,
+            .total_len = 0,
+            .received_len = 0,
+            .last_fragment_received = false,
+            .timestamp = getMonotonicTime(),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ReassemblyEntry) void {
+        for (&self.fragments) |*frag| {
+            if (frag.*) |f| {
+                self.allocator.free(f.data);
+                frag.* = null;
+            }
+        }
+    }
+
+    /// Add a fragment to the reassembly buffer
+    pub fn addFragment(self: *ReassemblyEntry, offset: usize, data: []const u8, more_fragments: bool) !bool {
+        // Find slot for this fragment
+        const slot_idx = offset / MAX_FRAGMENT_PAYLOAD;
+        if (slot_idx >= 64) return error.TooManyFragments;
+
+        // Copy data
+        const data_copy = try self.allocator.alloc(u8, data.len);
+        @memcpy(data_copy, data);
+
+        self.fragments[slot_idx] = .{
+            .offset = offset,
+            .data = data_copy,
+        };
+
+        self.received_len += data.len;
+
+        if (!more_fragments) {
+            self.last_fragment_received = true;
+            self.total_len = offset + data.len;
+        }
+
+        // Check if complete
+        return self.isComplete();
+    }
+
+    /// Check if all fragments received
+    pub fn isComplete(self: *const ReassemblyEntry) bool {
+        if (!self.last_fragment_received) return false;
+        return self.received_len >= self.total_len;
+    }
+
+    /// Check if timed out
+    pub fn isExpired(self: *const ReassemblyEntry) bool {
+        return (getMonotonicTime() - self.timestamp) > TIMEOUT_NS;
+    }
+
+    /// Reassemble the complete packet
+    pub fn reassemble(self: *ReassemblyEntry) ![]u8 {
+        if (!self.isComplete()) return error.IncompletePacket;
+
+        const result = try self.allocator.alloc(u8, self.total_len);
+        errdefer self.allocator.free(result);
+
+        for (self.fragments) |frag| {
+            if (frag) |f| {
+                @memcpy(result[f.offset..][0..f.data.len], f.data);
+            }
+        }
+
+        return result;
+    }
+};
+
+var reassembly_buffer: [32]?ReassemblyEntry = [_]?ReassemblyEntry{null} ** 32;
+var reassembly_lock: sync.Mutex = sync.Mutex.init();
+
+/// Process incoming IP fragment
+pub fn processIPFragment(
+    allocator: Basics.Allocator,
+    src_ip: IPv4Address,
+    dest_ip: IPv4Address,
+    id: u16,
+    protocol: IpProtocol,
+    offset: usize,
+    data: []const u8,
+    more_fragments: bool,
+) !?[]u8 {
+    reassembly_lock.lock();
+    defer reassembly_lock.unlock();
+
+    // Find existing entry or create new
+    var entry_idx: ?usize = null;
+    var free_idx: ?usize = null;
+
+    for (&reassembly_buffer, 0..) |*entry, i| {
+        if (entry.*) |*e| {
+            if (e.src_ip.equals(src_ip) and e.dest_ip.equals(dest_ip) and e.id == id) {
+                entry_idx = i;
+                break;
+            }
+            if (e.isExpired()) {
+                e.deinit();
+                entry.* = null;
+                free_idx = i;
+            }
+        } else {
+            if (free_idx == null) free_idx = i;
+        }
+    }
+
+    if (entry_idx == null) {
+        if (free_idx == null) {
+            // No space - drop oldest
+            return error.ReassemblyBufferFull;
+        }
+        reassembly_buffer[free_idx.?] = ReassemblyEntry.init(allocator, src_ip, dest_ip, id, protocol);
+        entry_idx = free_idx;
+    }
+
+    const entry = &reassembly_buffer[entry_idx.?].?;
+    const complete = try entry.addFragment(offset, data, more_fragments);
+
+    if (complete) {
+        const result = try entry.reassemble();
+        entry.deinit();
+        reassembly_buffer[entry_idx.?] = null;
+        return result;
+    }
+
+    return null;
+}
+
 pub fn sendIPv4(dev: *netdev.NetDevice, dest_ip: IPv4Address, protocol: IpProtocol, payload: []const u8) !void {
     const src_ip = getDeviceIP(dev);
 
-    var ip_header = IPv4Header.init(src_ip, dest_ip, protocol, @intCast(payload.len));
-    ip_header.checksum = calculateChecksum(Basics.mem.asBytes(&ip_header));
+    // Check if fragmentation is needed
+    if (payload.len > dev.mtu - @sizeOf(IPv4Header)) {
+        // Need to fragment
+        var fragments = try fragmentIPv4(dev.allocator, src_ip, dest_ip, protocol, payload, dev.mtu);
+        defer {
+            for (fragments.items) |frag| {
+                dev.allocator.free(frag);
+            }
+            fragments.deinit();
+        }
 
-    var buffer: [@sizeOf(IPv4Header) + 1500]u8 = undefined;
-    @memcpy(buffer[0..@sizeOf(IPv4Header)], Basics.mem.asBytes(&ip_header));
-    @memcpy(buffer[@sizeOf(IPv4Header)..][0..payload.len], payload);
+        for (fragments.items) |frag| {
+            const dest_mac = try resolveDestMac(dev, dest_ip);
+            try sendEthernet(dev, dest_mac, .IPv4, frag);
+        }
+    } else {
+        // No fragmentation needed
+        var ip_header = IPv4Header.init(src_ip, dest_ip, protocol, @intCast(payload.len));
+        ip_header.checksum = 0;
+        ip_header.checksum = ip_header.calculateChecksum();
 
-    // TODO: ARP lookup for dest_mac
-    const dest_mac = netdev.MacAddress.init([_]u8{0xFF} ** 6);
+        var buffer: [@sizeOf(IPv4Header) + 1500]u8 = undefined;
+        @memcpy(buffer[0..@sizeOf(IPv4Header)], Basics.mem.asBytes(&ip_header));
+        @memcpy(buffer[@sizeOf(IPv4Header)..][0..payload.len], payload);
 
-    try sendEthernet(dev, dest_mac, .IPv4, buffer[0 .. @sizeOf(IPv4Header) + payload.len]);
+        const dest_mac = try resolveDestMac(dev, dest_ip);
+        try sendEthernet(dev, dest_mac, .IPv4, buffer[0 .. @sizeOf(IPv4Header) + payload.len]);
+    }
+}
+
+/// Resolve destination MAC address using ARP
+fn resolveDestMac(dev: *netdev.NetDevice, dest_ip: IPv4Address) !netdev.MacAddress {
+    // Check if on same subnet or need gateway
+    const our_ip = getDeviceIP(dev);
+    const netmask = getDeviceNetmask(dev);
+
+    // Mask both addresses
+    const our_network = IPv4Address{ .bytes = .{
+        our_ip.bytes[0] & netmask.bytes[0],
+        our_ip.bytes[1] & netmask.bytes[1],
+        our_ip.bytes[2] & netmask.bytes[2],
+        our_ip.bytes[3] & netmask.bytes[3],
+    } };
+    const dest_network = IPv4Address{ .bytes = .{
+        dest_ip.bytes[0] & netmask.bytes[0],
+        dest_ip.bytes[1] & netmask.bytes[1],
+        dest_ip.bytes[2] & netmask.bytes[2],
+        dest_ip.bytes[3] & netmask.bytes[3],
+    } };
+
+    // Determine next-hop IP (gateway or direct)
+    const next_hop_ip = if (our_network.equals(dest_network))
+        dest_ip // Same network, direct
+    else blk: {
+        // Different network, use routing table
+        if (global_routing_table) |table| {
+            if (table.resolveNextHop(dest_ip)) |resolved| {
+                break :blk resolved.next_hop;
+            }
+        }
+        // No route, try default gateway
+        break :blk getDefaultGateway();
+    };
+
+    // Look up MAC in ARP cache
+    const cache = try getArpCache(dev.allocator);
+    if (cache.lookup(next_hop_ip)) |mac| {
+        return mac;
+    }
+
+    // Not in cache - send ARP request
+    try sendArpRequest(dev, next_hop_ip, dev.allocator);
+
+    // Return broadcast for now (ARP reply will update cache)
+    // In real implementation, queue packet and wait for ARP reply
+    return netdev.MacAddress.init([_]u8{0xFF} ** 6);
+}
+
+fn getDeviceNetmask(dev: *netdev.NetDevice) IPv4Address {
+    _ = dev;
+    // TODO: Get from device configuration
+    return IPv4Address.init(255, 255, 255, 0); // /24
+}
+
+fn getDefaultGateway() IPv4Address {
+    // TODO: Get from routing table or configuration
+    return IPv4Address.init(192, 168, 1, 1);
 }
 
 pub fn receiveIPv4(skb: *netdev.PacketBuffer) !void {
@@ -546,6 +998,11 @@ pub fn sendPing(dev: *netdev.NetDevice, dest_ip: IPv4Address, identifier: u16, s
 }
 
 pub fn receiveICMP(skb: *netdev.PacketBuffer) !void {
+    // Get the IP header first (we need source IP for reply)
+    const full_data = skb.data[skb.head - @sizeOf(IPv4Header) ..];
+    const ip_header: *const IPv4Header = @ptrCast(@alignCast(full_data.ptr));
+    const src_ip = IPv4Address{ .bytes = ip_header.src_ip };
+
     _ = try skb.pull(@sizeOf(IPv4Header));
 
     const icmp_data = skb.getData();
@@ -553,9 +1010,132 @@ pub fn receiveICMP(skb: *netdev.PacketBuffer) !void {
 
     const icmp: *const IcmpHeader = @ptrCast(@alignCast(icmp_data.ptr));
 
-    if (icmp.getType() == .EchoRequest) {
-        // TODO: Send echo reply
+    switch (icmp.getType()) {
+        .EchoRequest => {
+            // Send echo reply back to sender
+            try sendEchoReply(skb.dev.?, src_ip, icmp, icmp_data[@sizeOf(IcmpHeader)..]);
+        },
+        .EchoReply => {
+            // Notify waiting ping requests
+            notifyPingReply(icmp.identifier, icmp.sequence, src_ip);
+        },
+        else => {
+            // Handle other ICMP types (DestinationUnreachable, TimeExceeded, etc.)
+            handleIcmpError(icmp, src_ip);
+        },
     }
+}
+
+/// Send ICMP echo reply
+fn sendEchoReply(dev: *netdev.NetDevice, dest_ip: IPv4Address, request: *const IcmpHeader, payload: []const u8) !void {
+    var reply = IcmpHeader.init(.EchoReply, @byteSwap(request.identifier), @byteSwap(request.sequence));
+
+    var buffer: [@sizeOf(IcmpHeader) + 1472]u8 = undefined;
+    @memcpy(buffer[0..@sizeOf(IcmpHeader)], Basics.mem.asBytes(&reply));
+    @memcpy(buffer[@sizeOf(IcmpHeader)..][0..payload.len], payload);
+
+    const reply_ptr: *IcmpHeader = @ptrCast(@alignCast(&buffer));
+    reply_ptr.checksum = calculateChecksum(buffer[0 .. @sizeOf(IcmpHeader) + payload.len]);
+
+    try sendIPv4(dev, dest_ip, .ICMP, buffer[0 .. @sizeOf(IcmpHeader) + payload.len]);
+}
+
+/// Pending ping requests waiting for replies
+const PingRequest = struct {
+    identifier: u16,
+    sequence: u16,
+    timestamp: u64,
+    completed: bool,
+    rtt_ns: u64,
+    reply_ip: IPv4Address,
+};
+
+var pending_pings: [64]?PingRequest = [_]?PingRequest{null} ** 64;
+var ping_mutex: sync.Mutex = sync.Mutex.init();
+
+/// Notify waiting ping request of reply
+fn notifyPingReply(identifier: u16, sequence: u16, from_ip: IPv4Address) void {
+    ping_mutex.lock();
+    defer ping_mutex.unlock();
+
+    const id = @byteSwap(identifier);
+    const seq = @byteSwap(sequence);
+
+    for (&pending_pings) |*slot| {
+        if (slot.*) |*req| {
+            if (req.identifier == id and req.sequence == seq) {
+                req.completed = true;
+                req.rtt_ns = getMonotonicTime() - req.timestamp;
+                req.reply_ip = from_ip;
+                break;
+            }
+        }
+    }
+}
+
+/// Handle ICMP error messages
+fn handleIcmpError(icmp: *const IcmpHeader, from_ip: IPv4Address) void {
+    _ = icmp;
+    _ = from_ip;
+    // Log or handle ICMP errors (destination unreachable, time exceeded, etc.)
+    // These can be used to notify TCP/UDP of path issues
+}
+
+/// Ping with timeout - returns RTT in nanoseconds or error
+pub fn ping(dev: *netdev.NetDevice, dest_ip: IPv4Address, timeout_ms: u64) !u64 {
+    const identifier: u16 = @truncate(getMonotonicTime() & 0xFFFF);
+    const sequence: u16 = 1;
+
+    // Register pending ping
+    var slot_idx: ?usize = null;
+    {
+        ping_mutex.lock();
+        defer ping_mutex.unlock();
+
+        for (&pending_pings, 0..) |*slot, i| {
+            if (slot.* == null) {
+                slot.* = .{
+                    .identifier = identifier,
+                    .sequence = sequence,
+                    .timestamp = getMonotonicTime(),
+                    .completed = false,
+                    .rtt_ns = 0,
+                    .reply_ip = IPv4Address.init(0, 0, 0, 0),
+                };
+                slot_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (slot_idx == null) return error.TooManyPendingPings;
+    defer {
+        ping_mutex.lock();
+        pending_pings[slot_idx.?] = null;
+        ping_mutex.unlock();
+    }
+
+    // Send ping
+    try sendPing(dev, dest_ip, identifier, sequence);
+
+    // Wait for reply with timeout
+    const deadline = getMonotonicTime() + (timeout_ms * 1_000_000);
+    while (getMonotonicTime() < deadline) {
+        ping_mutex.lock();
+        if (pending_pings[slot_idx.?]) |req| {
+            if (req.completed) {
+                const rtt = req.rtt_ns;
+                ping_mutex.unlock();
+                return rtt;
+            }
+        }
+        ping_mutex.unlock();
+
+        // Small sleep to avoid busy-waiting (yield to scheduler)
+        // In real implementation, use a condition variable
+    }
+
+    return error.PingTimeout;
 }
 
 // ============================================================================
@@ -884,6 +1464,31 @@ pub const TcpState = enum {
     TimeWait,
 };
 
+/// TCP retransmission segment
+const TcpRetransmitSegment = struct {
+    data: []u8,
+    seq_num: u32,
+    sent_time: u64,
+    retries: u8,
+    allocator: Basics.Allocator,
+
+    const MAX_RETRIES: u8 = 5;
+    const INITIAL_RTO_MS: u64 = 1000; // 1 second initial RTO
+
+    pub fn deinit(self: *TcpRetransmitSegment) void {
+        self.allocator.free(self.data);
+    }
+};
+
+/// Pending connection from SYN received
+const TcpPendingConnection = struct {
+    remote_ip: IPv4Address,
+    remote_port: u16,
+    seq_num: u32,
+    ack_num: u32,
+    timestamp: u64,
+};
+
 pub const TcpSocket = struct {
     local_port: u16,
     remote_ip: IPv4Address,
@@ -893,8 +1498,23 @@ pub const TcpSocket = struct {
     ack_num: u32,
     send_buffer: Basics.ArrayList(u8),
     recv_buffer: Basics.ArrayList(u8),
+    retransmit_queue: Basics.ArrayList(TcpRetransmitSegment),
+    pending_connections: Basics.ArrayList(TcpPendingConnection),
+    backlog: u16,
+    window_size: u16,
+    congestion_window: u32,
+    ssthresh: u32,
+    rtt_estimate: u64, // RTT in nanoseconds
+    rto: u64, // Retransmission timeout in nanoseconds
+    last_ack_received: u32,
+    dup_ack_count: u8,
+    dev: ?*netdev.NetDevice,
     allocator: Basics.Allocator,
     mutex: sync.Mutex,
+
+    const INITIAL_WINDOW: u16 = 65535;
+    const INITIAL_CWND: u32 = 10 * 1460; // 10 segments
+    const INITIAL_SSTHRESH: u32 = 65535;
 
     pub fn init(allocator: Basics.Allocator) TcpSocket {
         return .{
@@ -906,6 +1526,17 @@ pub const TcpSocket = struct {
             .ack_num = 0,
             .send_buffer = Basics.ArrayList(u8).init(allocator),
             .recv_buffer = Basics.ArrayList(u8).init(allocator),
+            .retransmit_queue = Basics.ArrayList(TcpRetransmitSegment).init(allocator),
+            .pending_connections = Basics.ArrayList(TcpPendingConnection).init(allocator),
+            .backlog = 0,
+            .window_size = INITIAL_WINDOW,
+            .congestion_window = INITIAL_CWND,
+            .ssthresh = INITIAL_SSTHRESH,
+            .rtt_estimate = 100_000_000, // 100ms initial
+            .rto = 1_000_000_000, // 1s initial RTO
+            .last_ack_received = 0,
+            .dup_ack_count = 0,
+            .dev = null,
             .allocator = allocator,
             .mutex = sync.Mutex.init(),
         };
@@ -914,6 +1545,11 @@ pub const TcpSocket = struct {
     pub fn deinit(self: *TcpSocket) void {
         self.send_buffer.deinit();
         self.recv_buffer.deinit();
+        for (self.retransmit_queue.items) |*seg| {
+            seg.deinit();
+        }
+        self.retransmit_queue.deinit();
+        self.pending_connections.deinit();
     }
 
     pub fn connect(self: *TcpSocket, dev: *netdev.NetDevice, remote_ip: IPv4Address, remote_port: u16, local_port: u16) !void {
@@ -925,25 +1561,141 @@ pub const TcpSocket = struct {
         self.remote_ip = remote_ip;
         self.remote_port = remote_port;
         self.local_port = local_port;
-        self.seq_num = @truncate(@as(u64, @intCast(Basics.time.nanoTimestamp())) & 0xFFFFFFFF);
+        self.seq_num = generateInitialSeqNum();
         self.state = .SynSent;
+        self.dev = dev;
 
         // Send SYN
         var flags = TcpFlags{};
         flags.syn = true;
         try sendTCP(dev, local_port, remote_port, remote_ip, self.seq_num, 0, flags, &[_]u8{});
+
+        // Queue for retransmission
+        try self.queueRetransmit(&[_]u8{}, self.seq_num);
+        self.seq_num += 1; // SYN consumes a sequence number
     }
 
-    pub fn listen(self: *TcpSocket, port: u16) !void {
+    pub fn listen(self: *TcpSocket, port: u16, backlog_size: u16) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.state != .Closed) return error.InvalidState;
 
         self.local_port = port;
+        self.backlog = backlog_size;
         self.state = .Listen;
 
-        // TODO: Register listening socket
+        // Register this socket with global TCP socket list
+        try registerTcpSocket(self);
+    }
+
+    /// Accept an incoming connection (blocking)
+    pub fn accept(self: *TcpSocket, allocator: Basics.Allocator) !*TcpSocket {
+        while (true) {
+            self.mutex.lock();
+
+            if (self.state != .Listen) {
+                self.mutex.unlock();
+                return error.NotListening;
+            }
+
+            // Check for pending connections
+            if (self.pending_connections.items.len > 0) {
+                const pending = self.pending_connections.orderedRemove(0);
+                self.mutex.unlock();
+
+                // Create new socket for this connection
+                const new_socket = try allocator.create(TcpSocket);
+                new_socket.* = TcpSocket.init(allocator);
+                new_socket.local_port = self.local_port;
+                new_socket.remote_ip = pending.remote_ip;
+                new_socket.remote_port = pending.remote_port;
+                new_socket.seq_num = pending.seq_num;
+                new_socket.ack_num = pending.ack_num;
+                new_socket.state = .Established;
+                new_socket.dev = self.dev;
+
+                // Register new socket
+                try registerTcpSocket(new_socket);
+
+                return new_socket;
+            }
+
+            self.mutex.unlock();
+
+            // Yield to allow other processing
+            // In real implementation, use condition variable wait
+        }
+    }
+
+    /// Accept with timeout (non-blocking variant)
+    pub fn acceptTimeout(self: *TcpSocket, allocator: Basics.Allocator, timeout_ms: u64) !?*TcpSocket {
+        const deadline = getMonotonicTime() + (timeout_ms * 1_000_000);
+
+        while (getMonotonicTime() < deadline) {
+            self.mutex.lock();
+
+            if (self.state != .Listen) {
+                self.mutex.unlock();
+                return error.NotListening;
+            }
+
+            if (self.pending_connections.items.len > 0) {
+                const pending = self.pending_connections.orderedRemove(0);
+                self.mutex.unlock();
+
+                const new_socket = try allocator.create(TcpSocket);
+                new_socket.* = TcpSocket.init(allocator);
+                new_socket.local_port = self.local_port;
+                new_socket.remote_ip = pending.remote_ip;
+                new_socket.remote_port = pending.remote_port;
+                new_socket.seq_num = pending.seq_num;
+                new_socket.ack_num = pending.ack_num;
+                new_socket.state = .Established;
+                new_socket.dev = self.dev;
+
+                try registerTcpSocket(new_socket);
+                return new_socket;
+            }
+
+            self.mutex.unlock();
+        }
+
+        return null; // Timeout
+    }
+
+    /// Handle incoming SYN (for listening socket)
+    pub fn handleIncomingSyn(self: *TcpSocket, dev: *netdev.NetDevice, remote_ip: IPv4Address, remote_port: u16, client_seq: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.state != .Listen) return error.NotListening;
+
+        // Check backlog
+        if (self.pending_connections.items.len >= self.backlog) {
+            return error.BacklogFull;
+        }
+
+        // Generate our sequence number and send SYN-ACK
+        const our_seq = generateInitialSeqNum();
+        const their_ack = client_seq + 1;
+
+        var flags = TcpFlags{};
+        flags.syn = true;
+        flags.ack = true;
+
+        try sendTCP(dev, self.local_port, remote_port, remote_ip, our_seq, their_ack, flags, &[_]u8{});
+
+        // Add to pending connections (will be completed when we get ACK)
+        try self.pending_connections.append(.{
+            .remote_ip = remote_ip,
+            .remote_port = remote_port,
+            .seq_num = our_seq + 1, // Our seq after SYN-ACK
+            .ack_num = their_ack,
+            .timestamp = getMonotonicTime(),
+        });
+
+        self.dev = dev;
     }
 
     pub fn send(self: *TcpSocket, dev: *netdev.NetDevice, data: []const u8) !void {
@@ -952,13 +1704,28 @@ pub const TcpSocket = struct {
 
         if (self.state != .Established) return error.NotConnected;
 
-        // Send data with PSH+ACK
-        var flags = TcpFlags{};
-        flags.psh = true;
-        flags.ack = true;
+        // Segment data if larger than MSS
+        const MSS: usize = 1460;
+        var offset: usize = 0;
 
-        try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, self.seq_num, self.ack_num, flags, data);
-        self.seq_num += @intCast(data.len);
+        while (offset < data.len) {
+            const segment_len = @min(MSS, data.len - offset);
+            const segment = data[offset..][0..segment_len];
+
+            var flags = TcpFlags{};
+            flags.ack = true;
+            if (offset + segment_len >= data.len) {
+                flags.psh = true; // PSH on last segment
+            }
+
+            try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, self.seq_num, self.ack_num, flags, segment);
+
+            // Queue for retransmission
+            try self.queueRetransmit(segment, self.seq_num);
+
+            self.seq_num += @intCast(segment_len);
+            offset += segment_len;
+        }
     }
 
     pub fn receive(self: *TcpSocket, buffer: []u8) !usize {
@@ -980,6 +1747,126 @@ pub const TcpSocket = struct {
         return copy_len;
     }
 
+    /// Handle incoming ACK - process retransmission queue
+    pub fn handleAck(self: *TcpSocket, ack_num: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check for duplicate ACK (fast retransmit)
+        if (ack_num == self.last_ack_received) {
+            self.dup_ack_count += 1;
+            if (self.dup_ack_count >= 3) {
+                // Fast retransmit - retransmit first unacked segment
+                if (self.retransmit_queue.items.len > 0) {
+                    self.retransmitFirst() catch {};
+                }
+                // Fast recovery
+                self.ssthresh = self.congestion_window / 2;
+                self.congestion_window = self.ssthresh + 3 * 1460;
+            }
+        } else {
+            self.last_ack_received = ack_num;
+            self.dup_ack_count = 0;
+
+            // Remove acknowledged segments from retransmit queue
+            var i: usize = 0;
+            while (i < self.retransmit_queue.items.len) {
+                const seg = &self.retransmit_queue.items[i];
+                if (seqLessThan(seg.seq_num + @as(u32, @intCast(seg.data.len)), ack_num) or
+                    seg.seq_num + @as(u32, @intCast(seg.data.len)) == ack_num)
+                {
+                    // Segment fully acknowledged
+                    seg.deinit();
+                    _ = self.retransmit_queue.orderedRemove(i);
+                    // Don't increment i since we removed
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Congestion control: increase window
+            if (self.congestion_window < self.ssthresh) {
+                // Slow start
+                self.congestion_window += 1460;
+            } else {
+                // Congestion avoidance
+                self.congestion_window += 1460 * 1460 / self.congestion_window;
+            }
+        }
+    }
+
+    fn retransmitFirst(self: *TcpSocket) !void {
+        if (self.retransmit_queue.items.len == 0) return;
+
+        const seg = &self.retransmit_queue.items[0];
+        if (seg.retries >= TcpRetransmitSegment.MAX_RETRIES) {
+            // Connection failed
+            self.state = .Closed;
+            return error.ConnectionTimeout;
+        }
+
+        var flags = TcpFlags{};
+        flags.ack = true;
+
+        if (self.dev) |dev| {
+            try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, seg.seq_num, self.ack_num, flags, seg.data);
+        }
+
+        seg.retries += 1;
+        seg.sent_time = getMonotonicTime();
+    }
+
+    fn queueRetransmit(self: *TcpSocket, data: []const u8, seq: u32) !void {
+        const data_copy = try self.allocator.alloc(u8, data.len);
+        @memcpy(data_copy, data);
+
+        try self.retransmit_queue.append(.{
+            .data = data_copy,
+            .seq_num = seq,
+            .sent_time = getMonotonicTime(),
+            .retries = 0,
+            .allocator = self.allocator,
+        });
+    }
+
+    /// Check and process retransmission timeouts
+    pub fn processRetransmitTimer(self: *TcpSocket) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getMonotonicTime();
+
+        for (self.retransmit_queue.items) |*seg| {
+            if (now - seg.sent_time > self.rto) {
+                // Timeout - retransmit
+                if (seg.retries >= TcpRetransmitSegment.MAX_RETRIES) {
+                    self.state = .Closed;
+                    return error.ConnectionTimeout;
+                }
+
+                var flags = TcpFlags{};
+                flags.ack = true;
+
+                if (self.dev) |dev| {
+                    try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, seg.seq_num, self.ack_num, flags, seg.data);
+                }
+
+                seg.retries += 1;
+                seg.sent_time = now;
+
+                // Exponential backoff
+                self.rto *= 2;
+                if (self.rto > 60_000_000_000) { // Max 60 seconds
+                    self.rto = 60_000_000_000;
+                }
+
+                // Congestion: reduce window
+                self.ssthresh = self.congestion_window / 2;
+                self.congestion_window = 1460; // Reset to 1 segment
+            }
+        }
+    }
+
     pub fn close(self: *TcpSocket, dev: *netdev.NetDevice) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -993,11 +1880,55 @@ pub const TcpSocket = struct {
             flags.ack = true;
             try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, self.seq_num, self.ack_num, flags, &[_]u8{});
             self.seq_num += 1;
+        } else if (self.state == .CloseWait) {
+            self.state = .LastAck;
+
+            var flags = TcpFlags{};
+            flags.fin = true;
+            flags.ack = true;
+            try sendTCP(dev, self.local_port, self.remote_port, self.remote_ip, self.seq_num, self.ack_num, flags, &[_]u8{});
+            self.seq_num += 1;
         } else {
             self.state = .Closed;
         }
     }
 };
+
+/// Generate initial sequence number (should be random in production)
+fn generateInitialSeqNum() u32 {
+    return @truncate(getMonotonicTime() & 0xFFFFFFFF);
+}
+
+/// Sequence number comparison (handles wraparound)
+fn seqLessThan(a: u32, b: u32) bool {
+    return @as(i32, @bitCast(a -% b)) < 0;
+}
+
+/// Register TCP socket with global list
+fn registerTcpSocket(sock: *TcpSocket) !void {
+    tcp_mutex.lock();
+    defer tcp_mutex.unlock();
+
+    if (tcp_sockets == null) {
+        tcp_sockets = Basics.ArrayList(*TcpSocket).init(sock.allocator);
+    }
+    try tcp_sockets.?.append(sock);
+}
+
+/// Unregister TCP socket
+fn unregisterTcpSocket(sock: *TcpSocket) void {
+    tcp_mutex.lock();
+    defer tcp_mutex.unlock();
+
+    if (tcp_sockets) |*sockets| {
+        for (sockets.items, 0..) |s, i| {
+            if (s == sock) {
+                _ = sockets.orderedRemove(i);
+                break;
+            }
+        }
+    }
+}
 
 var tcp_sockets: ?Basics.ArrayList(*TcpSocket) = null;
 var tcp_mutex: sync.Mutex = sync.Mutex.init();
@@ -1212,4 +2143,107 @@ test "TCP state transitions" {
     defer sock.deinit();
 
     try Basics.testing.expectEqual(TcpState.Closed, sock.state);
+}
+
+test "routing table prefix matching" {
+    const route = RouteEntry{
+        .destination = IPv4Address.init(192, 168, 1, 0),
+        .netmask = IPv4Address.init(255, 255, 255, 0),
+        .gateway = IPv4Address.init(0, 0, 0, 0),
+        .interface = null,
+        .metric = 0,
+        .flags = .{},
+    };
+
+    // Should match IPs in 192.168.1.0/24
+    try Basics.testing.expect(route.matches(IPv4Address.init(192, 168, 1, 100)));
+    try Basics.testing.expect(route.matches(IPv4Address.init(192, 168, 1, 1)));
+    try Basics.testing.expect(route.matches(IPv4Address.init(192, 168, 1, 255)));
+
+    // Should not match IPs outside the network
+    try Basics.testing.expect(!route.matches(IPv4Address.init(192, 168, 2, 1)));
+    try Basics.testing.expect(!route.matches(IPv4Address.init(10, 0, 0, 1)));
+
+    // Check prefix length
+    try Basics.testing.expectEqual(@as(u8, 24), route.prefixLen());
+}
+
+test "routing table lookup" {
+    const allocator = Basics.testing.allocator;
+    var table = RoutingTable.init(allocator);
+    defer table.deinit();
+
+    // Add routes with different prefix lengths
+    try table.addRoute(.{
+        .destination = IPv4Address.init(0, 0, 0, 0),
+        .netmask = IPv4Address.init(0, 0, 0, 0),
+        .gateway = IPv4Address.init(192, 168, 1, 1),
+        .interface = null,
+        .metric = 100,
+        .flags = .{ .gateway = true },
+    });
+
+    try table.addRoute(.{
+        .destination = IPv4Address.init(192, 168, 1, 0),
+        .netmask = IPv4Address.init(255, 255, 255, 0),
+        .gateway = IPv4Address.init(0, 0, 0, 0),
+        .interface = null,
+        .metric = 0,
+        .flags = .{ .local = true },
+    });
+
+    // Lookup should find most specific route first (longest prefix match)
+    const local_route = table.lookup(IPv4Address.init(192, 168, 1, 50));
+    try Basics.testing.expect(local_route != null);
+    try Basics.testing.expect(local_route.?.flags.local);
+
+    // External IP should match default route
+    const external_route = table.lookup(IPv4Address.init(8, 8, 8, 8));
+    try Basics.testing.expect(external_route != null);
+    try Basics.testing.expect(external_route.?.flags.gateway);
+}
+
+test "ICMP header" {
+    const icmp = IcmpHeader.init(.EchoRequest, 0x1234, 1);
+    try Basics.testing.expectEqual(IcmpType.EchoRequest, icmp.getType());
+}
+
+test "IP fragmentation calculation" {
+    // Fragment offset must be multiple of 8 bytes
+    const offset1: usize = 1480 / FRAGMENT_OFFSET_UNIT;
+    try Basics.testing.expectEqual(@as(usize, 185), offset1);
+
+    // IP_FLAG_MF should be set for non-last fragments
+    var flags: u16 = 0;
+    flags |= IP_FLAG_MF;
+    try Basics.testing.expect(flags & IP_FLAG_MF != 0);
+}
+
+test "sequence number comparison" {
+    // Test wraparound handling
+    try Basics.testing.expect(seqLessThan(0xFFFFFFFF, 0));
+    try Basics.testing.expect(!seqLessThan(0, 0xFFFFFFFF));
+    try Basics.testing.expect(seqLessThan(100, 200));
+    try Basics.testing.expect(!seqLessThan(200, 100));
+}
+
+test "ARP cache entry" {
+    var entry = ArpCacheEntry.init(IPv4Address.init(192, 168, 1, 1));
+    try Basics.testing.expectEqual(ArpCacheEntry.EntryState.Incomplete, entry.state);
+    try Basics.testing.expect(entry.needsRetry());
+
+    // Update with MAC
+    entry.update(netdev.MacAddress.init([_]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 }));
+    try Basics.testing.expectEqual(ArpCacheEntry.EntryState.Reachable, entry.state);
+    try Basics.testing.expect(!entry.needsRetry());
+}
+
+test "TCP congestion window" {
+    const allocator = Basics.testing.allocator;
+    var sock = TcpSocket.init(allocator);
+    defer sock.deinit();
+
+    // Initial values
+    try Basics.testing.expectEqual(@as(u32, TcpSocket.INITIAL_CWND), sock.congestion_window);
+    try Basics.testing.expectEqual(@as(u32, TcpSocket.INITIAL_SSTHRESH), sock.ssthresh);
 }

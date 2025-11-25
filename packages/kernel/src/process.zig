@@ -336,6 +336,13 @@ pub const Process = struct {
     /// Allocator for this process
     allocator: Basics.Allocator,
 
+    /// VFS root dentry (for chroot)
+    fs_root: ?*anyopaque, // *vfs.Dentry
+    /// Current working directory dentry
+    fs_cwd: ?*anyopaque, // *vfs.Dentry
+    /// Umask for file creation
+    umask: u16,
+
     /// Create a new process
     pub fn create(allocator: Basics.Allocator, name: []const u8) !*Process {
         const process = try allocator.create(Process);
@@ -386,6 +393,9 @@ pub const Process = struct {
             .cpu_time_ns = 0,
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
+            .fs_root = null,
+            .fs_cwd = null,
+            .umask = 0o022, // Default umask
         };
 
         // Initialize default namespaces

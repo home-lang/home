@@ -711,6 +711,12 @@ pub const Clip = timeline.Clip;
 pub const Transition = timeline.Transition;
 pub const TimelineRenderer = timeline.TimelineRenderer;
 pub const EdlExporter = timeline.EdlExporter;
+pub const FcpXmlExporter = timeline.FcpXmlExporter;
+pub const XmlFormat = timeline.FcpXmlExporter.XmlFormat;
+pub const FcpXmlOptions = timeline.FcpXmlExporter.FcpXmlOptions;
+pub const PremiereXmlOptions = timeline.FcpXmlExporter.PremiereXmlOptions;
+pub const DavinciXmlOptions = timeline.FcpXmlExporter.DavinciXmlOptions;
+pub const TimelineProject = timeline.TimelineProject;
 
 // ============================================================================
 // GIF Support
@@ -1091,6 +1097,19 @@ pub const Audio = struct {
         return total;
     }
 };
+
+// ============================================================================
+// Home Language Bindings
+// ============================================================================
+
+pub const bindings = @import("bindings/home_bindings.zig");
+pub const VideoBinding = bindings.Video;
+pub const AudioBinding = bindings.Audio;
+pub const MetadataBinding = bindings.Metadata;
+pub const SubtitleBinding = bindings.Subtitle;
+pub const GifOptions = bindings.GifOptions;
+pub const videoToGif = bindings.videoToGif;
+pub const gifToVideo = bindings.gifToVideo;
 
 // ============================================================================
 // Version Information

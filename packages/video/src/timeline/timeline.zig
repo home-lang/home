@@ -330,6 +330,274 @@ pub const EdlExporter = struct {
     }
 };
 
+/// Final Cut Pro XML export (FCPXML 1.11)
+pub const FcpXmlExporter = struct {
+    pub fn exportFcpXml(timeline: *const Timeline, allocator: std.mem.Allocator, options: FcpXmlOptions) ![]u8 {
+        var output = std.ArrayList(u8).init(allocator);
+        errdefer output.deinit();
+        const writer = output.writer();
+
+        // XML declaration
+        try writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        try writer.writeAll("<!DOCTYPE fcpxml>\n");
+        try writer.writeAll("<fcpxml version=\"1.11\">\n");
+
+        // Resources section
+        try writer.writeAll("  <resources>\n");
+
+        // Format resource
+        try writer.print("    <format id=\"r1\" name=\"FFVideoFormat{}p{}\" frameDuration=\"{d}/{d}s\" width=\"{d}\" height=\"{d}\"/>\n", .{
+            timeline.height,
+            @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+            timeline.frame_rate.den,
+            timeline.frame_rate.num,
+            timeline.width,
+            timeline.height,
+        });
+
+        // Asset resources for each unique media file
+        var asset_id: u32 = 2;
+        var assets = std.StringHashMap(u32).init(allocator);
+        defer assets.deinit();
+
+        for (timeline.video_tracks.items) |*track| {
+            for (track.clips.items) |*clip| {
+                if (!assets.contains(clip.source_path)) {
+                    try assets.put(clip.source_path, asset_id);
+                    try writer.print("    <asset id=\"r{d}\" name=\"{s}\" src=\"file://{s}\" hasVideo=\"1\" hasAudio=\"1\" format=\"r1\"/>\n", .{
+                        asset_id,
+                        std.fs.path.basename(clip.source_path),
+                        clip.source_path,
+                    });
+                    asset_id += 1;
+                }
+            }
+        }
+
+        for (timeline.audio_tracks.items) |*track| {
+            for (track.clips.items) |*clip| {
+                if (!assets.contains(clip.source_path)) {
+                    try assets.put(clip.source_path, asset_id);
+                    try writer.print("    <asset id=\"r{d}\" name=\"{s}\" src=\"file://{s}\" hasVideo=\"0\" hasAudio=\"1\" format=\"r1\"/>\n", .{
+                        asset_id,
+                        std.fs.path.basename(clip.source_path),
+                        clip.source_path,
+                    });
+                    asset_id += 1;
+                }
+            }
+        }
+
+        try writer.writeAll("  </resources>\n");
+
+        // Library
+        try writer.print("  <library location=\"file:///Users/Shared/Library.fcpbundle\">\n", .{});
+
+        // Event
+        try writer.print("    <event name=\"{s}\">\n", .{options.event_name});
+
+        // Project
+        try writer.print("      <project name=\"{s}\">\n", .{options.project_name});
+
+        // Sequence
+        const duration_frames = @divTrunc(timeline.getDuration() * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+        try writer.print("        <sequence format=\"r1\" duration=\"{d}/{d}s\">\n", .{
+            duration_frames,
+            @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+        });
+
+        // Spine (primary storyline)
+        try writer.writeAll("          <spine>\n");
+
+        // Export video clips from first video track as spine
+        if (timeline.video_tracks.items.len > 0) {
+            const track = &timeline.video_tracks.items[0];
+            for (track.clips.items) |*clip| {
+                const clip_asset_id = assets.get(clip.source_path) orelse 2;
+                const start_frames = @divTrunc(clip.timeline_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+                const duration_clip = @divTrunc((clip.timeline_out - clip.timeline_in) * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+                const in_frames = @divTrunc(clip.source_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+
+                try writer.print("            <asset-clip ref=\"r{d}\" offset=\"{d}/{d}s\" name=\"{s}\" start=\"{d}/{d}s\" duration=\"{d}/{d}s\"/>\n", .{
+                    clip_asset_id,
+                    start_frames,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                    std.fs.path.basename(clip.source_path),
+                    in_frames,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                    duration_clip,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                });
+            }
+        }
+
+        try writer.writeAll("          </spine>\n");
+
+        // Additional video tracks as connected clips
+        for (timeline.video_tracks.items[1..], 1..) |*track, track_idx| {
+            for (track.clips.items) |*clip| {
+                const clip_asset_id = assets.get(clip.source_path) orelse 2;
+                const offset_frames = @divTrunc(clip.timeline_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+                const duration_clip = @divTrunc((clip.timeline_out - clip.timeline_in) * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+
+                try writer.print("          <asset-clip ref=\"r{d}\" lane=\"{d}\" offset=\"{d}/{d}s\" duration=\"{d}/{d}s\"/>\n", .{
+                    clip_asset_id,
+                    track_idx,
+                    offset_frames,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                    duration_clip,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                });
+            }
+        }
+
+        // Audio tracks
+        for (timeline.audio_tracks.items, 0..) |*track, track_idx| {
+            for (track.clips.items) |*clip| {
+                const clip_asset_id = assets.get(clip.source_path) orelse 2;
+                const offset_frames = @divTrunc(clip.timeline_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+                const duration_clip = @divTrunc((clip.timeline_out - clip.timeline_in) * timeline.frame_rate.num, timeline.frame_rate.den * 1000000);
+
+                try writer.print("          <audio ref=\"r{d}\" lane=\"-{d}\" offset=\"{d}/{d}s\" duration=\"{d}/{d}s\"/>\n", .{
+                    clip_asset_id,
+                    track_idx + 1,
+                    offset_frames,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                    duration_clip,
+                    @divTrunc(timeline.frame_rate.num, timeline.frame_rate.den),
+                });
+            }
+        }
+
+        try writer.writeAll("        </sequence>\n");
+        try writer.writeAll("      </project>\n");
+        try writer.writeAll("    </event>\n");
+        try writer.writeAll("  </library>\n");
+        try writer.writeAll("</fcpxml>\n");
+
+        return output.toOwnedSlice();
+    }
+
+    pub const FcpXmlOptions = struct {
+        project_name: []const u8 = "Untitled Project",
+        event_name: []const u8 = "Exported Event",
+        library_name: []const u8 = "Library",
+    };
+
+    pub fn exportXml(timeline: *const Timeline, allocator: std.mem.Allocator, format: XmlFormat, options: anytype) ![]u8 {
+        return switch (format) {
+            .fcpxml => exportFcpXml(timeline, allocator, options),
+            .premiere_xml => exportPremiereXml(timeline, allocator, options),
+            .davinci_xml => exportDavinciXml(timeline, allocator, options),
+        };
+    }
+
+    pub const XmlFormat = enum {
+        fcpxml, // Final Cut Pro XML
+        premiere_xml, // Adobe Premiere Pro XML
+        davinci_xml, // DaVinci Resolve XML
+    };
+
+    /// Export to Adobe Premiere Pro XML format
+    pub fn exportPremiereXml(timeline: *const Timeline, allocator: std.mem.Allocator, options: PremiereXmlOptions) ![]u8 {
+        var output = std.ArrayList(u8).init(allocator);
+        errdefer output.deinit();
+        const writer = output.writer();
+
+        try writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        try writer.writeAll("<xmeml version=\"5\">\n");
+        try writer.writeAll("  <project>\n");
+        try writer.print("    <name>{s}</name>\n", .{options.project_name});
+        try writer.writeAll("    <children>\n");
+        try writer.writeAll("      <sequence>\n");
+        try writer.print("        <name>{s}</name>\n", .{options.sequence_name});
+        try writer.print("        <duration>{d}</duration>\n", .{@divTrunc(timeline.getDuration() * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+
+        // Timecode
+        try writer.writeAll("        <timecode>\n");
+        try writer.print("          <rate><timebase>{d}</timebase></rate>\n", .{@divTrunc(timeline.frame_rate.num, timeline.frame_rate.den)});
+        try writer.writeAll("          <string>00:00:00:00</string>\n");
+        try writer.writeAll("          <frame>0</frame>\n");
+        try writer.writeAll("        </timecode>\n");
+
+        // Video tracks
+        try writer.writeAll("        <media>\n");
+        try writer.writeAll("          <video>\n");
+
+        for (timeline.video_tracks.items, 0..) |*track, track_idx| {
+            try writer.print("            <track TL.SQTrackAudioKeyframeStyle=\"0\" TL.SQTrackShy=\"0\" TL.SQTrackExpandedHeight=\"25\" TL.SQTrackExpanded=\"0\" MZ.TrackTargeted=\"1\">\n", .{});
+
+            for (track.clips.items) |*clip| {
+                try writer.writeAll("              <clipitem>\n");
+                try writer.print("                <name>{s}</name>\n", .{std.fs.path.basename(clip.source_path)});
+                try writer.print("                <duration>{d}</duration>\n", .{@divTrunc((clip.timeline_out - clip.timeline_in) * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <start>{d}</start>\n", .{@divTrunc(clip.timeline_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <end>{d}</end>\n", .{@divTrunc(clip.timeline_out * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <in>{d}</in>\n", .{@divTrunc(clip.source_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <out>{d}</out>\n", .{@divTrunc(clip.source_out * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.writeAll("                <file>\n");
+                try writer.print("                  <pathurl>file://localhost{s}</pathurl>\n", .{clip.source_path});
+                try writer.writeAll("                </file>\n");
+                try writer.writeAll("              </clipitem>\n");
+            }
+
+            try writer.print("            </track>\n", .{});
+            _ = track_idx;
+        }
+
+        try writer.writeAll("          </video>\n");
+
+        // Audio tracks
+        try writer.writeAll("          <audio>\n");
+
+        for (timeline.audio_tracks.items) |*track| {
+            try writer.writeAll("            <track>\n");
+
+            for (track.clips.items) |*clip| {
+                try writer.writeAll("              <clipitem>\n");
+                try writer.print("                <name>{s}</name>\n", .{std.fs.path.basename(clip.source_path)});
+                try writer.print("                <duration>{d}</duration>\n", .{@divTrunc((clip.timeline_out - clip.timeline_in) * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <start>{d}</start>\n", .{@divTrunc(clip.timeline_in * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.print("                <end>{d}</end>\n", .{@divTrunc(clip.timeline_out * timeline.frame_rate.num, timeline.frame_rate.den * 1000000)});
+                try writer.writeAll("                <file>\n");
+                try writer.print("                  <pathurl>file://localhost{s}</pathurl>\n", .{clip.source_path});
+                try writer.writeAll("                </file>\n");
+                try writer.writeAll("              </clipitem>\n");
+            }
+
+            try writer.writeAll("            </track>\n");
+        }
+
+        try writer.writeAll("          </audio>\n");
+        try writer.writeAll("        </media>\n");
+        try writer.writeAll("      </sequence>\n");
+        try writer.writeAll("    </children>\n");
+        try writer.writeAll("  </project>\n");
+        try writer.writeAll("</xmeml>\n");
+
+        return output.toOwnedSlice();
+    }
+
+    pub const PremiereXmlOptions = struct {
+        project_name: []const u8 = "Untitled Project",
+        sequence_name: []const u8 = "Sequence 01",
+    };
+
+    /// Export to DaVinci Resolve XML format
+    pub fn exportDavinciXml(timeline: *const Timeline, allocator: std.mem.Allocator, options: DavinciXmlOptions) ![]u8 {
+        // DaVinci Resolve uses similar format to Premiere XML
+        return exportPremiereXml(timeline, allocator, .{
+            .project_name = options.project_name,
+            .sequence_name = options.timeline_name,
+        });
+    }
+
+    pub const DavinciXmlOptions = struct {
+        project_name: []const u8 = "Untitled Project",
+        timeline_name: []const u8 = "Timeline 1",
+    };
+};
+
 /// Project serialization
 pub const TimelineProject = struct {
     timeline: Timeline,

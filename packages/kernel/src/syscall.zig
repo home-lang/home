@@ -2,7 +2,11 @@
 // Fast system call mechanism using SYSCALL/SYSRET
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const asm_mod = @import("asm.zig");
+const paging = @import("paging.zig");
+const sched = @import("sched.zig");
+const timer = @import("timer.zig");
+const vfs_sync = @import("vfs_sync.zig");
 
 // ============================================================================
 // MSR Constants for SYSCALL
@@ -689,16 +693,57 @@ fn sysWrite(args: SyscallArgs) callconv(.C) u64 {
 }
 
 fn sysOpen(args: SyscallArgs) callconv(.C) u64 {
-    const path = @as([*:0]const u8, @ptrFromInt(args.arg1));
+    const path_ptr = @as([*:0]const u8, @ptrFromInt(args.arg1));
     const flags = @as(u32, @intCast(args.arg2));
     const mode = @as(u16, @intCast(args.arg3));
 
-    _ = path;
-    _ = flags;
-    _ = mode;
+    const proc = process.current() orelse return toSyscallResult(error.NoProcess);
 
-    // TODO: Implement vfs.open
-    return toSyscallResult(error.InvalidOperation);
+    // Convert null-terminated path to slice
+    var path_len: usize = 0;
+    while (path_ptr[path_len] != 0 and path_len < 4096) : (path_len += 1) {}
+    const path = path_ptr[0..path_len];
+
+    // Open file flags
+    const O_RDONLY: u32 = 0x0000;
+    const O_WRONLY: u32 = 0x0001;
+    const O_RDWR: u32 = 0x0002;
+    const O_CREAT: u32 = 0x0040;
+    const O_EXCL: u32 = 0x0080;
+    const O_TRUNC: u32 = 0x0200;
+    const O_APPEND: u32 = 0x0400;
+
+    _ = O_RDONLY;
+    _ = O_WRONLY;
+    _ = O_RDWR;
+    _ = O_EXCL;
+    _ = O_TRUNC;
+    _ = O_APPEND;
+
+    // Determine access mode
+    const access_flags = flags & 0x03;
+    const create_flags = flags & O_CREAT;
+
+    // Open file through VFS
+    const vfs_flags = vfs_sync.OpenFlags{
+        .read = (access_flags == 0x00 or access_flags == 0x02),
+        .write = (access_flags == 0x01 or access_flags == 0x02),
+        .create = (create_flags != 0),
+        .truncate = (flags & O_TRUNC) != 0,
+        .append = (flags & O_APPEND) != 0,
+    };
+
+    const file = vfs_sync.open(path, vfs_flags, mode) catch |err| {
+        return toSyscallResult(err);
+    };
+
+    // Allocate file descriptor
+    const fd = proc.allocateFd(file) catch |err| {
+        file.close() catch {};
+        return toSyscallResult(err);
+    };
+
+    return @intCast(fd);
 }
 
 fn sysClose(args: SyscallArgs) callconv(.C) u64 {
@@ -717,7 +762,25 @@ fn sysExit(args: SyscallArgs) callconv(.C) u64 {
     proc.exit_code = exit_code;
     proc.state = .Zombie;
 
-    // TODO: Schedule next process
+    // Notify parent if waiting
+    if (proc.parent) |parent| {
+        if (parent.state == .Waiting) {
+            parent.state = .Runnable;
+            // Send SIGCHLD to parent
+            signal.sysKill(@intCast(parent.pid), signal.SIGCHLD) catch {};
+        }
+    }
+
+    // Close all open file descriptors
+    proc.closeAllFds();
+
+    // Release memory mappings
+    proc.releaseAllMemory();
+
+    // Schedule next process
+    sched.schedule();
+
+    // Should not return after schedule() when process is zombie
     return 0;
 }
 
@@ -979,7 +1042,8 @@ fn sysMunmap(args: SyscallArgs) callconv(.C) u64 {
 // Scheduling operations
 fn sysSchedYield(args: SyscallArgs) callconv(.C) u64 {
     _ = args;
-    // TODO: Yield to scheduler
+    // Yield CPU to next runnable process
+    sched.schedule();
     return 0;
 }
 
@@ -1002,22 +1066,33 @@ fn sysNanosleep(args: SyscallArgs) callconv(.C) u64 {
     // Convert to nanoseconds
     const sleep_ns = @as(u64, @intCast(req.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(req.tv_nsec));
 
-    // Calculate wake time
+    // Calculate wake time using hardware timer
     const current_ns = getMonotonicTime();
     const wake_time = current_ns + sleep_ns;
 
-    // Set process to sleeping state
+    // Set process to sleeping state with wake time
     proc.state = .Sleeping;
     proc.wake_time = wake_time;
 
-    // TODO: Schedule next process
-    // In a real implementation, the scheduler would switch to another process
-    // and wake this process at wake_time
+    // Register with timer subsystem for wakeup
+    timer.registerSleepingProcess(proc, wake_time) catch {};
 
-    // Simulate sleep completion (for now)
-    proc.state = .Running;
+    // Yield to scheduler - will switch to another process
+    sched.schedule();
 
-    // If interrupted, fill remaining time
+    // When we resume, check if we were interrupted
+    const actual_wake = getMonotonicTime();
+    if (actual_wake < wake_time) {
+        // We were interrupted early (e.g., by signal)
+        if (rem) |remaining| {
+            const remaining_ns = wake_time - actual_wake;
+            remaining.tv_sec = @intCast(remaining_ns / 1_000_000_000);
+            remaining.tv_nsec = @intCast(remaining_ns % 1_000_000_000);
+        }
+        return toSyscallResult(error.Interrupted);
+    }
+
+    // Sleep completed normally
     if (rem) |remaining| {
         remaining.tv_sec = 0;
         remaining.tv_nsec = 0;
@@ -1028,9 +1103,37 @@ fn sysNanosleep(args: SyscallArgs) callconv(.C) u64 {
 
 // Helper function to get monotonic time in nanoseconds
 fn getMonotonicTime() u64 {
-    // TODO: Read actual hardware timer (TSC, HPET, etc.)
-    // For now, return a simulated value
-    return 0;
+    // Read Time Stamp Counter (TSC) - high precision hardware timer
+    const tsc = readTSC();
+
+    // Convert TSC to nanoseconds using calibrated frequency
+    // TSC frequency is calibrated during boot (typically 2-4 GHz)
+    const tsc_freq = timer.getTscFrequency();
+    if (tsc_freq == 0) {
+        // Fallback if not calibrated - assume 3 GHz
+        return tsc / 3;
+    }
+
+    // Calculate: (tsc * 1_000_000_000) / tsc_freq
+    // Using 128-bit arithmetic to avoid overflow
+    const ns_per_cycle = @as(u128, 1_000_000_000);
+    const tsc_128 = @as(u128, tsc);
+    const freq_128 = @as(u128, tsc_freq);
+
+    return @intCast((tsc_128 * ns_per_cycle) / freq_128);
+}
+
+// Read Time Stamp Counter using RDTSC instruction
+inline fn readTSC() u64 {
+    var lo: u32 = undefined;
+    var hi: u32 = undefined;
+
+    asm volatile ("rdtsc"
+        : "={eax}" (lo),
+          "={edx}" (hi),
+    );
+
+    return (@as(u64, hi) << 32) | lo;
 }
 
 // Time operations
@@ -1071,10 +1174,82 @@ fn sysGettimeofday(args: SyscallArgs) callconv(.C) u64 {
 
 // Helper function to get real time (Unix epoch) in nanoseconds
 fn getRealTime() u64 {
-    // TODO: Read actual RTC or system time
-    // For now, return a simulated Unix timestamp (Jan 1, 2024)
-    const base_ns: u64 = 1704067200 * 1_000_000_000; // 2024-01-01 00:00:00
-    return base_ns + getMonotonicTime();
+    // Read base time from RTC (Real Time Clock)
+    const rtc_time = readRtcTime();
+
+    // Add elapsed time from monotonic clock since boot
+    return rtc_time + getMonotonicTime();
+}
+
+// Read Real Time Clock (CMOS RTC at ports 0x70/0x71)
+fn readRtcTime() u64 {
+    // Wait for RTC update to complete
+    while (readRtcRegister(0x0A) & 0x80 != 0) {}
+
+    // Read RTC registers (BCD format)
+    const seconds = bcdToBinary(readRtcRegister(0x00));
+    const minutes = bcdToBinary(readRtcRegister(0x02));
+    const hours = bcdToBinary(readRtcRegister(0x04));
+    const day = bcdToBinary(readRtcRegister(0x07));
+    const month = bcdToBinary(readRtcRegister(0x08));
+    const year = bcdToBinary(readRtcRegister(0x09));
+
+    // Convert to Unix timestamp (simplified - assumes 20xx year)
+    const full_year = @as(u64, year) + 2000;
+
+    // Days since Unix epoch (Jan 1, 1970)
+    var days: u64 = 0;
+
+    // Add days for complete years
+    var y: u64 = 1970;
+    while (y < full_year) : (y += 1) {
+        if (isLeapYear(y)) {
+            days += 366;
+        } else {
+            days += 365;
+        }
+    }
+
+    // Days in each month
+    const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+    // Add days for complete months
+    var m: usize = 1;
+    while (m < month) : (m += 1) {
+        days += days_in_month[m - 1];
+        if (m == 2 and isLeapYear(full_year)) {
+            days += 1;
+        }
+    }
+
+    // Add remaining days
+    days += day - 1;
+
+    // Convert to nanoseconds
+    const total_seconds = days * 86400 + @as(u64, hours) * 3600 + @as(u64, minutes) * 60 + @as(u64, seconds);
+    return total_seconds * 1_000_000_000;
+}
+
+fn readRtcRegister(reg: u8) u8 {
+    // Select register
+    asm volatile ("outb %[val], $0x70"
+        :
+        : [val] "{al}" (reg),
+    );
+    // Read value
+    var value: u8 = undefined;
+    asm volatile ("inb $0x71, %[result]"
+        : [result] "={al}" (value),
+    );
+    return value;
+}
+
+fn bcdToBinary(bcd: u8) u8 {
+    return (bcd & 0x0F) + ((bcd >> 4) * 10);
+}
+
+fn isLeapYear(year: u64) bool {
+    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
 }
 
 fn sysClockGettime(args: SyscallArgs) callconv(.C) u64 {

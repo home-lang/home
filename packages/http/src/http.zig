@@ -59,6 +59,18 @@ pub const middleware = struct {
 // Server
 pub const Server = @import("server.zig").Server;
 
+// Client
+pub const Client = @import("client.zig").Client;
+pub const ClientResponse = @import("client.zig").Response;
+pub const RequestBuilder = @import("client.zig").RequestBuilder;
+pub const Url = @import("client.zig").Url;
+pub const RequestConfig = @import("client.zig").RequestConfig;
+
+// Convenience functions
+pub const get = @import("client.zig").get;
+pub const post = @import("client.zig").post;
+pub const postJson = @import("client.zig").postJson;
+
 test {
     std.testing.refAllDecls(@This());
 }
