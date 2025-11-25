@@ -125,7 +125,7 @@ pub const LoopContext = struct {
 /// Stores both stack location and type information for local variables.
 pub const LocalInfo = struct {
     /// Stack offset from RBP (1-based index)
-    offset: u8,
+    offset: u32,
     /// Type name (e.g., "i32", "[i32]", "Point")
     type_name: []const u8,
     /// Size in bytes
@@ -590,7 +590,7 @@ pub const NativeCodegen = struct {
     /// Map of variable names to local variable info (stack offset + type)
     locals: std.StringHashMap(LocalInfo),
     /// Next available stack offset for local variables
-    next_local_offset: u8,
+    next_local_offset: u32,
 
     // Function tracking
     /// Map of function names to their code positions (for calls)
@@ -4483,7 +4483,7 @@ pub const NativeCodegen = struct {
         }
 
         // Update next_local_offset to account for all tuple slots (elements + count)
-        self.next_local_offset += @as(u8, @intCast(n + 1));
+        self.next_local_offset += @as(u32, @intCast(n + 1));
     }
 
     /// Try to fold constant expressions at compile-time
@@ -5993,7 +5993,7 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.rax, .rsp);
 
                 // Track stack usage
-                self.next_local_offset +|= @as(u8, @intCast(num_elements));
+                self.next_local_offset +|= @as(u32, @intCast(num_elements));
             },
 
             .StructLiteral => |struct_lit| {
@@ -6502,7 +6502,7 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.rax, .rsp);
 
                 // Track stack usage
-                self.next_local_offset +|= @as(u8, @intCast(count));
+                self.next_local_offset +|= @as(u32, @intCast(count));
             },
 
             else => |expr_tag| {

@@ -173,19 +173,19 @@
 |----------|----------|-------------|--------|
 | High | Line 371 | ~~**Handle labeled breaks** - Break labels ignored~~ | ✅ DONE |
 | High | Line 376 | ~~**Handle labeled continues** - Continue labels ignored~~ | ✅ DONE |
-| High | Line 770 | **Implement compound assignment targets** - Array/struct field assignment not supported | |
-| Medium | Line 753 | **Pointer operations** - Deref, AddressOf, Borrow, BorrowMut not implemented | |
+| High | Line 770 | ~~**Implement compound assignment targets** - Array/struct field assignment not supported~~ | ✅ DONE |
+| Medium | Line 753 | ~~**Pointer operations** - Deref, AddressOf, Borrow, BorrowMut not implemented~~ | ✅ DONE |
 
 ### `packages/interpreter/src/debugger.zig`
 
-| Priority | Location | Description |
-|----------|----------|-------------|
-| High | Line 262 | **Implement step over logic** - StepOver command incomplete |
-| High | Line 266 | **Implement step in logic** - StepIn command incomplete |
-| High | Line 270 | **Implement step out logic** - StepOut command incomplete |
-| High | Line 277 | **Implement expression evaluation** - Evaluate command incomplete |
-| High | Line 280 | **Implement variable retrieval** - GetVariable command incomplete |
-| High | Line 283 | **Implement variable modification** - SetVariable command incomplete |
+| Priority | Location | Description | Status |
+|----------|----------|-------------|--------|
+| High | Line 262 | ~~**Implement step over logic** - StepOver command incomplete~~ | ✅ DONE |
+| High | Line 266 | ~~**Implement step in logic** - StepIn command incomplete~~ | ✅ DONE |
+| High | Line 270 | ~~**Implement step out logic** - StepOut command incomplete~~ | ✅ DONE |
+| High | Line 277 | ~~**Implement expression evaluation** - Evaluate command incomplete~~ | ✅ DONE |
+| High | Line 280 | ~~**Implement variable retrieval** - GetVariable command incomplete~~ | ✅ DONE |
+| High | Line 283 | ~~**Implement variable modification** - SetVariable command incomplete~~ | ✅ DONE |
 
 ---
 
@@ -193,14 +193,14 @@
 
 ### `packages/lsp/src/lsp.zig`
 
-| Priority | Location | Description |
-|----------|----------|-------------|
-| High | Line 269 | **Semantic analysis** - Type checking, undefined variables not implemented |
-| High | Line 312 | **Add symbols from AST** - Completions don't include functions/variables/structs |
-| High | Line 324 | **Implement symbol resolution** - Go to definition not implemented |
-| High | Line 336 | **Implement reference finding** - Find all references not implemented |
-| Medium | Line 408 | **Provide type information** - Hover documentation not implemented |
-| Medium | Line 417 | **Use formatter package** - Document formatting returns unchanged text |
+| Priority | Location | Description | Status |
+|----------|----------|-------------|--------|
+| High | Line 269 | ~~**Semantic analysis** - Type checking, undefined variables not implemented~~ | ✅ DONE |
+| High | Line 312 | ~~**Add symbols from AST** - Completions don't include functions/variables/structs~~ | ✅ DONE |
+| High | Line 324 | ~~**Implement symbol resolution** - Go to definition not implemented~~ | ✅ DONE |
+| High | Line 336 | ~~**Implement reference finding** - Find all references not implemented~~ | ✅ DONE |
+| Medium | Line 408 | ~~**Provide type information** - Hover documentation not implemented~~ | ✅ DONE |
+| Medium | Line 417 | ~~**Use formatter package** - Document formatting returns unchanged text~~ | ✅ DONE |
 
 ---
 
@@ -226,8 +226,8 @@
 
 | Priority | Location | Description | Status |
 |----------|----------|-------------|--------|
-| High | Line 280 | **Parse IR for exports/imports** - LTO analysis simulated | |
-| High | Line 298 | **Build actual call graph** - Call graph simulated | |
+| High | Line 280 | ~~**Parse IR for exports/imports** - LTO analysis simulated~~ | ✅ DONE |
+| High | Line 298 | ~~**Build actual call graph** - Call graph simulated~~ | ✅ DONE |
 | High | Line 309 | **Actual IPO passes** - Devirtualization, argument specialization not implemented | |
 | High | Line 328 | **Actually inline functions** - Inlining simulated | |
 | High | Line 355 | **Remove unused globals** - Dead code elimination simulated | |

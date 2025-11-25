@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("ast");
 const parser_mod = @import("parser");
 const lexer_mod = @import("lexer");
+const formatter_mod = @import("formatter");
 
 /// Language Server Protocol implementation for Home
 /// Provides IDE features like autocomplete, goto definition, diagnostics
@@ -594,6 +595,66 @@ pub const LanguageServer = struct {
         };
     }
 
+    /// Format a type annotation for display
+    fn formatTypeAnnotation(self: *LanguageServer, type_ann: *const ast.TypeAnnotation) ![]const u8 {
+        _ = self;
+        return switch (type_ann.*) {
+            .Simple => |simple| simple,
+            .Generic => |generic| blk: {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.appendSlice(generic.base);
+                try buf.append('<');
+                for (generic.args, 0..) |arg, i| {
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(try self.formatTypeAnnotation(arg));
+                }
+                try buf.append('>');
+                break :blk try buf.toOwnedSlice();
+            },
+            .Array => |array| blk: {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.append('[');
+                try buf.appendSlice(try self.formatTypeAnnotation(array.element_type));
+                try buf.append(']');
+                break :blk try buf.toOwnedSlice();
+            },
+            .Optional => |optional| blk: {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.appendSlice(try self.formatTypeAnnotation(optional.inner));
+                try buf.append('?');
+                break :blk try buf.toOwnedSlice();
+            },
+            .Result => |result| blk: {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.appendSlice("Result<");
+                try buf.appendSlice(try self.formatTypeAnnotation(result.ok_type));
+                try buf.appendSlice(", ");
+                try buf.appendSlice(try self.formatTypeAnnotation(result.err_type));
+                try buf.append('>');
+                break :blk try buf.toOwnedSlice();
+            },
+            .Function => |function| blk: {
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.appendSlice("fn(");
+                for (function.params, 0..) |param, i| {
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(try self.formatTypeAnnotation(param));
+                }
+                try buf.append(')');
+                if (function.return_type) |ret| {
+                    try buf.appendSlice(" -> ");
+                    try buf.appendSlice(try self.formatTypeAnnotation(ret));
+                }
+                break :blk try buf.toOwnedSlice();
+            },
+        };
+    }
+
     /// Go to definition
     pub fn gotoDefinition(self: *LanguageServer, uri: []const u8, position: Position) !?Location {
         const doc = self.documents.get(uri) orelse return null;
@@ -893,12 +954,102 @@ pub const LanguageServer = struct {
 
     /// Hover information
     pub fn hover(self: *LanguageServer, uri: []const u8, position: Position) !?[]const u8 {
-        _ = position;
-
         const doc = self.documents.get(uri) orelse return null;
-        _ = doc;
 
-        // TODO: Provide type information and documentation
+        // Get the symbol at the cursor position
+        const symbol_name = try self.getSymbolAtPosition(doc, position);
+        if (symbol_name == null) return null;
+        const name = symbol_name.?;
+
+        if (doc.ast) |program| {
+            // Search for the symbol definition
+            for (program.statements) |stmt| {
+                switch (stmt) {
+                    .FunctionDecl => |func_decl| {
+                        if (std.mem.eql(u8, func_decl.name, name)) {
+                            // Format function signature with documentation
+                            const signature = try self.formatFunctionSignature(func_decl);
+                            var buf = std.ArrayList(u8).init(self.allocator);
+                            defer buf.deinit();
+
+                            try buf.appendSlice("```home\n");
+                            try buf.appendSlice(signature);
+                            try buf.appendSlice("\n```");
+
+                            return try buf.toOwnedSlice();
+                        }
+                    },
+                    .StructDecl => |struct_decl| {
+                        if (std.mem.eql(u8, struct_decl.name, name)) {
+                            var buf = std.ArrayList(u8).init(self.allocator);
+                            defer buf.deinit();
+
+                            try buf.appendSlice("```home\nstruct ");
+                            try buf.appendSlice(struct_decl.name);
+                            try buf.appendSlice(" {\n");
+
+                            for (struct_decl.fields) |field| {
+                                try buf.appendSlice("  ");
+                                try buf.appendSlice(field.name);
+                                if (field.type_annotation) |type_ann| {
+                                    try buf.appendSlice(": ");
+                                    try buf.appendSlice(try self.formatTypeAnnotation(type_ann));
+                                }
+                                try buf.appendSlice(",\n");
+                            }
+
+                            try buf.appendSlice("}\n```");
+                            return try buf.toOwnedSlice();
+                        }
+                    },
+                    .EnumDecl => |enum_decl| {
+                        if (std.mem.eql(u8, enum_decl.name, name)) {
+                            var buf = std.ArrayList(u8).init(self.allocator);
+                            defer buf.deinit();
+
+                            try buf.appendSlice("```home\nenum ");
+                            try buf.appendSlice(enum_decl.name);
+                            try buf.appendSlice(" {\n");
+
+                            for (enum_decl.variants) |variant| {
+                                try buf.appendSlice("  ");
+                                try buf.appendSlice(variant.name);
+                                if (variant.fields.len > 0) {
+                                    try buf.appendSlice("(");
+                                    for (variant.fields, 0..) |field, i| {
+                                        if (i > 0) try buf.appendSlice(", ");
+                                        if (field.type_annotation) |type_ann| {
+                                            try buf.appendSlice(try self.formatTypeAnnotation(type_ann));
+                                        }
+                                    }
+                                    try buf.appendSlice(")");
+                                }
+                                try buf.appendSlice(",\n");
+                            }
+
+                            try buf.appendSlice("}\n```");
+                            return try buf.toOwnedSlice();
+                        }
+                    },
+                    .ConstDecl => |const_decl| {
+                        if (std.mem.eql(u8, const_decl.name, name)) {
+                            var buf = std.ArrayList(u8).init(self.allocator);
+                            defer buf.deinit();
+
+                            try buf.appendSlice("```home\nconst ");
+                            try buf.appendSlice(const_decl.name);
+                            if (const_decl.type_annotation) |type_ann| {
+                                try buf.appendSlice(": ");
+                                try buf.appendSlice(try self.formatTypeAnnotation(type_ann));
+                            }
+                            try buf.appendSlice("\n```");
+                            return try buf.toOwnedSlice();
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
 
         return null;
     }
@@ -907,7 +1058,23 @@ pub const LanguageServer = struct {
     pub fn formatDocument(self: *LanguageServer, uri: []const u8) ![]const u8 {
         const doc = self.documents.get(uri) orelse return "";
 
-        // TODO: Use formatter package
-        return doc.text;
+        // If no AST is available, return unchanged text
+        if (doc.ast == null) return doc.text;
+
+        // Use the formatter package to format the document
+        var fmt = formatter_mod.Formatter.init(self.allocator, doc.ast.?);
+        defer fmt.deinit();
+
+        const options = formatter_mod.Formatter.FormatterOptions{
+            .indent_size = 4,
+            .use_spaces = true,
+            .max_line_length = 100,
+            .trailing_comma = true,
+            .quote_style = .double,
+            .semicolons = false,
+            .brace_style = .same_line,
+        };
+
+        return try fmt.format(options);
     }
 };
