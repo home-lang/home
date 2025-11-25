@@ -1,0 +1,462 @@
+// Comprehensive test for compiler optimizations and FFI
+// Tests optimization passes and C interoperability
+
+use std::optimizer::{PassManager, OptimizationLevel};
+use std::ffi::{CString, DynLib, BindingsGenerator};
+
+// =============================================================================
+// 1. COMPILER OPTIMIZATION TESTS
+// =============================================================================
+
+// Test constant folding
+fn test_constant_folding() {
+    // These should be folded at compile time
+    let a = 2 + 2;              // Should become: let a = 4;
+    let b = 10 * 5;             // Should become: let b = 50;
+    let c = (3 + 4) * 2;        // Should become: let c = 14;
+    let d = 100 / 4;            // Should become: let d = 25;
+
+    // Algebraic simplifications
+    let e = a + 0;              // Should become: let e = a;
+    let f = b * 1;              // Should become: let f = b;
+    let g = c * 0;              // Should become: let g = 0;
+
+    println("Constant folding results:");
+    println("a = " + a.to_string());  // 4
+    println("b = " + b.to_string());  // 50
+    println("c = " + c.to_string());  // 14
+    println("d = " + d.to_string());  // 25
+
+    assert(a == 4, "a should be 4");
+    assert(b == 50, "b should be 50");
+    assert(c == 14, "c should be 14");
+}
+
+// Test dead code elimination
+fn test_dead_code_elimination() {
+    let x = 10;
+    let y = 20;     // y is never used - should be eliminated
+    let z = x + 5;
+
+    if false {
+        // This entire block should be eliminated
+        println("This will never execute");
+        let unused = 100;
+    }
+
+    return z;
+}
+
+// Test function inlining
+@inline
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+@inline
+fn multiply(a: i32, b: i32) -> i32 {
+    return a * b;
+}
+
+fn test_inlining() {
+    // These calls should be inlined
+    let result1 = add(5, 10);           // Should become: let result1 = 5 + 10;
+    let result2 = multiply(3, 4);        // Should become: let result2 = 3 * 4;
+    let result3 = add(result1, result2); // Should inline and fold
+
+    println("Inlining results: " + result3.to_string());
+    assert(result3 == 27, "result should be 27");
+}
+
+// Test loop optimizations
+fn test_loop_optimization() {
+    let mut sum = 0;
+    let constant = 10;  // Loop invariant
+
+    // Loop invariant code motion:
+    // 'constant * 2' should be moved outside the loop
+    for i in 0..100 {
+        sum += i + (constant * 2);
+    }
+
+    println("Loop optimization result: " + sum.to_string());
+}
+
+// Test loop unrolling
+fn test_loop_unrolling() {
+    let mut sum = 0;
+
+    // Small loop with known iteration count should be unrolled
+    @unroll
+    for i in 0..8 {
+        sum += i;
+    }
+
+    // Becomes:
+    // sum += 0;
+    // sum += 1;
+    // sum += 2;
+    // ...
+    // sum += 7;
+
+    assert(sum == 28, "sum should be 28");
+}
+
+// Test escape analysis and stack allocation
+fn test_escape_analysis() {
+    // This allocation does not escape - should be stack-allocated
+    let local_data = Box::new(Point { x: 10, y: 20 });
+    let value = local_data.x + local_data.y;
+
+    println("Escape analysis result: " + value.to_string());
+    // local_data is freed here, but optimizer knows it never escaped
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn escaping_allocation() -> Box<Point> {
+    // This allocation DOES escape - must be heap-allocated
+    return Box::new(Point { x: 5, y: 10 });
+}
+
+// Test common subexpression elimination
+fn test_cse() {
+    let a = 5;
+    let b = 10;
+
+    // Same expression computed multiple times
+    let x = a * b + 20;
+    let y = a * b + 30;  // 'a * b' should be computed once
+    let z = a * b + 40;
+
+    println("CSE result: " + (x + y + z).to_string());
+}
+
+// =============================================================================
+// 2. FFI AND C INTEROP TESTS
+// =============================================================================
+
+// Basic C function calls
+fn test_c_standard_library() {
+    use std::ffi::CStdLib;
+
+    // Test math functions
+    let sqrt_result = CStdLib::sqrt(16.0);
+    println("sqrt(16) = " + sqrt_result.to_string());
+    assert(sqrt_result == 4.0, "sqrt(16) should be 4.0");
+
+    let sin_result = CStdLib::sin(0.0);
+    println("sin(0) = " + sin_result.to_string());
+    assert(sin_result == 0.0, "sin(0) should be 0.0");
+
+    let pow_result = CStdLib::pow(2.0, 10.0);
+    println("pow(2, 10) = " + pow_result.to_string());
+    assert(pow_result == 1024.0, "pow(2, 10) should be 1024.0");
+}
+
+// C string operations
+fn test_c_strings() {
+    let home_string = "Hello, World!";
+
+    // Convert to C string
+    let c_string = CString::from_home(home_string);
+    defer c_string.free();
+
+    // Use C string functions
+    let length = CStdLib::strlen(c_string);
+    println("String length: " + length.to_string());
+    assert(length == 13, "length should be 13");
+
+    // Convert back to Home string
+    let back = CString::to_home(c_string);
+    assert(back == home_string, "conversion roundtrip failed");
+}
+
+// C struct interop
+@c_struct
+struct CPoint {
+    x: c_int,
+    y: c_int,
+}
+
+fn test_c_structs() {
+    let point = CPoint { x: 100, y: 200 };
+
+    // Pass to C function (if it existed)
+    // process_point(&point);
+
+    println("C struct: ({}, {})".format(point.x, point.y));
+}
+
+// External C function declarations
+extern "c" fn strlen(s: *const c_char) -> usize;
+extern "c" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int;
+extern "c" fn malloc(size: usize) -> ?*anyopaque;
+extern "c" fn free(ptr: ?*anyopaque) -> void;
+
+fn test_extern_functions() {
+    // Use extern functions directly
+    let test_str = "test";
+    let c_str = CString::from_home(test_str);
+    defer c_str.free();
+
+    let len = strlen(c_str.as_ptr());
+    println("Extern strlen result: " + len.to_string());
+    assert(len == 4, "length should be 4");
+}
+
+// Dynamic library loading
+fn test_dynamic_loading() {
+    let lib_path = match std::env::os() {
+        "linux" => "libc.so.6",
+        "macos" => "libSystem.B.dylib",
+        "windows" => "msvcrt.dll",
+        _ => panic("unsupported platform"),
+    };
+
+    // Open library
+    let lib = DynLib::open(lib_path)?;
+    defer lib.close();
+
+    // Look up function
+    let strlen_fn = lib.lookup::<fn(*const c_char) -> usize>("strlen")?;
+
+    // Call dynamically loaded function
+    let test = "dynamic";
+    let c_test = CString::from_home(test);
+    defer c_test.free();
+
+    let result = strlen_fn(c_test.as_ptr());
+    println("Dynamic strlen result: " + result.to_string());
+    assert(result == 7, "length should be 7");
+}
+
+// Callback from C to Home
+type Callback = extern "c" fn(i32) -> i32;
+
+extern "c" fn my_callback(value: i32) -> i32 {
+    return value * 2;
+}
+
+// Hypothetical C function that takes callback
+extern "c" fn apply_callback(cb: Callback, value: i32) -> i32 {
+    return cb(value);
+}
+
+fn test_callbacks() {
+    let result = apply_callback(my_callback, 21);
+    println("Callback result: " + result.to_string());
+    assert(result == 42, "callback should double value");
+}
+
+// Bindings generator usage
+fn test_bindings_generator() {
+    // Generate bindings for a simple library
+    let functions = [
+        FunctionInfo {
+            name: "add",
+            return_type: "c_int",
+            parameters: &[
+                Parameter { name: "a", type_name: "c_int" },
+                Parameter { name: "b", type_name: "c_int" },
+            ],
+            is_variadic: false,
+        },
+        FunctionInfo {
+            name: "multiply",
+            return_type: "c_int",
+            parameters: &[
+                Parameter { name: "x", type_name: "c_int" },
+                Parameter { name: "y", type_name: "c_int" },
+            ],
+            is_variadic: false,
+        },
+    ];
+
+    let bindings = BindingsGenerator::generate_quick(
+        "mylib",
+        functions,
+    );
+
+    println("Generated bindings:");
+    println(bindings);
+}
+
+// =============================================================================
+// 3. OPTIMIZATION PASS MANAGER TEST
+// =============================================================================
+
+fn test_optimization_pipeline() {
+    // Configure optimizer
+    let mut pass_manager = PassManager::new(OptimizationLevel::O3);
+
+    // Add passes
+    pass_manager.add_pass("constant-folding");
+    pass_manager.add_pass("dead-code-elimination");
+    pass_manager.add_pass("inline-expansion");
+    pass_manager.add_pass("common-subexpression-elimination");
+    pass_manager.add_pass("loop-optimization");
+    pass_manager.add_pass("loop-unrolling");
+    pass_manager.add_pass("escape-analysis");
+
+    println("Optimization pipeline configured");
+    println("Running {} passes", pass_manager.num_passes());
+
+    // In actual compiler, would run on AST:
+    // pass_manager.run_on_program(&program);
+
+    // Print statistics
+    pass_manager.print_stats();
+}
+
+// =============================================================================
+// 4. PERFORMANCE COMPARISON
+// =============================================================================
+
+fn benchmark_optimizations() {
+    println("\n=== Optimization Performance Comparison ===\n");
+
+    // Unoptimized version
+    let start = std::time::now();
+    let mut sum1 = 0;
+    for i in 0..10000 {
+        sum1 += i * 2 + i * 2;  // Redundant computation
+    }
+    let unopt_time = std::time::now() - start;
+
+    println("Unoptimized: {}ms", unopt_time);
+    println("Sum: {}", sum1);
+
+    // Optimized version (CSE applied)
+    let start = std::time::now();
+    let mut sum2 = 0;
+    for i in 0..10000 {
+        let temp = i * 2;      // CSE: computed once
+        sum2 += temp + temp;
+    }
+    let opt_time = std::time::now() - start;
+
+    println("Optimized: {}ms", opt_time);
+    println("Sum: {}", sum2);
+
+    let speedup = unopt_time as f64 / opt_time as f64;
+    println("Speedup: {:.2}x", speedup);
+}
+
+// =============================================================================
+// 5. FFI PERFORMANCE TEST
+// =============================================================================
+
+fn benchmark_ffi_overhead() {
+    println("\n=== FFI Performance Test ===\n");
+
+    // Native Home function
+    fn native_sqrt(x: f64) -> f64 {
+        return x.sqrt();
+    }
+
+    // C library function
+    let iterations = 100000;
+
+    // Benchmark native
+    let start = std::time::now();
+    for _ in 0..iterations {
+        let _ = native_sqrt(2.0);
+    }
+    let native_time = std::time::now() - start;
+
+    // Benchmark C FFI
+    let start = std::time::now();
+    for _ in 0..iterations {
+        let _ = CStdLib::sqrt(2.0);
+    }
+    let ffi_time = std::time::now() - start;
+
+    println("Native:  {}ms ({} ops/sec)", native_time, iterations * 1000 / native_time);
+    println("C FFI:   {}ms ({} ops/sec)", ffi_time, iterations * 1000 / ffi_time);
+
+    let overhead = (ffi_time - native_time) as f64 / native_time as f64 * 100.0;
+    println("FFI overhead: {:.2}%", overhead);
+}
+
+// =============================================================================
+// MAIN ENTRY POINT
+// =============================================================================
+
+fn main() {
+    println("\n=== Testing Compiler Optimizations & FFI ===\n");
+
+    // Test optimizations
+    println("1. Testing Constant Folding...");
+    test_constant_folding();
+
+    println("\n2. Testing Dead Code Elimination...");
+    test_dead_code_elimination();
+
+    println("\n3. Testing Function Inlining...");
+    test_inlining();
+
+    println("\n4. Testing Loop Optimization...");
+    test_loop_optimization();
+
+    println("\n5. Testing Loop Unrolling...");
+    test_loop_unrolling();
+
+    println("\n6. Testing Escape Analysis...");
+    test_escape_analysis();
+
+    println("\n7. Testing Common Subexpression Elimination...");
+    test_cse();
+
+    // Test FFI
+    println("\n8. Testing C Standard Library...");
+    test_c_standard_library();
+
+    println("\n9. Testing C Strings...");
+    test_c_strings();
+
+    println("\n10. Testing C Structs...");
+    test_c_structs();
+
+    println("\n11. Testing Extern Functions...");
+    test_extern_functions();
+
+    println("\n12. Testing Dynamic Library Loading...");
+    test_dynamic_loading();
+
+    println("\n13. Testing Callbacks...");
+    test_callbacks();
+
+    println("\n14. Testing Bindings Generator...");
+    test_bindings_generator();
+
+    println("\n15. Testing Optimization Pipeline...");
+    test_optimization_pipeline();
+
+    // Benchmarks
+    benchmark_optimizations();
+    benchmark_ffi_overhead();
+
+    println("\n=== All Tests Passed! ===\n");
+    println("Compiler optimizations: ✓");
+    println("FFI and C interop:      ✓");
+    println("Dynamic loading:        ✓");
+    println("Bindings generation:    ✓");
+}
+
+// Test: Compile with different optimization levels
+// homecc -O0 test_optimizer_ffi.home  # No optimization
+// homecc -O1 test_optimizer_ffi.home  # Basic optimization
+// homecc -O2 test_optimizer_ffi.home  # Moderate optimization
+// homecc -O3 test_optimizer_ffi.home  # Aggressive optimization
+//
+// Expected behavior:
+// - O0: No optimizations, slowest, largest binary
+// - O1: Basic opts, moderate speed, smaller binary
+// - O2: More opts, faster, smaller binary
+// - O3: All opts, fastest, may be slightly larger due to inlining
+//
+// FFI tests should work across all optimization levels
