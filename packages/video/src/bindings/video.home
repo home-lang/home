@@ -1,0 +1,414 @@
+// Home Video Library - Idiomatic Home Language API
+// High-level wrapper around the native video library
+
+// ============================================================================
+// Foreign Function Interface Declarations
+// ============================================================================
+
+@extern fn video_init() -> i32
+@extern fn video_cleanup()
+@extern fn video_get_last_error() -> str
+@extern fn video_free_string(s: str)
+
+// Version
+@extern fn video_version_major() -> u32
+@extern fn video_version_minor() -> u32
+@extern fn video_version_patch() -> u32
+@extern fn video_version_string() -> str
+
+// Audio
+@extern fn video_audio_load(path: str, out: &mut ptr) -> i32
+@extern fn video_audio_load_from_memory(data: &[u8], len: usize, out: &mut ptr) -> i32
+@extern fn video_audio_save(handle: ptr, path: str) -> i32
+@extern fn video_audio_encode(handle: ptr, format: i32, out_data: &mut ptr, out_len: &mut usize) -> i32
+@extern fn video_audio_duration(handle: ptr) -> f64
+@extern fn video_audio_sample_rate(handle: ptr) -> u32
+@extern fn video_audio_channels(handle: ptr) -> u8
+@extern fn video_audio_total_samples(handle: ptr) -> u64
+@extern fn video_audio_free(handle: ptr)
+
+// Video Frame
+@extern fn video_frame_create(width: u32, height: u32, format: i32, out: &mut ptr) -> i32
+@extern fn video_frame_width(handle: ptr) -> u32
+@extern fn video_frame_height(handle: ptr) -> u32
+@extern fn video_frame_pixel_format(handle: ptr) -> i32
+@extern fn video_frame_data(handle: ptr, plane: u8) -> ptr
+@extern fn video_frame_linesize(handle: ptr, plane: u8) -> usize
+@extern fn video_frame_free(handle: ptr)
+
+// Video Filters
+@extern fn video_filter_scale(src: ptr, width: u32, height: u32, algo: i32, out: &mut ptr) -> i32
+@extern fn video_filter_crop(src: ptr, x: u32, y: u32, width: u32, height: u32, out: &mut ptr) -> i32
+@extern fn video_filter_grayscale(src: ptr, out: &mut ptr) -> i32
+@extern fn video_filter_blur(src: ptr, sigma: f32, out: &mut ptr) -> i32
+@extern fn video_filter_rotate(src: ptr, angle: i32, out: &mut ptr) -> i32
+
+// Codec Info
+@extern fn video_codec_name(codec: i32) -> str
+@extern fn video_codec_is_supported(codec: i32) -> bool
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+enum VideoError {
+    Ok,
+    InvalidArgument,
+    OutOfMemory,
+    FileNotFound,
+    InvalidFormat,
+    UnsupportedCodec,
+    DecodeError,
+    EncodeError,
+    IoError,
+    UnknownError,
+}
+
+fn error_from_code(code: i32) -> VideoError {
+    match code {
+        0 -> VideoError.Ok,
+        -1 -> VideoError.InvalidArgument,
+        -2 -> VideoError.OutOfMemory,
+        -3 -> VideoError.FileNotFound,
+        -4 -> VideoError.InvalidFormat,
+        -5 -> VideoError.UnsupportedCodec,
+        -6 -> VideoError.DecodeError,
+        -7 -> VideoError.EncodeError,
+        -8 -> VideoError.IoError,
+        _ -> VideoError.UnknownError,
+    }
+}
+
+fn get_last_error_message() -> str {
+    return video_get_last_error()
+}
+
+// ============================================================================
+// Audio Formats
+// ============================================================================
+
+enum AudioFormat {
+    Wav = 0,
+    Mp3 = 1,
+    Aac = 2,
+    Flac = 3,
+    Opus = 4,
+    Vorbis = 5,
+}
+
+// ============================================================================
+// Pixel Formats
+// ============================================================================
+
+enum PixelFormat {
+    Rgb24 = 0,
+    Rgba32 = 1,
+    Yuv420p = 2,
+    Yuv422p = 3,
+    Yuv444p = 4,
+    Gray8 = 5,
+}
+
+// ============================================================================
+// Video Codecs
+// ============================================================================
+
+enum VideoCodec {
+    H264 = 0,
+    Hevc = 1,
+    Vp9 = 2,
+    Av1 = 3,
+    Vvc = 4,
+}
+
+// ============================================================================
+// Scale Algorithms
+// ============================================================================
+
+enum ScaleAlgorithm {
+    Nearest = 0,
+    Bilinear = 1,
+    Bicubic = 2,
+    Lanczos = 3,
+}
+
+// ============================================================================
+// Rotation Angles
+// ============================================================================
+
+enum RotationAngle {
+    Rotate0 = 0,
+    Rotate90 = 1,
+    Rotate180 = 2,
+    Rotate270 = 3,
+}
+
+// ============================================================================
+// Audio API
+// ============================================================================
+
+struct Audio {
+    handle: ptr,
+
+    fn load(path: str) -> Result<Audio, VideoError> {
+        let mut handle: ptr = null
+        let code = video_audio_load(path, &mut handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(Audio { handle: handle })
+    }
+
+    fn load_from_memory(data: [u8]) -> Result<Audio, VideoError> {
+        let mut handle: ptr = null
+        let code = video_audio_load_from_memory(&data, data.len(), &mut handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(Audio { handle: handle })
+    }
+
+    fn save(self, path: str) -> Result<(), VideoError> {
+        let code = video_audio_save(self.handle, path)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(())
+    }
+
+    fn encode(self, format: AudioFormat) -> Result<[u8], VideoError> {
+        let mut data: ptr = null
+        let mut len: usize = 0
+        let code = video_audio_encode(self.handle, format as i32, &mut data, &mut len)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        // Copy data to managed array
+        let mut result: [u8] = []
+        for i in 0..len {
+            result.push((data as [u8])[i])
+        }
+
+        return Result.Ok(result)
+    }
+
+    fn duration(self) -> f64 {
+        return video_audio_duration(self.handle)
+    }
+
+    fn sample_rate(self) -> u32 {
+        return video_audio_sample_rate(self.handle)
+    }
+
+    fn channels(self) -> u8 {
+        return video_audio_channels(self.handle)
+    }
+
+    fn total_samples(self) -> u64 {
+        return video_audio_total_samples(self.handle)
+    }
+
+    fn free(self) {
+        video_audio_free(self.handle)
+    }
+}
+
+// ============================================================================
+// Video Frame API
+// ============================================================================
+
+struct VideoFrame {
+    handle: ptr,
+
+    fn create(width: u32, height: u32, format: PixelFormat) -> Result<VideoFrame, VideoError> {
+        let mut handle: ptr = null
+        let code = video_frame_create(width, height, format as i32, &mut handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: handle })
+    }
+
+    fn width(self) -> u32 {
+        return video_frame_width(self.handle)
+    }
+
+    fn height(self) -> u32 {
+        return video_frame_height(self.handle)
+    }
+
+    fn pixel_format(self) -> PixelFormat {
+        let fmt = video_frame_pixel_format(self.handle)
+        return fmt as PixelFormat
+    }
+
+    fn data(self, plane: u8) -> ptr {
+        return video_frame_data(self.handle, plane)
+    }
+
+    fn linesize(self, plane: u8) -> usize {
+        return video_frame_linesize(self.handle, plane)
+    }
+
+    // Chainable filter operations
+    fn scale(self, width: u32, height: u32, algo: ScaleAlgorithm) -> Result<VideoFrame, VideoError> {
+        let mut out_handle: ptr = null
+        let code = video_filter_scale(self.handle, width, height, algo as i32, &mut out_handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: out_handle })
+    }
+
+    fn crop(self, x: u32, y: u32, width: u32, height: u32) -> Result<VideoFrame, VideoError> {
+        let mut out_handle: ptr = null
+        let code = video_filter_crop(self.handle, x, y, width, height, &mut out_handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: out_handle })
+    }
+
+    fn grayscale(self) -> Result<VideoFrame, VideoError> {
+        let mut out_handle: ptr = null
+        let code = video_filter_grayscale(self.handle, &mut out_handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: out_handle })
+    }
+
+    fn blur(self, sigma: f32) -> Result<VideoFrame, VideoError> {
+        let mut out_handle: ptr = null
+        let code = video_filter_blur(self.handle, sigma, &mut out_handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: out_handle })
+    }
+
+    fn rotate(self, angle: RotationAngle) -> Result<VideoFrame, VideoError> {
+        let mut out_handle: ptr = null
+        let code = video_filter_rotate(self.handle, angle as i32, &mut out_handle)
+        let err = error_from_code(code)
+
+        if err != VideoError.Ok {
+            return Result.Err(err)
+        }
+
+        return Result.Ok(VideoFrame { handle: out_handle })
+    }
+
+    fn free(self) {
+        video_frame_free(self.handle)
+    }
+}
+
+// ============================================================================
+// Codec Information
+// ============================================================================
+
+struct CodecInfo {
+    fn name(codec: VideoCodec) -> str {
+        return video_codec_name(codec as i32)
+    }
+
+    fn is_supported(codec: VideoCodec) -> bool {
+        return video_codec_is_supported(codec as i32)
+    }
+}
+
+// ============================================================================
+// Version Information
+// ============================================================================
+
+struct Version {
+    fn major() -> u32 {
+        return video_version_major()
+    }
+
+    fn minor() -> u32 {
+        return video_version_minor()
+    }
+
+    fn patch() -> u32 {
+        return video_version_patch()
+    }
+
+    fn string() -> str {
+        return video_version_string()
+    }
+}
+
+// ============================================================================
+// Library Initialization
+// ============================================================================
+
+fn init() -> Result<(), VideoError> {
+    let code = video_init()
+    let err = error_from_code(code)
+
+    if err != VideoError.Ok {
+        return Result.Err(err)
+    }
+
+    return Result.Ok(())
+}
+
+fn cleanup() {
+    video_cleanup()
+}
+
+// ============================================================================
+// Example Usage
+// ============================================================================
+
+// Example: Load and process audio
+// let audio = Audio.load("input.wav")?
+// let duration = audio.duration()
+// let wav_data = audio.encode(AudioFormat.Wav)?
+// audio.save("output.wav")?
+// audio.free()
+
+// Example: Process video frame with filters (chainable)
+// let frame = VideoFrame.create(1920, 1080, PixelFormat.Rgb24)?
+// let processed = frame
+//     .scale(1280, 720, ScaleAlgorithm.Lanczos)?
+//     .crop(100, 100, 1080, 520)?
+//     .grayscale()?
+//     .blur(1.5)?
+// processed.free()
+// frame.free()
+
+// Example: Check codec support
+// if CodecInfo.is_supported(VideoCodec.Av1) {
+//     let name = CodecInfo.name(VideoCodec.Av1)
+//     println("AV1 codec is supported: {name}")
+// }

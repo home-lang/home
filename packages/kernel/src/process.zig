@@ -322,6 +322,14 @@ pub const Process = struct {
     /// Namespace set (PID, mount, network, IPC, UTS isolation)
     namespaces: ?*namespaces.NamespaceSet,
 
+    /// Memory management fields
+    heap_start: u64,
+    brk_addr: u64,
+
+    /// Timing fields
+    wake_time: u64,
+    cpu_time_ns: u64,
+
     /// Process lock
     lock: sync.Spinlock,
 
@@ -372,6 +380,10 @@ pub const Process = struct {
             .capabilities = 0xFFFFFFFFFFFFFFFF, // All capabilities for kernel processes
             .memory_stats = limits.MemoryStats.init(),
             .namespaces = null, // Will be initialized later
+            .heap_start = addr_space.heap_base,
+            .brk_addr = addr_space.heap_base,
+            .wake_time = 0,
+            .cpu_time_ns = 0,
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
         };
@@ -467,6 +479,123 @@ pub const Process = struct {
 
         if (self.fd_table[fd] == null) return error.BadFd;
         self.fd_table[fd] = null;
+    }
+
+    /// Get a file from file descriptor (for syscalls)
+    pub fn getFile(self: *Process, fd: i32) ?*anyopaque {
+        if (fd < 0 or fd >= 256) return null;
+
+        self.fd_lock.acquire();
+        defer self.fd_lock.release();
+
+        const fd_entry = self.fd_table[@intCast(fd)];
+        if (fd_entry) |entry| {
+            return entry.file_ptr;
+        }
+        return null;
+    }
+
+    /// Remove a file from file descriptor table
+    pub fn removeFile(self: *Process, fd: i32) void {
+        if (fd < 0 or fd >= 256) return;
+
+        self.fd_lock.acquire();
+        defer self.fd_lock.release();
+
+        self.fd_table[@intCast(fd)] = null;
+    }
+
+    /// Find a free virtual memory region for mmap
+    pub fn findFreeVirtualRegion(self: *Process, size: u64) !u64 {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Start searching from mmap_base
+        var addr = self.address_space.mmap_base;
+        const page_size: u64 = 4096;
+        const max_tries: usize = 10000;
+
+        for (0..max_tries) |_| {
+            // Check if this region is free
+            var free = true;
+            var check_addr = addr;
+            while (check_addr < addr + size) : (check_addr += page_size) {
+                if (self.address_space.findVma(check_addr)) |_| {
+                    free = false;
+                    break;
+                }
+            }
+
+            if (free) {
+                return addr;
+            }
+
+            // Try next region
+            addr += size + page_size;
+
+            // Check if we've exceeded user space
+            if (addr >= 0x0000_7FFF_FFFF_FFFF) {
+                return error.OutOfMemory;
+            }
+        }
+
+        return error.OutOfMemory;
+    }
+
+    /// Memory mapping structure
+    pub const MemoryMapping = struct {
+        addr: u64,
+        length: u64,
+        prot: u32,
+        flags: u32,
+        fd: ?i32,
+    };
+
+    /// Add a memory mapping (for mmap syscall)
+    pub fn addMemoryMapping(self: *Process, addr: u64, length: u64, prot: u32, flags: u32, fd: ?i32) !void {
+        _ = fd; // Will be used for file-backed mappings
+
+        var vma_flags = VmaFlags{};
+        vma_flags.read = (prot & 0x1) != 0;
+        vma_flags.write = (prot & 0x2) != 0;
+        vma_flags.execute = (prot & 0x4) != 0;
+        vma_flags.shared = (flags & 0x01) != 0;
+
+        _ = try self.address_space.addVma(self.allocator, addr, addr + length, vma_flags);
+    }
+
+    /// Remove a memory mapping (for munmap syscall)
+    pub fn removeMemoryMapping(self: *Process, addr: u64, length: u64) !void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Find and remove all VMAs in the range
+        const end_addr = addr + length;
+
+        self.address_space.lock.acquire();
+        defer self.address_space.lock.release();
+
+        var prev: ?*Vma = null;
+        var current = self.address_space.vma_list;
+
+        while (current) |vma| {
+            const next = vma.next;
+
+            // Check if this VMA overlaps with the range
+            if (vma.start < end_addr and vma.end > addr) {
+                // Remove this VMA
+                if (prev) |p| {
+                    p.next = next;
+                } else {
+                    self.address_space.vma_list = next;
+                }
+                self.allocator.destroy(vma);
+            } else {
+                prev = vma;
+            }
+
+            current = next;
+        }
     }
 
     /// Get name as string
@@ -615,6 +744,14 @@ pub const Process = struct {
         return count;
     }
 
+    /// Fork this process (create a copy)
+    pub fn fork(self: *Process) !u64 {
+        // TODO: Implement full fork with address space copy
+        // For now, just return a simulated child PID
+        const child_pid = allocatePid();
+        return child_pid;
+    }
+
     /// Format for printing
     pub fn format(
         self: Process,
@@ -675,6 +812,18 @@ pub fn unregisterProcess(process: *Process) void {
             }
         }
     }
+}
+
+/// Get current running process (thread-local)
+/// In a real implementation, this would use per-CPU data structures
+var current_process: ?*Process = null;
+
+pub fn current() ?*Process {
+    return current_process;
+}
+
+pub fn setCurrent(process: ?*Process) void {
+    current_process = process;
 }
 
 /// Find process by PID

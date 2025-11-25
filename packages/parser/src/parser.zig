@@ -915,15 +915,38 @@ pub const Parser = struct {
             // Check if this is a method definition (fn keyword)
             if (self.match(&.{.Fn})) {
                 // Parse method and collect it
-                const method_stmt = try self.functionDeclaration(false);
-                switch (method_stmt) {
-                    .FnDecl => |fn_decl| {
-                        try methods.append(self.allocator, fn_decl);
-                    },
-                    else => {
-                        try self.reportError("Expected function declaration in struct");
-                        return error.UnexpectedToken;
-                    },
+                if (self.functionDeclaration(false)) |method_stmt| {
+                    switch (method_stmt) {
+                        .FnDecl => |fn_decl| {
+                            try methods.append(self.allocator, fn_decl);
+                        },
+                        else => {
+                            try self.reportError("Expected function declaration in struct");
+                            return error.UnexpectedToken;
+                        },
+                    }
+                } else |err| {
+                    // Error parsing method - skip to next method or end of struct
+                    if (err == error.OutOfMemory) return err;
+
+                    // Synchronize: skip tokens until we find 'fn' (next method) or '}' (end of struct)
+                    var brace_depth: i32 = 0;
+                    while (!self.isAtEnd()) {
+                        const tok = self.peek();
+                        if (tok.type == .LeftBrace) {
+                            brace_depth += 1;
+                        } else if (tok.type == .RightBrace) {
+                            if (brace_depth == 0) {
+                                // Found struct closing brace
+                                break;
+                            }
+                            brace_depth -= 1;
+                        } else if (tok.type == .Fn and brace_depth == 0) {
+                            // Found next method
+                            break;
+                        }
+                        _ = self.advance();
+                    }
                 }
                 continue;
             }

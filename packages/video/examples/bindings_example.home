@@ -1,0 +1,152 @@
+// Home Video Library - Usage Examples
+// Demonstrates how to use the video library from Home language
+
+import video
+
+fn main() -> i32 {
+    // Initialize the video library
+    let init_result = video.init()
+    if init_result != video.VideoError.Ok {
+        println("Failed to initialize video library")
+        return 1
+    }
+
+    // Print version information
+    let version = video.Version.string()
+    println("Home Video Library v{version}")
+
+    // Example 1: Load and process audio
+    example_audio()?
+
+    // Example 2: Process video frames with filters
+    example_video_filters()?
+
+    // Example 3: Check codec support
+    example_codec_info()
+
+    // Cleanup
+    video.cleanup()
+
+    return 0
+}
+
+fn example_audio() -> Result<(), video.VideoError> {
+    println("\n=== Audio Processing Example ===")
+
+    // Load audio file
+    let audio = video.Audio.load("input.wav")?
+    defer audio.free()
+
+    // Get audio properties
+    let duration = audio.duration()
+    let sample_rate = audio.sample_rate()
+    let channels = audio.channels()
+    let total_samples = audio.total_samples()
+
+    println("Duration: {duration}s")
+    println("Sample rate: {sample_rate}Hz")
+    println("Channels: {channels}")
+    println("Total samples: {total_samples}")
+
+    // Encode to different formats
+    let wav_data = audio.encode(video.AudioFormat.Wav)?
+    println("WAV encoded: {wav_data.len()} bytes")
+
+    let aac_data = audio.encode(video.AudioFormat.Aac)?
+    println("AAC encoded: {aac_data.len()} bytes")
+
+    let opus_data = audio.encode(video.AudioFormat.Opus)?
+    println("Opus encoded: {opus_data.len()} bytes")
+
+    // Save to file
+    audio.save("output.wav")?
+    println("Saved to output.wav")
+
+    return Result.Ok(())
+}
+
+fn example_video_filters() -> Result<(), video.VideoError> {
+    println("\n=== Video Filter Example ===")
+
+    // Create a 1920x1080 RGB frame
+    let frame = video.VideoFrame.create(1920, 1080, video.PixelFormat.Rgb24)?
+    defer frame.free()
+
+    println("Created frame: {}x{}", frame.width(), frame.height())
+
+    // Chain multiple filters together
+    let processed = frame
+        .scale(1280, 720, video.ScaleAlgorithm.Lanczos)?
+        .crop(100, 100, 1080, 520)?
+        .grayscale()?
+        .blur(1.5)?
+    defer processed.free()
+
+    println("Processed frame: {}x{}", processed.width(), processed.height())
+
+    // Rotate frame
+    let rotated = processed.rotate(video.RotationAngle.Rotate90)?
+    defer rotated.free()
+
+    println("Rotated frame: {}x{}", rotated.width(), rotated.height())
+
+    return Result.Ok(())
+}
+
+fn example_codec_info() {
+    println("\n=== Codec Information ===")
+
+    let codecs = [
+        video.VideoCodec.H264,
+        video.VideoCodec.Hevc,
+        video.VideoCodec.Vp9,
+        video.VideoCodec.Av1,
+        video.VideoCodec.Vvc,
+    ]
+
+    for codec in codecs {
+        let name = video.CodecInfo.name(codec)
+        let supported = video.CodecInfo.is_supported(codec)
+        let status = if supported { "✓ supported" } else { "✗ not supported" }
+        println("{name}: {status}")
+    }
+}
+
+// Example: Load audio from memory buffer
+fn example_audio_from_memory() -> Result<(), video.VideoError> {
+    // Read file into memory
+    let file_data = std.fs.read_file("audio.wav")?
+
+    // Load from memory buffer
+    let audio = video.Audio.load_from_memory(file_data)?
+    defer audio.free()
+
+    let duration = audio.duration()
+    println("Loaded from memory: {duration}s")
+
+    return Result.Ok(())
+}
+
+// Example: Complex filter pipeline
+fn example_complex_pipeline() -> Result<(), video.VideoError> {
+    let input = video.VideoFrame.create(1920, 1080, video.PixelFormat.Rgba32)?
+    defer input.free()
+
+    // Create a thumbnail with blur and grayscale
+    let thumbnail = input
+        .scale(320, 180, video.ScaleAlgorithm.Lanczos)?
+        .blur(0.8)?
+        .grayscale()?
+    defer thumbnail.free()
+
+    // Create a banner
+    let banner = input
+        .crop(0, 0, 1920, 400)?
+        .scale(960, 200, video.ScaleAlgorithm.Bicubic)?
+    defer banner.free()
+
+    println("Created thumbnail: {}x{}", thumbnail.width(), thumbnail.height())
+    println("Created banner: {}x{}", banner.width(), banner.height())
+
+    return Result.Ok(())
+}

@@ -329,6 +329,75 @@ pub const InputState = struct {
 };
 
 // ============================================================================
+// Input State Tracking
+// ============================================================================
+
+/// Event tracker for key repeats and mouse deltas (separate from InputState)
+const EventTracker = struct {
+    // Key repeat tracking
+    last_key_code: ?u16 = null,
+    last_key_timestamp: f64 = 0,
+
+    // Mouse position tracking
+    last_mouse_x: f32 = 0,
+    last_mouse_y: f32 = 0,
+    mouse_initialized: bool = false,
+
+    fn init() EventTracker {
+        return .{};
+    }
+
+    /// Check if a key press is a repeat
+    fn isKeyRepeat(self: *EventTracker, key_code: u16, timestamp: f64) bool {
+        const repeat_threshold: f64 = 0.5; // 500ms threshold for repeat detection
+
+        if (self.last_key_code) |last_key| {
+            if (last_key == key_code) {
+                const time_diff = timestamp - self.last_key_timestamp;
+                if (time_diff < repeat_threshold) {
+                    return true;
+                }
+            }
+        }
+
+        self.last_key_code = key_code;
+        self.last_key_timestamp = timestamp;
+        return false;
+    }
+
+    /// Update mouse position and calculate delta
+    fn updateMousePosition(self: *EventTracker, x: f32, y: f32) struct { dx: f32, dy: f32 } {
+        if (!self.mouse_initialized) {
+            self.last_mouse_x = x;
+            self.last_mouse_y = y;
+            self.mouse_initialized = true;
+            return .{ .dx = 0, .dy = 0 };
+        }
+
+        const dx = x - self.last_mouse_x;
+        const dy = y - self.last_mouse_y;
+
+        self.last_mouse_x = x;
+        self.last_mouse_y = y;
+
+        return .{ .dx = dx, .dy = dy };
+    }
+};
+
+// Global event tracker instance
+var global_event_tracker = EventTracker.init();
+
+/// Get global event tracker (for tracking across events)
+fn getEventTracker() *EventTracker {
+    return &global_event_tracker;
+}
+
+/// Reset event tracker (useful for testing or window focus changes)
+pub fn resetEventTracker() void {
+    global_event_tracker = EventTracker.init();
+}
+
+// ============================================================================
 // Platform-specific event conversion
 // ============================================================================
 
@@ -339,12 +408,17 @@ pub fn convertMacOSEvent(ns_event: cocoa.id, window_height: f32) ?InputEvent {
         .KeyDown => {
             const key_code = cocoa.keyCode(ns_event);
             const modifiers = cocoa.modifierFlags(ns_event);
+            const timestamp = cocoa.timestamp(ns_event);
+
+            // Detect key repeat
+            const tracker = getEventTracker();
+            const is_repeat = tracker.isKeyRepeat(key_code, timestamp);
 
             return InputEvent{
                 .KeyDown = .{
                     .key = KeyCode.fromMacOS(key_code),
                     .modifiers = convertModifiers(modifiers),
-                    .repeat = false, // TODO: detect key repeat
+                    .repeat = is_repeat,
                 },
             };
         },
@@ -439,23 +513,30 @@ pub fn convertMacOSEvent(ns_event: cocoa.id, window_height: f32) ?InputEvent {
         },
         .MouseMoved, .LeftMouseDragged, .RightMouseDragged, .OtherMouseDragged => {
             const location = cocoa.mouseLocation(ns_event);
+            const x = @as(f32, @floatCast(location.x));
+            const y = @as(f32, @floatCast(window_height - location.y));
 
-            // TODO: Track previous position to calculate delta
+            // Calculate delta from previous position
+            const tracker = getEventTracker();
+            const delta = tracker.updateMousePosition(x, y);
+
             return InputEvent{
                 .MouseMove = .{
-                    .x = @floatCast(location.x),
-                    .y = @floatCast(window_height - location.y),
-                    .dx = 0, // TODO: Calculate delta
-                    .dy = 0,
+                    .x = x,
+                    .y = y,
+                    .dx = delta.dx,
+                    .dy = delta.dy,
                 },
             };
         },
         .ScrollWheel => {
-            // TODO: Get scroll delta from event
+            // Get scroll delta from event
+            const scroll_delta = cocoa.scrollingDelta(ns_event);
+
             return InputEvent{
                 .MouseScroll = .{
-                    .dx = 0,
-                    .dy = 0,
+                    .dx = @floatCast(scroll_delta.x),
+                    .dy = @floatCast(scroll_delta.y),
                 },
             };
         },

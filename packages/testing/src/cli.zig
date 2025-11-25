@@ -1,6 +1,10 @@
 const std = @import("std");
 const test_runner = @import("runner.zig");
 const test_file_discovery = @import("test_file_discovery.zig");
+const parser_mod = @import("parser");
+const lexer_mod = @import("lexer");
+const ast = @import("ast");
+const interpreter_mod = @import("interpreter");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -120,34 +124,98 @@ pub fn main() !void {
     };
 
     fn executeTestFile(allocator: std.mem.Allocator, file_path: []const u8, verbose: bool) !TestFileResult {
-        _ = allocator;
-        _ = verbose;
-
-        // In a real implementation, this would:
-        // 1. Read and parse the test file
-        // 2. Find all test functions (functions starting with "test_" or marked with @test)
-        // 3. Execute each test in isolated environment
-        // 4. Capture results and any errors
-
-        // For now, simulate some test results
-        // Check if file exists and is readable
-        const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-            std.debug.print("  Error: Failed to open file: {}\n", .{err});
-            return TestFileResult{
-                .passed = 0,
-                .failed = 1,
-                .skipped = 0,
-            };
-        };
-        defer file.close();
-
-        // Simulate test execution
-        // In reality, would parse AST, find test functions, and execute them
-        return TestFileResult{
-            .passed = 3, // Simulated: assume 3 tests passed
+        var result = TestFileResult{
+            .passed = 0,
             .failed = 0,
             .skipped = 0,
         };
+
+        // 1. Read the test file
+        const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+            std.debug.print("  Error: Failed to open file: {}\n", .{err});
+            result.failed = 1;
+            return result;
+        };
+        defer file.close();
+
+        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+            std.debug.print("  Error: Failed to read file: {}\n", .{err});
+            result.failed = 1;
+            return result;
+        };
+        defer allocator.free(source);
+
+        // 2. Parse the test file
+        var lex = lexer_mod.Lexer.init(source, file_path);
+        var tokens = lex.scanTokens(allocator) catch |err| {
+            std.debug.print("  Error: Lexer failed: {}\n", .{err});
+            result.failed = 1;
+            return result;
+        };
+        defer allocator.free(tokens);
+
+        var prs = parser_mod.Parser.init(allocator, tokens, file_path);
+        const program = prs.parse() catch |err| {
+            std.debug.print("  Error: Parser failed: {}\n", .{err});
+            result.failed = 1;
+            return result;
+        };
+        defer program.deinit(allocator);
+
+        // 3. Find all test functions (functions starting with "test_")
+        var test_functions = std.ArrayList(*const ast.FunctionDecl).init(allocator);
+        defer test_functions.deinit();
+
+        for (program.statements) |stmt| {
+            switch (stmt) {
+                .FunctionDecl => |func_decl| {
+                    if (std.mem.startsWith(u8, func_decl.name, "test_")) {
+                        try test_functions.append(&func_decl);
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (verbose) {
+            std.debug.print("  Found {d} test function(s)\n", .{test_functions.items.len});
+        }
+
+        // 4. Execute each test function
+        for (test_functions.items) |test_func| {
+            if (verbose) {
+                std.debug.print("    Running: {s}...", .{test_func.name});
+            }
+
+            // Create interpreter for each test (isolated environment)
+            var interp = interpreter_mod.Interpreter.init(allocator);
+            defer interp.deinit();
+
+            // Execute the test function
+            const test_passed = blk: {
+                // Create a call expression for the test function
+                const call_result = interp.callFunction(test_func.name, &[_]interpreter_mod.Value{}, program) catch |err| {
+                    if (verbose) {
+                        std.debug.print(" FAILED ({any})\n", .{err});
+                    }
+                    break :blk false;
+                };
+                _ = call_result;
+
+                if (verbose) {
+                    std.debug.print(" PASSED\n", .{});
+                }
+                break :blk true;
+            };
+
+            if (test_passed) {
+                result.passed += 1;
+            } else {
+                result.failed += 1;
+            }
+        }
+
+        return result;
     }
 
     // Create test runner

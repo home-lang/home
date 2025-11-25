@@ -190,17 +190,31 @@ pub const SpectrogramGenerator = struct {
         // Initialize to black
         @memset(pixels, 0);
 
-        // Would perform STFT (Short-Time Fourier Transform)
-        // For each time window:
-        //   1. Apply window function (Hann, Hamming)
-        //   2. Perform FFT
-        //   3. Calculate magnitude spectrum
-        //   4. Map to color and draw column
+        const fft_mod = @import("fft.zig");
 
-        const hop_size = samples.len / self.width;
-        _ = hop_size;
+        // Perform STFT
+        var stft = fft_mod.STFT.init(self.allocator, 2048, 512, .hann);
+        const frames = try stft.compute(samples);
+        defer stft.deinit(frames);
 
-        // Placeholder - would need actual FFT implementation
+        // Render spectrogram
+        const freq_bins = frames[0].len / 2; // Use only positive frequencies
+
+        for (frames, 0..) |frame, time_idx| {
+            if (time_idx >= self.width) break;
+
+            for (0..freq_bins) |freq_idx| {
+                const y = freq_bins - 1 - freq_idx; // Flip vertically
+                if (y >= self.height) continue;
+
+                const magnitude = frame[freq_idx].magnitude();
+                const normalized_mag = @min(magnitude / 1000.0, 1.0); // Normalize
+
+                const color = self.magnitudeToColor(normalized_mag);
+                pixels[y * self.width + time_idx] = color;
+            }
+        }
+
         return pixels;
     }
 

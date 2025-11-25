@@ -840,9 +840,41 @@ fn sysShmctl(args: SyscallArgs) callconv(.C) u64 {
 // Memory operations
 fn sysBrk(args: SyscallArgs) callconv(.C) u64 {
     const addr = args.arg1;
-    _ = addr;
-    // TODO: Implement brk
-    return 0;
+
+    const proc = process.current() orelse return toSyscallResult(error.NoProcess);
+
+    // If addr is 0, return current program break
+    if (addr == 0) {
+        return proc.brk_addr;
+    }
+
+    // Align address to page boundary
+    const page_size: u64 = 4096;
+    const aligned_addr = (addr + page_size - 1) & ~(page_size - 1);
+
+    // Validate new break address
+    if (aligned_addr < proc.heap_start) {
+        return proc.brk_addr; // Cannot shrink below heap start
+    }
+
+    const max_heap: u64 = 0x8000_0000; // 2GB heap limit
+    if (aligned_addr - proc.heap_start > max_heap) {
+        return proc.brk_addr; // Heap too large
+    }
+
+    // Update program break
+    const old_brk = proc.brk_addr;
+    proc.brk_addr = aligned_addr;
+
+    // If expanding, map new pages
+    if (aligned_addr > old_brk) {
+        const expand_size = aligned_addr - old_brk;
+        _ = expand_size;
+        // TODO: Actually map pages in page table
+        // For now, just update the break pointer
+    }
+
+    return proc.brk_addr;
 }
 
 fn sysMmap(args: SyscallArgs) callconv(.C) u64 {
@@ -853,25 +885,94 @@ fn sysMmap(args: SyscallArgs) callconv(.C) u64 {
     const fd = @as(i32, @intCast(args.arg5));
     const offset = args.arg6;
 
-    _ = addr;
-    _ = length;
-    _ = prot;
-    _ = flags;
-    _ = fd;
-    _ = offset;
+    const proc = process.current() orelse return toSyscallResult(error.NoProcess);
 
-    // TODO: Implement mmap
-    return toSyscallResult(error.InvalidOperation);
+    // Validate length
+    if (length == 0) {
+        return toSyscallResult(error.InvalidArgument);
+    }
+
+    // Align length to page boundary
+    const page_size: u64 = 4096;
+    const aligned_length = (length + page_size - 1) & ~(page_size - 1);
+
+    // Protection flags
+    const PROT_READ: u32 = 0x1;
+    const PROT_WRITE: u32 = 0x2;
+    const PROT_EXEC: u32 = 0x4;
+
+    // Mapping flags
+    const MAP_SHARED: u32 = 0x01;
+    const MAP_PRIVATE: u32 = 0x02;
+    const MAP_FIXED: u32 = 0x10;
+    const MAP_ANONYMOUS: u32 = 0x20;
+
+    const is_anonymous = (flags & MAP_ANONYMOUS) != 0;
+    const is_fixed = (flags & MAP_FIXED) != 0;
+    const is_shared = (flags & MAP_SHARED) != 0;
+
+    _ = is_shared;
+    _ = PROT_READ;
+    _ = PROT_WRITE;
+    _ = PROT_EXEC;
+
+    // Determine mapping address
+    var map_addr: u64 = addr;
+
+    if (!is_fixed or addr == 0) {
+        // Find free region in address space
+        map_addr = proc.findFreeVirtualRegion(aligned_length) catch {
+            return toSyscallResult(error.OutOfMemory);
+        };
+    }
+
+    // Validate file descriptor for file-backed mappings
+    if (!is_anonymous) {
+        const file = proc.getFile(fd) orelse return toSyscallResult(error.InvalidArgument);
+        _ = file;
+        _ = offset;
+        // TODO: Validate file offset and size
+    }
+
+    // Allocate virtual memory region
+    proc.addMemoryMapping(map_addr, aligned_length, prot, flags, if (is_anonymous) null else fd) catch {
+        return toSyscallResult(error.OutOfMemory);
+    };
+
+    // TODO: Actually map pages in page table
+    // For now, just track the mapping
+
+    return map_addr;
 }
 
 fn sysMunmap(args: SyscallArgs) callconv(.C) u64 {
     const addr = args.arg1;
     const length = args.arg2;
 
-    _ = addr;
-    _ = length;
+    const proc = process.current() orelse return toSyscallResult(error.NoProcess);
 
-    // TODO: Implement munmap
+    // Validate address alignment
+    const page_size: u64 = 4096;
+    if (addr & (page_size - 1) != 0) {
+        return toSyscallResult(error.InvalidArgument);
+    }
+
+    // Validate length
+    if (length == 0) {
+        return toSyscallResult(error.InvalidArgument);
+    }
+
+    // Align length to page boundary
+    const aligned_length = (length + page_size - 1) & ~(page_size - 1);
+
+    // Remove memory mapping
+    proc.removeMemoryMapping(addr, aligned_length) catch {
+        return toSyscallResult(error.InvalidArgument);
+    };
+
+    // TODO: Actually unmap pages in page table
+    // For now, just remove the tracking
+
     return 0;
 }
 
@@ -883,36 +984,150 @@ fn sysSchedYield(args: SyscallArgs) callconv(.C) u64 {
 }
 
 fn sysNanosleep(args: SyscallArgs) callconv(.C) u64 {
-    const req = @as(*const anyopaque, @ptrFromInt(args.arg1));
-    const rem = @as(?*anyopaque, @ptrFromInt(args.arg2));
+    const Timespec = extern struct {
+        tv_sec: i64,
+        tv_nsec: i64,
+    };
 
-    _ = req;
-    _ = rem;
+    const req = @as(*const Timespec, @ptrFromInt(args.arg1));
+    const rem = if (args.arg2 != 0) @as(*Timespec, @ptrFromInt(args.arg2)) else null;
 
-    // TODO: Implement nanosleep
+    const proc = process.current() orelse return toSyscallResult(error.NoProcess);
+
+    // Validate timespec
+    if (req.tv_nsec < 0 or req.tv_nsec >= 1_000_000_000) {
+        return toSyscallResult(error.InvalidArgument);
+    }
+
+    // Convert to nanoseconds
+    const sleep_ns = @as(u64, @intCast(req.tv_sec)) * 1_000_000_000 + @as(u64, @intCast(req.tv_nsec));
+
+    // Calculate wake time
+    const current_ns = getMonotonicTime();
+    const wake_time = current_ns + sleep_ns;
+
+    // Set process to sleeping state
+    proc.state = .Sleeping;
+    proc.wake_time = wake_time;
+
+    // TODO: Schedule next process
+    // In a real implementation, the scheduler would switch to another process
+    // and wake this process at wake_time
+
+    // Simulate sleep completion (for now)
+    proc.state = .Running;
+
+    // If interrupted, fill remaining time
+    if (rem) |remaining| {
+        remaining.tv_sec = 0;
+        remaining.tv_nsec = 0;
+    }
+
+    return 0;
+}
+
+// Helper function to get monotonic time in nanoseconds
+fn getMonotonicTime() u64 {
+    // TODO: Read actual hardware timer (TSC, HPET, etc.)
+    // For now, return a simulated value
     return 0;
 }
 
 // Time operations
 fn sysGettimeofday(args: SyscallArgs) callconv(.C) u64 {
-    const tv = @as(?*anyopaque, @ptrFromInt(args.arg1));
-    const tz = @as(?*anyopaque, @ptrFromInt(args.arg2));
+    const Timeval = extern struct {
+        tv_sec: i64,
+        tv_usec: i64,
+    };
 
-    _ = tv;
-    _ = tz;
+    const Timezone = extern struct {
+        tz_minuteswest: i32,
+        tz_dsttime: i32,
+    };
 
-    // TODO: Implement gettimeofday
+    const tv = if (args.arg1 != 0) @as(*Timeval, @ptrFromInt(args.arg1)) else null;
+    const tz = if (args.arg2 != 0) @as(*Timezone, @ptrFromInt(args.arg2)) else null;
+
+    // Get current Unix timestamp
+    const current_ns = getRealTime();
+    const seconds = current_ns / 1_000_000_000;
+    const nanoseconds = current_ns % 1_000_000_000;
+    const microseconds = nanoseconds / 1000;
+
+    // Fill timeval structure
+    if (tv) |timeval| {
+        timeval.tv_sec = @intCast(seconds);
+        timeval.tv_usec = @intCast(microseconds);
+    }
+
+    // Fill timezone structure (deprecated, usually NULL)
+    if (tz) |timezone| {
+        timezone.tz_minuteswest = 0;
+        timezone.tz_dsttime = 0;
+    }
+
     return 0;
 }
 
+// Helper function to get real time (Unix epoch) in nanoseconds
+fn getRealTime() u64 {
+    // TODO: Read actual RTC or system time
+    // For now, return a simulated Unix timestamp (Jan 1, 2024)
+    const base_ns: u64 = 1704067200 * 1_000_000_000; // 2024-01-01 00:00:00
+    return base_ns + getMonotonicTime();
+}
+
 fn sysClockGettime(args: SyscallArgs) callconv(.C) u64 {
+    const Timespec = extern struct {
+        tv_sec: i64,
+        tv_nsec: i64,
+    };
+
+    // Clock IDs (POSIX)
+    const CLOCK_REALTIME: i32 = 0;
+    const CLOCK_MONOTONIC: i32 = 1;
+    const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
+    const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+    const CLOCK_MONOTONIC_RAW: i32 = 4;
+    const CLOCK_REALTIME_COARSE: i32 = 5;
+    const CLOCK_MONOTONIC_COARSE: i32 = 6;
+    const CLOCK_BOOTTIME: i32 = 7;
+
     const clock_id = @as(i32, @intCast(args.arg1));
-    const tp = @as(*anyopaque, @ptrFromInt(args.arg2));
+    const tp = @as(*Timespec, @ptrFromInt(args.arg2));
 
-    _ = clock_id;
-    _ = tp;
+    var time_ns: u64 = undefined;
 
-    // TODO: Implement clock_gettime
+    switch (clock_id) {
+        CLOCK_REALTIME, CLOCK_REALTIME_COARSE => {
+            // Real time (Unix epoch)
+            time_ns = getRealTime();
+        },
+        CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW, CLOCK_MONOTONIC_COARSE, CLOCK_BOOTTIME => {
+            // Monotonic time (since boot)
+            time_ns = getMonotonicTime();
+        },
+        CLOCK_PROCESS_CPUTIME_ID => {
+            // Process CPU time
+            const proc = process.current() orelse return toSyscallResult(error.NoProcess);
+            time_ns = proc.cpu_time_ns;
+        },
+        CLOCK_THREAD_CPUTIME_ID => {
+            // Thread CPU time (for now, same as process)
+            const proc = process.current() orelse return toSyscallResult(error.NoProcess);
+            time_ns = proc.cpu_time_ns;
+        },
+        else => {
+            return toSyscallResult(error.InvalidArgument);
+        },
+    }
+
+    const seconds = time_ns / 1_000_000_000;
+    const nanoseconds = time_ns % 1_000_000_000;
+
+    tp.tv_sec = @intCast(seconds);
+    tp.tv_nsec = @intCast(nanoseconds);
+
     return 0;
 }
 

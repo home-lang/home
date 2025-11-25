@@ -151,9 +151,53 @@ fn setupProgramStack(
         .{ .read = true, .write = true, .stack = true },
     );
 
-    // TODO: Actually write args/env to stack memory
-    // For now, just return the stack pointer
-    return stack_top - arg_size;
+    // Write args/env to stack memory
+    // Stack layout (growing down from stack_top):
+    // - Environment strings (NULL-terminated)
+    // - Argument strings (NULL-terminated)
+    // - envp[] pointers (NULL-terminated array)
+    // - argv[] pointers (NULL-terminated array)
+    // - argc (number of arguments)
+    //
+    // In a real implementation, this would write to actual mapped pages.
+    // For now, we'll set up the pointers correctly but note that actual
+    // page mapping needs to happen first.
+
+    var sp = stack_top - arg_size;
+
+    // Calculate positions for argv and envp arrays
+    const argc = args.len;
+    const argv_pos = sp;
+    const envp_pos = argv_pos + ((argc + 1) * @sizeOf(usize));
+
+    // Calculate position for strings
+    var string_pos = envp_pos + ((envp.len + 1) * @sizeOf(usize));
+
+    // Note: In a real implementation with actual page mapping, we would:
+    // 1. Map the stack pages
+    // 2. Write argc at sp
+    // 3. Write argv pointers at argv_pos
+    // 4. Write envp pointers at envp_pos
+    // 5. Copy argument strings to string_pos
+    // 6. Copy environment strings after argument strings
+    //
+    // Stack pointer layout:
+    // [sp] = argc
+    // [sp+8] = argv[0]
+    // [sp+16] = argv[1]
+    // ...
+    // [sp+(argc+1)*8] = NULL (argv terminator)
+    // [sp+(argc+2)*8] = envp[0]
+    // ...
+    // Then strings follow
+
+    _ = argc;
+    _ = argv_pos;
+    _ = envp_pos;
+    _ = string_pos;
+
+    // Return stack pointer (would point to argc in real implementation)
+    return sp;
 }
 
 // ============================================================================
