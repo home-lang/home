@@ -1,0 +1,245 @@
+// Test file for LSP features
+// This file tests all language server capabilities
+
+// 1. Function declarations (should be highlighted and show in symbol list)
+fn calculate_sum(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+pub fn greet(name: String) -> String {
+    return "Hello, " + name;
+}
+
+async fn fetch_data(url: String) -> Result<String, String> {
+    // TODO: Implement async fetch
+    return Ok("data");
+}
+
+// 2. Struct declarations (test go-to-definition)
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+pub struct Rectangle {
+    pub width: f32,
+    pub height: f32,
+}
+
+// 3. Enum declarations (test completion)
+enum Color {
+    Red,
+    Green,
+    Blue,
+    RGB(i32, i32, i32),
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+// 4. Trait declarations (test hover info)
+trait Drawable {
+    fn draw(self) -> String;
+    fn area(self) -> f32;
+}
+
+trait Cloneable {
+    fn clone(self) -> Self;
+}
+
+// 5. Variable declarations (test find references)
+let immutable_value: i32 = 42;
+let mut mutable_value: String = "test";
+const MAX_SIZE: i32 = 100;
+
+// 6. Function with complex body (test diagnostics)
+fn process_point(p: Point) -> i32 {
+    let x_val = p.x;
+    let y_val = p.y;
+
+    // Test operators and expressions
+    let sum = x_val + y_val;
+    let product = x_val * y_val;
+
+    // Test conditional
+    if sum > 10 {
+        return sum;
+    } else {
+        return product;
+    }
+}
+
+// 7. Pattern matching (test exhaustiveness)
+fn color_name(c: Color) -> String {
+    match c {
+        Color.Red => "Red",
+        Color.Green => "Green",
+        Color.Blue => "Blue",
+        Color.RGB(r, g, b) => "Custom RGB",
+    }
+}
+
+// 8. Borrow checking (test ownership diagnostics)
+fn test_borrowing() {
+    let owner = Point { x: 10, y: 20 };
+    let borrowed = &owner;
+    let value = borrowed.x;
+
+    // This should work - owner still available
+    let another_borrow = &owner;
+}
+
+// 9. Error handling with ? operator
+fn read_file(path: String) -> Result<String, String> {
+    let contents = try_read(path)?;
+    let processed = process_contents(contents)?;
+    return Ok(processed);
+}
+
+fn try_read(path: String) -> Result<String, String> {
+    return Ok("file contents");
+}
+
+fn process_contents(data: String) -> Result<String, String> {
+    return Ok(data);
+}
+
+// 10. Generic functions (test type inference)
+fn max<T>(a: T, b: T) -> T where T: Ord {
+    if a > b {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+fn identity<T>(value: T) -> T {
+    return value;
+}
+
+// 11. Impl blocks (test method completion)
+impl Rectangle {
+    fn new(w: f32, h: f32) -> Rectangle {
+        return Rectangle { width: w, height: h };
+    }
+
+    fn area(self) -> f32 {
+        return self.width * self.height;
+    }
+
+    fn perimeter(self) -> f32 {
+        return 2.0 * (self.width + self.height);
+    }
+}
+
+impl Drawable for Rectangle {
+    fn draw(self) -> String {
+        return "Drawing rectangle";
+    }
+
+    fn area(self) -> f32 {
+        return self.width * self.height;
+    }
+}
+
+// 12. Complex expressions (test semantic highlighting)
+fn complex_calculation() -> f32 {
+    let a = 10.0;
+    let b = 20.0;
+    let c = 30.0;
+
+    let result = (a + b) * c / 2.0;
+    let comparison = result > 100.0 && a < b;
+
+    return if comparison { result } else { 0.0 };
+}
+
+// 13. String literals and numbers (test highlighting)
+fn test_literals() {
+    let string = "Hello, World!";
+    let integer = 42;
+    let float = 3.14159;
+    let hex = 0xFF;
+    let binary = 0b1010;
+    let boolean = true;
+}
+
+// 14. Arrays and optionals
+fn test_collections() {
+    let numbers: [i32] = [1, 2, 3, 4, 5];
+    let maybe_value: i32? = Some(42);
+    let no_value: i32? = None;
+
+    match maybe_value {
+        Some(v) => v,
+        None => 0,
+    }
+}
+
+// 15. Nested blocks and scopes
+fn test_scoping() {
+    let outer = 10;
+
+    {
+        let inner = 20;
+        let sum = outer + inner;
+    }
+
+    // inner not accessible here
+    let value = outer * 2;
+}
+
+// 16. Loops
+fn test_loops() {
+    let mut i = 0;
+    while i < 10 {
+        i = i + 1;
+    }
+
+    for item in [1, 2, 3, 4, 5] {
+        let doubled = item * 2;
+    }
+}
+
+// 17. Mutable borrows (test borrow checker)
+fn test_mut_borrow() {
+    let mut point = Point { x: 0, y: 0 };
+    let borrowed_mut = &mut point;
+    borrowed_mut.x = 10;
+}
+
+// 18. Type aliases
+type UserId = i32;
+type Callback = fn(i32) -> i32;
+
+fn use_alias(id: UserId) -> UserId {
+    return id + 1;
+}
+
+// 19. Associated types
+trait Container {
+    type Item;
+    fn get(self, index: i32) -> Item;
+}
+
+// 20. Comments and documentation
+/// Calculate the area of a circle
+///
+/// # Arguments
+/// * `radius` - The radius of the circle
+///
+/// # Returns
+/// The area as a float
+fn circle_area(radius: f32) -> f32 {
+    const PI: f32 = 3.14159;
+    return PI * radius * radius;
+}
+
+// Test: Rename symbol - try renaming "Point" throughout
+// Test: Go to definition - click on "Rectangle" and go to definition
+// Test: Find references - find all uses of "calculate_sum"
+// Test: Hover - hover over types to see information
+// Test: Format document - format this entire file
+// Test: Completion - type "Color." to see enum variants

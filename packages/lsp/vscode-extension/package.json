@@ -1,0 +1,75 @@
+{
+  "name": "home-language",
+  "displayName": "Home Language Support",
+  "description": "Language support for the Home programming language",
+  "version": "0.1.0",
+  "publisher": "home-lang",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:home"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "home",
+        "aliases": [
+          "Home",
+          "home"
+        ],
+        "extensions": [
+          ".home"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "home",
+        "scopeName": "source.home",
+        "path": "./syntaxes/home.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Home Language Configuration",
+      "properties": {
+        "homeLanguageServer.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Home language server executable"
+        },
+        "homeLanguageServer.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.19.0"
+  }
+}
