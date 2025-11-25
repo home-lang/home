@@ -172,10 +172,9 @@ pub fn setSeccompMode(proc: *process.Process, mode: SeccompMode, filter: ?*Secco
     // Lock the filter
     new_filter.lock();
 
-    // TODO: Set filter on process
-    // proc.seccomp.setFilter(new_filter);
-
-    _ = new_filter;
+    // Set filter on process's seccomp context
+    proc.seccomp_filter = new_filter;
+    proc.seccomp_mode = .FILTER;
 
     // Log seccomp activation
     audit.logSecurityViolation("Seccomp filter activated");
@@ -183,14 +182,21 @@ pub fn setSeccompMode(proc: *process.Process, mode: SeccompMode, filter: ?*Secco
 
 /// Check if syscall should be allowed
 pub fn checkSyscallFilter(proc: *process.Process, syscall_nr: u32) !void {
-    // TODO: Check against process's seccomp filter
-    // const action = proc.seccomp.checkSyscall(syscall_nr);
+    // Check if process has a seccomp filter installed
+    if (proc.seccomp_filter) |filter| {
+        // Evaluate the filter against the syscall number
+        const action = filter.check(syscall_nr);
+        switch (action) {
+            .ALLOW => return, // Syscall allowed
+            .KILL => return error.SeccompKill, // Kill process
+            .TRAP => return error.SeccompTrap, // Send SIGSYS
+            .ERRNO => return error.SeccompErrno, // Return error
+            .TRACE => {}, // Allow but notify tracer
+            .LOG => {}, // Allow but log
+        }
+    }
 
-    _ = proc;
-    _ = syscall_nr;
-
-    // For now, allow all syscalls
-    // In a full implementation, we would check the filter and take action
+    // No filter or filter allows - syscall proceeds
 }
 
 // ============================================================================

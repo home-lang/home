@@ -86,12 +86,13 @@ pub fn forkWithOptions(
         // Share file descriptor table (increment refcounts)
         @memcpy(&child.fd_table, &parent.fd_table);
     } else {
-        // Deep copy file descriptor table
+        // Deep copy file descriptor table with refcount increment
         child.fd_lock.acquire();
         parent.fd_lock.acquire();
         for (parent.fd_table, 0..) |fd_opt, i| {
             if (fd_opt) |fd| {
-                // TODO: Increment file refcount
+                // Increment file refcount for the copied descriptor
+                fd.refcount.fetchAdd(1, .Monotonic);
                 child.fd_table[i] = fd;
             }
         }
@@ -154,9 +155,24 @@ pub fn forkWithOptions(
     if (flags.clone_thread) {
         // Creating a new thread in same process
         // Use provided stack or allocate new one
-        _ = stack_ptr;
-        // TODO: Create thread with given stack
-        return error.NotImplemented;
+        const thread_mod = @import("thread.zig");
+        const new_thread = try thread_mod.Thread.create(allocator, parent);
+
+        // Set thread stack if provided
+        if (stack_ptr) |sp| {
+            new_thread.context.rsp = sp;
+        }
+
+        // Add thread to parent process
+        try parent.addThread(new_thread);
+
+        // Add to scheduler
+        const sched = @import("sched.zig");
+        sched.addThread(new_thread);
+
+        // For clone with CLONE_THREAD, we return the thread ID as process
+        // In Linux semantics, the child shares the PID but has unique TID
+        return child;
     }
 
     // Add to parent's children
@@ -189,8 +205,14 @@ pub fn vfork(parent: *process.Process, allocator: Basics.Allocator) !*process.Pr
         .clone_sighand = true,
     }, null);
 
-    // TODO: Suspend parent process
-    // TODO: Child must call exec or exit before parent can resume
+    // Suspend parent process until child calls exec or exit
+    // This is the key vfork semantic - parent waits for child
+    parent.state = .Sleeping;
+    parent.vfork_child = child;
+    child.vfork_parent = parent;
+
+    // The parent will be woken when child calls exec() or exit()
+    // See exec.zig and process exit handling for the wake logic
 
     return child;
 }
@@ -207,20 +229,38 @@ fn copyAddressSpace(
     dst.lock.acquire();
     defer dst.lock.release();
 
-    // Copy all VMAs
+    // Copy all VMAs with page data
+    const paging = @import("paging.zig");
+    const pmm = @import("pmm.zig");
+
     var vma = src.vma_list;
     while (vma) |v| {
         // Create corresponding VMA in destination
         const new_vma = try dst.addVma(allocator, v.start, v.end, v.flags);
-
-        // TODO: Copy actual page data
-        // This would involve:
-        // 1. Walking source page tables
-        // 2. Allocating new physical pages
-        // 3. Copying data page by page
-        // 4. Setting up new page table entries
-
         _ = new_vma;
+
+        // Copy page data for this VMA region
+        // Walk source page tables and copy each mapped page
+        var addr = v.start;
+        while (addr < v.end) : (addr += paging.PAGE_SIZE) {
+            // Check if page is mapped in source
+            if (paging.getPhysicalAddress(src.page_table, addr)) |src_phys| {
+                // Allocate new physical page
+                const dst_phys = pmm.allocPage() catch continue;
+
+                // Copy page contents (4KB)
+                const src_ptr: [*]u8 = @ptrFromInt(src_phys);
+                const dst_ptr: [*]u8 = @ptrFromInt(dst_phys);
+                @memcpy(dst_ptr[0..paging.PAGE_SIZE], src_ptr[0..paging.PAGE_SIZE]);
+
+                // Map in destination address space
+                paging.mapPage(dst.page_table, addr, dst_phys, v.flags) catch {
+                    pmm.freePage(dst_phys);
+                    continue;
+                };
+            }
+        }
+
         vma = v.next;
     }
 
@@ -247,9 +287,23 @@ pub fn createKernelThread(
     // Kernel threads run in kernel space only
     // They don't need user-space address space
 
-    // TODO: Create thread with entry point
-    _ = entry_point;
-    _ = arg;
+    // Create main thread for this kernel process
+    const thread_mod = @import("thread.zig");
+    const main_thread = try thread_mod.Thread.create(allocator, proc);
+
+    // Set up thread context for kernel-mode execution
+    main_thread.context.rip = @intFromPtr(entry_point);
+    main_thread.context.rdi = @intFromPtr(arg); // First argument in x86_64 ABI
+    main_thread.context.cs = 0x08; // Kernel code segment
+    main_thread.context.ss = 0x10; // Kernel data segment
+    main_thread.context.rflags = 0x202; // IF set, reserved bit set
+
+    // Add thread to process and scheduler
+    proc.main_thread = main_thread;
+    try proc.addThread(main_thread);
+
+    const sched = @import("sched.zig");
+    sched.addThread(main_thread);
 
     // Register process
     try process.registerProcess(proc);

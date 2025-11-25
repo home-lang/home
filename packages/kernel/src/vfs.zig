@@ -774,8 +774,17 @@ pub fn pathLookup(path: []const u8, flags: PathLookupFlags, root: *Dentry, cwd: 
 
                     // Handle symlinks
                     if (flags.follow and child_dentry.inode.inode_type == .Symlink) {
-                        // TODO: Follow symlink
-                        _ = child_dentry;
+                        // Follow symlink by reading target and recursively resolving
+                        if (child_dentry.inode.ops.readlink) |readlink_fn| {
+                            var target_buf: [MAX_PATH_LEN]u8 = undefined;
+                            const target_len = readlink_fn(child_dentry.inode, &target_buf) catch 0;
+                            if (target_len > 0) {
+                                // Recursively resolve symlink target
+                                const target_path = target_buf[0..target_len];
+                                child_dentry.put(child_dentry.sb.allocator);
+                                return pathLookup(target_path, flags);
+                            }
+                        }
                     }
 
                     current.put(current.sb.allocator);
@@ -1041,7 +1050,13 @@ pub fn umount(target: []const u8, proc: *process.Process) !void {
         return error.NotMounted;
     }
 
-    // TODO: Find and remove mount, sync filesystem
+    // Find and remove mount from mount table
+    // First sync the filesystem to ensure data is written
+    if (target_dentry.sb.ops.sync) |sync_fn| {
+        try sync_fn(target_dentry.sb);
+    }
+
+    // Clear mounted flag and update mount point
     target_dentry.flags.mounted = false;
     target_dentry.put(target_dentry.sb.allocator);
 }

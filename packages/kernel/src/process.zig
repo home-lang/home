@@ -217,7 +217,14 @@ pub const AddressSpace = struct {
 
         vma.flags = new_flags;
 
-        // TODO: Update page table entries to reflect new permissions
+        // Update page table entries to reflect new permissions
+        const paging = @import("paging.zig");
+        var addr = vma.start;
+        while (addr < vma.end) : (addr += paging.PAGE_SIZE) {
+            paging.updatePagePermissions(self.page_table, addr, new_flags) catch {};
+        }
+        // Flush TLB for the modified range
+        paging.tlbShootdownRange(vma.start, vma.end - vma.start);
     }
 
     /// Find VMA containing an address
@@ -655,7 +662,19 @@ pub const Process = struct {
         self.cleanupResources();
 
         // Wake up parent if waiting
-        // TODO: Implement wait queue
+        if (findProcess(self.ppid)) |parent| {
+            if (parent.state == .Sleeping) {
+                // Check if parent is waiting for this child
+                if (parent.wait_pid == 0 or parent.wait_pid == self.pid) {
+                    parent.state = .Ready;
+                    // Re-add to scheduler
+                    const sched = @import("sched.zig");
+                    if (parent.main_thread) |main_thr| {
+                        sched.addThread(main_thr);
+                    }
+                }
+            }
+        }
     }
 
     /// Clean up all process resources
@@ -761,10 +780,12 @@ pub const Process = struct {
 
     /// Fork this process (create a copy)
     pub fn fork(self: *Process) !u64 {
-        // TODO: Implement full fork with address space copy
-        // For now, just return a simulated child PID
-        const child_pid = allocatePid();
-        return child_pid;
+        // Use the fork module for full fork implementation
+        const fork_mod = @import("fork.zig");
+        const allocator = self.allocator orelse return error.NoAllocator;
+
+        const child = try fork_mod.fork(self, allocator);
+        return child.pid;
     }
 
     /// Format for printing
@@ -996,31 +1017,175 @@ pub fn forkWithFlags(parent: *Process, allocator: Basics.Allocator, flags: u32) 
 }
 
 /// Execute a new program in process
-pub fn exec(process: *Process, path: []const u8, args: []const []const u8) !void {
-    _ = args; // TODO: Pass to loader
+pub fn exec(proc: *Process, path: []const u8, args: []const []const u8) !void {
+    const vfs_mod = @import("vfs.zig");
+    const elf_loader = @import("elf_loader.zig");
+    const thread_mod = @import("thread.zig");
 
     // Clear current address space and load new program
-    process.lock.acquire();
-    defer process.lock.release();
+    proc.lock.acquire();
+    defer proc.lock.release();
 
     // Update process name
     const name_len = Basics.math.min(path.len, 255);
-    @memcpy(process.name[0..name_len], path[0..name_len]);
-    process.name_len = name_len;
+    @memcpy(proc.name[0..name_len], path[0..name_len]);
+    proc.name_len = name_len;
 
-    // TODO: Load executable from path
-    // TODO: Setup stack with arguments
-    // TODO: Setup initial thread
+    // Load executable from path via VFS
+    const file = try vfs_mod.open(path, .{ .read = true }, 0);
+    defer vfs_mod.close(file);
 
-    process.state = .Running;
+    // Read ELF data
+    const stat = try vfs_mod.stat(file);
+    const elf_data = try proc.allocator.alloc(u8, @intCast(stat.size));
+    defer proc.allocator.free(elf_data);
+
+    const bytes_read = try vfs_mod.read(file, elf_data);
+    if (bytes_read != stat.size) return error.IncompleteRead;
+
+    // Default environment
+    const default_envp = [_][]const u8{
+        "PATH=/usr/bin:/bin",
+        "HOME=/",
+    };
+
+    // Load ELF and setup stack with arguments
+    const entry_point = try elf_loader.ProcessLoader.loadProcess(
+        proc,
+        proc.allocator,
+        elf_data,
+        args,
+        &default_envp,
+    );
+
+    // Setup initial thread with entry point
+    if (proc.main_thread) |thread| {
+        // Reset thread context to start fresh
+        thread.context = thread_mod.ThreadContext{};
+        thread.context.rip = entry_point;
+        thread.context.rsp = proc.address_space.stack_base - 8; // Point to argc
+        thread.context.rflags = 0x202; // Interrupts enabled
+        thread.context.cs = 0x23; // User code segment
+        thread.context.ss = 0x1B; // User data segment
+    } else {
+        // Create new main thread
+        const thread = try thread_mod.Thread.create(proc.allocator, proc);
+        thread.context.rip = entry_point;
+        thread.context.rsp = proc.address_space.stack_base - 8;
+        thread.context.rflags = 0x202;
+        thread.context.cs = 0x23;
+        thread.context.ss = 0x1B;
+        proc.main_thread = thread;
+    }
+
+    proc.state = .Running;
+}
+
+/// Wait result for wait/waitpid syscalls
+pub const WaitResult = struct {
+    pid: Pid,
+    status: i32,
+};
+
+/// Non-blocking wait for child process (WNOHANG)
+pub fn tryWaitForProcess(target_pid: i32) !?WaitResult {
+    const parent = getCurrentProcess() orelse return error.NoProcess;
+
+    parent.lock.acquire();
+    defer parent.lock.release();
+
+    // Check if any child has exited
+    for (parent.children.items, 0..) |child, idx| {
+        const matches = (target_pid == -1) or (child.pid == target_pid);
+
+        if (matches and child.state == .Zombie) {
+            const result = WaitResult{
+                .pid = child.pid,
+                .status = child.exit_code,
+            };
+
+            // Remove from children list
+            _ = parent.children.swapRemove(idx);
+
+            // Free zombie process resources
+            child.destroy();
+
+            return result;
+        }
+    }
+
+    // No exited child - return null for WNOHANG
+    return null;
+}
+
+/// Blocking wait for child process
+pub fn waitForProcess(target_pid: i32) !WaitResult {
+    const sched = @import("sched.zig");
+    const parent = getCurrentProcess() orelse return error.NoProcess;
+
+    while (true) {
+        // Try non-blocking first
+        if (try tryWaitForProcess(target_pid)) |result| {
+            return result;
+        }
+
+        // No exited child yet, sleep and wait for signal
+        if (getCurrentThread()) |thread| {
+            thread.state = .Sleeping;
+            thread.wait_reason = .ChildExit;
+            sched.yield();
+        } else {
+            return error.NoThread;
+        }
+    }
 }
 
 /// Wait for child process to exit
 pub fn wait(parent: *Process, target_pid: Pid) !i32 {
-    _ = parent;
-    _ = target_pid;
-    // TODO: Implement wait queue and sleep/wake
-    return error.NotImplemented;
+    const sched = @import("sched.zig");
+
+    while (true) {
+        parent.lock.acquire();
+
+        // Check if any child has exited
+        for (parent.children.items) |child| {
+            // Match specific PID or any child (pid == -1)
+            const matches = (target_pid == -1) or (child.pid == target_pid);
+
+            if (matches and child.state == .Zombie) {
+                // Found an exited child
+                const exit_code = child.exit_code;
+
+                // Remove from children list and reap
+                var i: usize = 0;
+                while (i < parent.children.items.len) : (i += 1) {
+                    if (parent.children.items[i] == child) {
+                        _ = parent.children.swapRemove(i);
+                        break;
+                    }
+                }
+
+                parent.lock.release();
+
+                // Free zombie process resources
+                child.destroy();
+
+                return exit_code;
+            }
+        }
+
+        parent.lock.release();
+
+        // No exited child yet, sleep and wait for signal
+        // The scheduler will wake us when a child exits
+        if (getCurrentThread()) |thread| {
+            thread.state = .Sleeping;
+            thread.wait_reason = .ChildExit;
+            sched.yield();
+        } else {
+            return error.NoThread;
+        }
+    }
 }
 
 // ============================================================================

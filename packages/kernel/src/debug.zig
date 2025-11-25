@@ -473,26 +473,141 @@ pub const GdbStub = struct {
     }
 
     fn sendRegisters(self: *GdbStub) void {
-        // TODO: Send all register values
-        self.sendPacket("");
+        // Send all x86_64 general purpose registers in GDB order:
+        // RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8-R15, RIP, RFLAGS, CS, SS, DS, ES, FS, GS
+        var buf: [512]u8 = undefined;
+        var offset: usize = 0;
+
+        // Get current thread context if available
+        const context = if (@import("process.zig").getCurrentProcess()) |proc|
+            if (proc.main_thread) |thread| &thread.context else null
+        else
+            null;
+
+        if (context) |ctx| {
+            // Format each 64-bit register as 16 hex chars (little-endian)
+            const regs = [_]u64{
+                ctx.rax, ctx.rbx, ctx.rcx, ctx.rdx, ctx.rsi, ctx.rdi, ctx.rbp, ctx.rsp,
+                ctx.r8,  ctx.r9,  ctx.r10, ctx.r11, ctx.r12, ctx.r13, ctx.r14, ctx.r15,
+                ctx.rip, ctx.rflags, ctx.cs, ctx.ss, 0, 0, 0, 0, // DS, ES, FS, GS
+            };
+            for (regs) |reg| {
+                _ = Basics.fmt.bufPrint(buf[offset..], "{x:0>16}", .{reg}) catch break;
+                offset += 16;
+            }
+        }
+
+        self.sendPacket(buf[0..offset]);
     }
 
     fn setRegisters(self: *GdbStub, data: []const u8) void {
-        _ = data;
-        // TODO: Set register values
+        // Parse hex register values and set them
+        if (@import("process.zig").getCurrentProcess()) |proc| {
+            if (proc.main_thread) |thread| {
+                var ctx = &thread.context;
+                var offset: usize = 0;
+
+                // Parse each 64-bit register (16 hex chars)
+                inline for (&[_]*u64{ &ctx.rax, &ctx.rbx, &ctx.rcx, &ctx.rdx, &ctx.rsi, &ctx.rdi, &ctx.rbp, &ctx.rsp }) |reg_ptr| {
+                    if (offset + 16 <= data.len) {
+                        reg_ptr.* = Basics.fmt.parseInt(u64, data[offset..][0..16], 16) catch 0;
+                        offset += 16;
+                    }
+                }
+            }
+        }
         self.sendPacket("OK");
     }
 
     fn readMemory(self: *GdbStub, data: []const u8) void {
-        _ = data;
-        // TODO: Parse address and length, send memory contents
-        self.sendPacket("");
+        // Parse "addr,length" format
+        var addr: u64 = 0;
+        var length: usize = 0;
+        var parsing_addr = true;
+
+        for (data) |c| {
+            if (c == ',') {
+                parsing_addr = false;
+                continue;
+            }
+            const digit = if (c >= '0' and c <= '9')
+                c - '0'
+            else if (c >= 'a' and c <= 'f')
+                c - 'a' + 10
+            else if (c >= 'A' and c <= 'F')
+                c - 'A' + 10
+            else
+                break;
+
+            if (parsing_addr) {
+                addr = addr * 16 + digit;
+            } else {
+                length = length * 16 + digit;
+            }
+        }
+
+        // Read memory and send as hex
+        var buf: [512]u8 = undefined;
+        const max_len = @min(length, buf.len / 2);
+        var offset: usize = 0;
+
+        const mem_ptr: [*]const u8 = @ptrFromInt(addr);
+        for (0..max_len) |i| {
+            _ = Basics.fmt.bufPrint(buf[offset..], "{x:0>2}", .{mem_ptr[i]}) catch break;
+            offset += 2;
+        }
+
+        self.sendPacket(buf[0..offset]);
     }
 
     fn writeMemory(self: *GdbStub, data: []const u8) void {
-        _ = data;
-        // TODO: Parse address, length, and data, write to memory
+        // Parse "addr,length:data" format
+        var addr: u64 = 0;
+        var length: usize = 0;
+        var data_start: usize = 0;
+        var state: enum { addr, len, data_bytes } = .addr;
+
+        for (data, 0..) |c, i| {
+            switch (state) {
+                .addr => {
+                    if (c == ',') {
+                        state = .len;
+                        continue;
+                    }
+                    const digit = hexDigit(c) orelse break;
+                    addr = addr * 16 + digit;
+                },
+                .len => {
+                    if (c == ':') {
+                        state = .data_bytes;
+                        data_start = i + 1;
+                        break;
+                    }
+                    const digit = hexDigit(c) orelse break;
+                    length = length * 16 + digit;
+                },
+                .data_bytes => break,
+            }
+        }
+
+        // Write hex data to memory
+        const mem_ptr: [*]u8 = @ptrFromInt(addr);
+        const hex_data = data[data_start..];
+        var i: usize = 0;
+        while (i < length and i * 2 + 1 < hex_data.len) : (i += 1) {
+            const high = hexDigit(hex_data[i * 2]) orelse break;
+            const low = hexDigit(hex_data[i * 2 + 1]) orelse break;
+            mem_ptr[i] = @intCast(high * 16 + low);
+        }
+
         self.sendPacket("OK");
+    }
+
+    fn hexDigit(c: u8) ?u8 {
+        if (c >= '0' and c <= '9') return c - '0';
+        if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' and c <= 'F') return c - 'A' + 10;
+        return null;
     }
 };
 

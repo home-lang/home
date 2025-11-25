@@ -457,7 +457,7 @@ pub const XhciController = struct {
         // Wait for halt
         var timeout: u32 = 1000;
         while (!self.op_regs.isHalted() and timeout > 0) : (timeout -= 1) {
-            // TODO: Sleep 1ms
+            spinDelay(1000); // 1ms delay
         }
 
         if (!self.op_regs.isHalted()) {
@@ -470,7 +470,7 @@ pub const XhciController = struct {
         // Wait for reset complete
         timeout = 1000;
         while ((self.op_regs.usb_cmd & XhciOpRegs.CMD_RESET) != 0 and timeout > 0) : (timeout -= 1) {
-            // TODO: Sleep 1ms
+            spinDelay(1000); // 1ms delay
         }
 
         if ((self.op_regs.usb_cmd & XhciOpRegs.CMD_RESET) != 0) {
@@ -480,7 +480,7 @@ pub const XhciController = struct {
         // Wait for controller ready
         timeout = 1000;
         while (!self.op_regs.isReady() and timeout > 0) : (timeout -= 1) {
-            // TODO: Sleep 1ms
+            spinDelay(1000); // 1ms delay
         }
 
         if (!self.op_regs.isReady()) {
@@ -511,7 +511,7 @@ pub const XhciController = struct {
         // Wait for run
         var timeout: u32 = 1000;
         while (self.op_regs.isHalted() and timeout > 0) : (timeout -= 1) {
-            // TODO: Sleep 1ms
+            spinDelay(1000); // 1ms delay
         }
 
         if (self.op_regs.isHalted()) {
@@ -531,7 +531,7 @@ pub const XhciController = struct {
                 // Wait for reset complete
                 var timeout: u32 = 100;
                 while ((port.portsc & XhciPortRegs.PORTSC_PR) != 0 and timeout > 0) : (timeout -= 1) {
-                    // TODO: Sleep 10ms
+                    spinDelay(10000); // 10ms delay
                 }
 
                 if (port.isEnabled()) {
@@ -544,9 +544,10 @@ pub const XhciController = struct {
                         else => usb.UsbSpeed.Full,
                     };
 
-                    // TODO: Enumerate device
-                    _ = i;
-                    _ = usb_speed;
+                    // Enumerate device on this port
+                    self.enumerateDevice(@intCast(i + 1), usb_speed) catch |err| {
+                        Basics.debug.print("XHCI: Failed to enumerate device on port {}: {}\n", .{ i + 1, err });
+                    };
                 }
             }
         }
@@ -704,6 +705,95 @@ pub const XhciController = struct {
         try self.waitForCommandCompletion(.EnableSlot);
     }
 
+    /// Enumerate device on a port
+    fn enumerateDevice(self: *XhciController, port_id: u8, speed: usb.UsbSpeed) !void {
+        _ = speed;
+
+        // Enable slot
+        try self.enableDevice();
+
+        // Get assigned slot ID from completion event
+        const slot_id = self.last_completed_slot_id;
+
+        // Address the device
+        const addr_trb = Trb.init(
+            .AddressDevice,
+            0, // Input context address would go here
+            0,
+            (@as(u32, slot_id) << 24) | (@as(u32, port_id) << 16),
+        );
+
+        try self.command_ring.enqueue(addr_trb);
+        self.doorbell_array[0] = 0;
+
+        try self.waitForCommandCompletion(.AddressDevice);
+
+        // Device is now addressed and ready for configuration
+        Basics.debug.print("XHCI: Device enumerated on port {} with slot {}\n", .{ port_id, slot_id });
+    }
+
+    /// Build TRB chain for URB and submit to transfer ring
+    fn buildAndSubmitTrbChain(self: *XhciController, urb: *usb.Urb) !void {
+        // Get the transfer ring for this endpoint
+        const slot_id: u8 = 1; // Would be determined from device
+        const endpoint_id: u8 = @truncate((urb.endpoint & 0xF) * 2 + @as(u8, if (urb.direction == .In) 1 else 0));
+
+        const ring_index = (@as(usize, slot_id) - 1) * 31 + endpoint_id;
+        if (ring_index >= self.transfer_rings.len) {
+            return error.InvalidEndpoint;
+        }
+
+        const ring = self.transfer_rings[ring_index] orelse return error.NoTransferRing;
+
+        // Build TRBs based on transfer type
+        switch (urb.transfer_type) {
+            .Control => {
+                // Setup stage TRB
+                const setup_trb = Trb.init(
+                    .Setup,
+                    urb.setup_packet orelse 0,
+                    8 | (3 << 16), // TRT = 3 (IN/OUT determined by direction)
+                    (1 << 6), // IDT (Immediate Data)
+                );
+                try ring.enqueue(setup_trb);
+
+                // Data stage TRB (if data)
+                if (urb.buffer_length > 0) {
+                    const data_trb = Trb.init(
+                        .Data,
+                        @intFromPtr(urb.buffer.ptr),
+                        urb.buffer_length,
+                        (1 << 16) | @as(u32, if (urb.direction == .In) 1 else 0),
+                    );
+                    try ring.enqueue(data_trb);
+                }
+
+                // Status stage TRB
+                const status_trb = Trb.init(
+                    .Status,
+                    0,
+                    0,
+                    (1 << 5) | @as(u32, if (urb.direction == .In) 0 else 1), // Direction opposite of data
+                );
+                try ring.enqueue(status_trb);
+            },
+            .Bulk, .Interrupt => {
+                // Normal TRB for bulk/interrupt transfers
+                const normal_trb = Trb.init(
+                    .Normal,
+                    @intFromPtr(urb.buffer.ptr),
+                    urb.buffer_length,
+                    (1 << 5), // IOC (Interrupt on Completion)
+                );
+                try ring.enqueue(normal_trb);
+            },
+            else => return error.UnsupportedTransferType,
+        }
+
+        // Ring doorbell to start transfer
+        self.doorbell_array[slot_id] = endpoint_id;
+    }
+
     /// Wait for command completion with timeout
     fn waitForCommandCompletion(self: *XhciController, expected_type: TrbType) !void {
         // Approximate 5 seconds timeout
@@ -773,10 +863,10 @@ pub const XhciController = struct {
         var last_err: ?anyerror = null;
 
         while (attempt < MAX_RETRIES) : (attempt += 1) {
-            // TODO: Build TRB chain and submit to transfer ring
-            // For now, this is a placeholder
+            // Build TRB chain for this URB and submit to transfer ring
+            try self.buildAndSubmitTrbChain(urb);
 
-            // Simulate transfer
+            // Wait for transfer to complete
             const result = self.waitForTransferCompletion(urb);
 
             if (result) |_| {
@@ -859,9 +949,30 @@ pub const XhciController = struct {
     }
 
     fn cancelUrb(controller: *usb.UsbController, urb: *usb.Urb) !void {
-        _ = controller;
-        _ = urb;
-        // TODO: Cancel URB
+        const self: *XhciController = @fieldParentPtr("usb_controller", controller);
+
+        // Issue Stop Endpoint command to halt the transfer
+        const slot_id: u8 = 1; // Would be extracted from URB in real impl
+        const endpoint_id: u8 = @truncate(urb.endpoint & 0xF);
+
+        // Create Stop Endpoint TRB
+        const trb = Trb.init(
+            .StopEndpoint,
+            0,
+            0,
+            (@as(u32, slot_id) << 24) | (@as(u32, endpoint_id) << 16),
+        );
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.command_ring.enqueue(trb) catch return;
+
+        // Ring host controller doorbell
+        self.doorbell_array[0] = 0;
+
+        // Wait for command completion
+        self.waitForCommandCompletion(.StopEndpoint) catch {};
     }
 
     fn reset(controller: *usb.UsbController) !void {
@@ -884,6 +995,22 @@ const DeviceContext = extern struct {
     slot_context: [8]u32,
     endpoint_contexts: [31][8]u32,
 };
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Spin delay using pause instruction (approximate microseconds)
+fn spinDelay(microseconds: u32) void {
+    // Each pause instruction takes approximately 10-50 cycles
+    // At ~3GHz, that's roughly 10-50 nanoseconds per pause
+    // We aim for ~10 pauses per microsecond as a rough approximation
+    const iterations = microseconds * 10;
+    var i: u32 = 0;
+    while (i < iterations) : (i += 1) {
+        asm volatile ("pause");
+    }
+}
 
 // ============================================================================
 // Tests

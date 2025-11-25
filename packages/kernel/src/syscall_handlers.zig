@@ -234,7 +234,18 @@ export fn sys_wait4(args: syscall.SyscallArgs) callconv(.C) u64 {
     const pid = @as(i32, @bitCast(@as(u32, @truncate(args.arg1))));
     const wstatus_ptr = args.arg2;
     const options = @as(i32, @bitCast(@as(u32, @truncate(args.arg3))));
-    _ = options; // TODO: Use options
+
+    // Wait options flags
+    const WNOHANG: i32 = 1; // Return immediately if no child has exited
+    const WUNTRACED: i32 = 2; // Also return if child has stopped
+    const WCONTINUED: i32 = 8; // Also return if stopped child has continued
+
+    const is_nonblocking = (options & WNOHANG) != 0;
+    const track_stopped = (options & WUNTRACED) != 0;
+    const track_continued = (options & WCONTINUED) != 0;
+
+    _ = track_stopped;
+    _ = track_continued;
 
     // Validate status pointer if provided
     if (wstatus_ptr != 0) {
@@ -243,17 +254,30 @@ export fn sys_wait4(args: syscall.SyscallArgs) callconv(.C) u64 {
         };
     }
 
-    const result = process.waitForProcess(pid) catch |err| {
-        return returnError(err);
-    };
+    // Handle WNOHANG - return immediately if no child has exited
+    const result = if (is_nonblocking)
+        process.tryWaitForProcess(pid) catch |err| {
+            return returnError(err);
+        }
+    else
+        process.waitForProcess(pid) catch |err| {
+            return returnError(err);
+        };
+
+    // WNOHANG returns 0 if no child has exited yet
+    if (result == null) {
+        return 0;
+    }
+
+    const wait_result = result.?;
 
     // Write status if pointer provided
     if (wstatus_ptr != 0) {
         const status_ptr: *i32 = @ptrFromInt(wstatus_ptr);
-        status_ptr.* = result.status;
+        status_ptr.* = wait_result.status;
     }
 
-    return @as(u64, @intCast(result.pid));
+    return @as(u64, @intCast(wait_result.pid));
 }
 
 export fn sys_kill(args: syscall.SyscallArgs) callconv(.C) u64 {
@@ -693,9 +717,48 @@ export fn sys_setns(args: syscall.SyscallArgs) callconv(.C) u64 {
         return returnError(error.PermissionDenied);
     }
 
-    // TODO: Implement namespace file descriptor lookup and joining
-    // For now, just return ENOSYS (not implemented)
-    return returnError(error.NotImplemented);
+    // Get current process
+    const current = process.getCurrentProcess() orelse return returnError(error.NoProcess);
+
+    // Look up the namespace file descriptor
+    const ns_file = current.getFile(@intCast(ns_fd)) orelse return returnError(error.BadFileDescriptor);
+
+    // Verify this is a namespace file (from /proc/[pid]/ns/)
+    // The file should have namespace data attached
+    if (ns_file.private_data) |priv| {
+        const ns_info: *const namespaces.NamespaceFileInfo = @ptrCast(@alignCast(priv));
+
+        // Join the appropriate namespace based on type
+        if (ns_type == 0 or ns_type == @intFromEnum(namespaces.NamespaceType.CLONE_NEWPID)) {
+            if (ns_info.pid_ns) |target_ns| {
+                // Replace process's PID namespace
+                current.namespaces.?.pid_ns.release();
+                target_ns.acquire();
+                current.namespaces.?.pid_ns = target_ns;
+            }
+        }
+
+        if (ns_type == 0 or ns_type == @intFromEnum(namespaces.NamespaceType.CLONE_NEWNET)) {
+            if (ns_info.net_ns) |target_ns| {
+                current.namespaces.?.net_ns.release();
+                target_ns.acquire();
+                current.namespaces.?.net_ns = target_ns;
+            }
+        }
+
+        if (ns_type == 0 or ns_type == @intFromEnum(namespaces.NamespaceType.CLONE_NEWNS)) {
+            if (ns_info.mnt_ns) |target_ns| {
+                current.namespaces.?.mnt_ns.release();
+                target_ns.acquire();
+                current.namespaces.?.mnt_ns = target_ns;
+            }
+        }
+
+        audit.logProcessNamespaceChange(current.pid, ns_type);
+        return 0;
+    }
+
+    return returnError(error.InvalidArgument);
 }
 
 /// clone - create child process with namespace flags

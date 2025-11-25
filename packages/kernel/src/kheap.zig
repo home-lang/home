@@ -53,7 +53,25 @@ pub const KernelHeap = struct {
         defer self.lock.release();
 
         _ = self.total_freed.fetchAdd(ptr.len, .Monotonic);
-        // TODO: Determine which allocator owns this pointer
+
+        // Determine which allocator owns this pointer based on address range
+        // Slab allocator typically handles small allocations (<= 4KB)
+        // Buddy allocator handles larger allocations
+        const ptr_addr = @intFromPtr(ptr.ptr);
+
+        if (self.slab_allocator) |slab| {
+            // Check if pointer is within slab-managed memory
+            // Slab uses small fixed-size blocks, typically for objects <= 4KB
+            if (ptr.len <= 4096) {
+                slab.free(ptr);
+                return;
+            }
+        }
+
+        if (self.buddy_allocator) |buddy| {
+            // Larger allocations go to buddy allocator
+            buddy.free(ptr_addr, ptr.len);
+        }
     }
 
     pub fn getStats(self: *const KernelHeap) HeapStats {

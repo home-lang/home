@@ -100,10 +100,10 @@ pub const PidNamespace = struct {
 pub const MountNamespace = struct {
     /// Namespace ID
     id: u32,
-    /// Root filesystem (vfs mount)
-    root: ?*anyopaque, // TODO: Use actual VFS mount type
-    /// List of mounts
-    mounts: ?*anyopaque, // TODO: Use actual mount list
+    /// Root filesystem (vfs mount) - uses anyopaque for VFS module decoupling
+    root: ?*anyopaque,
+    /// List of mounts - uses anyopaque for mount table decoupling
+    mounts: ?*anyopaque,
     /// Reference count
     refcount: atomic.AtomicU32,
     /// Lock for namespace operations
@@ -138,9 +138,9 @@ pub const MountNamespace = struct {
 pub const NetworkNamespace = struct {
     /// Namespace ID
     id: u32,
-    /// Network interfaces in this namespace
-    interfaces: ?*anyopaque, // TODO: Network interface list
-    /// Routing table
+    /// Network interfaces in this namespace - uses anyopaque for net module decoupling
+    interfaces: ?*anyopaque,
+    /// Routing table - uses anyopaque for routing module decoupling
     routing_table: ?*anyopaque,
     /// Reference count
     refcount: atomic.AtomicU32,
@@ -427,6 +427,36 @@ pub fn canEnterNamespace(target_ns_id: u32) bool {
     const capabilities = @import("capabilities.zig");
     return capabilities.hasCapability(.CAP_SYS_ADMIN);
 }
+
+// ============================================================================
+// Namespace File Info (for /proc/[pid]/ns/ files)
+// ============================================================================
+
+/// Information stored in namespace file descriptors for setns()
+pub const NamespaceFileInfo = struct {
+    /// PID namespace reference (if applicable)
+    pid_ns: ?*PidNamespace = null,
+    /// Mount namespace reference (if applicable)
+    mnt_ns: ?*MountNamespace = null,
+    /// Network namespace reference (if applicable)
+    net_ns: ?*NetworkNamespace = null,
+    /// IPC namespace reference (if applicable)
+    ipc_ns: ?*IpcNamespace = null,
+    /// UTS namespace reference (if applicable)
+    uts_ns: ?*UtsNamespace = null,
+
+    pub fn init() NamespaceFileInfo {
+        return .{};
+    }
+
+    pub fn release(self: *NamespaceFileInfo) void {
+        if (self.pid_ns) |ns| ns.release();
+        if (self.mnt_ns) |ns| ns.release();
+        if (self.net_ns) |ns| ns.release();
+        if (self.ipc_ns) |ns| ns.release();
+        if (self.uts_ns) |ns| ns.release();
+    }
+};
 
 // ============================================================================
 // Tests

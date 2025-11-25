@@ -368,12 +368,21 @@ pub const Profiler = struct {
 
     pub fn start(self: *Profiler) void {
         self.config.enabled = true;
-        // TODO: Setup timer interrupt for sampling
+        // Setup timer interrupt for sampling using Local APIC timer
+        const apic = @import("apic.zig");
+        if (apic.getLocalApic()) |local_apic| {
+            // Configure APIC timer for periodic sampling at sampling_interval
+            local_apic.setupPeriodicTimer(self.config.sampling_interval, 0xF0);
+        }
     }
 
     pub fn stop(self: *Profiler) void {
         self.config.enabled = false;
-        // TODO: Disable timer interrupt
+        // Disable timer interrupt by stopping the Local APIC timer
+        const apic = @import("apic.zig");
+        if (apic.getLocalApic()) |local_apic| {
+            local_apic.stopTimer();
+        }
     }
 
     pub fn handleTimerInterrupt(self: *Profiler, ip: u64, cpu: u8) !void {
@@ -389,7 +398,12 @@ pub const Profiler = struct {
             sample.thread_id = thr.tid;
         }
 
-        // TODO: Capture stack trace
+        // Capture stack trace by walking frame pointers
+        // Stack frames: [rbp] -> [prev rbp, return addr, ...]
+        // Limited to 8 frames for sample storage
+        const stack = @import("stack_trace.zig");
+        sample.stack_depth = stack.captureStackTrace(&sample.stack_trace, 8);
+
         try self.cpu_profile.addSample(sample);
     }
 

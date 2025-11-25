@@ -341,10 +341,14 @@ pub fn exec(
     const new_addr_space = try process.AddressSpace.init(allocator);
     errdefer new_addr_space.deinit(allocator);
 
-    // TODO: Load executable file
-    const elf_data = &[_]u8{};
+    // Load executable file from VFS
+    const elf_data = try loadExecutableFromPath(allocator, path);
+    defer allocator.free(elf_data);
     const format = detectFormat(elf_data);
-    _ = format;
+
+    if (format != .ELF64 and format != .ELF32) {
+        return error.UnsupportedExecutableFormat;
+    }
 
     // Load program
     // const entry_point = try ElfLoader.loadElf64(new_addr_space, allocator, elf_data);

@@ -315,8 +315,33 @@ pub fn sysPipe(pipefd: *[2]i32) !void {
 
 /// sys_pipe2 - Create a pipe with flags
 pub fn sysPipe2(pipefd: *[2]i32, flags: u32) !void {
-    _ = flags; // TODO: Handle O_NONBLOCK, O_CLOEXEC
     try sysPipe(pipefd);
+
+    // Handle pipe flags
+    const O_NONBLOCK: u32 = 0o4000;
+    const O_CLOEXEC: u32 = 0o2000000;
+
+    const current = process.current() orelse return error.NoProcess;
+
+    if (flags & O_CLOEXEC != 0) {
+        // Set close-on-exec flag for both file descriptors
+        if (current.getFile(@intCast(pipefd[0]))) |fd| {
+            fd.flags |= vfs.O_CLOEXEC;
+        }
+        if (current.getFile(@intCast(pipefd[1]))) |fd| {
+            fd.flags |= vfs.O_CLOEXEC;
+        }
+    }
+
+    if (flags & O_NONBLOCK != 0) {
+        // Set non-blocking flag for both file descriptors
+        if (current.getFile(@intCast(pipefd[0]))) |fd| {
+            fd.flags |= vfs.O_NONBLOCK;
+        }
+        if (current.getFile(@intCast(pipefd[1]))) |fd| {
+            fd.flags |= vfs.O_NONBLOCK;
+        }
+    }
 }
 
 // ============================================================================

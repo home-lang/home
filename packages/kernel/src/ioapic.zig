@@ -401,9 +401,35 @@ pub fn initIsaIrqMapping() void {
 
 /// Set IRQ override (from ACPI MADT)
 pub fn setIrqOverride(isa_irq: u8, gsi: u32, flags: u16) void {
-    _ = flags; // TODO: Use flags for polarity/trigger mode
+    // Store flags for polarity/trigger mode configuration
+    // Bits 0-1: Polarity (0=conform to bus, 1=active high, 2=reserved, 3=active low)
+    // Bits 2-3: Trigger mode (0=conform to bus, 1=edge, 2=reserved, 3=level)
+    const polarity = flags & 0x3;
+    const trigger = (flags >> 2) & 0x3;
+
     if (isa_irq < 16) {
         isa_irq_to_gsi[isa_irq] = gsi;
+
+        // Configure the redirection entry with polarity and trigger mode
+        if (getIoApic()) |ioapic| {
+            var entry = ioapic.readRedirection(gsi);
+
+            // Set polarity (bit 13): 0=active high, 1=active low
+            if (polarity == 3) { // Active low
+                entry |= (1 << 13);
+            } else { // Active high (default)
+                entry &= ~@as(u64, 1 << 13);
+            }
+
+            // Set trigger mode (bit 15): 0=edge, 1=level
+            if (trigger == 3) { // Level triggered
+                entry |= (1 << 15);
+            } else { // Edge triggered (default)
+                entry &= ~@as(u64, 1 << 15);
+            }
+
+            ioapic.writeRedirection(gsi, entry);
+        }
     }
 }
 

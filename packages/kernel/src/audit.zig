@@ -148,7 +148,13 @@ pub fn logEvent(event: AuditEvent) void {
         audit_log_tail = (audit_log_tail + 1) % AUDIT_LOG_SIZE;
     }
 
-    // TODO: Also write to serial/disk for persistence
+    // Write to serial console for persistence (in production, would write to disk)
+    const serial = @import("serial.zig");
+    serial.writeString("[AUDIT] ");
+    serial.writeString(@tagName(event.event_type));
+    serial.writeString(" pid=");
+    serial.writeU64(event.pid);
+    serial.writeString("\n");
 }
 
 /// Get audit log events (for reading)
@@ -263,6 +269,18 @@ pub fn logSignalSend(target_pid: u32, signal: i32) void {
 
     var buf: [64]u8 = undefined;
     const msg = Basics.fmt.bufPrint(&buf, "Signal {} to PID {}", .{ signal, target_pid }) catch "signal_send";
+    event.addData(msg);
+
+    logEvent(event);
+}
+
+/// Log process namespace change (setns)
+pub fn logProcessNamespaceChange(pid: u32, ns_type: u32) void {
+    var event = AuditEvent.init(.AUDIT_SECURITY_VIOLATION, .INFO);
+    event.severity = .INFO; // Namespace changes are normal ops
+
+    var buf: [64]u8 = undefined;
+    const msg = Basics.fmt.bufPrint(&buf, "PID {} joined namespace type 0x{x}", .{ pid, ns_type }) catch "ns_change";
     event.addData(msg);
 
     logEvent(event);

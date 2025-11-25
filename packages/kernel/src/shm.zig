@@ -270,9 +270,25 @@ pub const ShmManager = struct {
 
     /// Mark segment for deletion when all processes detach
     pub fn markForDeletion(self: *ShmManager, id: u32) !void {
-        _ = self;
-        _ = id;
-        // TODO: Implement deferred deletion
+        self.lock.acquire();
+        defer self.lock.release();
+
+        if (self.segments.get(id)) |segment| {
+            // Mark for deferred deletion - segment will be freed when attach_count reaches 0
+            segment.marked_for_deletion = true;
+
+            // If no attachments, delete immediately
+            if (segment.attach_count.load(.Monotonic) == 0) {
+                // Free physical pages
+                const page_count = (segment.size + 4095) / 4096;
+                for (segment.pages[0..page_count]) |page| {
+                    if (page != 0) {
+                        freePhysicalPage(page);
+                    }
+                }
+                _ = self.segments.remove(id);
+            }
+        }
     }
 };
 
@@ -328,10 +344,13 @@ pub fn sysShmdt(addr: usize) !void {
     var it = manager.segments.valueIterator();
 
     while (it.next()) |segment| {
-        // Check if this address belongs to this segment
-        // TODO: Track attachments per process
-        try segment.*.detach(proc, addr);
-        return;
+        // Check if this address belongs to this segment for this process
+        // The attachment is tracked via the attach_count and the mapped address
+        // In a full implementation, we'd have a per-process attachment list
+        if (segment.*.isAttachedAt(addr)) {
+            try segment.*.detach(proc, addr);
+            return;
+        }
     }
 
     return error.InvalidAddress;
@@ -348,15 +367,34 @@ pub fn sysShmctl(shmid: i32, cmd: i32, buf: ?*anyopaque) !i32 {
 
     switch (cmd) {
         IPC_STAT => {
-            // Get segment info
-            _ = buf;
-            // TODO: Copy segment info to user buffer
+            // Get segment info - copy to user buffer
+            if (buf) |user_buf| {
+                const shmid_ds = @as(*ShmIdDs, @ptrCast(@alignCast(user_buf)));
+                shmid_ds.* = .{
+                    .shm_perm = .{
+                        .uid = segment.perms.uid,
+                        .gid = segment.perms.gid,
+                        .mode = segment.perms.mode,
+                    },
+                    .shm_segsz = segment.size,
+                    .shm_atime = segment.atime,
+                    .shm_dtime = segment.dtime,
+                    .shm_ctime = segment.ctime,
+                    .shm_cpid = segment.perms.creator_pid,
+                    .shm_lpid = segment.last_pid,
+                    .shm_nattch = segment.attach_count.load(.Monotonic),
+                };
+            }
             return 0;
         },
         IPC_SET => {
-            // Set segment info
-            _ = buf;
-            // TODO: Update segment info from user buffer
+            // Set segment info from user buffer
+            if (buf) |user_buf| {
+                const shmid_ds = @as(*const ShmIdDs, @ptrCast(@alignCast(user_buf)));
+                segment.perms.uid = shmid_ds.shm_perm.uid;
+                segment.perms.gid = shmid_ds.shm_perm.gid;
+                segment.perms.mode = shmid_ds.shm_perm.mode;
+            }
             return 0;
         },
         IPC_RMID => {
@@ -413,13 +451,15 @@ fn hashName(name: []const u8) i32 {
 // ============================================================================
 
 fn allocatePhysicalPage() !usize {
-    // TODO: Integrate with physical memory allocator
-    return @import("pmm.zig").allocPage();
+    // Allocate physical page using the kernel's physical memory manager
+    const pmm = @import("pmm.zig");
+    return pmm.allocPage();
 }
 
 fn freePhysicalPage(page: usize) void {
-    // TODO: Integrate with physical memory allocator
-    @import("pmm.zig").freePage(page);
+    // Free physical page back to the kernel's physical memory manager
+    const pmm = @import("pmm.zig");
+    pmm.freePage(page);
 }
 
 fn getTimeSeconds() u64 {

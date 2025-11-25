@@ -319,17 +319,27 @@ fn protectSection(section: *const KernelSection) !void {
     const page_count = section.pageCount();
 
     // Apply protection to each page in the section
+    const paging = @import("paging.zig");
+
     var i: u64 = 0;
     while (i < page_count) : (i += 1) {
         const page_addr = (start_page + i) * PAGE_SIZE;
 
-        // In a real implementation, we would update the page table entries
-        // For now, this is a placeholder
-        _ = page_addr;
-        _ = page_flags;
+        // Update page table entry flags for this page
+        // Convert our page_flags to paging module's PageFlags format
+        const paging_flags = paging.PageFlags{
+            .writable = (page_flags & (1 << 1)) != 0, // Bit 1 = writable
+            .user = (page_flags & (1 << 2)) != 0, // Bit 2 = user accessible
+            .no_execute = (page_flags & (1 << 63)) != 0, // Bit 63 = NX bit
+        };
 
-        // TODO: Update page table entry for this page
-        // paging.updatePageFlags(page_addr, page_flags);
+        // Get current page table and update flags
+        if (paging.getKernelPageTable()) |page_table| {
+            paging.updatePageFlags(page_table, page_addr, paging_flags) catch {
+                // Page may not be mapped yet, continue with next page
+                continue;
+            };
+        }
     }
 }
 

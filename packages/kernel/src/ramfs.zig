@@ -489,10 +489,36 @@ const ramfs_sb_ops = vfs.SuperblockOperations{
 
 fn ramfsMount(fs_type: *vfs.FilesystemType, source: ?[]const u8, flags: vfs.MountFlags, data: ?*anyopaque) anyerror!*vfs.Superblock {
     _ = source;
-    _ = data;
 
     // Parse mount options for size limit
-    const max_bytes: u64 = 0; // TODO: Parse from data
+    var max_bytes: u64 = 0; // Default: unlimited
+    if (data) |mount_data| {
+        // Mount data is typically a string like "size=512m" or "size=1g"
+        const opts: [*]const u8 = @ptrCast(mount_data);
+        // Simple parsing: look for "size=" prefix
+        var i: usize = 0;
+        while (i < 256 and opts[i] != 0) : (i += 1) {
+            if (i + 5 <= 256 and opts[i] == 's' and opts[i + 1] == 'i' and opts[i + 2] == 'z' and opts[i + 3] == 'e' and opts[i + 4] == '=') {
+                // Parse the size value
+                var size: u64 = 0;
+                var j = i + 5;
+                while (j < 256 and opts[j] >= '0' and opts[j] <= '9') : (j += 1) {
+                    size = size * 10 + (opts[j] - '0');
+                }
+                // Handle suffix (k, m, g)
+                if (j < 256) {
+                    switch (opts[j]) {
+                        'k', 'K' => size *= 1024,
+                        'm', 'M' => size *= 1024 * 1024,
+                        'g', 'G' => size *= 1024 * 1024 * 1024,
+                        else => {},
+                    }
+                }
+                max_bytes = size;
+                break;
+            }
+        }
+    }
 
     // Use page allocator for ramfs
     const allocator = Basics.heap.page_allocator;

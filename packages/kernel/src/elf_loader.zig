@@ -265,13 +265,83 @@ pub const StackSetup = struct {
             page_addr -= memory.PAGE_SIZE;
         }
 
-        // Setup argv/envp on stack
-        const stack_ptr = stack_base - arg_size;
-
-        // TODO: Write actual argv/envp data to stack memory
-        // This requires careful pointer arithmetic and string copying
+        // Setup argv/envp on stack following System V AMD64 ABI layout:
+        // Stack layout (high to low):
+        //   - environment strings
+        //   - argument strings
+        //   - NULL (envp terminator)
+        //   - envp[n-1] ... envp[0] pointers
+        //   - NULL (argv terminator)
+        //   - argv[argc-1] ... argv[0] pointers
+        //   - argc
+        //   <- RSP points here
 
         _ = allocator;
+
+        // Calculate positions for strings (write from top down)
+        var string_ptr = stack_base;
+
+        // First pass: write all strings and record their positions
+        var arg_positions: [256]u64 = undefined;
+        var env_positions: [256]u64 = undefined;
+
+        // Write environment strings (backwards to preserve order)
+        var env_idx: usize = envp.len;
+        while (env_idx > 0) {
+            env_idx -= 1;
+            string_ptr -= envp[env_idx].len + 1; // +1 for null terminator
+            const dest: [*]u8 = @ptrFromInt(string_ptr);
+            @memcpy(dest[0..envp[env_idx].len], envp[env_idx]);
+            dest[envp[env_idx].len] = 0; // null terminator
+            env_positions[env_idx] = string_ptr;
+        }
+
+        // Write argument strings (backwards to preserve order)
+        var arg_idx: usize = args.len;
+        while (arg_idx > 0) {
+            arg_idx -= 1;
+            string_ptr -= args[arg_idx].len + 1;
+            const dest: [*]u8 = @ptrFromInt(string_ptr);
+            @memcpy(dest[0..args[arg_idx].len], args[arg_idx]);
+            dest[args[arg_idx].len] = 0;
+            arg_positions[arg_idx] = string_ptr;
+        }
+
+        // Align to 16 bytes for pointers
+        string_ptr = string_ptr & ~@as(u64, 0xF);
+
+        // Calculate pointer table position
+        const total_ptrs = 1 + args.len + 1 + envp.len + 1; // argc + argv + NULL + envp + NULL
+        var ptr_pos = string_ptr - (total_ptrs * @sizeOf(u64));
+        ptr_pos = ptr_pos & ~@as(u64, 0xF); // Align to 16 bytes
+
+        const stack_ptr = ptr_pos;
+
+        // Write argc
+        const argc_ptr: *u64 = @ptrFromInt(ptr_pos);
+        argc_ptr.* = args.len;
+        ptr_pos += @sizeOf(u64);
+
+        // Write argv pointers
+        for (0..args.len) |i| {
+            const argv_ptr: *u64 = @ptrFromInt(ptr_pos);
+            argv_ptr.* = arg_positions[i];
+            ptr_pos += @sizeOf(u64);
+        }
+        // NULL terminator for argv
+        const argv_null: *u64 = @ptrFromInt(ptr_pos);
+        argv_null.* = 0;
+        ptr_pos += @sizeOf(u64);
+
+        // Write envp pointers
+        for (0..envp.len) |i| {
+            const envp_ptr: *u64 = @ptrFromInt(ptr_pos);
+            envp_ptr.* = env_positions[i];
+            ptr_pos += @sizeOf(u64);
+        }
+        // NULL terminator for envp
+        const envp_null: *u64 = @ptrFromInt(ptr_pos);
+        envp_null.* = 0;
 
         return stack_ptr;
     }
