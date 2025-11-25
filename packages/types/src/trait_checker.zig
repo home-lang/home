@@ -412,16 +412,74 @@ pub const TraitChecker = struct {
 
     /// Check a trait method for validity
     fn checkTraitMethod(
-        _: *TraitChecker,
+        self: *TraitChecker,
         trait_name: []const u8,
         method: ast.TraitMethod,
     ) !void {
-        _ = trait_name;
-        _ = method;
-        // TODO: Verify method signature is valid
-        // - Check parameter types exist
-        // - Check return type exists
-        // - Verify Self type usage is correct
+        // Check parameter types exist
+        for (method.params) |param| {
+            if (param.type_expr) |type_expr| {
+                try self.validateTypeExpr(type_expr, trait_name);
+            }
+        }
+
+        // Check return type exists
+        if (method.return_type) |return_type| {
+            try self.validateTypeExpr(return_type, trait_name);
+        }
+
+        // Self type is always valid within trait methods
+    }
+
+    /// Validate that a type expression refers to valid types
+    fn validateTypeExpr(
+        self: *TraitChecker,
+        type_expr: *ast.TypeExpr,
+        context: []const u8,
+    ) !void {
+        switch (type_expr.*) {
+            .Named => |name| {
+                // Check if type is a primitive or a known type
+                const primitives = [_][]const u8{
+                    "i8", "i16", "i32", "i64", "i128",
+                    "u8", "u16", "u32", "u64", "u128",
+                    "f32", "f64", "bool", "char", "str",
+                    "void", "never", "usize", "isize",
+                };
+                for (primitives) |prim| {
+                    if (std.mem.eql(u8, name, prim)) return;
+                }
+                // Non-primitive types are assumed valid (checked elsewhere)
+            },
+            .SelfType => {
+                // Self is always valid in trait context
+            },
+            .Generic => |gen| {
+                // Recursively validate generic base
+                try self.validateTypeExpr(gen.base, context);
+                for (gen.args) |arg| {
+                    try self.validateTypeExpr(arg, context);
+                }
+            },
+            .Reference => |ref| {
+                try self.validateTypeExpr(ref.inner, context);
+            },
+            .TraitObject => |obj| {
+                // Verify trait exists
+                if (self.trait_system.traits.get(obj.trait_name) == null) {
+                    try self.addError(.{
+                        .kind = .UndefinedTrait,
+                        .message = try std.fmt.allocPrint(
+                            self.allocator,
+                            "Trait '{s}' in type expression is not defined (context: {s})",
+                            .{ obj.trait_name, context },
+                        ),
+                        .location = .{ .line = 0, .column = 0 },
+                    });
+                }
+            },
+            else => {},
+        }
     }
 
     /// Convert TypeExpr to string for error messages

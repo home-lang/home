@@ -131,7 +131,41 @@ pub const Level = struct {
             }
         }
 
-        // TODO: Parse categories (c0.c3 format)
+        // Parse categories (c0.c3 format means categories 0 through 3)
+        // Format: s0:c0.c3 or s0:c0,c1,c5 or s0-s1:c0.c1023
+        if (std.mem.indexOf(u8, level_str, ":c")) |cat_start| {
+            const cat_str = level_str[cat_start + 2 ..];
+
+            // Check for range format (c0.c3)
+            if (std.mem.indexOf(u8, cat_str, ".c")) |range_sep| {
+                const start_str = cat_str[0..range_sep];
+                const end_str = cat_str[range_sep + 2 ..];
+
+                // Find end of range (might have comma after)
+                const end_idx = std.mem.indexOfScalar(u8, end_str, ',') orelse end_str.len;
+                const end_val = end_str[0..end_idx];
+
+                const start_cat = std.fmt.parseInt(u16, start_str, 10) catch 0;
+                const end_cat = std.fmt.parseInt(u16, end_val, 10) catch start_cat;
+
+                // Add all categories in range
+                var cat = start_cat;
+                while (cat <= end_cat) : (cat += 1) {
+                    try level.categories.put(cat, {});
+                }
+            } else {
+                // Parse comma-separated categories (c0,c1,c5)
+                var cat_parts = std.mem.splitScalar(u8, cat_str, ',');
+                while (cat_parts.next()) |part| {
+                    if (part.len > 0 and part[0] == 'c') {
+                        if (std.fmt.parseInt(u16, part[1..], 10)) |cat| {
+                            try level.categories.put(cat, {});
+                        } else |_| {}
+                    }
+                }
+            }
+        }
+
         return level;
     }
 

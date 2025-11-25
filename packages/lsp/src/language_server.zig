@@ -452,7 +452,21 @@ pub const LanguageServer = struct {
             }
         }
 
-        // TODO: Search in other documents in the workspace
+        // Search in other workspace documents
+        var doc_iter = self.documents.iterator();
+        while (doc_iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, uri)) continue; // Skip current doc
+
+            for (entry.value_ptr.symbols.items) |symbol| {
+                if (std.mem.eql(u8, symbol.name, identifier)) {
+                    return Location{
+                        .uri = entry.key_ptr.*,
+                        .range = symbol.range,
+                    };
+                }
+            }
+        }
+
         return null;
     }
 

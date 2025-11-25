@@ -14,6 +14,7 @@ const borrow_checker_mod = @import("borrow_checker.zig");
 pub const BorrowChecker = borrow_checker_mod.BorrowChecker;
 const comptime_mod = @import("comptime");
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
+const ComptimeValue = comptime_mod.ComptimeValue;
 const type_registry_mod = @import("type_registry.zig");
 pub const TypeRegistry = type_registry_mod.TypeRegistry;
 
@@ -620,6 +621,12 @@ pub const NativeCodegen = struct {
     /// Positions in code that need patching for string addresses
     string_fixups: std.ArrayList(StringFixup),
 
+    // Binary data literals (for comptime arrays/structs)
+    /// Raw binary data to be placed in __DATA section after strings
+    data_literals: std.ArrayList([]const u8),
+    /// Current offset for binary data (starts after strings end)
+    data_literals_offset: usize,
+
     // Register allocation
     /// Simple register allocator for optimizing register usage
     reg_alloc: RegisterAllocator,
@@ -683,6 +690,8 @@ pub const NativeCodegen = struct {
             .string_literals = std.ArrayList([]const u8){},
             .string_offsets = std.StringHashMap(usize).init(allocator),
             .string_fixups = std.ArrayList(StringFixup){},
+            .data_literals = std.ArrayList([]const u8){},
+            .data_literals_offset = 0,
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
@@ -845,6 +854,12 @@ pub const NativeCodegen = struct {
 
         self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
+
+        // Free data_literals (binary data for comptime arrays/structs)
+        for (self.data_literals.items) |data| {
+            self.allocator.free(data);
+        }
+        self.data_literals.deinit(self.allocator);
 
         // Free imported_modules keys and hashmap
         {
@@ -1159,6 +1174,112 @@ pub const NativeCodegen = struct {
             size += str.len + 1; // +1 for null terminator
         }
         return size;
+    }
+
+    /// Register a comptime array literal and return its offset in the data section
+    /// Serializes the array elements to binary format for direct memory access
+    fn registerArrayLiteral(self: *NativeCodegen, elements: []const ComptimeValue) !usize {
+        // Calculate total size needed: 8 bytes per element (i64/f64/pointer)
+        const elem_size: usize = 8;
+        const total_size = elements.len * elem_size;
+
+        // Allocate buffer for serialized data
+        var data = try self.allocator.alloc(u8, total_size);
+        errdefer self.allocator.free(data);
+
+        // Serialize each element
+        for (elements, 0..) |elem, i| {
+            const offset = i * elem_size;
+            switch (elem) {
+                .int => |int_val| {
+                    const bytes = std.mem.toBytes(@as(i64, int_val));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .float => |float_val| {
+                    const bytes = std.mem.toBytes(@as(f64, float_val));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .bool => |bool_val| {
+                    const bytes = std.mem.toBytes(@as(i64, if (bool_val) 1 else 0));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .@"null", .@"undefined" => {
+                    @memset(data[offset..][0..8], 0);
+                },
+                else => {
+                    // For complex types (nested arrays, structs, strings), use 0 placeholder
+                    @memset(data[offset..][0..8], 0);
+                },
+            }
+        }
+
+        // Calculate offset: after all strings + any previous data literals
+        const string_section_size = self.getDataSectionSize();
+        const data_offset = string_section_size + self.data_literals_offset;
+
+        // Store the data and update offset tracker
+        try self.data_literals.append(self.allocator, data);
+        self.data_literals_offset += total_size;
+
+        return data_offset;
+    }
+
+    /// Register a comptime struct literal and return its offset in the data section
+    /// Serializes the struct fields to binary format for direct memory access
+    fn registerStructLiteral(self: *NativeCodegen, fields: *const std.StringHashMap(ComptimeValue)) !usize {
+        // Calculate total size: 8 bytes per field (simple layout)
+        const field_size: usize = 8;
+        const total_size = fields.count() * field_size;
+
+        if (total_size == 0) {
+            // Empty struct, return current offset
+            return self.getDataSectionSize() + self.data_literals_offset;
+        }
+
+        // Allocate buffer for serialized data
+        var data = try self.allocator.alloc(u8, total_size);
+        errdefer self.allocator.free(data);
+
+        // Serialize fields (in iteration order - not ideal but consistent)
+        var field_iter = fields.iterator();
+        var field_idx: usize = 0;
+        while (field_iter.next()) |entry| {
+            const offset = field_idx * field_size;
+            const value = entry.value_ptr.*;
+
+            switch (value) {
+                .int => |int_val| {
+                    const bytes = std.mem.toBytes(@as(i64, int_val));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .float => |float_val| {
+                    const bytes = std.mem.toBytes(@as(f64, float_val));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .bool => |bool_val| {
+                    const bytes = std.mem.toBytes(@as(i64, if (bool_val) 1 else 0));
+                    @memcpy(data[offset..][0..8], &bytes);
+                },
+                .@"null", .@"undefined" => {
+                    @memset(data[offset..][0..8], 0);
+                },
+                else => {
+                    // For complex types, use 0 placeholder
+                    @memset(data[offset..][0..8], 0);
+                },
+            }
+            field_idx += 1;
+        }
+
+        // Calculate offset: after all strings + any previous data literals
+        const string_section_size = self.getDataSectionSize();
+        const data_offset = string_section_size + self.data_literals_offset;
+
+        // Store the data and update offset tracker
+        try self.data_literals.append(self.allocator, data);
+        self.data_literals_offset += total_size;
+
+        return data_offset;
     }
 
     /// Check if a match statement is exhaustive
@@ -5975,15 +6096,41 @@ pub const NativeCodegen = struct {
                                     .data_offset = str_offset,
                                 });
                             },
-                            .array => {
-                                // For arrays, fall back to evaluating the expression
-                                // TODO: Could optimize by generating array literal directly
-                                try self.generateExpr(comptime_expr.expression);
+                            .array => |arr_elements| {
+                                // Optimized: Generate array literal directly in data section
+                                if (arr_elements.len > 0) {
+                                    const arr_offset = try self.registerArrayLiteral(arr_elements);
+
+                                    // Load the address of the array using LEA with RIP-relative addressing
+                                    const lea_pos = try self.assembler.leaRipRel(.rax, 0);
+
+                                    // Track this fixup for later patching
+                                    try self.string_fixups.append(self.allocator, .{
+                                        .code_pos = lea_pos,
+                                        .data_offset = arr_offset,
+                                    });
+                                } else {
+                                    // Empty array - load null pointer
+                                    try self.assembler.movRegImm64(.rax, 0);
+                                }
                             },
-                            .@"struct" => {
-                                // For structs, fall back to evaluating the expression
-                                // TODO: Could optimize by generating struct literal directly
-                                try self.generateExpr(comptime_expr.expression);
+                            .@"struct" => |struct_val| {
+                                // Optimized: Generate struct literal directly in data section
+                                if (struct_val.fields.count() > 0) {
+                                    const struct_offset = try self.registerStructLiteral(&struct_val.fields);
+
+                                    // Load the address of the struct using LEA with RIP-relative addressing
+                                    const lea_pos = try self.assembler.leaRipRel(.rax, 0);
+
+                                    // Track this fixup for later patching
+                                    try self.string_fixups.append(self.allocator, .{
+                                        .code_pos = lea_pos,
+                                        .data_offset = struct_offset,
+                                    });
+                                } else {
+                                    // Empty struct - load null pointer
+                                    try self.assembler.movRegImm64(.rax, 0);
+                                }
                             },
                             .function => {
                                 // Function values in comptime context

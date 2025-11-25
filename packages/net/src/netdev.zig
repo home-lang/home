@@ -256,7 +256,18 @@ pub const NetDevice = struct {
         skb.dev = self;
         self.rx_queue.enqueue(skb);
 
-        // TODO: Wake up network stack
+        // Signal network stack that packets are available
+        // The network stack poll loop will process queued packets
+        if (net_stack_wakeup) |wakeup_fn| {
+            wakeup_fn();
+        }
+    }
+
+    // Callback for network stack wakeup (set by protocol layer)
+    pub var net_stack_wakeup: ?*const fn () void = null;
+
+    pub fn setWakeupCallback(callback: *const fn () void) void {
+        net_stack_wakeup = callback;
     }
 
     pub fn getStats(self: *const NetDevice) NetDeviceStats {

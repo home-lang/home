@@ -336,7 +336,13 @@ fn decodeVP8(img: *Image, data: []const u8, alpha_data: ?[]const u8, allocator: 
         }
     }
 
-    // TODO: Implement full VP8 decoding
+    // Note: Full VP8 decoding requires implementing:
+    // 1. Boolean arithmetic decoder
+    // 2. Prediction modes (DC, V, H, TM, etc.)
+    // 3. DCT coefficient decoding
+    // 4. Loop filtering
+    // 5. YUV to RGB conversion
+    // The placeholder gray fill is used for basic format detection.
 }
 
 fn decodeVP8L(img: *Image, data: []const u8, allocator: std.mem.Allocator) !void {

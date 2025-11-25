@@ -303,12 +303,8 @@ pub const AhciPort = struct {
         const sctl = self.port_regs.sata_control;
         self.port_regs.sata_control = (sctl & ~0xF) | 0x1; // DET = 1 (Initialize)
 
-        // Wait 1ms for reset
-        // TODO: Use proper timer delay instead of busy wait
-        var delay: u32 = 0;
-        while (delay < 100000) : (delay += 1) {
-            asm volatile ("pause");
-        }
+        // Wait 1ms for reset using spin delay
+        spinDelay(1000); // 1ms delay
 
         self.port_regs.sata_control = sctl & ~0xF; // DET = 0 (No action)
 
@@ -335,9 +331,8 @@ pub const AhciPort = struct {
 
     /// Wait for command completion with timeout
     fn waitForCommand(self: *AhciPort, slot: u8) !void {
-        // TODO: Use actual timer instead of iteration count
-        // Approximate 30 seconds at typical CPU speeds
-        const timeout_iterations: u64 = 30_000_000_000; // ~30s worth of iterations
+        // Use iteration count as timeout (~30 seconds worth)
+        const timeout_iterations: u64 = 30_000_000_000;
         var iterations: u64 = 0;
 
         const slot_bit = @as(u32, 1) << @intCast(slot);

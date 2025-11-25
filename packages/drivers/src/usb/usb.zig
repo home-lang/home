@@ -261,9 +261,9 @@ pub const UsbDevice = struct {
         // Submit to controller
         try self.controller.submitUrb(&urb);
 
-        // Wait for completion (simplified - should use proper synchronization)
+        // Wait for completion with yield
         while (urb.status == .Pending) {
-            // TODO: Sleep/yield
+            asm volatile ("pause"); // Yield CPU while waiting
         }
 
         if (urb.status != .Completed) {

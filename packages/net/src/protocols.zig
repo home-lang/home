@@ -239,8 +239,18 @@ pub fn getArpCache(allocator: Basics.Allocator) !*ArpCache {
 }
 
 fn getMonotonicTime() u64 {
-    // TODO: Get actual monotonic time from timer
-    return 0;
+    // Read CPU timestamp counter for monotonic time
+    // This provides high-resolution timing without syscalls
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+    asm volatile ("rdtsc"
+        : "={eax}" (low),
+          "={edx}" (high),
+    );
+    // Convert to nanoseconds (assuming ~3GHz CPU for approximation)
+    // In a real system, this would be calibrated against a known time source
+    const ticks = (@as(u64, high) << 32) | @as(u64, low);
+    return ticks / 3; // Approximate nanoseconds at 3GHz
 }
 
 // ============================================================================
@@ -927,13 +937,26 @@ fn resolveDestMac(dev: *netdev.NetDevice, dest_ip: IPv4Address) !netdev.MacAddre
 }
 
 fn getDeviceNetmask(dev: *netdev.NetDevice) IPv4Address {
-    _ = dev;
-    // TODO: Get from device configuration
-    return IPv4Address.init(255, 255, 255, 0); // /24
+    // Get netmask from device IP configuration
+    if (dev.ip_config) |config| {
+        return config.netmask;
+    }
+    // Default to /24 if not configured
+    return IPv4Address.init(255, 255, 255, 0);
 }
 
 fn getDefaultGateway() IPv4Address {
-    // TODO: Get from routing table or configuration
+    // Get default gateway from routing table
+    if (global_routing_table) |table| {
+        // Look for default route (0.0.0.0/0)
+        const default_dest = IPv4Address.init(0, 0, 0, 0);
+        if (table.lookup(default_dest)) |route| {
+            if (route.flags.gateway) {
+                return route.gateway;
+            }
+        }
+    }
+    // Fallback to common default gateway
     return IPv4Address.init(192, 168, 1, 1);
 }
 
@@ -1241,7 +1264,14 @@ pub const UdpSocket = struct {
         self.port = port;
         self.bound = true;
 
-        // TODO: Register socket with UDP layer
+        // Register socket with UDP layer for incoming packet delivery
+        udp_mutex.lock();
+        defer udp_mutex.unlock();
+
+        if (udp_sockets == null) {
+            udp_sockets = Basics.ArrayList(*UdpSocket).init(self.allocator);
+        }
+        try udp_sockets.?.append(self);
     }
 
     pub fn sendTo(self: *UdpSocket, dev: *netdev.NetDevice, dest_ip: IPv4Address, dest_port: u16, data: []const u8) !void {
@@ -2090,9 +2120,12 @@ fn calculateChecksum(data: []const u8) u16 {
 // ============================================================================
 
 fn getDeviceIP(dev: *netdev.NetDevice) IPv4Address {
-    _ = dev;
-    // TODO: Get from device configuration
-    return IPv4Address.init(192, 168, 1, 100);
+    // Get IP address from device configuration
+    if (dev.ip_config) |config| {
+        return config.address;
+    }
+    // Return zero address if not configured (will fail to communicate)
+    return IPv4Address.init(0, 0, 0, 0);
 }
 
 // ============================================================================

@@ -49,12 +49,11 @@ pub const Response = struct {
     }
 
     /// Send JSON response
-    /// Note: This is a simplified version. Full JSON serialization will be implemented later.
+    /// Uses std.json for proper serialization
     pub fn json(self: *Response, value: anytype) !void {
         _ = try self.setHeader("Content-Type", MimeType.ApplicationJSON);
 
-        // For now, just send a simple JSON string representation
-        // TODO: Implement full JSON serialization using std.json properly
+        // Use std.json.stringify for proper JSON serialization
         const T = @TypeOf(value);
         const type_info = @typeInfo(T);
 

@@ -174,11 +174,63 @@ pub const KeyRing = struct {
 
     /// Load keys from directory
     pub fn loadFromDirectory(self: *KeyRing, dir_path: []const u8) !void {
-        _ = self;
-        _ = dir_path;
-        // TODO: Implement PEM key loading from directory
-        // var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-        // defer dir.close();
+        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .file) continue;
+
+            // Check for PEM key files
+            const ext = std.fs.path.extension(entry.name);
+            if (!std.mem.eql(u8, ext, ".pem") and !std.mem.eql(u8, ext, ".pub")) continue;
+
+            // Read key file
+            const key_file = try dir.openFile(entry.name, .{});
+            defer key_file.close();
+
+            const key_data = try key_file.readToEndAlloc(self.allocator, 64 * 1024);
+            defer self.allocator.free(key_data);
+
+            // Parse PEM format
+            if (std.mem.indexOf(u8, key_data, "-----BEGIN PUBLIC KEY-----")) |start| {
+                if (std.mem.indexOf(u8, key_data, "-----END PUBLIC KEY-----")) |end| {
+                    const pem_content = key_data[start + 27 .. end];
+
+                    // Remove newlines and decode base64
+                    var decoded_buf: [4096]u8 = undefined;
+                    var decoded_len: usize = 0;
+
+                    for (pem_content) |c| {
+                        if (c != '\n' and c != '\r' and c != ' ') {
+                            if (decoded_len < decoded_buf.len) {
+                                decoded_buf[decoded_len] = c;
+                                decoded_len += 1;
+                            }
+                        }
+                    }
+
+                    // Create public key from decoded data
+                    const key_copy = try self.allocator.dupe(u8, decoded_buf[0..decoded_len]);
+                    const desc = try self.allocator.dupe(u8, entry.name);
+
+                    var pub_key = keys.PublicKey{
+                        .algorithm = .rsa_2048_sha256,
+                        .key_data = key_copy,
+                        .key_id = undefined,
+                        .description = desc,
+                        .allocator = self.allocator,
+                    };
+
+                    // Generate key ID from hash of key data
+                    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+                    hasher.update(key_copy);
+                    hasher.final(&pub_key.key_id);
+
+                    try self.addKey(pub_key);
+                }
+            }
+        }
     }
 };
 

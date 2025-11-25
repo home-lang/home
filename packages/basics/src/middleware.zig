@@ -1,5 +1,5 @@
 const Basics = @import("basics");
-const std = @import("std"); // TODO: Remove once fully migrated
+const std = @import("std"); // Used for network/time functionality
 const http_router = @import("http_router.zig");
 
 /// Enhanced Middleware System for Home

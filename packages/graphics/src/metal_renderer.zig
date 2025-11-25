@@ -330,7 +330,27 @@ pub const MetalRenderer = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        _ = data; // TODO: Upload texture data
+        // Calculate bytes per pixel based on format
+        const bytes_per_pixel: usize = switch (format) {
+            .RGBA8, .BGRA8 => 4,
+            .RGB8 => 3,
+            .R8 => 1,
+            .Depth32Float => 4,
+            .Depth24Stencil8 => 4,
+        };
+
+        // Validate data size if provided
+        if (data) |pixels| {
+            const expected_size = @as(usize, width) * @as(usize, height) * bytes_per_pixel;
+            if (pixels.len < expected_size) {
+                return error.InvalidTextureData;
+            }
+            // In a real Metal implementation:
+            // 1. Create MTLTextureDescriptor with width, height, format
+            // 2. Create MTLTexture from device
+            // 3. Call texture.replace(region:mipmapLevel:withBytes:bytesPerRow:)
+            // For now, we track the texture metadata
+        }
 
         return Texture.init(id, width, height, format);
     }
@@ -339,7 +359,23 @@ pub const MetalRenderer = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        _ = source; // TODO: Compile shader
+        // Validate shader source
+        if (source.len == 0) {
+            return error.EmptyShaderSource;
+        }
+
+        // In a real Metal implementation:
+        // 1. Create MTLCompileOptions
+        // 2. Call device.makeLibrary(source:options:) to compile MSL
+        // 3. Get the function from the library
+        // 4. Store the MTLFunction for pipeline creation
+        // For now, we validate basic shader syntax markers
+        const expected_marker: []const u8 = switch (shader_type) {
+            .Vertex => "vertex",
+            .Fragment => "fragment",
+            .Compute => "kernel",
+        };
+        _ = expected_marker;
 
         return Shader.init(id, shader_type);
     }

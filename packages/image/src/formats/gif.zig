@@ -587,10 +587,65 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     return output.toOwnedSlice();
 }
 
-fn generatePalette(_: *const Image, palette: *[256]Color) void {
-    // Simple uniform palette for now
-    // A better implementation would use median-cut or octree quantization
-    // TODO: analyze img to build adaptive palette
+fn generatePalette(img: *const Image, palette: *[256]Color) void {
+    // Analyze image to build adaptive palette using simple frequency-based approach
+    // For better quality, consider median-cut or octree quantization algorithms
+    var color_counts: [256]struct { color: Color, count: u32 } = undefined;
+    for (&color_counts) |*entry| {
+        entry.* = .{ .color = Color.BLACK, .count = 0 };
+    }
+
+    // Sample pixels to find common colors
+    var sampled: usize = 0;
+    const sample_step: u32 = @max(1, (img.width * img.height) / 10000);
+    var y: u32 = 0;
+    while (y < img.height) : (y += sample_step) {
+        var x: u32 = 0;
+        while (x < img.width) : (x += sample_step) {
+            const color = img.getPixel(x, y) orelse continue;
+            // Hash to bucket
+            const bucket: u8 = @truncate((@as(u16, color.r) + @as(u16, color.g) + @as(u16, color.b)) / 3);
+            color_counts[bucket].color = color;
+            color_counts[bucket].count +|= 1;
+            sampled += 1;
+        }
+    }
+
+    // If we sampled enough colors, use them; otherwise fall back to uniform
+    if (sampled > 0) {
+        // Sort by frequency and use most common colors
+        std.mem.sort(@TypeOf(color_counts[0]), &color_counts, {}, struct {
+            fn lessThan(_: void, a: @TypeOf(color_counts[0]), b: @TypeOf(color_counts[0])) bool {
+                return a.count > b.count;
+            }
+        }.lessThan);
+
+        for (color_counts[0..216], 0..) |entry, i| {
+            if (entry.count > 0) {
+                palette[i] = entry.color;
+            } else {
+                // Fill remaining with uniform palette
+                const r = i / 36;
+                const g = (i / 6) % 6;
+                const b = i % 6;
+                palette[i] = Color{
+                    .r = @intCast(r * 51),
+                    .g = @intCast(g * 51),
+                    .b = @intCast(b * 51),
+                    .a = 255,
+                };
+            }
+        }
+
+        // Fill remaining 40 slots with grayscale
+        for (216..256) |i| {
+            const gray: u8 = @intCast((i - 216) * 6);
+            palette[i] = Color{ .r = gray, .g = gray, .b = gray, .a = 255 };
+        }
+        return;
+    }
+
+    // Fallback: Simple uniform palette
     var idx: usize = 0;
     for (0..6) |r| {
         for (0..6) |g| {

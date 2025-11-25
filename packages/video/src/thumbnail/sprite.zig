@@ -156,13 +156,83 @@ pub const SpriteSheet = struct {
         const y_offset = self.config.padding + row * (self.config.thumbnail_height + self.config.spacing) +
                         self.config.thumbnail_height - 12;
 
-        // Draw simple timestamp string (would integrate with real text rendering)
-        _ = hours;
-        _ = minutes;
-        _ = seconds;
-        _ = x_offset;
-        _ = y_offset;
-        // TODO: Integrate with bitmap font or text rendering library
+        // Draw timestamp as simple bitmap digits
+        // Uses a basic 5x7 pixel font for timestamp display
+        const digit_width = 5;
+        const digit_spacing = 1;
+        const text_height = 7;
+
+        // Format string HH:MM:SS
+        var time_str: [8]u8 = undefined;
+        _ = std.fmt.bufPrint(&time_str, "{d:0>2}:{d:0>2}:{d:0>2}", .{ hours, minutes, seconds }) catch return;
+
+        var char_x = x_offset + 2; // Small margin from edge
+        const char_y = y_offset;
+
+        for (time_str) |char| {
+            if (char == ':') {
+                // Draw colon as two dots
+                self.setPixel(char_x + 1, char_y + 2, self.config.timestamp_color);
+                self.setPixel(char_x + 1, char_y + 4, self.config.timestamp_color);
+                char_x += 3;
+            } else if (char >= '0' and char <= '9') {
+                // Draw digit using basic bitmap patterns
+                self.drawDigit(char - '0', char_x, char_y, text_height);
+                char_x += digit_width + digit_spacing;
+            }
+        }
+    }
+
+    fn setPixel(self: *Self, x: u32, y: u32, color: [3]u8) void {
+        if (x < self.width and y < self.height) {
+            const idx = (y * self.width + x) * 3;
+            if (idx + 2 < self.pixels.len) {
+                self.pixels[idx] = color[0];
+                self.pixels[idx + 1] = color[1];
+                self.pixels[idx + 2] = color[2];
+            }
+        }
+    }
+
+    fn drawDigit(self: *Self, digit: u8, x: u32, y: u32, height: u32) void {
+        _ = height;
+        // Simple 5x7 digit patterns (bitmap font)
+        const patterns = [_][7]u8{
+            // 0
+            .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 },
+            // 1
+            .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+            // 2
+            .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111 },
+            // 3
+            .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110 },
+            // 4
+            .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 },
+            // 5
+            .{ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 },
+            // 6
+            .{ 0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 },
+            // 7
+            .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 },
+            // 8
+            .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 },
+            // 9
+            .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100 },
+        };
+
+        if (digit > 9) return;
+        const pattern = patterns[digit];
+
+        for (pattern, 0..) |row, row_idx| {
+            var bit: u5 = 4;
+            while (true) {
+                if ((row >> bit) & 1 == 1) {
+                    self.setPixel(x + (4 - bit), y + @as(u32, @intCast(row_idx)), self.config.timestamp_color);
+                }
+                if (bit == 0) break;
+                bit -= 1;
+            }
+        }
     }
 };
 

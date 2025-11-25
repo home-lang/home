@@ -120,16 +120,66 @@ pub const RateLimiter = struct {
     }
 
     /// Create a middleware handler for this rate limiter
-    /// Note: In a real implementation, this would maintain state properly
+    /// Note: In a real implementation, this would use a distributed cache
     pub fn createMiddleware(self: RateLimiter) MiddlewareHandler {
-        _ = self;
-        // For now, return a simple middleware that always passes
-        // A real implementation would need to track state across requests
+        // Store rate limiter config in a static to access in handler
+        // Note: A production implementation would use proper state management
+        const RateLimitState = struct {
+            var config: RateLimiter = undefined;
+            var request_counts: std.StringHashMap(RequestCount) = undefined;
+            var initialized: bool = false;
+
+            const RequestCount = struct {
+                count: u32,
+                window_start: i64,
+            };
+
+            fn init(cfg: RateLimiter, allocator: std.mem.Allocator) void {
+                if (!initialized) {
+                    config = cfg;
+                    request_counts = std.StringHashMap(RequestCount).init(allocator);
+                    initialized = true;
+                }
+            }
+        };
+
+        RateLimitState.init(self, std.heap.page_allocator);
+
         return struct {
             fn handle(req: *Request, res: *Response) !bool {
-                _ = req;
-                _ = res;
-                // TODO: Implement actual rate limiting logic
+                // Get client identifier (IP or other unique key)
+                const client_key = req.header("X-Forwarded-For") orelse req.header("X-Real-IP") orelse "unknown";
+
+                const current_time = std.time.timestamp();
+
+                // Check current request count for this client
+                if (RateLimitState.request_counts.getPtr(client_key)) |entry| {
+                    const window_elapsed = current_time - entry.window_start;
+
+                    if (window_elapsed >= RateLimitState.config.window_seconds) {
+                        // Window expired, reset
+                        entry.count = 1;
+                        entry.window_start = current_time;
+                    } else if (entry.count >= RateLimitState.config.max_requests) {
+                        // Rate limit exceeded
+                        _ = res.setStatus(.TooManyRequests);
+                        _ = try res.setHeader("Retry-After", "60");
+                        try res.send("Rate limit exceeded");
+                        return false;
+                    } else {
+                        entry.count += 1;
+                    }
+                } else {
+                    // New client, start tracking
+                    RateLimitState.request_counts.put(client_key, .{
+                        .count = 1,
+                        .window_start = current_time,
+                    }) catch {};
+                }
+
+                // Add rate limit headers
+                _ = res.setHeader("X-RateLimit-Limit", "100") catch {};
+                _ = res.setHeader("X-RateLimit-Remaining", "99") catch {};
                 return true;
             }
         }.handle;

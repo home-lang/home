@@ -205,9 +205,71 @@ pub const ImfPackage = struct {
         }
 
         // Validate asset references
-        // TODO: Check that all assets in CPL are in AssetMap
-        // TODO: Check that all assets in AssetMap have corresponding files
-        // TODO: Verify hashes in packing list
+        if (self.asset_map) |asset_map| {
+            // Check that all assets in CPL are in AssetMap
+            for (self.compositions.items) |cpl| {
+                for (cpl.segments) |segment| {
+                    for (segment.sequences) |sequence| {
+                        for (sequence.resources) |resource| {
+                            var found = false;
+                            for (asset_map.assets) |asset| {
+                                if (std.mem.eql(u8, asset.id, resource.track_file_id)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                const msg = std.fmt.allocPrint(
+                                    self.allocator,
+                                    "CPL resource {s} not found in AssetMap",
+                                    .{resource.track_file_id},
+                                ) catch "Asset reference error";
+                                try result.errors.append(msg);
+                                result.valid = false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check that all assets in AssetMap have corresponding files
+            for (asset_map.assets) |asset| {
+                for (asset.chunks) |chunk| {
+                    // Build full path and check if file exists
+                    const full_path = std.fs.path.join(self.allocator, &[_][]const u8{ self.root_path, chunk.path }) catch continue;
+                    defer self.allocator.free(full_path);
+
+                    std.fs.cwd().access(full_path, .{}) catch {
+                        const msg = std.fmt.allocPrint(
+                            self.allocator,
+                            "Asset file not found: {s}",
+                            .{chunk.path},
+                        ) catch "Missing file";
+                        try result.warnings.append(msg);
+                    };
+                }
+            }
+        }
+
+        // Verify hashes in packing list
+        for (self.packing_lists.items) |pkl| {
+            for (pkl.assets) |asset| {
+                // Verify hash length matches algorithm
+                const expected_len: usize = switch (asset.hash_algorithm) {
+                    .sha1 => 40,   // 160 bits = 40 hex chars
+                    .sha256 => 64, // 256 bits = 64 hex chars
+                    .sha512 => 128, // 512 bits = 128 hex chars
+                };
+                if (asset.hash.len != expected_len) {
+                    const msg = std.fmt.allocPrint(
+                        self.allocator,
+                        "Invalid hash length for asset {s}: expected {d}, got {d}",
+                        .{ asset.id, expected_len, asset.hash.len },
+                    ) catch "Hash error";
+                    try result.warnings.append(msg);
+                }
+            }
+        }
 
         return result;
     }

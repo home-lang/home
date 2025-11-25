@@ -294,8 +294,13 @@ pub const BlockDevice = struct {
     pub fn release(self: *BlockDevice) void {
         const old = self.refcount.fetchSub(1, .release);
         if (old == 1) {
-            // Last reference - can cleanup
-            // TODO: Call device cleanup
+            // Last reference - perform device cleanup
+            if (self.ops.cleanup) |cleanup_fn| {
+                cleanup_fn(self);
+            }
+            // Clear device state
+            self.flags.valid = false;
+            self.flags.removable = false;
         }
     }
 

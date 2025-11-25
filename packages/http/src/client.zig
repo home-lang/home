@@ -330,9 +330,42 @@ pub const Client = struct {
             total_read += bytes_read;
 
             // Check if we have full headers
-            if (std.mem.indexOf(u8, response_data.items, "\r\n\r\n")) |_| {
-                // TODO: Handle chunked encoding and content-length
-                break;
+            if (std.mem.indexOf(u8, response_data.items, "\r\n\r\n")) |header_end| {
+                // Parse headers to check for Content-Length or Transfer-Encoding
+                const headers_section = response_data.items[0..header_end];
+                var lines = std.mem.splitSequence(u8, headers_section, "\r\n");
+                _ = lines.next(); // Skip status line
+
+                var content_length: ?usize = null;
+                var chunked = false;
+
+                while (lines.next()) |line| {
+                    if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+                        const value = std.mem.trim(u8, line["content-length:".len..], " ");
+                        content_length = std.fmt.parseInt(usize, value, 10) catch null;
+                    } else if (std.ascii.startsWithIgnoreCase(line, "transfer-encoding:")) {
+                        const value = std.mem.trim(u8, line["transfer-encoding:".len..], " ");
+                        chunked = std.ascii.indexOfIgnoreCase(value, "chunked") != null;
+                    }
+                }
+
+                const body_start = header_end + 4;
+                if (chunked) {
+                    // For chunked encoding, read until we get 0\r\n terminator
+                    if (std.mem.indexOf(u8, response_data.items[body_start..], "0\r\n")) |_| {
+                        break; // Got the final chunk
+                    }
+                    // Continue reading for more chunks
+                } else if (content_length) |len| {
+                    // Check if we have the full body
+                    if (response_data.items.len >= body_start + len) {
+                        break;
+                    }
+                    // Continue reading
+                } else {
+                    // No content-length or chunked, assume response is complete
+                    break;
+                }
             }
         }
 
@@ -449,10 +482,33 @@ pub const RequestBuilder = struct {
 
     /// Set basic auth
     pub fn basicAuth(self: *RequestBuilder, username: []const u8, password: []const u8) *RequestBuilder {
-        _ = username;
-        _ = password;
-        // TODO: Base64 encode credentials
-        return self;
+        // Build credentials string: "username:password"
+        var credentials_buf: [512]u8 = undefined;
+        const credentials = std.fmt.bufPrint(&credentials_buf, "{s}:{s}", .{ username, password }) catch return self;
+
+        // Base64 encode the credentials
+        const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        var encoded_buf: [1024]u8 = undefined;
+        var encoded_len: usize = 0;
+
+        var i: usize = 0;
+        while (i < credentials.len) {
+            const b0 = credentials[i];
+            const b1 = if (i + 1 < credentials.len) credentials[i + 1] else 0;
+            const b2 = if (i + 2 < credentials.len) credentials[i + 2] else 0;
+
+            encoded_buf[encoded_len] = base64_alphabet[b0 >> 2];
+            encoded_buf[encoded_len + 1] = base64_alphabet[((b0 & 0x03) << 4) | (b1 >> 4)];
+            encoded_buf[encoded_len + 2] = if (i + 1 < credentials.len) base64_alphabet[((b1 & 0x0F) << 2) | (b2 >> 6)] else '=';
+            encoded_buf[encoded_len + 3] = if (i + 2 < credentials.len) base64_alphabet[b2 & 0x3F] else '=';
+            encoded_len += 4;
+            i += 3;
+        }
+
+        // Build "Basic <encoded>" header value
+        var auth_buf: [1100]u8 = undefined;
+        const auth = std.fmt.bufPrint(&auth_buf, "Basic {s}", .{encoded_buf[0..encoded_len]}) catch return self;
+        return self.header("Authorization", auth);
     }
 
     /// Set request body as raw bytes
