@@ -1,0 +1,572 @@
+// ============================================================================
+// Comprehensive Test Suite: Macros & Advanced Type System
+// ============================================================================
+// This file demonstrates:
+// 1. Declarative Macros (macro_rules!)
+// 2. Procedural Macros
+// 3. Derive Macros
+// 4. Higher-Kinded Types (HKT)
+// 5. Associated Types & GATs
+// 6. Refinement Types
+// 7. Type-Level Computation
+// 8. Phantom Types
+// 9. Existential Types
+// ============================================================================
+
+// ============================================================================
+// Part 1: Declarative Macros (macro_rules!)
+// ============================================================================
+
+// Example 1: vec! macro for creating vectors
+macro_rules! vec {
+    // Empty vector
+    () => {
+        Vec::new()
+    };
+    // Single element
+    ($elem:expr) => {
+        {
+            let mut v = Vec::new();
+            v.push($elem);
+            v
+        }
+    };
+    // Multiple elements
+    ($($elem:expr),+) => {
+        {
+            let mut v = Vec::new();
+            $(v.push($elem);)+
+            v
+        }
+    };
+}
+
+fn test_vec_macro() {
+    print("=== vec! Macro ===");
+    
+    let v1 = vec![];
+    let v2 = vec![1, 2, 3, 4, 5];
+    let v3 = vec!["hello", "world"];
+    
+    print("v1 length: ", v1.len());  // 0
+    print("v2 length: ", v2.len());  // 5
+    print("v3 length: ", v3.len());  // 2
+}
+
+// Example 2: println! macro for formatted printing
+macro_rules! println {
+    () => {
+        print("\n")
+    };
+    ($fmt:expr) => {
+        print($fmt, "\n")
+    };
+    ($fmt:expr, $($arg:expr),+) => {
+        print($fmt, $($arg),+, "\n")
+    };
+}
+
+fn test_println_macro() {
+    print("=== println! Macro ===");
+    
+    println!();
+    println!("Hello, World!");
+    println!("The answer is: {}", 42);
+    println!("{} + {} = {}", 2, 2, 4);
+}
+
+// Example 3: assert! macro
+macro_rules! assert {
+    ($cond:expr) => {
+        if !($cond) {
+            panic!("Assertion failed: ", stringify!($cond));
+        }
+    };
+    ($cond:expr, $msg:expr) => {
+        if !($cond) {
+            panic!("Assertion failed: ", $msg);
+        }
+    };
+}
+
+fn test_assert_macro() {
+    print("=== assert! Macro ===");
+    
+    assert!(true);
+    assert!(2 + 2 == 4);
+    assert!(1 < 2, "Math is broken!");
+    
+    print("All assertions passed!");
+}
+
+// Example 4: matches! macro for pattern matching
+macro_rules! matches {
+    ($expr:expr, $pattern:pat) => {
+        match $expr {
+            $pattern => true,
+            _ => false,
+        }
+    };
+}
+
+fn test_matches_macro() {
+    print("=== matches! Macro ===");
+    
+    let result: Result<i32, string> = Ok(42);
+    
+    if matches!(result, Ok(_)) {
+        print("It's an Ok variant!");
+    }
+    
+    if matches!(42, 40..50) {
+        print("42 is in range 40..50");
+    }
+}
+
+// Example 5: Custom hash_map! macro
+macro_rules! hash_map {
+    ($($key:expr => $value:expr),*) => {
+        {
+            let mut map = HashMap::new();
+            $(map.insert($key, $value);)*
+            map
+        }
+    };
+}
+
+fn test_hash_map_macro() {
+    print("=== hash_map! Macro ===");
+    
+    let map = hash_map! {
+        "one" => 1,
+        "two" => 2,
+        "three" => 3
+    };
+    
+    print("Map size: ", map.len());
+}
+
+// ============================================================================
+// Part 2: Derive Macros
+// ============================================================================
+
+// Example 6: Auto-derive Debug trait
+#[derive(Debug)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+// Generated implementation:
+// impl Debug for Point {
+//     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+//         write!(f, "Point {{ x: {}, y: {} }}", self.x, self.y)
+//     }
+// }
+
+#[derive(Debug, Clone, PartialEq)]
+struct User {
+    name: string,
+    age: i32,
+    active: bool,
+}
+
+fn test_derive_macros() {
+    print("=== Derive Macros ===");
+    
+    let p = Point { x: 10, y: 20 };
+    println!("Point: {:?}", p);  // Uses derived Debug
+    
+    let u1 = User { name: "Alice", age: 30, active: true };
+    let u2 = u1.clone();  // Uses derived Clone
+    
+    if u1 == u2 {  // Uses derived PartialEq
+        print("Users are equal!");
+    }
+}
+
+// Example 7: Custom derive macro
+#[derive(Serialize, Deserialize)]
+struct Config {
+    host: string,
+    port: i32,
+    secure: bool,
+}
+
+fn test_serialize_derive() {
+    print("=== Serialize Derive Macro ===");
+    
+    let config = Config {
+        host: "localhost",
+        port: 8080,
+        secure: false,
+    };
+    
+    let json = serialize(&config);
+    print("Serialized: ", json);
+    
+    let parsed: Config = deserialize(json);
+    print("Deserialized host: ", parsed.host);
+}
+
+// ============================================================================
+// Part 3: Higher-Kinded Types (HKT)
+// ============================================================================
+
+// Example 8: Functor trait (higher-kinded)
+trait Functor<F<_>> {
+    fn map<A, B>(self: F<A>, f: fn(A) -> B) -> F<B>;
+}
+
+// Implement Functor for Option
+impl<A> Functor<Option> for Option<A> {
+    fn map<A, B>(self: Option<A>, f: fn(A) -> B) -> Option<B> {
+        match self {
+            Some(a) => Some(f(a)),
+            None => None,
+        }
+    }
+}
+
+// Implement Functor for Vec
+impl<A> Functor<Vec> for Vec<A> {
+    fn map<A, B>(self: Vec<A>, f: fn(A) -> B) -> Vec<B> {
+        let mut result = Vec::new();
+        for item in self {
+            result.push(f(item));
+        }
+        return result;
+    }
+}
+
+fn test_functor() {
+    print("=== Higher-Kinded Types: Functor ===");
+    
+    let opt = Some(42);
+    let doubled = opt.map(|x| x * 2);
+    print("Doubled option: {:?}", doubled);  // Some(84)
+    
+    let nums = vec![1, 2, 3, 4, 5];
+    let squared = nums.map(|x| x * x);
+    print("Squared: {:?}", squared);  // [1, 4, 9, 16, 25]
+}
+
+// Example 9: Monad trait (higher-kinded)
+trait Monad<M<_>>: Functor<M> {
+    fn pure<A>(value: A) -> M<A>;
+    fn flat_map<A, B>(self: M<A>, f: fn(A) -> M<B>) -> M<B>;
+}
+
+impl<A> Monad<Option> for Option<A> {
+    fn pure<A>(value: A) -> Option<A> {
+        return Some(value);
+    }
+    
+    fn flat_map<A, B>(self: Option<A>, f: fn(A) -> Option<B>) -> Option<B> {
+        match self {
+            Some(a) => f(a),
+            None => None,
+        }
+    }
+}
+
+fn test_monad() {
+    print("=== Higher-Kinded Types: Monad ===");
+    
+    let result = Some(10)
+        .flat_map(|x| Some(x + 5))
+        .flat_map(|x| Some(x * 2));
+    
+    print("Chained computation: {:?}", result);  // Some(30)
+}
+
+// ============================================================================
+// Part 4: Associated Types
+// ============================================================================
+
+// Example 10: Iterator with associated type
+trait Iterator {
+    type Item;
+    
+    fn next(self: &mut Self) -> Option<Self::Item>;
+}
+
+struct Counter {
+    count: i32,
+    max: i32,
+}
+
+impl Iterator for Counter {
+    type Item = i32;
+    
+    fn next(self: &mut Counter) -> Option<i32> {
+        if self.count < self.max {
+            self.count += 1;
+            return Some(self.count);
+        }
+        return None;
+    }
+}
+
+fn test_associated_types() {
+    print("=== Associated Types ===");
+    
+    let mut counter = Counter { count: 0, max: 5 };
+    
+    while let Some(n) = counter.next() {
+        print("Count: ", n);
+    }
+}
+
+// Example 11: Container trait with associated type
+trait Container {
+    type Item;
+    
+    fn add(self: &mut Self, item: Self::Item);
+    fn get(self: &Self, index: i32) -> Option<Self::Item>;
+    fn len(self: &Self) -> i32;
+}
+
+// ============================================================================
+// Part 5: Generic Associated Types (GATs)
+// ============================================================================
+
+// Example 12: Lending iterator with GAT
+trait LendingIterator {
+    type Item<'a>: 'a where Self: 'a;
+    
+    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;
+}
+
+struct WindowsMut<T> {
+    data: Vec<T>,
+    window_size: usize,
+    pos: usize,
+}
+
+impl<T> LendingIterator for WindowsMut<T> {
+    type Item<'a> = &'a mut [T] where T: 'a;
+    
+    fn next<'a>(&'a mut self) -> Option<&'a mut [T]> {
+        if self.pos + self.window_size <= self.data.len() {
+            let window = &mut self.data[self.pos..self.pos + self.window_size];
+            self.pos += 1;
+            return Some(window);
+        }
+        return None;
+    }
+}
+
+fn test_gats() {
+    print("=== Generic Associated Types (GATs) ===");
+    
+    let mut windows = WindowsMut {
+        data: vec![1, 2, 3, 4, 5],
+        window_size: 2,
+        pos: 0,
+    };
+    
+    while let Some(window) = windows.next() {
+        print("Window: {:?}", window);
+    }
+}
+
+// ============================================================================
+// Part 6: Refinement Types
+// ============================================================================
+
+// Example 13: Positive integers
+type PositiveInt = i32 where |x| x > 0;
+type NonZeroInt = i32 where |x| x != 0;
+type EvenInt = i32 where |x| x % 2 == 0;
+
+fn divide_positive(a: PositiveInt, b: PositiveInt) -> PositiveInt {
+    return a / b;  // Guaranteed to be positive!
+}
+
+fn test_refinement_types() {
+    print("=== Refinement Types ===");
+    
+    let pos: PositiveInt = 42;  // OK
+    // let neg: PositiveInt = -1;  // Compile error!
+    
+    let result = divide_positive(10, 2);
+    print("10 / 2 = ", result);
+    
+    // let error = divide_positive(10, 0);  // Compile error! 0 is not positive
+}
+
+// Example 14: Bounded strings
+type NonEmptyString = string where |s| s.len() > 0;
+type ShortString = string where |s| s.len() <= 255;
+
+fn greet(name: NonEmptyString) {
+    print("Hello, ", name, "!");
+}
+
+// Example 15: Sorted array refinement
+type SortedArray<T> = [T] where |arr| is_sorted(arr);
+
+fn binary_search<T>(arr: SortedArray<T>, target: T) -> Option<usize> {
+    // Binary search is safe because array is guaranteed to be sorted!
+}
+
+// ============================================================================
+// Part 7: Type-Level Computation
+// ============================================================================
+
+// Example 16: Type-level natural numbers
+type Zero = 0;
+type One = Succ<Zero>;
+type Two = Succ<One>;
+type Three = Succ<Two>;
+
+// Fixed-size array with type-level size
+struct Array<T, N: Nat> {
+    data: [T; N],
+}
+
+fn test_type_level_nat() {
+    print("=== Type-Level Natural Numbers ===");
+    
+    let arr: Array<i32, Three> = Array { data: [1, 2, 3] };
+    // let bad: Array<i32, Three> = Array { data: [1, 2] };  // Compile error!
+    
+    print("Array length: ", arr.data.len());
+}
+
+// Example 17: Type-level boolean
+type True = true;
+type False = false;
+
+type If<Cond: Bool, Then, Else> = if Cond { Then } else { Else };
+
+// Example 18: Type-level operations
+type Add<A: Nat, B: Nat> = ...;  // Type-level addition
+type Mul<A: Nat, B: Nat> = ...;  // Type-level multiplication
+type Eq<A, B> = ...;              // Type-level equality
+
+// ============================================================================
+// Part 8: Phantom Types
+// ============================================================================
+
+// Example 19: Typed IDs with phantom types
+struct TypedId<T> {
+    id: i32,
+    _phantom: PhantomData<T>,
+}
+
+struct User { name: string }
+struct Post { title: string }
+
+type UserId = TypedId<User>;
+type PostId = TypedId<Post>;
+
+fn get_user(id: UserId) -> User {
+    // Implementation
+}
+
+fn get_post(id: PostId) -> Post {
+    // Implementation
+}
+
+fn test_phantom_types() {
+    print("=== Phantom Types ===");
+    
+    let user_id: UserId = TypedId { id: 1, _phantom: PhantomData::new() };
+    let post_id: PostId = TypedId { id: 1, _phantom: PhantomData::new() };
+    
+    let user = get_user(user_id);  // OK
+    // let error = get_user(post_id);  // Compile error! PostId != UserId
+    
+    print("User: ", user.name);
+}
+
+// ============================================================================
+// Part 9: Existential Types
+// ============================================================================
+
+// Example 20: Existential types for hiding implementation
+type AnyIterator<T> = exists I: Iterator<Item=T>. I;
+
+fn make_iterator<T>(data: Vec<T>) -> AnyIterator<T> {
+    // Hide the concrete iterator type
+    return data.into_iter();
+}
+
+fn test_existential_types() {
+    print("=== Existential Types ===");
+    
+    let iter = make_iterator(vec![1, 2, 3, 4, 5]);
+    
+    for item in iter {
+        print("Item: ", item);
+    }
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+
+fn main() {
+    print("╔══════════════════════════════════════════════════════════╗");
+    print("║   Home Language - Macros & Advanced Types Test Suite    ║");
+    print("╚══════════════════════════════════════════════════════════╝");
+    print("");
+    
+    // Macro Tests
+    test_vec_macro();
+    print("");
+    
+    test_println_macro();
+    print("");
+    
+    test_assert_macro();
+    print("");
+    
+    test_matches_macro();
+    print("");
+    
+    test_hash_map_macro();
+    print("");
+    
+    test_derive_macros();
+    print("");
+    
+    test_serialize_derive();
+    print("");
+    
+    // HKT Tests
+    test_functor();
+    print("");
+    
+    test_monad();
+    print("");
+    
+    // Associated Types
+    test_associated_types();
+    print("");
+    
+    test_gats();
+    print("");
+    
+    // Refinement Types
+    test_refinement_types();
+    print("");
+    
+    // Type-Level Computation
+    test_type_level_nat();
+    print("");
+    
+    // Phantom Types
+    test_phantom_types();
+    print("");
+    
+    // Existential Types
+    test_existential_types();
+    print("");
+    
+    print("╔══════════════════════════════════════════════════════════╗");
+    print("║     All Macro & Advanced Type Tests Complete!           ║");
+    print("╚══════════════════════════════════════════════════════════╝");
+}
