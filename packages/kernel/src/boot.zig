@@ -9,6 +9,7 @@ const interrupts = @import("interrupts.zig");
 const paging = @import("paging.zig");
 const memory = @import("memory.zig");
 const asm_ops = @import("asm.zig");
+const kheap = @import("kheap.zig");
 
 // ============================================================================
 // External Assembly Symbols
@@ -60,8 +61,9 @@ export fn kernel_main(magic: u32, info_addr: u32) callconv(.C) noreturn {
     println("✓ GDT initialized (from boot.s)");
 
     // Initialize IDT (Interrupt Descriptor Table)
-    // TODO: Implement full IDT setup
-    println("✓ IDT setup pending");
+    // Create and load full IDT with exception and IRQ handlers
+    initIdt();
+    println("✓ IDT initialized with exception handlers");
 
     // Initialize memory management
     initMemoryManagement(&mb_info);
@@ -179,12 +181,32 @@ fn initMemoryManagement(mb_info: *const multiboot2.Multiboot2Info) void {
     printU64(usable_memory / 1024 / 1024);
     println(" MB");
 
-    // Initialize physical memory allocator
-    // TODO: Implement proper physical memory allocator using memory map
+    // Initialize physical memory allocator using memory map
+    // Find the first large usable region and initialize the frame allocator
+    const frame_entries = mmap.entries();
+    for (frame_entries) |entry| {
+        if (entry.type == multiboot2.MULTIBOOT_MEMORY_AVAILABLE and entry.length >= 64 * 1024 * 1024) {
+            // Found a large enough region (at least 64MB)
+            // Initialize physical memory allocator starting from this region
+            // Skip first 16MB to avoid BIOS/kernel memory
+            const start_addr = if (entry.base_addr < 16 * 1024 * 1024)
+                @max(entry.base_addr, 16 * 1024 * 1024)
+            else
+                entry.base_addr;
+            const end_addr = entry.base_addr + entry.length;
+            memory.initPhysicalAllocator(start_addr, end_addr) catch {
+                panic("Failed to initialize physical memory allocator");
+            };
+            break;
+        }
+    }
     println("✓ Physical memory allocator initialized");
 
-    // Initialize kernel heap
-    // TODO: Implement kernel heap allocator
+    // Initialize kernel heap allocator
+    // The kernel heap uses the physical allocator for backing pages
+    kheap.init() catch {
+        panic("Failed to initialize kernel heap");
+    };
     println("✓ Kernel heap initialized");
 }
 
@@ -195,6 +217,25 @@ fn initPaging() void {
     // Here we can set up more sophisticated page tables if needed
 
     println("✓ Paging initialized");
+}
+
+// ============================================================================
+// IDT Initialization
+// ============================================================================
+
+var interrupt_manager: interrupts.InterruptManager = undefined;
+
+fn initIdt() void {
+    // Create interrupt manager and install default exception handlers
+    interrupt_manager = interrupts.InterruptManager.init();
+    interrupt_manager.installDefaultHandlers();
+
+    // Remap PIC to avoid conflicts with CPU exceptions (vectors 0-31)
+    // Map IRQ 0-7 to vectors 32-39 and IRQ 8-15 to vectors 40-47
+    interrupts.PIC.remap(32, 40);
+
+    // Load and activate the IDT
+    interrupt_manager.activate();
 }
 
 // ============================================================================

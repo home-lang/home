@@ -5,6 +5,10 @@ const Basics = @import("basics");
 const process = @import("process.zig");
 const memory = @import("memory.zig");
 const paging = @import("paging.zig");
+const signal = @import("signal.zig");
+const sched = @import("sched.zig");
+const thread = @import("thread.zig");
+const vfs = @import("vfs.zig");
 
 // ============================================================================
 // Executable Format Types
@@ -236,27 +240,42 @@ pub fn spawn(
     const proc = try process.Process.create(allocator, path);
     errdefer proc.destroy(allocator);
 
-    // TODO: Load executable file from path
-    // For now, assume we have the data
-    const elf_data = &[_]u8{};
+    // Load executable file from path via VFS
+    const elf_data = try loadExecutableFromPath(allocator, path);
+    defer allocator.free(elf_data);
 
     // Detect format
     const format = detectFormat(elf_data);
-    _ = format;
+    if (format != .ELF64 and format != .ELF32) {
+        return error.UnsupportedExecutableFormat;
+    }
 
-    // Load executable (placeholder - would actually load from VFS)
-    // const entry_point = try ElfLoader.loadElf64(proc.address_space, allocator, elf_data);
+    // Load executable into process address space
+    const entry_point = try ElfLoader.loadElf64(proc.address_space, allocator, elf_data);
 
     // Setup program stack with args and environment
     const stack_ptr = try setupProgramStack(proc.address_space, allocator, args, envp);
-    _ = stack_ptr;
 
-    // TODO: Create initial thread with entry point and stack pointer
-    // This would involve:
-    // 1. Creating a Thread object
-    // 2. Setting up CPU context (registers, stack pointer, instruction pointer)
-    // 3. Adding thread to process
-    // 4. Adding thread to scheduler
+    // Create initial thread with entry point and stack pointer
+    const main_thread = try thread.Thread.create(allocator, proc);
+    errdefer main_thread.destroy(allocator);
+
+    // Set up thread CPU context
+    main_thread.context.rip = entry_point; // Instruction pointer
+    main_thread.context.rsp = stack_ptr; // Stack pointer
+    main_thread.context.rflags = 0x202; // Interrupts enabled
+    main_thread.context.cs = 0x23; // User code segment
+    main_thread.context.ss = 0x1b; // User data segment
+
+    // Add thread to process
+    proc.main_thread = main_thread;
+    try proc.addThread(main_thread);
+
+    // Initialize signal queue
+    proc.signals = try signal.SignalQueue.init(allocator);
+
+    // Add thread to scheduler
+    try sched.addThread(main_thread);
 
     // Mark process as runnable
     proc.markRunning();
@@ -265,6 +284,46 @@ pub fn spawn(
     try process.registerProcess(proc);
 
     return proc;
+}
+
+/// Load executable file data from VFS
+fn loadExecutableFromPath(allocator: Basics.Allocator, path: []const u8) ![]u8 {
+    // Get current process for VFS context
+    const current_proc = process.current();
+    const root_dentry = if (current_proc) |p| p.fs_root else null;
+    const cwd_dentry = if (current_proc) |p| p.fs_cwd else null;
+
+    // Open the file
+    const file = try vfs.open(
+        path,
+        vfs.OpenFlags.O_RDONLY,
+        0,
+        current_proc,
+    );
+    defer file.put(allocator);
+
+    // Get file size
+    const inode = file.dentry.inode;
+    const size = inode.size;
+
+    if (size == 0 or size > 100 * 1024 * 1024) { // Max 100MB executable
+        return error.InvalidExecutable;
+    }
+
+    // Allocate buffer
+    const buffer = try allocator.alloc(u8, @intCast(size));
+    errdefer allocator.free(buffer);
+
+    // Read file contents
+    const bytes_read = try file.read(buffer);
+    if (bytes_read != size) {
+        return error.ReadError;
+    }
+
+    _ = root_dentry;
+    _ = cwd_dentry;
+
+    return buffer;
 }
 
 /// Execute a new program in the current process (replaces current program)
@@ -299,22 +358,49 @@ pub fn exec(
     @memcpy(proc.name[0..name_len], path[0..name_len]);
     proc.name_len = name_len;
 
-    // Close file descriptors marked as close-on-exec
+    // Close file descriptors marked as close-on-exec (FD_CLOEXEC)
     proc.fd_lock.acquire();
     for (&proc.fd_table, 0..) |*fd_opt, i| {
         if (fd_opt.*) |fd| {
-            // TODO: Check FD_CLOEXEC flag
-            if (fd.flags & 1 != 0) { // Assuming bit 0 is FD_CLOEXEC
+            // Check FD_CLOEXEC flag (bit 0)
+            const FD_CLOEXEC: u32 = 1;
+            if (fd.flags & FD_CLOEXEC != 0) {
+                // Close this file descriptor
+                if (fd.file) |file| {
+                    file.put(proc.allocator);
+                }
                 proc.fd_table[i] = null;
             }
         }
     }
     proc.fd_lock.release();
 
-    // TODO: Reset signal handlers to defaults
-    // TODO: Clear signal masks
-    // TODO: Terminate all threads except calling thread
-    // TODO: Reset thread CPU context to entry point
+    // Reset signal handlers to defaults and clear signal masks
+    proc.signals.resetForExec();
+
+    // Terminate all threads except calling thread
+    // Get current thread (calling thread)
+    const current_thread = thread.current();
+
+    proc.thread_lock.acquire();
+    var it = proc.threads.first;
+    while (it) |node| {
+        const next = node.next;
+        const thr = node.data;
+
+        // Don't terminate the calling thread
+        if (current_thread != null and thr == current_thread.?) {
+            it = next;
+            continue;
+        }
+
+        // Mark thread as dead and remove from scheduler
+        thr.state = .Dead;
+        sched.removeThread(thr);
+
+        it = next;
+    }
+    proc.thread_lock.release();
 
     // Switch to new address space
     proc.address_space = new_addr_space;
@@ -353,7 +439,6 @@ pub fn exit(proc: *process.Process, exit_code: i32) void {
 
     // Reparent children to init process
     proc.children_lock.acquire();
-    defer proc.children_lock.release();
 
     if (process.findProcess(process.INIT_PID)) |init_proc| {
         for (proc.children.items) |child| {
@@ -364,52 +449,85 @@ pub fn exit(proc: *process.Process, exit_code: i32) void {
         proc.children.clearRetainingCapacity();
     }
 
-    // Unregister from global process list
-    process.unregisterProcess(proc);
+    proc.children_lock.release();
 
-    // TODO: Wake up parent if waiting
-    // TODO: Send SIGCHLD to parent
-    // TODO: Switch to next runnable thread/process
+    // Send SIGCHLD to parent process
+    signal.notifyParentChildStatusChanged(proc, .Exited);
+
+    // Wake up parent if it's waiting
+    if (process.findProcess(proc.ppid)) |parent| {
+        // Check if parent is sleeping in wait()
+        if (parent.state == .Sleeping) {
+            // Check if parent was waiting for this child
+            if (parent.wait_pid == 0 or parent.wait_pid == proc.pid) {
+                parent.state = .Ready;
+                // Add parent to scheduler run queue
+                if (parent.main_thread) |main_thr| {
+                    sched.addThread(main_thr) catch {};
+                }
+            }
+        }
+    }
+
+    // Unregister from global process list (but don't destroy - parent needs to wait)
+    // Process stays as zombie until parent calls wait()
+    // process.unregisterProcess(proc);
+
+    // Switch to next runnable thread/process
+    sched.schedule();
 }
 
 /// Wait for child process to terminate
 pub fn wait(parent: *process.Process, pid: process.Pid) !i32 {
-    // Find child process
-    parent.children_lock.acquire();
+    while (true) {
+        // Find child process
+        parent.children_lock.acquire();
 
-    var child: ?*process.Process = null;
-    for (parent.children.items) |c| {
-        if (pid == 0 or c.pid == pid) {
-            child = c;
-            break;
+        var child: ?*process.Process = null;
+        for (parent.children.items) |c| {
+            if (pid == 0 or c.pid == pid) {
+                child = c;
+                break;
+            }
         }
-    }
 
-    if (child == null) {
+        if (child == null) {
+            parent.children_lock.release();
+            return error.NoSuchProcess;
+        }
+
         parent.children_lock.release();
-        return error.NoSuchProcess;
+
+        const target = child.?;
+
+        // Check if already a zombie
+        if (target.state == .Zombie) {
+            const exit_code = target.exit_code;
+
+            // Remove from children list
+            parent.removeChild(target);
+
+            // Unregister and destroy child process
+            process.unregisterProcess(target);
+            target.destroy(parent.allocator);
+
+            return exit_code;
+        }
+
+        // Not a zombie yet - sleep until child status changes
+        // Set the PID we're waiting for so exit() can wake us up
+        parent.wait_pid = pid;
+        parent.state = .Sleeping;
+
+        // Remove from run queue and yield to scheduler
+        if (parent.main_thread) |main_thr| {
+            sched.removeThread(main_thr);
+        }
+        sched.schedule();
+
+        // When we wake up, loop again to check if child is now a zombie
+        parent.wait_pid = 0;
     }
-
-    parent.children_lock.release();
-
-    const target = child.?;
-
-    // Check if already a zombie
-    if (target.state == .Zombie) {
-        const exit_code = target.exit_code;
-
-        // Remove from children list
-        parent.removeChild(target);
-
-        // Destroy child process
-        target.destroy(parent.allocator);
-
-        return exit_code;
-    }
-
-    // TODO: Sleep until child exits
-    // For now, just return error
-    return error.WouldBlock;
 }
 
 /// Wait for any child process

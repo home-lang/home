@@ -4,6 +4,7 @@
 const Basics = @import("basics");
 const sync = @import("sync.zig");
 const process = @import("process.zig");
+const timer = @import("timer.zig");
 
 // ============================================================================
 // Message Queue Configuration
@@ -118,8 +119,6 @@ pub const MessageQueue = struct {
 
     /// Send a message to the queue
     pub fn send(self: *MessageQueue, data: []const u8, priority: u32, timeout_ns: ?u64) !void {
-        _ = timeout_ns; // TODO: Implement timeout
-
         if (data.len > self.attr.msgsize) {
             return error.MessageTooLarge;
         }
@@ -128,11 +127,23 @@ pub const MessageQueue = struct {
             return error.InvalidPriority;
         }
 
+        // Calculate deadline if timeout specified
+        const deadline_ms: ?u64 = if (timeout_ns) |ns|
+            timer.getTicks() + (ns / 1_000_000) // Convert ns to ms
+        else
+            null;
+
         self.lock.acquireWrite();
         defer self.lock.releaseWrite();
 
         // Check if queue is full
         while (self.messages.items.len >= self.attr.maxmsg) {
+            // Check timeout before waiting
+            if (deadline_ms) |deadline| {
+                if (timer.getTicks() >= deadline) {
+                    return error.TimedOut;
+                }
+            }
             self.lock.releaseWrite();
             self.write_wait.wait();
             self.lock.acquireWrite();
@@ -151,13 +162,23 @@ pub const MessageQueue = struct {
 
     /// Receive a message from the queue
     pub fn receive(self: *MessageQueue, buffer: []u8, priority: ?*u32, timeout_ns: ?u64) !usize {
-        _ = timeout_ns; // TODO: Implement timeout
+        // Calculate deadline if timeout specified
+        const deadline_ms: ?u64 = if (timeout_ns) |ns|
+            timer.getTicks() + (ns / 1_000_000) // Convert ns to ms
+        else
+            null;
 
         self.lock.acquireWrite();
         defer self.lock.releaseWrite();
 
         // Wait for messages
         while (self.messages.items.len == 0) {
+            // Check timeout before waiting
+            if (deadline_ms) |deadline| {
+                if (timer.getTicks() >= deadline) {
+                    return error.TimedOut;
+                }
+            }
             self.lock.releaseWrite();
             self.read_wait.wait();
             self.lock.acquireWrite();

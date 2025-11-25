@@ -566,8 +566,33 @@ export fn sys_nanosleep(args: syscall.SyscallArgs) callconv(.C) u64 {
 
     if (req_ptr == 0) return returnError(error.InvalidArgument);
 
-    // TODO: Implement actual sleep
-    _ = rem_ptr;
+    // Read timespec from user memory
+    // struct timespec { time_t tv_sec; long tv_nsec; }
+    const req: *const extern struct { tv_sec: i64, tv_nsec: i64 } = @ptrFromInt(req_ptr);
+
+    // Calculate total sleep time in milliseconds
+    const sleep_ms: u64 = @intCast(@max(0, req.tv_sec) * 1000 + @divFloor(@max(0, req.tv_nsec), 1_000_000));
+
+    if (sleep_ms > 0) {
+        // Use timer ticks to wait (1 tick = 1ms)
+        const timer_mod = @import("timer.zig");
+        const start_ticks = timer_mod.getTicks();
+        const end_ticks = start_ticks + sleep_ms;
+
+        // Busy-wait or yield until time is up
+        // In a full implementation, this would block the thread
+        const sched = @import("sched.zig");
+        while (timer_mod.getTicks() < end_ticks) {
+            sched.yield();
+        }
+    }
+
+    // If rem_ptr is provided, set remaining time to 0 (we completed the full sleep)
+    if (rem_ptr != 0) {
+        const rem: *extern struct { tv_sec: i64, tv_nsec: i64 } = @ptrFromInt(rem_ptr);
+        rem.tv_sec = 0;
+        rem.tv_nsec = 0;
+    }
 
     return 0;
 }

@@ -4,6 +4,7 @@
 const Basics = @import("basics");
 const process = @import("process.zig");
 const sync = @import("sync.zig");
+const timer = @import("timer.zig");
 
 // ============================================================================
 // Audit Event Types
@@ -70,7 +71,7 @@ pub const AuditEvent = struct {
     event_type: AuditEventType,
     /// Severity level
     severity: AuditSeverity,
-    /// Timestamp (TODO: add real timestamp)
+    /// Timestamp in milliseconds since boot
     timestamp: u64,
     /// Process ID
     pid: u32,
@@ -86,7 +87,7 @@ pub const AuditEvent = struct {
         return .{
             .event_type = event_type,
             .severity = severity,
-            .timestamp = 0, // TODO: Get current timestamp
+            .timestamp = timer.getTicks(), // Milliseconds since boot
             .pid = if (current) |p| p.pid else 0,
             .uid = if (current) |p| p.uid else 0,
             .data = undefined,

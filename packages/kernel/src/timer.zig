@@ -88,10 +88,12 @@ pub const Hpet = struct {
 
 pub const Tsc = struct {
     frequency_hz: u64,
+    calibrated: bool,
 
     pub fn init() Tsc {
         return .{
             .frequency_hz = calibrate(),
+            .calibrated = true,
         };
     }
 
@@ -99,14 +101,122 @@ pub const Tsc = struct {
         return asm.rdtsc();
     }
 
+    /// Calibrate TSC frequency using PIT
+    /// Uses PIT channel 2 in one-shot mode for timing
     fn calibrate() u64 {
-        // TODO: Calibrate TSC frequency using PIT or HPET
-        // For now, return estimated value
-        return 2_000_000_000; // 2 GHz estimate
+        // Method 1: Try to get TSC frequency from CPUID
+        const cpuid_freq = getTscFrequencyFromCpuid();
+        if (cpuid_freq != 0) {
+            return cpuid_freq;
+        }
+
+        // Method 2: Calibrate using PIT
+        return calibrateUsingPit();
+    }
+
+    /// Try to get TSC frequency directly from CPUID (Intel processors)
+    fn getTscFrequencyFromCpuid() u64 {
+        // CPUID leaf 0x15: TSC/Core Crystal Clock ratio
+        // Only available on newer Intel processors
+        const max_leaf = asm.cpuid(0, 0).eax;
+
+        if (max_leaf >= 0x15) {
+            const cpuid15 = asm.cpuid(0x15, 0);
+            const denominator = cpuid15.eax;
+            const numerator = cpuid15.ebx;
+            const crystal_freq = cpuid15.ecx;
+
+            if (denominator != 0 and numerator != 0) {
+                if (crystal_freq != 0) {
+                    // TSC freq = crystal_freq * numerator / denominator
+                    return (@as(u64, crystal_freq) * @as(u64, numerator)) / @as(u64, denominator);
+                }
+            }
+        }
+
+        // CPUID leaf 0x16: Processor Frequency Information
+        if (max_leaf >= 0x16) {
+            const cpuid16 = asm.cpuid(0x16, 0);
+            const base_freq_mhz = cpuid16.eax & 0xFFFF;
+
+            if (base_freq_mhz != 0) {
+                return @as(u64, base_freq_mhz) * 1_000_000;
+            }
+        }
+
+        return 0; // CPUID method not available
+    }
+
+    /// Calibrate TSC using PIT channel 2
+    fn calibrateUsingPit() u64 {
+        const PIT_CHANNEL2: u16 = 0x42;
+        const PIT_COMMAND: u16 = 0x43;
+        const PIT_GATE: u16 = 0x61;
+        const PIT_FREQUENCY: u64 = 1193182;
+
+        // Calibration period: 10ms (119318 PIT ticks at 1193182 Hz)
+        const CALIBRATION_TICKS: u16 = 11932; // ~10ms
+
+        // Save current gate value
+        const old_gate = asm.inb(PIT_GATE);
+
+        // Disable speaker, enable PIT channel 2 gate
+        asm.outb(PIT_GATE, (old_gate & 0xFD) | 0x01);
+
+        // Command: Channel 2, lobyte/hibyte, one-shot mode
+        asm.outb(PIT_COMMAND, 0xB0);
+
+        // Set countdown value
+        asm.outb(PIT_CHANNEL2, @truncate(CALIBRATION_TICKS & 0xFF));
+        asm.outb(PIT_CHANNEL2, @truncate((CALIBRATION_TICKS >> 8) & 0xFF));
+
+        // Reset channel 2 gate to start countdown
+        asm.outb(PIT_GATE, asm.inb(PIT_GATE) & 0xFE);
+        asm.outb(PIT_GATE, asm.inb(PIT_GATE) | 0x01);
+
+        // Read TSC at start
+        const tsc_start = asm.rdtsc();
+
+        // Wait for countdown to complete (gate output goes high)
+        while ((asm.inb(PIT_GATE) & 0x20) == 0) {
+            asm.pause();
+        }
+
+        // Read TSC at end
+        const tsc_end = asm.rdtsc();
+
+        // Restore gate
+        asm.outb(PIT_GATE, old_gate);
+
+        // Calculate TSC frequency
+        const tsc_delta = tsc_end - tsc_start;
+        const calibration_ns = (@as(u64, CALIBRATION_TICKS) * 1_000_000_000) / PIT_FREQUENCY;
+
+        // TSC frequency = tsc_delta / (calibration_ns / 1e9)
+        // = tsc_delta * 1e9 / calibration_ns
+        const frequency = (tsc_delta * 1_000_000_000) / calibration_ns;
+
+        // Round to nearest 100 MHz for cleaner value
+        const rounded = ((frequency + 50_000_000) / 100_000_000) * 100_000_000;
+
+        return if (rounded > 0) rounded else 2_000_000_000; // Fallback to 2 GHz
     }
 
     pub fn toNanoseconds(self: *const Tsc, tsc_value: u64) u64 {
         return (tsc_value * 1_000_000_000) / self.frequency_hz;
+    }
+
+    pub fn toMicroseconds(self: *const Tsc, tsc_value: u64) u64 {
+        return (tsc_value * 1_000_000) / self.frequency_hz;
+    }
+
+    pub fn toMilliseconds(self: *const Tsc, tsc_value: u64) u64 {
+        return (tsc_value * 1_000) / self.frequency_hz;
+    }
+
+    /// Get TSC ticks for a given nanosecond duration
+    pub fn fromNanoseconds(self: *const Tsc, ns: u64) u64 {
+        return (ns * self.frequency_hz) / 1_000_000_000;
     }
 };
 

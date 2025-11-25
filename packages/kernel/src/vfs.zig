@@ -7,6 +7,7 @@ const atomic = @import("atomic.zig");
 const vfs_sync = @import("vfs_sync.zig");
 const vfs_advanced = @import("vfs_advanced.zig");
 const process = @import("process.zig");
+const timer = @import("timer.zig");
 
 // ============================================================================
 // Inode Types and Flags
@@ -972,8 +973,8 @@ pub fn stat(path: []const u8, proc: *process.Process) !Stat {
 // ============================================================================
 
 fn getCurrentTime() u64 {
-    // TODO: Get actual time from kernel
-    return 0;
+    // Get current time in milliseconds since boot from timer subsystem
+    return timer.getTicks();
 }
 
 // ============================================================================

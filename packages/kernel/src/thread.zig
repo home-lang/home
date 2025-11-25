@@ -449,23 +449,32 @@ pub const WaitQueue = struct {
 
 /// Sleep for specified milliseconds
 pub fn sleep(thread: *Thread, milliseconds: u64) void {
-    _ = milliseconds;
-    // TODO: Add to timer queue and block thread
+    const sched = @import("sched.zig");
+    const timer_mod = @import("timer.zig");
+
+    // Calculate wake time
+    thread.wake_time = timer_mod.getTicks() + milliseconds;
+
+    // Set thread to sleeping state
     thread.lock.acquire();
     thread.state = .Sleeping;
     thread.lock.release();
 
-    // TODO: Yield to scheduler
+    // Yield to scheduler to let other threads run
+    sched.yield();
 }
 
 /// Wake up a sleeping thread
 pub fn wake(thread: *Thread) void {
+    const sched = @import("sched.zig");
+
     thread.lock.acquire();
     defer thread.lock.release();
 
     if (thread.state == .Sleeping) {
         thread.state = .Ready;
-        // TODO: Add back to scheduler
+        // Add back to scheduler run queue
+        sched.addThread(thread);
     }
 }
 
@@ -475,21 +484,32 @@ pub fn wake(thread: *Thread) void {
 
 /// Exit current thread with exit code
 pub fn exit(thread: *Thread, exit_code: i32) void {
+    const sched = @import("sched.zig");
+
     thread.markDead(exit_code);
 
     // Remove from process thread list
     thread.process.removeThread(thread);
 
-    // TODO: Remove from scheduler
-    // TODO: Wake up any threads waiting to join
-    // TODO: Free thread resources (deferred cleanup)
+    // Remove from scheduler run queue
+    sched.removeThread(thread);
+
+    // Wake up any threads waiting to join this thread
+    thread.join_waiters.wakeAll();
+
+    // Schedule next thread (thread resources cleaned up when joined or GC'd)
+    sched.schedule();
 }
 
 /// Join thread (wait for it to finish)
 pub fn join(target: *Thread) i32 {
-    // TODO: Block until target is dead
+    const sched = @import("sched.zig");
+
+    // Block until target thread is dead
     while (target.isAlive()) {
-        // Yield to scheduler
+        // Add current thread to join waiters and yield
+        target.join_waiters.add(current() orelse break);
+        sched.yield();
     }
 
     return target.exit_code;

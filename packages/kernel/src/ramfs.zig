@@ -6,6 +6,7 @@ const vfs = @import("vfs.zig");
 const vfs_sync = @import("vfs_sync.zig");
 const sync = @import("sync.zig");
 const atomic = @import("atomic.zig");
+const timer = @import("timer.zig");
 
 // ============================================================================
 // Ramfs Inode Data
@@ -120,8 +121,10 @@ fn ramfsCreate(dir: *vfs.Inode, name: []const u8, mode: vfs.FileMode) anyerror!*
     @memcpy(entry.name[0..name.len], name);
     try dir_data.entries.append(entry);
 
-    dir.mtime = 0; // TODO: current time
-    dir.ctime = 0;
+    // Update directory timestamps
+    const now = timer.getTicks();
+    dir.mtime = now;
+    dir.ctime = now;
 
     return inode;
 }

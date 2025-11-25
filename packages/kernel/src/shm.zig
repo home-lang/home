@@ -423,8 +423,25 @@ fn freePhysicalPage(page: usize) void {
 }
 
 fn getTimeSeconds() u64 {
-    // TODO: Get current time in seconds
-    return 0;
+    // Get current time in seconds (timer ticks / 1000)
+    const timer = @import("timer.zig");
+    return timer.getTicks() / 1000;
+}
+
+/// Detach all shared memory segments for a process (called on process exit)
+pub fn detachAllSegments(proc: *process.Process) void {
+    const manager = getManager();
+
+    // Iterate through all segments and detach any belonging to this process
+    var it = manager.segments.valueIterator();
+    while (it.next()) |segment| {
+        // Decrement attach count if this process had it attached
+        // Note: In a full implementation, we'd track per-process attachments
+        // For now, just check if creator matches
+        if (segment.*.perms.creator_pid == proc.pid) {
+            _ = segment.*.attach_count.fetchSub(1, .Monotonic);
+        }
+    }
 }
 
 // ============================================================================

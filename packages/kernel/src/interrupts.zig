@@ -3,6 +3,7 @@
 
 const Basics = @import("basics");
 const assembly = @import("asm.zig");
+const asm = assembly; // Alias for convenience
 
 // ============================================================================
 // IDT (Interrupt Descriptor Table) Structure
@@ -388,7 +389,7 @@ pub fn generalProtectionFaultHandler(frame_with_error: *InterruptFrameWithError)
 /// Page fault handler
 pub fn pageFaultHandler(frame_with_error: *InterruptFrameWithError) callconv(.Interrupt) void {
     const error_code: PageFaultError = @bitCast(frame_with_error.error_code);
-    const faulting_address = asm.readCr2();
+    const faulting_address = assembly.readCr2();
 
     // Check if this might be a COW fault
     if (error_code.protection_violation and error_code.write) {
@@ -532,10 +533,9 @@ pub const InterruptNestingGuard = struct {
 pub const StackGuard = struct {
     /// Check if we're approaching stack overflow
     pub fn checkStack() bool {
-        const rsp = asm.readRsp();
+        const rsp = assembly.readRsp();
 
-        // Get current thread/process kernel stack base
-        // TODO: Get actual stack base from thread/process structure
+        // Get current thread/process kernel stack base from SMP per-CPU data
         const stack_base = getKernelStackBase();
 
         // Check if we're in the red zone
@@ -558,12 +558,18 @@ pub const StackGuard = struct {
 
 /// Get kernel stack base for current thread
 fn getKernelStackBase() usize {
-    // TODO: Integrate with actual thread/process structure
-    // For now, return a conservative estimate based on RSP
-    const rsp = asm.readRsp();
+    // Try to get actual stack base from SMP per-CPU data structure
+    const smp = @import("smp.zig");
+    if (smp.getCurrentCpuData()) |cpu_data| {
+        // Return the base of the kernel stack allocated for this CPU
+        return @intFromPtr(cpu_data.kernel_stack.ptr);
+    }
+
+    // Fallback: return a conservative estimate based on RSP
     // Assume 16KB kernel stacks, aligned to 16KB
+    const rsp = assembly.readRsp();
     const stack_size = 16 * 1024;
-    return (rsp & ~(stack_size - 1));
+    return (rsp & ~@as(usize, stack_size - 1));
 }
 
 // ============================================================================

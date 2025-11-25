@@ -278,6 +278,47 @@ pub const SignalQueue = struct {
         const deliverable = self.pending.intersect(SignalSet{ .bits = ~self.blocked.bits });
         return !deliverable.isEmpty();
     }
+
+    /// Reset all signal handlers to default (used by exec)
+    pub fn resetHandlersToDefault(self: *SignalQueue) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        for (&self.actions) |*action| {
+            action.* = SigAction.init();
+        }
+    }
+
+    /// Clear all signal masks (used by exec)
+    pub fn clearMasks(self: *SignalQueue) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        self.blocked.clear();
+    }
+
+    /// Clear pending signals (used by exec)
+    pub fn clearPending(self: *SignalQueue) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        self.pending.clear();
+        self.info_queue.clearRetainingCapacity();
+    }
+
+    /// Full reset for exec (reset handlers, clear masks, but keep pending)
+    pub fn resetForExec(self: *SignalQueue) void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        // Reset all handlers to default
+        for (&self.actions) |*action| {
+            action.* = SigAction.init();
+        }
+
+        // Clear signal masks
+        self.blocked.clear();
+    }
 };
 
 // ============================================================================
@@ -291,7 +332,11 @@ pub fn sendSignal(proc: *process.Process, sig: Signal, info: SigInfo) !void {
     // Wake up the process if it's sleeping
     if (proc.state == .Sleeping) {
         proc.state = .Ready;
-        // TODO: Add to scheduler run queue
+        // Add main thread to scheduler run queue
+        const sched = @import("sched.zig");
+        if (proc.main_thread) |main_thr| {
+            sched.addThread(main_thr);
+        }
     }
 }
 
@@ -303,7 +348,9 @@ pub fn sendSignalToThread(thr: *thread.Thread, sig: Signal, info: SigInfo) !void
     // Wake up the thread if it's sleeping
     if (thr.state == .Sleeping) {
         thr.state = .Ready;
-        // TODO: Add to scheduler run queue
+        // Add thread to scheduler run queue
+        const sched = @import("sched.zig");
+        sched.addThread(thr);
     }
 }
 
@@ -360,34 +407,87 @@ fn handleDefaultAction(proc: *process.Process, sig: Signal) void {
 /// Stop a process
 fn stopProcess(proc: *process.Process) void {
     proc.state = .Stopped;
-    // TODO: Notify parent with SIGCHLD
+    // Notify parent with SIGCHLD
+    notifyParentChildStatusChanged(proc, .Stopped);
+}
+
+/// Send SIGCHLD to parent process when child status changes
+pub fn notifyParentChildStatusChanged(child: *process.Process, reason: enum { Exited, Stopped, Continued }) void {
+    // Find parent process
+    const parent = process.findProcess(child.ppid) orelse return;
+
+    // Create SigInfo for SIGCHLD
+    var info = SigInfo.init(.SIGCHLD);
+    info.pid = child.pid;
+    info.uid = child.uid;
+
+    // Set code based on reason
+    info.code = switch (reason) {
+        .Exited => 1, // CLD_EXITED
+        .Stopped => 5, // CLD_STOPPED
+        .Continued => 6, // CLD_CONTINUED
+    };
+
+    // Set exit status as value for exited processes
+    if (reason == .Exited) {
+        info.value = @as(usize, @intCast(child.exit_code));
+    }
+
+    // Queue the signal
+    sendSignal(parent, .SIGCHLD, info) catch {};
 }
 
 /// Continue a stopped process
 fn continueProcess(proc: *process.Process) void {
     if (proc.state == .Stopped) {
         proc.state = .Ready;
-        // TODO: Add to scheduler run queue
+        // Add main thread to scheduler run queue
+        const sched = @import("sched.zig");
+        if (proc.main_thread) |main_thr| {
+            sched.addThread(main_thr);
+        }
     }
 }
 
 /// Generate core dump
 fn coreDump(proc: *process.Process, sig: Signal) void {
-    _ = sig;
-    // TODO: Write process memory to core file
+    // Core dump implementation:
+    // In a full implementation, this would write the process memory to a file
+    // named "core" or "core.<pid>" in the current working directory.
+    // For now, we just set the exit status to indicate the signal.
+    //
+    // Core file format (ELF core dump):
+    // - ELF header with ET_CORE type
+    // - PT_NOTE segment with process info, registers
+    // - PT_LOAD segments for each memory region
+    //
+    // For embedded/minimal systems, core dumps may not be needed.
+
     proc.state = .Zombie;
     proc.exit_code = 128 + @as(i32, @intFromEnum(sig));
 }
 
 /// Setup signal handler frame on user stack
 fn setupSignalFrame(thr: *thread.Thread, handler: *const fn (Signal) void, info: SigInfo) void {
+    // Architecture-specific signal frame setup for x86_64:
+    // 1. Save current thread context (RIP, RSP, registers) to ucontext_t
+    // 2. Push signal info (siginfo_t) onto user stack
+    // 3. Push saved context (ucontext_t) onto user stack
+    // 4. Setup return address to point to sigreturn trampoline
+    // 5. Set RIP to handler address
+    // 6. Set RSP to new stack pointer
+    //
+    // The sigreturn trampoline typically looks like:
+    //   mov rax, SYS_rt_sigreturn
+    //   syscall
+    //
+    // This allows the handler to return and restore original context.
+
+    // For now, skip frame setup as this requires user-space memory mapping
+    // When implemented, use thr.context to save/restore registers
     _ = thr;
     _ = handler;
     _ = info;
-    // TODO: Architecture-specific signal frame setup
-    // - Save current context
-    // - Setup user stack with signal handler
-    // - Setup return trampoline to sigreturn
 }
 
 // ============================================================================

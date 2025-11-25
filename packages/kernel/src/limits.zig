@@ -5,6 +5,8 @@ const Basics = @import("basics");
 const process = @import("process.zig");
 const sync = @import("sync.zig");
 const atomic = @import("atomic.zig");
+const timer = @import("timer.zig");
+const signal = @import("signal.zig");
 
 // ============================================================================
 // Resource Limit Types
@@ -191,11 +193,13 @@ pub const RateLimiter = struct {
     lock: sync.Spinlock,
 
     pub fn init(window_ms: u64, max_ops: u32) RateLimiter {
+        // Get current time in milliseconds from timer subsystem
+        const current_time_ms = timer.getTicks(); // 1 tick = 1ms
         return .{
             .window_ms = window_ms,
             .max_ops = max_ops,
             .count = atomic.AtomicU32.init(0),
-            .window_start = atomic.AtomicU64.init(0), // TODO: Get current time
+            .window_start = atomic.AtomicU64.init(current_time_ms),
             .lock = sync.Spinlock.init(),
         };
     }
@@ -205,8 +209,8 @@ pub const RateLimiter = struct {
         self.lock.acquire();
         defer self.lock.release();
 
-        // TODO: Get current timestamp
-        const now: u64 = 0; // Placeholder
+        // Get current timestamp in milliseconds from timer
+        const now: u64 = timer.getTicks();
 
         const window_start = self.window_start.load(.Monotonic);
         const elapsed = now -% window_start;
@@ -452,12 +456,16 @@ pub fn invokeOomKiller() !void {
 
     audit.logSecurityViolation(msg);
 
-    // Send SIGKILL to victim
-    // TODO: Implement signal sending
-    // For now, just mark it for termination
-    victim.state = .ZOMBIE;
+    // Send SIGKILL to victim process
+    // SIGKILL cannot be caught or ignored, so the process will be terminated
+    const siginfo = signal.SigInfo.init(.SIGKILL);
+    signal.sendSignal(victim, .SIGKILL, siginfo) catch {
+        // If signal delivery fails, forcibly mark as zombie
+        victim.state = .ZOMBIE;
+    };
 
-    // Free the memory
+    // The actual memory will be freed when the process is reaped
+    // For immediate relief, we can mark it as zombie and free memory here
     const freed_bytes = victim.memory_stats.getRssBytes();
     if (getGlobalMemoryStats()) |stats| {
         stats.free(freed_bytes);

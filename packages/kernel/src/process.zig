@@ -671,27 +671,32 @@ pub const Process = struct {
         self.fd_lock.release();
 
         // 2. Clean up memory mappings (VMAs)
-        // TODO: Free all user-space page tables
-        // This should iterate through VMAs and unmap them
+        // User-space page tables are freed when the address space is destroyed
+        // on process reaping. For now, mark VMAs as unmapped.
+        self.vma_lock.acquire();
+        self.vma_list.clearRetainingCapacity();
+        self.vma_lock.release();
 
         // 3. Clean up IPC resources
         // Pipes - close any pipe FDs (handled above in FD cleanup)
 
         // Shared memory - detach all segments
-        // TODO: Implement shm cleanup when shm.zig is available
+        const shm = @import("shm.zig");
+        shm.detachAllSegments(self);
 
-        // Message queues - close all queues
-        // TODO: Implement mqueue cleanup when mqueue.zig is available
+        // Message queues - close all queues (refs decremented in FD cleanup above)
 
         // 4. Clean up signal handlers
         // Reset to default handlers
-        // TODO: Implement signal handlers
+        if (self.signals) |*sig| {
+            sig.resetHandlersToDefault();
+        }
 
         // 5. Terminate all threads
         self.thread_lock.acquire();
         for (self.threads.items) |thread_ptr| {
             // Mark thread as terminated
-            _ = thread_ptr; // TODO: thread_ptr.terminate();
+            thread_ptr.markDead(self.exit_code);
         }
         self.thread_lock.release();
 

@@ -417,8 +417,9 @@ pub fn getCpuScheduler(cpu_id: u8) ?*CpuScheduler {
 
 /// Get current CPU's scheduler
 pub fn getCurrentScheduler() ?*CpuScheduler {
-    // TODO: Get actual CPU ID from APIC
-    const cpu_id: u8 = 0;
+    // Get actual CPU ID from SMP/APIC subsystem
+    const smp = @import("smp.zig");
+    const cpu_id: u8 = @intCast(smp.getCurrentCpuId());
     return getCpuScheduler(cpu_id);
 }
 

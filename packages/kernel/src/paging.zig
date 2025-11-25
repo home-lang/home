@@ -478,21 +478,43 @@ pub var tlb_shootdown_request: ?*TlbShootdownRequest = null;
 
 /// Perform TLB shootdown on all CPUs
 pub fn tlbShootdownAll(address: u64) void {
-    // Invalidate on local CPU
+    // Invalidate on local CPU first
     asm.invlpg(address);
 
-    // TODO: Send IPI to all other CPUs
-    // This requires the APIC/SMP subsystem to be available
-    // For now, we only invalidate locally
-    // When SMP is active, this should:
-    // 1. Create a TlbShootdownRequest
-    // 2. Send IPI to all other CPUs
-    // 3. Wait for acknowledgments
+    // Send IPI to all other CPUs for TLB shootdown
+    const smp = @import("smp.zig");
+    const apic = @import("apic.zig");
+
+    const online_cpus = smp.getOnlineCpuCount();
+    if (online_cpus <= 1) {
+        // Single CPU system, local invalidation is sufficient
+        return;
+    }
+
+    // Create TLB shootdown request
+    var request = TlbShootdownRequest{
+        .address = address,
+        .size = PAGE_SIZE,
+        .is_range = false,
+        .cpus_pending = @intCast(online_cpus - 1), // Exclude current CPU
+    };
+    tlb_shootdown_request = &request;
+
+    // Send TLB shootdown IPI to all other CPUs
+    // Vector 0xFE is conventionally used for TLB shootdown
+    if (apic.getLocalApic()) |local_apic| {
+        local_apic.sendIpiAllExcludingSelf(0xFE);
+    }
+
+    // Wait for all CPUs to acknowledge
+    request.wait();
+
+    tlb_shootdown_request = null;
 }
 
 /// Perform TLB shootdown for a range on all CPUs
 pub fn tlbShootdownRange(address: u64, size: u64) void {
-    // Invalidate range on local CPU
+    // Invalidate range on local CPU first
     const page_count = memory.pageCount(size);
     var i: usize = 0;
     while (i < page_count) : (i += 1) {
@@ -500,7 +522,34 @@ pub fn tlbShootdownRange(address: u64, size: u64) void {
         asm.invlpg(virt);
     }
 
-    // TODO: Send IPI to all other CPUs
+    // Send IPI to all other CPUs for TLB shootdown
+    const smp = @import("smp.zig");
+    const apic = @import("apic.zig");
+
+    const online_cpus = smp.getOnlineCpuCount();
+    if (online_cpus <= 1) {
+        // Single CPU system, local invalidation is sufficient
+        return;
+    }
+
+    // Create TLB shootdown request for range
+    var request = TlbShootdownRequest{
+        .address = address,
+        .size = size,
+        .is_range = true,
+        .cpus_pending = @intCast(online_cpus - 1),
+    };
+    tlb_shootdown_request = &request;
+
+    // Send TLB shootdown IPI to all other CPUs
+    if (apic.getLocalApic()) |local_apic| {
+        local_apic.sendIpiAllExcludingSelf(0xFE);
+    }
+
+    // Wait for all CPUs to acknowledge
+    request.wait();
+
+    tlb_shootdown_request = null;
 }
 
 /// TLB shootdown IPI handler (called by interrupt handler)

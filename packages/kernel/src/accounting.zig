@@ -5,6 +5,7 @@ const Basics = @import("basics");
 const sync = @import("sync.zig");
 const atomic = @import("atomic.zig");
 const process = @import("process.zig");
+const timer = @import("timer.zig");
 
 // ============================================================================
 // Resource Usage Statistics
@@ -129,7 +130,7 @@ pub const AccountingRecord = struct {
         record.ppid = proc.ppid;
         record.uid = proc.uid;
         record.gid = proc.gid;
-        record.start_time = 0; // TODO: Get actual start time
+        record.start_time = timer.getTicks(); // Current time in ms since boot
         record.end_time = 0;
         record.exit_code = proc.exit_code;
         record.usage = ResourceUsage.init();
@@ -250,7 +251,7 @@ pub fn logProcessExit(proc: *const process.Process) void {
     if (!accounting_initialized) return;
 
     var record = AccountingRecord.init(proc);
-    record.end_time = 0; // TODO: Get current time
+    record.end_time = timer.getTicks(); // Current time in ms since boot
 
     global_accounting_log.logExit(record);
 }
