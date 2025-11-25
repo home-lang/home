@@ -110,6 +110,8 @@ pub const NvmeQueue = struct {
     phase: u8,
     lock: sync.Spinlock,
     allocator: std.mem.Allocator,
+    sq_buffer: dma.DmaBufferInfo,
+    cq_buffer: dma.DmaBufferInfo,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -146,13 +148,16 @@ pub const NvmeQueue = struct {
             .phase = 1,
             .lock = sync.Spinlock.init(),
             .allocator = allocator,
+            .sq_buffer = sq_buffer,
+            .cq_buffer = cq_buffer,
         };
 
         return queue;
     }
 
     pub fn deinit(self: *NvmeQueue) void {
-        // TODO: Free DMA buffers
+        dma.freeBuffer(self.sq_buffer);
+        dma.freeBuffer(self.cq_buffer);
         self.allocator.destroy(self);
     }
 
@@ -512,18 +517,159 @@ pub const NvmeController = struct {
         return error.Timeout;
     }
 
-    fn identifyNamespaces(self: *NvmeController) !void {
-        // TODO: Implement identify command and namespace discovery
-        // For now, create a single namespace
-        const ns = try self.allocator.create(NvmeNamespace);
-        ns.* = .{
-            .id = 1,
-            .block_size = 512,
-            .block_count = 1024 * 1024 * 2, // 1GB
-            .controller = self,
-        };
+    /// Identify Controller structure (4096 bytes, only key fields)
+    const IdentifyController = extern struct {
+        vid: u16, // PCI Vendor ID
+        ssvid: u16, // PCI Subsystem Vendor ID
+        sn: [20]u8, // Serial Number
+        mn: [40]u8, // Model Number
+        fr: [8]u8, // Firmware Revision
+        rab: u8, // Recommended Arbitration Burst
+        ieee: [3]u8, // IEEE OUI Identifier
+        cmic: u8, // Controller Multi-Path I/O and Namespace Sharing
+        mdts: u8, // Maximum Data Transfer Size
+        cntlid: u16, // Controller ID
+        ver: u32, // Version
+        rtd3r: u32, // RTD3 Resume Latency
+        rtd3e: u32, // RTD3 Entry Latency
+        oaes: u32, // Optional Async Events Supported
+        ctratt: u32, // Controller Attributes
+        reserved: [156]u8,
+        oacs: u16, // Optional Admin Command Support
+        acl: u8, // Abort Command Limit
+        aerl: u8, // Async Event Request Limit
+        frmw: u8, // Firmware Updates
+        lpa: u8, // Log Page Attributes
+        elpe: u8, // Error Log Page Entries
+        npss: u8, // Number of Power States Supported
+        avscc: u8, // Admin Vendor Specific Command Config
+        apsta: u8, // Autonomous Power State Transition Attributes
+        wctemp: u16, // Warning Composite Temperature Threshold
+        cctemp: u16, // Critical Composite Temperature Threshold
+        mtfa: u16, // Max Time for Firmware Activation
+        hmpre: u32, // Host Memory Buffer Preferred Size
+        hmmin: u32, // Host Memory Buffer Minimum Size
+        tnvmcap: [16]u8, // Total NVM Capacity
+        unvmcap: [16]u8, // Unallocated NVM Capacity
+        rpmbs: u32, // Replay Protected Memory Block Support
+        edstt: u16, // Extended Device Self-test Time
+        dsto: u8, // Device Self-test Options
+        fwug: u8, // Firmware Update Granularity
+        kas: u16, // Keep Alive Support
+        hctma: u16, // Host Controlled Thermal Management Attributes
+        mntmt: u16, // Minimum Thermal Management Temperature
+        mxtmt: u16, // Maximum Thermal Management Temperature
+        sanicap: u32, // Sanitize Capabilities
+        reserved2: [180]u8,
+        sqes: u8, // Submission Queue Entry Size
+        cqes: u8, // Completion Queue Entry Size
+        maxcmd: u16, // Maximum Outstanding Commands
+        nn: u32, // Number of Namespaces
+        // ... rest of structure to 4096 bytes
+    };
 
-        try self.namespaces.append(ns);
+    /// Identify Namespace structure (4096 bytes, only key fields)
+    const IdentifyNamespace = extern struct {
+        nsze: u64, // Namespace Size (in blocks)
+        ncap: u64, // Namespace Capacity (in blocks)
+        nuse: u64, // Namespace Utilization (in blocks)
+        nsfeat: u8, // Namespace Features
+        nlbaf: u8, // Number of LBA Formats
+        flbas: u8, // Formatted LBA Size
+        mc: u8, // Metadata Capabilities
+        dpc: u8, // Data Protection Capabilities
+        dps: u8, // Data Protection Settings
+        nmic: u8, // Namespace Multi-path I/O and Namespace Sharing
+        rescap: u8, // Reservation Capabilities
+        fpi: u8, // Format Progress Indicator
+        dlfeat: u8, // Deallocate Logical Block Features
+        nawun: u16, // Namespace Atomic Write Unit Normal
+        nawupf: u16, // Namespace Atomic Write Unit Power Fail
+        nacwu: u16, // Namespace Atomic Compare & Write Unit
+        nabsn: u16, // Namespace Atomic Boundary Size Normal
+        nabo: u16, // Namespace Atomic Boundary Offset
+        nabspf: u16, // Namespace Atomic Boundary Size Power Fail
+        noiob: u16, // Namespace Optimal IO Boundary
+        nvmcap: [16]u8, // NVM Capacity
+        reserved: [40]u8,
+        nguid: [16]u8, // Namespace Globally Unique Identifier
+        eui64: [8]u8, // IEEE Extended Unique Identifier
+        lbaf: [16]LbaFormat, // LBA Format Support (up to 16 formats)
+        // ... rest of structure to 4096 bytes
+    };
+
+    const LbaFormat = extern struct {
+        ms: u16, // Metadata Size
+        lbads: u8, // LBA Data Size (power of 2)
+        rp: u8, // Relative Performance
+    };
+
+    fn identifyNamespaces(self: *NvmeController) !void {
+        // Allocate DMA buffer for identify data (4096 bytes)
+        const identify_buf = try dma.allocateBuffer(self.allocator, 4096, 4096);
+        defer dma.freeBuffer(identify_buf);
+
+        // First, identify the controller to get number of namespaces
+        var cmd = NvmeCommand.init(ADMIN_IDENTIFY, 0);
+        cmd.prp1 = identify_buf.physical_addr;
+        cmd.cdw10 = 0x01; // CNS = 1 (Identify Controller)
+
+        _ = try self.executeCommandWithRetry(self.admin_queue, cmd);
+
+        // Parse controller identify data
+        const ctrl_id: *const IdentifyController = @ptrFromInt(identify_buf.virtual_addr);
+        const num_namespaces = ctrl_id.nn;
+
+        // If no namespaces reported, try at least NS 1
+        const max_ns = if (num_namespaces == 0) 1 else @min(num_namespaces, 16);
+
+        // Enumerate namespaces
+        var ns_id: u32 = 1;
+        while (ns_id <= max_ns) : (ns_id += 1) {
+            // Identify namespace
+            cmd = NvmeCommand.init(ADMIN_IDENTIFY, ns_id);
+            cmd.prp1 = identify_buf.physical_addr;
+            cmd.cdw10 = 0x00; // CNS = 0 (Identify Namespace)
+
+            const result = self.executeCommandWithRetry(self.admin_queue, cmd);
+            if (result) |_| {
+                const ns_id_data: *const IdentifyNamespace = @ptrFromInt(identify_buf.virtual_addr);
+
+                // Check if namespace is valid (has size > 0)
+                if (ns_id_data.nsze == 0) continue;
+
+                // Get LBA format
+                const lba_format_idx = ns_id_data.flbas & 0x0F;
+                const lba_format = ns_id_data.lbaf[lba_format_idx];
+                const block_size: u32 = @as(u32, 1) << @intCast(lba_format.lbads);
+
+                // Create namespace
+                const ns = try self.allocator.create(NvmeNamespace);
+                ns.* = .{
+                    .id = ns_id,
+                    .block_size = block_size,
+                    .block_count = ns_id_data.nsze,
+                    .controller = self,
+                };
+
+                try self.namespaces.append(ns);
+            } else |_| {
+                // Namespace doesn't exist, skip
+                continue;
+            }
+        }
+
+        // If no namespaces found, create a default one
+        if (self.namespaces.items.len == 0) {
+            const ns = try self.allocator.create(NvmeNamespace);
+            ns.* = .{
+                .id = 1,
+                .block_size = 512,
+                .block_count = 1024 * 1024 * 2, // 1GB fallback
+                .controller = self,
+            };
+            try self.namespaces.append(ns);
+        }
     }
 
     pub fn getNamespace(self: *NvmeController, id: u32) ?*NvmeNamespace {

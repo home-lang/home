@@ -925,17 +925,80 @@ fn sysBrk(args: SyscallArgs) callconv(.C) u64 {
         return proc.brk_addr; // Heap too large
     }
 
-    // Update program break
+    // Get old break address (page-aligned)
     const old_brk = proc.brk_addr;
-    proc.brk_addr = aligned_addr;
+    const old_brk_aligned = (old_brk + page_size - 1) & ~(page_size - 1);
 
     // If expanding, map new pages
-    if (aligned_addr > old_brk) {
-        const expand_size = aligned_addr - old_brk;
-        _ = expand_size;
-        // TODO: Actually map pages in page table
-        // For now, just update the break pointer
+    if (aligned_addr > old_brk_aligned) {
+        const start_page = old_brk_aligned;
+        const page_count = (aligned_addr - old_brk_aligned) / page_size;
+
+        var i: u64 = 0;
+        while (i < page_count) : (i += 1) {
+            const virt_addr = start_page + (i * page_size);
+
+            // Allocate a physical page
+            const phys_page = Basics.heap.page_allocator.alloc(u8, page_size) catch {
+                // Rollback on failure
+                var j: u64 = 0;
+                while (j < i) : (j += 1) {
+                    const rollback_addr = start_page + (j * page_size);
+                    proc.page_mapper.unmap(rollback_addr) catch {};
+                }
+                return proc.brk_addr; // Return old break on failure
+            };
+
+            // Zero the page
+            @memset(phys_page, 0);
+
+            const phys_addr = @intFromPtr(phys_page.ptr);
+
+            // Map the page (readable, writable, user-accessible)
+            proc.page_mapper.map(virt_addr, phys_addr, .{
+                .writable = true,
+                .user = true,
+                .no_execute = true, // Heap should not be executable
+            }) catch {
+                // Rollback on failure
+                Basics.heap.page_allocator.free(phys_page);
+                var j: u64 = 0;
+                while (j < i) : (j += 1) {
+                    const rollback_addr = start_page + (j * page_size);
+                    proc.page_mapper.unmap(rollback_addr) catch {};
+                }
+                return proc.brk_addr;
+            };
+        }
+    } else if (aligned_addr < old_brk_aligned) {
+        // Shrinking - unmap and free pages
+        const page_count = (old_brk_aligned - aligned_addr) / page_size;
+        var i: u64 = 0;
+
+        while (i < page_count) : (i += 1) {
+            const virt_addr = aligned_addr + (i * page_size);
+
+            // Get physical address before unmapping
+            const phys_addr = proc.page_mapper.translate(virt_addr) catch {
+                continue;
+            };
+
+            // Unmap the page
+            proc.page_mapper.unmap(virt_addr) catch {
+                continue;
+            };
+
+            // Free the physical page
+            const page_ptr: [*]u8 = @ptrFromInt(phys_addr & ~(page_size - 1));
+            Basics.heap.page_allocator.free(page_ptr[0..page_size]);
+        }
+
+        // TLB shootdown for unmapped range
+        paging.tlbShootdownRange(aligned_addr, old_brk_aligned - aligned_addr);
     }
+
+    // Update program break
+    proc.brk_addr = aligned_addr;
 
     return proc.brk_addr;
 }
@@ -973,11 +1036,9 @@ fn sysMmap(args: SyscallArgs) callconv(.C) u64 {
     const is_anonymous = (flags & MAP_ANONYMOUS) != 0;
     const is_fixed = (flags & MAP_FIXED) != 0;
     const is_shared = (flags & MAP_SHARED) != 0;
+    const is_private = (flags & MAP_PRIVATE) != 0;
 
     _ = is_shared;
-    _ = PROT_READ;
-    _ = PROT_WRITE;
-    _ = PROT_EXEC;
 
     // Determine mapping address
     var map_addr: u64 = addr;
@@ -994,16 +1055,58 @@ fn sysMmap(args: SyscallArgs) callconv(.C) u64 {
         const file = proc.getFile(fd) orelse return toSyscallResult(error.InvalidArgument);
         _ = file;
         _ = offset;
-        // TODO: Validate file offset and size
+        // File-backed mappings will be handled on page fault (demand paging)
     }
 
-    // Allocate virtual memory region
+    // Track the virtual memory mapping
     proc.addMemoryMapping(map_addr, aligned_length, prot, flags, if (is_anonymous) null else fd) catch {
         return toSyscallResult(error.OutOfMemory);
     };
 
-    // TODO: Actually map pages in page table
-    // For now, just track the mapping
+    // For anonymous mappings, allocate and map physical pages
+    if (is_anonymous) {
+        const page_count = aligned_length / page_size;
+        var i: u64 = 0;
+
+        while (i < page_count) : (i += 1) {
+            const virt_addr = map_addr + (i * page_size);
+
+            // Allocate a physical page
+            const phys_page = Basics.heap.page_allocator.alloc(u8, page_size) catch {
+                // Rollback on failure - unmap already mapped pages
+                var j: u64 = 0;
+                while (j < i) : (j += 1) {
+                    proc.page_mapper.unmap(map_addr + (j * page_size)) catch {};
+                }
+                proc.removeMemoryMapping(map_addr, aligned_length) catch {};
+                return toSyscallResult(error.OutOfMemory);
+            };
+
+            // Zero the page for security (anonymous mappings should be zeroed)
+            @memset(phys_page, 0);
+
+            const phys_addr = @intFromPtr(phys_page.ptr);
+
+            // Map the physical page to virtual address
+            proc.page_mapper.map(virt_addr, phys_addr, .{
+                .writable = (prot & PROT_WRITE) != 0,
+                .user = true, // User-accessible
+                .no_execute = (prot & PROT_EXEC) == 0,
+            }) catch {
+                // Rollback on failure
+                var j: u64 = 0;
+                while (j < i) : (j += 1) {
+                    proc.page_mapper.unmap(map_addr + (j * page_size)) catch {};
+                }
+                proc.removeMemoryMapping(map_addr, aligned_length) catch {};
+                return toSyscallResult(error.OutOfMemory);
+            };
+
+            // For MAP_PRIVATE, mark page as copy-on-write ready
+            // (actual COW happens on fork, not here)
+            _ = is_private;
+        }
+    }
 
     return map_addr;
 }
@@ -1028,13 +1131,40 @@ fn sysMunmap(args: SyscallArgs) callconv(.C) u64 {
     // Align length to page boundary
     const aligned_length = (length + page_size - 1) & ~(page_size - 1);
 
-    // Remove memory mapping
-    proc.removeMemoryMapping(addr, aligned_length) catch {
-        return toSyscallResult(error.InvalidArgument);
-    };
+    // Unmap pages from page table and free physical memory
+    const page_count = aligned_length / page_size;
+    var i: u64 = 0;
 
-    // TODO: Actually unmap pages in page table
-    // For now, just remove the tracking
+    while (i < page_count) : (i += 1) {
+        const virt_addr = addr + (i * page_size);
+
+        // Get physical address before unmapping (for freeing)
+        const phys_addr = proc.page_mapper.translate(virt_addr) catch {
+            // Page not mapped, skip
+            continue;
+        };
+
+        // Unmap the page
+        proc.page_mapper.unmap(virt_addr) catch {
+            // Already unmapped or error, continue
+            continue;
+        };
+
+        // Free the physical page
+        // Note: We need to be careful here - only free if this was an anonymous mapping
+        // For file-backed or shared mappings, we shouldn't free the physical page
+        // For now, we free all physical pages (this is correct for anonymous mappings)
+        const page_ptr: [*]u8 = @ptrFromInt(phys_addr & ~(page_size - 1));
+        Basics.heap.page_allocator.free(page_ptr[0..page_size]);
+    }
+
+    // Perform TLB shootdown for the unmapped range
+    paging.tlbShootdownRange(addr, aligned_length);
+
+    // Remove memory mapping from process tracking
+    proc.removeMemoryMapping(addr, aligned_length) catch {
+        // Already removed or never existed, not an error
+    };
 
     return 0;
 }

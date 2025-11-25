@@ -139,6 +139,8 @@ pub const FisRegH2D = extern struct {
 pub const AtaCommand = enum(u8) {
     ReadDma = 0x25, // READ DMA EXT
     WriteDma = 0x35, // WRITE DMA EXT
+    FlushCache = 0xE7, // FLUSH CACHE (28-bit)
+    FlushCacheExt = 0xEA, // FLUSH CACHE EXT (48-bit)
     Identify = 0xEC, // IDENTIFY DEVICE
     _,
 };
@@ -531,6 +533,106 @@ pub const AhciPort = struct {
         }
         return error.NoFreeSlots;
     }
+
+    /// Flush cached data to disk
+    pub fn flush(self: *AhciPort) !void {
+        self.lock.acquire();
+        defer self.lock.release();
+
+        const slot = try self.findCommandSlot();
+        const cmd_header = &self.command_list[slot];
+        const cmd_table = &self.command_tables[slot];
+
+        // Setup command header (no data transfer)
+        cmd_header.* = CommandHeader.init(
+            @sizeOf(FisRegH2D) / 4,
+            false,
+            0, // No PRDT entries for flush
+        );
+
+        const cmd_table_addr = @intFromPtr(cmd_table);
+        cmd_header.ctba = @truncate(cmd_table_addr);
+        cmd_header.ctba_upper = @truncate(cmd_table_addr >> 32);
+
+        // Setup Command FIS - use FLUSH CACHE EXT for 48-bit LBA support
+        const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));
+        fis.* = .{
+            .fis_type = @intFromEnum(FisType.RegH2D),
+            .pm_port = 1 << 7, // Command bit
+            .command = @intFromEnum(AtaCommand.FlushCacheExt),
+            .features_low = 0,
+            .lba0 = 0,
+            .lba1 = 0,
+            .lba2 = 0,
+            .device = 0,
+            .lba3 = 0,
+            .lba4 = 0,
+            .lba5 = 0,
+            .features_high = 0,
+            .count_low = 0,
+            .count_high = 0,
+            .icc = 0,
+            .control = 0,
+            .reserved = [_]u8{0} ** 4,
+        };
+
+        // Execute command with retry (flush can take time)
+        try self.executeWithRetry(slot);
+    }
+
+    /// Identify device - returns device info
+    pub fn identify(self: *AhciPort, buffer: []u8) !void {
+        if (buffer.len < 512) return error.BufferTooSmall;
+
+        self.lock.acquire();
+        defer self.lock.release();
+
+        const slot = try self.findCommandSlot();
+        const cmd_header = &self.command_list[slot];
+        const cmd_table = &self.command_tables[slot];
+
+        // Setup command header
+        cmd_header.* = CommandHeader.init(
+            @sizeOf(FisRegH2D) / 4,
+            false, // Read from device
+            1, // One PRDT entry
+        );
+
+        const cmd_table_addr = @intFromPtr(cmd_table);
+        cmd_header.ctba = @truncate(cmd_table_addr);
+        cmd_header.ctba_upper = @truncate(cmd_table_addr >> 32);
+
+        // Setup PRDT - 512 bytes for identify data
+        cmd_table.prdt[0] = PrdtEntry.init(self.dma_buffer.physical, 512);
+
+        // Setup Command FIS
+        const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));
+        fis.* = .{
+            .fis_type = @intFromEnum(FisType.RegH2D),
+            .pm_port = 1 << 7, // Command bit
+            .command = @intFromEnum(AtaCommand.Identify),
+            .features_low = 0,
+            .lba0 = 0,
+            .lba1 = 0,
+            .lba2 = 0,
+            .device = 0,
+            .lba3 = 0,
+            .lba4 = 0,
+            .lba5 = 0,
+            .features_high = 0,
+            .count_low = 0,
+            .count_high = 0,
+            .icc = 0,
+            .control = 0,
+            .reserved = [_]u8{0} ** 4,
+        };
+
+        // Execute command
+        try self.executeWithRetry(slot);
+
+        // Copy from DMA buffer
+        try self.dma_buffer.copyTo(buffer[0..512]);
+    }
 };
 
 // ============================================================================
@@ -620,8 +722,8 @@ fn ahciWrite(device: *block.BlockDevice, sector: u64, count: u32, data: []const 
 }
 
 fn ahciFlush(device: *block.BlockDevice) !void {
-    _ = device;
-    // TODO: Implement FLUSH CACHE command
+    const port: *AhciPort = @ptrCast(@alignCast(device.driver_data.?));
+    try port.flush();
 }
 
 const ahci_ops = block.BlockDeviceOps{

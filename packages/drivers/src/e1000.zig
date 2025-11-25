@@ -485,8 +485,24 @@ fn e1000Open(dev: *netdev.NetDevice) !void {
 }
 
 fn e1000Stop(dev: *netdev.NetDevice) !void {
-    _ = dev;
-    // TODO: Disable RX/TX
+    const e1000: *E1000Device = @ptrCast(@alignCast(dev.driver_data.?));
+
+    // Disable receiver
+    const rctl = e1000.readReg(E1000Regs.RCTL);
+    e1000.writeReg(E1000Regs.RCTL, rctl & ~RCTL_EN);
+
+    // Disable transmitter
+    const tctl = e1000.readReg(E1000Regs.TCTL);
+    e1000.writeReg(E1000Regs.TCTL, tctl & ~TCTL_EN);
+
+    // Disable all interrupts
+    e1000.writeReg(E1000Regs.IMC, 0xFFFFFFFF);
+
+    // Clear any pending interrupts
+    _ = e1000.readReg(E1000Regs.ICR);
+
+    // Clear link up flag
+    e1000.link_up = false;
 }
 
 fn e1000Xmit(dev: *netdev.NetDevice, skb: *netdev.PacketBuffer) !void {
