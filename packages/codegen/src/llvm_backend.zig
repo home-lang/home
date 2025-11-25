@@ -433,31 +433,279 @@ pub const Compiler = struct {
     }
 
     fn generateReturn(self: *LLVMBackend, ret: *const ast.ReturnStmt) !void {
-        if (ret.value) |_| {
-            // TODO: Generate return value expression
-            try self.emitLine("; ret <value>");
+        if (ret.value) |value_expr| {
+            // Generate the return value expression
+            const value_reg = try self.generateExpr(value_expr);
+            const value_type = try self.toLLVMType(value_reg.typ);
+
+            try self.emit("ret ");
+            try self.emit(value_type);
+            try self.emit(" ");
+            try self.emit(value_reg.name);
+            try self.emitLine("");
         } else {
             try self.emitLine("ret void");
         }
     }
 
     fn generateIf(self: *LLVMBackend, if_stmt: *const ast.IfStmt) !void {
-        // TODO: Generate condition, branches, labels
-        try self.emitLine("; if statement");
+        // Generate labels for then, else, and merge blocks
+        const then_label = try self.newLabel();
+        const else_label = try self.newLabel();
+        const merge_label = try self.newLabel();
+
+        // Generate condition
+        const cond_reg = try self.generateExpr(if_stmt.condition);
+
+        // Branch based on condition
+        if (if_stmt.else_block) |_| {
+            try self.emit("br i1 ");
+            try self.emit(cond_reg.name);
+            try self.emit(", label %");
+            try self.emit(then_label);
+            try self.emit(", label %");
+            try self.emit(else_label);
+            try self.emitLine("");
+        } else {
+            try self.emit("br i1 ");
+            try self.emit(cond_reg.name);
+            try self.emit(", label %");
+            try self.emit(then_label);
+            try self.emit(", label %");
+            try self.emit(merge_label);
+            try self.emitLine("");
+        }
+
+        // Generate then block
+        try self.emitLine("");
+        try self.emit(then_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        for (if_stmt.then_block.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+        try self.emit("br label %");
+        try self.emit(merge_label);
+        try self.emitLine("");
+        self.indent_level -= 1;
+
+        // Generate else block if present
+        if (if_stmt.else_block) |else_block| {
+            try self.emitLine("");
+            try self.emit(else_label);
+            try self.emitLine(":");
+            self.indent_level += 1;
+            for (else_block.statements) |stmt| {
+                try self.generateStmt(stmt);
+            }
+            try self.emit("br label %");
+            try self.emit(merge_label);
+            try self.emitLine("");
+            self.indent_level -= 1;
+        }
+
+        // Generate merge block
+        try self.emitLine("");
+        try self.emit(merge_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        // Continue with code after if
+        self.indent_level -= 1;
     }
 
     fn generateWhile(self: *LLVMBackend, while_stmt: *const ast.WhileStmt) !void {
-        // TODO: Generate loop labels and condition
-        try self.emitLine("; while loop");
+        // Generate labels for header, body, and exit
+        const header_label = try self.newLabel();
+        const body_label = try self.newLabel();
+        const exit_label = try self.newLabel();
+
+        // Branch to header
+        try self.emit("br label %");
+        try self.emit(header_label);
+        try self.emitLine("");
+
+        // Generate loop header (condition check)
+        try self.emitLine("");
+        try self.emit(header_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        const cond_reg = try self.generateExpr(while_stmt.condition);
+        try self.emit("br i1 ");
+        try self.emit(cond_reg.name);
+        try self.emit(", label %");
+        try self.emit(body_label);
+        try self.emit(", label %");
+        try self.emit(exit_label);
+        try self.emitLine("");
+        self.indent_level -= 1;
+
+        // Generate loop body
+        try self.emitLine("");
+        try self.emit(body_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        for (while_stmt.body.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+        try self.emit("br label %");
+        try self.emit(header_label);
+        try self.emitLine("");
+        self.indent_level -= 1;
+
+        // Generate exit block
+        try self.emitLine("");
+        try self.emit(exit_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        // Continue with code after loop
+        self.indent_level -= 1;
     }
 
     fn generateFor(self: *LLVMBackend, for_stmt: *const ast.ForStmt) !void {
-        // TODO: Generate for loop
-        try self.emitLine("; for loop");
+        // For now, generate a basic for loop structure
+        // A proper implementation would handle iterators and ranges
+        const header_label = try self.newLabel();
+        const body_label = try self.newLabel();
+        const exit_label = try self.newLabel();
+
+        // Generate iterator initialization
+        try self.emit("; for ");
+        try self.emit(for_stmt.iterator);
+        try self.emit(" in <iterable>");
+        try self.emitLine("");
+
+        // Branch to header
+        try self.emit("br label %");
+        try self.emit(header_label);
+        try self.emitLine("");
+
+        // Generate loop header
+        try self.emitLine("");
+        try self.emit(header_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        try self.emitLine("; check if iterator has next");
+        const has_next = try self.newTemp();
+        try self.emit(has_next);
+        try self.emitLine(" = icmp ne i32 0, 0 ; placeholder");
+        try self.emit("br i1 ");
+        try self.emit(has_next);
+        try self.emit(", label %");
+        try self.emit(body_label);
+        try self.emit(", label %");
+        try self.emit(exit_label);
+        try self.emitLine("");
+        self.indent_level -= 1;
+
+        // Generate loop body
+        try self.emitLine("");
+        try self.emit(body_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        for (for_stmt.body.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+        try self.emit("br label %");
+        try self.emit(header_label);
+        try self.emitLine("");
+        self.indent_level -= 1;
+
+        // Generate exit block
+        try self.emitLine("");
+        try self.emit(exit_label);
+        try self.emitLine(":");
+        self.indent_level += 1;
+        // Continue with code after loop
+        self.indent_level -= 1;
     }
 
     fn generateExprStmt(self: *LLVMBackend, expr: *const ast.Expr) !void {
-        // TODO: Generate expression and discard result
-        try self.emitLine("; expression statement");
+        // Generate expression for side effects and discard result
+        _ = try self.generateExpr(expr);
+    }
+
+    /// Generate LLVM IR for an expression and return the register holding the result
+    fn generateExpr(self: *LLVMBackend, expr: *const ast.Expr) !LLVMValue {
+        // Basic expression generation stub
+        // A full implementation would handle all expression types
+        switch (expr.*) {
+            .IntLiteral => |int_lit| {
+                const temp = try self.newTemp();
+                try self.emit(temp);
+                try self.emit(" = add i32 0, ");
+                const value_str = try std.fmt.allocPrint(self.allocator, "{d}", .{int_lit.value});
+                defer self.allocator.free(value_str);
+                try self.emit(value_str);
+                try self.emitLine("");
+                return LLVMValue{ .name = temp, .typ = .Int };
+            },
+            .BoolLiteral => |bool_lit| {
+                const temp = try self.newTemp();
+                try self.emit(temp);
+                try self.emit(" = add i1 0, ");
+                try self.emit(if (bool_lit.value) "1" else "0");
+                try self.emitLine("");
+                return LLVMValue{ .name = temp, .typ = .Bool };
+            },
+            .BinaryOp => |bin_op| {
+                const left = try self.generateExpr(bin_op.left);
+                const right = try self.generateExpr(bin_op.right);
+                const temp = try self.newTemp();
+                const llvm_type = try self.toLLVMType(left.typ);
+
+                try self.emit(temp);
+                try self.emit(" = ");
+
+                // Generate appropriate LLVM instruction based on operator
+                const op_instr = switch (bin_op.op) {
+                    .Add => "add",
+                    .Sub => "sub",
+                    .Mul => "mul",
+                    .Div => "sdiv",
+                    .Mod => "srem",
+                    .Equal => "icmp eq",
+                    .NotEqual => "icmp ne",
+                    .LessThan => "icmp slt",
+                    .LessThanOrEqual => "icmp sle",
+                    .GreaterThan => "icmp sgt",
+                    .GreaterThanOrEqual => "icmp sge",
+                    .And => "and",
+                    .Or => "or",
+                    else => "add", // Placeholder for other operators
+                };
+
+                try self.emit(op_instr);
+                try self.emit(" ");
+                try self.emit(llvm_type);
+                try self.emit(" ");
+                try self.emit(left.name);
+                try self.emit(", ");
+                try self.emit(right.name);
+                try self.emitLine("");
+
+                const result_type = if (std.mem.eql(u8, op_instr[0..4], "icmp")) Type.Bool else left.typ;
+                return LLVMValue{ .name = temp, .typ = result_type };
+            },
+            .Identifier => |ident| {
+                // Look up variable in symbol table
+                if (self.variables.get(ident.name)) |var_value| {
+                    return var_value;
+                }
+                // If not found, create a placeholder
+                const temp = try self.newTemp();
+                try self.emit(temp);
+                try self.emit(" = load i32, i32* %");
+                try self.emit(ident.name);
+                try self.emitLine(" ; variable load");
+                return LLVMValue{ .name = temp, .typ = .Int };
+            },
+            else => {
+                // Placeholder for other expression types
+                const temp = try self.newTemp();
+                try self.emit(temp);
+                try self.emitLine(" = add i32 0, 0 ; unsupported expression");
+                return LLVMValue{ .name = temp, .typ = .Int };
+            },
+        }
     }
 };

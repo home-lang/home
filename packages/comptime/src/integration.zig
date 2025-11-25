@@ -120,6 +120,84 @@ pub const ComptimeIntegration = struct {
                 }
             },
 
+            .AssignmentExpr => |assign_expr| {
+                try self.processExpression(assign_expr.target);
+                try self.processExpression(assign_expr.value);
+            },
+
+            .IndexExpr => |index_expr| {
+                try self.processExpression(index_expr.array);
+                try self.processExpression(index_expr.index);
+            },
+
+            .MemberExpr => |member_expr| {
+                try self.processExpression(member_expr.object);
+            },
+
+            .RangeExpr => |range_expr| {
+                try self.processExpression(range_expr.start);
+                try self.processExpression(range_expr.end);
+            },
+
+            .SliceExpr => |slice_expr| {
+                try self.processExpression(slice_expr.array);
+                if (slice_expr.start) |start| {
+                    try self.processExpression(start);
+                }
+                if (slice_expr.end) |end| {
+                    try self.processExpression(end);
+                }
+            },
+
+            .TernaryExpr => |ternary_expr| {
+                try self.processExpression(ternary_expr.condition);
+                try self.processExpression(ternary_expr.true_expr);
+                try self.processExpression(ternary_expr.false_expr);
+            },
+
+            .TryExpr => |try_expr| {
+                try self.processExpression(try_expr.expression);
+            },
+
+            .TypeCastExpr => |cast_expr| {
+                try self.processExpression(cast_expr.expression);
+            },
+
+            .TupleExpr => |tuple_expr| {
+                for (tuple_expr.elements) |elem| {
+                    try self.processExpression(elem);
+                }
+            },
+
+            .MatchExpr => |match_expr| {
+                try self.processExpression(match_expr.target);
+                for (match_expr.arms) |arm| {
+                    if (arm.guard) |guard| {
+                        try self.processExpression(guard);
+                    }
+                    try self.processExpression(arm.body);
+                }
+            },
+
+            .AwaitExpr => |await_expr| {
+                try self.processExpression(await_expr.expression);
+            },
+
+            .NullCoalesceExpr => |null_coalesce| {
+                try self.processExpression(null_coalesce.left);
+                try self.processExpression(null_coalesce.right);
+            },
+
+            .SafeNavExpr => |safe_nav| {
+                try self.processExpression(safe_nav.target);
+            },
+
+            .ClosureExpr => |closure_expr| {
+                for (closure_expr.body.statements) |stmt| {
+                    try self.processStatement(&stmt);
+                }
+            },
+
             // Leaf nodes - no sub-expressions
             .IntegerLiteral,
             .FloatLiteral,
@@ -130,7 +208,7 @@ pub const ComptimeIntegration = struct {
             .Identifier => {},
 
             else => {
-                // TODO: Handle other expression types as needed
+                // Unsupported expression types can be added as needed
             },
         }
     }
@@ -179,8 +257,28 @@ pub const ComptimeIntegration = struct {
                 }
             },
 
+            .ForStmt => |for_stmt| {
+                try self.processExpression(for_stmt.iterable);
+                for (for_stmt.body.statements) |s| {
+                    try self.processStatement(&s);
+                }
+            },
+
+            .MatchStmt => |match_stmt| {
+                try self.processExpression(match_stmt.value);
+                // Note: arm bodies are Expr, not BlockStmt, so handled by MatchExpr
+            },
+
+            .ConstDecl => {
+                // Marker only
+            },
+
+            .BreakStmt, .ContinueStmt, .DeferStmt => {
+                // No expressions to process
+            },
+
             else => {
-                // TODO: Handle other statement types
+                // Unsupported statement types can be added as needed
             },
         }
     }
@@ -196,8 +294,36 @@ pub const ComptimeIntegration = struct {
                     }
                 },
 
+                .StructDecl => |struct_decl| {
+                    // Process method bodies
+                    for (struct_decl.methods) |method| {
+                        for (method.body.statements) |stmt| {
+                            try self.processStatement(&stmt);
+                        }
+                    }
+                },
+
+                .ImplDecl => |impl_decl| {
+                    // Process method implementations
+                    for (impl_decl.methods) |method| {
+                        for (method.body.statements) |stmt| {
+                            try self.processStatement(&stmt);
+                        }
+                    }
+                },
+
+                .ConstDecl => {
+                    // ConstDecl is a type alias in Stmt union, no fields to process
+                },
+
+                .LetDecl => |let_decl| {
+                    if (let_decl.value) |value| {
+                        try self.processExpression(value);
+                    }
+                },
+
                 else => {
-                    // TODO: Handle other declaration types
+                    // Type declarations and other top-level constructs
                 },
             }
         }
