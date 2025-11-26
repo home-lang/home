@@ -9,6 +9,7 @@ pub const IncrementalCompiler = struct {
     cache_dir: []const u8,
     modules: std.StringHashMap(ModuleInfo),
     dependency_graph: std.StringHashMap(std.ArrayList([]const u8)),
+    max_cache_size_bytes: usize = 1024 * 1024 * 1024, // Default: 1GB
 
     pub const ModuleInfo = struct {
         path: []const u8,
@@ -251,8 +252,51 @@ pub const IncrementalCompiler = struct {
         // Sort by last modified time (oldest first)
         std.mem.sort(CacheEntry, entries.items, {}, CacheEntry.lessThan);
 
-        // TODO: Calculate total cache size and remove oldest entries until under limit
-        // For now, just keep all entries
+        // Calculate total cache size and remove oldest entries until under limit
+        var total_size: usize = 0;
+        var entries_to_remove = std.ArrayList([]const u8).init(self.allocator);
+        defer entries_to_remove.deinit();
+
+        // First pass: calculate current cache size
+        for (entries.items) |entry| {
+            const file_size = self.getFileSize(entry.path) catch continue;
+            total_size += file_size;
+        }
+
+        // If under limit, nothing to do
+        if (total_size <= self.max_cache_size_bytes) {
+            return;
+        }
+
+        // Second pass: mark oldest entries for removal until under limit
+        var current_size = total_size;
+        for (entries.items) |entry| {
+            if (current_size <= self.max_cache_size_bytes) {
+                break;
+            }
+
+            const file_size = self.getFileSize(entry.path) catch continue;
+            try entries_to_remove.append(entry.path);
+            current_size -= file_size;
+        }
+
+        // Remove marked entries
+        for (entries_to_remove.items) |path| {
+            // Delete cache files
+            std.fs.cwd().deleteFile(path) catch {};
+
+            // Remove from modules map
+            _ = self.modules.remove(path);
+        }
+    }
+
+    /// Get file size in bytes
+    fn getFileSize(_: *IncrementalCompiler, file_path: []const u8) !usize {
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        const stat = try file.stat();
+        return @intCast(stat.size);
     }
 
     const CacheEntry = struct {

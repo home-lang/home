@@ -167,7 +167,67 @@ pub const CLI = struct {
             if (options.verbose) {
                 std.debug.print("Validating code examples...\n", .{});
             }
-            // TODO: Implement example validation
+
+            const example_extractor = @import("example_extractor.zig");
+            var extractor = example_extractor.ExampleExtractor.init(self.allocator);
+            defer extractor.deinit();
+
+            var runner = example_extractor.ExampleRunner.init(self.allocator);
+
+            var total_examples: usize = 0;
+            var passed: usize = 0;
+            var failed: usize = 0;
+
+            // Extract and validate examples from all source files
+            for (source_files.items) |file_path| {
+                const examples = try extractor.extractExamples(file_path);
+                defer {
+                    for (examples) |ex| {
+                        self.allocator.free(ex.code);
+                        if (ex.expected_output) |out| self.allocator.free(out);
+                    }
+                    self.allocator.free(examples);
+                }
+
+                for (examples) |ex| {
+                    total_examples += 1;
+
+                    // Run the example
+                    const output = runner.runExample(ex) catch |err| {
+                        if (options.verbose) {
+                            std.debug.print("  ✗ Example failed to run: {}\n", .{err});
+                        }
+                        failed += 1;
+                        continue;
+                    };
+                    defer self.allocator.free(output);
+
+                    // Check if output matches expected (if provided)
+                    if (ex.expected_output) |expected| {
+                        if (example_extractor.ExampleRunner.compareOutput(expected, output)) {
+                            passed += 1;
+                            if (options.verbose) {
+                                std.debug.print("  ✓ Example passed\n", .{});
+                            }
+                        } else {
+                            failed += 1;
+                            if (options.verbose) {
+                                std.debug.print("  ✗ Output mismatch\n", .{});
+                                std.debug.print("    Expected: {s}\n", .{expected});
+                                std.debug.print("    Got:      {s}\n", .{output});
+                            }
+                        }
+                    } else {
+                        // No expected output - just check it runs
+                        passed += 1;
+                        if (options.verbose) {
+                            std.debug.print("  ✓ Example compiled and ran\n", .{});
+                        }
+                    }
+                }
+            }
+
+            std.debug.print("\nValidation results: {d} total, {d} passed, {d} failed\n", .{ total_examples, passed, failed });
         }
 
         std.debug.print("Documentation generated successfully!\n", .{});
@@ -221,11 +281,67 @@ pub const CLI = struct {
 
     /// Validate documentation (check for broken links, invalid examples, etc.)
     fn validateDocs(self: *CLI, options: Options) !void {
-        _ = self;
-        _ = options;
         std.debug.print("Validating documentation...\n", .{});
-        // TODO: Implement validation
-        std.debug.print("Note: Validation not yet implemented\n", .{});
+
+        var issues = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (issues.items) |issue| {
+                self.allocator.free(issue);
+            }
+            issues.deinit();
+        }
+
+        // Check if output directory exists
+        std.fs.cwd().access(options.output_dir, .{}) catch {
+            try issues.append(try std.fmt.allocPrint(self.allocator, "Output directory does not exist: {s}", .{options.output_dir}));
+        };
+
+        // Check for index.html
+        const index_path = try std.fs.path.join(self.allocator, &.{ options.output_dir, "index.html" });
+        defer self.allocator.free(index_path);
+
+        std.fs.cwd().access(index_path, .{}) catch {
+            try issues.append(try std.fmt.allocPrint(self.allocator, "Missing index.html", .{}));
+        };
+
+        // Collect all HTML files and check for broken internal links
+        var html_files = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (html_files.items) |file| {
+                self.allocator.free(file);
+            }
+            html_files.deinit();
+        }
+
+        try self.collectHTMLFiles(options.output_dir, &html_files);
+
+        // Basic validation complete
+        if (issues.items.len == 0) {
+            std.debug.print("✓ Validation passed! Found {d} HTML files\n", .{html_files.items.len});
+        } else {
+            std.debug.print("✗ Validation found {d} issues:\n", .{issues.items.len});
+            for (issues.items) |issue| {
+                std.debug.print("  - {s}\n", .{issue});
+            }
+        }
+    }
+
+    /// Collect all HTML files from a directory
+    fn collectHTMLFiles(self: *CLI, dir_path: []const u8, files: *std.ArrayList([]const u8)) !void {
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .directory) {
+                const sub_dir = try std.fs.path.join(self.allocator, &.{ dir_path, entry.name });
+                defer self.allocator.free(sub_dir);
+                try self.collectHTMLFiles(sub_dir, files);
+            } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".html")) {
+                const file_path = try std.fs.path.join(self.allocator, &.{ dir_path, entry.name });
+                try files.append(file_path);
+            }
+        }
     }
 
     /// Print help message

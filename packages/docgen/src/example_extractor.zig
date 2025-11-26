@@ -259,15 +259,45 @@ pub const ExampleRunner = struct {
 
     /// Run an example and capture output
     pub fn runExample(self: *ExampleRunner, example: ExampleExtractor.CodeExample) ![]const u8 {
-        _ = self;
-        _ = example;
-        // TODO: Implement example execution
-        // This would involve:
-        // 1. Writing code to temporary file
-        // 2. Compiling it
-        // 3. Running it
-        // 4. Capturing output
-        return "";
+        // 1. Create a temporary directory
+        var tmp_dir_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const tmp_dir = try std.fmt.bufPrint(&tmp_dir_buf, "/tmp/home_example_{d}", .{std.time.timestamp()});
+
+        try std.fs.cwd().makeDir(tmp_dir);
+        defer std.fs.cwd().deleteTree(tmp_dir) catch {};
+
+        // 2. Write code to temporary file
+        var file_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/example.home", .{tmp_dir});
+
+        const file = try std.fs.cwd().createFile(file_path, .{});
+        defer file.close();
+        try file.writeAll(example.code);
+
+        // 3. Compile the example (assuming home compiler is in PATH)
+        var compile_result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &[_][]const u8{ "home", "build", file_path },
+        });
+        defer self.allocator.free(compile_result.stdout);
+        defer self.allocator.free(compile_result.stderr);
+
+        if (compile_result.term.Exited != 0) {
+            return error.CompilationFailed;
+        }
+
+        // 4. Run the compiled executable
+        var exe_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const exe_path = try std.fmt.bufPrint(&exe_path_buf, "{s}/example", .{tmp_dir});
+
+        var run_result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &[_][]const u8{exe_path},
+        });
+        defer self.allocator.free(run_result.stderr);
+
+        // Return captured stdout (ownership transferred to caller)
+        return run_result.stdout;
     }
 
     /// Compare expected vs actual output

@@ -272,22 +272,52 @@ pub const EnhancedReporter = struct {
             try writer.print("{s}{s}", .{ Color.Bold.code(), Color.Red.code() });
         }
 
-        // For now, just print a single caret and underline
-        // TODO: Support multi-character spans
-        try writer.writeAll("^");
+        // Support multi-character spans by examining primary label
+        var span_len: usize = 1; // Default to single character
 
-        // Determine underline length (default to rest of identifier)
-        var underline_len: usize = 1;
-        if (col < line.len) {
-            var pos = col;
-            while (pos < line.len and isIdentifierChar(line[pos])) {
-                underline_len += 1;
-                pos += 1;
+        // Check if we have a primary label to get span info from
+        if (diagnostic.labels.len > 0) {
+            const primary_label = diagnostic.labels[0];
+            if (primary_label.style == .primary) {
+                // Try to determine span length from the error context
+                // For identifiers, span the whole identifier
+                if (col < line.len) {
+                    var pos = col;
+                    while (pos < line.len and isIdentifierChar(line[pos])) {
+                        span_len += 1;
+                        pos += 1;
+                    }
+                    span_len -= 1; // Adjust for initial count
+                }
             }
         }
 
+        // If still just 1, try to infer from context
+        if (span_len == 1 and col < line.len) {
+            // Check for common multi-char tokens
+            if (col + 1 < line.len) {
+                const two_char = line[col .. col + 2];
+                // Check for two-character operators
+                if (std.mem.eql(u8, two_char, "==") or
+                    std.mem.eql(u8, two_char, "!=") or
+                    std.mem.eql(u8, two_char, "<=") or
+                    std.mem.eql(u8, two_char, ">=") or
+                    std.mem.eql(u8, two_char, "&&") or
+                    std.mem.eql(u8, two_char, "||") or
+                    std.mem.eql(u8, two_char, "->") or
+                    std.mem.eql(u8, two_char, "::"))
+                {
+                    span_len = 2;
+                }
+            }
+        }
+
+        // Print caret
+        try writer.writeAll("^");
+
+        // Print underline tildes
         i = 1;
-        while (i < underline_len) : (i += 1) {
+        while (i < span_len) : (i += 1) {
             try writer.writeAll("~");
         }
 

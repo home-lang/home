@@ -165,12 +165,44 @@ pub const MetadataSerializer = struct {
     /// Extract metadata from AST
     pub fn extractFromAST(self: *MetadataSerializer, program: *ast.Program, module_name: []const u8) !Metadata {
         var exports = std.ArrayList(Metadata.ExportedSymbol).init(self.allocator);
+        var imports = std.ArrayList(Metadata.ImportedSymbol).init(self.allocator);
         var type_definitions = std.ArrayList(Metadata.TypeDefinition).init(self.allocator);
         var function_signatures = std.ArrayList(Metadata.FunctionSignature).init(self.allocator);
 
         // Walk AST and extract symbol information
         for (program.statements) |stmt| {
             switch (stmt) {
+                .ImportDecl => |import_decl| {
+                    // Build module path from segments
+                    var module_path = std.ArrayList(u8).init(self.allocator);
+                    defer module_path.deinit();
+
+                    for (import_decl.path, 0..) |segment, i| {
+                        if (i > 0) try module_path.appendSlice("::");
+                        try module_path.appendSlice(segment);
+                    }
+
+                    const module_str = try module_path.toOwnedSlice();
+
+                    // If specific imports listed, add each one
+                    if (import_decl.imports) |import_list| {
+                        for (import_list) |import_name| {
+                            try imports.append(.{
+                                .name = try self.allocator.dupe(u8, import_name),
+                                .module = try self.allocator.dupe(u8, module_str),
+                                .alias = if (import_decl.alias) |a| try self.allocator.dupe(u8, a) else null,
+                            });
+                        }
+                    } else {
+                        // Wildcard import - just record the module
+                        const name = if (import_decl.alias) |a| a else import_decl.path[import_decl.path.len - 1];
+                        try imports.append(.{
+                            .name = try self.allocator.dupe(u8, name),
+                            .module = module_str,
+                            .alias = if (import_decl.alias) |a| try self.allocator.dupe(u8, a) else null,
+                        });
+                    }
+                },
                 .FunctionDecl => |func_decl| {
                     if (func_decl.is_public) {
                         try exports.append(.{
@@ -184,14 +216,14 @@ pub const MetadataSerializer = struct {
                     for (func_decl.params, 0..) |param, i| {
                         params[i] = .{
                             .name = try self.allocator.dupe(u8, param.name),
-                            .type_name = try self.allocator.dupe(u8, "unknown"), // TODO: Get actual type
+                            .type_name = try self.allocator.dupe(u8, param.type_name),
                         };
                     }
 
                     try function_signatures.append(.{
                         .name = try self.allocator.dupe(u8, func_decl.name),
                         .params = params,
-                        .return_type = try self.allocator.dupe(u8, "unknown"), // TODO: Get actual return type
+                        .return_type = if (func_decl.return_type) |ret| try self.allocator.dupe(u8, ret) else try self.allocator.dupe(u8, "void"),
                         .is_generic = func_decl.generic_params.len > 0,
                     });
                 },
@@ -208,7 +240,7 @@ pub const MetadataSerializer = struct {
                     for (struct_decl.fields, 0..) |field, i| {
                         fields[i] = .{
                             .name = try self.allocator.dupe(u8, field.name),
-                            .type_name = try self.allocator.dupe(u8, "unknown"), // TODO: Get actual type
+                            .type_name = try self.allocator.dupe(u8, field.type_name),
                             .offset = i,
                         };
                     }
@@ -226,7 +258,7 @@ pub const MetadataSerializer = struct {
         return .{
             .module_name = try self.allocator.dupe(u8, module_name),
             .exports = try exports.toOwnedSlice(),
-            .imports = &.{}, // TODO: Extract imports
+            .imports = try imports.toOwnedSlice(),
             .type_definitions = try type_definitions.toOwnedSlice(),
             .function_signatures = try function_signatures.toOwnedSlice(),
         };
