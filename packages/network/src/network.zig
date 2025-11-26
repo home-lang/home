@@ -10,19 +10,39 @@ const Allocator = std.mem.Allocator;
 
 // ==================== Core Types ====================
 
-/// Socket address
-pub const Address = struct {
-    family: u16,
-    port: u16,
-    addr: [4]u8, // IPv4 for now
+/// Socket address supporting both IPv4 and IPv6
+pub const Address = union(enum) {
+    ipv4: Ipv4Address,
+    ipv6: Ipv6Address,
+
+    pub const Ipv4Address = struct {
+        port: u16,
+        addr: [4]u8,
+    };
+
+    pub const Ipv6Address = struct {
+        port: u16,
+        addr: [16]u8,
+        flowinfo: u32 = 0,
+        scope_id: u32 = 0,
+    };
 
     /// Create IPv4 address
     pub fn initIp4(ip: [4]u8, port: u16) Address {
-        return Address{
-            .family = posix.AF.INET,
-            .port = std.mem.nativeToBig(u16, port),
+        return .{ .ipv4 = .{
+            .port = port,
             .addr = ip,
-        };
+        } };
+    }
+
+    /// Create IPv6 address
+    pub fn initIp6(ip: [16]u8, port: u16) Address {
+        return .{ .ipv6 = .{
+            .port = port,
+            .addr = ip,
+            .flowinfo = 0,
+            .scope_id = 0,
+        } };
     }
 
     /// Parse IPv4 from string "127.0.0.1"
@@ -41,51 +61,174 @@ pub const Address = struct {
         return initIp4(parts, port);
     }
 
-    /// Get localhost (127.0.0.1)
+    /// Parse IPv6 from string "::1" or "2001:db8::1"
+    pub fn parseIp6(ip_str: []const u8, port: u16) !Address {
+        var addr: [16]u8 = [_]u8{0} ** 16;
+
+        // Handle :: notation (zero compression)
+        if (std.mem.indexOf(u8, ip_str, "::")) |double_colon_pos| {
+            var before = ip_str[0..double_colon_pos];
+            var after = ip_str[double_colon_pos + 2 ..];
+
+            var before_parts = std.mem.splitScalar(u8, before, ':');
+            var i: usize = 0;
+            while (before_parts.next()) |part| {
+                if (part.len == 0) continue;
+                const value = try std.fmt.parseInt(u16, part, 16);
+                addr[i * 2] = @intCast((value >> 8) & 0xFF);
+                addr[i * 2 + 1] = @intCast(value & 0xFF);
+                i += 1;
+            }
+
+            var after_parts = std.mem.splitScalar(u8, after, ':');
+            var j: usize = 15;
+            var after_list = std.ArrayList(u16).init(std.heap.page_allocator);
+            defer after_list.deinit();
+            while (after_parts.next()) |part| {
+                if (part.len == 0) continue;
+                const value = try std.fmt.parseInt(u16, part, 16);
+                try after_list.append(value);
+            }
+            var k = after_list.items.len;
+            while (k > 0) {
+                k -= 1;
+                const value = after_list.items[k];
+                addr[j - 1] = @intCast(value & 0xFF);
+                addr[j - 2] = @intCast((value >> 8) & 0xFF);
+                j -= 2;
+            }
+        } else {
+            var parts = std.mem.splitScalar(u8, ip_str, ':');
+            var i: usize = 0;
+            while (parts.next()) |part| : (i += 1) {
+                if (i >= 8) return error.InvalidIpAddress;
+                const value = try std.fmt.parseInt(u16, part, 16);
+                addr[i * 2] = @intCast((value >> 8) & 0xFF);
+                addr[i * 2 + 1] = @intCast(value & 0xFF);
+            }
+            if (i != 8) return error.InvalidIpAddress;
+        }
+
+        return initIp6(addr, port);
+    }
+
+    /// Get localhost (127.0.0.1 for IPv4, ::1 for IPv6)
     pub fn localhost(port: u16) Address {
         return initIp4([_]u8{ 127, 0, 0, 1 }, port);
     }
 
-    /// Get any address (0.0.0.0)
+    pub fn localhost6(port: u16) Address {
+        var addr = [_]u8{0} ** 16;
+        addr[15] = 1; // ::1
+        return initIp6(addr, port);
+    }
+
+    /// Get any address (0.0.0.0 for IPv4, :: for IPv6)
     pub fn any(port: u16) Address {
         return initIp4([_]u8{ 0, 0, 0, 0 }, port);
     }
 
+    pub fn any6(port: u16) Address {
+        return initIp6([_]u8{0} ** 16, port);
+    }
+
     /// Get port number
     pub fn getPort(self: Address) u16 {
-        return std.mem.bigToNative(u16, self.port);
+        return switch (self) {
+            .ipv4 => |addr| addr.port,
+            .ipv6 => |addr| addr.port,
+        };
+    }
+
+    /// Get address family
+    pub fn getFamily(self: Address) u16 {
+        return switch (self) {
+            .ipv4 => posix.AF.INET,
+            .ipv6 => posix.AF.INET6,
+        };
     }
 
     /// Convert to posix sockaddr
     fn toSockAddr(self: Address) posix.sockaddr {
         var addr: posix.sockaddr = undefined;
-        const addr_in = @as(*posix.sockaddr.in, @ptrCast(@alignCast(&addr)));
-        addr_in.family = self.family;
-        addr_in.port = self.port;
-        @memcpy(&addr_in.addr, &self.addr);
-        @memset(std.mem.asBytes(&addr_in.zero), 0);
+        switch (self) {
+            .ipv4 => |ipv4| {
+                const addr_in = @as(*posix.sockaddr.in, @ptrCast(@alignCast(&addr)));
+                addr_in.family = posix.AF.INET;
+                addr_in.port = std.mem.nativeToBig(u16, ipv4.port);
+                @memcpy(&addr_in.addr, &ipv4.addr);
+                @memset(std.mem.asBytes(&addr_in.zero), 0);
+            },
+            .ipv6 => |ipv6| {
+                const addr_in6 = @as(*posix.sockaddr.in6, @ptrCast(@alignCast(&addr)));
+                addr_in6.family = posix.AF.INET6;
+                addr_in6.port = std.mem.nativeToBig(u16, ipv6.port);
+                addr_in6.flowinfo = ipv6.flowinfo;
+                @memcpy(&addr_in6.addr, &ipv6.addr);
+                addr_in6.scope_id = ipv6.scope_id;
+            },
+        }
         return addr;
+    }
+
+    /// Get sockaddr size
+    fn getSockAddrSize(self: Address) usize {
+        return switch (self) {
+            .ipv4 => @sizeOf(posix.sockaddr.in),
+            .ipv6 => @sizeOf(posix.sockaddr.in6),
+        };
     }
 
     /// Create from posix sockaddr
     fn fromSockAddr(addr: *const posix.sockaddr) Address {
-        const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr)));
-        var ip: [4]u8 = undefined;
-        @memcpy(&ip, &addr_in.addr);
-        return Address{
-            .family = addr_in.family,
-            .port = addr_in.port,
-            .addr = ip,
-        };
+        switch (addr.family) {
+            posix.AF.INET => {
+                const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr)));
+                var ip: [4]u8 = undefined;
+                @memcpy(&ip, &addr_in.addr);
+                return .{ .ipv4 = .{
+                    .port = std.mem.bigToNative(u16, addr_in.port),
+                    .addr = ip,
+                } };
+            },
+            posix.AF.INET6 => {
+                const addr_in6 = @as(*const posix.sockaddr.in6, @ptrCast(@alignCast(addr)));
+                var ip: [16]u8 = undefined;
+                @memcpy(&ip, &addr_in6.addr);
+                return .{ .ipv6 = .{
+                    .port = std.mem.bigToNative(u16, addr_in6.port),
+                    .addr = ip,
+                    .flowinfo = addr_in6.flowinfo,
+                    .scope_id = addr_in6.scope_id,
+                } };
+            },
+            else => unreachable,
+        }
     }
 
     /// Format as string (caller owns memory)
     pub fn format(self: Address, allocator: Allocator) ![]u8 {
-        return try std.fmt.allocPrint(
-            allocator,
-            "{d}.{d}.{d}.{d}:{d}",
-            .{ self.addr[0], self.addr[1], self.addr[2], self.addr[3], self.getPort() },
-        );
+        return switch (self) {
+            .ipv4 => |ipv4| try std.fmt.allocPrint(
+                allocator,
+                "{d}.{d}.{d}.{d}:{d}",
+                .{ ipv4.addr[0], ipv4.addr[1], ipv4.addr[2], ipv4.addr[3], ipv4.port },
+            ),
+            .ipv6 => |ipv6| blk: {
+                // Format IPv6 with zero compression
+                var parts: [8]u16 = undefined;
+                for (0..8) |i| {
+                    parts[i] = (@as(u16, ipv6.addr[i * 2]) << 8) | ipv6.addr[i * 2 + 1];
+                }
+
+                // Simple formatting without zero compression for now
+                break :blk try std.fmt.allocPrint(
+                    allocator,
+                    "[{x}:{x}:{x}:{x}:{x}:{x}:{x}:{x}]:{d}",
+                    .{ parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], ipv6.port },
+                );
+            },
+        };
     }
 };
 
@@ -96,11 +239,11 @@ pub const TcpStream = struct {
 
     /// Connect to address
     pub fn connect(address: Address) !TcpStream {
-        const sock = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+        const sock = try posix.socket(address.getFamily(), posix.SOCK.STREAM, 0);
         errdefer posix.close(sock);
 
         const addr = address.toSockAddr();
-        try posix.connect(sock, &addr, @sizeOf(posix.sockaddr.in));
+        try posix.connect(sock, &addr, @intCast(address.getSockAddrSize()));
 
         return TcpStream{ .socket = sock };
     }
@@ -184,7 +327,7 @@ pub const TcpListener = struct {
 
     /// Bind to address and listen
     pub fn bind(address: Address) !TcpListener {
-        const sock = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+        const sock = try posix.socket(address.getFamily(), posix.SOCK.STREAM, 0);
         errdefer posix.close(sock);
 
         // Set SO_REUSEADDR
@@ -196,8 +339,19 @@ pub const TcpListener = struct {
             std.mem.asBytes(&enable),
         );
 
+        // For IPv6, also set IPV6_V6ONLY to false for dual-stack support
+        if (address.getFamily() == posix.AF.INET6) {
+            const v6only: c_int = 0;
+            posix.setsockopt(
+                sock,
+                posix.IPPROTO.IPV6,
+                26, // IPV6_V6ONLY
+                std.mem.asBytes(&v6only),
+            ) catch {};
+        }
+
         const addr = address.toSockAddr();
-        try posix.bind(sock, &addr, @sizeOf(posix.sockaddr.in));
+        try posix.bind(sock, &addr, @intCast(address.getSockAddrSize()));
 
         try posix.listen(sock, 128);
 
@@ -261,11 +415,11 @@ pub const UdpSocket = struct {
 
     /// Bind to address
     pub fn bind(address: Address) !UdpSocket {
-        const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
+        const sock = try posix.socket(address.getFamily(), posix.SOCK.DGRAM, 0);
         errdefer posix.close(sock);
 
         const addr = address.toSockAddr();
-        try posix.bind(sock, &addr, @sizeOf(posix.sockaddr.in));
+        try posix.bind(sock, &addr, @intCast(address.getSockAddrSize()));
 
         return UdpSocket{ .socket = sock };
     }
@@ -293,7 +447,7 @@ pub const UdpSocket = struct {
             data,
             0,
             &addr,
-            @sizeOf(posix.sockaddr.in),
+            @intCast(address.getSockAddrSize()),
         );
     }
 

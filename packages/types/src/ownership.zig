@@ -148,6 +148,42 @@ pub const OwnershipTracker = struct {
         }
     }
 
+    /// Move a variable (transfer ownership)
+    /// This is used when a value is moved by passing to a function or assignment
+    pub fn move(self: *OwnershipTracker, name: []const u8, loc: ast.SourceLocation) !void {
+        const info = self.variables.getPtr(name) orelse return;
+
+        // Check if already moved
+        if (info.state == .Moved) {
+            const msg = try std.fmt.allocPrint(
+                self.allocator,
+                "Use of moved value '{s}' (previously moved at line {d})",
+                .{ name, info.location.line },
+            );
+            try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+            return error.UseAfterMove;
+        }
+
+        // Check if borrowed (cannot move while borrowed)
+        if (info.borrows.items.len > 0) {
+            const first_borrow = info.borrows.items[0];
+            const borrow_kind = if (first_borrow.is_mutable) "mutably" else "immutably";
+            const msg = try std.fmt.allocPrint(
+                self.allocator,
+                "Cannot move '{s}' because it is borrowed {s} at line {d}",
+                .{ name, borrow_kind, first_borrow.location.line },
+            );
+            try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+            return error.MutBorrowWhileBorrowed;
+        }
+
+        // Only move types that are not Copy
+        if (self.isMovable(info.type)) {
+            info.state = .Moved;
+            info.location = loc; // Update location to move site
+        }
+    }
+
     /// Check if a type is movable (not Copy)
     fn isMovable(self: *OwnershipTracker, typ: Type) bool {
         _ = self;
@@ -162,8 +198,18 @@ pub const OwnershipTracker = struct {
         };
     }
 
+    /// Borrow a variable (immutable or mutable based on parameter)
+    /// This is the main borrow method used by the borrow checker
+    pub fn borrow(self: *OwnershipTracker, name: []const u8, is_mutable: bool, loc: ast.SourceLocation) !void {
+        if (is_mutable) {
+            return self.borrowMut(name, loc);
+        } else {
+            return self.borrowImmut(name, loc);
+        }
+    }
+
     /// Borrow a variable immutably
-    pub fn borrow(self: *OwnershipTracker, name: []const u8, loc: ast.SourceLocation) !void {
+    pub fn borrowImmut(self: *OwnershipTracker, name: []const u8, loc: ast.SourceLocation) !void {
         const info = self.variables.getPtr(name) orelse return;
 
         switch (info.state) {
