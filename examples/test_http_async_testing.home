@@ -1,0 +1,346 @@
+// Comprehensive test for HTTP, Async, and Testing features
+// Demonstrates all three newly completed systems working together
+
+import http;
+import async;
+import testing;
+
+// ==================== HTTP Client/Server Examples ====================
+
+fn test_http_client() -> void {
+    println("=== Testing HTTP Client ===\n");
+
+    // Simple GET request
+    let client = HttpClient::new();
+    let response = client.get("https://api.example.com/users").send();
+
+    assert response.isSuccess();
+    println("Status: {}", response.status_code);
+
+    // POST with JSON
+    let user = User { name: "Alice", email: "alice@example.com" };
+    let create_response = client
+        .post("https://api.example.com/users")
+        .json(user)
+        .send();
+
+    assert create_response.status_code == 201;
+
+    // With cookies
+    let mut jar = CookieJar::new();
+    jar.add(Cookie { name: "session", value: "abc123" });
+
+    let auth_response = client
+        .get("https://api.example.com/profile")
+        .cookies(jar)
+        .send();
+
+    println("Response: {}", auth_response.text());
+}
+
+fn test_http_server() -> void {
+    println("\n=== Testing HTTP Server ===\n");
+
+    // Create server with routing
+    let mut server = HttpServer::new("127.0.0.1:8080");
+
+    // Add routes
+    server.get("/", |req, res| {
+        res.html("<h1>Welcome!</h1>");
+    });
+
+    server.post("/api/users", |req, res| {
+        let user: User = req.json();
+        println("Creating user: {}", user.name);
+
+        res.status(201).json(user);
+    });
+
+    // With session middleware
+    server.use(SessionMiddleware::new());
+
+    server.get("/dashboard", |req, res| {
+        let session = req.session();
+
+        if let Some(user_id) = session.get("user_id") {
+            res.html(format!("<h1>Dashboard for user {}</h1>", user_id));
+        } else {
+            res.redirect("/login");
+        }
+    });
+
+    // TLS/HTTPS support
+    server.tls(TLSConfig {
+        cert_path: "cert.pem",
+        key_path: "key.pem",
+    });
+
+    // With compression
+    server.use(CompressionMiddleware::new());
+
+    println("Server would start on https://127.0.0.1:8080");
+    // server.listen(); // Async in real impl
+}
+
+// ==================== Testing Framework Examples ====================
+
+#[test]
+fn test_basic_assertion() -> void {
+    assert_eq!(2 + 2, 4);
+    assert_eq!("hello", "hello");
+    assert!(true);
+}
+
+#[test]
+fn test_string_operations() -> void {
+    let s = String::from("Hello, World!");
+
+    assert!(s.contains("World"));
+    assert_eq!(s.len(), 13);
+    assert!(s.starts_with("Hello"));
+}
+
+#[test]
+fn test_vec_operations() -> void {
+    let mut v = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+
+    assert_eq!(v.len(), 3);
+    assert_eq!(v[0], 1);
+    assert_eq!(v.pop(), Some(3));
+}
+
+#[test]
+#[should_panic]
+fn test_panic_expected() -> void {
+    panic("This test should panic");
+}
+
+#[test]
+fn test_with_fixture() -> void {
+    // Setup
+    let mut db = Database::connect("test.db");
+
+    // Test
+    db.insert("key", "value");
+    let result = db.get("key");
+    assert_eq!(result, Some("value"));
+
+    // Teardown
+    db.disconnect();
+}
+
+// Mock example
+#[test]
+fn test_with_mock() -> void {
+    let mut mock_api = MockAPI::new();
+
+    mock_api.expect_call("get_user")
+        .with_args(vec![123])
+        .returns(User { id: 123, name: "Alice" });
+
+    let user = mock_api.get_user(123);
+    assert_eq!(user.name, "Alice");
+
+    assert!(mock_api.was_called("get_user"));
+    assert_eq!(mock_api.call_count("get_user"), 1);
+}
+
+// Parallel test execution
+#[test]
+#[parallel]
+fn test_parallel_1() -> void {
+    // Runs in parallel with other parallel tests
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(true);
+}
+
+#[test]
+#[parallel]
+fn test_parallel_2() -> void {
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(true);
+}
+
+// ==================== Async Runtime Examples ====================
+
+async fn fetch_data(url: String) -> Result<String, Error> {
+    let client = HttpClient::new();
+    let response = await client.get(url).send_async();
+    return Ok(response.text());
+}
+
+async fn process_multiple_requests() -> void {
+    println("=== Testing Async Runtime ===\n");
+
+    // Concurrent requests
+    let future1 = fetch_data("https://api.example.com/users");
+    let future2 = fetch_data("https://api.example.com/posts");
+    let future3 = fetch_data("https://api.example.com/comments");
+
+    // Wait for all
+    let (users, posts, comments) = await join!(future1, future2, future3);
+
+    println("Fetched {} bytes of users data", users.len());
+    println("Fetched {} bytes of posts data", posts.len());
+    println("Fetched {} bytes of comments data", comments.len());
+}
+
+async fn async_file_operations() -> void {
+    // Async file I/O
+    let contents = await async_fs::read_to_string("large_file.txt");
+    println("Read {} bytes", contents.len());
+
+    // Async write
+    await async_fs::write("output.txt", "Hello, async world!");
+
+    // Async processing
+    let lines = contents.lines();
+    let processed = lines
+        .map(async |line| await process_line(line))
+        .collect();
+
+    await async_fs::write_lines("processed.txt", processed);
+}
+
+async fn async_timers() -> void {
+    println("Starting timer...");
+
+    // Sleep asynchronously
+    await async::sleep(Duration::from_secs(2));
+
+    println("2 seconds elapsed");
+
+    // Timeout
+    let result = await async::timeout(
+        Duration::from_secs(1),
+        fetch_data("https://slow-api.example.com")
+    );
+
+    match result {
+        Ok(data) => println("Got data: {}", data),
+        Err(Timeout) => println("Request timed out"),
+    }
+}
+
+async fn work_stealing_example() -> void {
+    // Spawn tasks on work-stealing scheduler
+    let mut tasks = Vec::new();
+
+    for i in 0..100 {
+        let task = async::spawn(async move {
+            await async::sleep(Duration::from_millis(10));
+            return i * i;
+        });
+
+        tasks.push(task);
+    }
+
+    // Wait for all tasks
+    let results = await async::join_all(tasks);
+
+    println("Computed {} squares", results.len());
+}
+
+// ==================== Combined Example: Async HTTP Server ====================
+
+async fn handle_request(req: Request) -> Response {
+    match req.path() {
+        "/api/slow" => {
+            // Simulate slow operation
+            await async::sleep(Duration::from_secs(1));
+            Response::json(json!({ "message": "Done after 1 second" }))
+        }
+
+        "/api/fetch" => {
+            // Fetch from external API asynchronously
+            let data = await fetch_data("https://external-api.example.com/data");
+            Response::text(data)
+        }
+
+        "/api/parallel" => {
+            // Parallel processing
+            let tasks = vec![
+                async::spawn(compute_expensive_task(1)),
+                async::spawn(compute_expensive_task(2)),
+                async::spawn(compute_expensive_task(3)),
+            ];
+
+            let results = await async::join_all(tasks);
+            Response::json(results)
+        }
+
+        _ => Response::not_found()
+    }
+}
+
+async fn start_async_server() -> void {
+    let server = AsyncHttpServer::new("127.0.0.1:8080");
+
+    server.route_async("/", handle_request);
+
+    println("Async server listening on http://127.0.0.1:8080");
+
+    await server.listen_async();
+}
+
+// ==================== Integration Tests ====================
+
+#[test]
+async fn test_http_with_async() -> void {
+    let server = spawn_test_server();
+
+    // Make async request to test server
+    let response = await HttpClient::new()
+        .get("http://localhost:8080/api/test")
+        .send_async();
+
+    assert_eq!(response.status_code, 200);
+
+    server.shutdown();
+}
+
+#[test]
+fn test_compression_with_http() -> void {
+    let data = "Hello, World!".repeat(1000);
+
+    // Compress
+    let compressed = compress_gzip(data);
+
+    assert!(compressed.len() < data.len());
+
+    // Use in HTTP
+    let response = HttpClient::new()
+        .post("https://api.example.com/upload")
+        .header("Content-Encoding", "gzip")
+        .body(compressed)
+        .send();
+
+    assert!(response.isSuccess());
+}
+
+// ==================== Main Entry Point ====================
+
+async fn main() -> void {
+    println("=== HTTP, Async, and Testing Framework Demo ===\n");
+
+    // Test HTTP features
+    test_http_client();
+    test_http_server();
+
+    // Test async features
+    await process_multiple_requests();
+    await async_file_operations();
+    await async_timers();
+    await work_stealing_example();
+
+    // Start async server (would run indefinitely)
+    // await start_async_server();
+
+    println("\n=== All Tests Completed ===");
+}
+
+// Run all tests with:
+// home test examples/test_http_async_testing.home --parallel --verbose
