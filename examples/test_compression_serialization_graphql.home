@@ -1,0 +1,621 @@
+/// Comprehensive tests for new compression, serialization, and GraphQL features
+/// Tests Brotli, LZ4, Snappy, CBOR, Avro, Cap'n Proto, and GraphQL client
+
+import compression.{Brotli, LZ4, Snappy}
+import serialization.{CBOR, Avro, CapnProto}
+import graphql.{GraphQLClient, QueryBuilder, Introspection}
+import testing.{test, assert, assertEqual, assertError}
+
+// ========================================
+// COMPRESSION TESTS
+// ========================================
+
+test "Brotli compression and decompression" {
+    let data = "The quick brown fox jumps over the lazy dog. " * 50
+
+    let mut brotli = Brotli::new(quality: 6, window_size: 22)
+
+    // Test compression
+    let compressed = brotli.compress(data)?
+    println("Brotli compression ratio: {:.2}%", (compressed.len as f64 / data.len as f64) * 100.0)
+    assert(compressed.len < data.len, "Compressed size should be smaller")
+
+    // Test decompression
+    let decompressed = brotli.decompress(compressed)?
+    assertEqual(data, decompressed, "Decompressed data should match original")
+
+    // Test different quality levels
+    for quality in 0..11 {
+        let mut brotli_q = Brotli::new(quality: quality as u4, window_size: 22)
+        let compressed_q = brotli_q.compress(data)?
+        let decompressed_q = brotli_q.decompress(compressed_q)?
+        assertEqual(data, decompressed_q, "Quality {} should preserve data", quality)
+    }
+
+    // Test empty input
+    let empty_compressed = brotli.compress("")?
+    let empty_decompressed = brotli.decompress(empty_compressed)?
+    assertEqual("", empty_decompressed, "Empty data should work")
+
+    // Test highly compressible data
+    let repetitive = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" * 100
+    let rep_compressed = brotli.compress(repetitive)?
+    println("Brotli repetitive data ratio: {:.2}%", (rep_compressed.len as f64 / repetitive.len as f64) * 100.0)
+    assert(rep_compressed.len < repetitive.len / 5, "Should compress very well")
+}
+
+test "LZ4 fast compression" {
+    let data = "LZ4 is optimized for speed. " * 100
+
+    let mut lz4 = LZ4::new(acceleration: 1)
+
+    // Test compression
+    let compressed = lz4.compress(data)?
+    println("LZ4 compression ratio: {:.2}%", (compressed.len as f64 / data.len as f64) * 100.0)
+    assert(compressed.len < data.len, "Compressed size should be smaller")
+
+    // Test decompression
+    let decompressed = lz4.decompress(compressed)?
+    assertEqual(data, decompressed, "Decompressed data should match original")
+
+    // Test acceleration levels
+    for accel in 1..4 {
+        let mut lz4_a = LZ4::new(acceleration: accel)
+        let compressed_a = lz4_a.compress(data)?
+        let decompressed_a = lz4_a.decompress(compressed_a)?
+        assertEqual(data, decompressed_a, "Acceleration {} should preserve data", accel)
+    }
+
+    // Test maximum compressed size bound
+    let input_size = 1000
+    let max_size = LZ4::compressBound(input_size)
+    assert(max_size > input_size, "Max size should be larger than input")
+
+    // Test incompressible data (random)
+    let random_data = generateRandomBytes(1000)
+    let random_compressed = lz4.compress(random_data)?
+    let random_decompressed = lz4.decompress(random_compressed)?
+    assertEqual(random_data, random_decompressed, "Random data should be preserved")
+}
+
+test "Snappy fast compression" {
+    let data = "Snappy is designed by Google for speed. " * 80
+
+    let mut snappy = Snappy::new()
+
+    // Test compression
+    let compressed = snappy.compress(data)?
+    println("Snappy compression ratio: {:.2}%", (compressed.len as f64 / data.len as f64) * 100.0)
+    assert(compressed.len < data.len, "Compressed size should be smaller")
+
+    // Test decompression
+    let decompressed = snappy.decompress(compressed)?
+    assertEqual(data, decompressed, "Decompressed data should match original")
+
+    // Test maximum compressed length
+    let input_size = 1000
+    let max_len = Snappy::maxCompressedLength(input_size)
+    assert(max_len > input_size, "Max length should be larger than input")
+
+    // Test single byte
+    let single = "A"
+    let single_compressed = snappy.compress(single)?
+    let single_decompressed = snappy.decompress(single_compressed)?
+    assertEqual(single, single_decompressed, "Single byte should work")
+
+    // Test long repeated sequence
+    let repeated = "A" * 1000
+    let rep_compressed = snappy.compress(repeated)?
+    println("Snappy repeated sequence ratio: {:.2}%", (rep_compressed.len as f64 / repeated.len as f64) * 100.0)
+    assert(rep_compressed.len < repeated.len / 2, "Should compress repeated data well")
+    let rep_decompressed = snappy.decompress(rep_compressed)?
+    assertEqual(repeated, rep_decompressed, "Repeated data should be preserved")
+}
+
+test "Compression algorithms comparison" {
+    let test_data = "The quick brown fox jumps over the lazy dog. " * 100
+
+    let mut brotli = Brotli::new(quality: 6, window_size: 22)
+    let mut lz4 = LZ4::new(acceleration: 1)
+    let mut snappy = Snappy::new()
+
+    let brotli_compressed = brotli.compress(test_data)?
+    let lz4_compressed = lz4.compress(test_data)?
+    let snappy_compressed = snappy.compress(test_data)?
+
+    println("\nCompression comparison for {} bytes:", test_data.len)
+    println("Brotli: {} bytes ({:.2}%)", brotli_compressed.len, (brotli_compressed.len as f64 / test_data.len as f64) * 100.0)
+    println("LZ4: {} bytes ({:.2}%)", lz4_compressed.len, (lz4_compressed.len as f64 / test_data.len as f64) * 100.0)
+    println("Snappy: {} bytes ({:.2}%)", snappy_compressed.len, (snappy_compressed.len as f64 / test_data.len as f64) * 100.0)
+
+    // All should decompress correctly
+    assertEqual(test_data, brotli.decompress(brotli_compressed)?, "Brotli roundtrip")
+    assertEqual(test_data, lz4.decompress(lz4_compressed)?, "LZ4 roundtrip")
+    assertEqual(test_data, snappy.decompress(snappy_compressed)?, "Snappy roundtrip")
+}
+
+// ========================================
+// SERIALIZATION TESTS
+// ========================================
+
+test "CBOR serialization" {
+    let mut cbor = CBOR::new()
+
+    // Test unsigned integer
+    let uint_value = CBORValue::Unsigned(42)
+    let uint_encoded = cbor.encode(uint_value)?
+    let uint_decoded = cbor.decode(uint_encoded)?
+    assertEqual(42, uint_decoded.asUnsigned()?, "Unsigned integer roundtrip")
+
+    // Test text string
+    let text_value = CBORValue::Text("Hello, CBOR!")
+    let text_encoded = cbor.encode(text_value)?
+    let text_decoded = cbor.decode(text_encoded)?
+    assertEqual("Hello, CBOR!", text_decoded.asText()?, "Text string roundtrip")
+
+    // Test boolean
+    let bool_value = CBORValue::Boolean(true)
+    let bool_encoded = cbor.encode(bool_value)?
+    let bool_decoded = cbor.decode(bool_encoded)?
+    assertEqual(true, bool_decoded.asBoolean()?, "Boolean roundtrip")
+
+    // Test array
+    let array_value = CBORValue::Array([
+        CBORValue::Unsigned(1),
+        CBORValue::Unsigned(2),
+        CBORValue::Unsigned(3)
+    ])
+    let array_encoded = cbor.encode(array_value)?
+    let array_decoded = cbor.decode(array_encoded)?
+    let array = array_decoded.asArray()?
+    assertEqual(3, array.len, "Array length")
+    assertEqual(1, array[0].asUnsigned()?, "Array element 0")
+    assertEqual(3, array[2].asUnsigned()?, "Array element 2")
+
+    // Test float
+    let float_value = CBORValue::Float(3.14159)
+    let float_encoded = cbor.encode(float_value)?
+    let float_decoded = cbor.decode(float_encoded)?
+    assert((float_decoded.asFloat()? - 3.14159).abs() < 0.00001, "Float roundtrip")
+
+    // Test null
+    let null_value = CBORValue::Null
+    let null_encoded = cbor.encode(null_value)?
+    let null_decoded = cbor.decode(null_encoded)?
+    assert(null_decoded.isNull(), "Null roundtrip")
+
+    // Test negative integer
+    let neg_value = CBORValue::Negative(-100)
+    let neg_encoded = cbor.encode(neg_value)?
+    let neg_decoded = cbor.decode(neg_encoded)?
+    assertEqual(-100, neg_decoded.asNegative()?, "Negative integer roundtrip")
+
+    println("CBOR all tests passed")
+}
+
+test "Apache Avro serialization" {
+    let mut avro = Avro::new()
+
+    // Test int
+    let int_schema = AvroSchema::Int
+    let int_value = AvroValue::Int(42)
+    let int_encoded = avro.encode(int_schema, int_value)?
+    let int_decoded = avro.decode(int_schema, int_encoded)?
+    assertEqual(42, int_decoded.asInt()?, "Int roundtrip")
+
+    // Test string
+    let string_schema = AvroSchema::String
+    let string_value = AvroValue::String("Hello, Avro!")
+    let string_encoded = avro.encode(string_schema, string_value)?
+    let string_decoded = avro.decode(string_schema, string_encoded)?
+    assertEqual("Hello, Avro!", string_decoded.asString()?, "String roundtrip")
+
+    // Test boolean
+    let bool_schema = AvroSchema::Boolean
+    let bool_value = AvroValue::Boolean(true)
+    let bool_encoded = avro.encode(bool_schema, bool_value)?
+    let bool_decoded = avro.decode(bool_schema, bool_encoded)?
+    assertEqual(true, bool_decoded.asBoolean()?, "Boolean roundtrip")
+
+    // Test array
+    let array_schema = AvroSchema::Array(AvroSchema::Int)
+    let array_value = AvroValue::Array([
+        AvroValue::Int(1),
+        AvroValue::Int(2),
+        AvroValue::Int(3)
+    ])
+    let array_encoded = avro.encode(array_schema, array_value)?
+    let array_decoded = avro.decode(array_schema, array_encoded)?
+    let array = array_decoded.asArray()?
+    assertEqual(3, array.len, "Array length")
+    assertEqual(1, array[0].asInt()?, "Array element 0")
+
+    // Test null
+    let null_schema = AvroSchema::Null
+    let null_value = AvroValue::Null
+    let null_encoded = avro.encode(null_schema, null_value)?
+    let null_decoded = avro.decode(null_schema, null_encoded)?
+    assert(null_decoded.isNull(), "Null roundtrip")
+
+    // Test record (struct)
+    let record_schema = AvroSchema::Record {
+        name: "Person",
+        fields: [
+            { name: "name", type: AvroSchema::String },
+            { name: "age", type: AvroSchema::Int }
+        ]
+    }
+
+    let record_value = AvroValue::Record([
+        { name: "name", value: AvroValue::String("Alice") },
+        { name: "age", value: AvroValue::Int(30) }
+    ])
+
+    let record_encoded = avro.encode(record_schema, record_value)?
+    let record_decoded = avro.decode(record_schema, record_encoded)?
+    let record = record_decoded.asRecord()?
+    assertEqual("Alice", record[0].value.asString()?, "Record field 0")
+    assertEqual(30, record[1].value.asInt()?, "Record field 1")
+
+    println("Avro all tests passed")
+}
+
+test "Cap'n Proto serialization" {
+    let mut capnp = CapnProto::new()
+
+    // Create message
+    let mut message = CapnProtoMessage::new()
+
+    // Build struct with 2 words data, 0 pointers
+    let mut builder = StructBuilder::new(&message, data_size: 2, pointer_count: 0)?
+    builder.setUInt32(0, 42)?
+    builder.setFloat64(8, 3.14159)?
+
+    // Read back
+    let segment = message.getSegment(0)?
+    let reader = StructReader::new(segment, offset: 0, data_size: 2, pointer_count: 0)
+    let int_value = reader.getUInt32(0)?
+    let float_value = reader.getFloat64(8)?
+
+    assertEqual(42, int_value, "Cap'n Proto UInt32")
+    assert((float_value - 3.14159).abs() < 0.00001, "Cap'n Proto Float64")
+
+    // Test list builder
+    let mut list = ListBuilder::new(&message, element_size: .four_bytes, element_count: 5)?
+    list.setUInt32(0, 10)?
+    list.setUInt32(1, 20)?
+    list.setUInt32(2, 30)?
+    list.setUInt32(3, 40)?
+    list.setUInt32(4, 50)?
+
+    let list_segment = message.getSegment(1)?
+    assertEqual(10, readU32(list_segment, 0), "List element 0")
+    assertEqual(50, readU32(list_segment, 16), "List element 4")
+
+    // Test serialization
+    let serialized = capnp.serialize(&message)?
+    let deserialized = capnp.deserialize(serialized)?
+
+    assertEqual(2, deserialized.segmentCount(), "Segment count after deserialization")
+
+    println("Cap'n Proto all tests passed")
+}
+
+test "Serialization formats comparison" {
+    let mut cbor = CBOR::new()
+    let mut avro = Avro::new()
+
+    // Test data
+    let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    // CBOR
+    let cbor_array = CBORValue::Array(data.map(|x| CBORValue::Unsigned(x)))
+    let cbor_encoded = cbor.encode(cbor_array)?
+
+    // Avro
+    let avro_schema = AvroSchema::Array(AvroSchema::Int)
+    let avro_array = AvroValue::Array(data.map(|x| AvroValue::Int(x as i32)))
+    let avro_encoded = avro.encode(avro_schema, avro_array)?
+
+    println("\nSerialization comparison for array of 10 integers:")
+    println("CBOR: {} bytes", cbor_encoded.len)
+    println("Avro: {} bytes", avro_encoded.len)
+
+    // Both should deserialize correctly
+    let cbor_decoded = cbor.decode(cbor_encoded)?
+    let avro_decoded = avro.decode(avro_schema, avro_encoded)?
+
+    assertEqual(10, cbor_decoded.asArray()?.len, "CBOR array length")
+    assertEqual(10, avro_decoded.asArray()?.len, "Avro array length")
+}
+
+// ========================================
+// GRAPHQL TESTS
+// ========================================
+
+test "GraphQL client initialization" {
+    let mut client = GraphQLClient::new("https://api.example.com/graphql")?
+
+    // Set headers
+    client.setHeader("Authorization", "Bearer token123")?
+    client.setHeader("Content-Type", "application/json")?
+
+    assertEqual("https://api.example.com/graphql", client.endpoint, "Endpoint should be set")
+
+    println("GraphQL client initialized successfully")
+}
+
+test "GraphQL query builder - basic query" {
+    let mut builder = QueryBuilder::new(operationType: .query)
+
+    // Build query: { user(id: 123) { id name email } }
+    let mut user_field = Field::new("user")
+    user_field.withArg("id", Value::Int(123))?
+    user_field.select(Field::new("id"))?
+    user_field.select(Field::new("name"))?
+    user_field.select(Field::new("email"))?
+
+    builder.addField(user_field)?
+
+    let query = builder.build()?
+
+    println("Generated query:\n{}", query)
+
+    assert(query.contains("query {"), "Should start with 'query {'")
+    assert(query.contains("user(id: 123)"), "Should have user field with id argument")
+    assert(query.contains("id"), "Should have id field")
+    assert(query.contains("name"), "Should have name field")
+    assert(query.contains("email"), "Should have email field")
+}
+
+test "GraphQL query builder - with variables" {
+    let mut builder = QueryBuilder::new(operationType: .query)
+    builder.withName("GetUser")?
+    builder.addVariable("userId", "ID!", default: null)?
+
+    // Build query: query GetUser($userId: ID!) { user(id: $userId) { id name } }
+    let mut user_field = Field::new("user")
+    user_field.withArg("id", Value::Variable("userId"))?
+    user_field.select(Field::new("id"))?
+    user_field.select(Field::new("name"))?
+
+    builder.addField(user_field)?
+
+    let query = builder.build()?
+
+    println("Generated query with variables:\n{}", query)
+
+    assert(query.contains("query GetUser($userId: ID!)"), "Should have named query with variable")
+    assert(query.contains("user(id: $userId)"), "Should use variable in argument")
+}
+
+test "GraphQL query builder - mutation" {
+    let mut builder = QueryBuilder::new(operationType: .mutation)
+
+    // Build mutation: mutation { createUser(name: "John Doe", age: 30) { id name } }
+    let mut create_user_field = Field::new("createUser")
+    create_user_field.withArg("name", Value::String("John Doe"))?
+    create_user_field.withArg("age", Value::Int(30))?
+    create_user_field.select(Field::new("id"))?
+    create_user_field.select(Field::new("name"))?
+
+    builder.addField(create_user_field)?
+
+    let mutation = builder.build()?
+
+    println("Generated mutation:\n{}", mutation)
+
+    assert(mutation.contains("mutation {"), "Should start with 'mutation {'")
+    assert(mutation.contains("createUser("), "Should have createUser field")
+    assert(mutation.contains("name: \"John Doe\""), "Should have name argument")
+    assert(mutation.contains("age: 30"), "Should have age argument")
+}
+
+test "GraphQL query builder - nested fields" {
+    let mut builder = QueryBuilder::new(operationType: .query)
+
+    // Build query: { user { id profile { bio avatar } } }
+    let mut profile_field = Field::new("profile")
+    profile_field.select(Field::new("bio"))?
+    profile_field.select(Field::new("avatar"))?
+
+    let mut user_field = Field::new("user")
+    user_field.select(Field::new("id"))?
+    user_field.select(profile_field)?
+
+    builder.addField(user_field)?
+
+    let query = builder.build()?
+
+    println("Generated nested query:\n{}", query)
+
+    assert(query.contains("user {"), "Should have user field")
+    assert(query.contains("profile {"), "Should have nested profile field")
+    assert(query.contains("bio"), "Should have bio field")
+    assert(query.contains("avatar"), "Should have avatar field")
+}
+
+test "GraphQL query builder - with alias" {
+    let mut builder = QueryBuilder::new(operationType: .query)
+
+    // Build query: { admin: user(id: 1) { name } regular: user(id: 2) { name } }
+    let mut admin_field = Field::new("user")
+    admin_field.withAlias("admin")?
+    admin_field.withArg("id", Value::Int(1))?
+    admin_field.select(Field::new("name"))?
+
+    let mut regular_field = Field::new("user")
+    regular_field.withAlias("regular")?
+    regular_field.withArg("id", Value::Int(2))?
+    regular_field.select(Field::new("name"))?
+
+    builder.addField(admin_field)?
+    builder.addField(regular_field)?
+
+    let query = builder.build()?
+
+    println("Generated query with aliases:\n{}", query)
+
+    assert(query.contains("admin: user(id: 1)"), "Should have admin alias")
+    assert(query.contains("regular: user(id: 2)"), "Should have regular alias")
+}
+
+test "GraphQL query builder - complex arguments" {
+    let mut builder = QueryBuilder::new(operationType: .query)
+
+    // Build query with list and object arguments
+    let mut search_field = Field::new("search")
+
+    // List argument
+    search_field.withArg("tags", Value::List([
+        Value::String("tech"),
+        Value::String("science")
+    ]))?
+
+    // Object argument
+    search_field.withArg("filter", Value::Object([
+        { name: "minScore", value: Value::Int(80) },
+        { name: "verified", value: Value::Boolean(true) }
+    ]))?
+
+    // Enum argument
+    search_field.withArg("sortBy", Value::Enum("RELEVANCE"))?
+
+    search_field.select(Field::new("title"))?
+
+    builder.addField(search_field)?
+
+    let query = builder.build()?
+
+    println("Generated query with complex arguments:\n{}", query)
+
+    assert(query.contains("search("), "Should have search field")
+    assert(query.contains("tags: ["), "Should have list argument")
+    assert(query.contains("filter: {"), "Should have object argument")
+    assert(query.contains("sortBy: RELEVANCE"), "Should have enum argument")
+}
+
+test "GraphQL introspection query" {
+    let introspection_query = Introspection::buildIntrospectionQuery()?
+
+    println("Generated introspection query:\n{}", introspection_query)
+
+    assert(introspection_query.contains("__schema"), "Should query __schema")
+    assert(introspection_query.contains("types"), "Should query types")
+    assert(introspection_query.contains("name"), "Should query type names")
+    assert(introspection_query.contains("kind"), "Should query type kinds")
+}
+
+test "GraphQL subscription" {
+    let mut builder = QueryBuilder::new(operationType: .subscription)
+
+    // Build subscription: subscription { messageAdded { id content author } }
+    let mut message_field = Field::new("messageAdded")
+    message_field.select(Field::new("id"))?
+    message_field.select(Field::new("content"))?
+    message_field.select(Field::new("author"))?
+
+    builder.addField(message_field)?
+
+    let subscription = builder.build()?
+
+    println("Generated subscription:\n{}", subscription)
+
+    assert(subscription.contains("subscription {"), "Should start with 'subscription {'")
+    assert(subscription.contains("messageAdded"), "Should have messageAdded field")
+}
+
+// ========================================
+// INTEGRATION TESTS
+// ========================================
+
+test "Integration: Compress and serialize data" {
+    // Create structured data
+    let user_data = {
+        id: 123,
+        name: "Alice Johnson",
+        email: "alice@example.com",
+        age: 28,
+        tags: ["developer", "golang", "rust"]
+    }
+
+    // Serialize with CBOR
+    let mut cbor = CBOR::new()
+    let cbor_value = CBORValue::fromStruct(user_data)?
+    let serialized = cbor.encode(cbor_value)?
+
+    println("Serialized size: {} bytes", serialized.len)
+
+    // Compress with LZ4
+    let mut lz4 = LZ4::new(acceleration: 1)
+    let compressed = lz4.compress(serialized)?
+
+    println("Compressed size: {} bytes", compressed.len)
+    println("Total reduction: {:.2}%", (compressed.len as f64 / serialized.len as f64) * 100.0)
+
+    // Decompress and deserialize
+    let decompressed = lz4.decompress(compressed)?
+    let deserialized = cbor.decode(decompressed)?
+
+    // Verify data
+    let result = deserialized.asObject()?
+    assertEqual(123, result["id"].asUnsigned()?, "User ID preserved")
+    assertEqual("Alice Johnson", result["name"].asText()?, "User name preserved")
+
+    println("Integration test passed: compress + serialize")
+}
+
+test "Performance: Compression algorithms on large data" {
+    let large_data = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 1000
+
+    println("\nPerformance test on {} bytes:", large_data.len)
+
+    // Brotli
+    let start = time::now()
+    let mut brotli = Brotli::new(quality: 6, window_size: 22)
+    let brotli_compressed = brotli.compress(large_data)?
+    let brotli_time = time::now() - start
+    println("Brotli: {} bytes in {}ms ({:.2}%)", brotli_compressed.len, brotli_time, (brotli_compressed.len as f64 / large_data.len as f64) * 100.0)
+
+    // LZ4
+    let start = time::now()
+    let mut lz4 = LZ4::new(acceleration: 1)
+    let lz4_compressed = lz4.compress(large_data)?
+    let lz4_time = time::now() - start
+    println("LZ4: {} bytes in {}ms ({:.2}%)", lz4_compressed.len, lz4_time, (lz4_compressed.len as f64 / large_data.len as f64) * 100.0)
+
+    // Snappy
+    let start = time::now()
+    let mut snappy = Snappy::new()
+    let snappy_compressed = snappy.compress(large_data)?
+    let snappy_time = time::now() - start
+    println("Snappy: {} bytes in {}ms ({:.2}%)", snappy_compressed.len, snappy_time, (snappy_compressed.len as f64 / large_data.len as f64) * 100.0)
+}
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+fn generateRandomBytes(size: usize) -> [u8] {
+    let mut bytes = [0u8; size]
+    for i in 0..size {
+        bytes[i] = (i * 137 + 42) % 256
+    }
+    bytes
+}
+
+fn readU32(bytes: [u8], offset: usize) -> u32 {
+    (bytes[offset] as u32) |
+    ((bytes[offset + 1] as u32) << 8) |
+    ((bytes[offset + 2] as u32) << 16) |
+    ((bytes[offset + 3] as u32) << 24)
+}
+
+fn main() {
+    println("===========================================")
+    println("Compression, Serialization, and GraphQL Tests")
+    println("===========================================\n")
+
+    // Run all tests
+    testing::runAllTests()
+}
