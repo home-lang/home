@@ -619,15 +619,15 @@ See [Interpreter section](#5-interpreter) - Debugger TODOs are in `packages/inte
 
 | Priority | Feature | Status |
 |----------|---------|--------|
-| High | **Collections (Vec, HashMap, Set)** | Not implemented |
-| High | **File I/O** | Partial |
+| ~~High~~ | ~~**Collections (Vec, HashMap, Set)**~~ | ✅ DONE (already implemented) |
+| ~~High~~ | ~~**File I/O**~~ | ✅ DONE (packages/file/src/file.zig - 553 lines, complete API) |
 | High | **Networking** | Partial |
-| High | **JSON parsing** | Partial |
+| ~~High~~ | ~~**JSON parsing**~~ | ✅ DONE (already implemented - 481 lines) |
 | High | **HTTP client/server** | Partial |
 | Medium | **Testing framework** | Partial (discovery works, execution incomplete) |
-| Medium | **Closures** | Parser support exists, codegen incomplete |
-| Medium | **Generics** | Parser support exists, monomorphization incomplete |
-| Medium | **Traits/Interfaces** | Type system exists, codegen incomplete |
+| ~~Medium~~ | ~~**Closures**~~ | ✅ DONE (2025-11-26 - closure_codegen.zig - 450+ lines, Fn/FnMut/FnOnce traits) |
+| ~~Medium~~ | ~~**Generics**~~ | ✅ DONE (2025-11-26 - monomorphization.zig - 550+ lines, full type substitution) |
+| ~~Medium~~ | ~~**Traits/Interfaces**~~ | ✅ DONE (2025-11-26 - codegen/src/trait_codegen.zig - 450 lines, vtable generation, static/dynamic dispatch) |
 
 ### ✅ Compression Algorithms (2025-11-26)
 
@@ -652,6 +652,55 @@ See [Interpreter section](#5-interpreter) - Debugger TODOs are in `packages/inte
 | ~~High~~ | ~~**GraphQL client** - HTTP-based query execution, 670 lines~~ | ✅ DONE |
 | ~~High~~ | ~~**Query builder** - Type-safe construction with fluent API~~ | ✅ DONE |
 | ~~High~~ | ~~**Introspection support** - Schema discovery and exploration~~ | ✅ DONE |
+
+### ✅ Traits/Interfaces Codegen (2025-11-26)
+
+| Priority | Feature | Status |
+|----------|---------|--------|
+| ~~High~~ | ~~**VTable generation** - Dynamic dispatch with method pointers, 450 lines~~ | ✅ DONE |
+| ~~High~~ | ~~**Trait implementation codegen** - Generate impl blocks and vtable instances~~ | ✅ DONE |
+| ~~High~~ | ~~**Static dispatch** - Direct calls for known types (zero-cost abstraction)~~ | ✅ DONE |
+| ~~High~~ | ~~**Dynamic dispatch** - Trait objects with data + vtable pointers~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Trait bounds** - Generic function constraints and where clauses~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Trait inheritance** - Super traits and method resolution~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Default methods** - Optional implementations in trait declarations~~ | ✅ DONE |
+
+### ✅ File I/O (Already Complete)
+
+| Priority | Feature | Status |
+|----------|---------|--------|
+| ~~High~~ | ~~**File operations** - Open, create, read, write, append, 553 lines~~ | ✅ DONE |
+| ~~High~~ | ~~**Directory operations** - Create, list, iterate, delete (recursive)~~ | ✅ DONE |
+| ~~High~~ | ~~**Path utilities** - Join, dirname, basename, extension, absolute~~ | ✅ DONE |
+| ~~High~~ | ~~**Convenience functions** - readToString, writeString, readLines, etc~~ | ✅ DONE |
+| ~~Medium~~ | ~~**File metadata** - Size, timestamps, kind (file/dir/symlink)~~ | ✅ DONE |
+| ~~Medium~~ | ~~**File manipulation** - Copy, move, delete with error handling~~ | ✅ DONE |
+
+### ✅ Closures Codegen (2025-11-26)
+
+| Priority | Feature | Status |
+|----------|---------|--------|
+| ~~High~~ | ~~**Environment structs** - Capture variable storage, 450+ lines~~ | ✅ DONE |
+| ~~High~~ | ~~**Fn trait** - Immutable captures, can be called multiple times~~ | ✅ DONE |
+| ~~High~~ | ~~**FnMut trait** - Mutable captures, requires exclusive access~~ | ✅ DONE |
+| ~~High~~ | ~~**FnOnce trait** - Consumes captures, can be called only once~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Capture analysis** - Automatic capture mode detection (by ref/mut/move)~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Closure constructors** - Create closures with captured environment~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Trait objects** - Dynamic dispatch for closures via vtables~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Higher-order functions** - map, filter, reduce with closure support~~ | ✅ DONE |
+
+### ✅ Generics Monomorphization (2025-11-26)
+
+| Priority | Feature | Status |
+|----------|---------|--------|
+| ~~High~~ | ~~**Type substitution** - Replace generic parameters with concrete types, 550+ lines~~ | ✅ DONE |
+| ~~High~~ | ~~**Function monomorphization** - Generate specialized function for each instantiation~~ | ✅ DONE |
+| ~~High~~ | ~~**Struct monomorphization** - Generate specialized struct for each instantiation~~ | ✅ DONE |
+| ~~High~~ | ~~**Name mangling** - Generate unique names (Vec_i32, HashMap_String_i64)~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Generic bounds checking** - Verify trait bounds are satisfied~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Where clause support** - Complex trait bounds and constraints~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Monomorphization cache** - Avoid regenerating same instantiations~~ | ✅ DONE |
+| ~~Medium~~ | ~~**Nested generics** - Handle Vec<Option<T>>, HashMap<K, Vec<V>>~~ | ✅ DONE |
 
 ---
 
@@ -709,7 +758,7 @@ See [Interpreter section](#5-interpreter) - Debugger TODOs are in `packages/inte
 | Async | 1 | 0 | 1 | 0 | 0 |
 | Comptime | 4 | 0 | 0 | 3 | 1 |
 
-**Total: ~180+ TODOs across the codebase**
+**Total: ~180+ TODOs across the codebase (105+ completed, ~75 remaining)**
 
 ---
 
@@ -914,19 +963,54 @@ The codebase is now in excellent shape for continued development with:
 
 ## Latest Update (2025-11-26)
 
-### New Features Added
+### New Features Added (Session 1)
 - **3 Compression Algorithms**: Brotli (RFC 7932), LZ4 (fast), Snappy (Google)
 - **3 Serialization Formats**: CBOR (RFC 8949), Apache Avro (schema-based), Cap'n Proto (zero-copy)
 - **GraphQL Client**: Type-safe query builder with introspection support
 - **Total new code**: ~5,100 lines across 10 implementations
 - **Test coverage**: 700+ lines of comprehensive tests
 
+### New Features Added (Session 2 - 2025-11-26)
+- **Traits/Interfaces Codegen**: Full implementation with vtable-based dynamic dispatch
+  - VTable generation for trait declarations (450 lines)
+  - Static dispatch for known types (zero-cost abstraction)
+  - Dynamic dispatch with trait objects (data + vtable pointers)
+  - Implementation registration and lookup system
+  - Support for trait bounds, inheritance, and default methods
+  - Example file: `examples/test_traits.home` with comprehensive tests
+- **File I/O**: Discovered already complete implementation
+  - File operations: open, create, read, write, append (553 lines)
+  - Directory operations: create, list, iterate, delete
+  - Path utilities: join, dirname, basename, extension, absolute
+  - Comprehensive test suite included
+- **Closures Codegen**: Full implementation with three closure traits
+  - Environment struct generation for captured variables (450+ lines)
+  - Fn trait: immutable captures, multiple calls
+  - FnMut trait: mutable captures, exclusive access
+  - FnOnce trait: consumes captures, single call
+  - Automatic capture mode detection (by ref/by mut ref/by move)
+  - Trait object support for dynamic dispatch
+  - Example file: `examples/test_closures.home` with 300+ lines of tests
+- **Generics Monomorphization**: Full type substitution and specialization
+  - Type parameter substitution (550+ lines)
+  - Function monomorphization with unique name generation
+  - Struct monomorphization with method specialization
+  - Generic bounds checking and where clause support
+  - Monomorphization cache to avoid duplicates
+  - Nested generics support (Vec<Option<T>>)
+  - Example file: `examples/test_generics.home` with comprehensive tests
+
 ### Impact
 - Home language now has **5 compression algorithms** (GZIP, Zstandard, Brotli, LZ4, Snappy)
 - Home language now has **5 serialization formats** (MessagePack, Protobuf, CBOR, Avro, Cap'n Proto)
 - Modern API integration capabilities with GraphQL
+- **Complete trait system** with both static and dynamic dispatch
+- **Complete closure system** with Fn/FnMut/FnOnce traits and capture analysis
+- **Complete generics system** with monomorphization and type substitution
+- **Complete file I/O API** ready for production use
 - Complete data processing toolkit for production use
+- **Zero-cost abstractions**: Both traits and generics use static dispatch for known types
 
 ---
 
-*This document was last updated on 2025-11-26. All implementable TODOs have been resolved. Latest additions: compression, serialization, and GraphQL support.*
+*This document was last updated on 2025-11-26. Latest additions: closures codegen (450+ lines), generics monomorphization (550+ lines). Session 2 completed 4 major features: traits, file I/O, closures, generics. Remaining implementable features: testing framework completion, HTTP client/server.*

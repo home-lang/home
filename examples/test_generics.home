@@ -1,0 +1,537 @@
+// Test Generics/Monomorphization Implementation
+// Demonstrates generic functions, structs, traits, and monomorphization
+
+// ==================== Generic Functions ====================
+
+fn identity<T>(value: T) -> T {
+    return value;
+}
+
+fn swap<T>(a: T, b: T) -> (T, T) {
+    return (b, a);
+}
+
+fn first<T>(items: Vec<T>) -> Option<T> {
+    if items.len() > 0 {
+        return Some(items[0]);
+    }
+    return None;
+}
+
+fn last<T>(items: Vec<T>) -> Option<T> {
+    if items.len() > 0 {
+        return Some(items[items.len() - 1]);
+    }
+    return None;
+}
+
+fn test_generic_functions() -> void {
+    println("=== Generic Functions ===\n");
+
+    // Identity with different types
+    let num = identity(42);
+    let text = identity("hello");
+    let flag = identity(true);
+    println("Identity: {}, {}, {}", num, text, flag);
+
+    // Swap with different types
+    let (x, y) = swap(1, 2);
+    println("Swapped: ({}, {})", x, y);
+
+    let (a, b) = swap("first", "second");
+    println("Swapped: ({}, {})", a, b);
+
+    // First and last
+    let numbers = vec![1, 2, 3, 4, 5];
+    println("First: {:?}", first(numbers));
+    println("Last: {:?}", last(numbers));
+}
+
+// ==================== Generic Structs ====================
+
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+impl<T, U> Pair<T, U> {
+    fn new(first: T, second: U) -> Pair<T, U> {
+        return Pair { first, second };
+    }
+
+    fn get_first(self: &Self) -> &T {
+        return &self.first;
+    }
+
+    fn get_second(self: &Self) -> &U {
+        return &self.second;
+    }
+
+    fn swap(self: Self) -> Pair<U, T> {
+        return Pair::new(self.second, self.first);
+    }
+}
+
+struct Box<T> {
+    value: T,
+}
+
+impl<T> Box<T> {
+    fn new(value: T) -> Box<T> {
+        return Box { value };
+    }
+
+    fn get(self: &Self) -> &T {
+        return &self.value;
+    }
+
+    fn map<U, F>(self: Self, f: F) -> Box<U>
+    where F: Fn(T) -> U
+    {
+        return Box::new(f(self.value));
+    }
+}
+
+fn test_generic_structs() -> void {
+    println("\n=== Generic Structs ===\n");
+
+    // Pair with different types
+    let int_pair = Pair::new(1, 2);
+    println("Int pair: ({}, {})", int_pair.first, int_pair.second);
+
+    let mixed_pair = Pair::new(42, "answer");
+    println("Mixed pair: ({}, {})", mixed_pair.first, mixed_pair.second);
+
+    let swapped = mixed_pair.swap();
+    println("Swapped pair: ({}, {})", swapped.first, swapped.second);
+
+    // Box with different types
+    let num_box = Box::new(100);
+    println("Box contains: {}", num_box.get());
+
+    let string_box = Box::new("boxed");
+    println("Box contains: {}", string_box.get());
+
+    // Map over box
+    let doubled = num_box.map(|x| x * 2);
+    println("Doubled: {}", doubled.get());
+}
+
+// ==================== Generic Collections ====================
+
+struct Vec<T> {
+    data: []T,
+    len: usize,
+    capacity: usize,
+}
+
+impl<T> Vec<T> {
+    fn new() -> Vec<T> {
+        return Vec {
+            data: [],
+            len: 0,
+            capacity: 0,
+        };
+    }
+
+    fn with_capacity(capacity: usize) -> Vec<T> {
+        return Vec {
+            data: allocate(capacity),
+            len: 0,
+            capacity: capacity,
+        };
+    }
+
+    fn push(self: &mut Self, value: T) -> void {
+        if self.len == self.capacity {
+            self.grow();
+        }
+        self.data[self.len] = value;
+        self.len = self.len + 1;
+    }
+
+    fn pop(self: &mut Self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len = self.len - 1;
+        return Some(self.data[self.len]);
+    }
+
+    fn get(self: &Self, index: usize) -> Option<&T> {
+        if index < self.len {
+            return Some(&self.data[index]);
+        }
+        return None;
+    }
+
+    fn len(self: &Self) -> usize {
+        return self.len;
+    }
+
+    fn grow(self: &mut Self) -> void {
+        let new_capacity = if self.capacity == 0 { 4 } else { self.capacity * 2 };
+        let new_data = allocate(new_capacity);
+        // Copy existing data
+        for i in 0..self.len {
+            new_data[i] = self.data[i];
+        }
+        self.data = new_data;
+        self.capacity = new_capacity;
+    }
+}
+
+fn test_generic_collections() -> void {
+    println("\n=== Generic Collections ===\n");
+
+    // Vec<i32>
+    let mut int_vec = Vec::<i32>::new();
+    int_vec.push(1);
+    int_vec.push(2);
+    int_vec.push(3);
+    println("Int vec length: {}", int_vec.len());
+
+    // Vec<String>
+    let mut string_vec = Vec::<String>::new();
+    string_vec.push(String::from("one"));
+    string_vec.push(String::from("two"));
+    string_vec.push(String::from("three"));
+    println("String vec length: {}", string_vec.len());
+}
+
+// ==================== Generic Enums ====================
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+impl<T> Option<T> {
+    fn is_some(self: &Self) -> bool {
+        return match self {
+            Option::Some(_) => true,
+            Option::None => false,
+        };
+    }
+
+    fn is_none(self: &Self) -> bool {
+        return !self.is_some();
+    }
+
+    fn unwrap(self: Self) -> T {
+        return match self {
+            Option::Some(value) => value,
+            Option::None => panic("called unwrap on None"),
+        };
+    }
+
+    fn unwrap_or(self: Self, default: T) -> T {
+        return match self {
+            Option::Some(value) => value,
+            Option::None => default,
+        };
+    }
+
+    fn map<U, F>(self: Self, f: F) -> Option<U>
+    where F: Fn(T) -> U
+    {
+        return match self {
+            Option::Some(value) => Option::Some(f(value)),
+            Option::None => Option::None,
+        };
+    }
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+impl<T, E> Result<T, E> {
+    fn is_ok(self: &Self) -> bool {
+        return match self {
+            Result::Ok(_) => true,
+            Result::Err(_) => false,
+        };
+    }
+
+    fn is_err(self: &Self) -> bool {
+        return !self.is_ok();
+    }
+
+    fn unwrap(self: Self) -> T {
+        return match self {
+            Result::Ok(value) => value,
+            Result::Err(_) => panic("called unwrap on Err"),
+        };
+    }
+
+    fn map<U, F>(self: Self, f: F) -> Result<U, E>
+    where F: Fn(T) -> U
+    {
+        return match self {
+            Result::Ok(value) => Result::Ok(f(value)),
+            Result::Err(err) => Result::Err(err),
+        };
+    }
+}
+
+fn test_generic_enums() -> void {
+    println("\n=== Generic Enums ===\n");
+
+    // Option<i32>
+    let some_num = Option::Some(42);
+    let no_num = Option::<i32>::None;
+
+    println("some_num is_some: {}", some_num.is_some());
+    println("no_num is_none: {}", no_num.is_none());
+
+    // Result<i32, String>
+    let ok_result = Result::Ok(100);
+    let err_result = Result::<i32, String>::Err(String::from("error"));
+
+    println("ok_result is_ok: {}", ok_result.is_ok());
+    println("err_result is_err: {}", err_result.is_err());
+
+    // Map over Option
+    let doubled = some_num.map(|x| x * 2);
+    println("Doubled: {:?}", doubled);
+}
+
+// ==================== Generic Traits ====================
+
+trait Comparable<T> {
+    fn compare(self: &Self, other: &T) -> i32;
+}
+
+impl Comparable<i32> for i32 {
+    fn compare(self: &Self, other: &i32) -> i32 {
+        if *self < *other {
+            return -1;
+        } else if *self > *other {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}
+
+trait Container<T> {
+    fn add(self: &mut Self, item: T) -> void;
+    fn get(self: &Self, index: usize) -> Option<&T>;
+    fn len(self: &Self) -> usize;
+}
+
+impl<T> Container<T> for Vec<T> {
+    fn add(self: &mut Self, item: T) -> void {
+        self.push(item);
+    }
+
+    fn get(self: &Self, index: usize) -> Option<&T> {
+        return self.get(index);
+    }
+
+    fn len(self: &Self) -> usize {
+        return self.len();
+    }
+}
+
+fn test_generic_traits() -> void {
+    println("\n=== Generic Traits ===\n");
+
+    // Comparable
+    let a = 10;
+    let b = 20;
+    let cmp = a.compare(&b);
+    println("10 compared to 20: {}", cmp);
+
+    // Container trait
+    let mut container = Vec::<i32>::new();
+    container.add(1);
+    container.add(2);
+    container.add(3);
+    println("Container length: {}", container.len());
+}
+
+// ==================== Generic Bounds ====================
+
+fn max<T>(a: T, b: T) -> T
+where T: Comparable<T>
+{
+    if a.compare(&b) > 0 {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+fn min<T>(a: T, b: T) -> T
+where T: Comparable<T>
+{
+    if a.compare(&b) < 0 {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+fn sum<T>(items: Vec<T>) -> T
+where T: Add<Output = T> + Default
+{
+    let mut result = T::default();
+    for item in items {
+        result = result + item;
+    }
+    return result;
+}
+
+fn test_generic_bounds() -> void {
+    println("\n=== Generic Bounds ===\n");
+
+    // Max and min with bounds
+    let maximum = max(10, 20);
+    let minimum = min(10, 20);
+    println("Max of 10 and 20: {}", maximum);
+    println("Min of 10 and 20: {}", minimum);
+}
+
+// ==================== Multiple Generic Parameters ====================
+
+fn zip<T, U>(a: Vec<T>, b: Vec<U>) -> Vec<Pair<T, U>> {
+    let mut result = Vec::new();
+    let len = min(a.len(), b.len());
+
+    for i in 0..len {
+        result.push(Pair::new(a[i], b[i]));
+    }
+
+    return result;
+}
+
+fn fold<T, U, F>(items: Vec<T>, initial: U, f: F) -> U
+where F: Fn(U, T) -> U
+{
+    let mut acc = initial;
+    for item in items {
+        acc = f(acc, item);
+    }
+    return acc;
+}
+
+fn test_multiple_generic_parameters() -> void {
+    println("\n=== Multiple Generic Parameters ===\n");
+
+    // Zip two vectors
+    let numbers = vec![1, 2, 3];
+    let letters = vec!["a", "b", "c"];
+    let zipped = zip(numbers, letters);
+    println("Zipped length: {}", zipped.len());
+
+    // Fold with different types
+    let numbers = vec![1, 2, 3, 4, 5];
+    let sum = fold(numbers, 0, |acc, x| acc + x);
+    println("Sum via fold: {}", sum);
+}
+
+// ==================== Generic Type Aliases ====================
+
+type Point<T> = Pair<T, T>;
+type Stack<T> = Vec<T>;
+type HashMap<K, V> = Vec<Pair<K, V>>;
+
+fn test_generic_type_aliases() -> void {
+    println("\n=== Generic Type Aliases ===\n");
+
+    // Point as alias for Pair
+    let point = Point::new(10, 20);
+    println("Point: ({}, {})", point.first, point.second);
+
+    // Stack as alias for Vec
+    let mut stack = Stack::<i32>::new();
+    stack.push(1);
+    stack.push(2);
+    stack.push(3);
+    println("Stack length: {}", stack.len());
+}
+
+// ==================== Const Generics ====================
+
+struct Array<T, const N: usize> {
+    data: [T; N],
+}
+
+impl<T, const N: usize> Array<T, N> {
+    fn new(default: T) -> Array<T, N>
+    where T: Copy
+    {
+        return Array {
+            data: [default; N],
+        };
+    }
+
+    fn get(self: &Self, index: usize) -> Option<&T> {
+        if index < N {
+            return Some(&self.data[index]);
+        }
+        return None;
+    }
+
+    fn len(self: &Self) -> usize {
+        return N;
+    }
+}
+
+fn test_const_generics() -> void {
+    println("\n=== Const Generics ===\n");
+
+    // Fixed-size array with const generic
+    let arr = Array::<i32, 5>::new(0);
+    println("Array length: {}", arr.len());
+
+    let arr2 = Array::<String, 10>::new(String::from(""));
+    println("Array2 length: {}", arr2.len());
+}
+
+// ==================== Monomorphization Examples ====================
+
+fn test_monomorphization() -> void {
+    println("\n=== Monomorphization Examples ===\n");
+
+    println("The following instantiations should be monomorphized:");
+    println("- identity<i32>");
+    println("- identity<String>");
+    println("- identity<bool>");
+    println("- Vec<i32>");
+    println("- Vec<String>");
+    println("- Pair<i32, i32>");
+    println("- Pair<i32, String>");
+    println("- Option<i32>");
+    println("- Result<i32, String>");
+
+    // Each unique instantiation gets its own specialized code
+    let _ = identity(42);           // identity_i32
+    let _ = identity("text");       // identity_String
+    let _ = Vec::<i32>::new();      // Vec_i32
+    let _ = Vec::<String>::new();   // Vec_String
+    let _ = Pair::new(1, 2);        // Pair_i32_i32
+    let _ = Pair::new(1, "two");    // Pair_i32_String
+}
+
+// ==================== Main Test Function ====================
+
+fn main() -> void {
+    println("=== Testing Generics/Monomorphization ===\n");
+
+    test_generic_functions();
+    test_generic_structs();
+    test_generic_collections();
+    test_generic_enums();
+    test_generic_traits();
+    test_generic_bounds();
+    test_multiple_generic_parameters();
+    test_generic_type_aliases();
+    test_const_generics();
+    test_monomorphization();
+
+    println("\n=== All Generics Tests Completed ===");
+}

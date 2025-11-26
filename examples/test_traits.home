@@ -1,0 +1,325 @@
+// Test Traits/Interfaces Implementation
+// Demonstrates trait declarations, implementations, static/dynamic dispatch
+
+// ==================== Basic Trait Declaration ====================
+
+trait Drawable {
+    fn draw(self: &Self) -> void;
+    fn get_area(self: &Self) -> f64;
+}
+
+// ==================== Struct Types ====================
+
+struct Circle {
+    radius: f64,
+    x: f64,
+    y: f64,
+}
+
+struct Rectangle {
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+}
+
+struct Triangle {
+    base: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+}
+
+// ==================== Trait Implementations ====================
+
+impl Drawable for Circle {
+    fn draw(self: &Self) -> void {
+        print("Drawing circle at ({}, {}) with radius {}", self.x, self.y, self.radius);
+    }
+
+    fn get_area(self: &Self) -> f64 {
+        return 3.14159 * self.radius * self.radius;
+    }
+}
+
+impl Drawable for Rectangle {
+    fn draw(self: &Self) -> void {
+        print("Drawing rectangle at ({}, {}) with size {}x{}",
+              self.x, self.y, self.width, self.height);
+    }
+
+    fn get_area(self: &Self) -> f64 {
+        return self.width * self.height;
+    }
+}
+
+impl Drawable for Triangle {
+    fn draw(self: &Self) -> void {
+        print("Drawing triangle at ({}, {}) with base {} and height {}",
+              self.x, self.y, self.base, self.height);
+    }
+
+    fn get_area(self: &Self) -> f64 {
+        return 0.5 * self.base * self.height;
+    }
+}
+
+// ==================== Trait with Generic Parameters ====================
+
+trait Comparable<T> {
+    fn compare(self: &Self, other: &T) -> i32;
+    fn equals(self: &Self, other: &T) -> bool;
+}
+
+impl Comparable<Circle> for Circle {
+    fn compare(self: &Self, other: &Circle) -> i32 {
+        let area1 = self.get_area();
+        let area2 = other.get_area();
+
+        if area1 < area2 {
+            return -1;
+        } else if area1 > area2 {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
+    fn equals(self: &Self, other: &Circle) -> bool {
+        return self.radius == other.radius;
+    }
+}
+
+// ==================== Trait with Associated Types ====================
+
+trait Container {
+    type Item;
+
+    fn add(self: &mut Self, item: Item) -> void;
+    fn get(self: &Self, index: i32) -> Option<Item>;
+    fn size(self: &Self) -> i32;
+}
+
+struct ShapeCollection {
+    shapes: Vec<Box<dyn Drawable>>,
+}
+
+impl Container for ShapeCollection {
+    type Item = Box<dyn Drawable>;
+
+    fn add(self: &mut Self, item: Box<dyn Drawable>) -> void {
+        self.shapes.push(item);
+    }
+
+    fn get(self: &Self, index: i32) -> Option<Box<dyn Drawable>> {
+        if index >= 0 && index < self.shapes.len() {
+            return Some(self.shapes[index]);
+        }
+        return None;
+    }
+
+    fn size(self: &Self) -> i32 {
+        return self.shapes.len();
+    }
+}
+
+// ==================== Trait Bounds and Where Clauses ====================
+
+trait Printable {
+    fn to_string(self: &Self) -> String;
+}
+
+impl Printable for Circle {
+    fn to_string(self: &Self) -> String {
+        return format("Circle(r={}, x={}, y={})", self.radius, self.x, self.y);
+    }
+}
+
+fn print_if_drawable<T>(obj: &T) -> void
+where T: Drawable + Printable
+{
+    println(obj.to_string());
+    obj.draw();
+    println("Area: {}", obj.get_area());
+}
+
+// ==================== Trait Inheritance ====================
+
+trait Shape: Drawable {
+    fn get_perimeter(self: &Self) -> f64;
+    fn translate(self: &mut Self, dx: f64, dy: f64) -> void;
+}
+
+impl Shape for Circle {
+    fn get_perimeter(self: &Self) -> f64 {
+        return 2.0 * 3.14159 * self.radius;
+    }
+
+    fn translate(self: &mut Self, dx: f64, dy: f64) -> void {
+        self.x = self.x + dx;
+        self.y = self.y + dy;
+    }
+}
+
+impl Shape for Rectangle {
+    fn get_perimeter(self: &Self) -> f64 {
+        return 2.0 * (self.width + self.height);
+    }
+
+    fn translate(self: &mut Self, dx: f64, dy: f64) -> void {
+        self.x = self.x + dx;
+        self.y = self.y + dy;
+    }
+}
+
+// ==================== Default Trait Methods ====================
+
+trait Resizable {
+    fn scale(self: &mut Self, factor: f64) -> void;
+
+    fn double_size(self: &mut Self) -> void {
+        self.scale(2.0);
+    }
+
+    fn half_size(self: &mut Self) -> void {
+        self.scale(0.5);
+    }
+}
+
+impl Resizable for Circle {
+    fn scale(self: &mut Self, factor: f64) -> void {
+        self.radius = self.radius * factor;
+    }
+}
+
+impl Resizable for Rectangle {
+    fn scale(self: &mut Self, factor: f64) -> void {
+        self.width = self.width * factor;
+        self.height = self.height * factor;
+    }
+}
+
+// ==================== Static Dispatch Functions ====================
+
+fn draw_shape<T: Drawable>(shape: &T) -> void {
+    shape.draw();
+    println("Area: {}", shape.get_area());
+}
+
+fn total_area<T: Drawable>(shapes: &Vec<T>) -> f64 {
+    let total = 0.0;
+    for shape in shapes {
+        total = total + shape.get_area();
+    }
+    return total;
+}
+
+// ==================== Dynamic Dispatch Functions ====================
+
+fn draw_all_shapes(shapes: &Vec<Box<dyn Drawable>>) -> void {
+    for shape in shapes {
+        shape.draw();
+    }
+}
+
+fn find_largest_shape(shapes: &Vec<Box<dyn Drawable>>) -> Option<Box<dyn Drawable>> {
+    if shapes.len() == 0 {
+        return None;
+    }
+
+    let largest = shapes[0];
+    let max_area = largest.get_area();
+
+    for shape in shapes {
+        let area = shape.get_area();
+        if area > max_area {
+            largest = shape;
+            max_area = area;
+        }
+    }
+
+    return Some(largest);
+}
+
+// ==================== Main Test Function ====================
+
+fn main() -> void {
+    println("=== Testing Traits/Interfaces ===\n");
+
+    // Test 1: Static dispatch with concrete types
+    println("--- Test 1: Static Dispatch ---");
+    let circle = Circle { radius: 5.0, x: 0.0, y: 0.0 };
+    let rect = Rectangle { width: 10.0, height: 5.0, x: 10.0, y: 10.0 };
+    let tri = Triangle { base: 6.0, height: 8.0, x: 20.0, y: 20.0 };
+
+    draw_shape(&circle);
+    draw_shape(&rect);
+    draw_shape(&tri);
+
+    // Test 2: Dynamic dispatch with trait objects
+    println("\n--- Test 2: Dynamic Dispatch ---");
+    let mut shapes: Vec<Box<dyn Drawable>> = Vec::new();
+    shapes.push(Box::new(circle));
+    shapes.push(Box::new(rect));
+    shapes.push(Box::new(tri));
+
+    draw_all_shapes(&shapes);
+
+    // Test 3: Find largest shape
+    println("\n--- Test 3: Find Largest Shape ---");
+    match find_largest_shape(&shapes) {
+        Some(largest) => {
+            println("Largest shape:");
+            largest.draw();
+            println("Area: {}", largest.get_area());
+        }
+        None => println("No shapes found")
+    }
+
+    // Test 4: Trait bounds
+    println("\n--- Test 4: Trait Bounds ---");
+    let circle2 = Circle { radius: 3.0, x: 5.0, y: 5.0 };
+    print_if_drawable(&circle2);
+
+    // Test 5: Trait inheritance
+    println("\n--- Test 5: Trait Inheritance (Shape extends Drawable) ---");
+    let mut circle3 = Circle { radius: 4.0, x: 0.0, y: 0.0 };
+    println("Perimeter: {}", circle3.get_perimeter());
+    circle3.translate(10.0, 15.0);
+    circle3.draw();
+
+    // Test 6: Default trait methods
+    println("\n--- Test 6: Default Trait Methods ---");
+    let mut circle4 = Circle { radius: 2.0, x: 0.0, y: 0.0 };
+    println("Original area: {}", circle4.get_area());
+    circle4.double_size();
+    println("After doubling: {}", circle4.get_area());
+    circle4.half_size();
+    println("After halving: {}", circle4.get_area());
+
+    // Test 7: Comparable trait
+    println("\n--- Test 7: Comparable Trait ---");
+    let circle_a = Circle { radius: 5.0, x: 0.0, y: 0.0 };
+    let circle_b = Circle { radius: 3.0, x: 0.0, y: 0.0 };
+
+    let comparison = circle_a.compare(&circle_b);
+    if comparison > 0 {
+        println("Circle A is larger than Circle B");
+    } else if comparison < 0 {
+        println("Circle A is smaller than Circle B");
+    } else {
+        println("Circle A and Circle B have the same area");
+    }
+
+    // Test 8: Total area calculation
+    println("\n--- Test 8: Total Area Calculation ---");
+    let circles = vec![
+        Circle { radius: 1.0, x: 0.0, y: 0.0 },
+        Circle { radius: 2.0, x: 0.0, y: 0.0 },
+        Circle { radius: 3.0, x: 0.0, y: 0.0 },
+    ];
+    let total = total_area(&circles);
+    println("Total area of all circles: {}", total);
+
+    println("\n=== All Trait Tests Completed ===");
+}

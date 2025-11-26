@@ -1,0 +1,338 @@
+// Test Closures Implementation
+// Demonstrates closure syntax, capture modes, and closure traits (Fn, FnMut, FnOnce)
+
+// ==================== Basic Closures ====================
+
+fn test_basic_closures() -> void {
+    println("=== Basic Closures ===\n");
+
+    // Simple closure with no captures
+    let greet = || println("Hello, World!");
+    greet();
+
+    // Closure with parameters
+    let add = |a: i32, b: i32| a + b;
+    let result = add(5, 3);
+    println("5 + 3 = {}", result);
+
+    // Closure with type inference
+    let multiply = |x, y| x * y;
+    println("4 * 7 = {}", multiply(4, 7));
+
+    // Closure with block body
+    let factorial = |n: i32| {
+        let mut result = 1;
+        let mut i = 1;
+        while i <= n {
+            result = result * i;
+            i = i + 1;
+        }
+        return result;
+    };
+    println("5! = {}", factorial(5));
+}
+
+// ==================== Closures with Captures ====================
+
+fn test_closures_with_captures() -> void {
+    println("\n=== Closures with Captures ===\n");
+
+    // Capture by reference (Fn trait)
+    let x = 10;
+    let y = 20;
+    let add_to_sum = |z: i32| x + y + z;
+    println("10 + 20 + 5 = {}", add_to_sum(5));
+    println("x is still {}", x); // x not moved
+
+    // Capture by mutable reference (FnMut trait)
+    let mut counter = 0;
+    let mut increment = || {
+        counter = counter + 1;
+        return counter;
+    };
+    println("Count: {}", increment()); // 1
+    println("Count: {}", increment()); // 2
+    println("Count: {}", increment()); // 3
+
+    // Capture by move (FnOnce trait)
+    let name = String::from("Alice");
+    let greet_once = move || {
+        println("Hello, {}!", name);
+        // name is moved, cannot be used again
+    };
+    greet_once();
+    // name is no longer available here
+}
+
+// ==================== Closure Traits ====================
+
+// Fn trait - can be called multiple times, immutable captures
+fn apply_twice_fn<F>(f: &F, x: i32) -> i32
+where F: Fn(i32) -> i32
+{
+    return f(f(x));
+}
+
+// FnMut trait - can be called multiple times, mutable captures
+fn apply_n_times<F>(mut f: F, n: i32) -> void
+where F: FnMut()
+{
+    let mut i = 0;
+    while i < n {
+        f();
+        i = i + 1;
+    }
+}
+
+// FnOnce trait - can be called only once, consumes captures
+fn call_once<F>(f: F) -> void
+where F: FnOnce()
+{
+    f();
+}
+
+fn test_closure_traits() -> void {
+    println("\n=== Closure Traits ===\n");
+
+    // Test Fn trait
+    let double = |x: i32| x * 2;
+    let result = apply_twice_fn(&double, 3);
+    println("Double twice: 3 -> {} -> {}", double(3), result);
+
+    // Test FnMut trait
+    let mut count = 0;
+    apply_n_times(|| {
+        count = count + 1;
+        println("Iteration {}", count);
+    }, 3);
+
+    // Test FnOnce trait
+    let message = String::from("This closure runs once");
+    call_once(move || {
+        println("{}", message);
+    });
+}
+
+// ==================== Higher-Order Functions ====================
+
+fn map<T, U, F>(items: Vec<T>, f: F) -> Vec<U>
+where F: Fn(T) -> U
+{
+    let mut result = Vec::new();
+    for item in items {
+        result.push(f(item));
+    }
+    return result;
+}
+
+fn filter<T, F>(items: Vec<T>, predicate: F) -> Vec<T>
+where F: Fn(&T) -> bool
+{
+    let mut result = Vec::new();
+    for item in items {
+        if predicate(&item) {
+            result.push(item);
+        }
+    }
+    return result;
+}
+
+fn reduce<T, U, F>(items: Vec<T>, initial: U, f: F) -> U
+where F: Fn(U, T) -> U
+{
+    let mut accumulator = initial;
+    for item in items {
+        accumulator = f(accumulator, item);
+    }
+    return accumulator;
+}
+
+fn test_higher_order_functions() -> void {
+    println("\n=== Higher-Order Functions ===\n");
+
+    // Map: Transform each element
+    let numbers = vec![1, 2, 3, 4, 5];
+    let squared = map(numbers, |x| x * x);
+    println("Squared: {:?}", squared);
+
+    // Filter: Select elements
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let evens = filter(numbers, |&x| x % 2 == 0);
+    println("Evens: {:?}", evens);
+
+    // Reduce: Aggregate elements
+    let numbers = vec![1, 2, 3, 4, 5];
+    let sum = reduce(numbers, 0, |acc, x| acc + x);
+    println("Sum: {}", sum);
+
+    // Chaining operations
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let result = reduce(
+        map(
+            filter(numbers, |&x| x % 2 == 0),
+            |x| x * x
+        ),
+        0,
+        |acc, x| acc + x
+    );
+    println("Sum of squares of evens: {}", result);
+}
+
+// ==================== Closures in Data Structures ====================
+
+struct Button {
+    label: String,
+    on_click: Box<dyn Fn()>,
+}
+
+impl Button {
+    fn new(label: String, on_click: Box<dyn Fn()>) -> Button {
+        return Button { label, on_click };
+    }
+
+    fn click(self: &Self) -> void {
+        (self.on_click)();
+    }
+}
+
+fn test_closures_in_structs() -> void {
+    println("\n=== Closures in Data Structures ===\n");
+
+    let mut click_count = 0;
+
+    let button = Button::new(
+        String::from("Click me!"),
+        Box::new(move || {
+            click_count = click_count + 1;
+            println("Button clicked {} times", click_count);
+        })
+    );
+
+    button.click();
+    button.click();
+    button.click();
+}
+
+// ==================== Async Closures ====================
+
+fn test_async_closures() -> void {
+    println("\n=== Async Closures ===\n");
+
+    // Async closure
+    let fetch_data = async || {
+        println("Fetching data...");
+        // Simulate async operation
+        await async_sleep(1000);
+        println("Data fetched!");
+        return "data";
+    };
+
+    // Async closure with captures
+    let url = String::from("https://api.example.com");
+    let fetch_from_url = async move || {
+        println("Fetching from {}...", url);
+        await async_sleep(500);
+        return "response";
+    };
+
+    println("Async closures defined (would need async runtime to execute)");
+}
+
+// ==================== Closure Type Aliases ====================
+
+type Predicate = dyn Fn(i32) -> bool;
+type Transformer<T, U> = dyn Fn(T) -> U;
+type Consumer<T> = dyn FnMut(T);
+
+fn test_closure_type_aliases() -> void {
+    println("\n=== Closure Type Aliases ===\n");
+
+    let is_positive: Box<Predicate> = Box::new(|x| x > 0);
+    let to_string: Box<Transformer<i32, String>> = Box::new(|x| format!("{}", x));
+
+    println("5 is positive: {}", is_positive(5));
+    println("-3 is positive: {}", is_positive(-3));
+    println("42 as string: {}", to_string(42));
+}
+
+// ==================== Returning Closures ====================
+
+fn make_adder(n: i32) -> Box<dyn Fn(i32) -> i32> {
+    return Box::new(move |x| x + n);
+}
+
+fn make_counter() -> Box<dyn FnMut() -> i32> {
+    let mut count = 0;
+    return Box::new(move || {
+        count = count + 1;
+        return count;
+    });
+}
+
+fn test_returning_closures() -> void {
+    println("\n=== Returning Closures ===\n");
+
+    let add_5 = make_adder(5);
+    println("3 + 5 = {}", add_5(3));
+    println("10 + 5 = {}", add_5(10));
+
+    let mut counter = make_counter();
+    println("Count: {}", counter());
+    println("Count: {}", counter());
+    println("Count: {}", counter());
+}
+
+// ==================== Closures for Lazy Evaluation ====================
+
+struct LazyValue<T> {
+    computer: Option<Box<dyn FnOnce() -> T>>,
+    value: Option<T>,
+}
+
+impl<T> LazyValue<T> {
+    fn new(computer: Box<dyn FnOnce() -> T>) -> LazyValue<T> {
+        return LazyValue {
+            computer: Some(computer),
+            value: None,
+        };
+    }
+
+    fn get(self: &mut Self) -> &T {
+        if self.value.is_none() {
+            let computer = self.computer.take().unwrap();
+            self.value = Some(computer());
+        }
+        return self.value.as_ref().unwrap();
+    }
+}
+
+fn test_lazy_evaluation() -> void {
+    println("\n=== Lazy Evaluation ===\n");
+
+    let mut lazy = LazyValue::new(Box::new(|| {
+        println("Computing expensive value...");
+        return 42;
+    }));
+
+    println("Lazy value created, not computed yet");
+    println("Value: {}", lazy.get()); // Computes here
+    println("Value: {}", lazy.get()); // Uses cached value
+}
+
+// ==================== Main Test Function ====================
+
+fn main() -> void {
+    println("=== Testing Closures Implementation ===\n");
+
+    test_basic_closures();
+    test_closures_with_captures();
+    test_closure_traits();
+    test_higher_order_functions();
+    test_closures_in_structs();
+    test_async_closures();
+    test_closure_type_aliases();
+    test_returning_closures();
+    test_lazy_evaluation();
+
+    println("\n=== All Closure Tests Completed ===");
+}

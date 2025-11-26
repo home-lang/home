@@ -16,6 +16,9 @@ pub const loop_optimizer = @import("loop_optimizer.zig");
 pub const inliner = @import("inliner.zig");
 pub const instruction_scheduler = @import("instruction_scheduler.zig");
 pub const vectorizer = @import("vectorizer.zig");
+pub const trait_codegen = @import("trait_codegen.zig");
+pub const closure_codegen = @import("closure_codegen.zig");
+pub const monomorphization = @import("monomorphization.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;
@@ -33,3 +36,6 @@ pub const LoopUnroller = loop_optimizer.LoopUnroller;
 pub const FunctionInliner = inliner.FunctionInliner;
 pub const InstructionScheduler = instruction_scheduler.InstructionScheduler;
 pub const Vectorizer = vectorizer.Vectorizer;
+pub const TraitCodegen = trait_codegen.TraitCodegen;
+pub const ClosureCodegen = closure_codegen.ClosureCodegen;
+pub const Monomorphization = monomorphization.Monomorphization;
