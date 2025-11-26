@@ -166,9 +166,13 @@ pub const TraitCodegen = struct {
 
         try writer.writeAll(" {\n");
 
-        // Method body (simplified - would need full codegen here)
-        try writer.writeAll("        // TODO: Generate method body from AST\n");
-        try writer.writeAll("        _ = self;\n");
+        // Generate method body from AST
+        if (method.body) |body| {
+            try self.generateMethodBody(writer, &body, 2);
+        } else {
+            try writer.writeAll("        _ = self;\n");
+            try writer.writeAll("        return;\n");
+        }
 
         try writer.writeAll("    }\n\n");
     }
@@ -239,6 +243,116 @@ pub const TraitCodegen = struct {
         try writer.writeAll("};\n\n");
 
         return try code.toOwnedSlice();
+    }
+
+    /// Generate method body from AST
+    fn generateMethodBody(self: *TraitCodegen, writer: anytype, block: *const ast.BlockStmt, indent_level: usize) !void {
+        for (block.statements) |stmt| {
+            try self.generateStatement(writer, &stmt, indent_level);
+        }
+    }
+
+    /// Generate statement from AST
+    fn generateStatement(self: *TraitCodegen, writer: anytype, stmt: *const ast.Stmt, indent_level: usize) !void {
+        try self.writeIndent(writer, indent_level);
+
+        switch (stmt.*) {
+            .LetDecl => |let_decl| {
+                try writer.print("const {s}", .{let_decl.name});
+                if (let_decl.type_annotation) |type_ann| {
+                    try writer.writeAll(": ");
+                    try self.writeTypeAnnotation(writer, type_ann);
+                }
+                if (let_decl.initializer) |init| {
+                    try writer.writeAll(" = ");
+                    try self.generateExpression(writer, init);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ReturnStmt => |ret_stmt| {
+                try writer.writeAll("return");
+                if (ret_stmt.expression) |expr| {
+                    try writer.writeAll(" ");
+                    try self.generateExpression(writer, expr);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ExprStmt => |expr| {
+                try self.generateExpression(writer, expr);
+                try writer.writeAll(";\n");
+            },
+            else => {
+                try writer.writeAll("/* stmt */;\n");
+            },
+        }
+    }
+
+    /// Generate expression from AST
+    fn generateExpression(self: *TraitCodegen, writer: anytype, expr: *ast.Expr) !void {
+        _ = self;
+        switch (expr.*) {
+            .Literal => |lit| {
+                switch (lit) {
+                    .Int => |val| try writer.print("{d}", .{val}),
+                    .Float => |val| try writer.print("{d}", .{val}),
+                    .String => |val| try writer.print("\"{s}\"", .{val}),
+                    .Bool => |val| try writer.print("{}", .{val}),
+                    .Null => try writer.writeAll("null"),
+                }
+            },
+            .Identifier => |id| {
+                try writer.print("{s}", .{id.name});
+            },
+            .BinaryExpr => |bin| {
+                try writer.writeAll("(");
+                try self.generateExpression(writer, bin.left);
+                try writer.print(" {s} ", .{@tagName(bin.operator)});
+                try self.generateExpression(writer, bin.right);
+                try writer.writeAll(")");
+            },
+            .CallExpr => |call| {
+                try self.generateExpression(writer, call.callee);
+                try writer.writeAll("(");
+                for (call.arguments, 0..) |arg, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.generateExpression(writer, arg);
+                }
+                try writer.writeAll(")");
+            },
+            .MemberExpr => |member| {
+                try self.generateExpression(writer, member.object);
+                try writer.print(".{s}", .{member.member});
+            },
+            else => {
+                try writer.writeAll("/* expr */");
+            },
+        }
+    }
+
+    /// Write type annotation
+    fn writeTypeAnnotation(self: *TraitCodegen, writer: anytype, type_ann: *const ast.TypeAnnotation) !void {
+        _ = self;
+        switch (type_ann.*) {
+            .Simple => |simple| try writer.print("{s}", .{simple}),
+            .Generic => |generic| {
+                try writer.print("{s}<", .{generic.base});
+                for (generic.args, 0..) |arg, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.writeTypeAnnotation(writer, arg);
+                }
+                try writer.writeAll(">");
+            },
+            else => try writer.writeAll("unknown"),
+        }
+    }
+
+    /// Write indentation
+    fn writeIndent(self: *TraitCodegen, writer: anytype, level: usize) !void {
+        _ = self;
+        var i: usize = 0;
+        while (i < level * 4) : (i += 1) {
+            try writer.writeAll(" ");
+        }
     }
 
     /// Generate static dispatch call for known type

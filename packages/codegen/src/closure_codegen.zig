@@ -179,20 +179,12 @@ pub const ClosureCodegen = struct {
         // Generate body
         switch (closure.body) {
             .Expression => |expr| {
-                _ = expr;
-                try writer.writeAll("    // TODO: Generate expression from AST\n");
-                try writer.writeAll("    _ = env;\n");
-                for (closure.params) |param| {
-                    try writer.print("    _ = {s};\n", .{param.name});
-                }
+                try writer.writeAll("    return ");
+                try self.generateExpression(writer, expr);
+                try writer.writeAll(";\n");
             },
             .Block => |block| {
-                _ = block;
-                try writer.writeAll("    // TODO: Generate block statements from AST\n");
-                try writer.writeAll("    _ = env;\n");
-                for (closure.params) |param| {
-                    try writer.print("    _ = {s};\n", .{param.name});
-                }
+                try self.generateBlock(writer, block, 1);
             },
         }
 
@@ -315,6 +307,154 @@ pub const ClosureCodegen = struct {
         }
 
         return try captures.toOwnedSlice();
+    }
+
+    /// Generate expression code from AST
+    fn generateExpression(self: *ClosureCodegen, writer: anytype, expr: *ast.Expr) !void {
+        switch (expr.*) {
+            .Literal => |lit| {
+                switch (lit) {
+                    .Int => |val| try writer.print("{d}", .{val}),
+                    .Float => |val| try writer.print("{d}", .{val}),
+                    .String => |val| try writer.print("\"{s}\"", .{val}),
+                    .Bool => |val| try writer.print("{}", .{val}),
+                    .Null => try writer.writeAll("null"),
+                }
+            },
+            .Identifier => |id| {
+                try writer.print("{s}", .{id.name});
+            },
+            .BinaryExpr => |bin| {
+                try writer.writeAll("(");
+                try self.generateExpression(writer, bin.left);
+                try writer.print(" {s} ", .{@tagName(bin.operator)});
+                try self.generateExpression(writer, bin.right);
+                try writer.writeAll(")");
+            },
+            .UnaryExpr => |un| {
+                try writer.print("{s}(", .{@tagName(un.operator)});
+                try self.generateExpression(writer, un.operand);
+                try writer.writeAll(")");
+            },
+            .CallExpr => |call| {
+                try self.generateExpression(writer, call.callee);
+                try writer.writeAll("(");
+                for (call.arguments, 0..) |arg, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.generateExpression(writer, arg);
+                }
+                try writer.writeAll(")");
+            },
+            .MemberExpr => |member| {
+                try self.generateExpression(writer, member.object);
+                try writer.print(".{s}", .{member.member});
+            },
+            .IndexExpr => |index| {
+                try self.generateExpression(writer, index.array);
+                try writer.writeAll("[");
+                try self.generateExpression(writer, index.index);
+                try writer.writeAll("]");
+            },
+            .ArrayLiteral => |arr| {
+                try writer.writeAll("[_]");
+                try writer.writeAll("{");
+                for (arr.elements, 0..) |elem, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.generateExpression(writer, elem);
+                }
+                try writer.writeAll("}");
+            },
+            else => {
+                try writer.writeAll("/* expr */");
+            },
+        }
+    }
+
+    /// Generate block code from AST
+    fn generateBlock(self: *ClosureCodegen, writer: anytype, block: *ast.BlockStmt, indent_level: usize) !void {
+        for (block.statements) |stmt| {
+            try self.generateStatement(writer, &stmt, indent_level);
+        }
+    }
+
+    /// Generate statement code from AST
+    fn generateStatement(self: *ClosureCodegen, writer: anytype, stmt: *const ast.Stmt, indent_level: usize) !void {
+        try self.writeIndent(writer, indent_level);
+
+        switch (stmt.*) {
+            .LetDecl => |let_decl| {
+                try writer.print("const {s}", .{let_decl.name});
+                if (let_decl.type_annotation) |type_ann| {
+                    try writer.writeAll(": ");
+                    try self.writeTypeAnnotation(writer, type_ann);
+                }
+                if (let_decl.initializer) |init| {
+                    try writer.writeAll(" = ");
+                    try self.generateExpression(writer, init);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ReturnStmt => |ret_stmt| {
+                try writer.writeAll("return");
+                if (ret_stmt.expression) |expr| {
+                    try writer.writeAll(" ");
+                    try self.generateExpression(writer, expr);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ExprStmt => |expr| {
+                try self.generateExpression(writer, expr);
+                try writer.writeAll(";\n");
+            },
+            .IfStmt => |if_stmt| {
+                try writer.writeAll("if (");
+                try self.generateExpression(writer, if_stmt.condition);
+                try writer.writeAll(") {\n");
+                try self.generateBlock(writer, &if_stmt.then_block, indent_level + 1);
+                try self.writeIndent(writer, indent_level);
+                try writer.writeAll("}");
+                if (if_stmt.else_block) |else_block| {
+                    try writer.writeAll(" else {\n");
+                    try self.generateBlock(writer, &else_block, indent_level + 1);
+                    try self.writeIndent(writer, indent_level);
+                    try writer.writeAll("}");
+                }
+                try writer.writeAll("\n");
+            },
+            else => {
+                try writer.writeAll("/* stmt */;\n");
+            },
+        }
+    }
+
+    /// Write type annotation
+    fn writeTypeAnnotation(self: *ClosureCodegen, writer: anytype, type_ann: *const ast.TypeAnnotation) !void {
+        _ = self;
+        switch (type_ann.*) {
+            .Simple => |simple| try writer.print("{s}", .{simple}),
+            .Generic => |generic| {
+                try writer.print("{s}<", .{generic.base});
+                for (generic.args, 0..) |arg, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.writeTypeAnnotation(writer, arg);
+                }
+                try writer.writeAll(">");
+            },
+            .Array => |array| {
+                try writer.writeAll("[]");
+                try self.writeTypeAnnotation(writer, array.element_type);
+            },
+            else => try writer.writeAll("unknown"),
+        }
+    }
+
+    /// Write indentation
+    fn writeIndent(self: *ClosureCodegen, writer: anytype, level: usize) !void {
+        _ = self;
+        var i: usize = 0;
+        while (i < level * 4) : (i += 1) {
+            try writer.writeAll(" ");
+        }
     }
 
     /// Write a type expression

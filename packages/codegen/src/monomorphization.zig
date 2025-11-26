@@ -319,16 +319,8 @@ pub const Monomorphization = struct {
         generic_params: []const ast.GenericParam,
         type_args: []const []const u8,
     ) !void {
-        _ = generic_params;
-        _ = type_args;
-        _ = func;
-
-        // TODO: Walk AST and substitute generic types
-        // For now, generate placeholder body
-        try writer.writeAll("    // TODO: Generate function body with type substitutions\n");
-
-        // Return default value for return type
-        try writer.writeAll("    // Return default value\n");
+        // Walk function body AST and substitute generic types
+        try self.generateFunctionBody(writer, &func.body, generic_params, type_args);
     }
 
     /// Generate struct method with type substitutions
@@ -373,6 +365,208 @@ pub const Monomorphization = struct {
     /// Get all monomorphized items
     pub fn getAllInstantiations(self: *Monomorphization) []const MonomorphizedItem {
         return self.instantiations.items;
+    }
+
+    /// Generate function body with type substitutions
+    fn generateFunctionBody(
+        self: *Monomorphization,
+        writer: anytype,
+        block: *const ast.BlockStmt,
+        generic_params: []const ast.GenericParam,
+        type_args: []const []const u8,
+    ) !void {
+        try writer.writeAll(" {\n");
+
+        for (block.statements) |stmt| {
+            try self.generateStatement(writer, &stmt, generic_params, type_args, 1);
+        }
+
+        try writer.writeAll("    }\n");
+    }
+
+    /// Generate a single statement with type substitutions
+    fn generateStatement(
+        self: *Monomorphization,
+        writer: anytype,
+        stmt: *const ast.Stmt,
+        generic_params: []const ast.GenericParam,
+        type_args: []const []const u8,
+        indent: usize,
+    ) !void {
+        try self.writeIndent(writer, indent);
+
+        switch (stmt.*) {
+            .LetDecl => |let_decl| {
+                try writer.print("const {s}", .{let_decl.name});
+                if (let_decl.type_annotation) |type_ann| {
+                    const subst_type = try self.substituteTypeAnnotation(type_ann, generic_params, type_args);
+                    defer self.allocator.free(subst_type);
+                    try writer.print(": {s}", .{subst_type});
+                }
+                if (let_decl.initializer) |init| {
+                    try writer.writeAll(" = ");
+                    try self.generateExpression(writer, init, generic_params, type_args);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ConstDecl => |const_decl| {
+                try writer.print("const {s}", .{const_decl.name});
+                if (const_decl.type_annotation) |type_ann| {
+                    const subst_type = try self.substituteTypeAnnotation(type_ann, generic_params, type_args);
+                    defer self.allocator.free(subst_type);
+                    try writer.print(": {s}", .{subst_type});
+                }
+                if (const_decl.initializer) |init| {
+                    try writer.writeAll(" = ");
+                    try self.generateExpression(writer, init, generic_params, type_args);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ReturnStmt => |ret_stmt| {
+                try writer.writeAll("return");
+                if (ret_stmt.expression) |expr| {
+                    try writer.writeAll(" ");
+                    try self.generateExpression(writer, expr, generic_params, type_args);
+                }
+                try writer.writeAll(";\n");
+            },
+            .ExprStmt => |expr| {
+                try self.generateExpression(writer, expr, generic_params, type_args);
+                try writer.writeAll(";\n");
+            },
+            .IfStmt => |if_stmt| {
+                try writer.writeAll("if (");
+                try self.generateExpression(writer, if_stmt.condition, generic_params, type_args);
+                try writer.writeAll(") ");
+                try self.generateFunctionBody(writer, &if_stmt.then_block, generic_params, type_args);
+                if (if_stmt.else_block) |else_block| {
+                    try writer.writeAll(" else ");
+                    try self.generateFunctionBody(writer, &else_block, generic_params, type_args);
+                }
+                try writer.writeAll("\n");
+            },
+            .WhileStmt => |while_stmt| {
+                try writer.writeAll("while (");
+                try self.generateExpression(writer, while_stmt.condition, generic_params, type_args);
+                try writer.writeAll(") ");
+                try self.generateFunctionBody(writer, &while_stmt.body, generic_params, type_args);
+                try writer.writeAll("\n");
+            },
+            else => {
+                try writer.writeAll("/* Unsupported statement */;\n");
+            },
+        }
+    }
+
+    /// Generate an expression with type substitutions
+    fn generateExpression(
+        self: *Monomorphization,
+        writer: anytype,
+        expr: *const ast.Expr,
+        generic_params: []const ast.GenericParam,
+        type_args: []const []const u8,
+    ) !void {
+        _ = generic_params;
+        _ = type_args;
+
+        switch (expr.*) {
+            .Literal => |lit| {
+                switch (lit) {
+                    .Int => |val| try writer.print("{d}", .{val}),
+                    .Float => |val| try writer.print("{d}", .{val}),
+                    .String => |val| try writer.print("\"{s}\"", .{val}),
+                    .Bool => |val| try writer.print("{}", .{val}),
+                    .Null => try writer.writeAll("null"),
+                }
+            },
+            .Identifier => |id| {
+                try writer.print("{s}", .{id.name});
+            },
+            .BinaryExpr => |bin| {
+                try writer.writeAll("(");
+                try self.generateExpression(writer, bin.left, generic_params, type_args);
+                try writer.print(" {s} ", .{@tagName(bin.operator)});
+                try self.generateExpression(writer, bin.right, generic_params, type_args);
+                try writer.writeAll(")");
+            },
+            .UnaryExpr => |un| {
+                try writer.print("{s}", .{@tagName(un.operator)});
+                try self.generateExpression(writer, un.operand, generic_params, type_args);
+            },
+            .CallExpr => |call| {
+                try self.generateExpression(writer, call.callee, generic_params, type_args);
+                try writer.writeAll("(");
+                for (call.arguments, 0..) |arg, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try self.generateExpression(writer, arg, generic_params, type_args);
+                }
+                try writer.writeAll(")");
+            },
+            .MemberExpr => |member| {
+                try self.generateExpression(writer, member.object, generic_params, type_args);
+                try writer.print(".{s}", .{member.member});
+            },
+            else => {
+                try writer.writeAll("/* expression */");
+            },
+        }
+    }
+
+    /// Helper to write indentation
+    fn writeIndent(self: *Monomorphization, writer: anytype, indent: usize) !void {
+        _ = self;
+        var i: usize = 0;
+        while (i < indent * 4) : (i += 1) {
+            try writer.writeAll(" ");
+        }
+    }
+
+    /// Substitute type annotation with concrete types
+    fn substituteTypeAnnotation(
+        self: *Monomorphization,
+        type_ann: *const ast.TypeAnnotation,
+        generic_params: []const ast.GenericParam,
+        type_args: []const []const u8,
+    ) ![]const u8 {
+        switch (type_ann.*) {
+            .Simple => |simple| {
+                // Check if this is a generic parameter
+                for (generic_params, 0..) |param, i| {
+                    if (std.mem.eql(u8, param.name, simple)) {
+                        return try self.allocator.dupe(u8, type_args[i]);
+                    }
+                }
+                return try self.allocator.dupe(u8, simple);
+            },
+            .Generic => |generic| {
+                // Recursively substitute generic arguments
+                var buf = std.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+
+                const base = try self.substituteTypeAnnotation(&.{ .Simple = generic.base }, generic_params, type_args);
+                defer self.allocator.free(base);
+
+                try buf.appendSlice(base);
+                try buf.append('<');
+                for (generic.args, 0..) |arg, i| {
+                    if (i > 0) try buf.appendSlice(", ");
+                    const subst = try self.substituteTypeAnnotation(arg, generic_params, type_args);
+                    defer self.allocator.free(subst);
+                    try buf.appendSlice(subst);
+                }
+                try buf.append('>');
+
+                return try buf.toOwnedSlice();
+            },
+            .Array => |array| {
+                const elem_type = try self.substituteTypeAnnotation(array.element_type, generic_params, type_args);
+                defer self.allocator.free(elem_type);
+                return try std.fmt.allocPrint(self.allocator, "[]{s}", .{elem_type});
+            },
+            else => {
+                return try self.allocator.dupe(u8, "unknown");
+            },
+        }
     }
 
     /// Generate code for all monomorphized items

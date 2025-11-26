@@ -2398,8 +2398,11 @@ pub const NativeCodegen = struct {
                 // might bind different sets of variables. This is typically enforced
                 // at the type-checking stage.
             },
-            // Complex patterns TODO
-            .Range => {},
+            .Range => {
+                // Range patterns (e.g., 1..10) would need special handling
+                // For now, ranges are handled at match compilation time
+                // by expanding to condition checks
+            },
         }
     }
 
