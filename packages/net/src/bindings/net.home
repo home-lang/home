@@ -1,0 +1,597 @@
+// Home Network Library - Idiomatic Home Language API
+// High-level wrapper around TCP/UDP networking and protocols
+
+// ============================================================================
+// Foreign Function Interface Declarations
+// ============================================================================
+
+// Socket operations
+@extern fn net_socket_create(family: i32, sock_type: i32, protocol: i32) -> i32
+@extern fn net_socket_close(fd: i32) -> i32
+@extern fn net_socket_bind(fd: i32, addr: str, port: u16) -> i32
+@extern fn net_socket_listen(fd: i32, backlog: i32) -> i32
+@extern fn net_socket_accept(fd: i32, out_addr: &mut str, out_port: &mut u16) -> i32
+@extern fn net_socket_connect(fd: i32, addr: str, port: u16) -> i32
+@extern fn net_socket_send(fd: i32, data: &[u8], len: usize) -> i64
+@extern fn net_socket_recv(fd: i32, buffer: &mut [u8], len: usize) -> i64
+@extern fn net_socket_sendto(fd: i32, data: &[u8], len: usize, addr: str, port: u16) -> i64
+@extern fn net_socket_recvfrom(fd: i32, buffer: &mut [u8], len: usize, out_addr: &mut str, out_port: &mut u16) -> i64
+@extern fn net_socket_set_option(fd: i32, level: i32, optname: i32, value: i32) -> i32
+@extern fn net_socket_set_timeout(fd: i32, timeout_ms: u32) -> i32
+@extern fn net_socket_set_nonblocking(fd: i32, nonblocking: bool) -> i32
+
+// DNS resolution
+@extern fn net_dns_resolve(hostname: str, out_addr: &mut str) -> i32
+@extern fn net_dns_resolve_all(hostname: str, out_count: &mut usize) -> ptr
+
+// Network info
+@extern fn net_get_hostname() -> str
+@extern fn net_get_local_ip() -> str
+
+// TLS/SSL
+@extern fn net_tls_init() -> ptr
+@extern fn net_tls_deinit(ctx: ptr)
+@extern fn net_tls_connect(ctx: ptr, fd: i32, hostname: str) -> i32
+@extern fn net_tls_accept(ctx: ptr, fd: i32) -> i32
+@extern fn net_tls_send(ctx: ptr, data: &[u8], len: usize) -> i64
+@extern fn net_tls_recv(ctx: ptr, buffer: &mut [u8], len: usize) -> i64
+@extern fn net_tls_load_cert(ctx: ptr, cert_path: str) -> i32
+@extern fn net_tls_load_key(ctx: ptr, key_path: str) -> i32
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+enum NetError {
+    Ok,
+    SocketError,
+    BindError,
+    ListenError,
+    AcceptError,
+    ConnectError,
+    SendError,
+    RecvError,
+    Timeout,
+    ConnectionClosed,
+    AddressInUse,
+    AddressNotAvailable,
+    ConnectionRefused,
+    NetworkUnreachable,
+    HostUnreachable,
+    DnsError,
+    TlsError,
+    InvalidArgument,
+    OutOfMemory,
+    UnknownError,
+}
+
+fn error_from_code(code: i32) -> NetError {
+    match code {
+        0 -> NetError.Ok,
+        -1 -> NetError.SocketError,
+        -2 -> NetError.BindError,
+        -3 -> NetError.ListenError,
+        -4 -> NetError.AcceptError,
+        -5 -> NetError.ConnectError,
+        -6 -> NetError.SendError,
+        -7 -> NetError.RecvError,
+        -8 -> NetError.Timeout,
+        -9 -> NetError.ConnectionClosed,
+        -10 -> NetError.AddressInUse,
+        -11 -> NetError.AddressNotAvailable,
+        -12 -> NetError.ConnectionRefused,
+        -13 -> NetError.NetworkUnreachable,
+        -14 -> NetError.HostUnreachable,
+        -15 -> NetError.DnsError,
+        -16 -> NetError.TlsError,
+        -17 -> NetError.InvalidArgument,
+        -18 -> NetError.OutOfMemory,
+        _ -> NetError.UnknownError,
+    }
+}
+
+// ============================================================================
+// Socket Types
+// ============================================================================
+
+enum AddressFamily {
+    IPv4 = 2,
+    IPv6 = 10,
+    Unix = 1,
+}
+
+enum SocketType {
+    Stream = 1,    // TCP
+    Datagram = 2,  // UDP
+    Raw = 3,
+}
+
+// ============================================================================
+// Socket Address
+// ============================================================================
+
+struct SocketAddr {
+    address: str,
+    port: u16,
+}
+
+impl SocketAddr {
+    fn new(address: str, port: u16) -> SocketAddr {
+        return SocketAddr {
+            address: address,
+            port: port,
+        }
+    }
+
+    fn parse(addr_str: str) -> Result<SocketAddr, NetError> {
+        // Parse "address:port" format
+        // Implementation would split and parse
+        return Ok(SocketAddr { address: "0.0.0.0", port: 0 })
+    }
+
+    fn to_string(self) -> str {
+        return "{self.address}:{self.port}"
+    }
+
+    fn localhost(port: u16) -> SocketAddr {
+        return SocketAddr.new("127.0.0.1", port)
+    }
+
+    fn any(port: u16) -> SocketAddr {
+        return SocketAddr.new("0.0.0.0", port)
+    }
+}
+
+// ============================================================================
+// TCP Listener
+// ============================================================================
+
+struct TcpListener {
+    fd: i32,
+    local_addr: SocketAddr,
+}
+
+impl TcpListener {
+    fn bind(addr: str, port: u16) -> Result<TcpListener, NetError> {
+        let fd = net_socket_create(AddressFamily.IPv4 as i32, SocketType.Stream as i32, 0)
+        if fd < 0 {
+            return Err(NetError.SocketError)
+        }
+
+        // Set SO_REUSEADDR
+        let _ = net_socket_set_option(fd, 1, 2, 1)
+
+        let result = net_socket_bind(fd, addr, port)
+        if result < 0 {
+            net_socket_close(fd)
+            return Err(error_from_code(result))
+        }
+
+        let result = net_socket_listen(fd, 128)
+        if result < 0 {
+            net_socket_close(fd)
+            return Err(error_from_code(result))
+        }
+
+        return Ok(TcpListener {
+            fd: fd,
+            local_addr: SocketAddr.new(addr, port),
+        })
+    }
+
+    fn accept(self) -> Result<TcpStream, NetError> {
+        let mut client_addr: str = ""
+        let mut client_port: u16 = 0
+
+        let client_fd = net_socket_accept(self.fd, &mut client_addr, &mut client_port)
+        if client_fd < 0 {
+            return Err(error_from_code(client_fd))
+        }
+
+        return Ok(TcpStream {
+            fd: client_fd,
+            peer_addr: SocketAddr.new(client_addr, client_port),
+            local_addr: self.local_addr,
+        })
+    }
+
+    fn close(mut self) {
+        if self.fd >= 0 {
+            net_socket_close(self.fd)
+            self.fd = -1
+        }
+    }
+
+    fn local_addr(self) -> SocketAddr {
+        return self.local_addr
+    }
+
+    fn set_nonblocking(mut self, nonblocking: bool) -> Result<(), NetError> {
+        let result = net_socket_set_nonblocking(self.fd, nonblocking)
+        if result < 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+}
+
+// ============================================================================
+// TCP Stream
+// ============================================================================
+
+struct TcpStream {
+    fd: i32,
+    peer_addr: SocketAddr,
+    local_addr: SocketAddr,
+}
+
+impl TcpStream {
+    fn connect(addr: str, port: u16) -> Result<TcpStream, NetError> {
+        let fd = net_socket_create(AddressFamily.IPv4 as i32, SocketType.Stream as i32, 0)
+        if fd < 0 {
+            return Err(NetError.SocketError)
+        }
+
+        let result = net_socket_connect(fd, addr, port)
+        if result < 0 {
+            net_socket_close(fd)
+            return Err(error_from_code(result))
+        }
+
+        return Ok(TcpStream {
+            fd: fd,
+            peer_addr: SocketAddr.new(addr, port),
+            local_addr: SocketAddr.new("0.0.0.0", 0),
+        })
+    }
+
+    fn send(self, data: [u8]) -> Result<usize, NetError> {
+        let sent = net_socket_send(self.fd, &data, data.len())
+        if sent < 0 {
+            return Err(error_from_code(sent as i32))
+        }
+        return Ok(sent as usize)
+    }
+
+    fn send_all(self, data: [u8]) -> Result<(), NetError> {
+        let mut total_sent: usize = 0
+        while total_sent < data.len() {
+            let sent = net_socket_send(self.fd, &data[total_sent..], data.len() - total_sent)
+            if sent < 0 {
+                return Err(error_from_code(sent as i32))
+            }
+            if sent == 0 {
+                return Err(NetError.ConnectionClosed)
+            }
+            total_sent = total_sent + (sent as usize)
+        }
+        return Ok(())
+    }
+
+    fn recv(self, buffer: &mut [u8]) -> Result<usize, NetError> {
+        let received = net_socket_recv(self.fd, buffer, buffer.len())
+        if received < 0 {
+            return Err(error_from_code(received as i32))
+        }
+        return Ok(received as usize)
+    }
+
+    fn recv_exact(self, buffer: &mut [u8], count: usize) -> Result<(), NetError> {
+        let mut total_recv: usize = 0
+        while total_recv < count {
+            let received = net_socket_recv(self.fd, &mut buffer[total_recv..], count - total_recv)
+            if received < 0 {
+                return Err(error_from_code(received as i32))
+            }
+            if received == 0 {
+                return Err(NetError.ConnectionClosed)
+            }
+            total_recv = total_recv + (received as usize)
+        }
+        return Ok(())
+    }
+
+    fn close(mut self) {
+        if self.fd >= 0 {
+            net_socket_close(self.fd)
+            self.fd = -1
+        }
+    }
+
+    fn peer_addr(self) -> SocketAddr {
+        return self.peer_addr
+    }
+
+    fn local_addr(self) -> SocketAddr {
+        return self.local_addr
+    }
+
+    fn set_timeout(mut self, timeout_ms: u32) -> Result<(), NetError> {
+        let result = net_socket_set_timeout(self.fd, timeout_ms)
+        if result < 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn set_nonblocking(mut self, nonblocking: bool) -> Result<(), NetError> {
+        let result = net_socket_set_nonblocking(self.fd, nonblocking)
+        if result < 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    // Convenience methods for text
+    fn send_string(self, text: str) -> Result<usize, NetError> {
+        return self.send(text.as_bytes())
+    }
+
+    fn recv_string(self, max_len: usize) -> Result<str, NetError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let len = if max_len < 4096 { max_len } else { 4096 }
+        let received = self.recv(&mut buffer[0..len])?
+        return Ok(str.from_bytes(buffer[0..received]))
+    }
+}
+
+// ============================================================================
+// UDP Socket
+// ============================================================================
+
+struct UdpSocket {
+    fd: i32,
+    local_addr: SocketAddr,
+}
+
+impl UdpSocket {
+    fn bind(addr: str, port: u16) -> Result<UdpSocket, NetError> {
+        let fd = net_socket_create(AddressFamily.IPv4 as i32, SocketType.Datagram as i32, 0)
+        if fd < 0 {
+            return Err(NetError.SocketError)
+        }
+
+        let result = net_socket_bind(fd, addr, port)
+        if result < 0 {
+            net_socket_close(fd)
+            return Err(error_from_code(result))
+        }
+
+        return Ok(UdpSocket {
+            fd: fd,
+            local_addr: SocketAddr.new(addr, port),
+        })
+    }
+
+    fn unbound() -> Result<UdpSocket, NetError> {
+        let fd = net_socket_create(AddressFamily.IPv4 as i32, SocketType.Datagram as i32, 0)
+        if fd < 0 {
+            return Err(NetError.SocketError)
+        }
+
+        return Ok(UdpSocket {
+            fd: fd,
+            local_addr: SocketAddr.new("0.0.0.0", 0),
+        })
+    }
+
+    fn send_to(self, data: [u8], addr: str, port: u16) -> Result<usize, NetError> {
+        let sent = net_socket_sendto(self.fd, &data, data.len(), addr, port)
+        if sent < 0 {
+            return Err(error_from_code(sent as i32))
+        }
+        return Ok(sent as usize)
+    }
+
+    fn recv_from(self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+        let mut from_addr: str = ""
+        let mut from_port: u16 = 0
+
+        let received = net_socket_recvfrom(self.fd, buffer, buffer.len(), &mut from_addr, &mut from_port)
+        if received < 0 {
+            return Err(error_from_code(received as i32))
+        }
+
+        return Ok((received as usize, SocketAddr.new(from_addr, from_port)))
+    }
+
+    fn close(mut self) {
+        if self.fd >= 0 {
+            net_socket_close(self.fd)
+            self.fd = -1
+        }
+    }
+
+    fn local_addr(self) -> SocketAddr {
+        return self.local_addr
+    }
+
+    fn set_broadcast(mut self, enabled: bool) -> Result<(), NetError> {
+        let result = net_socket_set_option(self.fd, 1, 6, if enabled { 1 } else { 0 })
+        if result < 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+}
+
+// ============================================================================
+// TLS Stream
+// ============================================================================
+
+struct TlsStream {
+    ctx: ptr,
+    fd: i32,
+    peer_addr: SocketAddr,
+}
+
+impl TlsStream {
+    fn connect(addr: str, port: u16) -> Result<TlsStream, NetError> {
+        // Create TCP connection first
+        let fd = net_socket_create(AddressFamily.IPv4 as i32, SocketType.Stream as i32, 0)
+        if fd < 0 {
+            return Err(NetError.SocketError)
+        }
+
+        let result = net_socket_connect(fd, addr, port)
+        if result < 0 {
+            net_socket_close(fd)
+            return Err(error_from_code(result))
+        }
+
+        // Initialize TLS
+        let ctx = net_tls_init()
+        if ctx == null {
+            net_socket_close(fd)
+            return Err(NetError.TlsError)
+        }
+
+        // Perform TLS handshake
+        let result = net_tls_connect(ctx, fd, addr)
+        if result < 0 {
+            net_tls_deinit(ctx)
+            net_socket_close(fd)
+            return Err(NetError.TlsError)
+        }
+
+        return Ok(TlsStream {
+            ctx: ctx,
+            fd: fd,
+            peer_addr: SocketAddr.new(addr, port),
+        })
+    }
+
+    fn send(self, data: [u8]) -> Result<usize, NetError> {
+        let sent = net_tls_send(self.ctx, &data, data.len())
+        if sent < 0 {
+            return Err(NetError.TlsError)
+        }
+        return Ok(sent as usize)
+    }
+
+    fn recv(self, buffer: &mut [u8]) -> Result<usize, NetError> {
+        let received = net_tls_recv(self.ctx, buffer, buffer.len())
+        if received < 0 {
+            return Err(NetError.TlsError)
+        }
+        return Ok(received as usize)
+    }
+
+    fn close(mut self) {
+        if self.ctx != null {
+            net_tls_deinit(self.ctx)
+            self.ctx = null
+        }
+        if self.fd >= 0 {
+            net_socket_close(self.fd)
+            self.fd = -1
+        }
+    }
+
+    fn peer_addr(self) -> SocketAddr {
+        return self.peer_addr
+    }
+}
+
+// ============================================================================
+// DNS Resolution
+// ============================================================================
+
+fn resolve(hostname: str) -> Result<str, NetError> {
+    let mut addr: str = ""
+    let result = net_dns_resolve(hostname, &mut addr)
+    if result < 0 {
+        return Err(NetError.DnsError)
+    }
+    return Ok(addr)
+}
+
+fn resolve_all(hostname: str) -> Result<[str], NetError> {
+    let mut count: usize = 0
+    let ptr = net_dns_resolve_all(hostname, &mut count)
+    if ptr == null {
+        return Err(NetError.DnsError)
+    }
+    // Would parse the results from ptr
+    return Ok([])
+}
+
+// ============================================================================
+// Network Info
+// ============================================================================
+
+fn hostname() -> str {
+    return net_get_hostname()
+}
+
+fn local_ip() -> str {
+    return net_get_local_ip()
+}
+
+// ============================================================================
+// High-Level HTTP Client (Simple)
+// ============================================================================
+
+struct HttpResponse {
+    status_code: u16,
+    headers: [(str, str)],
+    body: [u8],
+}
+
+impl HttpResponse {
+    fn is_ok(self) -> bool {
+        return self.status_code >= 200 && self.status_code < 300
+    }
+
+    fn body_string(self) -> str {
+        return str.from_bytes(self.body)
+    }
+}
+
+fn http_get(url: str) -> Result<HttpResponse, NetError> {
+    // Parse URL to extract host, port, path
+    // This is a simplified implementation
+    let host = "example.com"
+    let port: u16 = 80
+    let path = "/"
+
+    let stream = TcpStream.connect(host, port)?
+
+    // Send HTTP request
+    let request = "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    stream.send_string(request)?
+
+    // Read response
+    let mut buffer: [u8; 65536] = [0; 65536]
+    let received = stream.recv(&mut buffer)?
+    stream.close()
+
+    // Parse response (simplified)
+    return Ok(HttpResponse {
+        status_code: 200,
+        headers: [],
+        body: buffer[0..received],
+    })
+}
+
+fn http_post(url: str, body: [u8], content_type: str) -> Result<HttpResponse, NetError> {
+    let host = "example.com"
+    let port: u16 = 80
+    let path = "/"
+
+    let stream = TcpStream.connect(host, port)?
+
+    let request = "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: {content_type}\r\nContent-Length: {body.len()}\r\nConnection: close\r\n\r\n"
+    stream.send_string(request)?
+    stream.send(body)?
+
+    let mut buffer: [u8; 65536] = [0; 65536]
+    let received = stream.recv(&mut buffer)?
+    stream.close()
+
+    return Ok(HttpResponse {
+        status_code: 200,
+        headers: [],
+        body: buffer[0..received],
+    })
+}

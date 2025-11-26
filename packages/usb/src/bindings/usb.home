@@ -1,0 +1,573 @@
+// Home USB Security Library - Idiomatic Home Language API
+// High-level wrapper around USB device authentication and security
+
+// ============================================================================
+// Foreign Function Interface Declarations
+// ============================================================================
+
+// Authentication
+@extern fn usb_auth_init(mode: i32) -> ptr
+@extern fn usb_auth_deinit(handle: ptr)
+@extern fn usb_auth_set_mode(handle: ptr, mode: i32)
+@extern fn usb_auth_get_mode(handle: ptr) -> i32
+@extern fn usb_auth_add_whitelist(handle: ptr, vendor_id: u16, product_id: u16) -> i32
+@extern fn usb_auth_add_blacklist(handle: ptr, vendor_id: u16, product_id: u16) -> i32
+@extern fn usb_auth_remove_whitelist(handle: ptr, vendor_id: u16, product_id: u16) -> i32
+@extern fn usb_auth_remove_blacklist(handle: ptr, vendor_id: u16, product_id: u16) -> i32
+@extern fn usb_auth_is_authorized(handle: ptr, vendor_id: u16, product_id: u16) -> bool
+@extern fn usb_auth_whitelist_count(handle: ptr) -> usize
+@extern fn usb_auth_blacklist_count(handle: ptr) -> usize
+
+// Device enumeration
+@extern fn usb_device_count() -> usize
+@extern fn usb_device_get_vendor_id(index: usize) -> u16
+@extern fn usb_device_get_product_id(index: usize) -> u16
+@extern fn usb_device_get_class(index: usize) -> u8
+@extern fn usb_device_get_name(index: usize) -> str
+
+// Policy enforcement
+@extern fn usb_policy_init() -> ptr
+@extern fn usb_policy_deinit(handle: ptr)
+@extern fn usb_policy_allow_class(handle: ptr, class: u8) -> i32
+@extern fn usb_policy_deny_class(handle: ptr, class: u8) -> i32
+@extern fn usb_policy_is_class_allowed(handle: ptr, class: u8) -> bool
+
+// BadUSB protection
+@extern fn usb_badusb_init() -> ptr
+@extern fn usb_badusb_deinit(handle: ptr)
+@extern fn usb_badusb_analyze(handle: ptr, vendor_id: u16, product_id: u16) -> i32
+@extern fn usb_badusb_get_threat_level(handle: ptr) -> i32
+@extern fn usb_badusb_get_threat_reason(handle: ptr) -> str
+
+// Monitoring
+@extern fn usb_monitor_init() -> ptr
+@extern fn usb_monitor_deinit(handle: ptr)
+@extern fn usb_monitor_start(handle: ptr) -> i32
+@extern fn usb_monitor_stop(handle: ptr) -> i32
+@extern fn usb_monitor_get_event_count(handle: ptr) -> usize
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+enum UsbError {
+    Ok,
+    InvalidHandle,
+    DeviceNotFound,
+    AccessDenied,
+    Timeout,
+    IoError,
+    InvalidArgument,
+    NotSupported,
+    OutOfMemory,
+    UnknownError,
+}
+
+fn error_from_code(code: i32) -> UsbError {
+    match code {
+        0 -> UsbError.Ok,
+        -1 -> UsbError.InvalidHandle,
+        -2 -> UsbError.DeviceNotFound,
+        -3 -> UsbError.AccessDenied,
+        -4 -> UsbError.Timeout,
+        -5 -> UsbError.IoError,
+        -6 -> UsbError.InvalidArgument,
+        -7 -> UsbError.NotSupported,
+        -8 -> UsbError.OutOfMemory,
+        _ -> UsbError.UnknownError,
+    }
+}
+
+// ============================================================================
+// Authorization Modes
+// ============================================================================
+
+enum AuthMode {
+    AllowAll = 0,     // Allow all devices (insecure)
+    DenyAll = 1,      // Deny all devices (maximum security)
+    Whitelist = 2,    // Only allow whitelisted devices
+    Blacklist = 3,    // Allow all except blacklisted devices
+}
+
+// ============================================================================
+// USB Device Classes
+// ============================================================================
+
+enum UsbClass {
+    PerInterface = 0x00,
+    Audio = 0x01,
+    Comm = 0x02,
+    Hid = 0x03,
+    Physical = 0x05,
+    Image = 0x06,
+    Printer = 0x07,
+    MassStorage = 0x08,
+    Hub = 0x09,
+    Video = 0x0E,
+    Wireless = 0xE0,
+    VendorSpecific = 0xFF,
+}
+
+// ============================================================================
+// Threat Levels
+// ============================================================================
+
+enum ThreatLevel {
+    None = 0,
+    Low = 1,
+    Medium = 2,
+    High = 3,
+    Critical = 4,
+}
+
+// ============================================================================
+// Device ID
+// ============================================================================
+
+struct DeviceId {
+    vendor_id: u16,
+    product_id: u16,
+}
+
+impl DeviceId {
+    fn new(vendor_id: u16, product_id: u16) -> DeviceId {
+        return DeviceId {
+            vendor_id: vendor_id,
+            product_id: product_id,
+        }
+    }
+
+    fn from_string(id_str: str) -> Result<DeviceId, UsbError> {
+        // Parse "VVVV:PPPP" format
+        // Implementation would parse the hex values
+        return Ok(DeviceId { vendor_id: 0, product_id: 0 })
+    }
+
+    fn to_string(self) -> str {
+        // Return "VVVV:PPPP" format
+        return "0000:0000"
+    }
+}
+
+// ============================================================================
+// USB Authenticator
+// ============================================================================
+
+struct Authenticator {
+    handle: ptr,
+}
+
+impl Authenticator {
+    fn init(mode: AuthMode) -> Result<Authenticator, UsbError> {
+        let handle = usb_auth_init(mode as i32)
+        if handle == null {
+            return Err(UsbError.OutOfMemory)
+        }
+        return Ok(Authenticator { handle: handle })
+    }
+
+    fn deinit(mut self) {
+        if self.handle != null {
+            usb_auth_deinit(self.handle)
+            self.handle = null
+        }
+    }
+
+    fn set_mode(mut self, mode: AuthMode) {
+        usb_auth_set_mode(self.handle, mode as i32)
+    }
+
+    fn get_mode(self) -> AuthMode {
+        let mode = usb_auth_get_mode(self.handle)
+        match mode {
+            0 -> AuthMode.AllowAll,
+            1 -> AuthMode.DenyAll,
+            2 -> AuthMode.Whitelist,
+            3 -> AuthMode.Blacklist,
+            _ -> AuthMode.DenyAll,
+        }
+    }
+
+    fn add_to_whitelist(mut self, device: DeviceId) -> Result<(), UsbError> {
+        let result = usb_auth_add_whitelist(self.handle, device.vendor_id, device.product_id)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn add_to_blacklist(mut self, device: DeviceId) -> Result<(), UsbError> {
+        let result = usb_auth_add_blacklist(self.handle, device.vendor_id, device.product_id)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn remove_from_whitelist(mut self, device: DeviceId) -> Result<(), UsbError> {
+        let result = usb_auth_remove_whitelist(self.handle, device.vendor_id, device.product_id)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn remove_from_blacklist(mut self, device: DeviceId) -> Result<(), UsbError> {
+        let result = usb_auth_remove_blacklist(self.handle, device.vendor_id, device.product_id)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn is_authorized(self, device: DeviceId) -> bool {
+        return usb_auth_is_authorized(self.handle, device.vendor_id, device.product_id)
+    }
+
+    fn whitelist_count(self) -> usize {
+        return usb_auth_whitelist_count(self.handle)
+    }
+
+    fn blacklist_count(self) -> usize {
+        return usb_auth_blacklist_count(self.handle)
+    }
+}
+
+// ============================================================================
+// USB Policy Manager
+// ============================================================================
+
+struct PolicyManager {
+    handle: ptr,
+}
+
+impl PolicyManager {
+    fn init() -> Result<PolicyManager, UsbError> {
+        let handle = usb_policy_init()
+        if handle == null {
+            return Err(UsbError.OutOfMemory)
+        }
+        return Ok(PolicyManager { handle: handle })
+    }
+
+    fn deinit(mut self) {
+        if self.handle != null {
+            usb_policy_deinit(self.handle)
+            self.handle = null
+        }
+    }
+
+    fn allow_class(mut self, class: UsbClass) -> Result<(), UsbError> {
+        let result = usb_policy_allow_class(self.handle, class as u8)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn deny_class(mut self, class: UsbClass) -> Result<(), UsbError> {
+        let result = usb_policy_deny_class(self.handle, class as u8)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn is_class_allowed(self, class: UsbClass) -> bool {
+        return usb_policy_is_class_allowed(self.handle, class as u8)
+    }
+
+    // Convenience methods for common policies
+    fn allow_input_devices(mut self) -> Result<(), UsbError> {
+        self.allow_class(UsbClass.Hid)?
+        return Ok(())
+    }
+
+    fn allow_storage_devices(mut self) -> Result<(), UsbError> {
+        self.allow_class(UsbClass.MassStorage)?
+        return Ok(())
+    }
+
+    fn allow_audio_devices(mut self) -> Result<(), UsbError> {
+        self.allow_class(UsbClass.Audio)?
+        return Ok(())
+    }
+
+    fn deny_all_storage(mut self) -> Result<(), UsbError> {
+        self.deny_class(UsbClass.MassStorage)?
+        return Ok(())
+    }
+}
+
+// ============================================================================
+// BadUSB Detector
+// ============================================================================
+
+struct BadUsbDetector {
+    handle: ptr,
+}
+
+impl BadUsbDetector {
+    fn init() -> Result<BadUsbDetector, UsbError> {
+        let handle = usb_badusb_init()
+        if handle == null {
+            return Err(UsbError.OutOfMemory)
+        }
+        return Ok(BadUsbDetector { handle: handle })
+    }
+
+    fn deinit(mut self) {
+        if self.handle != null {
+            usb_badusb_deinit(self.handle)
+            self.handle = null
+        }
+    }
+
+    fn analyze(self, device: DeviceId) -> Result<ThreatAnalysis, UsbError> {
+        let result = usb_badusb_analyze(self.handle, device.vendor_id, device.product_id)
+        if result < 0 {
+            return Err(error_from_code(result))
+        }
+
+        let level = usb_badusb_get_threat_level(self.handle)
+        let reason = usb_badusb_get_threat_reason(self.handle)
+
+        return Ok(ThreatAnalysis {
+            device: device,
+            threat_level: match level {
+                0 -> ThreatLevel.None,
+                1 -> ThreatLevel.Low,
+                2 -> ThreatLevel.Medium,
+                3 -> ThreatLevel.High,
+                4 -> ThreatLevel.Critical,
+                _ -> ThreatLevel.None,
+            },
+            reason: reason,
+        })
+    }
+}
+
+struct ThreatAnalysis {
+    device: DeviceId,
+    threat_level: ThreatLevel,
+    reason: str,
+}
+
+impl ThreatAnalysis {
+    fn is_safe(self) -> bool {
+        return self.threat_level == ThreatLevel.None || self.threat_level == ThreatLevel.Low
+    }
+
+    fn requires_attention(self) -> bool {
+        return self.threat_level == ThreatLevel.Medium
+    }
+
+    fn is_dangerous(self) -> bool {
+        return self.threat_level == ThreatLevel.High || self.threat_level == ThreatLevel.Critical
+    }
+}
+
+// ============================================================================
+// USB Monitor
+// ============================================================================
+
+struct UsbMonitor {
+    handle: ptr,
+}
+
+impl UsbMonitor {
+    fn init() -> Result<UsbMonitor, UsbError> {
+        let handle = usb_monitor_init()
+        if handle == null {
+            return Err(UsbError.OutOfMemory)
+        }
+        return Ok(UsbMonitor { handle: handle })
+    }
+
+    fn deinit(mut self) {
+        if self.handle != null {
+            usb_monitor_deinit(self.handle)
+            self.handle = null
+        }
+    }
+
+    fn start(mut self) -> Result<(), UsbError> {
+        let result = usb_monitor_start(self.handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn stop(mut self) -> Result<(), UsbError> {
+        let result = usb_monitor_stop(self.handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn event_count(self) -> usize {
+        return usb_monitor_get_event_count(self.handle)
+    }
+}
+
+// ============================================================================
+// Device Enumeration
+// ============================================================================
+
+fn list_devices() -> [DeviceInfo] {
+    let count = usb_device_count()
+    let mut devices: [DeviceInfo] = []
+
+    for i in 0..count {
+        let info = DeviceInfo {
+            vendor_id: usb_device_get_vendor_id(i),
+            product_id: usb_device_get_product_id(i),
+            class: usb_device_get_class(i),
+            name: usb_device_get_name(i),
+        }
+        devices.push(info)
+    }
+
+    return devices
+}
+
+struct DeviceInfo {
+    vendor_id: u16,
+    product_id: u16,
+    class: u8,
+    name: str,
+}
+
+impl DeviceInfo {
+    fn device_id(self) -> DeviceId {
+        return DeviceId.new(self.vendor_id, self.product_id)
+    }
+
+    fn usb_class(self) -> UsbClass {
+        match self.class {
+            0x00 -> UsbClass.PerInterface,
+            0x01 -> UsbClass.Audio,
+            0x02 -> UsbClass.Comm,
+            0x03 -> UsbClass.Hid,
+            0x05 -> UsbClass.Physical,
+            0x06 -> UsbClass.Image,
+            0x07 -> UsbClass.Printer,
+            0x08 -> UsbClass.MassStorage,
+            0x09 -> UsbClass.Hub,
+            0x0E -> UsbClass.Video,
+            0xE0 -> UsbClass.Wireless,
+            _ -> UsbClass.VendorSpecific,
+        }
+    }
+}
+
+// ============================================================================
+// High-Level Security Manager
+// ============================================================================
+
+struct SecurityManager {
+    auth: Authenticator,
+    policy: PolicyManager,
+    detector: BadUsbDetector,
+    monitor: UsbMonitor,
+}
+
+impl SecurityManager {
+    fn init(mode: AuthMode) -> Result<SecurityManager, UsbError> {
+        let auth = Authenticator.init(mode)?
+        let policy = PolicyManager.init()?
+        let detector = BadUsbDetector.init()?
+        let monitor = UsbMonitor.init()?
+
+        return Ok(SecurityManager {
+            auth: auth,
+            policy: policy,
+            detector: detector,
+            monitor: monitor,
+        })
+    }
+
+    fn deinit(mut self) {
+        self.auth.deinit()
+        self.policy.deinit()
+        self.detector.deinit()
+        self.monitor.deinit()
+    }
+
+    fn check_device(self, device: DeviceId) -> SecurityCheck {
+        let authorized = self.auth.is_authorized(device)
+        let class_allowed = true // Would check actual class
+        let analysis = self.detector.analyze(device)
+
+        return SecurityCheck {
+            device: device,
+            authorized: authorized,
+            class_allowed: class_allowed,
+            threat_analysis: match analysis {
+                Ok(a) -> Some(a),
+                Err(_) -> None,
+            },
+        }
+    }
+
+    fn allow_device(mut self, device: DeviceId) -> Result<(), UsbError> {
+        self.auth.add_to_whitelist(device)?
+        return Ok(())
+    }
+
+    fn block_device(mut self, device: DeviceId) -> Result<(), UsbError> {
+        self.auth.add_to_blacklist(device)?
+        return Ok(())
+    }
+
+    fn start_monitoring(mut self) -> Result<(), UsbError> {
+        self.monitor.start()?
+        return Ok(())
+    }
+
+    fn stop_monitoring(mut self) -> Result<(), UsbError> {
+        self.monitor.stop()?
+        return Ok(())
+    }
+}
+
+struct SecurityCheck {
+    device: DeviceId,
+    authorized: bool,
+    class_allowed: bool,
+    threat_analysis: ?ThreatAnalysis,
+}
+
+impl SecurityCheck {
+    fn is_allowed(self) -> bool {
+        if !self.authorized {
+            return false
+        }
+        if !self.class_allowed {
+            return false
+        }
+        if let Some(analysis) = self.threat_analysis {
+            if analysis.is_dangerous() {
+                return false
+            }
+        }
+        return true
+    }
+
+    fn get_denial_reason(self) -> ?str {
+        if !self.authorized {
+            return Some("Device not in whitelist")
+        }
+        if !self.class_allowed {
+            return Some("Device class not allowed by policy")
+        }
+        if let Some(analysis) = self.threat_analysis {
+            if analysis.is_dangerous() {
+                return Some(analysis.reason)
+            }
+        }
+        return None
+    }
+}

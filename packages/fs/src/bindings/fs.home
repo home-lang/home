@@ -1,0 +1,1065 @@
+// Home Programming Language - File System Bindings
+// VFS and file I/O operations for Home
+
+// ============================================================================
+// FFI Declarations - Low-level C ABI bindings to Zig implementations
+// ============================================================================
+
+// File Operations
+@extern fn fs_open(path: str, flags: i32, mode: u16) -> i64
+@extern fn fs_close(fd: i64) -> i32
+@extern fn fs_read(fd: i64, buffer: &mut [u8], count: usize) -> i64
+@extern fn fs_write(fd: i64, buffer: &[u8], count: usize) -> i64
+@extern fn fs_seek(fd: i64, offset: i64, whence: i32) -> i64
+@extern fn fs_tell(fd: i64) -> i64
+@extern fn fs_flush(fd: i64) -> i32
+@extern fn fs_sync(fd: i64) -> i32
+@extern fn fs_truncate(fd: i64, length: u64) -> i32
+@extern fn fs_fstat(fd: i64, stat: &mut FileStat) -> i32
+
+// Path Operations
+@extern fn fs_stat(path: str, stat: &mut FileStat) -> i32
+@extern fn fs_lstat(path: str, stat: &mut FileStat) -> i32
+@extern fn fs_exists(path: str) -> i32
+@extern fn fs_is_file(path: str) -> i32
+@extern fn fs_is_dir(path: str) -> i32
+@extern fn fs_is_symlink(path: str) -> i32
+
+// Directory Operations
+@extern fn fs_mkdir(path: str, mode: u16) -> i32
+@extern fn fs_mkdir_all(path: str, mode: u16) -> i32
+@extern fn fs_rmdir(path: str) -> i32
+@extern fn fs_opendir(path: str) -> i64
+@extern fn fs_readdir(dir: i64, entry: &mut DirEntry) -> i32
+@extern fn fs_closedir(dir: i64) -> i32
+@extern fn fs_chdir(path: str) -> i32
+@extern fn fs_getcwd(buffer: &mut [u8]) -> i32
+
+// File Management
+@extern fn fs_unlink(path: str) -> i32
+@extern fn fs_rename(old_path: str, new_path: str) -> i32
+@extern fn fs_link(src_path: str, dst_path: str) -> i32
+@extern fn fs_symlink(target: str, link_path: str) -> i32
+@extern fn fs_readlink(path: str, buffer: &mut [u8]) -> i64
+@extern fn fs_chmod(path: str, mode: u16) -> i32
+@extern fn fs_chown(path: str, uid: u32, gid: u32) -> i32
+@extern fn fs_copy(src: str, dst: str) -> i32
+@extern fn fs_copy_file(src: str, dst: str) -> i64
+
+// Utility
+@extern fn fs_realpath(path: str, buffer: &mut [u8]) -> i32
+@extern fn fs_basename(path: str, buffer: &mut [u8]) -> i32
+@extern fn fs_dirname(path: str, buffer: &mut [u8]) -> i32
+@extern fn fs_join_path(base: str, child: str, buffer: &mut [u8]) -> i32
+@extern fn fs_temp_dir(buffer: &mut [u8]) -> i32
+@extern fn fs_home_dir(buffer: &mut [u8]) -> i32
+
+// Mount Operations
+@extern fn fs_mount(source: str, target: str, fs_type: str, flags: u32) -> i32
+@extern fn fs_umount(target: str) -> i32
+@extern fn fs_statfs(path: str, stat: &mut FileSystemStat) -> i32
+
+// File Locking
+@extern fn fs_lock(fd: i64, operation: i32) -> i32
+@extern fn fs_unlock(fd: i64) -> i32
+@extern fn fs_try_lock(fd: i64, operation: i32) -> i32
+
+// Memory Mapping
+@extern fn fs_mmap(fd: i64, offset: u64, length: usize, prot: i32, flags: i32) -> usize
+@extern fn fs_munmap(addr: usize, length: usize) -> i32
+@extern fn fs_msync(addr: usize, length: usize, flags: i32) -> i32
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+enum FsError {
+    None,
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    NotADirectory,
+    IsADirectory,
+    NotEmpty,
+    TooManyOpenFiles,
+    InvalidPath,
+    InvalidOperation,
+    IoError,
+    NoSpace,
+    ReadOnly,
+    Busy,
+    CrossDevice,
+    TooManySymlinks,
+    NameTooLong,
+    Unknown,
+}
+
+fn fs_error_from_code(code: i32) -> FsError {
+    match code {
+        0 => FsError.None,
+        -2 => FsError.NotFound,        // ENOENT
+        -13 => FsError.PermissionDenied, // EACCES
+        -17 => FsError.AlreadyExists,  // EEXIST
+        -20 => FsError.NotADirectory,  // ENOTDIR
+        -21 => FsError.IsADirectory,   // EISDIR
+        -39 => FsError.NotEmpty,       // ENOTEMPTY
+        -24 => FsError.TooManyOpenFiles, // EMFILE
+        -22 => FsError.InvalidPath,    // EINVAL
+        -5 => FsError.IoError,         // EIO
+        -28 => FsError.NoSpace,        // ENOSPC
+        -30 => FsError.ReadOnly,       // EROFS
+        -16 => FsError.Busy,           // EBUSY
+        -18 => FsError.CrossDevice,    // EXDEV
+        -40 => FsError.TooManySymlinks, // ELOOP
+        -36 => FsError.NameTooLong,    // ENAMETOOLONG
+        _ => FsError.Unknown,
+    }
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum FileType {
+    Unknown,
+    Regular,
+    Directory,
+    Symlink,
+    CharDevice,
+    BlockDevice,
+    Fifo,
+    Socket,
+}
+
+fn file_type_from_mode(mode: u32) -> FileType {
+    let type_bits = (mode >> 12) & 0xF
+    match type_bits {
+        0x8 => FileType.Regular,
+        0x4 => FileType.Directory,
+        0xA => FileType.Symlink,
+        0x2 => FileType.CharDevice,
+        0x6 => FileType.BlockDevice,
+        0x1 => FileType.Fifo,
+        0xC => FileType.Socket,
+        _ => FileType.Unknown,
+    }
+}
+
+enum SeekFrom {
+    Start,
+    Current,
+    End,
+}
+
+fn seek_from_to_code(whence: SeekFrom) -> i32 {
+    match whence {
+        SeekFrom.Start => 0,    // SEEK_SET
+        SeekFrom.Current => 1,  // SEEK_CUR
+        SeekFrom.End => 2,      // SEEK_END
+    }
+}
+
+enum OpenMode {
+    Read,
+    Write,
+    Append,
+    ReadWrite,
+    Create,
+    CreateNew,
+    Truncate,
+}
+
+// Open flags
+comptime const O_RDONLY: i32 = 0x0000
+comptime const O_WRONLY: i32 = 0x0001
+comptime const O_RDWR: i32 = 0x0002
+comptime const O_CREAT: i32 = 0x0040
+comptime const O_EXCL: i32 = 0x0080
+comptime const O_TRUNC: i32 = 0x0200
+comptime const O_APPEND: i32 = 0x0400
+comptime const O_NOFOLLOW: i32 = 0x20000
+comptime const O_DIRECTORY: i32 = 0x10000
+
+// File lock operations
+comptime const LOCK_SH: i32 = 1  // Shared lock
+comptime const LOCK_EX: i32 = 2  // Exclusive lock
+comptime const LOCK_UN: i32 = 8  // Unlock
+comptime const LOCK_NB: i32 = 4  // Non-blocking
+
+// Memory protection flags
+comptime const PROT_NONE: i32 = 0
+comptime const PROT_READ: i32 = 1
+comptime const PROT_WRITE: i32 = 2
+comptime const PROT_EXEC: i32 = 4
+
+// Memory map flags
+comptime const MAP_SHARED: i32 = 1
+comptime const MAP_PRIVATE: i32 = 2
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
+struct FileMode {
+    mode: u16,
+}
+
+impl FileMode {
+    /// Create from octal (e.g., 0o755)
+    fn from_octal(octal: u16) -> FileMode {
+        FileMode { mode: octal }
+    }
+
+    /// Default file permissions (0o644)
+    fn default_file() -> FileMode {
+        FileMode { mode: 0o644 }
+    }
+
+    /// Default directory permissions (0o755)
+    fn default_dir() -> FileMode {
+        FileMode { mode: 0o755 }
+    }
+
+    /// Read-only (0o444)
+    fn read_only() -> FileMode {
+        FileMode { mode: 0o444 }
+    }
+
+    /// Full permissions (0o777)
+    fn full() -> FileMode {
+        FileMode { mode: 0o777 }
+    }
+
+    fn can_read(self) -> bool {
+        (self.mode & 0o400) != 0
+    }
+
+    fn can_write(self) -> bool {
+        (self.mode & 0o200) != 0
+    }
+
+    fn can_execute(self) -> bool {
+        (self.mode & 0o100) != 0
+    }
+}
+
+struct FileStat {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    nlink: u32,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    size: u64,
+    blksize: u64,
+    blocks: u64,
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
+}
+
+impl FileStat {
+    fn file_type(self) -> FileType {
+        file_type_from_mode(self.mode)
+    }
+
+    fn is_file(self) -> bool {
+        self.file_type() == FileType.Regular
+    }
+
+    fn is_dir(self) -> bool {
+        self.file_type() == FileType.Directory
+    }
+
+    fn is_symlink(self) -> bool {
+        self.file_type() == FileType.Symlink
+    }
+
+    fn permissions(self) -> FileMode {
+        FileMode { mode: (self.mode & 0o777) as u16 }
+    }
+
+    fn size_kb(self) -> u64 {
+        self.size / 1024
+    }
+
+    fn size_mb(self) -> u64 {
+        self.size / (1024 * 1024)
+    }
+}
+
+struct DirEntry {
+    ino: u64,
+    file_type: u8,
+    name: [u8; 256],
+    name_len: usize,
+}
+
+impl DirEntry {
+    fn get_name(self) -> str {
+        // Convert name bytes to string
+        ""  // Simplified
+    }
+
+    fn get_type(self) -> FileType {
+        match self.file_type {
+            0 => FileType.Unknown,
+            1 => FileType.Regular,
+            2 => FileType.Directory,
+            3 => FileType.Symlink,
+            4 => FileType.CharDevice,
+            5 => FileType.BlockDevice,
+            6 => FileType.Fifo,
+            7 => FileType.Socket,
+            _ => FileType.Unknown,
+        }
+    }
+
+    fn is_file(self) -> bool {
+        self.file_type == 1
+    }
+
+    fn is_dir(self) -> bool {
+        self.file_type == 2
+    }
+}
+
+struct FileSystemStat {
+    block_size: u64,
+    total_blocks: u64,
+    free_blocks: u64,
+    available_blocks: u64,
+    total_inodes: u64,
+    free_inodes: u64,
+}
+
+impl FileSystemStat {
+    fn total_bytes(self) -> u64 {
+        self.total_blocks * self.block_size
+    }
+
+    fn free_bytes(self) -> u64 {
+        self.free_blocks * self.block_size
+    }
+
+    fn available_bytes(self) -> u64 {
+        self.available_blocks * self.block_size
+    }
+
+    fn used_bytes(self) -> u64 {
+        (self.total_blocks - self.free_blocks) * self.block_size
+    }
+
+    fn used_percent(self) -> u64 {
+        if self.total_blocks == 0 {
+            0
+        } else {
+            ((self.total_blocks - self.free_blocks) * 100) / self.total_blocks
+        }
+    }
+}
+
+// ============================================================================
+// File - File handle for I/O operations
+// ============================================================================
+
+struct File {
+    fd: i64,
+    path: str,
+    readable: bool,
+    writable: bool,
+}
+
+impl File {
+    /// Open file for reading
+    fn open(path: str) -> Result<File, FsError> {
+        let fd = fs_open(path, O_RDONLY, 0)
+        if fd < 0 {
+            return Result.Err(fs_error_from_code(fd as i32))
+        }
+
+        Result.Ok(File {
+            fd: fd,
+            path: path,
+            readable: true,
+            writable: false,
+        })
+    }
+
+    /// Create or truncate file for writing
+    fn create(path: str) -> Result<File, FsError> {
+        let fd = fs_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        if fd < 0 {
+            return Result.Err(fs_error_from_code(fd as i32))
+        }
+
+        Result.Ok(File {
+            fd: fd,
+            path: path,
+            readable: false,
+            writable: true,
+        })
+    }
+
+    /// Open file for reading and writing
+    fn open_rw(path: str) -> Result<File, FsError> {
+        let fd = fs_open(path, O_RDWR, 0)
+        if fd < 0 {
+            return Result.Err(fs_error_from_code(fd as i32))
+        }
+
+        Result.Ok(File {
+            fd: fd,
+            path: path,
+            readable: true,
+            writable: true,
+        })
+    }
+
+    /// Open file for appending
+    fn open_append(path: str) -> Result<File, FsError> {
+        let fd = fs_open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        if fd < 0 {
+            return Result.Err(fs_error_from_code(fd as i32))
+        }
+
+        Result.Ok(File {
+            fd: fd,
+            path: path,
+            readable: false,
+            writable: true,
+        })
+    }
+
+    /// Create new file (fails if exists)
+    fn create_new(path: str) -> Result<File, FsError> {
+        let fd = fs_open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+        if fd < 0 {
+            return Result.Err(fs_error_from_code(fd as i32))
+        }
+
+        Result.Ok(File {
+            fd: fd,
+            path: path,
+            readable: false,
+            writable: true,
+        })
+    }
+
+    /// Read bytes from file
+    fn read(self, buffer: &mut [u8]) -> Result<usize, FsError> {
+        let result = fs_read(self.fd, buffer, buffer.len())
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(result as usize)
+        }
+    }
+
+    /// Read all bytes from file
+    fn read_all(self, buffer: &mut [u8]) -> Result<usize, FsError> {
+        let mut total: usize = 0
+        loop {
+            let result = fs_read(self.fd, buffer[total..], buffer.len() - total)
+            if result < 0 {
+                return Result.Err(fs_error_from_code(result as i32))
+            }
+            if result == 0 {
+                break
+            }
+            total = total + result as usize
+        }
+        Result.Ok(total)
+    }
+
+    /// Write bytes to file
+    fn write(self, data: &[u8]) -> Result<usize, FsError> {
+        let result = fs_write(self.fd, data, data.len())
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(result as usize)
+        }
+    }
+
+    /// Write all bytes to file
+    fn write_all(self, data: &[u8]) -> Result<void, FsError> {
+        let mut written: usize = 0
+        while written < data.len() {
+            let result = fs_write(self.fd, data[written..], data.len() - written)
+            if result < 0 {
+                return Result.Err(fs_error_from_code(result as i32))
+            }
+            written = written + result as usize
+        }
+        Result.Ok(())
+    }
+
+    /// Seek to position
+    fn seek(self, pos: SeekFrom, offset: i64) -> Result<u64, FsError> {
+        let result = fs_seek(self.fd, offset, seek_from_to_code(pos))
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(result as u64)
+        }
+    }
+
+    /// Get current position
+    fn position(self) -> Result<u64, FsError> {
+        let result = fs_tell(self.fd)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(result as u64)
+        }
+    }
+
+    /// Seek to beginning
+    fn rewind(self) -> Result<void, FsError> {
+        let result = fs_seek(self.fd, 0, 0)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Flush buffered writes
+    fn flush(self) -> Result<void, FsError> {
+        let result = fs_flush(self.fd)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Sync to disk
+    fn sync(self) -> Result<void, FsError> {
+        let result = fs_sync(self.fd)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Truncate file to length
+    fn truncate(self, length: u64) -> Result<void, FsError> {
+        let result = fs_truncate(self.fd, length)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Get file metadata
+    fn metadata(self) -> Result<FileStat, FsError> {
+        let mut stat = FileStat {
+            dev: 0, ino: 0, mode: 0, nlink: 0,
+            uid: 0, gid: 0, rdev: 0, size: 0,
+            blksize: 0, blocks: 0,
+            atime: 0, mtime: 0, ctime: 0,
+        }
+
+        let result = fs_fstat(self.fd, &mut stat)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(stat)
+        }
+    }
+
+    /// Get file size
+    fn size(self) -> Result<u64, FsError> {
+        match self.metadata() {
+            Result.Ok(stat) => Result.Ok(stat.size),
+            Result.Err(e) => Result.Err(e),
+        }
+    }
+
+    /// Acquire shared lock
+    fn lock_shared(self) -> Result<void, FsError> {
+        let result = fs_lock(self.fd, LOCK_SH)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Acquire exclusive lock
+    fn lock_exclusive(self) -> Result<void, FsError> {
+        let result = fs_lock(self.fd, LOCK_EX)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Release lock
+    fn unlock(self) -> Result<void, FsError> {
+        let result = fs_unlock(self.fd)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Close file
+    fn close(self) -> Result<void, FsError> {
+        let result = fs_close(self.fd)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+}
+
+// ============================================================================
+// Dir - Directory iteration
+// ============================================================================
+
+struct Dir {
+    handle: i64,
+    path: str,
+}
+
+impl Dir {
+    /// Open directory for reading
+    fn open(path: str) -> Result<Dir, FsError> {
+        let handle = fs_opendir(path)
+        if handle < 0 {
+            return Result.Err(fs_error_from_code(handle as i32))
+        }
+
+        Result.Ok(Dir { handle: handle, path: path })
+    }
+
+    /// Read next entry
+    fn read(self) -> Option<DirEntry> {
+        let mut entry = DirEntry {
+            ino: 0,
+            file_type: 0,
+            name: [0; 256],
+            name_len: 0,
+        }
+
+        let result = fs_readdir(self.handle, &mut entry)
+        if result <= 0 {
+            Option.None
+        } else {
+            Option.Some(entry)
+        }
+    }
+
+    /// Close directory
+    fn close(self) -> Result<void, FsError> {
+        let result = fs_closedir(self.handle)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+}
+
+// ============================================================================
+// Path - Path operations
+// ============================================================================
+
+struct Path {
+    path: str,
+}
+
+impl Path {
+    /// Create path from string
+    fn new(path: str) -> Path {
+        Path { path: path }
+    }
+
+    /// Check if path exists
+    fn exists(self) -> bool {
+        fs_exists(self.path) == 1
+    }
+
+    /// Check if path is a file
+    fn is_file(self) -> bool {
+        fs_is_file(self.path) == 1
+    }
+
+    /// Check if path is a directory
+    fn is_dir(self) -> bool {
+        fs_is_dir(self.path) == 1
+    }
+
+    /// Check if path is a symlink
+    fn is_symlink(self) -> bool {
+        fs_is_symlink(self.path) == 1
+    }
+
+    /// Get file metadata
+    fn metadata(self) -> Result<FileStat, FsError> {
+        let mut stat = FileStat {
+            dev: 0, ino: 0, mode: 0, nlink: 0,
+            uid: 0, gid: 0, rdev: 0, size: 0,
+            blksize: 0, blocks: 0,
+            atime: 0, mtime: 0, ctime: 0,
+        }
+
+        let result = fs_stat(self.path, &mut stat)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(stat)
+        }
+    }
+
+    /// Get symlink metadata (doesn't follow symlinks)
+    fn symlink_metadata(self) -> Result<FileStat, FsError> {
+        let mut stat = FileStat {
+            dev: 0, ino: 0, mode: 0, nlink: 0,
+            uid: 0, gid: 0, rdev: 0, size: 0,
+            blksize: 0, blocks: 0,
+            atime: 0, mtime: 0, ctime: 0,
+        }
+
+        let result = fs_lstat(self.path, &mut stat)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(stat)
+        }
+    }
+
+    /// Get canonical path
+    fn canonicalize(self) -> Result<str, FsError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let result = fs_realpath(self.path, &mut buffer)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok("")  // Would convert buffer to string
+        }
+    }
+}
+
+// ============================================================================
+// Fs - Static file system operations
+// ============================================================================
+
+struct Fs {
+    // Static filesystem utilities
+}
+
+impl Fs {
+    /// Read entire file to bytes
+    fn read_bytes(path: str) -> Result<[u8], FsError> {
+        let file = File.open(path)?
+        let stat = file.metadata()?
+        let mut buffer: [u8] = []
+        // Would allocate and read
+        file.close()?
+        Result.Ok(buffer)
+    }
+
+    /// Read entire file to string
+    fn read_string(path: str) -> Result<str, FsError> {
+        let file = File.open(path)?
+        // Would read and convert
+        file.close()?
+        Result.Ok("")
+    }
+
+    /// Write bytes to file
+    fn write_bytes(path: str, data: &[u8]) -> Result<void, FsError> {
+        let file = File.create(path)?
+        file.write_all(data)?
+        file.close()
+    }
+
+    /// Write string to file
+    fn write_string(path: str, content: str) -> Result<void, FsError> {
+        let file = File.create(path)?
+        // Would write string as bytes
+        file.close()
+    }
+
+    /// Create directory
+    fn create_dir(path: str) -> Result<void, FsError> {
+        let result = fs_mkdir(path, 0o755)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Create directory and all parents
+    fn create_dir_all(path: str) -> Result<void, FsError> {
+        let result = fs_mkdir_all(path, 0o755)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Remove empty directory
+    fn remove_dir(path: str) -> Result<void, FsError> {
+        let result = fs_rmdir(path)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Remove file
+    fn remove_file(path: str) -> Result<void, FsError> {
+        let result = fs_unlink(path)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Rename file or directory
+    fn rename(from: str, to: str) -> Result<void, FsError> {
+        let result = fs_rename(from, to)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Create hard link
+    fn hard_link(src: str, dst: str) -> Result<void, FsError> {
+        let result = fs_link(src, dst)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Create symbolic link
+    fn symlink(target: str, link: str) -> Result<void, FsError> {
+        let result = fs_symlink(target, link)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Read symbolic link target
+    fn read_link(path: str) -> Result<str, FsError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let result = fs_readlink(path, &mut buffer)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok("")  // Would convert buffer to string
+        }
+    }
+
+    /// Copy file
+    fn copy(from: str, to: str) -> Result<u64, FsError> {
+        let result = fs_copy_file(from, to)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result as i32))
+        } else {
+            Result.Ok(result as u64)
+        }
+    }
+
+    /// Set file permissions
+    fn set_permissions(path: str, mode: FileMode) -> Result<void, FsError> {
+        let result = fs_chmod(path, mode.mode)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Set file owner
+    fn set_owner(path: str, uid: u32, gid: u32) -> Result<void, FsError> {
+        let result = fs_chown(path, uid, gid)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Get current working directory
+    fn current_dir() -> Result<str, FsError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let result = fs_getcwd(&mut buffer)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok("")  // Would convert buffer to string
+        }
+    }
+
+    /// Change current working directory
+    fn set_current_dir(path: str) -> Result<void, FsError> {
+        let result = fs_chdir(path)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Get filesystem statistics
+    fn filesystem_stat(path: str) -> Result<FileSystemStat, FsError> {
+        let mut stat = FileSystemStat {
+            block_size: 0,
+            total_blocks: 0,
+            free_blocks: 0,
+            available_blocks: 0,
+            total_inodes: 0,
+            free_inodes: 0,
+        }
+
+        let result = fs_statfs(path, &mut stat)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(stat)
+        }
+    }
+
+    /// Get temporary directory
+    fn temp_dir() -> Result<str, FsError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let result = fs_temp_dir(&mut buffer)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok("")  // Would convert buffer to string
+        }
+    }
+
+    /// Get home directory
+    fn home_dir() -> Result<str, FsError> {
+        let mut buffer: [u8; 4096] = [0; 4096]
+        let result = fs_home_dir(&mut buffer)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok("")  // Would convert buffer to string
+        }
+    }
+}
+
+// ============================================================================
+// MappedFile - Memory-mapped file
+// ============================================================================
+
+struct MappedFile {
+    file: File,
+    address: usize,
+    length: usize,
+    writable: bool,
+}
+
+impl MappedFile {
+    /// Map file into memory for reading
+    fn open_read(path: str) -> Result<MappedFile, FsError> {
+        let file = File.open(path)?
+        let stat = file.metadata()?
+        let length = stat.size as usize
+
+        let addr = fs_mmap(file.fd, 0, length, PROT_READ, MAP_PRIVATE)
+        if addr == 0 {
+            file.close()?
+            return Result.Err(FsError.IoError)
+        }
+
+        Result.Ok(MappedFile {
+            file: file,
+            address: addr,
+            length: length,
+            writable: false,
+        })
+    }
+
+    /// Map file into memory for reading and writing
+    fn open_rw(path: str) -> Result<MappedFile, FsError> {
+        let file = File.open_rw(path)?
+        let stat = file.metadata()?
+        let length = stat.size as usize
+
+        let addr = fs_mmap(file.fd, 0, length, PROT_READ | PROT_WRITE, MAP_SHARED)
+        if addr == 0 {
+            file.close()?
+            return Result.Err(FsError.IoError)
+        }
+
+        Result.Ok(MappedFile {
+            file: file,
+            address: addr,
+            length: length,
+            writable: true,
+        })
+    }
+
+    /// Sync changes to disk
+    fn sync(self) -> Result<void, FsError> {
+        let result = fs_msync(self.address, self.length, 0)
+        if result < 0 {
+            Result.Err(fs_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Get mapped length
+    fn len(self) -> usize {
+        self.length
+    }
+
+    /// Unmap and close file
+    fn close(self) -> Result<void, FsError> {
+        fs_munmap(self.address, self.length)
+        self.file.close()
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Check if path exists
+fn exists(path: str) -> bool {
+    Path.new(path).exists()
+}
+
+/// Check if path is a file
+fn is_file(path: str) -> bool {
+    Path.new(path).is_file()
+}
+
+/// Check if path is a directory
+fn is_dir(path: str) -> bool {
+    Path.new(path).is_dir()
+}
+
+/// Get file size
+fn file_size(path: str) -> Result<u64, FsError> {
+    let stat = Path.new(path).metadata()?
+    Result.Ok(stat.size)
+}

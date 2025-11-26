@@ -1,0 +1,898 @@
+// Home Programming Language - Graphics/GPU Bindings
+// Framebuffer and GPU rendering for Home
+
+// ============================================================================
+// FFI Declarations - Low-level C ABI bindings to Zig implementations
+// ============================================================================
+
+// Framebuffer Operations
+@extern fn framebuffer_init(address: usize, width: u32, height: u32, pitch: u32, bpp: u8, format: u8) -> i64
+@extern fn framebuffer_destroy(fb: i64) -> void
+@extern fn framebuffer_put_pixel(fb: i64, x: u32, y: u32, color: u32) -> void
+@extern fn framebuffer_get_pixel(fb: i64, x: u32, y: u32) -> u32
+@extern fn framebuffer_clear(fb: i64, color: u32) -> void
+@extern fn framebuffer_fill_rect(fb: i64, x: u32, y: u32, width: u32, height: u32, color: u32) -> void
+@extern fn framebuffer_draw_line(fb: i64, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) -> void
+@extern fn framebuffer_draw_circle(fb: i64, cx: i32, cy: i32, radius: u32, color: u32) -> void
+@extern fn framebuffer_draw_circle_filled(fb: i64, cx: i32, cy: i32, radius: u32, color: u32) -> void
+@extern fn framebuffer_scroll(fb: i64, lines: u32) -> void
+@extern fn framebuffer_blit(fb: i64, src: &[u8], x: u32, y: u32, width: u32, height: u32) -> void
+@extern fn framebuffer_get_info(fb: i64, info: &mut FramebufferInfo) -> i32
+
+// Double Buffering
+@extern fn framebuffer_create_backbuffer(fb: i64) -> i64
+@extern fn framebuffer_swap_buffers(fb: i64, backbuffer: i64) -> void
+@extern fn framebuffer_copy_buffer(src: i64, dst: i64) -> void
+
+// VGA Text Mode
+@extern fn vga_text_init() -> i64
+@extern fn vga_text_destroy(vga: i64) -> void
+@extern fn vga_text_put_char(vga: i64, x: u32, y: u32, char: u8, fg: u8, bg: u8) -> void
+@extern fn vga_text_clear(vga: i64, fg: u8, bg: u8) -> void
+@extern fn vga_text_write_char(vga: i64, char: u8, fg: u8, bg: u8) -> void
+@extern fn vga_text_write_string(vga: i64, str: str, fg: u8, bg: u8) -> void
+@extern fn vga_text_scroll(vga: i64) -> void
+@extern fn vga_text_set_cursor(vga: i64, x: u32, y: u32) -> void
+@extern fn vga_text_get_cursor(vga: i64, x: &mut u32, y: &mut u32) -> void
+
+// GPU Operations (when available)
+@extern fn gpu_init() -> i64
+@extern fn gpu_destroy(gpu: i64) -> void
+@extern fn gpu_get_info(gpu: i64, info: &mut GpuInfo) -> i32
+@extern fn gpu_create_texture(gpu: i64, width: u32, height: u32, format: u8) -> i64
+@extern fn gpu_destroy_texture(gpu: i64, texture: i64) -> void
+@extern fn gpu_upload_texture(gpu: i64, texture: i64, data: &[u8]) -> i32
+@extern fn gpu_draw_texture(gpu: i64, texture: i64, x: i32, y: i32) -> void
+@extern fn gpu_draw_texture_scaled(gpu: i64, texture: i64, x: i32, y: i32, width: u32, height: u32) -> void
+@extern fn gpu_present(gpu: i64) -> void
+
+// Display Mode
+@extern fn display_get_mode_count() -> i32
+@extern fn display_get_mode(index: i32, mode: &mut DisplayMode) -> i32
+@extern fn display_set_mode(width: u32, height: u32, bpp: u8) -> i32
+@extern fn display_get_current_mode(mode: &mut DisplayMode) -> i32
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+enum GraphicsError {
+    None,
+    NotInitialized,
+    InvalidParameter,
+    OutOfMemory,
+    UnsupportedFormat,
+    ModeNotSupported,
+    DeviceNotFound,
+    Unknown,
+}
+
+fn graphics_error_from_code(code: i32) -> GraphicsError {
+    match code {
+        0 => GraphicsError.None,
+        -1 => GraphicsError.NotInitialized,
+        -2 => GraphicsError.InvalidParameter,
+        -3 => GraphicsError.OutOfMemory,
+        -4 => GraphicsError.UnsupportedFormat,
+        -5 => GraphicsError.ModeNotSupported,
+        -6 => GraphicsError.DeviceNotFound,
+        _ => GraphicsError.Unknown,
+    }
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum PixelFormat {
+    RGB888,     // 24-bit RGB
+    RGBA8888,   // 32-bit RGBA
+    BGR888,     // 24-bit BGR
+    BGRA8888,   // 32-bit BGRA
+    RGB565,     // 16-bit RGB (5-6-5)
+    RGB555,     // 16-bit RGB (5-5-5)
+    Indexed8,   // 8-bit indexed
+    Grayscale8, // 8-bit grayscale
+}
+
+fn pixel_format_from_code(code: u8) -> PixelFormat {
+    match code {
+        0 => PixelFormat.RGB888,
+        1 => PixelFormat.RGBA8888,
+        2 => PixelFormat.BGR888,
+        3 => PixelFormat.BGRA8888,
+        4 => PixelFormat.RGB565,
+        5 => PixelFormat.RGB555,
+        6 => PixelFormat.Indexed8,
+        7 => PixelFormat.Grayscale8,
+        _ => PixelFormat.RGB888,
+    }
+}
+
+fn pixel_format_to_code(format: PixelFormat) -> u8 {
+    match format {
+        PixelFormat.RGB888 => 0,
+        PixelFormat.RGBA8888 => 1,
+        PixelFormat.BGR888 => 2,
+        PixelFormat.BGRA8888 => 3,
+        PixelFormat.RGB565 => 4,
+        PixelFormat.RGB555 => 5,
+        PixelFormat.Indexed8 => 6,
+        PixelFormat.Grayscale8 => 7,
+    }
+}
+
+fn pixel_format_bytes_per_pixel(format: PixelFormat) -> u8 {
+    match format {
+        PixelFormat.RGB888 => 3,
+        PixelFormat.RGBA8888 => 4,
+        PixelFormat.BGR888 => 3,
+        PixelFormat.BGRA8888 => 4,
+        PixelFormat.RGB565 => 2,
+        PixelFormat.RGB555 => 2,
+        PixelFormat.Indexed8 => 1,
+        PixelFormat.Grayscale8 => 1,
+    }
+}
+
+enum VgaColor {
+    Black,
+    Blue,
+    Green,
+    Cyan,
+    Red,
+    Magenta,
+    Brown,
+    LightGray,
+    DarkGray,
+    LightBlue,
+    LightGreen,
+    LightCyan,
+    LightRed,
+    LightMagenta,
+    Yellow,
+    White,
+}
+
+fn vga_color_to_code(color: VgaColor) -> u8 {
+    match color {
+        VgaColor.Black => 0,
+        VgaColor.Blue => 1,
+        VgaColor.Green => 2,
+        VgaColor.Cyan => 3,
+        VgaColor.Red => 4,
+        VgaColor.Magenta => 5,
+        VgaColor.Brown => 6,
+        VgaColor.LightGray => 7,
+        VgaColor.DarkGray => 8,
+        VgaColor.LightBlue => 9,
+        VgaColor.LightGreen => 10,
+        VgaColor.LightCyan => 11,
+        VgaColor.LightRed => 12,
+        VgaColor.LightMagenta => 13,
+        VgaColor.Yellow => 14,
+        VgaColor.White => 15,
+    }
+}
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl Color {
+    /// Create RGB color
+    fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color { r: r, g: g, b: b, a: 255 }
+    }
+
+    /// Create RGBA color
+    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+        Color { r: r, g: g, b: b, a: a }
+    }
+
+    /// Create from hex value (0xRRGGBB)
+    fn from_hex(hex: u32) -> Color {
+        Color {
+            r: ((hex >> 16) & 0xFF) as u8,
+            g: ((hex >> 8) & 0xFF) as u8,
+            b: (hex & 0xFF) as u8,
+            a: 255,
+        }
+    }
+
+    /// Create from hex value with alpha (0xRRGGBBAA)
+    fn from_hex_alpha(hex: u32) -> Color {
+        Color {
+            r: ((hex >> 24) & 0xFF) as u8,
+            g: ((hex >> 16) & 0xFF) as u8,
+            b: ((hex >> 8) & 0xFF) as u8,
+            a: (hex & 0xFF) as u8,
+        }
+    }
+
+    /// Convert to u32 for specific format
+    fn to_u32(self, format: PixelFormat) -> u32 {
+        match format {
+            PixelFormat.RGBA8888 => {
+                ((self.r as u32) << 24) | ((self.g as u32) << 16) |
+                ((self.b as u32) << 8) | (self.a as u32)
+            },
+            PixelFormat.BGRA8888 => {
+                ((self.b as u32) << 24) | ((self.g as u32) << 16) |
+                ((self.r as u32) << 8) | (self.a as u32)
+            },
+            PixelFormat.RGB888 => {
+                ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
+            },
+            PixelFormat.BGR888 => {
+                ((self.b as u32) << 16) | ((self.g as u32) << 8) | (self.r as u32)
+            },
+            PixelFormat.RGB565 => {
+                (((self.r as u32) & 0xF8) << 8) |
+                (((self.g as u32) & 0xFC) << 3) |
+                ((self.b as u32) >> 3)
+            },
+            _ => 0,
+        }
+    }
+
+    /// Blend two colors
+    fn blend(self, other: Color) -> Color {
+        let alpha = other.a as u32
+        let inv_alpha = 255 - alpha
+
+        Color {
+            r: ((self.r as u32 * inv_alpha + other.r as u32 * alpha) / 255) as u8,
+            g: ((self.g as u32 * inv_alpha + other.g as u32 * alpha) / 255) as u8,
+            b: ((self.b as u32 * inv_alpha + other.b as u32 * alpha) / 255) as u8,
+            a: 255,
+        }
+    }
+
+    /// Lighten color by percentage (0-100)
+    fn lighten(self, percent: u8) -> Color {
+        let factor = percent as u32
+        Color {
+            r: (self.r as u32 + (255 - self.r as u32) * factor / 100) as u8,
+            g: (self.g as u32 + (255 - self.g as u32) * factor / 100) as u8,
+            b: (self.b as u32 + (255 - self.b as u32) * factor / 100) as u8,
+            a: self.a,
+        }
+    }
+
+    /// Darken color by percentage (0-100)
+    fn darken(self, percent: u8) -> Color {
+        let factor = 100 - percent as u32
+        Color {
+            r: (self.r as u32 * factor / 100) as u8,
+            g: (self.g as u32 * factor / 100) as u8,
+            b: (self.b as u32 * factor / 100) as u8,
+            a: self.a,
+        }
+    }
+}
+
+// Predefined colors
+comptime const COLOR_BLACK: Color = Color { r: 0, g: 0, b: 0, a: 255 }
+comptime const COLOR_WHITE: Color = Color { r: 255, g: 255, b: 255, a: 255 }
+comptime const COLOR_RED: Color = Color { r: 255, g: 0, b: 0, a: 255 }
+comptime const COLOR_GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 }
+comptime const COLOR_BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 }
+comptime const COLOR_YELLOW: Color = Color { r: 255, g: 255, b: 0, a: 255 }
+comptime const COLOR_CYAN: Color = Color { r: 0, g: 255, b: 255, a: 255 }
+comptime const COLOR_MAGENTA: Color = Color { r: 255, g: 0, b: 255, a: 255 }
+comptime const COLOR_TRANSPARENT: Color = Color { r: 0, g: 0, b: 0, a: 0 }
+
+struct FramebufferInfo {
+    address: usize,
+    width: u32,
+    height: u32,
+    pitch: u32,
+    bpp: u8,
+    format: u8,
+}
+
+impl FramebufferInfo {
+    fn get_format(self) -> PixelFormat {
+        pixel_format_from_code(self.format)
+    }
+
+    fn size(self) -> usize {
+        self.pitch as usize * self.height as usize
+    }
+
+    fn bytes_per_pixel(self) -> u8 {
+        pixel_format_bytes_per_pixel(self.get_format())
+    }
+}
+
+struct DisplayMode {
+    width: u32,
+    height: u32,
+    bpp: u8,
+    refresh_rate: u8,
+}
+
+impl DisplayMode {
+    fn resolution_str(self) -> str {
+        // Return resolution as string like "1920x1080"
+        ""  // Simplified
+    }
+
+    fn aspect_ratio(self) -> f64 {
+        self.width as f64 / self.height as f64
+    }
+}
+
+struct GpuInfo {
+    vendor_id: u16,
+    device_id: u16,
+    video_memory_mb: u32,
+    max_texture_size: u32,
+    supports_3d: bool,
+    supports_shaders: bool,
+}
+
+struct Rect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl Rect {
+    fn new(x: i32, y: i32, width: u32, height: u32) -> Rect {
+        Rect { x: x, y: y, width: width, height: height }
+    }
+
+    fn contains(self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + self.width as i32 &&
+        py >= self.y && py < self.y + self.height as i32
+    }
+
+    fn intersects(self, other: Rect) -> bool {
+        self.x < other.x + other.width as i32 &&
+        self.x + self.width as i32 > other.x &&
+        self.y < other.y + other.height as i32 &&
+        self.y + self.height as i32 > other.y
+    }
+
+    fn right(self) -> i32 {
+        self.x + self.width as i32
+    }
+
+    fn bottom(self) -> i32 {
+        self.y + self.height as i32
+    }
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point {
+    fn new(x: i32, y: i32) -> Point {
+        Point { x: x, y: y }
+    }
+
+    fn distance(self, other: Point) -> f64 {
+        let dx = (self.x - other.x) as f64
+        let dy = (self.y - other.y) as f64
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+
+// ============================================================================
+// Framebuffer - Main graphics surface
+// ============================================================================
+
+struct Framebuffer {
+    handle: i64,
+    info: FramebufferInfo,
+}
+
+impl Framebuffer {
+    /// Create framebuffer from memory address
+    fn from_address(
+        address: usize,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        bpp: u8,
+        format: PixelFormat
+    ) -> Result<Framebuffer, GraphicsError> {
+        let handle = framebuffer_init(
+            address, width, height, pitch, bpp,
+            pixel_format_to_code(format)
+        )
+
+        if handle < 0 {
+            return Result.Err(graphics_error_from_code(handle as i32))
+        }
+
+        let info = FramebufferInfo {
+            address: address,
+            width: width,
+            height: height,
+            pitch: pitch,
+            bpp: bpp,
+            format: pixel_format_to_code(format),
+        }
+
+        Result.Ok(Framebuffer { handle: handle, info: info })
+    }
+
+    /// Get framebuffer width
+    fn width(self) -> u32 {
+        self.info.width
+    }
+
+    /// Get framebuffer height
+    fn height(self) -> u32 {
+        self.info.height
+    }
+
+    /// Get pixel format
+    fn format(self) -> PixelFormat {
+        self.info.get_format()
+    }
+
+    /// Set a single pixel
+    fn put_pixel(self, x: u32, y: u32, color: Color) -> void {
+        if x < self.info.width && y < self.info.height {
+            framebuffer_put_pixel(self.handle, x, y, color.to_u32(self.format()))
+        }
+    }
+
+    /// Get a single pixel
+    fn get_pixel(self, x: u32, y: u32) -> Option<Color> {
+        if x >= self.info.width || y >= self.info.height {
+            return Option.None
+        }
+
+        let value = framebuffer_get_pixel(self.handle, x, y)
+        // Convert based on format
+        Option.Some(Color.from_hex(value))
+    }
+
+    /// Clear entire framebuffer with color
+    fn clear(self, color: Color) -> void {
+        framebuffer_clear(self.handle, color.to_u32(self.format()))
+    }
+
+    /// Fill a rectangle
+    fn fill_rect(self, x: u32, y: u32, width: u32, height: u32, color: Color) -> void {
+        framebuffer_fill_rect(self.handle, x, y, width, height, color.to_u32(self.format()))
+    }
+
+    /// Fill a rectangle from Rect struct
+    fn fill(self, rect: Rect, color: Color) -> void {
+        if rect.x >= 0 && rect.y >= 0 {
+            self.fill_rect(rect.x as u32, rect.y as u32, rect.width, rect.height, color)
+        }
+    }
+
+    /// Draw a line
+    fn draw_line(self, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) -> void {
+        framebuffer_draw_line(self.handle, x0, y0, x1, y1, color.to_u32(self.format()))
+    }
+
+    /// Draw a line from points
+    fn draw_line_points(self, p0: Point, p1: Point, color: Color) -> void {
+        self.draw_line(p0.x, p0.y, p1.x, p1.y, color)
+    }
+
+    /// Draw a circle outline
+    fn draw_circle(self, cx: i32, cy: i32, radius: u32, color: Color) -> void {
+        framebuffer_draw_circle(self.handle, cx, cy, radius, color.to_u32(self.format()))
+    }
+
+    /// Draw a filled circle
+    fn fill_circle(self, cx: i32, cy: i32, radius: u32, color: Color) -> void {
+        framebuffer_draw_circle_filled(self.handle, cx, cy, radius, color.to_u32(self.format()))
+    }
+
+    /// Draw a rectangle outline
+    fn draw_rect(self, x: u32, y: u32, width: u32, height: u32, color: Color) -> void {
+        let color_val = color.to_u32(self.format())
+        // Top and bottom
+        framebuffer_draw_line(self.handle, x as i32, y as i32, (x + width) as i32, y as i32, color_val)
+        framebuffer_draw_line(self.handle, x as i32, (y + height) as i32, (x + width) as i32, (y + height) as i32, color_val)
+        // Left and right
+        framebuffer_draw_line(self.handle, x as i32, y as i32, x as i32, (y + height) as i32, color_val)
+        framebuffer_draw_line(self.handle, (x + width) as i32, y as i32, (x + width) as i32, (y + height) as i32, color_val)
+    }
+
+    /// Draw a rectangle outline from Rect
+    fn stroke(self, rect: Rect, color: Color) -> void {
+        if rect.x >= 0 && rect.y >= 0 {
+            self.draw_rect(rect.x as u32, rect.y as u32, rect.width, rect.height, color)
+        }
+    }
+
+    /// Draw horizontal line (optimized)
+    fn draw_hline(self, x: u32, y: u32, length: u32, color: Color) -> void {
+        framebuffer_fill_rect(self.handle, x, y, length, 1, color.to_u32(self.format()))
+    }
+
+    /// Draw vertical line (optimized)
+    fn draw_vline(self, x: u32, y: u32, length: u32, color: Color) -> void {
+        framebuffer_fill_rect(self.handle, x, y, 1, length, color.to_u32(self.format()))
+    }
+
+    /// Scroll framebuffer up by n lines
+    fn scroll(self, lines: u32) -> void {
+        framebuffer_scroll(self.handle, lines)
+    }
+
+    /// Blit raw pixel data to framebuffer
+    fn blit(self, data: &[u8], x: u32, y: u32, width: u32, height: u32) -> void {
+        framebuffer_blit(self.handle, data, x, y, width, height)
+    }
+
+    /// Create a backbuffer for double buffering
+    fn create_backbuffer(self) -> Result<Framebuffer, GraphicsError> {
+        let handle = framebuffer_create_backbuffer(self.handle)
+        if handle < 0 {
+            return Result.Err(graphics_error_from_code(handle as i32))
+        }
+
+        Result.Ok(Framebuffer { handle: handle, info: self.info })
+    }
+
+    /// Swap front and back buffers
+    fn swap_buffers(self, backbuffer: Framebuffer) -> void {
+        framebuffer_swap_buffers(self.handle, backbuffer.handle)
+    }
+
+    /// Destroy the framebuffer
+    fn destroy(self) -> void {
+        framebuffer_destroy(self.handle)
+    }
+}
+
+// ============================================================================
+// VgaText - VGA text mode console
+// ============================================================================
+
+struct VgaText {
+    handle: i64,
+    width: u32,
+    height: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+}
+
+impl VgaText {
+    /// Initialize VGA text mode (80x25)
+    fn init() -> VgaText {
+        VgaText {
+            handle: vga_text_init(),
+            width: 80,
+            height: 25,
+            cursor_x: 0,
+            cursor_y: 0,
+        }
+    }
+
+    /// Put a character at position
+    fn put_char(self, x: u32, y: u32, char: u8, fg: VgaColor, bg: VgaColor) -> void {
+        vga_text_put_char(self.handle, x, y, char, vga_color_to_code(fg), vga_color_to_code(bg))
+    }
+
+    /// Clear screen with colors
+    fn clear(mut self, fg: VgaColor, bg: VgaColor) -> void {
+        vga_text_clear(self.handle, vga_color_to_code(fg), vga_color_to_code(bg))
+        self.cursor_x = 0
+        self.cursor_y = 0
+    }
+
+    /// Write a character at cursor position
+    fn write_char(mut self, char: u8, fg: VgaColor, bg: VgaColor) -> void {
+        vga_text_write_char(self.handle, char, vga_color_to_code(fg), vga_color_to_code(bg))
+        // Update cursor position (handled by Zig side)
+    }
+
+    /// Write a string at cursor position
+    fn write(self, text: str, fg: VgaColor, bg: VgaColor) -> void {
+        vga_text_write_string(self.handle, text, vga_color_to_code(fg), vga_color_to_code(bg))
+    }
+
+    /// Print with default colors (light gray on black)
+    fn print(self, text: str) -> void {
+        self.write(text, VgaColor.LightGray, VgaColor.Black)
+    }
+
+    /// Print line (with newline)
+    fn println(self, text: str) -> void {
+        self.write(text, VgaColor.LightGray, VgaColor.Black)
+        self.write_char(10, VgaColor.LightGray, VgaColor.Black)  // newline
+    }
+
+    /// Scroll text up
+    fn scroll(self) -> void {
+        vga_text_scroll(self.handle)
+    }
+
+    /// Set cursor position
+    fn set_cursor(mut self, x: u32, y: u32) -> void {
+        vga_text_set_cursor(self.handle, x, y)
+        self.cursor_x = x
+        self.cursor_y = y
+    }
+
+    /// Get cursor position
+    fn get_cursor(self) -> Point {
+        let mut x: u32 = 0
+        let mut y: u32 = 0
+        vga_text_get_cursor(self.handle, &mut x, &mut y)
+        Point.new(x as i32, y as i32)
+    }
+
+    /// Destroy VGA text handle
+    fn destroy(self) -> void {
+        vga_text_destroy(self.handle)
+    }
+}
+
+// ============================================================================
+// Gpu - GPU acceleration (when available)
+// ============================================================================
+
+struct Gpu {
+    handle: i64,
+    info: GpuInfo,
+}
+
+impl Gpu {
+    /// Initialize GPU
+    fn init() -> Result<Gpu, GraphicsError> {
+        let handle = gpu_init()
+        if handle < 0 {
+            return Result.Err(graphics_error_from_code(handle as i32))
+        }
+
+        let mut info = GpuInfo {
+            vendor_id: 0,
+            device_id: 0,
+            video_memory_mb: 0,
+            max_texture_size: 0,
+            supports_3d: false,
+            supports_shaders: false,
+        }
+
+        let result = gpu_get_info(handle, &mut info)
+        if result < 0 {
+            gpu_destroy(handle)
+            return Result.Err(graphics_error_from_code(result))
+        }
+
+        Result.Ok(Gpu { handle: handle, info: info })
+    }
+
+    /// Get video memory size in MB
+    fn video_memory_mb(self) -> u32 {
+        self.info.video_memory_mb
+    }
+
+    /// Get maximum texture size
+    fn max_texture_size(self) -> u32 {
+        self.info.max_texture_size
+    }
+
+    /// Check if 3D is supported
+    fn supports_3d(self) -> bool {
+        self.info.supports_3d
+    }
+
+    /// Check if shaders are supported
+    fn supports_shaders(self) -> bool {
+        self.info.supports_shaders
+    }
+
+    /// Create a texture
+    fn create_texture(self, width: u32, height: u32, format: PixelFormat) -> Result<Texture, GraphicsError> {
+        let tex_handle = gpu_create_texture(self.handle, width, height, pixel_format_to_code(format))
+        if tex_handle < 0 {
+            return Result.Err(graphics_error_from_code(tex_handle as i32))
+        }
+
+        Result.Ok(Texture {
+            handle: tex_handle,
+            width: width,
+            height: height,
+            format: format,
+        })
+    }
+
+    /// Present rendered frame
+    fn present(self) -> void {
+        gpu_present(self.handle)
+    }
+
+    /// Destroy GPU handle
+    fn destroy(self) -> void {
+        gpu_destroy(self.handle)
+    }
+}
+
+// ============================================================================
+// Texture - GPU texture
+// ============================================================================
+
+struct Texture {
+    handle: i64,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+}
+
+impl Texture {
+    /// Upload pixel data to texture
+    fn upload(self, gpu: Gpu, data: &[u8]) -> Result<void, GraphicsError> {
+        let result = gpu_upload_texture(gpu.handle, self.handle, data)
+        if result < 0 {
+            Result.Err(graphics_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Draw texture at position
+    fn draw(self, gpu: Gpu, x: i32, y: i32) -> void {
+        gpu_draw_texture(gpu.handle, self.handle, x, y)
+    }
+
+    /// Draw texture scaled
+    fn draw_scaled(self, gpu: Gpu, x: i32, y: i32, width: u32, height: u32) -> void {
+        gpu_draw_texture_scaled(gpu.handle, self.handle, x, y, width, height)
+    }
+
+    /// Destroy texture
+    fn destroy(self, gpu: Gpu) -> void {
+        gpu_destroy_texture(gpu.handle, self.handle)
+    }
+}
+
+// ============================================================================
+// Display - Display mode management
+// ============================================================================
+
+struct Display {
+    // Static display manager
+}
+
+impl Display {
+    /// Get number of available display modes
+    fn mode_count() -> i32 {
+        display_get_mode_count()
+    }
+
+    /// Get display mode by index
+    fn get_mode(index: i32) -> Result<DisplayMode, GraphicsError> {
+        let mut mode = DisplayMode {
+            width: 0,
+            height: 0,
+            bpp: 0,
+            refresh_rate: 0,
+        }
+
+        let result = display_get_mode(index, &mut mode)
+        if result < 0 {
+            Result.Err(graphics_error_from_code(result))
+        } else {
+            Result.Ok(mode)
+        }
+    }
+
+    /// Set display mode
+    fn set_mode(width: u32, height: u32, bpp: u8) -> Result<void, GraphicsError> {
+        let result = display_set_mode(width, height, bpp)
+        if result < 0 {
+            Result.Err(graphics_error_from_code(result))
+        } else {
+            Result.Ok(())
+        }
+    }
+
+    /// Get current display mode
+    fn current_mode() -> Result<DisplayMode, GraphicsError> {
+        let mut mode = DisplayMode {
+            width: 0,
+            height: 0,
+            bpp: 0,
+            refresh_rate: 0,
+        }
+
+        let result = display_get_current_mode(&mut mode)
+        if result < 0 {
+            Result.Err(graphics_error_from_code(result))
+        } else {
+            Result.Ok(mode)
+        }
+    }
+}
+
+// ============================================================================
+// Canvas - High-level drawing context
+// ============================================================================
+
+struct Canvas {
+    fb: Framebuffer,
+    fg_color: Color,
+    bg_color: Color,
+}
+
+impl Canvas {
+    /// Create canvas from framebuffer
+    fn from_framebuffer(fb: Framebuffer) -> Canvas {
+        Canvas {
+            fb: fb,
+            fg_color: COLOR_WHITE,
+            bg_color: COLOR_BLACK,
+        }
+    }
+
+    /// Set foreground color
+    fn set_color(mut self, color: Color) -> void {
+        self.fg_color = color
+    }
+
+    /// Set background color
+    fn set_background(mut self, color: Color) -> void {
+        self.bg_color = color
+    }
+
+    /// Clear with background color
+    fn clear(self) -> void {
+        self.fb.clear(self.bg_color)
+    }
+
+    /// Draw pixel with current color
+    fn pixel(self, x: u32, y: u32) -> void {
+        self.fb.put_pixel(x, y, self.fg_color)
+    }
+
+    /// Draw line with current color
+    fn line(self, x0: i32, y0: i32, x1: i32, y1: i32) -> void {
+        self.fb.draw_line(x0, y0, x1, y1, self.fg_color)
+    }
+
+    /// Draw rectangle outline with current color
+    fn rect(self, x: u32, y: u32, width: u32, height: u32) -> void {
+        self.fb.draw_rect(x, y, width, height, self.fg_color)
+    }
+
+    /// Fill rectangle with current color
+    fn fill_rect(self, x: u32, y: u32, width: u32, height: u32) -> void {
+        self.fb.fill_rect(x, y, width, height, self.fg_color)
+    }
+
+    /// Draw circle outline with current color
+    fn circle(self, cx: i32, cy: i32, radius: u32) -> void {
+        self.fb.draw_circle(cx, cy, radius, self.fg_color)
+    }
+
+    /// Fill circle with current color
+    fn fill_circle(self, cx: i32, cy: i32, radius: u32) -> void {
+        self.fb.fill_circle(cx, cy, radius, self.fg_color)
+    }
+
+    /// Get width
+    fn width(self) -> u32 {
+        self.fb.width()
+    }
+
+    /// Get height
+    fn height(self) -> u32 {
+        self.fb.height()
+    }
+}

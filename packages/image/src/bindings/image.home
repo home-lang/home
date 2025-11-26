@@ -1,0 +1,639 @@
+// Home Image Processing Library - Idiomatic Home Language API
+// High-level wrapper around image manipulation with Sharp-like chainable API
+
+// ============================================================================
+// Foreign Function Interface Declarations
+// ============================================================================
+
+// Image I/O
+@extern fn image_load(path: str, out: &mut ptr) -> i32
+@extern fn image_load_from_memory(data: &[u8], len: usize, out: &mut ptr) -> i32
+@extern fn image_save(handle: ptr, path: str, format: i32, quality: i32) -> i32
+@extern fn image_encode(handle: ptr, format: i32, quality: i32, out_data: &mut ptr, out_len: &mut usize) -> i32
+@extern fn image_free(handle: ptr)
+@extern fn image_clone(handle: ptr, out: &mut ptr) -> i32
+
+// Image properties
+@extern fn image_width(handle: ptr) -> u32
+@extern fn image_height(handle: ptr) -> u32
+@extern fn image_format(handle: ptr) -> i32
+@extern fn image_channels(handle: ptr) -> u8
+@extern fn image_has_alpha(handle: ptr) -> bool
+@extern fn image_get_pixel(handle: ptr, x: u32, y: u32) -> u32
+@extern fn image_set_pixel(handle: ptr, x: u32, y: u32, color: u32)
+
+// Resize operations
+@extern fn image_resize(handle: ptr, width: u32, height: u32, algo: i32, out: &mut ptr) -> i32
+@extern fn image_resize_fit(handle: ptr, width: u32, height: u32, fit: i32, out: &mut ptr) -> i32
+@extern fn image_thumbnail(handle: ptr, size: u32, out: &mut ptr) -> i32
+
+// Crop and transform
+@extern fn image_crop(handle: ptr, x: u32, y: u32, width: u32, height: u32, out: &mut ptr) -> i32
+@extern fn image_rotate(handle: ptr, degrees: i32, out: &mut ptr) -> i32
+@extern fn image_flip_h(handle: ptr, out: &mut ptr) -> i32
+@extern fn image_flip_v(handle: ptr, out: &mut ptr) -> i32
+
+// Color adjustments
+@extern fn image_brightness(handle: ptr, factor: f32, out: &mut ptr) -> i32
+@extern fn image_contrast(handle: ptr, factor: f32, out: &mut ptr) -> i32
+@extern fn image_saturation(handle: ptr, factor: f32, out: &mut ptr) -> i32
+@extern fn image_hue(handle: ptr, degrees: f32, out: &mut ptr) -> i32
+@extern fn image_gamma(handle: ptr, value: f32, out: &mut ptr) -> i32
+
+// Filters
+@extern fn image_grayscale(handle: ptr, out: &mut ptr) -> i32
+@extern fn image_sepia(handle: ptr, out: &mut ptr) -> i32
+@extern fn image_invert(handle: ptr, out: &mut ptr) -> i32
+@extern fn image_blur(handle: ptr, sigma: f32, out: &mut ptr) -> i32
+@extern fn image_sharpen(handle: ptr, sigma: f32, out: &mut ptr) -> i32
+@extern fn image_edge_detect(handle: ptr, out: &mut ptr) -> i32
+@extern fn image_emboss(handle: ptr, out: &mut ptr) -> i32
+
+// Composite operations
+@extern fn image_overlay(base: ptr, overlay: ptr, x: i32, y: i32, opacity: f32, out: &mut ptr) -> i32
+@extern fn image_blend(img1: ptr, img2: ptr, mode: i32, out: &mut ptr) -> i32
+@extern fn image_tint(handle: ptr, color: u32, out: &mut ptr) -> i32
+
+// Text and drawing
+@extern fn image_draw_rect(handle: ptr, x: u32, y: u32, w: u32, h: u32, color: u32, filled: bool) -> i32
+@extern fn image_draw_circle(handle: ptr, cx: u32, cy: u32, r: u32, color: u32, filled: bool) -> i32
+@extern fn image_draw_line(handle: ptr, x1: u32, y1: u32, x2: u32, y2: u32, color: u32, width: u32) -> i32
+
+// Metadata
+@extern fn image_get_exif(handle: ptr, key: str, out: &mut str) -> i32
+@extern fn image_set_exif(handle: ptr, key: str, value: str) -> i32
+@extern fn image_strip_metadata(handle: ptr) -> i32
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+enum ImageError {
+    Ok,
+    FileNotFound,
+    InvalidFormat,
+    UnsupportedFormat,
+    DecodeError,
+    EncodeError,
+    OutOfMemory,
+    InvalidArgument,
+    IoError,
+    UnknownError,
+}
+
+fn error_from_code(code: i32) -> ImageError {
+    match code {
+        0 -> ImageError.Ok,
+        -1 -> ImageError.FileNotFound,
+        -2 -> ImageError.InvalidFormat,
+        -3 -> ImageError.UnsupportedFormat,
+        -4 -> ImageError.DecodeError,
+        -5 -> ImageError.EncodeError,
+        -6 -> ImageError.OutOfMemory,
+        -7 -> ImageError.InvalidArgument,
+        -8 -> ImageError.IoError,
+        _ -> ImageError.UnknownError,
+    }
+}
+
+// ============================================================================
+// Image Formats
+// ============================================================================
+
+enum Format {
+    Png = 0,
+    Jpeg = 1,
+    Webp = 2,
+    Gif = 3,
+    Bmp = 4,
+    Tiff = 5,
+    Avif = 6,
+    Heic = 7,
+    Ico = 8,
+    Qoi = 9,
+}
+
+// ============================================================================
+// Resize Algorithms
+// ============================================================================
+
+enum ResizeAlgorithm {
+    Nearest = 0,
+    Bilinear = 1,
+    Bicubic = 2,
+    Lanczos = 3,
+    Mitchell = 4,
+}
+
+enum FitMode {
+    Cover = 0,      // Crop to fill
+    Contain = 1,    // Fit within bounds
+    Fill = 2,       // Stretch to fill
+    Inside = 3,     // Fit inside, may be smaller
+    Outside = 4,    // Fit outside, may be larger
+}
+
+// ============================================================================
+// Blend Modes
+// ============================================================================
+
+enum BlendMode {
+    Normal = 0,
+    Multiply = 1,
+    Screen = 2,
+    Overlay = 3,
+    Darken = 4,
+    Lighten = 5,
+    ColorDodge = 6,
+    ColorBurn = 7,
+    HardLight = 8,
+    SoftLight = 9,
+    Difference = 10,
+    Exclusion = 11,
+}
+
+// ============================================================================
+// Color
+// ============================================================================
+
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl Color {
+    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+        return Color { r: r, g: g, b: b, a: a }
+    }
+
+    fn rgb(r: u8, g: u8, b: u8) -> Color {
+        return Color { r: r, g: g, b: b, a: 255 }
+    }
+
+    fn hex(value: u32) -> Color {
+        return Color {
+            r: ((value >> 16) & 0xFF) as u8,
+            g: ((value >> 8) & 0xFF) as u8,
+            b: (value & 0xFF) as u8,
+            a: 255,
+        }
+    }
+
+    fn to_u32(self) -> u32 {
+        return ((self.a as u32) << 24) | ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
+    }
+
+    // Common colors
+    const BLACK: Color = Color { r: 0, g: 0, b: 0, a: 255 }
+    const WHITE: Color = Color { r: 255, g: 255, b: 255, a: 255 }
+    const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 }
+    const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 }
+    const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 }
+    const TRANSPARENT: Color = Color { r: 0, g: 0, b: 0, a: 0 }
+}
+
+// ============================================================================
+// Image
+// ============================================================================
+
+struct Image {
+    handle: ptr,
+}
+
+impl Image {
+    // ========================================================================
+    // Loading & Saving
+    // ========================================================================
+
+    fn load(path: str) -> Result<Image, ImageError> {
+        let mut handle: ptr = null
+        let result = image_load(path, &mut handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: handle })
+    }
+
+    fn from_bytes(data: [u8]) -> Result<Image, ImageError> {
+        let mut handle: ptr = null
+        let result = image_load_from_memory(&data, data.len(), &mut handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: handle })
+    }
+
+    fn create(width: u32, height: u32, color: Color) -> Result<Image, ImageError> {
+        // Create a new blank image with the given color
+        // Implementation would allocate and fill
+        return Err(ImageError.UnsupportedFormat)
+    }
+
+    fn save(self, path: str) -> Result<(), ImageError> {
+        // Auto-detect format from extension
+        let format = self.format_from_path(path)
+        let result = image_save(self.handle, path, format as i32, 90)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn save_with_quality(self, path: str, quality: i32) -> Result<(), ImageError> {
+        let format = self.format_from_path(path)
+        let result = image_save(self.handle, path, format as i32, quality)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn to_bytes(self, format: Format) -> Result<[u8], ImageError> {
+        let mut data: ptr = null
+        let mut len: usize = 0
+        let result = image_encode(self.handle, format as i32, 90, &mut data, &mut len)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        // Would copy data to managed array
+        return Ok([])
+    }
+
+    fn clone(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_clone(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn free(mut self) {
+        if self.handle != null {
+            image_free(self.handle)
+            self.handle = null
+        }
+    }
+
+    // ========================================================================
+    // Properties
+    // ========================================================================
+
+    fn width(self) -> u32 {
+        return image_width(self.handle)
+    }
+
+    fn height(self) -> u32 {
+        return image_height(self.handle)
+    }
+
+    fn dimensions(self) -> (u32, u32) {
+        return (self.width(), self.height())
+    }
+
+    fn channels(self) -> u8 {
+        return image_channels(self.handle)
+    }
+
+    fn has_alpha(self) -> bool {
+        return image_has_alpha(self.handle)
+    }
+
+    fn get_pixel(self, x: u32, y: u32) -> Color {
+        let value = image_get_pixel(self.handle, x, y)
+        return Color {
+            a: ((value >> 24) & 0xFF) as u8,
+            r: ((value >> 16) & 0xFF) as u8,
+            g: ((value >> 8) & 0xFF) as u8,
+            b: (value & 0xFF) as u8,
+        }
+    }
+
+    fn set_pixel(mut self, x: u32, y: u32, color: Color) {
+        image_set_pixel(self.handle, x, y, color.to_u32())
+    }
+
+    // ========================================================================
+    // Resize Operations (Chainable)
+    // ========================================================================
+
+    fn resize(self, width: u32, height: u32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_resize(self.handle, width, height, ResizeAlgorithm.Lanczos as i32, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn resize_with(self, width: u32, height: u32, algo: ResizeAlgorithm) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_resize(self.handle, width, height, algo as i32, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn resize_fit(self, width: u32, height: u32, fit: FitMode) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_resize_fit(self.handle, width, height, fit as i32, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn thumbnail(self, size: u32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_thumbnail(self.handle, size, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    // ========================================================================
+    // Crop & Transform (Chainable)
+    // ========================================================================
+
+    fn crop(self, x: u32, y: u32, width: u32, height: u32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_crop(self.handle, x, y, width, height, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn rotate(self, degrees: i32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_rotate(self.handle, degrees, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn flip_horizontal(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_flip_h(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn flip_vertical(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_flip_v(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    // ========================================================================
+    // Color Adjustments (Chainable)
+    // ========================================================================
+
+    fn brightness(self, factor: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_brightness(self.handle, factor, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn contrast(self, factor: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_contrast(self.handle, factor, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn saturation(self, factor: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_saturation(self.handle, factor, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn hue(self, degrees: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_hue(self.handle, degrees, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn gamma(self, value: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_gamma(self.handle, value, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    // ========================================================================
+    // Filters (Chainable)
+    // ========================================================================
+
+    fn grayscale(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_grayscale(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn sepia(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_sepia(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn invert(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_invert(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn blur(self, sigma: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_blur(self.handle, sigma, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn sharpen(self, sigma: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_sharpen(self.handle, sigma, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn edge_detect(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_edge_detect(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn emboss(self) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_emboss(self.handle, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    // ========================================================================
+    // Composite Operations
+    // ========================================================================
+
+    fn overlay(self, other: Image, x: i32, y: i32, opacity: f32) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_overlay(self.handle, other.handle, x, y, opacity, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn blend(self, other: Image, mode: BlendMode) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_blend(self.handle, other.handle, mode as i32, &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    fn tint(self, color: Color) -> Result<Image, ImageError> {
+        let mut new_handle: ptr = null
+        let result = image_tint(self.handle, color.to_u32(), &mut new_handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(Image { handle: new_handle })
+    }
+
+    // ========================================================================
+    // Drawing
+    // ========================================================================
+
+    fn draw_rect(mut self, x: u32, y: u32, w: u32, h: u32, color: Color, filled: bool) -> Result<(), ImageError> {
+        let result = image_draw_rect(self.handle, x, y, w, h, color.to_u32(), filled)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn draw_circle(mut self, cx: u32, cy: u32, r: u32, color: Color, filled: bool) -> Result<(), ImageError> {
+        let result = image_draw_circle(self.handle, cx, cy, r, color.to_u32(), filled)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn draw_line(mut self, x1: u32, y1: u32, x2: u32, y2: u32, color: Color, width: u32) -> Result<(), ImageError> {
+        let result = image_draw_line(self.handle, x1, y1, x2, y2, color.to_u32(), width)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    // ========================================================================
+    // Metadata
+    // ========================================================================
+
+    fn get_exif(self, key: str) -> ?str {
+        let mut value: str = ""
+        let result = image_get_exif(self.handle, key, &mut value)
+        if result != 0 {
+            return None
+        }
+        return Some(value)
+    }
+
+    fn set_exif(mut self, key: str, value: str) -> Result<(), ImageError> {
+        let result = image_set_exif(self.handle, key, value)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    fn strip_metadata(mut self) -> Result<(), ImageError> {
+        let result = image_strip_metadata(self.handle)
+        if result != 0 {
+            return Err(error_from_code(result))
+        }
+        return Ok(())
+    }
+
+    // ========================================================================
+    // Private Helpers
+    // ========================================================================
+
+    fn format_from_path(self, path: str) -> Format {
+        if path.ends_with(".png") {
+            return Format.Png
+        } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+            return Format.Jpeg
+        } else if path.ends_with(".webp") {
+            return Format.Webp
+        } else if path.ends_with(".gif") {
+            return Format.Gif
+        } else if path.ends_with(".bmp") {
+            return Format.Bmp
+        } else if path.ends_with(".tiff") || path.ends_with(".tif") {
+            return Format.Tiff
+        } else if path.ends_with(".avif") {
+            return Format.Avif
+        } else if path.ends_with(".ico") {
+            return Format.Ico
+        } else {
+            return Format.Png
+        }
+    }
+}
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+fn load(path: str) -> Result<Image, ImageError> {
+    return Image.load(path)
+}
+
+fn from_bytes(data: [u8]) -> Result<Image, ImageError> {
+    return Image.from_bytes(data)
+}
