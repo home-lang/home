@@ -6,68 +6,68 @@
 // ============================================================================
 
 // File Operations
-@extern fn fs_open(path: str, flags: i32, mode: u16) -> i64
-@extern fn fs_close(fd: i64) -> i32
-@extern fn fs_read(fd: i64, buffer: &mut [u8], count: usize) -> i64
-@extern fn fs_write(fd: i64, buffer: &[u8], count: usize) -> i64
-@extern fn fs_seek(fd: i64, offset: i64, whence: i32) -> i64
-@extern fn fs_tell(fd: i64) -> i64
-@extern fn fs_flush(fd: i64) -> i32
-@extern fn fs_sync(fd: i64) -> i32
-@extern fn fs_truncate(fd: i64, length: u64) -> i32
-@extern fn fs_fstat(fd: i64, stat: &mut FileStat) -> i32
+@extern fn fs_open(path: str, flags: i32, mode: u16): i64
+@extern fn fs_close(fd: i64): i32
+@extern fn fs_read(fd: i64, buffer: &mut [u8], count: usize): i64
+@extern fn fs_write(fd: i64, buffer: &[u8], count: usize): i64
+@extern fn fs_seek(fd: i64, offset: i64, whence: i32): i64
+@extern fn fs_tell(fd: i64): i64
+@extern fn fs_flush(fd: i64): i32
+@extern fn fs_sync(fd: i64): i32
+@extern fn fs_truncate(fd: i64, length: u64): i32
+@extern fn fs_fstat(fd: i64, stat: &mut FileStat): i32
 
 // Path Operations
-@extern fn fs_stat(path: str, stat: &mut FileStat) -> i32
-@extern fn fs_lstat(path: str, stat: &mut FileStat) -> i32
-@extern fn fs_exists(path: str) -> i32
-@extern fn fs_is_file(path: str) -> i32
-@extern fn fs_is_dir(path: str) -> i32
-@extern fn fs_is_symlink(path: str) -> i32
+@extern fn fs_stat(path: str, stat: &mut FileStat): i32
+@extern fn fs_lstat(path: str, stat: &mut FileStat): i32
+@extern fn fs_exists(path: str): i32
+@extern fn fs_is_file(path: str): i32
+@extern fn fs_is_dir(path: str): i32
+@extern fn fs_is_symlink(path: str): i32
 
 // Directory Operations
-@extern fn fs_mkdir(path: str, mode: u16) -> i32
-@extern fn fs_mkdir_all(path: str, mode: u16) -> i32
-@extern fn fs_rmdir(path: str) -> i32
-@extern fn fs_opendir(path: str) -> i64
-@extern fn fs_readdir(dir: i64, entry: &mut DirEntry) -> i32
-@extern fn fs_closedir(dir: i64) -> i32
-@extern fn fs_chdir(path: str) -> i32
-@extern fn fs_getcwd(buffer: &mut [u8]) -> i32
+@extern fn fs_mkdir(path: str, mode: u16): i32
+@extern fn fs_mkdir_all(path: str, mode: u16): i32
+@extern fn fs_rmdir(path: str): i32
+@extern fn fs_opendir(path: str): i64
+@extern fn fs_readdir(dir: i64, entry: &mut DirEntry): i32
+@extern fn fs_closedir(dir: i64): i32
+@extern fn fs_chdir(path: str): i32
+@extern fn fs_getcwd(buffer: &mut [u8]): i32
 
 // File Management
-@extern fn fs_unlink(path: str) -> i32
-@extern fn fs_rename(old_path: str, new_path: str) -> i32
-@extern fn fs_link(src_path: str, dst_path: str) -> i32
-@extern fn fs_symlink(target: str, link_path: str) -> i32
-@extern fn fs_readlink(path: str, buffer: &mut [u8]) -> i64
-@extern fn fs_chmod(path: str, mode: u16) -> i32
-@extern fn fs_chown(path: str, uid: u32, gid: u32) -> i32
-@extern fn fs_copy(src: str, dst: str) -> i32
-@extern fn fs_copy_file(src: str, dst: str) -> i64
+@extern fn fs_unlink(path: str): i32
+@extern fn fs_rename(old_path: str, new_path: str): i32
+@extern fn fs_link(src_path: str, dst_path: str): i32
+@extern fn fs_symlink(target: str, link_path: str): i32
+@extern fn fs_readlink(path: str, buffer: &mut [u8]): i64
+@extern fn fs_chmod(path: str, mode: u16): i32
+@extern fn fs_chown(path: str, uid: u32, gid: u32): i32
+@extern fn fs_copy(src: str, dst: str): i32
+@extern fn fs_copy_file(src: str, dst: str): i64
 
 // Utility
-@extern fn fs_realpath(path: str, buffer: &mut [u8]) -> i32
-@extern fn fs_basename(path: str, buffer: &mut [u8]) -> i32
-@extern fn fs_dirname(path: str, buffer: &mut [u8]) -> i32
-@extern fn fs_join_path(base: str, child: str, buffer: &mut [u8]) -> i32
-@extern fn fs_temp_dir(buffer: &mut [u8]) -> i32
-@extern fn fs_home_dir(buffer: &mut [u8]) -> i32
+@extern fn fs_realpath(path: str, buffer: &mut [u8]): i32
+@extern fn fs_basename(path: str, buffer: &mut [u8]): i32
+@extern fn fs_dirname(path: str, buffer: &mut [u8]): i32
+@extern fn fs_join_path(base: str, child: str, buffer: &mut [u8]): i32
+@extern fn fs_temp_dir(buffer: &mut [u8]): i32
+@extern fn fs_home_dir(buffer: &mut [u8]): i32
 
 // Mount Operations
-@extern fn fs_mount(source: str, target: str, fs_type: str, flags: u32) -> i32
-@extern fn fs_umount(target: str) -> i32
-@extern fn fs_statfs(path: str, stat: &mut FileSystemStat) -> i32
+@extern fn fs_mount(source: str, target: str, fs_type: str, flags: u32): i32
+@extern fn fs_umount(target: str): i32
+@extern fn fs_statfs(path: str, stat: &mut FileSystemStat): i32
 
 // File Locking
-@extern fn fs_lock(fd: i64, operation: i32) -> i32
-@extern fn fs_unlock(fd: i64) -> i32
-@extern fn fs_try_lock(fd: i64, operation: i32) -> i32
+@extern fn fs_lock(fd: i64, operation: i32): i32
+@extern fn fs_unlock(fd: i64): i32
+@extern fn fs_try_lock(fd: i64, operation: i32): i32
 
 // Memory Mapping
-@extern fn fs_mmap(fd: i64, offset: u64, length: usize, prot: i32, flags: i32) -> usize
-@extern fn fs_munmap(addr: usize, length: usize) -> i32
-@extern fn fs_msync(addr: usize, length: usize, flags: i32) -> i32
+@extern fn fs_mmap(fd: i64, offset: u64, length: usize, prot: i32, flags: i32): usize
+@extern fn fs_munmap(addr: usize, length: usize): i32
+@extern fn fs_msync(addr: usize, length: usize, flags: i32): i32
 
 // ============================================================================
 // Error Types
@@ -94,7 +94,7 @@ enum FsError {
     Unknown,
 }
 
-fn fs_error_from_code(code: i32) -> FsError {
+fn fs_error_from_code(code: i32): FsError {
     match code {
         0 => FsError.None,
         -2 => FsError.NotFound,        // ENOENT
@@ -131,7 +131,7 @@ enum FileType {
     Socket,
 }
 
-fn file_type_from_mode(mode: u32) -> FileType {
+fn file_type_from_mode(mode: u32): FileType {
     let type_bits = (mode >> 12) & 0xF
     match type_bits {
         0x8 => FileType.Regular,
@@ -151,7 +151,7 @@ enum SeekFrom {
     End,
 }
 
-fn seek_from_to_code(whence: SeekFrom) -> i32 {
+fn seek_from_to_code(whence: SeekFrom): i32 {
     match whence {
         SeekFrom.Start => 0,    // SEEK_SET
         SeekFrom.Current => 1,  // SEEK_CUR
@@ -206,39 +206,39 @@ struct FileMode {
 
 impl FileMode {
     /// Create from octal (e.g., 0o755)
-    fn from_octal(octal: u16) -> FileMode {
+    fn from_octal(octal: u16): FileMode {
         FileMode { mode: octal }
     }
 
     /// Default file permissions (0o644)
-    fn default_file() -> FileMode {
+    fn default_file(): FileMode {
         FileMode { mode: 0o644 }
     }
 
     /// Default directory permissions (0o755)
-    fn default_dir() -> FileMode {
+    fn default_dir(): FileMode {
         FileMode { mode: 0o755 }
     }
 
     /// Read-only (0o444)
-    fn read_only() -> FileMode {
+    fn read_only(): FileMode {
         FileMode { mode: 0o444 }
     }
 
     /// Full permissions (0o777)
-    fn full() -> FileMode {
+    fn full(): FileMode {
         FileMode { mode: 0o777 }
     }
 
-    fn can_read(self) -> bool {
+    fn can_read(self): bool {
         (self.mode & 0o400) != 0
     }
 
-    fn can_write(self) -> bool {
+    fn can_write(self): bool {
         (self.mode & 0o200) != 0
     }
 
-    fn can_execute(self) -> bool {
+    fn can_execute(self): bool {
         (self.mode & 0o100) != 0
     }
 }
@@ -260,31 +260,31 @@ struct FileStat {
 }
 
 impl FileStat {
-    fn file_type(self) -> FileType {
+    fn file_type(self): FileType {
         file_type_from_mode(self.mode)
     }
 
-    fn is_file(self) -> bool {
+    fn is_file(self): bool {
         self.file_type() == FileType.Regular
     }
 
-    fn is_dir(self) -> bool {
+    fn is_dir(self): bool {
         self.file_type() == FileType.Directory
     }
 
-    fn is_symlink(self) -> bool {
+    fn is_symlink(self): bool {
         self.file_type() == FileType.Symlink
     }
 
-    fn permissions(self) -> FileMode {
+    fn permissions(self): FileMode {
         FileMode { mode: (self.mode & 0o777) as u16 }
     }
 
-    fn size_kb(self) -> u64 {
+    fn size_kb(self): u64 {
         self.size / 1024
     }
 
-    fn size_mb(self) -> u64 {
+    fn size_mb(self): u64 {
         self.size / (1024 * 1024)
     }
 }
@@ -297,12 +297,12 @@ struct DirEntry {
 }
 
 impl DirEntry {
-    fn get_name(self) -> str {
+    fn get_name(self): str {
         // Convert name bytes to string
         ""  // Simplified
     }
 
-    fn get_type(self) -> FileType {
+    fn get_type(self): FileType {
         match self.file_type {
             0 => FileType.Unknown,
             1 => FileType.Regular,
@@ -316,11 +316,11 @@ impl DirEntry {
         }
     }
 
-    fn is_file(self) -> bool {
+    fn is_file(self): bool {
         self.file_type == 1
     }
 
-    fn is_dir(self) -> bool {
+    fn is_dir(self): bool {
         self.file_type == 2
     }
 }
@@ -335,23 +335,23 @@ struct FileSystemStat {
 }
 
 impl FileSystemStat {
-    fn total_bytes(self) -> u64 {
+    fn total_bytes(self): u64 {
         self.total_blocks * self.block_size
     }
 
-    fn free_bytes(self) -> u64 {
+    fn free_bytes(self): u64 {
         self.free_blocks * self.block_size
     }
 
-    fn available_bytes(self) -> u64 {
+    fn available_bytes(self): u64 {
         self.available_blocks * self.block_size
     }
 
-    fn used_bytes(self) -> u64 {
+    fn used_bytes(self): u64 {
         (self.total_blocks - self.free_blocks) * self.block_size
     }
 
-    fn used_percent(self) -> u64 {
+    fn used_percent(self): u64 {
         if self.total_blocks == 0 {
             0
         } else {
@@ -373,7 +373,7 @@ struct File {
 
 impl File {
     /// Open file for reading
-    fn open(path: str) -> Result<File, FsError> {
+    fn open(path: str): Result<File, FsError> {
         let fd = fs_open(path, O_RDONLY, 0)
         if fd < 0 {
             return Result.Err(fs_error_from_code(fd as i32))
@@ -388,7 +388,7 @@ impl File {
     }
 
     /// Create or truncate file for writing
-    fn create(path: str) -> Result<File, FsError> {
+    fn create(path: str): Result<File, FsError> {
         let fd = fs_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         if fd < 0 {
             return Result.Err(fs_error_from_code(fd as i32))
@@ -403,7 +403,7 @@ impl File {
     }
 
     /// Open file for reading and writing
-    fn open_rw(path: str) -> Result<File, FsError> {
+    fn open_rw(path: str): Result<File, FsError> {
         let fd = fs_open(path, O_RDWR, 0)
         if fd < 0 {
             return Result.Err(fs_error_from_code(fd as i32))
@@ -418,7 +418,7 @@ impl File {
     }
 
     /// Open file for appending
-    fn open_append(path: str) -> Result<File, FsError> {
+    fn open_append(path: str): Result<File, FsError> {
         let fd = fs_open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
         if fd < 0 {
             return Result.Err(fs_error_from_code(fd as i32))
@@ -433,7 +433,7 @@ impl File {
     }
 
     /// Create new file (fails if exists)
-    fn create_new(path: str) -> Result<File, FsError> {
+    fn create_new(path: str): Result<File, FsError> {
         let fd = fs_open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
         if fd < 0 {
             return Result.Err(fs_error_from_code(fd as i32))
@@ -448,7 +448,7 @@ impl File {
     }
 
     /// Read bytes from file
-    fn read(self, buffer: &mut [u8]) -> Result<usize, FsError> {
+    fn read(self, buffer: &mut [u8]): Result<usize, FsError> {
         let result = fs_read(self.fd, buffer, buffer.len())
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -458,7 +458,7 @@ impl File {
     }
 
     /// Read all bytes from file
-    fn read_all(self, buffer: &mut [u8]) -> Result<usize, FsError> {
+    fn read_all(self, buffer: &mut [u8]): Result<usize, FsError> {
         let mut total: usize = 0
         loop {
             let result = fs_read(self.fd, buffer[total..], buffer.len() - total)
@@ -474,7 +474,7 @@ impl File {
     }
 
     /// Write bytes to file
-    fn write(self, data: &[u8]) -> Result<usize, FsError> {
+    fn write(self, data: &[u8]): Result<usize, FsError> {
         let result = fs_write(self.fd, data, data.len())
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -484,7 +484,7 @@ impl File {
     }
 
     /// Write all bytes to file
-    fn write_all(self, data: &[u8]) -> Result<void, FsError> {
+    fn write_all(self, data: &[u8]): Result<void, FsError> {
         let mut written: usize = 0
         while written < data.len() {
             let result = fs_write(self.fd, data[written..], data.len() - written)
@@ -497,7 +497,7 @@ impl File {
     }
 
     /// Seek to position
-    fn seek(self, pos: SeekFrom, offset: i64) -> Result<u64, FsError> {
+    fn seek(self, pos: SeekFrom, offset: i64): Result<u64, FsError> {
         let result = fs_seek(self.fd, offset, seek_from_to_code(pos))
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -507,7 +507,7 @@ impl File {
     }
 
     /// Get current position
-    fn position(self) -> Result<u64, FsError> {
+    fn position(self): Result<u64, FsError> {
         let result = fs_tell(self.fd)
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -517,7 +517,7 @@ impl File {
     }
 
     /// Seek to beginning
-    fn rewind(self) -> Result<void, FsError> {
+    fn rewind(self): Result<void, FsError> {
         let result = fs_seek(self.fd, 0, 0)
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -527,7 +527,7 @@ impl File {
     }
 
     /// Flush buffered writes
-    fn flush(self) -> Result<void, FsError> {
+    fn flush(self): Result<void, FsError> {
         let result = fs_flush(self.fd)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -537,7 +537,7 @@ impl File {
     }
 
     /// Sync to disk
-    fn sync(self) -> Result<void, FsError> {
+    fn sync(self): Result<void, FsError> {
         let result = fs_sync(self.fd)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -547,7 +547,7 @@ impl File {
     }
 
     /// Truncate file to length
-    fn truncate(self, length: u64) -> Result<void, FsError> {
+    fn truncate(self, length: u64): Result<void, FsError> {
         let result = fs_truncate(self.fd, length)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -557,7 +557,7 @@ impl File {
     }
 
     /// Get file metadata
-    fn metadata(self) -> Result<FileStat, FsError> {
+    fn metadata(self): Result<FileStat, FsError> {
         let mut stat = FileStat {
             dev: 0, ino: 0, mode: 0, nlink: 0,
             uid: 0, gid: 0, rdev: 0, size: 0,
@@ -574,7 +574,7 @@ impl File {
     }
 
     /// Get file size
-    fn size(self) -> Result<u64, FsError> {
+    fn size(self): Result<u64, FsError> {
         match self.metadata() {
             Result.Ok(stat) => Result.Ok(stat.size),
             Result.Err(e) => Result.Err(e),
@@ -582,7 +582,7 @@ impl File {
     }
 
     /// Acquire shared lock
-    fn lock_shared(self) -> Result<void, FsError> {
+    fn lock_shared(self): Result<void, FsError> {
         let result = fs_lock(self.fd, LOCK_SH)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -592,7 +592,7 @@ impl File {
     }
 
     /// Acquire exclusive lock
-    fn lock_exclusive(self) -> Result<void, FsError> {
+    fn lock_exclusive(self): Result<void, FsError> {
         let result = fs_lock(self.fd, LOCK_EX)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -602,7 +602,7 @@ impl File {
     }
 
     /// Release lock
-    fn unlock(self) -> Result<void, FsError> {
+    fn unlock(self): Result<void, FsError> {
         let result = fs_unlock(self.fd)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -612,7 +612,7 @@ impl File {
     }
 
     /// Close file
-    fn close(self) -> Result<void, FsError> {
+    fn close(self): Result<void, FsError> {
         let result = fs_close(self.fd)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -633,7 +633,7 @@ struct Dir {
 
 impl Dir {
     /// Open directory for reading
-    fn open(path: str) -> Result<Dir, FsError> {
+    fn open(path: str): Result<Dir, FsError> {
         let handle = fs_opendir(path)
         if handle < 0 {
             return Result.Err(fs_error_from_code(handle as i32))
@@ -643,7 +643,7 @@ impl Dir {
     }
 
     /// Read next entry
-    fn read(self) -> Option<DirEntry> {
+    fn read(self): Option<DirEntry> {
         let mut entry = DirEntry {
             ino: 0,
             file_type: 0,
@@ -660,7 +660,7 @@ impl Dir {
     }
 
     /// Close directory
-    fn close(self) -> Result<void, FsError> {
+    fn close(self): Result<void, FsError> {
         let result = fs_closedir(self.handle)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -680,32 +680,32 @@ struct Path {
 
 impl Path {
     /// Create path from string
-    fn new(path: str) -> Path {
+    fn new(path: str): Path {
         Path { path: path }
     }
 
     /// Check if path exists
-    fn exists(self) -> bool {
+    fn exists(self): bool {
         fs_exists(self.path) == 1
     }
 
     /// Check if path is a file
-    fn is_file(self) -> bool {
+    fn is_file(self): bool {
         fs_is_file(self.path) == 1
     }
 
     /// Check if path is a directory
-    fn is_dir(self) -> bool {
+    fn is_dir(self): bool {
         fs_is_dir(self.path) == 1
     }
 
     /// Check if path is a symlink
-    fn is_symlink(self) -> bool {
+    fn is_symlink(self): bool {
         fs_is_symlink(self.path) == 1
     }
 
     /// Get file metadata
-    fn metadata(self) -> Result<FileStat, FsError> {
+    fn metadata(self): Result<FileStat, FsError> {
         let mut stat = FileStat {
             dev: 0, ino: 0, mode: 0, nlink: 0,
             uid: 0, gid: 0, rdev: 0, size: 0,
@@ -722,7 +722,7 @@ impl Path {
     }
 
     /// Get symlink metadata (doesn't follow symlinks)
-    fn symlink_metadata(self) -> Result<FileStat, FsError> {
+    fn symlink_metadata(self): Result<FileStat, FsError> {
         let mut stat = FileStat {
             dev: 0, ino: 0, mode: 0, nlink: 0,
             uid: 0, gid: 0, rdev: 0, size: 0,
@@ -739,7 +739,7 @@ impl Path {
     }
 
     /// Get canonical path
-    fn canonicalize(self) -> Result<str, FsError> {
+    fn canonicalize(self): Result<str, FsError> {
         let mut buffer: [u8; 4096] = [0; 4096]
         let result = fs_realpath(self.path, &mut buffer)
         if result < 0 {
@@ -760,7 +760,7 @@ struct Fs {
 
 impl Fs {
     /// Read entire file to bytes
-    fn read_bytes(path: str) -> Result<[u8], FsError> {
+    fn read_bytes(path: str): Result<[u8], FsError> {
         let file = File.open(path)?
         let stat = file.metadata()?
         let mut buffer: [u8] = []
@@ -770,7 +770,7 @@ impl Fs {
     }
 
     /// Read entire file to string
-    fn read_string(path: str) -> Result<str, FsError> {
+    fn read_string(path: str): Result<str, FsError> {
         let file = File.open(path)?
         // Would read and convert
         file.close()?
@@ -778,21 +778,21 @@ impl Fs {
     }
 
     /// Write bytes to file
-    fn write_bytes(path: str, data: &[u8]) -> Result<void, FsError> {
+    fn write_bytes(path: str, data: &[u8]): Result<void, FsError> {
         let file = File.create(path)?
         file.write_all(data)?
         file.close()
     }
 
     /// Write string to file
-    fn write_string(path: str, content: str) -> Result<void, FsError> {
+    fn write_string(path: str, content: str): Result<void, FsError> {
         let file = File.create(path)?
         // Would write string as bytes
         file.close()
     }
 
     /// Create directory
-    fn create_dir(path: str) -> Result<void, FsError> {
+    fn create_dir(path: str): Result<void, FsError> {
         let result = fs_mkdir(path, 0o755)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -802,7 +802,7 @@ impl Fs {
     }
 
     /// Create directory and all parents
-    fn create_dir_all(path: str) -> Result<void, FsError> {
+    fn create_dir_all(path: str): Result<void, FsError> {
         let result = fs_mkdir_all(path, 0o755)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -812,7 +812,7 @@ impl Fs {
     }
 
     /// Remove empty directory
-    fn remove_dir(path: str) -> Result<void, FsError> {
+    fn remove_dir(path: str): Result<void, FsError> {
         let result = fs_rmdir(path)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -822,7 +822,7 @@ impl Fs {
     }
 
     /// Remove file
-    fn remove_file(path: str) -> Result<void, FsError> {
+    fn remove_file(path: str): Result<void, FsError> {
         let result = fs_unlink(path)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -832,7 +832,7 @@ impl Fs {
     }
 
     /// Rename file or directory
-    fn rename(from: str, to: str) -> Result<void, FsError> {
+    fn rename(from: str, to: str): Result<void, FsError> {
         let result = fs_rename(from, to)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -842,7 +842,7 @@ impl Fs {
     }
 
     /// Create hard link
-    fn hard_link(src: str, dst: str) -> Result<void, FsError> {
+    fn hard_link(src: str, dst: str): Result<void, FsError> {
         let result = fs_link(src, dst)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -852,7 +852,7 @@ impl Fs {
     }
 
     /// Create symbolic link
-    fn symlink(target: str, link: str) -> Result<void, FsError> {
+    fn symlink(target: str, link: str): Result<void, FsError> {
         let result = fs_symlink(target, link)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -862,7 +862,7 @@ impl Fs {
     }
 
     /// Read symbolic link target
-    fn read_link(path: str) -> Result<str, FsError> {
+    fn read_link(path: str): Result<str, FsError> {
         let mut buffer: [u8; 4096] = [0; 4096]
         let result = fs_readlink(path, &mut buffer)
         if result < 0 {
@@ -873,7 +873,7 @@ impl Fs {
     }
 
     /// Copy file
-    fn copy(from: str, to: str) -> Result<u64, FsError> {
+    fn copy(from: str, to: str): Result<u64, FsError> {
         let result = fs_copy_file(from, to)
         if result < 0 {
             Result.Err(fs_error_from_code(result as i32))
@@ -883,7 +883,7 @@ impl Fs {
     }
 
     /// Set file permissions
-    fn set_permissions(path: str, mode: FileMode) -> Result<void, FsError> {
+    fn set_permissions(path: str, mode: FileMode): Result<void, FsError> {
         let result = fs_chmod(path, mode.mode)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -893,7 +893,7 @@ impl Fs {
     }
 
     /// Set file owner
-    fn set_owner(path: str, uid: u32, gid: u32) -> Result<void, FsError> {
+    fn set_owner(path: str, uid: u32, gid: u32): Result<void, FsError> {
         let result = fs_chown(path, uid, gid)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -903,7 +903,7 @@ impl Fs {
     }
 
     /// Get current working directory
-    fn current_dir() -> Result<str, FsError> {
+    fn current_dir(): Result<str, FsError> {
         let mut buffer: [u8; 4096] = [0; 4096]
         let result = fs_getcwd(&mut buffer)
         if result < 0 {
@@ -914,7 +914,7 @@ impl Fs {
     }
 
     /// Change current working directory
-    fn set_current_dir(path: str) -> Result<void, FsError> {
+    fn set_current_dir(path: str): Result<void, FsError> {
         let result = fs_chdir(path)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -924,7 +924,7 @@ impl Fs {
     }
 
     /// Get filesystem statistics
-    fn filesystem_stat(path: str) -> Result<FileSystemStat, FsError> {
+    fn filesystem_stat(path: str): Result<FileSystemStat, FsError> {
         let mut stat = FileSystemStat {
             block_size: 0,
             total_blocks: 0,
@@ -943,7 +943,7 @@ impl Fs {
     }
 
     /// Get temporary directory
-    fn temp_dir() -> Result<str, FsError> {
+    fn temp_dir(): Result<str, FsError> {
         let mut buffer: [u8; 4096] = [0; 4096]
         let result = fs_temp_dir(&mut buffer)
         if result < 0 {
@@ -954,7 +954,7 @@ impl Fs {
     }
 
     /// Get home directory
-    fn home_dir() -> Result<str, FsError> {
+    fn home_dir(): Result<str, FsError> {
         let mut buffer: [u8; 4096] = [0; 4096]
         let result = fs_home_dir(&mut buffer)
         if result < 0 {
@@ -978,7 +978,7 @@ struct MappedFile {
 
 impl MappedFile {
     /// Map file into memory for reading
-    fn open_read(path: str) -> Result<MappedFile, FsError> {
+    fn open_read(path: str): Result<MappedFile, FsError> {
         let file = File.open(path)?
         let stat = file.metadata()?
         let length = stat.size as usize
@@ -998,7 +998,7 @@ impl MappedFile {
     }
 
     /// Map file into memory for reading and writing
-    fn open_rw(path: str) -> Result<MappedFile, FsError> {
+    fn open_rw(path: str): Result<MappedFile, FsError> {
         let file = File.open_rw(path)?
         let stat = file.metadata()?
         let length = stat.size as usize
@@ -1018,7 +1018,7 @@ impl MappedFile {
     }
 
     /// Sync changes to disk
-    fn sync(self) -> Result<void, FsError> {
+    fn sync(self): Result<void, FsError> {
         let result = fs_msync(self.address, self.length, 0)
         if result < 0 {
             Result.Err(fs_error_from_code(result))
@@ -1028,12 +1028,12 @@ impl MappedFile {
     }
 
     /// Get mapped length
-    fn len(self) -> usize {
+    fn len(self): usize {
         self.length
     }
 
     /// Unmap and close file
-    fn close(self) -> Result<void, FsError> {
+    fn close(self): Result<void, FsError> {
         fs_munmap(self.address, self.length)
         self.file.close()
     }
@@ -1044,22 +1044,22 @@ impl MappedFile {
 // ============================================================================
 
 /// Check if path exists
-fn exists(path: str) -> bool {
+fn exists(path: str): bool {
     Path.new(path).exists()
 }
 
 /// Check if path is a file
-fn is_file(path: str) -> bool {
+fn is_file(path: str): bool {
     Path.new(path).is_file()
 }
 
 /// Check if path is a directory
-fn is_dir(path: str) -> bool {
+fn is_dir(path: str): bool {
     Path.new(path).is_dir()
 }
 
 /// Get file size
-fn file_size(path: str) -> Result<u64, FsError> {
+fn file_size(path: str): Result<u64, FsError> {
     let stat = Path.new(path).metadata()?
     Result.Ok(stat.size)
 }

@@ -6,101 +6,101 @@
 // ============================================================================
 
 // Thread Management
-@extern fn thread_spawn(func_ptr: usize, arg_ptr: usize) -> i64
-@extern fn thread_join(thread_id: i64) -> i32
-@extern fn thread_detach(thread_id: i64) -> i32
-@extern fn thread_current_id() -> u64
-@extern fn thread_yield() -> void
-@extern fn thread_sleep_ns(nanoseconds: u64) -> void
-@extern fn thread_sleep_ms(milliseconds: u64) -> void
-@extern fn thread_sleep_s(seconds: u64) -> void
+@extern fn thread_spawn(func_ptr: usize, arg_ptr: usize): i64
+@extern fn thread_join(thread_id: i64): i32
+@extern fn thread_detach(thread_id: i64): i32
+@extern fn thread_current_id(): u64
+@extern fn thread_yield(): void
+@extern fn thread_sleep_ns(nanoseconds: u64): void
+@extern fn thread_sleep_ms(milliseconds: u64): void
+@extern fn thread_sleep_s(seconds: u64): void
 
 // Mutex Operations
-@extern fn mutex_create() -> usize
-@extern fn mutex_destroy(mutex: usize) -> void
-@extern fn mutex_lock(mutex: usize) -> i32
-@extern fn mutex_try_lock(mutex: usize) -> i32
-@extern fn mutex_unlock(mutex: usize) -> i32
+@extern fn mutex_create(): usize
+@extern fn mutex_destroy(mutex: usize): void
+@extern fn mutex_lock(mutex: usize): i32
+@extern fn mutex_try_lock(mutex: usize): i32
+@extern fn mutex_unlock(mutex: usize): i32
 
 // RwLock Operations
-@extern fn rwlock_create() -> usize
-@extern fn rwlock_destroy(rwlock: usize) -> void
-@extern fn rwlock_read_lock(rwlock: usize) -> i32
-@extern fn rwlock_read_unlock(rwlock: usize) -> i32
-@extern fn rwlock_write_lock(rwlock: usize) -> i32
-@extern fn rwlock_write_unlock(rwlock: usize) -> i32
+@extern fn rwlock_create(): usize
+@extern fn rwlock_destroy(rwlock: usize): void
+@extern fn rwlock_read_lock(rwlock: usize): i32
+@extern fn rwlock_read_unlock(rwlock: usize): i32
+@extern fn rwlock_write_lock(rwlock: usize): i32
+@extern fn rwlock_write_unlock(rwlock: usize): i32
 
 // Spinlock Operations (for short critical sections)
-@extern fn spinlock_create() -> usize
-@extern fn spinlock_destroy(spinlock: usize) -> void
-@extern fn spinlock_lock(spinlock: usize) -> void
-@extern fn spinlock_try_lock(spinlock: usize) -> i32
-@extern fn spinlock_unlock(spinlock: usize) -> void
-@extern fn spinlock_is_locked(spinlock: usize) -> i32
+@extern fn spinlock_create(): usize
+@extern fn spinlock_destroy(spinlock: usize): void
+@extern fn spinlock_lock(spinlock: usize): void
+@extern fn spinlock_try_lock(spinlock: usize): i32
+@extern fn spinlock_unlock(spinlock: usize): void
+@extern fn spinlock_is_locked(spinlock: usize): i32
 
 // TicketLock Operations (fair FIFO ordering)
-@extern fn ticketlock_create() -> usize
-@extern fn ticketlock_destroy(ticketlock: usize) -> void
-@extern fn ticketlock_lock(ticketlock: usize) -> void
-@extern fn ticketlock_unlock(ticketlock: usize) -> void
+@extern fn ticketlock_create(): usize
+@extern fn ticketlock_destroy(ticketlock: usize): void
+@extern fn ticketlock_lock(ticketlock: usize): void
+@extern fn ticketlock_unlock(ticketlock: usize): void
 
 // Condition Variable Operations
-@extern fn condvar_create() -> usize
-@extern fn condvar_destroy(condvar: usize) -> void
-@extern fn condvar_wait(condvar: usize, mutex: usize) -> i32
-@extern fn condvar_wait_timeout(condvar: usize, mutex: usize, timeout_ns: u64) -> i32
-@extern fn condvar_signal(condvar: usize) -> void
-@extern fn condvar_broadcast(condvar: usize) -> void
+@extern fn condvar_create(): usize
+@extern fn condvar_destroy(condvar: usize): void
+@extern fn condvar_wait(condvar: usize, mutex: usize): i32
+@extern fn condvar_wait_timeout(condvar: usize, mutex: usize, timeout_ns: u64): i32
+@extern fn condvar_signal(condvar: usize): void
+@extern fn condvar_broadcast(condvar: usize): void
 
 // Semaphore Operations
-@extern fn semaphore_create(initial_count: u32) -> usize
-@extern fn semaphore_destroy(sem: usize) -> void
-@extern fn semaphore_wait(sem: usize) -> i32
-@extern fn semaphore_try_wait(sem: usize) -> i32
-@extern fn semaphore_post(sem: usize) -> i32
-@extern fn semaphore_get_value(sem: usize) -> i32
+@extern fn semaphore_create(initial_count: u32): usize
+@extern fn semaphore_destroy(sem: usize): void
+@extern fn semaphore_wait(sem: usize): i32
+@extern fn semaphore_try_wait(sem: usize): i32
+@extern fn semaphore_post(sem: usize): i32
+@extern fn semaphore_get_value(sem: usize): i32
 
 // WaitGroup Operations (Go-style)
-@extern fn waitgroup_create() -> usize
-@extern fn waitgroup_destroy(wg: usize) -> void
-@extern fn waitgroup_add(wg: usize, delta: i32) -> void
-@extern fn waitgroup_done(wg: usize) -> void
-@extern fn waitgroup_wait(wg: usize) -> void
+@extern fn waitgroup_create(): usize
+@extern fn waitgroup_destroy(wg: usize): void
+@extern fn waitgroup_add(wg: usize, delta: i32): void
+@extern fn waitgroup_done(wg: usize): void
+@extern fn waitgroup_wait(wg: usize): void
 
 // Event Operations
-@extern fn event_create_manual(initial_state: i32) -> usize
-@extern fn event_create_auto(initial_state: i32) -> usize
-@extern fn event_destroy(event: usize) -> void
-@extern fn event_set(event: usize) -> void
-@extern fn event_reset(event: usize) -> void
-@extern fn event_wait(event: usize) -> void
-@extern fn event_wait_timeout(event: usize, timeout_ns: u64) -> i32
-@extern fn event_is_signaled(event: usize) -> i32
+@extern fn event_create_manual(initial_state: i32): usize
+@extern fn event_create_auto(initial_state: i32): usize
+@extern fn event_destroy(event: usize): void
+@extern fn event_set(event: usize): void
+@extern fn event_reset(event: usize): void
+@extern fn event_wait(event: usize): void
+@extern fn event_wait_timeout(event: usize, timeout_ns: u64): i32
+@extern fn event_is_signaled(event: usize): i32
 
 // Latch Operations (one-shot barrier)
-@extern fn latch_create(count: u32) -> usize
-@extern fn latch_destroy(latch: usize) -> void
-@extern fn latch_count_down(latch: usize) -> void
-@extern fn latch_wait(latch: usize) -> void
-@extern fn latch_try_wait(latch: usize) -> i32
+@extern fn latch_create(count: u32): usize
+@extern fn latch_destroy(latch: usize): void
+@extern fn latch_count_down(latch: usize): void
+@extern fn latch_wait(latch: usize): void
+@extern fn latch_try_wait(latch: usize): i32
 
 // Atomic Operations
-@extern fn atomic_load_i32(ptr: usize) -> i32
-@extern fn atomic_store_i32(ptr: usize, value: i32) -> void
-@extern fn atomic_add_i32(ptr: usize, delta: i32) -> i32
-@extern fn atomic_sub_i32(ptr: usize, delta: i32) -> i32
-@extern fn atomic_exchange_i32(ptr: usize, value: i32) -> i32
-@extern fn atomic_compare_exchange_i32(ptr: usize, expected: i32, desired: i32) -> i32
+@extern fn atomic_load_i32(ptr: usize): i32
+@extern fn atomic_store_i32(ptr: usize, value: i32): void
+@extern fn atomic_add_i32(ptr: usize, delta: i32): i32
+@extern fn atomic_sub_i32(ptr: usize, delta: i32): i32
+@extern fn atomic_exchange_i32(ptr: usize, value: i32): i32
+@extern fn atomic_compare_exchange_i32(ptr: usize, expected: i32, desired: i32): i32
 
-@extern fn atomic_load_i64(ptr: usize) -> i64
-@extern fn atomic_store_i64(ptr: usize, value: i64) -> void
-@extern fn atomic_add_i64(ptr: usize, delta: i64) -> i64
-@extern fn atomic_sub_i64(ptr: usize, delta: i64) -> i64
-@extern fn atomic_exchange_i64(ptr: usize, value: i64) -> i64
-@extern fn atomic_compare_exchange_i64(ptr: usize, expected: i64, desired: i64) -> i64
+@extern fn atomic_load_i64(ptr: usize): i64
+@extern fn atomic_store_i64(ptr: usize, value: i64): void
+@extern fn atomic_add_i64(ptr: usize, delta: i64): i64
+@extern fn atomic_sub_i64(ptr: usize, delta: i64): i64
+@extern fn atomic_exchange_i64(ptr: usize, value: i64): i64
+@extern fn atomic_compare_exchange_i64(ptr: usize, expected: i64, desired: i64): i64
 
-@extern fn atomic_flag_test_and_set(ptr: usize) -> i32
-@extern fn atomic_flag_clear(ptr: usize) -> void
+@extern fn atomic_flag_test_and_set(ptr: usize): i32
+@extern fn atomic_flag_clear(ptr: usize): void
 
 // ============================================================================
 // Error Types
@@ -121,7 +121,7 @@ enum ThreadError {
     Unknown,
 }
 
-fn thread_error_from_code(code: i32) -> ThreadError {
+fn thread_error_from_code(code: i32): ThreadError {
     match code {
         0 => ThreadError.None,
         -1 => ThreadError.CreationFailed,
@@ -148,32 +148,32 @@ struct Thread {
 
 impl Thread {
     /// Get the current thread's ID
-    fn current() -> u64 {
+    fn current(): u64 {
         thread_current_id()
     }
 
     /// Yield execution to other threads
-    fn yield() -> void {
+    fn yield(): void {
         thread_yield()
     }
 
     /// Sleep for specified nanoseconds
-    fn sleep_ns(nanoseconds: u64) -> void {
+    fn sleep_ns(nanoseconds: u64): void {
         thread_sleep_ns(nanoseconds)
     }
 
     /// Sleep for specified milliseconds
-    fn sleep_ms(milliseconds: u64) -> void {
+    fn sleep_ms(milliseconds: u64): void {
         thread_sleep_ms(milliseconds)
     }
 
     /// Sleep for specified seconds
-    fn sleep(seconds: u64) -> void {
+    fn sleep(seconds: u64): void {
         thread_sleep_s(seconds)
     }
 
     /// Wait for thread to complete
-    fn join(self) -> Result<void, ThreadError> {
+    fn join(self): Result<void, ThreadError> {
         let result = thread_join(self.id)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -183,7 +183,7 @@ impl Thread {
     }
 
     /// Detach thread (run independently)
-    fn detach(self) -> Result<void, ThreadError> {
+    fn detach(self): Result<void, ThreadError> {
         let result = thread_detach(self.id)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -203,12 +203,12 @@ struct Mutex {
 
 impl Mutex {
     /// Create a new mutex
-    fn new() -> Mutex {
+    fn new(): Mutex {
         Mutex { handle: mutex_create() }
     }
 
     /// Acquire the mutex (blocks until available)
-    fn lock(self) -> Result<MutexGuard, ThreadError> {
+    fn lock(self): Result<MutexGuard, ThreadError> {
         let result = mutex_lock(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -218,7 +218,7 @@ impl Mutex {
     }
 
     /// Try to acquire the mutex without blocking
-    fn try_lock(self) -> Option<MutexGuard> {
+    fn try_lock(self): Option<MutexGuard> {
         let result = mutex_try_lock(self.handle)
         if result == 0 {
             Option.Some(MutexGuard { mutex: self })
@@ -228,7 +228,7 @@ impl Mutex {
     }
 
     /// Release the mutex
-    fn unlock(self) -> Result<void, ThreadError> {
+    fn unlock(self): Result<void, ThreadError> {
         let result = mutex_unlock(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -238,7 +238,7 @@ impl Mutex {
     }
 
     /// Destroy the mutex
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         mutex_destroy(self.handle)
     }
 }
@@ -250,7 +250,7 @@ struct MutexGuard {
 
 impl MutexGuard {
     /// Release the lock manually
-    fn release(self) -> void {
+    fn release(self): void {
         mutex_unlock(self.mutex.handle)
     }
 }
@@ -265,12 +265,12 @@ struct RwLock {
 
 impl RwLock {
     /// Create a new read-write lock
-    fn new() -> RwLock {
+    fn new(): RwLock {
         RwLock { handle: rwlock_create() }
     }
 
     /// Acquire read lock (multiple readers allowed)
-    fn read(self) -> Result<ReadGuard, ThreadError> {
+    fn read(self): Result<ReadGuard, ThreadError> {
         let result = rwlock_read_lock(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -280,7 +280,7 @@ impl RwLock {
     }
 
     /// Acquire write lock (exclusive access)
-    fn write(self) -> Result<WriteGuard, ThreadError> {
+    fn write(self): Result<WriteGuard, ThreadError> {
         let result = rwlock_write_lock(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -290,7 +290,7 @@ impl RwLock {
     }
 
     /// Destroy the read-write lock
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         rwlock_destroy(self.handle)
     }
 }
@@ -300,7 +300,7 @@ struct ReadGuard {
 }
 
 impl ReadGuard {
-    fn release(self) -> void {
+    fn release(self): void {
         rwlock_read_unlock(self.rwlock.handle)
     }
 }
@@ -310,7 +310,7 @@ struct WriteGuard {
 }
 
 impl WriteGuard {
-    fn release(self) -> void {
+    fn release(self): void {
         rwlock_write_unlock(self.rwlock.handle)
     }
 }
@@ -325,18 +325,18 @@ struct Spinlock {
 
 impl Spinlock {
     /// Create a new spinlock
-    fn new() -> Spinlock {
+    fn new(): Spinlock {
         Spinlock { handle: spinlock_create() }
     }
 
     /// Acquire the spinlock (busy-waits)
-    fn lock(self) -> SpinGuard {
+    fn lock(self): SpinGuard {
         spinlock_lock(self.handle)
         SpinGuard { spinlock: self }
     }
 
     /// Try to acquire without blocking
-    fn try_lock(self) -> Option<SpinGuard> {
+    fn try_lock(self): Option<SpinGuard> {
         let result = spinlock_try_lock(self.handle)
         if result == 1 {
             Option.Some(SpinGuard { spinlock: self })
@@ -346,12 +346,12 @@ impl Spinlock {
     }
 
     /// Check if locked
-    fn is_locked(self) -> bool {
+    fn is_locked(self): bool {
         spinlock_is_locked(self.handle) == 1
     }
 
     /// Destroy the spinlock
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         spinlock_destroy(self.handle)
     }
 }
@@ -361,7 +361,7 @@ struct SpinGuard {
 }
 
 impl SpinGuard {
-    fn release(self) -> void {
+    fn release(self): void {
         spinlock_unlock(self.spinlock.handle)
     }
 }
@@ -376,18 +376,18 @@ struct TicketLock {
 
 impl TicketLock {
     /// Create a new ticket lock
-    fn new() -> TicketLock {
+    fn new(): TicketLock {
         TicketLock { handle: ticketlock_create() }
     }
 
     /// Acquire in FIFO order
-    fn lock(self) -> TicketGuard {
+    fn lock(self): TicketGuard {
         ticketlock_lock(self.handle)
         TicketGuard { ticket_lock: self }
     }
 
     /// Destroy the ticket lock
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         ticketlock_destroy(self.handle)
     }
 }
@@ -397,7 +397,7 @@ struct TicketGuard {
 }
 
 impl TicketGuard {
-    fn release(self) -> void {
+    fn release(self): void {
         ticketlock_unlock(self.ticket_lock.handle)
     }
 }
@@ -412,12 +412,12 @@ struct CondVar {
 
 impl CondVar {
     /// Create a new condition variable
-    fn new() -> CondVar {
+    fn new(): CondVar {
         CondVar { handle: condvar_create() }
     }
 
     /// Wait for signal (must hold mutex)
-    fn wait(self, mutex: Mutex) -> Result<void, ThreadError> {
+    fn wait(self, mutex: Mutex): Result<void, ThreadError> {
         let result = condvar_wait(self.handle, mutex.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -427,7 +427,7 @@ impl CondVar {
     }
 
     /// Wait with timeout (returns Timeout on expiration)
-    fn wait_timeout(self, mutex: Mutex, timeout_ns: u64) -> Result<void, ThreadError> {
+    fn wait_timeout(self, mutex: Mutex, timeout_ns: u64): Result<void, ThreadError> {
         let result = condvar_wait_timeout(self.handle, mutex.handle, timeout_ns)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -437,17 +437,17 @@ impl CondVar {
     }
 
     /// Wake one waiting thread
-    fn signal(self) -> void {
+    fn signal(self): void {
         condvar_signal(self.handle)
     }
 
     /// Wake all waiting threads
-    fn broadcast(self) -> void {
+    fn broadcast(self): void {
         condvar_broadcast(self.handle)
     }
 
     /// Destroy the condition variable
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         condvar_destroy(self.handle)
     }
 }
@@ -462,12 +462,12 @@ struct Semaphore {
 
 impl Semaphore {
     /// Create a semaphore with initial count
-    fn new(initial_count: u32) -> Semaphore {
+    fn new(initial_count: u32): Semaphore {
         Semaphore { handle: semaphore_create(initial_count) }
     }
 
     /// Wait (decrement) - blocks if count is zero
-    fn wait(self) -> Result<void, ThreadError> {
+    fn wait(self): Result<void, ThreadError> {
         let result = semaphore_wait(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -477,12 +477,12 @@ impl Semaphore {
     }
 
     /// Try to wait without blocking
-    fn try_wait(self) -> bool {
+    fn try_wait(self): bool {
         semaphore_try_wait(self.handle) == 0
     }
 
     /// Post (increment) - wake one waiter
-    fn post(self) -> Result<void, ThreadError> {
+    fn post(self): Result<void, ThreadError> {
         let result = semaphore_post(self.handle)
         if result < 0 {
             Result.Err(thread_error_from_code(result))
@@ -492,12 +492,12 @@ impl Semaphore {
     }
 
     /// Get current count
-    fn value(self) -> i32 {
+    fn value(self): i32 {
         semaphore_get_value(self.handle)
     }
 
     /// Destroy the semaphore
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         semaphore_destroy(self.handle)
     }
 }
@@ -512,27 +512,27 @@ struct WaitGroup {
 
 impl WaitGroup {
     /// Create a new wait group
-    fn new() -> WaitGroup {
+    fn new(): WaitGroup {
         WaitGroup { handle: waitgroup_create() }
     }
 
     /// Add delta to counter
-    fn add(self, delta: i32) -> void {
+    fn add(self, delta: i32): void {
         waitgroup_add(self.handle, delta)
     }
 
     /// Decrement counter by 1 (call when work is done)
-    fn done(self) -> void {
+    fn done(self): void {
         waitgroup_done(self.handle)
     }
 
     /// Wait for counter to reach zero
-    fn wait(self) -> void {
+    fn wait(self): void {
         waitgroup_wait(self.handle)
     }
 
     /// Destroy the wait group
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         waitgroup_destroy(self.handle)
     }
 }
@@ -547,43 +547,43 @@ struct ManualResetEvent {
 
 impl ManualResetEvent {
     /// Create event (initially not signaled)
-    fn new() -> ManualResetEvent {
+    fn new(): ManualResetEvent {
         ManualResetEvent { handle: event_create_manual(0) }
     }
 
     /// Create event with initial state
-    fn with_state(signaled: bool) -> ManualResetEvent {
+    fn with_state(signaled: bool): ManualResetEvent {
         let state = if signaled { 1 } else { 0 }
         ManualResetEvent { handle: event_create_manual(state) }
     }
 
     /// Set to signaled state (wakes all waiters)
-    fn set(self) -> void {
+    fn set(self): void {
         event_set(self.handle)
     }
 
     /// Reset to non-signaled state
-    fn reset(self) -> void {
+    fn reset(self): void {
         event_reset(self.handle)
     }
 
     /// Wait for signaled state
-    fn wait(self) -> void {
+    fn wait(self): void {
         event_wait(self.handle)
     }
 
     /// Wait with timeout
-    fn wait_timeout(self, timeout_ns: u64) -> bool {
+    fn wait_timeout(self, timeout_ns: u64): bool {
         event_wait_timeout(self.handle, timeout_ns) == 1
     }
 
     /// Check if signaled
-    fn is_signaled(self) -> bool {
+    fn is_signaled(self): bool {
         event_is_signaled(self.handle) == 1
     }
 
     /// Destroy the event
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         event_destroy(self.handle)
     }
 }
@@ -598,33 +598,33 @@ struct AutoResetEvent {
 
 impl AutoResetEvent {
     /// Create event (initially not signaled)
-    fn new() -> AutoResetEvent {
+    fn new(): AutoResetEvent {
         AutoResetEvent { handle: event_create_auto(0) }
     }
 
     /// Create event with initial state
-    fn with_state(signaled: bool) -> AutoResetEvent {
+    fn with_state(signaled: bool): AutoResetEvent {
         let state = if signaled { 1 } else { 0 }
         AutoResetEvent { handle: event_create_auto(state) }
     }
 
     /// Set to signaled state (releases one waiter)
-    fn set(self) -> void {
+    fn set(self): void {
         event_set(self.handle)
     }
 
     /// Wait for signaled state (auto-resets after wait)
-    fn wait(self) -> void {
+    fn wait(self): void {
         event_wait(self.handle)
     }
 
     /// Wait with timeout
-    fn wait_timeout(self, timeout_ns: u64) -> bool {
+    fn wait_timeout(self, timeout_ns: u64): bool {
         event_wait_timeout(self.handle, timeout_ns) == 1
     }
 
     /// Destroy the event
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         event_destroy(self.handle)
     }
 }
@@ -639,27 +639,27 @@ struct Latch {
 
 impl Latch {
     /// Create latch with specified count
-    fn new(count: u32) -> Latch {
+    fn new(count: u32): Latch {
         Latch { handle: latch_create(count) }
     }
 
     /// Decrement count (releases waiters when reaching zero)
-    fn count_down(self) -> void {
+    fn count_down(self): void {
         latch_count_down(self.handle)
     }
 
     /// Wait for count to reach zero
-    fn wait(self) -> void {
+    fn wait(self): void {
         latch_wait(self.handle)
     }
 
     /// Check if count has reached zero
-    fn try_wait(self) -> bool {
+    fn try_wait(self): bool {
         latch_try_wait(self.handle) == 1
     }
 
     /// Destroy the latch
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         latch_destroy(self.handle)
     }
 }
@@ -674,47 +674,47 @@ struct AtomicI32 {
 
 impl AtomicI32 {
     /// Create with initial value
-    fn new(initial: i32) -> AtomicI32 {
+    fn new(initial: i32): AtomicI32 {
         AtomicI32 { value: initial }
     }
 
     /// Atomically load value
-    fn load(self) -> i32 {
+    fn load(self): i32 {
         atomic_load_i32(@ptr(self.value) as usize)
     }
 
     /// Atomically store value
-    fn store(mut self, value: i32) -> void {
+    fn store(mut self, value: i32): void {
         atomic_store_i32(@ptr(self.value) as usize, value)
     }
 
     /// Add and return previous value
-    fn fetch_add(mut self, delta: i32) -> i32 {
+    fn fetch_add(mut self, delta: i32): i32 {
         atomic_add_i32(@ptr(self.value) as usize, delta)
     }
 
     /// Subtract and return previous value
-    fn fetch_sub(mut self, delta: i32) -> i32 {
+    fn fetch_sub(mut self, delta: i32): i32 {
         atomic_sub_i32(@ptr(self.value) as usize, delta)
     }
 
     /// Exchange and return previous value
-    fn swap(mut self, value: i32) -> i32 {
+    fn swap(mut self, value: i32): i32 {
         atomic_exchange_i32(@ptr(self.value) as usize, value)
     }
 
     /// Compare and exchange (returns true if swapped)
-    fn compare_exchange(mut self, expected: i32, desired: i32) -> bool {
+    fn compare_exchange(mut self, expected: i32, desired: i32): bool {
         atomic_compare_exchange_i32(@ptr(self.value) as usize, expected, desired) == expected
     }
 
     /// Increment and return new value
-    fn increment(mut self) -> i32 {
+    fn increment(mut self): i32 {
         self.fetch_add(1) + 1
     }
 
     /// Decrement and return new value
-    fn decrement(mut self) -> i32 {
+    fn decrement(mut self): i32 {
         self.fetch_sub(1) - 1
     }
 }
@@ -725,37 +725,37 @@ struct AtomicI64 {
 
 impl AtomicI64 {
     /// Create with initial value
-    fn new(initial: i64) -> AtomicI64 {
+    fn new(initial: i64): AtomicI64 {
         AtomicI64 { value: initial }
     }
 
     /// Atomically load value
-    fn load(self) -> i64 {
+    fn load(self): i64 {
         atomic_load_i64(@ptr(self.value) as usize)
     }
 
     /// Atomically store value
-    fn store(mut self, value: i64) -> void {
+    fn store(mut self, value: i64): void {
         atomic_store_i64(@ptr(self.value) as usize, value)
     }
 
     /// Add and return previous value
-    fn fetch_add(mut self, delta: i64) -> i64 {
+    fn fetch_add(mut self, delta: i64): i64 {
         atomic_add_i64(@ptr(self.value) as usize, delta)
     }
 
     /// Subtract and return previous value
-    fn fetch_sub(mut self, delta: i64) -> i64 {
+    fn fetch_sub(mut self, delta: i64): i64 {
         atomic_sub_i64(@ptr(self.value) as usize, delta)
     }
 
     /// Exchange and return previous value
-    fn swap(mut self, value: i64) -> i64 {
+    fn swap(mut self, value: i64): i64 {
         atomic_exchange_i64(@ptr(self.value) as usize, value)
     }
 
     /// Compare and exchange
-    fn compare_exchange(mut self, expected: i64, desired: i64) -> bool {
+    fn compare_exchange(mut self, expected: i64, desired: i64): bool {
         atomic_compare_exchange_i64(@ptr(self.value) as usize, expected, desired) == expected
     }
 }
@@ -766,27 +766,27 @@ struct AtomicBool {
 
 impl AtomicBool {
     /// Create with initial value
-    fn new(initial: bool) -> AtomicBool {
+    fn new(initial: bool): AtomicBool {
         AtomicBool { value: if initial { 1 } else { 0 } }
     }
 
     /// Atomically load value
-    fn load(self) -> bool {
+    fn load(self): bool {
         atomic_load_i32(@ptr(self.value) as usize) != 0
     }
 
     /// Atomically store value
-    fn store(mut self, value: bool) -> void {
+    fn store(mut self, value: bool): void {
         atomic_store_i32(@ptr(self.value) as usize, if value { 1 } else { 0 })
     }
 
     /// Test and set (returns previous value)
-    fn test_and_set(mut self) -> bool {
+    fn test_and_set(mut self): bool {
         atomic_flag_test_and_set(@ptr(self.value) as usize) != 0
     }
 
     /// Clear the flag
-    fn clear(mut self) -> void {
+    fn clear(mut self): void {
         atomic_flag_clear(@ptr(self.value) as usize)
     }
 }
@@ -802,7 +802,7 @@ struct Once {
 
 impl Once {
     /// Create a new Once
-    fn new() -> Once {
+    fn new(): Once {
         Once {
             done: AtomicBool.new(false),
             mutex: Mutex.new(),
@@ -810,12 +810,12 @@ impl Once {
     }
 
     /// Check if initialization has completed
-    fn is_completed(self) -> bool {
+    fn is_completed(self): bool {
         self.done.load()
     }
 
     /// Destroy the Once
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         self.mutex.destroy()
     }
 }
@@ -837,7 +837,7 @@ struct Channel<T> {
 
 impl Channel<T> {
     /// Create a bounded channel
-    fn bounded(capacity: usize) -> Channel<T> {
+    fn bounded(capacity: usize): Channel<T> {
         Channel {
             buffer: [],
             capacity: capacity,
@@ -851,22 +851,22 @@ impl Channel<T> {
     }
 
     /// Check if channel is empty
-    fn is_empty(self) -> bool {
+    fn is_empty(self): bool {
         self.count.load() == 0
     }
 
     /// Check if channel is full
-    fn is_full(self) -> bool {
+    fn is_full(self): bool {
         self.count.load() >= self.capacity as i64
     }
 
     /// Get current number of items
-    fn len(self) -> usize {
+    fn len(self): usize {
         self.count.load() as usize
     }
 
     /// Destroy the channel
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         self.mutex.destroy()
         self.not_empty.destroy()
         self.not_full.destroy()
@@ -887,7 +887,7 @@ struct Barrier {
 
 impl Barrier {
     /// Create a barrier for n threads
-    fn new(count: u32) -> Barrier {
+    fn new(count: u32): Barrier {
         Barrier {
             count: count,
             waiting: AtomicI32.new(0),
@@ -898,7 +898,7 @@ impl Barrier {
     }
 
     /// Destroy the barrier
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         self.mutex.destroy()
         self.condvar.destroy()
     }
@@ -924,7 +924,7 @@ struct ThreadPool {
 
 impl ThreadPool {
     /// Create a thread pool with specified number of workers
-    fn new(size: usize) -> Result<ThreadPool, ThreadPoolError> {
+    fn new(size: usize): Result<ThreadPool, ThreadPoolError> {
         if size == 0 {
             return Result.Err(ThreadPoolError.InvalidSize)
         }
@@ -937,23 +937,23 @@ impl ThreadPool {
     }
 
     /// Check if pool is running
-    fn is_running(self) -> bool {
+    fn is_running(self): bool {
         self.running.load()
     }
 
     /// Shutdown the pool
-    fn shutdown(mut self) -> void {
+    fn shutdown(mut self): void {
         self.running.store(false)
         self.condvar.broadcast()
     }
 
     /// Get pool size
-    fn worker_count(self) -> usize {
+    fn worker_count(self): usize {
         self.size
     }
 
     /// Destroy the thread pool
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         self.mutex.destroy()
         self.condvar.destroy()
     }
@@ -968,16 +968,16 @@ comptime const NANOSECONDS_PER_MILLISECOND: u64 = 1000000
 comptime const NANOSECONDS_PER_SECOND: u64 = 1000000000
 
 /// Convert microseconds to nanoseconds
-fn micros_to_nanos(micros: u64) -> u64 {
+fn micros_to_nanos(micros: u64): u64 {
     micros * NANOSECONDS_PER_MICROSECOND
 }
 
 /// Convert milliseconds to nanoseconds
-fn millis_to_nanos(millis: u64) -> u64 {
+fn millis_to_nanos(millis: u64): u64 {
     millis * NANOSECONDS_PER_MILLISECOND
 }
 
 /// Convert seconds to nanoseconds
-fn secs_to_nanos(secs: u64) -> u64 {
+fn secs_to_nanos(secs: u64): u64 {
     secs * NANOSECONDS_PER_SECOND
 }

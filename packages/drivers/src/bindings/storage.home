@@ -6,46 +6,46 @@
 // ============================================================================
 
 // Block Device Management
-@extern fn block_device_open(device_path: str) -> i64
-@extern fn block_device_close(device: i64) -> i32
-@extern fn block_device_read(device: i64, sector: u64, count: u32, buffer: &mut [u8]) -> i64
-@extern fn block_device_write(device: i64, sector: u64, count: u32, buffer: &[u8]) -> i64
-@extern fn block_device_flush(device: i64) -> i32
-@extern fn block_device_trim(device: i64, sector: u64, count: u32) -> i32
-@extern fn block_device_get_info(device: i64, info: &mut BlockDeviceInfo) -> i32
-@extern fn block_device_get_stats(device: i64, stats: &mut DeviceStats) -> i32
+@extern fn block_device_open(device_path: str): i64
+@extern fn block_device_close(device: i64): i32
+@extern fn block_device_read(device: i64, sector: u64, count: u32, buffer: &mut [u8]): i64
+@extern fn block_device_write(device: i64, sector: u64, count: u32, buffer: &[u8]): i64
+@extern fn block_device_flush(device: i64): i32
+@extern fn block_device_trim(device: i64, sector: u64, count: u32): i32
+@extern fn block_device_get_info(device: i64, info: &mut BlockDeviceInfo): i32
+@extern fn block_device_get_stats(device: i64, stats: &mut DeviceStats): i32
 
 // Device Enumeration
-@extern fn storage_enumerate_devices(devices: &mut [DeviceEntry], max_count: u32) -> i32
-@extern fn storage_get_device_count() -> i32
-@extern fn storage_get_device_by_id(device_id: u32) -> i64
-@extern fn storage_get_device_by_name(name: str) -> i64
+@extern fn storage_enumerate_devices(devices: &mut [DeviceEntry], max_count: u32): i32
+@extern fn storage_get_device_count(): i32
+@extern fn storage_get_device_by_id(device_id: u32): i64
+@extern fn storage_get_device_by_name(name: str): i64
 
 // Partition Management
-@extern fn partition_scan(device: i64) -> i32
-@extern fn partition_get_count(device: i64) -> i32
-@extern fn partition_get_info(device: i64, partition_num: u32, info: &mut PartitionInfo) -> i32
-@extern fn partition_read(device: i64, partition_num: u32, sector: u64, count: u32, buffer: &mut [u8]) -> i64
-@extern fn partition_write(device: i64, partition_num: u32, sector: u64, count: u32, buffer: &[u8]) -> i64
+@extern fn partition_scan(device: i64): i32
+@extern fn partition_get_count(device: i64): i32
+@extern fn partition_get_info(device: i64, partition_num: u32, info: &mut PartitionInfo): i32
+@extern fn partition_read(device: i64, partition_num: u32, sector: u64, count: u32, buffer: &mut [u8]): i64
+@extern fn partition_write(device: i64, partition_num: u32, sector: u64, count: u32, buffer: &[u8]): i64
 
 // NVMe Specific
-@extern fn nvme_identify_controller(device: i64, info: &mut NvmeControllerInfo) -> i32
-@extern fn nvme_get_namespace_count(device: i64) -> i32
-@extern fn nvme_get_namespace_info(device: i64, ns_id: u32, info: &mut NvmeNamespaceInfo) -> i32
-@extern fn nvme_submit_io(device: i64, ns_id: u32, opcode: u8, lba: u64, count: u32, buffer: usize) -> i32
-@extern fn nvme_admin_command(device: i64, opcode: u8, nsid: u32, cdw10: u32, cdw11: u32) -> i32
+@extern fn nvme_identify_controller(device: i64, info: &mut NvmeControllerInfo): i32
+@extern fn nvme_get_namespace_count(device: i64): i32
+@extern fn nvme_get_namespace_info(device: i64, ns_id: u32, info: &mut NvmeNamespaceInfo): i32
+@extern fn nvme_submit_io(device: i64, ns_id: u32, opcode: u8, lba: u64, count: u32, buffer: usize): i32
+@extern fn nvme_admin_command(device: i64, opcode: u8, nsid: u32, cdw10: u32, cdw11: u32): i32
 
 // AHCI/SATA Specific
-@extern fn ahci_get_port_count() -> i32
-@extern fn ahci_get_port_status(port: u32) -> u32
-@extern fn ahci_identify_device(port: u32, buffer: &mut [u8]) -> i32
+@extern fn ahci_get_port_count(): i32
+@extern fn ahci_get_port_status(port: u32): u32
+@extern fn ahci_identify_device(port: u32, buffer: &mut [u8]): i32
 
 // Request Queue Management
-@extern fn request_queue_create() -> usize
-@extern fn request_queue_destroy(queue: usize) -> void
-@extern fn request_queue_submit(queue: usize, request: &BlockRequest) -> i32
-@extern fn request_queue_poll(queue: usize) -> i32
-@extern fn request_queue_get_pending(queue: usize) -> i32
+@extern fn request_queue_create(): usize
+@extern fn request_queue_destroy(queue: usize): void
+@extern fn request_queue_submit(queue: usize, request: &BlockRequest): i32
+@extern fn request_queue_poll(queue: usize): i32
+@extern fn request_queue_get_pending(queue: usize): i32
 
 // ============================================================================
 // Error Types
@@ -69,7 +69,7 @@ enum StorageError {
     Unknown,
 }
 
-fn storage_error_from_code(code: i32) -> StorageError {
+fn storage_error_from_code(code: i32): StorageError {
     match code {
         0 => StorageError.None,
         -1 => StorageError.DeviceNotFound,
@@ -103,7 +103,7 @@ enum BlockDeviceType {
     Virtual,
 }
 
-fn device_type_from_code(code: u8) -> BlockDeviceType {
+fn device_type_from_code(code: u8): BlockDeviceType {
     match code {
         0 => BlockDeviceType.Unknown,
         1 => BlockDeviceType.HardDisk,
@@ -133,7 +133,7 @@ enum PartitionType {
     Other,
 }
 
-fn partition_type_from_code(code: u8) -> PartitionType {
+fn partition_type_from_code(code: u8): PartitionType {
     match code {
         0x00 => PartitionType.Empty,
         0x01 => PartitionType.Fat12,
@@ -181,44 +181,44 @@ struct BlockDeviceInfo {
 }
 
 impl BlockDeviceInfo {
-    fn get_type(self) -> BlockDeviceType {
+    fn get_type(self): BlockDeviceType {
         device_type_from_code(self.device_type)
     }
 
-    fn get_name(self) -> str {
+    fn get_name(self): str {
         // Return name as string slice
         ""  // Simplified - actual implementation would convert bytes to str
     }
 
-    fn capacity_bytes(self) -> u64 {
+    fn capacity_bytes(self): u64 {
         self.total_sectors * self.sector_size as u64
     }
 
-    fn capacity_mb(self) -> u64 {
+    fn capacity_mb(self): u64 {
         self.capacity_bytes() / (1024 * 1024)
     }
 
-    fn capacity_gb(self) -> u64 {
+    fn capacity_gb(self): u64 {
         self.capacity_bytes() / (1024 * 1024 * 1024)
     }
 
-    fn is_removable(self) -> bool {
+    fn is_removable(self): bool {
         (self.flags & 0x01) != 0
     }
 
-    fn is_read_only(self) -> bool {
+    fn is_read_only(self): bool {
         (self.flags & 0x02) != 0
     }
 
-    fn is_ssd(self) -> bool {
+    fn is_ssd(self): bool {
         !((self.flags & 0x04) != 0)  // Not rotational = SSD
     }
 
-    fn supports_trim(self) -> bool {
+    fn supports_trim(self): bool {
         (self.flags & 0x08) != 0
     }
 
-    fn supports_flush(self) -> bool {
+    fn supports_flush(self): bool {
         (self.flags & 0x10) != 0
     }
 }
@@ -232,19 +232,19 @@ struct DeviceStats {
 }
 
 impl DeviceStats {
-    fn total_requests(self) -> u64 {
+    fn total_requests(self): u64 {
         self.read_requests + self.write_requests
     }
 
-    fn total_sectors(self) -> u64 {
+    fn total_sectors(self): u64 {
         self.read_sectors + self.write_sectors
     }
 
-    fn read_bytes(self, sector_size: u32) -> u64 {
+    fn read_bytes(self, sector_size: u32): u64 {
         self.read_sectors * sector_size as u64
     }
 
-    fn write_bytes(self, sector_size: u32) -> u64 {
+    fn write_bytes(self, sector_size: u32): u64 {
         self.write_sectors * sector_size as u64
     }
 }
@@ -258,15 +258,15 @@ struct PartitionInfo {
 }
 
 impl PartitionInfo {
-    fn get_type(self) -> PartitionType {
+    fn get_type(self): PartitionType {
         partition_type_from_code(self.partition_type)
     }
 
-    fn size_bytes(self, sector_size: u32) -> u64 {
+    fn size_bytes(self, sector_size: u32): u64 {
         self.sector_count * sector_size as u64
     }
 
-    fn size_mb(self, sector_size: u32) -> u64 {
+    fn size_mb(self, sector_size: u32): u64 {
         self.size_bytes(sector_size) / (1024 * 1024)
     }
 }
@@ -311,11 +311,11 @@ struct NvmeNamespaceInfo {
 }
 
 impl NvmeNamespaceInfo {
-    fn size_bytes(self) -> u64 {
+    fn size_bytes(self): u64 {
         self.size_blocks * self.block_size as u64
     }
 
-    fn size_gb(self) -> u64 {
+    fn size_gb(self): u64 {
         self.size_bytes() / (1024 * 1024 * 1024)
     }
 }
@@ -331,7 +331,7 @@ struct BlockDevice {
 
 impl BlockDevice {
     /// Open a block device by path
-    fn open(path: str) -> Result<BlockDevice, StorageError> {
+    fn open(path: str): Result<BlockDevice, StorageError> {
         let handle = block_device_open(path)
         if handle < 0 {
             return Result.Err(storage_error_from_code(handle as i32))
@@ -356,7 +356,7 @@ impl BlockDevice {
     }
 
     /// Open a device by ID
-    fn open_by_id(device_id: u32) -> Result<BlockDevice, StorageError> {
+    fn open_by_id(device_id: u32): Result<BlockDevice, StorageError> {
         let handle = storage_get_device_by_id(device_id)
         if handle < 0 {
             return Result.Err(StorageError.DeviceNotFound)
@@ -380,7 +380,7 @@ impl BlockDevice {
     }
 
     /// Read sectors from device
-    fn read(self, sector: u64, count: u32, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read(self, sector: u64, count: u32, buffer: &mut [u8]): Result<usize, StorageError> {
         let required_size = count as usize * self.info.sector_size as usize
         if buffer.len() < required_size {
             return Result.Err(StorageError.BufferTooSmall)
@@ -395,7 +395,7 @@ impl BlockDevice {
     }
 
     /// Write sectors to device
-    fn write(self, sector: u64, count: u32, buffer: &[u8]) -> Result<usize, StorageError> {
+    fn write(self, sector: u64, count: u32, buffer: &[u8]): Result<usize, StorageError> {
         if self.info.is_read_only() {
             return Result.Err(StorageError.ReadOnly)
         }
@@ -414,7 +414,7 @@ impl BlockDevice {
     }
 
     /// Flush write cache to disk
-    fn flush(self) -> Result<void, StorageError> {
+    fn flush(self): Result<void, StorageError> {
         if !self.info.supports_flush() {
             return Result.Ok(())
         }
@@ -428,7 +428,7 @@ impl BlockDevice {
     }
 
     /// Trim/discard sectors (SSD optimization)
-    fn trim(self, sector: u64, count: u32) -> Result<void, StorageError> {
+    fn trim(self, sector: u64, count: u32): Result<void, StorageError> {
         if !self.info.supports_trim() {
             return Result.Err(StorageError.NotSupported)
         }
@@ -442,7 +442,7 @@ impl BlockDevice {
     }
 
     /// Get device statistics
-    fn stats(self) -> Result<DeviceStats, StorageError> {
+    fn stats(self): Result<DeviceStats, StorageError> {
         let mut stats = DeviceStats {
             read_requests: 0,
             write_requests: 0,
@@ -460,32 +460,32 @@ impl BlockDevice {
     }
 
     /// Get sector size
-    fn sector_size(self) -> u32 {
+    fn sector_size(self): u32 {
         self.info.sector_size
     }
 
     /// Get total sectors
-    fn total_sectors(self) -> u64 {
+    fn total_sectors(self): u64 {
         self.info.total_sectors
     }
 
     /// Get capacity in bytes
-    fn capacity(self) -> u64 {
+    fn capacity(self): u64 {
         self.info.capacity_bytes()
     }
 
     /// Get device type
-    fn device_type(self) -> BlockDeviceType {
+    fn device_type(self): BlockDeviceType {
         self.info.get_type()
     }
 
     /// Check if device is an SSD
-    fn is_ssd(self) -> bool {
+    fn is_ssd(self): bool {
         self.info.is_ssd()
     }
 
     /// Close the device
-    fn close(self) -> void {
+    fn close(self): void {
         block_device_close(self.handle)
     }
 }
@@ -501,7 +501,7 @@ struct Partition {
 
 impl Partition {
     /// Get partition from device
-    fn from_device(device: BlockDevice, partition_num: u32) -> Result<Partition, StorageError> {
+    fn from_device(device: BlockDevice, partition_num: u32): Result<Partition, StorageError> {
         let mut info = PartitionInfo {
             partition_type: 0,
             start_sector: 0,
@@ -519,7 +519,7 @@ impl Partition {
     }
 
     /// Read sectors from partition
-    fn read(self, sector: u64, count: u32, buffer: &mut [u8]) -> Result<usize, StorageError> {
+    fn read(self, sector: u64, count: u32, buffer: &mut [u8]): Result<usize, StorageError> {
         if sector + count as u64 > self.info.sector_count {
             return Result.Err(StorageError.OutOfBounds)
         }
@@ -540,7 +540,7 @@ impl Partition {
     }
 
     /// Write sectors to partition
-    fn write(self, sector: u64, count: u32, buffer: &[u8]) -> Result<usize, StorageError> {
+    fn write(self, sector: u64, count: u32, buffer: &[u8]): Result<usize, StorageError> {
         if sector + count as u64 > self.info.sector_count {
             return Result.Err(StorageError.OutOfBounds)
         }
@@ -561,17 +561,17 @@ impl Partition {
     }
 
     /// Get partition type
-    fn partition_type(self) -> PartitionType {
+    fn partition_type(self): PartitionType {
         self.info.get_type()
     }
 
     /// Get partition size in bytes
-    fn size(self) -> u64 {
+    fn size(self): u64 {
         self.info.size_bytes(self.device.sector_size())
     }
 
     /// Check if bootable
-    fn is_bootable(self) -> bool {
+    fn is_bootable(self): bool {
         self.info.bootable
     }
 }
@@ -586,12 +586,12 @@ struct Storage {
 
 impl Storage {
     /// Get number of available storage devices
-    fn device_count() -> i32 {
+    fn device_count(): i32 {
         storage_get_device_count()
     }
 
     /// Enumerate all storage devices
-    fn enumerate() -> [DeviceEntry] {
+    fn enumerate(): [DeviceEntry] {
         let count = storage_get_device_count()
         if count <= 0 {
             return []
@@ -602,7 +602,7 @@ impl Storage {
     }
 
     /// Scan partitions on a device
-    fn scan_partitions(device: BlockDevice) -> Result<i32, StorageError> {
+    fn scan_partitions(device: BlockDevice): Result<i32, StorageError> {
         let result = partition_scan(device.handle)
         if result < 0 {
             Result.Err(storage_error_from_code(result))
@@ -612,7 +612,7 @@ impl Storage {
     }
 
     /// Get partition count on device
-    fn partition_count(device: BlockDevice) -> i32 {
+    fn partition_count(device: BlockDevice): i32 {
         partition_get_count(device.handle)
     }
 }
@@ -628,7 +628,7 @@ struct NvmeController {
 
 impl NvmeController {
     /// Create NVMe controller wrapper from block device
-    fn from_device(device: BlockDevice) -> Result<NvmeController, StorageError> {
+    fn from_device(device: BlockDevice): Result<NvmeController, StorageError> {
         let mut info = NvmeControllerInfo {
             vendor_id: 0,
             subsystem_vendor_id: 0,
@@ -650,12 +650,12 @@ impl NvmeController {
     }
 
     /// Get number of namespaces
-    fn namespace_count(self) -> u32 {
+    fn namespace_count(self): u32 {
         self.info.num_namespaces
     }
 
     /// Get namespace info
-    fn namespace_info(self, ns_id: u32) -> Result<NvmeNamespaceInfo, StorageError> {
+    fn namespace_info(self, ns_id: u32): Result<NvmeNamespaceInfo, StorageError> {
         let mut info = NvmeNamespaceInfo {
             id: 0,
             size_blocks: 0,
@@ -673,18 +673,18 @@ impl NvmeController {
     }
 
     /// Get firmware version string
-    fn firmware_version(self) -> str {
+    fn firmware_version(self): str {
         // Return firmware revision as string
         ""  // Simplified
     }
 
     /// Get vendor ID
-    fn vendor_id(self) -> u16 {
+    fn vendor_id(self): u16 {
         self.info.vendor_id
     }
 
     /// Get controller ID
-    fn controller_id(self) -> u16 {
+    fn controller_id(self): u16 {
         self.info.controller_id
     }
 }
@@ -699,12 +699,12 @@ struct RequestQueue {
 
 impl RequestQueue {
     /// Create a new request queue
-    fn new() -> RequestQueue {
+    fn new(): RequestQueue {
         RequestQueue { handle: request_queue_create() }
     }
 
     /// Submit a read request
-    fn submit_read(self, sector: u64, count: u32, buffer: &mut [u8]) -> Result<void, StorageError> {
+    fn submit_read(self, sector: u64, count: u32, buffer: &mut [u8]): Result<void, StorageError> {
         let request = BlockRequest {
             request_type: 0,  // Read
             sector: sector,
@@ -724,7 +724,7 @@ impl RequestQueue {
     }
 
     /// Submit a write request
-    fn submit_write(self, sector: u64, count: u32, buffer: &[u8]) -> Result<void, StorageError> {
+    fn submit_write(self, sector: u64, count: u32, buffer: &[u8]): Result<void, StorageError> {
         let request = BlockRequest {
             request_type: 1,  // Write
             sector: sector,
@@ -744,17 +744,17 @@ impl RequestQueue {
     }
 
     /// Poll for completions
-    fn poll(self) -> i32 {
+    fn poll(self): i32 {
         request_queue_poll(self.handle)
     }
 
     /// Get number of pending requests
-    fn pending_count(self) -> i32 {
+    fn pending_count(self): i32 {
         request_queue_get_pending(self.handle)
     }
 
     /// Destroy the queue
-    fn destroy(self) -> void {
+    fn destroy(self): void {
         request_queue_destroy(self.handle)
     }
 }
