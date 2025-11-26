@@ -536,6 +536,13 @@ pub const Parser = struct {
     ///
     /// Returns: Statement AST node (declarations are represented as statements)
     fn declaration(self: *Parser) ParseError!ast.Stmt {
+        // Capture any doc comments (///) before the declaration
+        var doc_comment: ?[]const u8 = null;
+        if (self.check(.DocComment)) {
+            const doc_token = self.advance();
+            doc_comment = doc_token.lexeme;
+        }
+
         // Parse any attributes first
         const attributes = try self.parseAttributes();
 
@@ -569,6 +576,7 @@ pub const Parser = struct {
         if (self.match(&.{.Struct})) {
             var stmt = try self.structDeclaration();
             if (is_pub) stmt.StructDecl.is_public = true;
+            if (doc_comment) |doc| stmt.StructDecl.doc_comment = doc;
             stmt.StructDecl.attributes = attributes;
             return stmt;
         }
@@ -606,6 +614,7 @@ pub const Parser = struct {
             var stmt = try self.functionDeclaration(is_test);
             if (is_pub or is_export) stmt.FnDecl.is_public = true;
             if (is_export) stmt.FnDecl.is_exported = true;
+            if (doc_comment) |doc| stmt.FnDecl.doc_comment = doc;
             stmt.FnDecl.attributes = attributes;
             return stmt;
         }

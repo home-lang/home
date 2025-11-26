@@ -57,7 +57,7 @@ pub const DocGenerator = struct {
                     .kind = .Function,
                     .name = try self.allocator.dupe(u8, fn_decl.name),
                     .signature = try self.generateFunctionSignature(fn_decl),
-                    .description = try self.extractDocComment(fn_decl.node.loc),
+                    .description = if (fn_decl.doc_comment) |doc| try self.parseDocComment(doc) else try self.allocator.dupe(u8, ""),
                     .file_path = try self.allocator.dupe(u8, file_path),
                     .loc = fn_decl.node.loc,
                     .params = try self.extractParams(fn_decl),
@@ -74,13 +74,13 @@ pub const DocGenerator = struct {
                     .kind = .Struct,
                     .name = try self.allocator.dupe(u8, struct_decl.name),
                     .signature = try self.generateStructSignature(struct_decl),
-                    .description = try self.allocator.dupe(u8, ""),
+                    .description = if (struct_decl.doc_comment) |doc| try self.parseDocComment(doc) else try self.allocator.dupe(u8, ""),
                     .file_path = try self.allocator.dupe(u8, file_path),
                     .loc = struct_decl.node.loc,
                     .params = &[_]ParamDoc{},
                     .return_type = null,
                     .examples = &[_][]const u8{},
-                    .is_public = true,
+                    .is_public = struct_decl.is_public,
                     .is_async = false,
                     .generics = if (struct_decl.type_params.len > 0) try self.allocator.dupe([]const u8, struct_decl.type_params) else &[_][]const u8{},
                 };
@@ -169,14 +169,42 @@ pub const DocGenerator = struct {
         return params;
     }
 
-    /// Extract documentation comment from source location
-    /// Looks for /// comments immediately preceding the declaration
-    fn extractDocComment(self: *DocGenerator, loc: ast.SourceLocation) ![]const u8 {
-        _ = loc;
-        // For now, return empty string
-        // Full implementation would scan backwards from loc to find doc comments
-        // and extract /// comment text
-        return try self.allocator.dupe(u8, "");
+    /// Parse a documentation comment, removing /// prefix and cleaning up formatting
+    /// Handles multiple consecutive /// lines and combines them into a single description
+    fn parseDocComment(self: *DocGenerator, doc_comment: []const u8) ![]const u8 {
+        var result = std.ArrayList(u8).init(self.allocator);
+        defer result.deinit();
+
+        // Split by newlines and process each line
+        var lines = std.mem.splitSequence(u8, doc_comment, "\n");
+        var first_line = true;
+
+        while (lines.next()) |line| {
+            var trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+
+            // Remove /// prefix
+            if (std.mem.startsWith(u8, trimmed, "///")) {
+                trimmed = trimmed[3..];
+                // Remove one space after /// if present
+                if (trimmed.len > 0 and trimmed[0] == ' ') {
+                    trimmed = trimmed[1..];
+                }
+            }
+
+            // Skip empty lines at the start
+            if (first_line and trimmed.len == 0) {
+                continue;
+            }
+
+            if (!first_line) {
+                try result.append('\n');
+            }
+
+            try result.appendSlice(trimmed);
+            first_line = false;
+        }
+
+        return result.toOwnedSlice();
     }
 
     /// Generate HTML documentation
@@ -227,13 +255,32 @@ pub const DocGenerator = struct {
         for (self.docs.items) |doc| {
             if (doc.kind == .Function) {
                 try writer.print("  <div class='item'>\n", .{});
-                try writer.print("    <h3>{s}</h3>\n", .{doc.name});
+                try writer.print("    <h3><a href='{s}.html'>{s}</a>", .{ doc.name, doc.name });
+                if (!doc.is_public) {
+                    try writer.writeAll(" <span style='color: #6b7280; font-size: 0.9em;'>(private)</span>");
+                }
+                try writer.writeAll("</h3>\n");
                 try writer.print("    <div class='signature'>{s}</div>\n", .{doc.signature});
+                if (doc.description.len > 0) {
+                    // Show first line of description
+                    var first_line_end = std.mem.indexOfScalar(u8, doc.description, '\n') orelse doc.description.len;
+                    if (first_line_end > 100) first_line_end = 100;
+                    try writer.print("    <p>{s}", .{doc.description[0..first_line_end]});
+                    if (first_line_end < doc.description.len) {
+                        try writer.writeAll("...");
+                    }
+                    try writer.writeAll("</p>\n");
+                }
+                var badges = std.ArrayList(u8).init(self.allocator);
+                defer badges.deinit();
                 if (doc.generics.len > 0) {
-                    try writer.writeAll("    <p class='generics'>Generic</p>\n");
+                    try badges.appendSlice(" <span class='generics'>Generic</span>");
                 }
                 if (doc.is_async) {
-                    try writer.writeAll("    <p class='async'>Async</p>\n");
+                    try badges.appendSlice(" <span class='async'>Async</span>");
+                }
+                if (badges.items.len > 0) {
+                    try writer.print("    <div>{s}</div>\n", .{badges.items});
                 }
                 try writer.writeAll("  </div>\n");
             }
@@ -244,10 +291,24 @@ pub const DocGenerator = struct {
         for (self.docs.items) |doc| {
             if (doc.kind == .Struct) {
                 try writer.print("  <div class='item'>\n", .{});
-                try writer.print("    <h3>{s}</h3>\n", .{doc.name});
+                try writer.print("    <h3><a href='{s}.html'>{s}</a>", .{ doc.name, doc.name });
+                if (!doc.is_public) {
+                    try writer.writeAll(" <span style='color: #6b7280; font-size: 0.9em;'>(private)</span>");
+                }
+                try writer.writeAll("</h3>\n");
                 try writer.print("    <div class='signature'>{s}</div>\n", .{doc.signature});
+                if (doc.description.len > 0) {
+                    // Show first line of description
+                    var first_line_end = std.mem.indexOfScalar(u8, doc.description, '\n') orelse doc.description.len;
+                    if (first_line_end > 100) first_line_end = 100;
+                    try writer.print("    <p>{s}", .{doc.description[0..first_line_end]});
+                    if (first_line_end < doc.description.len) {
+                        try writer.writeAll("...");
+                    }
+                    try writer.writeAll("</p>\n");
+                }
                 if (doc.generics.len > 0) {
-                    try writer.writeAll("    <p class='generics'>Generic</p>\n");
+                    try writer.writeAll("    <div><span class='generics'>Generic</span></div>\n");
                 }
                 try writer.writeAll("  </div>\n");
             }
@@ -290,39 +351,82 @@ pub const DocGenerator = struct {
             \\  <meta charset="UTF-8">
             \\  <title>{s} - Home Documentation</title>
             \\  <style>
-            \\    body {{ font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }}
-            \\    .signature {{ background: #f0f0f0; padding: 10px; border-radius: 5px; }}
+            \\    body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #fafafa; }}
+            \\    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }}
+            \\    .back-link {{ color: #7c3aed; text-decoration: none; }}
+            \\    .back-link:hover {{ text-decoration: underline; }}
+            \\    h1 {{ color: #1f2937; margin: 0; }}
+            \\    .visibility {{ color: #6b7280; font-size: 0.9em; font-weight: normal; }}
+            \\    .signature {{ background: #f3f4f6; padding: 15px; border-radius: 8px; font-family: 'Monaco', 'Courier New', monospace; border: 1px solid #e5e7eb; overflow-x: auto; }}
+            \\    .description {{ margin: 20px 0; line-height: 1.6; color: #374151; }}
+            \\    .section {{ margin: 30px 0; }}
+            \\    .section h3 {{ color: #4b5563; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }}
             \\    .params {{ margin-top: 20px; }}
-            \\    .param {{ margin: 10px 0; }}
+            \\    .param {{ margin: 15px 0; padding: 12px; background: white; border-radius: 6px; border-left: 3px solid #7c3aed; }}
+            \\    .param-name {{ font-weight: 600; color: #7c3aed; }}
+            \\    .param-type {{ color: #059669; font-family: monospace; }}
+            \\    .badges {{ margin: 15px 0; }}
+            \\    .badge {{ display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 0.85em; margin-right: 8px; }}
+            \\    .badge-generic {{ background: #d1fae5; color: #065f46; }}
+            \\    .badge-async {{ background: #fef3c7; color: #92400e; }}
+            \\    .badge-public {{ background: #dbeafe; color: #1e40af; }}
+            \\    .badge-private {{ background: #e5e7eb; color: #374151; }}
             \\  </style>
             \\</head>
             \\<body>
-            \\  <h1>{s}</h1>
+            \\  <div class="header">
+            \\    <h1>{s} <span class="visibility">({s})</span></h1>
+            \\    <a href="index.html" class="back-link">← Back to Index</a>
+            \\  </div>
             \\  <div class="signature"><code>{s}</code></div>
             \\
-        , .{ doc.name, doc.name, doc.signature });
+        , .{ doc.name, if (doc.is_public) "public" else "private", doc.signature });
+
+        // Write badges
+        if (doc.generics.len > 0 or doc.is_async or doc.is_public) {
+            try writer.writeAll("  <div class=\"badges\">\n");
+            if (doc.is_public) {
+                try writer.writeAll("    <span class=\"badge badge-public\">Public</span>\n");
+            } else {
+                try writer.writeAll("    <span class=\"badge badge-private\">Private</span>\n");
+            }
+            if (doc.generics.len > 0) {
+                try writer.writeAll("    <span class=\"badge badge-generic\">Generic</span>\n");
+            }
+            if (doc.is_async) {
+                try writer.writeAll("    <span class=\"badge badge-async\">Async</span>\n");
+            }
+            try writer.writeAll("  </div>\n");
+        }
 
         // Write description
         if (doc.description.len > 0) {
-            try writer.print("  <p>{s}</p>\n", .{doc.description});
+            try writer.print("  <div class=\"description\">{s}</div>\n", .{doc.description});
         }
 
         // Write parameters
         if (doc.params.len > 0) {
-            try writer.writeAll("  <div class=\"params\"><h3>Parameters:</h3>\n");
+            try writer.writeAll("  <div class=\"section\">\n");
+            try writer.writeAll("    <h3>Parameters</h3>\n");
+            try writer.writeAll("    <div class=\"params\">\n");
             for (doc.params) |param| {
-                try writer.print("    <div class=\"param\"><b>{s}</b>: {s}", .{ param.name, param.type_name });
+                try writer.writeAll("      <div class=\"param\">\n");
+                try writer.print("        <span class=\"param-name\">{s}</span>: <span class=\"param-type\">{s}</span>", .{ param.name, param.type_name });
                 if (param.description.len > 0) {
-                    try writer.print(" - {s}", .{param.description});
+                    try writer.print("<br>{s}", .{param.description});
                 }
-                try writer.writeAll("</div>\n");
+                try writer.writeAll("\n      </div>\n");
             }
+            try writer.writeAll("    </div>\n");
             try writer.writeAll("  </div>\n");
         }
 
         // Write return type
         if (doc.return_type) |ret_type| {
-            try writer.print("  <p><b>Returns:</b> {s}</p>\n", .{ret_type});
+            try writer.writeAll("  <div class=\"section\">\n");
+            try writer.writeAll("    <h3>Returns</h3>\n");
+            try writer.print("    <div class=\"param-type\">{s}</div>\n", .{ret_type});
+            try writer.writeAll("  </div>\n");
         }
 
         // Write footer

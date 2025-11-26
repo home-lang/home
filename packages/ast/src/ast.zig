@@ -1939,6 +1939,7 @@ pub const StructDecl = struct {
     methods: []const *FnDecl = &.{}, // Methods defined inside struct body
     is_public: bool = false,
     attributes: []const Attribute = &.{},
+    doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);
@@ -2052,6 +2053,7 @@ pub const FnDecl = struct {
     is_exported: bool = false, // export keyword for C ABI exports
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
+    doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);
