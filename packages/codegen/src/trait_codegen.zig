@@ -179,6 +179,7 @@ pub const TraitCodegen = struct {
 
     /// Generate vtable instance for an implementation
     fn generateVTableInstance(self: *TraitCodegen, writer: anytype, impl_decl: *ImplDecl) !void {
+        _ = self;
         const type_name = impl_decl.type_name;
         const trait_name = impl_decl.trait_name orelse return Error.InvalidImplementation;
 
@@ -263,9 +264,9 @@ pub const TraitCodegen = struct {
                     try writer.writeAll(": ");
                     try self.writeTypeAnnotation(writer, type_ann);
                 }
-                if (let_decl.initializer) |init| {
+                if (let_decl.initializer) |initializer| {
                     try writer.writeAll(" = ");
-                    try self.generateExpression(writer, init);
+                    try self.generateExpression(writer, initializer);
                 }
                 try writer.writeAll(";\n");
             },
@@ -289,7 +290,6 @@ pub const TraitCodegen = struct {
 
     /// Generate expression from AST
     fn generateExpression(self: *TraitCodegen, writer: anytype, expr: *ast.Expr) !void {
-        _ = self;
         switch (expr.*) {
             .Literal => |lit| {
                 switch (lit) {
@@ -331,7 +331,6 @@ pub const TraitCodegen = struct {
 
     /// Write type annotation
     fn writeTypeAnnotation(self: *TraitCodegen, writer: anytype, type_ann: *const ast.TypeAnnotation) !void {
-        _ = self;
         switch (type_ann.*) {
             .Simple => |simple| try writer.print("{s}", .{simple}),
             .Generic => |generic| {

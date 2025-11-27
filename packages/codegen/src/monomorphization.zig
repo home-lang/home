@@ -1,8 +1,9 @@
 const std = @import("std");
 const ast = @import("ast");
 const types = @import("types");
-const GenericSystem = @import("../generics/generic_system.zig").GenericSystem;
-const GenericInstantiation = @import("../generics/generic_system.zig").GenericInstantiation;
+const generics = @import("generics");
+const GenericSystem = generics.GenericSystem;
+const GenericInstantiation = generics.GenericInstantiation;
 
 /// Monomorphization - converting generic code to concrete specialized code
 /// Takes generic functions/structs and generates concrete versions for each type instantiation
@@ -320,7 +321,7 @@ pub const Monomorphization = struct {
         type_args: []const []const u8,
     ) !void {
         // Walk function body AST and substitute generic types
-        try self.generateFunctionBody(writer, &func.body, generic_params, type_args);
+        try self.generateBlockWithSubstitutions(writer, &func.body, generic_params, type_args);
     }
 
     /// Generate struct method with type substitutions
@@ -367,8 +368,8 @@ pub const Monomorphization = struct {
         return self.instantiations.items;
     }
 
-    /// Generate function body with type substitutions
-    fn generateFunctionBody(
+    /// Generate block statement with type substitutions
+    fn generateBlockWithSubstitutions(
         self: *Monomorphization,
         writer: anytype,
         block: *const ast.BlockStmt,
@@ -403,9 +404,9 @@ pub const Monomorphization = struct {
                     defer self.allocator.free(subst_type);
                     try writer.print(": {s}", .{subst_type});
                 }
-                if (let_decl.initializer) |init| {
+                if (let_decl.initializer) |initializer| {
                     try writer.writeAll(" = ");
-                    try self.generateExpression(writer, init, generic_params, type_args);
+                    try self.generateExpression(writer, initializer, generic_params, type_args);
                 }
                 try writer.writeAll(";\n");
             },
@@ -416,9 +417,9 @@ pub const Monomorphization = struct {
                     defer self.allocator.free(subst_type);
                     try writer.print(": {s}", .{subst_type});
                 }
-                if (const_decl.initializer) |init| {
+                if (const_decl.initializer) |initializer| {
                     try writer.writeAll(" = ");
-                    try self.generateExpression(writer, init, generic_params, type_args);
+                    try self.generateExpression(writer, initializer, generic_params, type_args);
                 }
                 try writer.writeAll(";\n");
             },
@@ -438,10 +439,10 @@ pub const Monomorphization = struct {
                 try writer.writeAll("if (");
                 try self.generateExpression(writer, if_stmt.condition, generic_params, type_args);
                 try writer.writeAll(") ");
-                try self.generateFunctionBody(writer, &if_stmt.then_block, generic_params, type_args);
+                try self.generateBlockWithSubstitutions(writer, &if_stmt.then_block, generic_params, type_args);
                 if (if_stmt.else_block) |else_block| {
                     try writer.writeAll(" else ");
-                    try self.generateFunctionBody(writer, &else_block, generic_params, type_args);
+                    try self.generateBlockWithSubstitutions(writer, &else_block, generic_params, type_args);
                 }
                 try writer.writeAll("\n");
             },
@@ -449,7 +450,7 @@ pub const Monomorphization = struct {
                 try writer.writeAll("while (");
                 try self.generateExpression(writer, while_stmt.condition, generic_params, type_args);
                 try writer.writeAll(") ");
-                try self.generateFunctionBody(writer, &while_stmt.body, generic_params, type_args);
+                try self.generateBlockWithSubstitutions(writer, &while_stmt.body, generic_params, type_args);
                 try writer.writeAll("\n");
             },
             else => {
@@ -466,9 +467,6 @@ pub const Monomorphization = struct {
         generic_params: []const ast.GenericParam,
         type_args: []const []const u8,
     ) !void {
-        _ = generic_params;
-        _ = type_args;
-
         switch (expr.*) {
             .Literal => |lit| {
                 switch (lit) {

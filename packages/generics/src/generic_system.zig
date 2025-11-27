@@ -1,7 +1,7 @@
 const std = @import("std");
-const ast = @import("../ast/ast.zig");
-const types = @import("../types/type_system.zig");
-const traits = @import("../traits/trait_system.zig");
+const ast = @import("ast");
+const types = @import("types");
+const traits = @import("traits");
 
 /// Generic parameter definition
 pub const GenericParam = struct {
@@ -319,8 +319,7 @@ pub const GenericSystem = struct {
 
     /// Monomorphize a single instantiation
     fn monomorphize(self: *GenericSystem, inst: *GenericInstantiation) !MonomorphizedFunction {
-        const decl = self.declarations.get(inst.generic_name).?;
-
+        _ = self;
         const name = try inst.getMonomorphizedName();
 
         return MonomorphizedFunction{

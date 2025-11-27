@@ -169,8 +169,6 @@ pub const SuggestionEngine = struct {
 
     /// Generate suggestion for type mismatch
     pub fn suggestForTypeMismatch(self: *SuggestionEngine, expected: []const u8, found: []const u8) !?[]const u8 {
-        _ = self;
-
         // Common type conversion suggestions
         if (std.mem.eql(u8, expected, "string") and std.mem.eql(u8, found, "int")) {
             return try std.fmt.allocPrint(

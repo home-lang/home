@@ -255,10 +255,10 @@ pub const ErrorFormatter = struct {
         file: []const u8,
         line: usize,
         column: usize,
-        err: CompilerError,
+        error_value: CompilerError,
         source_line: ?[]const u8,
     ) ![]const u8 {
-        const message = switch (err) {
+        const message = switch (error_value) {
             error.InvalidCharacter => "invalid character in source",
             error.UnterminatedString => "unterminated string literal",
             error.UnterminatedComment => "unterminated comment",
@@ -323,9 +323,9 @@ pub const ErrorFormatter = struct {
         self: ErrorFormatter,
         file: []const u8,
         line: usize,
-        err: RuntimeError,
+        error_value: RuntimeError,
     ) ![]const u8 {
-        const message = switch (err) {
+        const message = switch (error_value) {
             error.OutOfMemory => "out of memory",
             error.NullPointerDereference => "null pointer dereference",
             error.UseAfterFree => "use after free",
@@ -800,14 +800,14 @@ pub const DiagnosticBag = struct {
 
     /// Create and add an error
     pub fn addError(self: *DiagnosticBag, message: []const u8, location: SourceLocation) !*RichDiagnostic {
-        var diag = RichDiagnostic.init(self.allocator, .@"error", message, location);
+        const diag = RichDiagnostic.init(self.allocator, .@"error", message, location);
         try self.add(diag);
         return &self.diagnostics.items[self.diagnostics.items.len - 1];
     }
 
     /// Create and add a warning
     pub fn addWarning(self: *DiagnosticBag, message: []const u8, location: SourceLocation) !*RichDiagnostic {
-        var diag = RichDiagnostic.init(self.allocator, .warning, message, location);
+        const diag = RichDiagnostic.init(self.allocator, .warning, message, location);
         try self.add(diag);
         return &self.diagnostics.items[self.diagnostics.items.len - 1];
     }

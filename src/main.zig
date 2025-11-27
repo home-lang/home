@@ -24,7 +24,7 @@ const AuthManager = pkg_manager_mod.AuthManager;
 const ir_cache_mod = @import("ir_cache");
 const IRCache = ir_cache_mod.IRCache;
 const FileWatcher = ir_cache_mod.FileWatcher;
-const IncrementalCompiler = @import("cache").IncrementalCompiler;
+const IncrementalCompiler = ir_cache_mod.IncrementalCompiler;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
 const AllocationProfiler = profiler_mod.AllocationProfiler;
@@ -646,26 +646,23 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
     if (build_options.enable_ir_cache and !kernel_mode) {
         // Use new incremental compiler
-        inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache");
+        inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache", true);
         std.debug.print("{s}Incremental compilation:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
         // Check if module needs recompilation
-        const needs_rebuild = try inc_compiler.?.needsRecompilation(file_path);
-        if (!needs_rebuild) {
+        const can_use_cached = try inc_compiler.?.canUseCached(file_path, source);
+        if (can_use_cached) {
             std.debug.print("{s}Cache Hit:{s} Module is up-to-date, skipping compilation\n", .{
                 Color.Green.code(),
                 Color.Reset.code()
             });
 
-            // Get cached artifacts
-            if (inc_compiler.?.getCachedArtifacts(file_path)) |artifacts| {
-                if (artifacts.object_path) |obj_path| {
-                    std.debug.print("{s}Using cached object:{s} {s}\n", .{
-                        Color.Cyan.code(),
-                        Color.Reset.code(),
-                        obj_path
-                    });
-                }
+            // Get cached object
+            if (try inc_compiler.?.getCachedObject(file_path)) |_| {
+                std.debug.print("{s}Using cached object{s}\n", .{
+                    Color.Cyan.code(),
+                    Color.Reset.code(),
+                });
             }
         } else {
             std.debug.print("{s}Cache Miss:{s} Recompiling module\n", .{

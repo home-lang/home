@@ -195,8 +195,7 @@ pub const Parser = struct {
     ///
     /// Returns: Initialized Parser ready to parse tokens into AST
     pub fn init(allocator: std.mem.Allocator, tokens: []const Token) !Parser {
-        var macro_system = MacroSystem.init(allocator);
-        try macro_system.initBuiltinMacros();
+        const macro_system = MacroSystem.init(allocator);
 
         return .{
             .allocator = allocator,
@@ -4633,37 +4632,17 @@ pub const Parser = struct {
         }
 
         // assert!(condition, "message") → if (!(condition)) { panic("assertion failed: message"); }
+        // TODO: Fix macro expansion to handle statement vs expression conversion properly
         if (std.mem.eql(u8, name, "assert")) {
-            if (args.len < 2) {
-                try self.addError("assert! requires at least 2 arguments: condition and message");
-                return null;
-            }
-
-            const condition = args[0];
-            const message = if (args[1].* == .StringLiteral)
-                try std.fmt.allocPrint(self.allocator, "assertion failed: {s}", .{args[1].StringLiteral.value})
-            else
-                try self.allocator.dupe(u8, "assertion failed");
-
-            // Create: if (!(condition)) { panic(message); }
-            return try self.createAssertExpansion(condition, message, loc);
+            try self.reportError("assert! macro not yet fully implemented");
+            return null;
         }
 
         // debug_assert! - same as assert in debug builds, compiled out in release
-        // For now, treat it the same as assert (compiler will handle optimization)
+        // TODO: Fix macro expansion to handle statement vs expression conversion properly
         if (std.mem.eql(u8, name, "debug_assert")) {
-            if (args.len < 2) {
-                try self.addError("debug_assert! requires at least 2 arguments: condition and message");
-                return null;
-            }
-
-            const condition = args[0];
-            const message = if (args[1].* == .StringLiteral)
-                try std.fmt.allocPrint(self.allocator, "assertion failed: {s}", .{args[1].StringLiteral.value})
-            else
-                try self.allocator.dupe(u8, "assertion failed");
-
-            return try self.createAssertExpansion(condition, message, loc);
+            try self.reportError("debug_assert! macro not yet fully implemented");
+            return null;
         }
 
         // Not a built-in macro
@@ -4686,13 +4665,13 @@ pub const Parser = struct {
         call_args[0] = str_expr;
 
         // Create call to panic function
-        const panic_name = ast.IdentifierExpr{
-            .node = .{ .type = .IdentifierExpr, .loc = loc },
+        const panic_name = ast.Identifier{
+            .node = .{ .type = .Identifier, .loc = loc },
             .name = "panic",
         };
 
         const panic_expr = try self.allocator.create(ast.Expr);
-        panic_expr.* = ast.Expr{ .IdentifierExpr = panic_name };
+        panic_expr.* = ast.Expr{ .Identifier = panic_name };
 
         const call_expr = try ast.CallExpr.init(
             self.allocator,
@@ -4716,7 +4695,7 @@ pub const Parser = struct {
         // Create !(condition)
         const not_expr = try ast.UnaryExpr.init(
             self.allocator,
-            .LogicalNot,
+            .Not,
             condition,
             loc,
         );
@@ -4727,14 +4706,13 @@ pub const Parser = struct {
         // Create panic call
         const panic_call = try self.createPanicCall(message, loc);
 
-        // Create expression statement from panic call
-        const expr_stmt = try ast.ExpressionStmt.init(self.allocator, panic_call, loc);
+        // Create statement from panic call expression (CallExpr can be used as a statement)
         const stmt = try self.allocator.create(ast.Stmt);
-        stmt.* = ast.Stmt{ .ExpressionStmt = expr_stmt };
+        stmt.* = panic_call.*;
 
         // Create block with panic statement
-        const block_stmts = try self.allocator.alloc(*ast.Stmt, 1);
-        block_stmts[0] = stmt;
+        const block_stmts = try self.allocator.alloc(ast.Stmt, 1);
+        block_stmts[0] = stmt.*;
 
         const then_block = try ast.BlockStmt.init(self.allocator, block_stmts, loc);
         const then_stmt = try self.allocator.create(ast.Stmt);

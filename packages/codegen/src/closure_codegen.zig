@@ -140,8 +140,6 @@ pub const ClosureCodegen = struct {
         closure: *ClosureExpr,
         trait: ClosureTrait,
     ) !void {
-        _ = self;
-
         try writer.print("fn {s}(", .{func_name});
 
         // First parameter is always the environment
@@ -260,6 +258,7 @@ pub const ClosureCodegen = struct {
         trait: ClosureTrait,
         env_struct_name: []const u8,
     ) !void {
+        _ = self;
         _ = env_struct_name;
 
         switch (trait) {
@@ -388,9 +387,9 @@ pub const ClosureCodegen = struct {
                     try writer.writeAll(": ");
                     try self.writeTypeAnnotation(writer, type_ann);
                 }
-                if (let_decl.initializer) |init| {
+                if (let_decl.initializer) |initializer| {
                     try writer.writeAll(" = ");
-                    try self.generateExpression(writer, init);
+                    try self.generateExpression(writer, initializer);
                 }
                 try writer.writeAll(";\n");
             },
@@ -429,7 +428,6 @@ pub const ClosureCodegen = struct {
 
     /// Write type annotation
     fn writeTypeAnnotation(self: *ClosureCodegen, writer: anytype, type_ann: *const ast.TypeAnnotation) !void {
-        _ = self;
         switch (type_ann.*) {
             .Simple => |simple| try writer.print("{s}", .{simple}),
             .Generic => |generic| {
@@ -459,7 +457,6 @@ pub const ClosureCodegen = struct {
 
     /// Write a type expression
     fn writeTypeExpr(self: *ClosureCodegen, writer: anytype, type_expr: *ast.closure_nodes.TypeExpr) !void {
-        _ = self;
         switch (type_expr.*) {
             .Named => |name| try writer.print("{s}", .{name}),
             .Generic => |gen| {

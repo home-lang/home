@@ -1350,7 +1350,7 @@ pub const TypeChecker = struct {
                 const var_name = unary.operand.Identifier.name;
 
                 // Track the borrow in ownership system
-                try self.ownership_tracker.borrow(var_name, unary.node.loc);
+                try self.ownership_tracker.borrow(var_name, false, unary.node.loc);
 
                 // Return Reference type
                 const inner_type = try self.allocator.create(Type);

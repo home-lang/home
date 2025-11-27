@@ -1,20 +1,22 @@
 const std = @import("std");
 
-/// Helper function to create a package module with zig-test-framework imported
+/// Helper function to create a package module with optional zig-test-framework
 fn createPackage(
     b: *std.Build,
     path: []const u8,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    test_framework: *std.Build.Module,
+    test_framework: ?*std.Build.Module,
 ) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path(path),
         .target = target,
         .optimize = optimize,
     });
-    // Add zig-test-framework to every package
-    module.addImport("zig-test-framework", test_framework);
+    // Add zig-test-framework if available
+    if (test_framework) |tf| {
+        module.addImport("zig-test-framework", tf);
+    }
     return module;
 }
 
@@ -26,11 +28,20 @@ pub fn build(b: *std.Build) void {
     // Workspace-Level Dependencies
     // ========================================================================
 
-    // Add zig-test-framework as a workspace-wide module
-    // Available to all packages for testing and coverage
-    const zig_test_framework = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = "/Users/chrisbreuer/Code/zig-test-framework/src/lib.zig" },
-    });
+    // Try to find zig-test-framework (optional)
+    // If not found, packages will build without test framework support
+    const test_framework_path = b.option(
+        []const u8,
+        "test-framework-path",
+        "Path to zig-test-framework (optional)",
+    );
+
+    const zig_test_framework: ?*std.Build.Module = if (test_framework_path) |path|
+        b.createModule(.{
+            .root_source_file = .{ .cwd_relative = path },
+        })
+    else
+        null;
 
     // Build options for conditional compilation
     const enable_craft = b.option(bool, "craft", "Enable Craft integration") orelse false;
@@ -59,7 +70,9 @@ pub fn build(b: *std.Build) void {
     const types_pkg = createPackage(b, "packages/types/src/type_system.zig", target, optimize, zig_test_framework);
     const interpreter_pkg = createPackage(b, "packages/interpreter/src/interpreter.zig", target, optimize, zig_test_framework);
     const comptime_pkg = createPackage(b, "packages/comptime/src/comptime.zig", target, optimize, zig_test_framework);
+    const generics_pkg = createPackage(b, "packages/generics/src/generic_system.zig", target, optimize, zig_test_framework);
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
+    const compiler_pkg = createPackage(b, "packages/compiler/src/borrow_check_pass.zig", target, optimize, zig_test_framework);
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
     const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize, zig_test_framework);
     const linter_pkg = createPackage(b, "packages/linter/src/linter.zig", target, optimize, zig_test_framework);
@@ -144,6 +157,7 @@ pub fn build(b: *std.Build) void {
     parser_pkg.addImport("ast", ast_pkg);
     diagnostics_pkg.addImport("ast", ast_pkg);
     parser_pkg.addImport("diagnostics", diagnostics_pkg);
+    parser_pkg.addImport("macros", macros_pkg);
     types_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("diagnostics", diagnostics_pkg);
     types_pkg.addImport("traits", traits_pkg);
@@ -151,11 +165,18 @@ pub fn build(b: *std.Build) void {
     interpreter_pkg.addImport("ast", ast_pkg);
     comptime_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("comptime", comptime_pkg);
+    generics_pkg.addImport("ast", ast_pkg);
+    generics_pkg.addImport("types", types_pkg);
+    generics_pkg.addImport("traits", traits_pkg);
     codegen_pkg.addImport("ast", ast_pkg);
     codegen_pkg.addImport("lexer", lexer_pkg);
     codegen_pkg.addImport("parser", parser_pkg);
     codegen_pkg.addImport("types", types_pkg);
     codegen_pkg.addImport("comptime", comptime_pkg);
+    codegen_pkg.addImport("generics", generics_pkg);
+    compiler_pkg.addImport("ast", ast_pkg);
+    compiler_pkg.addImport("types", types_pkg);
+    compiler_pkg.addImport("diagnostics", diagnostics_pkg);
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);
@@ -182,6 +203,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("types", types_pkg);
     exe.root_module.addImport("interpreter", interpreter_pkg);
     exe.root_module.addImport("codegen", codegen_pkg);
+    exe.root_module.addImport("compiler", compiler_pkg);
     exe.root_module.addImport("formatter", formatter_pkg);
     exe.root_module.addImport("linter", linter_pkg);
     exe.root_module.addImport("macros", macros_pkg);
@@ -265,7 +287,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    home_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        home_module.addImport("zig-test-framework", tf);
+    }
     home_module.addImport("lexer", lexer_pkg);
     home_module.addImport("ast", ast_pkg);
     home_module.addImport("parser", parser_pkg);
@@ -279,14 +303,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    http_router_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        http_router_module.addImport("zig-test-framework", tf);
+    }
 
     const craft_module = b.createModule(.{
         .root_source_file = b.path("packages/basics/src/craft.zig"),
         .target = target,
         .optimize = optimize,
     });
-    craft_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        craft_module.addImport("zig-test-framework", tf);
+    }
 
     // Lexer tests
     const lexer_tests = b.addTest(.{
@@ -309,7 +337,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     parser_tests.root_module.addImport("home", home_module);
-    parser_tests.root_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        parser_tests.root_module.addImport("zig-test-framework", tf);
+    }
 
     const run_parser_tests = b.addRunArtifact(parser_tests);
 
@@ -322,7 +352,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     http_router_tests.root_module.addImport("http_router", http_router_module);
-    http_router_tests.root_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        http_router_tests.root_module.addImport("zig-test-framework", tf);
+    }
 
     const run_http_router_tests = b.addRunArtifact(http_router_tests);
 
@@ -335,7 +367,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     craft_tests.root_module.addImport("craft", craft_module);
-    craft_tests.root_module.addImport("zig-test-framework", zig_test_framework);
+    if (zig_test_framework) |tf| {
+        craft_tests.root_module.addImport("zig-test-framework", tf);
+    }
 
     const run_craft_tests = b.addRunArtifact(craft_tests);
 
@@ -612,35 +646,37 @@ pub fn build(b: *std.Build) void {
     const run_pantry_tests = b.addRunArtifact(pantry_tests);
     test_step.dependOn(&run_pantry_tests.step);
 
-    // Test zig-test-framework integration
-    const framework_integration_mod = b.createModule(.{
-        .root_source_file = b.path("packages/build/test_framework_integration.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    framework_integration_mod.addImport("zig-test-framework", zig_test_framework);
-
-    const framework_integration_tests = b.addTest(.{ .root_module = framework_integration_mod });
-    const run_framework_integration_tests = b.addRunArtifact(framework_integration_tests);
-
-    const framework_test_step = b.step("test-framework", "Test zig-test-framework integration");
-    framework_test_step.dependOn(&run_framework_integration_tests.step);
-
-    // Coverage test runner executable
-    const coverage_runner = b.addExecutable(.{
-        .name = "coverage-runner",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/build/test_with_coverage.zig"),
+    // Test zig-test-framework integration (only if framework is available)
+    if (zig_test_framework) |tf| {
+        const framework_integration_mod = b.createModule(.{
+            .root_source_file = b.path("packages/build/test_framework_integration.zig"),
             .target = target,
             .optimize = optimize,
-        }),
-    });
-    coverage_runner.root_module.addImport("zig-test-framework", zig_test_framework);
-    b.installArtifact(coverage_runner);
+        });
+        framework_integration_mod.addImport("zig-test-framework", tf);
 
-    const run_coverage_runner = b.addRunArtifact(coverage_runner);
-    const coverage_step = b.step("coverage", "Run coverage test runner");
-    coverage_step.dependOn(&run_coverage_runner.step);
+        const framework_integration_tests = b.addTest(.{ .root_module = framework_integration_mod });
+        const run_framework_integration_tests = b.addRunArtifact(framework_integration_tests);
+
+        const framework_test_step = b.step("test-framework", "Test zig-test-framework integration");
+        framework_test_step.dependOn(&run_framework_integration_tests.step);
+
+        // Coverage test runner executable
+        const coverage_runner = b.addExecutable(.{
+            .name = "coverage-runner",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/build/test_with_coverage.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        coverage_runner.root_module.addImport("zig-test-framework", tf);
+        b.installArtifact(coverage_runner);
+
+        const run_coverage_runner = b.addRunArtifact(coverage_runner);
+        const coverage_step = b.step("coverage", "Run coverage test runner");
+        coverage_step.dependOn(&run_coverage_runner.step);
+    }
 
     // Parallel test runner with caching and benchmarking
     // TODO: Fix ArrayList compilation issue in Zig 0.15.1
