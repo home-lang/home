@@ -28,6 +28,7 @@
 18. [Comptime](#18-comptime)
 19. [Standard Library](#19-standard-library)
 20. [General Improvements](#20-general-improvements)
+21. [Known Issues](#21-known-issues)
 
 ---
 
@@ -864,6 +865,38 @@ See [Interpreter section](#5-interpreter) - Debugger TODOs are in `packages/inte
 | High | **Test Execution** | Test discovery works but tests don't actually run |
 | Medium | **Coverage** | Coverage builder exists but test suggestions not implemented |
 | Medium | **Integration Tests** | Need more comprehensive test suite |
+
+---
+
+## 21. Known Issues
+
+### ~~Critical Runtime Issues~~ ✅ FIXED
+
+| Priority | Component | Description | Status |
+|----------|-----------|-------------|--------|
+| ~~**CRITICAL**~~ | ~~**Runtime**~~ | ~~**Arena allocator corruption during interpretation** - `home run` crashes with "start index 16 is larger than end index 0" when trying to define function names in environment.~~ | ✅ **FIXED** (Session 10) |
+
+**Root Cause:**
+- `Interpreter.init()` was returning by value, causing the internal `ArenaAllocator` to be copied
+- `ArenaAllocator` contains internal pointers and state that become corrupted when copied
+- When the original arena went out of scope, the copied arena had invalid internal buffer pointers
+
+**Fix Applied:**
+- Changed `Interpreter.init()` to return `!*Interpreter` (pointer) instead of `Interpreter` (value)
+- Allocate interpreter on the heap via `allocator.create(Interpreter)`
+- Initialize arena directly in the struct field to avoid any copying: `interpreter.arena = ArenaAllocator.init(allocator)`
+- Updated `deinit()` to call `allocator.destroy(self)` to free the interpreter itself
+- Updated all call sites in `main.zig` and `repl.zig`
+
+**Files Modified:**
+- `packages/interpreter/src/interpreter.zig` - init/deinit methods
+- `src/main.zig` - call sites updated
+- `src/repl.zig` - call site updated
+
+**Verified Working:**
+- ✅ `examples/hello.home` - prints "Hello, Home!"
+- ✅ `examples/test_optimizer.home` - outputs correct result
+- ✅ `examples/test_optimizations.home` - all tests pass
 
 ---
 

@@ -610,7 +610,7 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const program = try parser.parse();
 
     // Interpret
-    var interpreter = Interpreter.init(allocator, program);
+    const interpreter = try Interpreter.init(allocator, program);
     defer interpreter.deinit();
 
     std.debug.print("{s}Running:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -1055,7 +1055,10 @@ fn runAndReportError(allocator: std.mem.Allocator, file_path: []const u8) void {
     };
 
     // Interpret
-    var interpreter = Interpreter.init(allocator, program);
+    const interpreter = Interpreter.init(allocator, program) catch |err| {
+        std.debug.print("{s}Interpreter init error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+        return;
+    };
     defer interpreter.deinit();
 
     interpreter.interpret() catch |err| {

@@ -230,7 +230,10 @@ pub const Repl = struct {
         };
 
         // Interpret
-        var interpreter = Interpreter.init(self.allocator, program);
+        const interpreter = Interpreter.init(self.allocator, program) catch |err| {
+            std.debug.print("{s}Interpreter init error:{s} {}\n\n", .{ Color.Red.code(), Color.Reset.code(), err });
+            return;
+        };
         defer interpreter.deinit();
 
         interpreter.interpret() catch |err| {

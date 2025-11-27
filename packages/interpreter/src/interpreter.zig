@@ -61,23 +61,29 @@ pub const Interpreter = struct {
     /// Current continue target (label or null for any loop)
     continue_target: ?LoopTarget,
 
-    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Interpreter {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        const arena_allocator = arena.allocator();
+    pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) !*Interpreter {
+        const interpreter = try allocator.create(Interpreter);
+        errdefer allocator.destroy(interpreter);
 
-        return .{
-            .allocator = allocator,
-            .arena = arena,
-            .global_env = Environment.init(arena_allocator, null),
-            .program = program,
-            .return_value = null,
-            .debugger = null,
-            .debug_enabled = false,
-            .source_file = "",
-            .loop_labels = .{ .items = &.{}, .capacity = 0 },
-            .break_target = null,
-            .continue_target = null,
-        };
+        // Initialize arena directly in the struct to avoid copying
+        interpreter.arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer interpreter.arena.deinit();
+
+        const arena_allocator = interpreter.arena.allocator();
+
+        // Now set the rest of the fields
+        interpreter.allocator = allocator;
+        interpreter.global_env = Environment.init(arena_allocator, null);
+        interpreter.program = program;
+        interpreter.return_value = null;
+        interpreter.debugger = null;
+        interpreter.debug_enabled = false;
+        interpreter.source_file = "";
+        interpreter.loop_labels = .{ .items = &.{}, .capacity = 0 };
+        interpreter.break_target = null;
+        interpreter.continue_target = null;
+
+        return interpreter;
     }
 
     /// Initialize interpreter with debug support
@@ -86,8 +92,8 @@ pub const Interpreter = struct {
         program: *const ast.Program,
         debugger: *Debugger,
         source_file: []const u8,
-    ) Interpreter {
-        var interpreter = init(allocator, program);
+    ) !*Interpreter {
+        const interpreter = try init(allocator, program);
         interpreter.debugger = debugger;
         interpreter.debug_enabled = true;
         interpreter.source_file = source_file;
@@ -98,8 +104,10 @@ pub const Interpreter = struct {
         // Arena allocator frees all allocated memory at once
         // This includes all strings, arrays, struct fields, AND the environment's HashMap
         // We don't need to call global_env.deinit() because the arena owns everything
-        self.loop_labels.deinit(self.allocator);
+        const allocator = self.allocator;
+        self.loop_labels.deinit(allocator);
         self.arena.deinit();
+        allocator.destroy(self);
     }
 
     pub fn interpret(self: *Interpreter) !void {
