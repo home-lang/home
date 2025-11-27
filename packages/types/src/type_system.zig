@@ -892,9 +892,12 @@ pub const TypeChecker = struct {
         if (self.source_path) |sp| {
             if (std.mem.lastIndexOf(u8, sp, "/")) |last_slash| {
                 const dir = sp[0..last_slash];
-                // Check if we're in src/ and go up to project root
+                // Check if we're in src/ - handle both "src/..." and ".../src/..."
                 if (std.mem.indexOf(u8, dir, "/src")) |src_pos| {
                     source_root = dir[0..src_pos];
+                } else if (std.mem.startsWith(u8, dir, "src")) {
+                    // Relative path like "src/engine" - source_root is "."
+                    source_root = ".";
                 } else {
                     source_root = dir;
                 }

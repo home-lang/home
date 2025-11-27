@@ -1604,10 +1604,14 @@ pub const Parser = struct {
             return ast.Stmt{ .TupleDestructureDecl = decl };
         }
 
-        // Accept Identifier or 'default' keyword as variable name
+        // Accept Identifier or keywords as variable name (keywords can be contextual identifiers)
         const name_token = if (self.match(&.{.Identifier}))
             self.previous()
         else if (self.match(&.{.Default}))
+            self.previous()
+        else if (self.match(&.{.Type}))
+            self.previous()
+        else if (self.match(&.{.It}))
             self.previous()
         else blk: {
             try self.reportError("Expected variable name");
@@ -3184,6 +3188,12 @@ pub const Parser = struct {
             self.previous()
         else if (self.match(&.{.Test}))
             self.previous()
+        else if (self.match(&.{.Import}))
+            self.previous()
+        else if (self.match(&.{.It}))
+            self.previous()
+        else if (self.match(&.{.SelfValue}))
+            self.previous()
         else blk: {
             try self.reportError("Expected field name after '.'");
             break :blk self.previous();
@@ -3201,9 +3211,27 @@ pub const Parser = struct {
         return result;
     }
 
-    /// Parse a scope access expression (Type::variant or Type::method)
+    /// Parse a scope access expression (Type::variant or Type::method or turbofish ::<Type>)
     fn scopeAccessExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
         const colon_colon_token = self.previous();
+
+        // Check for turbofish syntax: ::<Type>
+        // For now, just parse and discard the type args - type checker will infer
+        if (self.check(.Less)) {
+            _ = self.advance(); // consume '<'
+
+            // Parse the type argument(s) and discard
+            while (!self.check(.Greater) and !self.isAtEnd()) {
+                // Skip type name
+                _ = try self.expect(.Identifier, "Expected type name in turbofish");
+                if (!self.match(&.{.Comma})) break;
+            }
+
+            _ = try self.expect(.Greater, "Expected '>' after turbofish type arguments");
+
+            // Return the object unchanged - the call following will handle it
+            return object;
+        }
 
         // The next token must be an identifier
         const member_token = try self.expect(.Identifier, "Expected identifier after '::'");
@@ -4072,13 +4100,24 @@ pub const Parser = struct {
             if (self.match(&.{.Bang})) {
                 const bang_token = self.previous();
 
-                // Parse macro arguments
-                _ = try self.expect(.LeftParen, "Expected '(' after '!' for macro invocation");
-
+                // Parse macro arguments - support (), [], and {} delimiters (Rust-style)
                 var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
                 defer args.deinit(self.allocator);
 
-                if (!self.check(.RightParen)) {
+                // Determine which delimiter is used
+                var close_token: TokenType = undefined;
+                if (self.match(&.{.LeftParen})) {
+                    close_token = .RightParen;
+                } else if (self.match(&.{.LeftBracket})) {
+                    close_token = .RightBracket;
+                } else if (self.match(&.{.LeftBrace})) {
+                    close_token = .RightBrace;
+                } else {
+                    try self.reportError("Expected '(', '[', or '{' after '!' for macro invocation");
+                    return error.UnexpectedToken;
+                }
+
+                if (!self.check(close_token)) {
                     while (true) {
                         const arg = try self.expression();
                         try args.append(self.allocator, arg);
@@ -4086,7 +4125,12 @@ pub const Parser = struct {
                     }
                 }
 
-                _ = try self.expect(.RightParen, "Expected ')' after macro arguments");
+                // Expect closing delimiter
+                if (!self.check(close_token)) {
+                    try self.reportError("Expected closing delimiter after macro arguments");
+                    return error.UnexpectedToken;
+                }
+                _ = self.advance();
 
                 const macro_name = token.lexeme;
                 const macro_args = try args.toOwnedSlice(self.allocator);
@@ -4328,6 +4372,26 @@ pub const Parser = struct {
 
         // 'self' keyword in expressions (for method bodies)
         if (self.match(&.{.SelfValue})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
+        // 'it' keyword used as identifier
+        if (self.match(&.{.It})) {
+            const token = self.previous();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
+        // 'type' keyword used as identifier
+        if (self.match(&.{.Type})) {
             const token = self.previous();
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
