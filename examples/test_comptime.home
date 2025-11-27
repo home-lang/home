@@ -1,0 +1,92 @@
+// Test file for compile-time evaluation
+// Demonstrates comptime blocks, type reflection, and compile-time string operations
+
+comptime {
+    // Compile-time string operations
+    const greeting = string.concat("Hello", " ", "World");
+    const upper = string.toUpper(greeting);
+    const len = string.length(upper);
+
+    // These values are computed at compile time
+    const GREETING = greeting;  // "Hello World"
+    const GREETING_UPPER = upper;  // "HELLO WORLD"
+    const GREETING_LEN = len;  // 11
+}
+
+// Type reflection example
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+comptime {
+    const T = Point;
+
+    // Get field count at compile time
+    const field_count = type.getFieldCount(T);  // 2
+
+    // Get field names at compile time
+    const fields = type.getFieldNames(T);  // ["x", "y"]
+
+    // Check if field exists
+    const has_x = type.hasField(T, "x");  // true
+    const has_z = type.hasField(T, "z");  // false
+}
+
+// Array operations at compile time
+comptime {
+    const numbers = [1, 2, 3, 4, 5];
+
+    // Functional operations on arrays
+    const doubled = array.map(numbers, fn(x) { x * 2 });  // [2, 4, 6, 8, 10]
+    const evens = array.filter(numbers, fn(x) { x % 2 == 0 });  // [2, 4]
+    const sum = array.sum(numbers);  // 15
+    const max_val = array.max(numbers);  // 5
+
+    // Export as compile-time constants
+    const DOUBLED_SUM = array.sum(doubled);  // 30
+    const HAS_FIVE = array.contains(numbers, 5);  // true
+}
+
+// Generate code at compile time
+comptime fn generateFieldGetters(T: type): []const u8 {
+    const fields = type.getFieldNames(T);
+    var code = "";
+
+    for (fields) |field_name| {
+        // Generate getter method for each field
+        code = string.concat(code, "fn get_", field_name, "(self: *", T.name, "): auto { return self.", field_name, "; }");
+    }
+
+    return code;
+}
+
+// Compile-time configuration
+comptime {
+    const DEBUG = true;
+    const VERSION = "1.0.0";
+    const MAX_CONNECTIONS = 100;
+
+    // Export as public constants
+    pub const Config = struct {
+        debug: bool = DEBUG,
+        version: string = VERSION,
+        max_connections: i32 = MAX_CONNECTIONS,
+    };
+}
+
+fn main(): i32 {
+    let p = Point{ x: 10, y: 20 };
+
+    print("Point x: ");
+    println(p.x);
+
+    print("Point y: ");
+    println(p.y);
+
+    // Use compile-time computed values
+    print("Config version: ");
+    println(Config.version);
+
+    return 0;
+}

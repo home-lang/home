@@ -1,0 +1,52 @@
+// Test file for built-in macro expansion
+// Demonstrates todo!, unreachable!, assert!, and debug_assert!
+
+fn divide(a: i32, b: i32): i32 {
+    // assert! expands to: if (!(b != 0)) { panic("assertion failed: division by zero"); }
+    assert!(b != 0, "division by zero");
+    return a / b;
+}
+
+fn handle_status(code: i32): string {
+    if (code == 200) {
+        return "OK";
+    } else if (code == 404) {
+        return "Not Found";
+    } else {
+        // unreachable! expands to: panic("unreachable code: unexpected status code")
+        unreachable!("unexpected status code");
+    }
+}
+
+fn incomplete_feature(): void {
+    // todo! expands to: panic("not yet implemented: OAuth authentication")
+    todo!("OAuth authentication");
+}
+
+fn future_work(): void {
+    // unimplemented! is an alias for todo!
+    unimplemented!("planned for v2.0");
+}
+
+fn validate_input(value: i32): void {
+    // debug_assert! is same as assert in debug builds, compiled out in release
+    debug_assert!(value >= 0, "value must be non-negative");
+    debug_assert!(value <= 100, "value must be at most 100");
+}
+
+fn main(): i32 {
+    // Test assert macro
+    let result = divide(10, 2);
+    print("10 / 2 = ");
+    println(result);
+
+    // Test status handling
+    let status = handle_status(200);
+    print("Status: ");
+    println(status);
+
+    // Test validation (debug only checks)
+    validate_input(50);
+
+    return 0;
+}

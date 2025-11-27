@@ -15,6 +15,8 @@ pub const CompilationUnit = compilation_unit.CompilationUnit;
 pub const CompiledModule = compilation_unit.CompiledModule;
 const trait_parser = @import("trait_parser.zig");
 const closure_parser = @import("closure_parser.zig");
+const macros_mod = @import("macros");
+const MacroSystem = macros_mod.MacroSystem;
 
 /// Error set for parsing operations.
 ///
@@ -175,6 +177,8 @@ pub const Parser = struct {
     symbol_table: SymbolTable,
     /// Track pending > from >> in nested generics
     pending_greater: bool,
+    /// Macro system for expanding macro invocations
+    macro_system: MacroSystem,
 
     /// Maximum allowed recursion depth to prevent stack overflow
     const MAX_RECURSION_DEPTH: usize = 256;
@@ -191,6 +195,9 @@ pub const Parser = struct {
     ///
     /// Returns: Initialized Parser ready to parse tokens into AST
     pub fn init(allocator: std.mem.Allocator, tokens: []const Token) !Parser {
+        var macro_system = MacroSystem.init(allocator);
+        try macro_system.initBuiltinMacros();
+
         return .{
             .allocator = allocator,
             .tokens = tokens,
@@ -203,6 +210,7 @@ pub const Parser = struct {
             .module_resolver = try ModuleResolver.init(allocator),
             .symbol_table = SymbolTable.init(allocator),
             .pending_greater = false,
+            .macro_system = macro_system,
         };
     }
 
@@ -218,6 +226,7 @@ pub const Parser = struct {
         self.errors.deinit(self.allocator);
         self.module_resolver.deinit();
         self.symbol_table.deinit();
+        self.macro_system.deinit();
     }
 
     /// Check if we've reached the end of the token stream.
@@ -3992,11 +4001,21 @@ pub const Parser = struct {
 
                 _ = try self.expect(.RightParen, "Expected ')' after macro arguments");
 
+                const macro_name = token.lexeme;
+                const macro_args = try args.toOwnedSlice(self.allocator);
+                const macro_loc = ast.SourceLocation.fromToken(bang_token);
+
+                // Try to expand built-in macros during parsing
+                if (try self.expandBuiltinMacro(macro_name, macro_args, macro_loc)) |expanded| {
+                    return expanded;
+                }
+
+                // For non-builtin macros, create MacroExpr node for later expansion
                 const macro_expr = try ast.MacroExpr.init(
                     self.allocator,
-                    token.lexeme,
-                    try args.toOwnedSlice(self.allocator),
-                    ast.SourceLocation.fromToken(bang_token),
+                    macro_name,
+                    macro_args,
+                    macro_loc,
                 );
 
                 const expr = try self.allocator.create(ast.Expr);
@@ -4578,13 +4597,169 @@ pub const Parser = struct {
         }
         return buf.toOwnedSlice(self.allocator);
     }
-    
+
+    /// Expand built-in macros during parsing
+    /// Returns null if the macro is not a built-in or expansion fails
+    fn expandBuiltinMacro(
+        self: *Parser,
+        name: []const u8,
+        args: []*ast.Expr,
+        loc: ast.SourceLocation,
+    ) !?*ast.Expr {
+        // todo!("message") → panic("not yet implemented: message")
+        // todo!() → panic("not yet implemented")
+        if (std.mem.eql(u8, name, "todo") or std.mem.eql(u8, name, "unimplemented")) {
+            const message = if (args.len > 0)
+                try std.fmt.allocPrint(self.allocator, "not yet implemented: {s}", .{
+                    // Extract string literal content if available
+                    if (args[0].* == .StringLiteral) args[0].StringLiteral.value else "<<expr>>",
+                })
+            else
+                try self.allocator.dupe(u8, "not yet implemented");
+
+            return try self.createPanicCall(message, loc);
+        }
+
+        // unreachable!("message") → panic("unreachable code: message")
+        if (std.mem.eql(u8, name, "unreachable")) {
+            const message = if (args.len > 0)
+                try std.fmt.allocPrint(self.allocator, "unreachable code: {s}", .{
+                    if (args[0].* == .StringLiteral) args[0].StringLiteral.value else "<<expr>>",
+                })
+            else
+                try self.allocator.dupe(u8, "unreachable code");
+
+            return try self.createPanicCall(message, loc);
+        }
+
+        // assert!(condition, "message") → if (!(condition)) { panic("assertion failed: message"); }
+        if (std.mem.eql(u8, name, "assert")) {
+            if (args.len < 2) {
+                try self.addError("assert! requires at least 2 arguments: condition and message");
+                return null;
+            }
+
+            const condition = args[0];
+            const message = if (args[1].* == .StringLiteral)
+                try std.fmt.allocPrint(self.allocator, "assertion failed: {s}", .{args[1].StringLiteral.value})
+            else
+                try self.allocator.dupe(u8, "assertion failed");
+
+            // Create: if (!(condition)) { panic(message); }
+            return try self.createAssertExpansion(condition, message, loc);
+        }
+
+        // debug_assert! - same as assert in debug builds, compiled out in release
+        // For now, treat it the same as assert (compiler will handle optimization)
+        if (std.mem.eql(u8, name, "debug_assert")) {
+            if (args.len < 2) {
+                try self.addError("debug_assert! requires at least 2 arguments: condition and message");
+                return null;
+            }
+
+            const condition = args[0];
+            const message = if (args[1].* == .StringLiteral)
+                try std.fmt.allocPrint(self.allocator, "assertion failed: {s}", .{args[1].StringLiteral.value})
+            else
+                try self.allocator.dupe(u8, "assertion failed");
+
+            return try self.createAssertExpansion(condition, message, loc);
+        }
+
+        // Not a built-in macro
+        return null;
+    }
+
+    /// Create a panic("message") call expression
+    fn createPanicCall(self: *Parser, message: []const u8, loc: ast.SourceLocation) !*ast.Expr {
+        // Create string literal for message
+        const str_lit = ast.StringLiteral{
+            .node = .{ .type = .StringLiteral, .loc = loc },
+            .value = message,
+        };
+
+        const str_expr = try self.allocator.create(ast.Expr);
+        str_expr.* = ast.Expr{ .StringLiteral = str_lit };
+
+        // Create args array
+        const call_args = try self.allocator.alloc(*ast.Expr, 1);
+        call_args[0] = str_expr;
+
+        // Create call to panic function
+        const panic_name = ast.IdentifierExpr{
+            .node = .{ .type = .IdentifierExpr, .loc = loc },
+            .name = "panic",
+        };
+
+        const panic_expr = try self.allocator.create(ast.Expr);
+        panic_expr.* = ast.Expr{ .IdentifierExpr = panic_name };
+
+        const call_expr = try ast.CallExpr.init(
+            self.allocator,
+            panic_expr,
+            call_args,
+            loc,
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .CallExpr = call_expr };
+        return result;
+    }
+
+    /// Create: if (!(condition)) { panic(message); }
+    fn createAssertExpansion(
+        self: *Parser,
+        condition: *ast.Expr,
+        message: []const u8,
+        loc: ast.SourceLocation,
+    ) !*ast.Expr {
+        // Create !(condition)
+        const not_expr = try ast.UnaryExpr.init(
+            self.allocator,
+            .LogicalNot,
+            condition,
+            loc,
+        );
+
+        const not_expr_wrapped = try self.allocator.create(ast.Expr);
+        not_expr_wrapped.* = ast.Expr{ .UnaryExpr = not_expr };
+
+        // Create panic call
+        const panic_call = try self.createPanicCall(message, loc);
+
+        // Create expression statement from panic call
+        const expr_stmt = try ast.ExpressionStmt.init(self.allocator, panic_call, loc);
+        const stmt = try self.allocator.create(ast.Stmt);
+        stmt.* = ast.Stmt{ .ExpressionStmt = expr_stmt };
+
+        // Create block with panic statement
+        const block_stmts = try self.allocator.alloc(*ast.Stmt, 1);
+        block_stmts[0] = stmt;
+
+        const then_block = try ast.BlockStmt.init(self.allocator, block_stmts, loc);
+        const then_stmt = try self.allocator.create(ast.Stmt);
+        then_stmt.* = ast.Stmt{ .BlockStmt = then_block };
+
+        // Create if expression: if (!(condition)) { panic(message); }
+        const if_expr = try ast.IfExpr.init(
+            self.allocator,
+            not_expr_wrapped,
+            then_stmt,
+            null, // no else branch
+            loc,
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .IfExpr = if_expr };
+        return result;
+    }
+
     // Trait parsing methods
     pub const traitDeclaration = trait_parser.parseTraitDeclaration;
     pub const implDeclaration = trait_parser.parseImplDeclaration;
     pub const parseWhereClause = trait_parser.parseWhereClause;
     pub const parseTypeExpr = trait_parser.parseTypeExpr;
-    
+
     // Closure parsing methods
     pub const parseClosureExpr = closure_parser.parseClosureExpr;
 };
