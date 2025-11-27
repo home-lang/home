@@ -1,0 +1,91 @@
+// Test file for optimizer passes
+// This file demonstrates various optimizations:
+// 1. Constant folding
+// 2. Algebraic simplifications
+// 3. Dead code elimination
+
+fn test_constant_folding() {
+    // These should be folded at compile time
+    let x = 5 + 3;        // Should become: let x = 8
+    let y = 10 * 2;       // Should become: let y = 20
+    let z = 100 / 5;      // Should become: let z = 20
+    let w = 50 - 10;      // Should become: let w = 40
+
+    print("Constant folding results:");
+    print("x =", x);  // 8
+    print("y =", y);  // 20
+    print("z =", z);  // 20
+    print("w =", w);  // 40
+}
+
+fn test_algebraic_simplifications() {
+    let a = 10;
+
+    // These should be simplified
+    let b = a + 0;        // Should become: let b = a
+    let c = a * 1;        // Should become: let c = a
+    let d = a * 0;        // Should become: let d = 0
+
+    print("Algebraic simplifications:");
+    print("b =", b);  // 10
+    print("c =", c);  // 10
+    print("d =", d);  // 0
+}
+
+fn test_dead_code_after_return() {
+    print("Before return");
+    return;
+
+    // Dead code - should be detected
+    print("This should never execute");
+    let x = 42;
+    print("x =", x);
+}
+
+fn test_dead_code_constant_condition() {
+    // Constant condition - else branch is dead
+    if (true) {
+        print("Always executes");
+    } else {
+        print("Never executes - dead code");
+    }
+
+    // Another constant condition
+    if (false) {
+        print("Never executes - dead code");
+    } else {
+        print("Always executes");
+    }
+}
+
+fn test_complex_expressions() {
+    // Complex constant expression
+    let result = (5 + 3) * 2 - 1;  // Should fold to: let result = 15
+    print("Complex expression result:", result);
+
+    // Nested operations
+    let nested = ((10 * 2) + (5 * 4)) / 2;  // Should fold to: let nested = 20
+    print("Nested expression result:", nested);
+}
+
+fn main() {
+    print("=== Optimizer Test Suite ===");
+    print("");
+
+    test_constant_folding();
+    print("");
+
+    test_algebraic_simplifications();
+    print("");
+
+    test_dead_code_after_return();
+    print("");
+
+    test_dead_code_constant_condition();
+    print("");
+
+    test_complex_expressions();
+    print("");
+
+    print("=== Optimizer Tests Complete ===");
+}

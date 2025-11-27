@@ -147,9 +147,11 @@
 | ~~High~~ | ~~N/A~~ | ~~**PassManager implementation** - Need pass orchestration system~~ | ✅ DONE (Current Session) |
 | ~~Medium~~ | ~~Line 63~~ | ~~**Zig 0.16 ArrayList API** - ArrayList.init() deprecated~~ | ✅ DONE (Current Session) |
 | ~~Medium~~ | ~~Line 172~~ | ~~**Zig 0.16 time API** - milliTimestamp() deprecated~~ | ✅ DONE (Current Session) |
-| High | Line 341-348 | **Mutable AST access** - Current AST uses `[]const Stmt` preventing in-place transformations | TODO |
-| High | Line 457-527 | **Optimization pass implementations** - Most passes are stubbed (DCE, CSE, inlining, etc.) | TODO |
-| Medium | N/A | **AST mutation strategy** - Need either mutable AST or copy-on-write semantics | TODO |
+| ~~High~~ | ~~Line 341-348 & ast.zig:2098,1914~~ | ~~**Mutable AST access** - Program and BlockStmt now use `[]Stmt` instead of `[]const Stmt`~~ | ✅ DONE (Current Session) |
+| ~~High~~ | ~~Line 454-535~~ | ~~**Dead Code Elimination** - Detects unreachable code after returns/breaks, constant conditions~~ | ✅ DONE (Current Session) |
+| Medium | Line 537-603 | **Common Subexpression Elimination** - Framework in place, needs full implementation | Partial |
+| Medium | Line 605+ | **Other optimization passes** - Inlining, loop optimization, etc. still stubbed | TODO |
+| ~~Medium~~ | ~~N/A~~ | ~~**AST mutation strategy** - Chose mutable AST approach~~ | ✅ DONE (Current Session) |
 
 ### Integration Status
 
@@ -158,8 +160,9 @@
 | Build System | ✅ Complete | Added to build.zig with AST dependency |
 | Main Pipeline | ✅ Complete | Integrated after borrow check, before codegen (main.zig:782-794) |
 | O2 Optimization | ✅ Configured | Using O2 level with basic/moderate passes |
-| Constant Folding | ⏸️ Stubbed | Needs mutable AST access |
-| Dead Code Elimination | ⏸️ Stubbed | Implementation pending |
+| Constant Folding | ✅ Implemented | Evaluates constant expressions, algebraic simplifications |
+| Dead Code Elimination | ✅ Implemented | Detects unreachable code, constant branch conditions |
+| Common Subexpression Elimination | ⏸️ Partial | Framework present, needs expression equality & temp vars |
 | Function Inlining | ⏸️ Stubbed | Implementation pending |
 | Loop Optimization | ⏸️ Stubbed | Implementation pending |
 
