@@ -60,7 +60,7 @@ pub const PassManager = struct {
     pub fn init(allocator: std.mem.Allocator, level: OptimizationLevel) PassManager {
         return .{
             .allocator = allocator,
-            .passes = std.ArrayList(*Pass).init(allocator),
+            .passes = .{},
             .optimization_level = level,
             .stats = OptimizationStats.init(),
         };
@@ -71,12 +71,12 @@ pub const PassManager = struct {
             pass.deinit();
             self.allocator.destroy(pass);
         }
-        self.passes.deinit();
+        self.passes.deinit(self.allocator);
     }
 
     /// Add a pass to the manager
     pub fn addPass(self: *PassManager, pass: *Pass) !void {
-        try self.passes.append(pass);
+        try self.passes.append(self.allocator, pass);
     }
 
     /// Configure passes based on optimization level
@@ -169,7 +169,7 @@ pub const PassManager = struct {
 
     /// Run all passes on a program
     pub fn runOnProgram(self: *PassManager, program: *ast.Program) !void {
-        const start_time = std.time.milliTimestamp();
+        const start_time = try std.time.Instant.now();
 
         var changed = true;
         var iteration: usize = 0;
@@ -185,8 +185,8 @@ pub const PassManager = struct {
             }
         }
 
-        const end_time = std.time.milliTimestamp();
-        self.stats.total_time_ms = end_time - start_time;
+        const end_time = try std.time.Instant.now();
+        self.stats.total_time_ms = @intCast(@divFloor(end_time.since(start_time), std.time.ns_per_ms));
     }
 
     /// Print optimization statistics
@@ -350,24 +350,21 @@ pub const Pass = struct {
     }
 
     fn foldStmt(self: *Pass, stmt: *ast.Stmt, stats: *PassManager.OptimizationStats) !bool {
-        _ = self;
-        _ = stats;
-
         switch (stmt.*) {
-            .LetDecl => |*let_decl| {
-                if (let_decl.initializer) |init_expr| {
+            .LetDecl => |let_decl| {
+                if (let_decl.value) |init_expr| {
                     return try foldExpr(init_expr, stats);
                 }
             },
-            .ReturnStmt => |*ret_stmt| {
-                if (ret_stmt.expression) |expr| {
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |expr| {
                     return try foldExpr(expr, stats);
                 }
             },
-            .FunctionDecl => |*func| {
+            .FnDecl => |func| {
                 var changed = false;
                 for (func.body.statements) |*body_stmt| {
-                    const stmt_changed = try foldStmt(body_stmt, stats);
+                    const stmt_changed = try self.foldStmt(body_stmt, stats);
                     changed = changed or stmt_changed;
                 }
                 return changed;
@@ -380,7 +377,7 @@ pub const Pass = struct {
 
     fn foldExpr(expr: *ast.Expr, stats: *PassManager.OptimizationStats) !bool {
         switch (expr.*) {
-            .BinaryExpr => |*bin| {
+            .BinaryExpr => |bin| {
                 // Try to fold binary operations with constant operands
                 const left_is_const = isConstant(bin.left);
                 const right_is_const = isConstant(bin.right);
@@ -398,13 +395,13 @@ pub const Pass = struct {
                 // x + 0 = x, x * 1 = x, x * 0 = 0, etc.
                 if (right_is_const) {
                     if (bin.right.IntegerLiteral.value == 0) {
-                        switch (bin.operator) {
-                            .Add, .Subtract => {
+                        switch (bin.op) {
+                            .Add, .Sub => {
                                 expr.* = bin.left.*;
                                 stats.constant_folds += 1;
                                 return true;
                             },
-                            .Multiply => {
+                            .Mul => {
                                 expr.* = .{ .IntegerLiteral = .{ .value = 0, .node = bin.node } };
                                 stats.constant_folds += 1;
                                 return true;
@@ -412,8 +409,8 @@ pub const Pass = struct {
                             else => {},
                         }
                     } else if (bin.right.IntegerLiteral.value == 1) {
-                        switch (bin.operator) {
-                            .Multiply, .Divide => {
+                        switch (bin.op) {
+                            .Mul, .Div => {
                                 expr.* = bin.left.*;
                                 stats.constant_folds += 1;
                                 return true;
@@ -431,7 +428,7 @@ pub const Pass = struct {
 
     fn isConstant(expr: *const ast.Expr) bool {
         return switch (expr.*) {
-            .IntegerLiteral, .FloatLiteral, .BoolLiteral => true,
+            .IntegerLiteral, .FloatLiteral, .BooleanLiteral => true,
             else => false,
         };
     }
@@ -444,12 +441,12 @@ pub const Pass = struct {
         const left = bin.left.IntegerLiteral.value;
         const right = bin.right.IntegerLiteral.value;
 
-        return switch (bin.operator) {
+        return switch (bin.op) {
             .Add => left + right,
-            .Subtract => left - right,
-            .Multiply => left * right,
-            .Divide => if (right != 0) @divTrunc(left, right) else null,
-            .Modulo => if (right != 0) @mod(left, right) else null,
+            .Sub => left - right,
+            .Mul => left * right,
+            .Div => if (right != 0) @divTrunc(left, right) else null,
+            .Mod => if (right != 0) @mod(left, right) else null,
             else => null,
         };
     }

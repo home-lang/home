@@ -1,0 +1,7 @@
+// Simple test for optimizer
+fn main() {
+    let x = 5 + 3;
+    let y = x * 2;
+    let z = y - 1;
+    print("Result: ", z);
+}

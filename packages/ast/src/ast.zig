@@ -1911,9 +1911,9 @@ pub const Stmt = union(NodeType) {
 /// Block statement
 pub const BlockStmt = struct {
     node: Node,
-    statements: []const Stmt,
+    statements: []Stmt,
 
-    pub fn init(allocator: std.mem.Allocator, statements: []const Stmt, loc: SourceLocation) !*BlockStmt {
+    pub fn init(allocator: std.mem.Allocator, statements: []Stmt, loc: SourceLocation) !*BlockStmt {
         const block = try allocator.create(BlockStmt);
         block.* = .{
             .node = .{ .type = .BlockStmt, .loc = loc },
@@ -2095,9 +2095,9 @@ pub const ItTestDecl = struct {
 
 /// Program (top-level)
 pub const Program = struct {
-    statements: []const Stmt,
+    statements: []Stmt,
 
-    pub fn init(allocator: std.mem.Allocator, statements: []const Stmt) !*Program {
+    pub fn init(allocator: std.mem.Allocator, statements: []Stmt) !*Program {
         const program = try allocator.create(Program);
         program.* = .{
             .statements = statements,

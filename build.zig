@@ -73,6 +73,7 @@ pub fn build(b: *std.Build) void {
     const generics_pkg = createPackage(b, "packages/generics/src/generic_system.zig", target, optimize, zig_test_framework);
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
     const compiler_pkg = createPackage(b, "packages/compiler/src/borrow_check_pass.zig", target, optimize, zig_test_framework);
+    const optimizer_pkg = createPackage(b, "packages/optimizer/src/pass_manager.zig", target, optimize, zig_test_framework);
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
     const formatter_pkg = createPackage(b, "packages/formatter/src/formatter.zig", target, optimize, zig_test_framework);
     const linter_pkg = createPackage(b, "packages/linter/src/linter.zig", target, optimize, zig_test_framework);
@@ -177,6 +178,7 @@ pub fn build(b: *std.Build) void {
     compiler_pkg.addImport("ast", ast_pkg);
     compiler_pkg.addImport("types", types_pkg);
     compiler_pkg.addImport("diagnostics", diagnostics_pkg);
+    optimizer_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("ast", ast_pkg);
     formatter_pkg.addImport("lexer", lexer_pkg);
     formatter_pkg.addImport("parser", parser_pkg);
@@ -204,6 +206,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("interpreter", interpreter_pkg);
     exe.root_module.addImport("codegen", codegen_pkg);
     exe.root_module.addImport("compiler", compiler_pkg);
+    exe.root_module.addImport("optimizer", optimizer_pkg);
     exe.root_module.addImport("formatter", formatter_pkg);
     exe.root_module.addImport("linter", linter_pkg);
     exe.root_module.addImport("macros", macros_pkg);

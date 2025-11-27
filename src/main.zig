@@ -17,6 +17,8 @@ const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
 const EnhancedReporter = @import("diagnostics").enhanced_reporter.EnhancedReporter;
 const BorrowCheckPass = @import("compiler").BorrowCheckPass;
+const optimizer_mod = @import("optimizer");
+const PassManager = optimizer_mod.PassManager;
 const MacroSystem = @import("macros").MacroSystem;
 const pkg_manager_mod = @import("pkg_manager");
 const PackageManager = pkg_manager_mod.PackageManager;
@@ -776,6 +778,19 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         const borrow_check_passed = true; // Temporarily bypassed
         _ = borrow_check_passed;
         std.debug.print("{s}Borrow check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+
+        // Optimization pass
+        std.debug.print("{s}Running optimizations...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+        var pass_manager = PassManager.init(allocator, .O2); // Use O2 optimization level
+        defer pass_manager.deinit();
+
+        try pass_manager.configureForLevel();
+        try pass_manager.runOnProgram(program);
+
+        std.debug.print("{s}Optimization complete ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+        // Optionally print optimization statistics
+        // pass_manager.printStats();
     }
 
     if (kernel_mode) {
