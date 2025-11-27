@@ -36,7 +36,7 @@ pub const BorrowCheckPass = struct {
             .allocator = allocator,
             .tracker = OwnershipTracker.init(allocator),
             .reporter = reporter,
-            .errors = std.ArrayList(BorrowError).init(allocator),
+            .errors = .{},
         };
     }
 
@@ -47,7 +47,7 @@ pub const BorrowCheckPass = struct {
                 self.allocator.free(info);
             }
         }
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
     }
 
     /// Run borrow check on entire program
@@ -65,14 +65,14 @@ pub const BorrowCheckPass = struct {
     }
 
     /// Check a single statement
-    fn checkStatement(self: *BorrowCheckPass, stmt: *ast.Stmt) !void {
+    fn checkStatement(self: *BorrowCheckPass, stmt: *const ast.Stmt) !void {
         switch (stmt.*) {
-            .FunctionDecl => |*func_decl| {
-                try self.checkFunction(func_decl);
+            .FunctionDecl => |func_decl| {
+                try self.checkFunction(&func_decl);
             },
             .LetDecl => |let_decl| {
-                if (let_decl.initializer) |init| {
-                    try self.checkExpression(init);
+                if (let_decl.initializer) |initializer| {
+                    try self.checkExpression(initializer);
                 }
                 // Register variable as owned
                 try self.tracker.define(let_decl.name, .Int, let_decl.location);
@@ -266,7 +266,6 @@ pub const BorrowCheckPass = struct {
     }
 
     fn getErrorMessage(self: *BorrowCheckPass, kind: BorrowError.ErrorKind, var_name: []const u8) []const u8 {
-        _ = self;
         return switch (kind) {
             .UseAfterMove => std.fmt.allocPrint(self.allocator, "use of moved value: `{s}`", .{var_name}) catch unreachable,
             .MultipleMutableBorrows => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as mutable more than once at a time", .{var_name}) catch unreachable,
@@ -292,7 +291,6 @@ pub const BorrowCheckPass = struct {
     }
 
     fn getHelpText(self: *BorrowCheckPass, kind: BorrowError.ErrorKind, var_name: []const u8) []const u8 {
-        _ = self;
         return switch (kind) {
             .UseAfterMove => std.fmt.allocPrint(self.allocator, "consider cloning the value before moving: `{s}.clone()`", .{var_name}) catch unreachable,
             .MultipleMutableBorrows => "mutable borrows cannot exist simultaneously; consider restructuring your code",
