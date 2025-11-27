@@ -162,6 +162,8 @@ pub fn build(b: *std.Build) void {
     types_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("diagnostics", diagnostics_pkg);
     types_pkg.addImport("traits", traits_pkg);
+    types_pkg.addImport("lexer", lexer_pkg);
+    types_pkg.addImport("parser", parser_pkg);
     traits_pkg.addImport("ast", ast_pkg);
     interpreter_pkg.addImport("ast", ast_pkg);
     comptime_pkg.addImport("ast", ast_pkg);

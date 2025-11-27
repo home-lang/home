@@ -19,7 +19,7 @@ const TokenType = @import("lexer").TokenType;
 ///   async move |x| await processData(x)
 ///   || println("hello")
 pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
-    const start_loc = self.peek().loc;
+    const start_token = self.peek();
 
     // Check for 'async' keyword
     const is_async = if (self.match(&.{.Identifier}) and std.mem.eql(u8, self.previous().lexeme, "async"))
@@ -42,8 +42,8 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     _ = try self.expect(.Pipe, "Expected '|' to start closure parameters");
     
     // Parse parameters
-    var params = std.ArrayList(ast.ClosureParam).init(self.allocator);
-    defer params.deinit();
+    var params = std.ArrayList(ast.ClosureParam){ .items = &.{}, .capacity = 0 };
+    defer params.deinit(self.allocator);
     
     while (!self.check(.Pipe) and !self.isAtEnd()) {
         const is_mut = self.match(&.{.Mut});
@@ -54,10 +54,10 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
         // Optional type annotation
         var type_annotation: ?*ast.closure_nodes.TypeExpr = null;
         if (self.match(&.{.Colon})) {
-            type_annotation = try self.parseClosureTypeExpr();
+            type_annotation = try parseClosureTypeExpr(self);
         }
         
-        try params.append(.{
+        try params.append(self.allocator, .{
             .name = param_name,
             .type_annotation = type_annotation,
             .is_mut = is_mut,
@@ -71,13 +71,13 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     // Optional return type (TypeScript-style with colon)
     var return_type: ?*ast.closure_nodes.TypeExpr = null;
     if (self.match(&.{.Colon})) {
-        return_type = try self.parseClosureTypeExpr();
+        return_type = try parseClosureTypeExpr(self);
     }
     
     // Parse body - either expression or block
     const body: ast.ClosureBody = if (self.check(.LeftBrace)) blk: {
-        const block = try self.block();
-        break :blk .{ .Block = block.BlockStmt };
+        const block_stmt = try self.blockStatement();
+        break :blk .{ .Block = block_stmt };
     } else blk: {
         const expr = try self.expression();
         break :blk .{ .Expression = expr };
@@ -94,12 +94,12 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
         captures,
         is_async,
         is_move,
-        ast.SourceLocation.fromToken(start_loc),
+        ast.SourceLocation.fromToken(start_token),
     );
     
     const expr = try self.allocator.create(ast.Expr);
-    expr.* = .{ .ClosureExpr = closure.* };
-    
+    expr.* = .{ .ClosureExpr = closure };
+
     return expr;
 }
 
@@ -110,7 +110,7 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
     // Handle reference types
     if (self.match(&.{.Ampersand})) {
         const is_mut = self.match(&.{.Mut});
-        const inner = try self.parseClosureTypeExpr();
+        const inner = try parseClosureTypeExpr(self);
         
         type_expr.* = .{ .Reference = .{
             .is_mut = is_mut,
@@ -122,27 +122,27 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
     // Handle function/closure types
     if (self.match(&.{.Fn})) {
         _ = try self.expect(.LeftParen, "Expected '(' after 'fn'");
-        
-        var param_types = std.ArrayList(*ast.closure_nodes.TypeExpr).init(self.allocator);
-        defer param_types.deinit();
-        
+
+        var param_types = std.ArrayList(*ast.closure_nodes.TypeExpr){ .items = &.{}, .capacity = 0 };
+        defer param_types.deinit(self.allocator);
+
         while (!self.check(.RightParen) and !self.isAtEnd()) {
-            const param_type = try self.parseClosureTypeExpr();
-            try param_types.append(param_type);
-            
+            const param_type = try parseClosureTypeExpr(self);
+            try param_types.append(self.allocator, param_type);
+
             if (!self.match(&.{.Comma})) break;
         }
-        
+
         _ = try self.expect(.RightParen, "Expected ')' after function parameters");
 
-        var return_type: ?*ast.closure_nodes.TypeExpr = null;
+        var fn_return_type: ?*ast.closure_nodes.TypeExpr = null;
         if (self.match(&.{.Colon})) {
-            return_type = try self.parseClosureTypeExpr();
+            fn_return_type = try parseClosureTypeExpr(self);
         }
-        
+
         type_expr.* = .{ .Function = .{
             .params = try param_types.toOwnedSlice(self.allocator),
-            .return_type = return_type,
+            .return_type = fn_return_type,
         }};
         return type_expr;
     }
@@ -153,18 +153,18 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
     
     // Check for generic arguments
     if (self.match(&.{.Less})) {
-        var args = std.ArrayList(*ast.closure_nodes.TypeExpr).init(self.allocator);
-        defer args.deinit();
-        
+        var args = std.ArrayList(*ast.closure_nodes.TypeExpr){ .items = &.{}, .capacity = 0 };
+        defer args.deinit(self.allocator);
+
         while (!self.check(.Greater) and !self.isAtEnd()) {
-            const arg = try self.parseClosureTypeExpr();
-            try args.append(arg);
-            
+            const arg = try parseClosureTypeExpr(self);
+            try args.append(self.allocator, arg);
+
             if (!self.match(&.{.Comma})) break;
         }
-        
+
         _ = try self.expect(.Greater, "Expected '>' after generic arguments");
-        
+
         type_expr.* = .{ .Generic = .{
             .base = type_name,
             .args = try args.toOwnedSlice(self.allocator),

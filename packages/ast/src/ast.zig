@@ -753,6 +753,8 @@ pub const ArrayRepeat = struct {
     node: Node,
     value: *Expr,
     count: []const u8,
+    /// For expression-based counts (e.g., [val; CONST] instead of [val; 10])
+    count_expr: ?*Expr = null,
 
     pub fn init(allocator: std.mem.Allocator, value: *Expr, count: []const u8, loc: SourceLocation) !*ArrayRepeat {
         const expr = try allocator.create(ArrayRepeat);
@@ -760,6 +762,19 @@ pub const ArrayRepeat = struct {
             .node = .{ .type = .ArrayRepeat, .loc = loc },
             .value = value,
             .count = count,
+            .count_expr = null,
+        };
+        return expr;
+    }
+
+    /// Initialize with an expression for the count (allows const/variable counts)
+    pub fn initWithExpr(allocator: std.mem.Allocator, value: *Expr, count_expr: *Expr, loc: SourceLocation) !*ArrayRepeat {
+        const expr = try allocator.create(ArrayRepeat);
+        expr.* = .{
+            .node = .{ .type = .ArrayRepeat, .loc = loc },
+            .value = value,
+            .count = "", // Empty string, use count_expr instead
+            .count_expr = count_expr,
         };
         return expr;
     }
@@ -1538,6 +1553,8 @@ pub const ForStmt = struct {
     body: *BlockStmt,
     /// Optional index variable for enumerate (e.g., for i, item in items)
     index: ?[]const u8 = null,
+    /// Optional tuple bindings for destructuring (e.g., for (a, b, c) in items)
+    tuple_bindings: ?[]const []const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, iterator: []const u8, iterable: *Expr, body: *BlockStmt, index: ?[]const u8, loc: SourceLocation) !*ForStmt {
         const stmt = try allocator.create(ForStmt);
@@ -1547,6 +1564,21 @@ pub const ForStmt = struct {
             .iterable = iterable,
             .body = body,
             .index = index,
+            .tuple_bindings = null,
+        };
+        return stmt;
+    }
+
+    /// Initialize with tuple destructuring bindings
+    pub fn initWithTuple(allocator: std.mem.Allocator, bindings: []const []const u8, iterable: *Expr, body: *BlockStmt, loc: SourceLocation) !*ForStmt {
+        const stmt = try allocator.create(ForStmt);
+        stmt.* = .{
+            .node = .{ .type = .ForStmt, .loc = loc },
+            .iterator = "",  // Empty when using tuple bindings
+            .iterable = iterable,
+            .body = body,
+            .index = null,
+            .tuple_bindings = bindings,
         };
         return stmt;
     }

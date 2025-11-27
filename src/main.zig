@@ -32,6 +32,7 @@ const profiler_mod = @import("profiler.zig");
 const AllocationProfiler = profiler_mod.AllocationProfiler;
 const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
+const package_cmd = @import("package_command.zig");
 
 const Color = enum {
     Reset,
@@ -129,6 +130,7 @@ fn printUsage() void {
         \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
         \\  test / t [opts]    Run tests (use --help for more options)
         \\  profile <file>     Profile memory allocations during compilation
+        \\  package [opts]     Create distributable packages (--help for options)
         \\
         \\  {s}Package Management:{s}
         \\  pkg init           Initialize a new Home project with home.toml
@@ -438,8 +440,9 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var comptime_store = ComptimeValueStore.init(allocator);
     defer comptime_store.deinit();
 
-    // Type check
-    var type_checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
+    // Type check with source path for import resolution
+    var type_checker = TypeChecker.initWithSourcePath(allocator, program, file_path);
+    type_checker.comptime_store = &comptime_store;
     defer type_checker.deinit();
 
     std.debug.print("{s}Checking:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
@@ -1546,6 +1549,11 @@ pub fn main() !void {
         }
 
         try profileCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "package")) {
+        try package_cmd.packageCommand(allocator, args[2..]);
         return;
     }
 

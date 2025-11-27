@@ -664,6 +664,10 @@ pub const NativeCodegen = struct {
     /// Stack of loop contexts for break/continue statements
     loop_stack: std.ArrayList(LoopContext),
 
+    // Current function being generated
+    /// Name of the function currently being generated (for return statement handling)
+    current_function_name: ?[]const u8,
+
     // Global type registry for cross-module type resolution
     /// Global type registry shared across all compilation units
     type_registry: ?*TypeRegistry,
@@ -701,6 +705,7 @@ pub const NativeCodegen = struct {
             .module_sources = std.ArrayList([]const u8){},
             .comptime_store = comptime_store,
             .loop_stack = std.ArrayList(LoopContext){},
+            .current_function_name = null,
             .type_registry = type_registry,
         };
     }
@@ -3108,10 +3113,24 @@ pub const NativeCodegen = struct {
                     try self.generateExpr(value);
                     // Result is in rax
                 }
-                // Jump to epilogue (for now, just return)
+                // Jump to epilogue
                 try self.assembler.movRegReg(.rsp, .rbp);
                 try self.assembler.popReg(.rbp);
-                try self.assembler.ret();
+
+                // For main function, we need to call exit syscall on macOS
+                // instead of just ret, because main is the entry point
+                if (self.current_function_name) |func_name| {
+                    if (std.mem.eql(u8, func_name, "main")) {
+                        // macOS exit syscall: rax = 0x2000001 (exit), rdi = exit code (0)
+                        try self.assembler.movRegImm64(.rax, 0x2000001); // exit syscall number
+                        try self.assembler.movRegImm64(.rdi, 0); // exit code 0
+                        try self.assembler.syscall();
+                    } else {
+                        try self.assembler.ret();
+                    }
+                } else {
+                    try self.assembler.ret();
+                }
             },
             .IfStmt => |if_stmt| {
                 // Evaluate condition
@@ -4497,6 +4516,10 @@ pub const NativeCodegen = struct {
         // Use override name if provided (for struct methods with mangled names)
         const effective_name = override_name orelse func.name;
 
+        // Track current function name for return statement handling
+        self.current_function_name = effective_name;
+        defer self.current_function_name = null;
+
         // Reset local variable tracking for new function
         self.next_local_offset = 0;
 
@@ -4640,7 +4663,17 @@ pub const NativeCodegen = struct {
         if (needs_epilogue) {
             try self.assembler.movRegReg(.rsp, .rbp);
             try self.assembler.popReg(.rbp);
-            try self.assembler.ret();
+
+            // For main function, we need to call exit syscall on macOS
+            // instead of just ret, because main is the entry point
+            if (std.mem.eql(u8, effective_name, "main")) {
+                // macOS exit syscall: rax = 0x2000001 (exit), rdi = exit code (0)
+                try self.assembler.movRegImm64(.rax, 0x2000001); // exit syscall number
+                try self.assembler.movRegImm64(.rdi, 0); // exit code 0
+                try self.assembler.syscall();
+            } else {
+                try self.assembler.ret();
+            }
         }
     }
 
@@ -5574,7 +5607,6 @@ pub const NativeCodegen = struct {
 
                             // Value to print is in rax
                             // We need to convert it to ASCII and write to stdout
-                            // Using Linux write syscall: write(1, buffer, length)
 
                             // Allocate buffer on stack for number string (20 bytes = max i64 digits)
                             try self.assembler.movRegImm64(.rdx, 20);
@@ -5585,8 +5617,15 @@ pub const NativeCodegen = struct {
                             // Store number at buffer
                             try self.generateMovMemReg(.rbx, 0, .rax);
 
-                            // Write syscall: rax=1 (write), rdi=1 (stdout), rsi=buffer, rdx=8
-                            try self.assembler.movRegImm64(.rax, 1); // sys_write
+                            // Write syscall: platform-specific
+                            // macOS: rax=0x2000004 (write), rdi=1 (stdout), rsi=buffer, rdx=length
+                            // Linux: rax=1 (write), rdi=1 (stdout), rsi=buffer, rdx=length
+                            const write_syscall: u64 = switch (builtin.os.tag) {
+                                .macos => 0x2000004,
+                                .linux => 1,
+                                else => 1,
+                            };
+                            try self.assembler.movRegImm64(.rax, write_syscall);
                             try self.assembler.movRegImm64(.rdi, 1); // stdout
                             try self.assembler.movRegReg(.rsi, .rbx); // buffer
                             try self.assembler.movRegImm64(.rdx, 8); // length (8 bytes for i64)
@@ -6993,6 +7032,35 @@ pub const NativeCodegen = struct {
 
                 // Track stack usage
                 self.next_local_offset +|= @as(u32, @intCast(count));
+            },
+
+            .InterpolatedString => |interp_str| {
+                // Interpolated string: "Hello {name}!"
+                // For now, we concatenate the parts and expressions at runtime.
+                // In native code, we'll build the string on the heap.
+
+                // Simple implementation: just concatenate all parts as a single string
+                // and skip interpolation (expressions evaluate but result is ignored).
+                // This is a stub - full implementation would need runtime string concatenation.
+
+                // For each expression, evaluate it (side effects may be needed)
+                for (interp_str.expressions) |expr_item| {
+                    try self.generateExpr(&expr_item);
+                }
+
+                // Return pointer to first part as the string result
+                // (This is a simplification - real impl needs string building)
+                if (interp_str.parts.len > 0) {
+                    const first_part = interp_str.parts[0];
+                    // Register string literal and get data section offset
+                    const str_offset = try self.registerStringLiteral(first_part);
+                    // Store address relative to data section base (will be patched at link time)
+                    // For now, use a placeholder that will need fixing
+                    try self.assembler.movRegImm64(.rax, @as(i64, @intCast(str_offset)));
+                } else {
+                    // Empty string
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
             },
 
             else => |expr_tag| {

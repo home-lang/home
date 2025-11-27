@@ -282,7 +282,7 @@ pub const Parser = struct {
     /// Get current token without advancing the parser.
     ///
     /// Returns: The token at the current position
-    fn peek(self: *Parser) Token {
+    pub fn peek(self: *Parser) Token {
         return self.tokens[self.current];
     }
 
@@ -1895,9 +1895,74 @@ pub const Parser = struct {
     /// Parse a for statement
     fn forStatement(self: *Parser) !ast.Stmt {
         const for_token = self.previous();
-        // Parentheses are optional: both "for (x in items)" and "for x in items" work
-        const has_paren = self.match(&.{.LeftParen});
 
+        // Check for tuple destructuring: for (a, b, c) in items
+        // or regular: for x in items / for (x in items)
+        if (self.match(&.{.LeftParen})) {
+            // Could be tuple destructuring or just grouping parens
+            const first_token = try self.expect(.Identifier, "Expected iterator variable name");
+            const first_name = first_token.lexeme;
+
+            if (self.match(&.{.Comma})) {
+                // This is tuple destructuring: for (a, b, ...) in items
+                var bindings = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                defer bindings.deinit(self.allocator);
+
+                try bindings.append(self.allocator, first_name);
+
+                while (true) {
+                    const binding_token = try self.expect(.Identifier, "Expected identifier in tuple pattern");
+                    try bindings.append(self.allocator, binding_token.lexeme);
+
+                    if (!self.match(&.{.Comma})) break;
+                    // Check if next is RightParen (trailing comma)
+                    if (self.check(.RightParen)) break;
+                }
+
+                _ = try self.expect(.RightParen, "Expected ')' after tuple pattern");
+                _ = try self.expect(.In, "Expected 'in' after tuple pattern");
+
+                const iterable = try self.expression();
+                errdefer ast.Program.deinitExpr(iterable, self.allocator);
+
+                const body = try self.blockStatement();
+                errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+                const stmt = try ast.ForStmt.initWithTuple(
+                    self.allocator,
+                    try bindings.toOwnedSlice(self.allocator),
+                    iterable,
+                    body,
+                    ast.SourceLocation.fromToken(for_token),
+                );
+
+                return ast.Stmt{ .ForStmt = stmt };
+            } else {
+                // Just grouping parens: for (x in items)
+                _ = try self.expect(.In, "Expected 'in' after iterator variable");
+
+                const iterable = try self.expression();
+                errdefer ast.Program.deinitExpr(iterable, self.allocator);
+
+                _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
+
+                const body = try self.blockStatement();
+                errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+                const stmt = try ast.ForStmt.init(
+                    self.allocator,
+                    first_name,
+                    iterable,
+                    body,
+                    null,
+                    ast.SourceLocation.fromToken(for_token),
+                );
+
+                return ast.Stmt{ .ForStmt = stmt };
+            }
+        }
+
+        // No parens: for x in items or for i, x in items
         const first_token = try self.expect(.Identifier, "Expected iterator variable name");
         const first_name = first_token.lexeme;
 
@@ -1916,9 +1981,6 @@ pub const Parser = struct {
 
         const iterable = try self.expression();
         errdefer ast.Program.deinitExpr(iterable, self.allocator);
-        if (has_paren) {
-            _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
-        }
 
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
@@ -2064,6 +2126,27 @@ pub const Parser = struct {
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             // Parse pattern
             var pattern = try self.parsePattern();
+
+            // Check for OR patterns: pattern1 | pattern2 | ...
+            if (self.match(&.{.Pipe})) {
+                var patterns = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+                defer patterns.deinit(self.allocator);
+
+                try patterns.append(self.allocator, pattern);
+
+                // Parse additional patterns separated by |
+                while (true) {
+                    const next_pattern = try self.parsePattern();
+                    try patterns.append(self.allocator, next_pattern);
+
+                    if (!self.match(&.{.Pipe})) break;
+                }
+
+                // Create OR pattern
+                const or_pattern = try self.allocator.create(ast.Pattern);
+                or_pattern.* = ast.Pattern{ .Or = try patterns.toOwnedSlice(self.allocator) };
+                pattern = or_pattern;
+            }
 
             // Check for @ binding: pattern @ identifier
             if (self.match(&.{.At})) {
@@ -2587,7 +2670,7 @@ pub const Parser = struct {
     ///
     /// Returns: Expression AST node
     /// Errors: ParseError if the expression is malformed
-    fn expression(self: *Parser) !*ast.Expr {
+    pub fn expression(self: *Parser) !*ast.Expr {
         return self.parsePrecedence(.Assignment);
     }
 
@@ -3584,6 +3667,11 @@ pub const Parser = struct {
             return try self.matchExpr();
         }
 
+        // Closure expression: |params| body or |params| { body }
+        if (self.check(.Pipe)) {
+            return try self.parseClosureExpr();
+        }
+
         // Block expression: { stmt1; stmt2; expr }
         // Only parse as block if it's a bare '{' not preceded by type name
         if (self.match(&.{.LeftBrace})) {
@@ -4391,14 +4479,15 @@ pub const Parser = struct {
 
                 // Check for repeat syntax: [value; count]
                 if (self.match(&.{.Semicolon})) {
-                    const count_token = try self.expect(.Integer, "Expected count after ';' in array repeat");
+                    // Count can be an integer literal or a constant expression
+                    const count_expr = try self.expression();
                     _ = try self.expect(.RightBracket, "Expected ']' after array repeat count");
 
-                    // Create ArrayRepeat expression
-                    const repeat_expr = try ast.ArrayRepeat.init(
+                    // Create ArrayRepeat expression with expression-based count
+                    const repeat_expr = try ast.ArrayRepeat.initWithExpr(
                         self.allocator,
                         first_elem,
-                        count_token.lexeme,
+                        count_expr,
                         ast.SourceLocation.fromToken(bracket_token),
                     );
 
