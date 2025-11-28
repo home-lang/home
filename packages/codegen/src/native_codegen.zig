@@ -6471,9 +6471,32 @@ pub const NativeCodegen = struct {
                         // Skip this assignment for now
                         return;
                     }
+                } else if (assign.target.* == .TupleExpr) {
+                    // Tuple destructuring assignment: (a, b) = expr
+                    const tuple = assign.target.TupleExpr;
+
+                    // Save the source tuple pointer in rbx
+                    try self.assembler.movRegReg(.rbx, .rax);
+
+                    // For each element in the tuple target, extract and assign
+                    for (tuple.elements, 0..) |elem, i| {
+                        if (elem.* == .Identifier) {
+                            const var_name = elem.Identifier.name;
+                            if (self.locals.get(var_name)) |local_info| {
+                                // Load the i-th element from the source tuple
+                                // Tuples are stored as consecutive 8-byte values on the stack
+                                const tuple_offset: i32 = -@as(i32, @intCast(i * 8));
+                                try self.assembler.movRegMem(.rax, .rbx, tuple_offset);
+
+                                // Store to the target variable
+                                const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                                try self.assembler.movMemReg(.rbp, stack_offset, .rax);
+                            }
+                        }
+                        // For non-identifier tuple elements (nested), skip for now
+                    }
                 } else {
-                    // Unsupported assignment target type (likely tuple destructuring or index)
-                    // For now, just skip - full tuple destructuring would require more work
+                    // Unsupported assignment target type
                     return;
                 }
             },

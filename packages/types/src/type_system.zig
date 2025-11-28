@@ -1004,10 +1004,10 @@ pub const TypeChecker = struct {
                 self.ownership_tracker.exitScope();
             },
             .IfStmt => |if_stmt| {
-                // Check condition is boolean
+                // Check condition is boolean or optional (optionals are truthy if Some, falsy if None)
                 const cond_type = try self.inferExpression(if_stmt.condition);
-                if (!cond_type.equals(Type.Bool)) {
-                    try self.addError("If condition must be boolean", if_stmt.node.loc);
+                if (!cond_type.equals(Type.Bool) and cond_type != .Optional) {
+                    try self.addError("If condition must be boolean or optional", if_stmt.node.loc);
                     return error.TypeMismatch;
                 }
 
@@ -1080,10 +1080,10 @@ pub const TypeChecker = struct {
                 }
             },
             .WhileStmt => |while_stmt| {
-                // Check condition is boolean
+                // Check condition is boolean or optional (optionals are truthy if Some, falsy if None)
                 const cond_type = try self.inferExpression(while_stmt.condition);
-                if (!cond_type.equals(Type.Bool)) {
-                    try self.addError("While condition must be boolean", while_stmt.node.loc);
+                if (!cond_type.equals(Type.Bool) and cond_type != .Optional) {
+                    try self.addError("While condition must be boolean or optional", while_stmt.node.loc);
                     return error.TypeMismatch;
                 }
 
@@ -1339,6 +1339,13 @@ pub const TypeChecker = struct {
 
     /// Check mode: Verify that an expression has the expected type
     fn checkExpression(self: *TypeChecker, expr: *const ast.Expr, expected: Type) TypeError!void {
+        // Special case: null literals can be assigned to optional types
+        if (expr.* == .NullLiteral) {
+            if (expected == .Optional) {
+                return; // Valid null assignment to optional type
+            }
+        }
+
         // Special case: integer literals can be coerced to any integer type
         if (expr.* == .IntegerLiteral) {
             if (isIntegerType(expected)) {
@@ -1385,6 +1392,17 @@ pub const TypeChecker = struct {
 
     /// Check if a type can be coerced to another type
     fn canCoerce(from: Type, to: Type) bool {
+        // Value can be coerced to Optional of that type (T -> ?T)
+        // This must be checked first to handle Int -> ?i32 coercion
+        if (to == .Optional) {
+            const inner_type = to.Optional.*;
+            // Check if from type matches or can coerce to the inner type
+            if (from.equals(inner_type)) {
+                return true;
+            }
+            // Also check if from can coerce to inner type
+            return canCoerce(from, inner_type);
+        }
         // Integer type coercion: generic Int can coerce to specific integer types
         if (from == .Int) {
             return isIntegerType(to);
@@ -1529,7 +1547,7 @@ pub const TypeChecker = struct {
                     // Type check positional arguments
                     for (call.args, 0..) |arg, i| {
                         const arg_type = try self.inferExpression(arg);
-                        if (!arg_type.equals(expected_params[i])) {
+                        if (!arg_type.equals(expected_params[i]) and !canCoerce(arg_type, expected_params[i])) {
                             try self.addError("Argument type mismatch", call.node.loc);
                             return error.TypeMismatch;
                         }
@@ -1651,16 +1669,34 @@ pub const TypeChecker = struct {
             return Type.Void;
         };
 
-        // Object must be a struct type
-        if (object_type != .Struct) {
-            try self.addError("Cannot access member of non-struct type", member.node.loc);
-            return error.TypeMismatch;
-        }
-
-        // Find the field in the struct
         const member_name = member.member;
         if (member_name.len == 0) {
             try self.addError("Empty member name in member access", member.node.loc);
+            return error.TypeMismatch;
+        }
+
+        // Handle enum variant access (e.g., Platform::MACOS)
+        if (object_type == .Enum) {
+            // Check if the member is a valid variant
+            for (object_type.Enum.variants) |variant| {
+                if (std.mem.eql(u8, variant.name, member_name)) {
+                    // Return the enum type itself for variant access
+                    return object_type;
+                }
+            }
+            const err_msg = try std.fmt.allocPrint(
+                self.allocator,
+                "Enum '{s}' has no variant '{s}'",
+                .{ object_type.Enum.name, member_name },
+            );
+            try self.addError(err_msg, member.node.loc);
+            self.allocator.free(err_msg);
+            return error.TypeMismatch;
+        }
+
+        // Object must be a struct type for field access
+        if (object_type != .Struct) {
+            try self.addError("Cannot access member of non-struct type", member.node.loc);
             return error.TypeMismatch;
         }
 
@@ -1734,8 +1770,10 @@ pub const TypeChecker = struct {
 
         return switch (unary.op) {
             .Not => {
-                if (!operand_type.equals(Type.Bool)) {
-                    try self.addError("Logical not requires boolean operand", unary.node.loc);
+                // Allow logical not on boolean or optional types
+                // For optional types, !opt is true if opt is null (None)
+                if (!operand_type.equals(Type.Bool) and operand_type != .Optional) {
+                    try self.addError("Logical not requires boolean or optional operand", unary.node.loc);
                     return error.TypeMismatch;
                 }
                 return Type.Bool;
@@ -1835,11 +1873,13 @@ pub const TypeChecker = struct {
         // Right side must be compatible with the unwrapped left type
         if (left_type == .Optional) {
             const inner_type = left_type.Optional.*;
-            if (!inner_type.equals(right_type)) {
+            // Use canCoerce to allow integer literal coercion (e.g., Int -> i32)
+            if (!inner_type.equals(right_type) and !canCoerce(right_type, inner_type)) {
                 try self.addError("Null coalesce default value must match optional type", null_coalesce.node.loc);
                 return error.TypeMismatch;
             }
-            return right_type;
+            // Return the inner type (unwrapped optional type)
+            return inner_type;
         }
 
         // If left is not optional, just return its type (it will never be null)
@@ -1967,6 +2007,14 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "str")) return Type.String; // Allow both string and str
         if (std.mem.eql(u8, name, "void")) return Type.Void;
 
+        // Check if it's a mutable type (mut T) - for by-value mutable parameters
+        // This is different from &mut T which is a mutable reference
+        if (std.mem.startsWith(u8, name, "mut ")) {
+            const inner_type_name = name[4..];
+            // For type checking, mut T is treated as T (mutability is a binding property)
+            return try self.parseTypeName(inner_type_name);
+        }
+
         // Check if it's a reference type
         if (std.mem.startsWith(u8, name, "&mut ")) {
             const inner_type_name = name[5..];
@@ -1986,6 +2034,17 @@ pub const TypeChecker = struct {
             inner_ptr.* = inner_type;
             try self.allocated_types.append(self.allocator, inner_ptr);
             return Type{ .Reference = inner_ptr };
+        }
+
+        // Check if it's an optional type (?T)
+        if (name.len > 1 and name[0] == '?') {
+            const inner_type_name = name[1..];
+            const inner_type = try self.parseTypeName(inner_type_name);
+            const inner_ptr = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(inner_ptr);
+            inner_ptr.* = inner_type;
+            try self.allocated_types.append(self.allocator, inner_ptr);
+            return Type{ .Optional = inner_ptr };
         }
 
         // Check if it's a generic type (e.g., "Result<T, E>", "Vec<T>", "Option<T>")
@@ -2078,6 +2137,20 @@ pub const TypeChecker = struct {
                 return Type{ .Array = .{
                     .element_type = elem_type,
                 } };
+            }
+        }
+
+        // Handle module::Type paths (e.g., "thing::Thing", "player::Player")
+        if (std.mem.indexOf(u8, name, "::")) |sep_pos| {
+            // Extract the type name after the module path
+            const type_name = name[sep_pos + 2 ..];
+            // Try to look up just the type name in environment
+            if (self.env.get(type_name)) |user_type| {
+                return user_type;
+            }
+            // Also try the full path as-is
+            if (self.env.get(name)) |user_type| {
+                return user_type;
             }
         }
 
@@ -2220,6 +2293,8 @@ pub const TypeEnvironment = struct {
     pub fn deinit(self: *TypeEnvironment) void {
         // Free tracked slices (struct fields, enum variants)
         for (self.allocated_slices.items) |alloc| {
+            // Skip zero-length allocations to avoid integer overflow in rawFree
+            if (alloc.len == 0) continue;
             const byte_ptr: [*]u8 = @ptrCast(alloc.ptr);
             const byte_slice = byte_ptr[0 .. alloc.len * alloc.elem_size];
             self.allocator.rawFree(byte_slice, @enumFromInt(alloc.alignment), @returnAddress());

@@ -2837,9 +2837,9 @@ pub const Parser = struct {
     fn assignment(self: *Parser, target: *ast.Expr) !*ast.Expr {
         const assign_token = self.previous();
 
-        // Validate that the target is a valid lvalue (identifier, index, member access, or dereference)
+        // Validate that the target is a valid lvalue (identifier, index, member access, dereference, or tuple for destructuring)
         switch (target.*) {
-            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr => {},
+            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr, .TupleExpr => {},
             else => {
                 try self.reportError("Invalid assignment target");
                 return ParseError.UnexpectedToken;
@@ -2867,7 +2867,7 @@ pub const Parser = struct {
         const op_token = self.previous();
         const loc = ast.SourceLocation.fromToken(op_token);
 
-        // Validate that the target is a valid lvalue
+        // Validate that the target is a valid lvalue (tuple not allowed for compound assignment)
         switch (target.*) {
             .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr => {},
             else => {
@@ -4446,7 +4446,7 @@ pub const Parser = struct {
                 .Minus => .Neg,
                 .Tilde => .BitNot,
                 .Star => .Deref,
-                .Ampersand => .AddressOf,
+                .Ampersand => if (self.match(&.{.Mut})) .BorrowMut else .AddressOf,
                 else => unreachable,
             };
             const operand = try self.parsePrecedence(.Unary);
@@ -4511,7 +4511,9 @@ pub const Parser = struct {
             const bracket_token = self.previous();
 
             // Check for typed array literal: [N]Type{ values }
+            // Save checkpoint in case this isn't a typed array literal
             if (self.check(.Integer)) {
+                const checkpoint = self.current;
                 const size_token = self.advance();
                 if (self.match(&.{.RightBracket})) {
                     // We have [N] - now check for type followed by {
@@ -4551,8 +4553,8 @@ pub const Parser = struct {
                         }
                     }
                 }
-                // Not a typed array literal - this is an error in the syntax
-                // Fall through to error handling
+                // Not a typed array literal - restore position and parse as regular array
+                self.current = checkpoint;
             }
 
             // Regular array literal: [a, b, c] or repeat syntax: [value; count]
