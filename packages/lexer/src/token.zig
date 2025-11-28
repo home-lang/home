@@ -133,6 +133,7 @@ pub const TokenType = enum {
     While,
     Assert,
     Export, // export keyword for exported functions
+    Extern, // extern keyword for external function declarations
 
     // Special
     Eof,
@@ -260,6 +261,7 @@ pub const TokenType = enum {
             .Test => "test",
             .Assert => "assert",
             .Export => "export",
+            .Extern => "extern",
             .Eof => "eof",
             .Invalid => "invalid",
         };
@@ -392,4 +394,5 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "assert", .Assert },
     .{ "var", .Var },
     .{ "export", .Export },
+    .{ "extern", .Extern },
 });

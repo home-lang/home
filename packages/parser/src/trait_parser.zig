@@ -299,7 +299,7 @@ pub fn parseImplDeclaration(self: *Parser) !ast.Stmt {
         _ = self.match(&.{.Async}); // optional async
         _ = try self.expect(.Fn, "Expected 'fn' in impl block");
 
-        const method_stmt = try self.functionDeclaration(false);
+        const method_stmt = try self.functionDeclaration(false, false);
         if (method_stmt == .FnDecl) {
             try methods.append(self.allocator, method_stmt.FnDecl);
         }
@@ -335,12 +335,18 @@ pub fn parseWhereClause(self: *Parser) !*ast.WhereClause {
         
         var trait_bounds = std.ArrayList([]const u8).empty;
         defer trait_bounds.deinit(self.allocator);
-        
+
         while (true) {
-            const trait_token = try self.expect(.Identifier, "Expected trait bound");
-            const trait_bound = try self.allocator.dupe(u8, trait_token.lexeme);
-            try trait_bounds.append(self.allocator, trait_bound);
-            
+            // Check for function type bound: fn(T1, T2) or fn(&T)
+            if (self.check(.Fn)) {
+                const fn_type = try self.parseTypeAnnotation();
+                try trait_bounds.append(self.allocator, fn_type);
+            } else {
+                const trait_token = try self.expect(.Identifier, "Expected trait bound");
+                const trait_bound = try self.allocator.dupe(u8, trait_token.lexeme);
+                try trait_bounds.append(self.allocator, trait_bound);
+            }
+
             if (!self.match(&.{.Plus})) break;
         }
         

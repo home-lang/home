@@ -557,6 +557,7 @@ pub const Parser = struct {
         // Check for pub or export modifier
         const is_pub = self.match(&.{.Pub});
         const is_export = self.match(&.{.Export});
+        const is_extern = self.match(&.{.Extern});
 
         // Check if @test attribute exists for backward compatibility
         var is_test = false;
@@ -619,7 +620,7 @@ pub const Parser = struct {
         if (self.match(&.{.Impl})) return self.implDeclaration();
 
         if (self.match(&.{.Fn})) {
-            var stmt = try self.functionDeclaration(is_test);
+            var stmt = try self.functionDeclaration(is_test, is_extern);
             if (is_pub or is_export) stmt.FnDecl.is_public = true;
             if (is_export) stmt.FnDecl.is_exported = true;
             if (doc_comment) |doc| stmt.FnDecl.doc_comment = doc;
@@ -707,7 +708,7 @@ pub const Parser = struct {
     ///   @test fn test_addition() { ... }
     ///
     /// Returns: Function declaration statement node
-    pub fn functionDeclaration(self: *Parser, is_test: bool) !ast.Stmt {
+    pub fn functionDeclaration(self: *Parser, is_test: bool, is_extern: bool) !ast.Stmt {
         // Check for async keyword before function name
         const is_async = self.match(&.{.Async});
 
@@ -816,9 +817,22 @@ pub const Parser = struct {
             return_type = try self.parseTypeAnnotation();
         }
 
-        // Parse body
-        const body = try self.blockStatement();
-        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+        // Parse optional where clause (skip it for now - just consume tokens until '{' or newline for extern)
+        if (self.match(&.{.Where})) {
+            // Consume where clause: TYPE: TRAIT (+ TRAIT)* (, TYPE: TRAIT (+ TRAIT)*)*
+            while (!self.check(.LeftBrace) and !self.isAtEnd()) {
+                // For extern functions, also break on newline since there's no body
+                if (is_extern and (self.peek().type == .Eof or self.previous().line != self.peek().line)) break;
+                _ = self.advance();
+            }
+        }
+
+        // Parse body (only for non-extern functions)
+        // For extern functions, create an empty block
+        const body = if (is_extern)
+            try ast.BlockStmt.init(self.allocator, &.{}, ast.SourceLocation.fromToken(name_token))
+        else
+            try self.blockStatement();
 
         const params_slice = try params.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(params_slice);
@@ -932,7 +946,7 @@ pub const Parser = struct {
             // Check if this is a method definition (fn keyword)
             if (self.match(&.{.Fn})) {
                 // Parse method and collect it
-                if (self.functionDeclaration(false)) |method_stmt| {
+                if (self.functionDeclaration(false, false)) |method_stmt| {
                     switch (method_stmt) {
                         .FnDecl => |fn_decl| {
                             try methods.append(self.allocator, fn_decl);
@@ -1334,7 +1348,7 @@ pub const Parser = struct {
     }
 
     /// Parse a type annotation (supports arrays, generics, nullable, etc.)
-    fn parseTypeAnnotation(self: *Parser) ![]const u8 {
+    pub fn parseTypeAnnotation(self: *Parser) ![]const u8 {
         // Check for mut type modifier: mut T
         if (self.match(&.{.Mut})) {
             const inner_type = try self.parseTypeAnnotation();
@@ -1465,18 +1479,24 @@ pub const Parser = struct {
 
             // Check for semicolon (fixed-size array: [T; N])
             if (self.match(&.{.Semicolon})) {
-                // Parse the size - can be an integer literal or a constant identifier
-                const size_lexeme = blk: {
-                    if (self.match(&.{.Integer})) {
-                        break :blk self.previous().lexeme;
-                    } else if (self.match(&.{.Identifier})) {
-                        break :blk self.previous().lexeme;
-                    } else {
-                        try self.reportError("Expected array size");
-                        return error.ExpectedArraySize;
+                // Parse the size - can be any expression (constant, cast, etc.)
+                // Collect tokens until we hit ]
+                var size_tokens = std.ArrayList(u8).empty;
+                defer size_tokens.deinit(self.allocator);
+
+                while (!self.check(.RightBracket) and !self.isAtEnd()) {
+                    const tok = self.advance();
+                    if (size_tokens.items.len > 0) {
+                        try size_tokens.append(self.allocator, ' ');
                     }
-                };
+                    for (tok.lexeme) |c| {
+                        try size_tokens.append(self.allocator, c);
+                    }
+                }
+
                 _ = try self.expect(.RightBracket, "Expected ']'");
+
+                const size_lexeme = try size_tokens.toOwnedSlice(self.allocator);
                 // Return [T; N] as string
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_lexeme });
                 return arr_type;
@@ -4122,6 +4142,8 @@ pub const Parser = struct {
                         const arg = try self.expression();
                         try args.append(self.allocator, arg);
                         if (!self.match(&.{.Comma})) break;
+                        // Handle trailing comma - check if next token is close delimiter
+                        if (self.check(close_token)) break;
                     }
                 }
 
