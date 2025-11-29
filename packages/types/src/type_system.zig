@@ -1564,6 +1564,40 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Handle enum variant constructor calls like Result::Ok(value)
+        if (call.callee.* == .MemberExpr) {
+            const member = call.callee.MemberExpr;
+            if (member.object.* == .Identifier) {
+                const enum_name = member.object.Identifier.name;
+                const enum_type = self.env.get(enum_name) orelse {
+                    // Unknown type, allow to continue
+                    return Type.Void;
+                };
+
+                if (enum_type == .Enum) {
+                    // This is an enum variant constructor like Result::Ok(value)
+                    // The type of the expression is the enum type itself
+                    // Verify the variant exists and type-check the argument
+                    const variant_name = member.member;
+                    for (enum_type.Enum.variants) |variant| {
+                        if (std.mem.eql(u8, variant.name, variant_name)) {
+                            // Type check the argument if the variant has data
+                            if (variant.data_type) |expected_data_type| {
+                                if (call.args.len == 1) {
+                                    const arg_type = try self.inferExpression(call.args[0]);
+                                    if (!arg_type.equals(expected_data_type) and !canCoerce(arg_type, expected_data_type)) {
+                                        try self.addError("Enum variant data type mismatch", call.node.loc);
+                                        return error.TypeMismatch;
+                                    }
+                                }
+                            }
+                            return enum_type;
+                        }
+                    }
+                }
+            }
+        }
+
         return Type.Void;
     }
 
@@ -1735,7 +1769,30 @@ pub const TypeChecker = struct {
     fn inferStructLiteral(self: *TypeChecker, struct_lit: *const ast.StructLiteralExpr) TypeError!Type {
         // Look up the struct type in the environment
         const type_name = struct_lit.type_name;
-        const struct_type = self.env.get(type_name) orelse {
+
+        // First try direct lookup in environment
+        if (self.env.get(type_name)) |struct_type| {
+            if (struct_type != .Struct) {
+                const err_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "'{s}' is not a struct type",
+                    .{type_name},
+                );
+                try self.addError(err_msg, struct_lit.node.loc);
+                self.allocator.free(err_msg);
+                return error.TypeMismatch;
+            }
+
+            // Validate field types (optional: check each field against struct definition)
+            for (struct_lit.fields) |field| {
+                _ = try self.inferExpression(field.value);
+            }
+
+            return struct_type;
+        }
+
+        // If not found, try parsing as a type name (handles generic types like Vec<i32>)
+        const parsed_type = self.parseTypeName(type_name) catch {
             const err_msg = try std.fmt.allocPrint(
                 self.allocator,
                 "Unknown struct type '{s}'",
@@ -1746,23 +1803,33 @@ pub const TypeChecker = struct {
             return error.UndefinedVariable;
         };
 
-        if (struct_type != .Struct) {
-            const err_msg = try std.fmt.allocPrint(
-                self.allocator,
-                "'{s}' is not a struct type",
-                .{type_name},
-            );
-            try self.addError(err_msg, struct_lit.node.loc);
-            self.allocator.free(err_msg);
-            return error.TypeMismatch;
+        // For generic collection types (Vec<T>, Array<T>, List<T>), return the parsed type
+        // These are valid as constructor expressions like Vec<i32> {}
+        if (parsed_type == .Array) {
+            // Validate field types if any
+            for (struct_lit.fields) |field| {
+                _ = try self.inferExpression(field.value);
+            }
+            return parsed_type;
         }
 
-        // Validate field types (optional: check each field against struct definition)
-        for (struct_lit.fields) |field| {
-            _ = try self.inferExpression(field.value);
+        // For other parsed types that resolved to Struct, use that
+        if (parsed_type == .Struct) {
+            for (struct_lit.fields) |field| {
+                _ = try self.inferExpression(field.value);
+            }
+            return parsed_type;
         }
 
-        return struct_type;
+        // Otherwise, report unknown type
+        const err_msg = try std.fmt.allocPrint(
+            self.allocator,
+            "Unknown struct type '{s}'",
+            .{type_name},
+        );
+        try self.addError(err_msg, struct_lit.node.loc);
+        self.allocator.free(err_msg);
+        return error.UndefinedVariable;
     }
 
     fn inferUnaryExpression(self: *TypeChecker, unary: *const ast.UnaryExpr) TypeError!Type {
