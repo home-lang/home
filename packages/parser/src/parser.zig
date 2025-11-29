@@ -4260,13 +4260,25 @@ pub const Parser = struct {
                                     try self.reportError("Expected field name");
                                     return error.UnexpectedToken;
                                 };
-                                _ = try self.expect(.Colon, "Expected ':' after field name");
-                                const field_value = try self.expression();
+
+                                // Support both `field: value` and shorthand `field` syntax
+                                var is_shorthand = false;
+                                const field_value = if (self.match(&.{.Colon}))
+                                    try self.expression()
+                                else blk: {
+                                    // Shorthand: field name is also the variable name
+                                    is_shorthand = true;
+                                    const id_expr = try self.allocator.create(ast.Expr);
+                                    id_expr.* = ast.Expr{
+                                        .Identifier = ast.Identifier.init(field_name_token.lexeme, ast.SourceLocation.fromToken(field_name_token)),
+                                    };
+                                    break :blk id_expr;
+                                };
 
                                 try fields.append(self.allocator, ast.FieldInit{
                                     .name = field_name_token.lexeme,
                                     .value = field_value,
-                                    .is_shorthand = false,
+                                    .is_shorthand = is_shorthand,
                                     .loc = ast.SourceLocation.fromToken(field_name_token),
                                 });
 
@@ -4352,13 +4364,25 @@ pub const Parser = struct {
                         try self.reportError("Expected field name");
                         return error.UnexpectedToken;
                     };
-                    _ = try self.expect(.Colon, "Expected ':' after field name");
-                    const field_value = try self.expression();
+
+                    // Support both `field: value` and shorthand `field` syntax
+                    var is_shorthand = false;
+                    const field_value = if (self.match(&.{.Colon}))
+                        try self.expression()
+                    else blk: {
+                        // Shorthand: field name is also the variable name
+                        is_shorthand = true;
+                        const id_expr = try self.allocator.create(ast.Expr);
+                        id_expr.* = ast.Expr{
+                            .Identifier = ast.Identifier.init(field_name_token.lexeme, ast.SourceLocation.fromToken(field_name_token)),
+                        };
+                        break :blk id_expr;
+                    };
 
                     try fields.append(self.allocator, ast.FieldInit{
                         .name = field_name_token.lexeme,
                         .value = field_value,
-                        .is_shorthand = false,
+                        .is_shorthand = is_shorthand,
                         .loc = ast.SourceLocation.fromToken(field_name_token),
                     });
 

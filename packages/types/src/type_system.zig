@@ -771,6 +771,9 @@ pub const TypeChecker = struct {
             return err;
         };
 
+        // Set source root for module resolution based on the imported file path
+        parser.module_resolver.setSourceRoot(file_path) catch {};
+
         const program = parser.parse() catch |err| {
             if (import_decl.imports) |imports| {
                 for (imports) |import_name| {
@@ -1441,6 +1444,7 @@ pub const TypeChecker = struct {
             },
             .BinaryExpr => |binary| try self.inferBinaryExpression(binary),
             .CallExpr => |call| try self.inferCallExpression(call),
+            .StaticCallExpr => |static_call| try self.inferStaticCallExpression(static_call),
             .IndexExpr => |index| try self.inferIndexExpression(index),
             .SliceExpr => |slice| try self.inferSliceExpression(slice),
             .MemberExpr => |member| try self.inferMemberExpression(member),
@@ -1564,11 +1568,60 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Handle enum variant constructor calls like Result::Ok(value)
+        // Handle method calls on objects (string methods, struct methods, etc.)
         if (call.callee.* == .MemberExpr) {
-            const member = call.callee.MemberExpr;
+            const member = call.callee.*.MemberExpr;
+
+            // First, infer the type of the object being called on
+            const object_type = try self.inferExpression(member.object);
+            const method_name = member.member;
+
+            // Handle String methods
+            if (object_type == .String) {
+                // String methods that return bool
+                if (std.mem.eql(u8, method_name, "contains") or
+                    std.mem.eql(u8, method_name, "starts_with") or
+                    std.mem.eql(u8, method_name, "ends_with") or
+                    std.mem.eql(u8, method_name, "is_empty"))
+                {
+                    return Type.Bool;
+                }
+                // String methods that return i32/usize
+                if (std.mem.eql(u8, method_name, "len") or
+                    std.mem.eql(u8, method_name, "find") or
+                    std.mem.eql(u8, method_name, "rfind"))
+                {
+                    return Type.Int;
+                }
+                // String methods that return String
+                if (std.mem.eql(u8, method_name, "to_lowercase") or
+                    std.mem.eql(u8, method_name, "to_uppercase") or
+                    std.mem.eql(u8, method_name, "trim") or
+                    std.mem.eql(u8, method_name, "substr") or
+                    std.mem.eql(u8, method_name, "replace"))
+                {
+                    return Type.String;
+                }
+            }
+
+            // Handle Vec/Array methods
+            if (object_type == .Array) {
+                if (std.mem.eql(u8, method_name, "len") or
+                    std.mem.eql(u8, method_name, "is_empty"))
+                {
+                    return Type.Int;
+                }
+                if (std.mem.eql(u8, method_name, "push") or
+                    std.mem.eql(u8, method_name, "pop") or
+                    std.mem.eql(u8, method_name, "clear"))
+                {
+                    return Type.Void;
+                }
+            }
+
+            // Handle enum variant constructor calls like Result::Ok(value) via MemberExpr
             if (member.object.* == .Identifier) {
-                const enum_name = member.object.Identifier.name;
+                const enum_name = member.object.*.Identifier.name;
                 const enum_type = self.env.get(enum_name) orelse {
                     // Unknown type, allow to continue
                     return Type.Void;
@@ -1598,6 +1651,55 @@ pub const TypeChecker = struct {
             }
         }
 
+        return Type.Void;
+    }
+
+    fn inferStaticCallExpression(self: *TypeChecker, static_call: *const ast.StaticCallExpr) TypeError!Type {
+        // Handle static method calls like Type::method() and enum variant constructors like Result::Ok(value)
+        const type_name = static_call.type_name;
+        const method_name = static_call.method_name;
+
+        // Look up the type in the environment
+        const type_value = self.env.get(type_name) orelse {
+            // Unknown type, allow to continue
+            return Type.Void;
+        };
+
+        // Check if this is an enum variant constructor
+        if (type_value == .Enum) {
+            // Look for a variant matching the method_name
+            for (type_value.Enum.variants) |variant| {
+                if (std.mem.eql(u8, variant.name, method_name)) {
+                    // Type check the argument if the variant has data
+                    if (variant.data_type) |expected_data_type| {
+                        if (static_call.args.len == 1) {
+                            const arg_type = try self.inferExpression(static_call.args[0]);
+                            if (!arg_type.equals(expected_data_type) and !canCoerce(arg_type, expected_data_type)) {
+                                try self.addError("Enum variant data type mismatch", static_call.node.loc);
+                                return error.TypeMismatch;
+                            }
+                        }
+                    }
+                    // Return the enum type itself
+                    return type_value;
+                }
+            }
+        }
+
+        // Check if this is a static method on a struct
+        if (type_value == .Struct) {
+            // For now, static methods return void - can be expanded later
+            // Type check arguments
+            for (static_call.args) |arg| {
+                _ = try self.inferExpression(arg);
+            }
+            return Type.Void;
+        }
+
+        // Unknown static call - type check arguments and return void
+        for (static_call.args) |arg| {
+            _ = try self.inferExpression(arg);
+        }
         return Type.Void;
     }
 
@@ -2205,6 +2307,16 @@ pub const TypeChecker = struct {
                     .element_type = elem_type,
                 } };
             }
+        }
+
+        // Handle Zig stdlib types (std.fs.File, std.mem.Allocator, etc.)
+        // These are treated as opaque pointer types for FFI compatibility
+        if (std.mem.startsWith(u8, name, "std.")) {
+            // Create an opaque struct type for the stdlib type
+            return Type{ .Struct = .{
+                .name = name,
+                .fields = &.{}, // Opaque - no accessible fields
+            } };
         }
 
         // Handle module::Type paths (e.g., "thing::Thing", "player::Player")

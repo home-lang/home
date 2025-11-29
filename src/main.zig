@@ -396,6 +396,10 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse (AST allocated in arena)
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
 
     // Print header
@@ -434,6 +438,10 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
 
     // Create comptime value store for compile-time evaluation
@@ -610,6 +618,10 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
 
     // Interpret
@@ -902,6 +914,10 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Parse
     const start_parse = try std.time.Instant.now();
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
     const end_parse = try std.time.Instant.now();
     const parse_time = @divFloor(end_parse.since(start_parse), std.time.ns_per_ms);
@@ -1208,6 +1224,10 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+
+    // Set source root for module resolution based on the file being compiled
+    try parser.module_resolver.setSourceRoot(file_path);
+
     const program = try parser.parse();
 
     // Check for parse errors
