@@ -1,0 +1,36 @@
+// Test Function Inlining
+// The optimizer should inline small functions at their call sites
+
+fn add(a, b) {
+    return a + b;
+}
+
+fn multiply(x, y) {
+    return x * y;
+}
+
+fn square(n) {
+    return n * n;
+}
+
+fn main() {
+    print("=== Function Inlining Test ===");
+    print("");
+
+    // Simple function calls that should be inlined
+    let result1 = add(5, 3);
+    print("add(5, 3) =", result1);
+
+    let result2 = multiply(4, 7);
+    print("multiply(4, 7) =", result2);
+
+    let result3 = square(6);
+    print("square(6) =", result3);
+
+    // Nested calls
+    let result4 = add(square(2), multiply(3, 4));
+    print("add(square(2), multiply(3, 4)) =", result4);
+
+    print("");
+    print("=== Inlining Tests Complete ===");
+}

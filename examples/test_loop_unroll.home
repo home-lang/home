@@ -1,0 +1,30 @@
+// Test Loop Unrolling
+// The optimizer should unroll loops with small, known iteration counts
+
+fn main() {
+    print("=== Loop Unrolling Test ===");
+    print("");
+
+    // Small fixed-size loop (should be unrolled)
+    print("Unrolling loop 0..5:");
+    for i in 0..5 {
+        print("  i =", i);
+    }
+
+    print("");
+    print("Unrolling loop 0..3:");
+    for j in 0..3 {
+        print("  j =", j);
+    }
+
+    print("");
+    print("Loop with computation:");
+    let sum = 0;
+    for k in 0..4 {
+        sum = sum + k;
+    }
+    print("Sum 0..4 =", sum);
+
+    print("");
+    print("=== Loop Unrolling Tests Complete ===");
+}

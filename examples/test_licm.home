@@ -1,0 +1,34 @@
+// Test Loop Invariant Code Motion (LICM)
+// The optimizer should hoist invariant computations out of loops
+
+fn main() {
+    print("=== Loop Invariant Code Motion Test ===");
+    print("");
+
+    let x = 10;
+    let y = 20;
+
+    // Loop with invariant computation (x + y doesn't change)
+    print("Loop with invariant computation:");
+    for i in 0..5 {
+        let constant = x + y;  // Invariant: should be hoisted
+        let result = constant + i;
+        print("  iteration", i, "result =", result);
+    }
+
+    print("");
+
+    // Loop with multiple invariants
+    print("Loop with multiple invariants:");
+    let a = 5;
+    let b = 3;
+    for j in 0..4 {
+        let product = a * b;  // Invariant
+        let doubled = product * 2;  // Invariant
+        let final = doubled + j;
+        print("  j =", j, "final =", final);
+    }
+
+    print("");
+    print("=== LICM Tests Complete ===");
+}
