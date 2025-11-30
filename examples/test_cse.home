@@ -1,0 +1,59 @@
+// Test Common Subexpression Elimination
+// The optimizer should detect duplicate expressions and potentially
+// replace them with temporary variables
+
+fn test_simple_cse() {
+    let x = 10;
+    let y = 20;
+
+    // These two expressions are identical - CSE opportunity
+    let a = x + y;
+    let b = x + y;  // Same as a
+
+    print("a =", a);
+    print("b =", b);
+}
+
+fn test_complex_cse() {
+    let x = 5;
+    let y = 3;
+    let z = 2;
+
+    // Multiple occurrences of same subexpression
+    let result1 = (x * y) + z;
+    let result2 = (x * y) - z;  // x * y is common
+    let result3 = (x * y) + 1;  // x * y is common again
+
+    print("result1 =", result1);
+    print("result2 =", result2);
+    print("result3 =", result3);
+}
+
+fn test_nested_cse() {
+    let a = 2;
+    let b = 3;
+    let c = 4;
+
+    // Nested common subexpressions
+    let v1 = (a + b) * (a + b);  // a + b appears twice
+    let v2 = (a + b) + c;        // a + b appears again
+
+    print("v1 =", v1);
+    print("v2 =", v2);
+}
+
+fn main() {
+    print("=== CSE Test Suite ===");
+    print("");
+
+    test_simple_cse();
+    print("");
+
+    test_complex_cse();
+    print("");
+
+    test_nested_cse();
+    print("");
+
+    print("=== CSE Tests Complete ===");
+}

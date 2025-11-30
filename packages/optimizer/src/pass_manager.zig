@@ -577,29 +577,332 @@ pub const Pass = struct {
         }
     }
 
+    const TempVarInfo = struct {
+        temp_name: []const u8,
+        first_expr: *ast.Expr,
+        count: usize,
+    };
+
     fn cseInBlock(self: *Pass, block: *ast.BlockStmt, stats: *PassManager.OptimizationStats) anyerror!bool {
-        _ = self;
-        _ = stats;
+        // CSE Strategy:
+        // 1. Track first occurrence of each pure expression
+        // 2. For duplicates, create a temp variable on first occurrence
+        // 3. Replace all occurrences (including first) with variable reference
+        // 4. Insert temp variable declarations at block start
 
-        // Simple CSE within a block:
-        // Track common binary expressions like a+b, x*y, etc.
-        // If we see the same expression twice, we could replace it with a temp variable
-        //
-        // Full implementation would need:
-        // - Expression equality checking
-        // - HashMap to track seen expressions
-        // - AST modification to introduce temp variables
-        // - Ensuring expressions are still valid (no intervening modifications)
+        var expr_map = std.StringHashMap(TempVarInfo).init(self.allocator);
+        defer {
+            var iter = expr_map.iterator();
+            while (iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.temp_name);
+            }
+            expr_map.deinit();
+        }
 
-        const changed = false;
+        var temp_counter: usize = 0;
+        var changed = false;
 
-        // For now, just traverse and count potential opportunities
+        // Pass 1: Identify duplicate expressions
         for (block.statements) |stmt| {
-            _ = stmt;
-            // Would analyze expressions here
+            try self.findDuplicateExprs(stmt, &expr_map, &temp_counter);
+        }
+
+        // Pass 2: Replace expressions with temp variable references
+        // Only replace if we found duplicates (count > 1)
+        for (block.statements) |*stmt| {
+            const stmt_changed = try self.replaceWithTempVars(stmt, &expr_map);
+            changed = changed or stmt_changed;
+        }
+
+        // Pass 3: Insert temp variable declarations at the beginning
+        if (changed) {
+            var new_stmts = try std.ArrayList(ast.Stmt).initCapacity(self.allocator, block.statements.len + expr_map.count());
+            defer new_stmts.deinit(self.allocator);
+
+            // Add temp variable declarations
+            var iter = expr_map.iterator();
+            while (iter.next()) |entry| {
+                if (entry.value_ptr.count > 1) {
+                    // Create: let _cse_N = <expression>
+                    // Get location from the expression
+                    const loc = switch (entry.value_ptr.first_expr.*) {
+                        .BinaryExpr => |bin| bin.node.loc,
+                        .IntegerLiteral => |int| int.node.loc,
+                        .Identifier => |id| id.node.loc,
+                        else => ast.SourceLocation{ .line = 0, .column = 0 },
+                    };
+                    const let_decl = try ast.LetDecl.init(
+                        self.allocator,
+                        entry.value_ptr.temp_name,
+                        null, // type_name
+                        entry.value_ptr.first_expr,
+                        false, // is_mutable
+                        loc,
+                    );
+                    try new_stmts.append(self.allocator, ast.Stmt{ .LetDecl = let_decl });
+                    stats.dead_code_removed += 1; // Track CSE count
+                }
+            }
+
+            // Add original statements
+            for (block.statements) |stmt| {
+                try new_stmts.append(self.allocator, stmt);
+            }
+
+            // Replace block's statements
+            block.statements = try new_stmts.toOwnedSlice(self.allocator);
         }
 
         return changed;
+    }
+
+    fn findDuplicateExprs(
+        self: *Pass,
+        stmt: ast.Stmt,
+        expr_map: *std.StringHashMap(TempVarInfo),
+        temp_counter: *usize,
+    ) anyerror!void {
+        switch (stmt) {
+            .ExprStmt => |expr| {
+                try self.trackExpr(expr, expr_map, temp_counter);
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.value) |val| {
+                    try self.trackExpr(val, expr_map, temp_counter);
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |val| {
+                    try self.trackExpr(val, expr_map, temp_counter);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn trackExpr(
+        self: *Pass,
+        expr: *ast.Expr,
+        expr_map: *std.StringHashMap(TempVarInfo),
+        temp_counter: *usize,
+    ) anyerror!void {
+        // Only track pure binary expressions for now
+        if (expr.* != .BinaryExpr) return;
+
+        const bin_expr = expr.BinaryExpr;
+        const is_pure = switch (bin_expr.op) {
+            .Add, .Sub, .Mul, .Div, .Mod,
+            .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq,
+            .BitAnd, .BitOr, .BitXor, .LeftShift, .RightShift => true,
+            else => false,
+        };
+
+        if (!is_pure) return;
+
+        const expr_str = try self.exprToString(expr.*);
+        defer self.allocator.free(expr_str);
+
+        const entry = try expr_map.getOrPut(expr_str);
+        if (!entry.found_existing) {
+            // First occurrence - create temp var name
+            const temp_name = try std.fmt.allocPrint(self.allocator, "_cse_{d}", .{temp_counter.*});
+            temp_counter.* += 1;
+
+            const key_copy = try self.allocator.dupe(u8, expr_str);
+            entry.key_ptr.* = key_copy;
+            entry.value_ptr.* = .{
+                .temp_name = temp_name,
+                .first_expr = expr,
+                .count = 1,
+            };
+        } else {
+            entry.value_ptr.count += 1;
+        }
+
+        // Recursively track subexpressions
+        try self.trackExpr(bin_expr.left, expr_map, temp_counter);
+        try self.trackExpr(bin_expr.right, expr_map, temp_counter);
+    }
+
+    fn replaceWithTempVars(
+        self: *Pass,
+        stmt: *ast.Stmt,
+        expr_map: *std.StringHashMap(TempVarInfo),
+    ) anyerror!bool {
+        switch (stmt.*) {
+            .ExprStmt => |expr| {
+                return try self.replaceExpr(expr, expr_map);
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.value) |val| {
+                    return try self.replaceExpr(val, expr_map);
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |val| {
+                    return try self.replaceExpr(val, expr_map);
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    fn replaceExpr(
+        self: *Pass,
+        expr: *ast.Expr,
+        expr_map: *std.StringHashMap(TempVarInfo),
+    ) anyerror!bool {
+        // Check if this expression should be replaced
+        const expr_str = try self.exprToString(expr.*);
+        defer self.allocator.free(expr_str);
+
+        if (expr_map.get(expr_str)) |info| {
+            if (info.count > 1) {
+                // Replace with identifier
+                // Get location from current expression
+                const loc = switch (expr.*) {
+                    .BinaryExpr => |bin| bin.node.loc,
+                    .IntegerLiteral => |int| int.node.loc,
+                    .Identifier => |id| id.node.loc,
+                    else => ast.SourceLocation{ .line = 0, .column = 0 },
+                };
+                expr.* = ast.Expr{
+                    .Identifier = ast.Identifier.init(info.temp_name, loc),
+                };
+                return true;
+            }
+        }
+
+        // Recursively replace in subexpressions
+        var changed = false;
+        switch (expr.*) {
+            .BinaryExpr => |bin_expr| {
+                changed = try self.replaceExpr(bin_expr.left, expr_map) or changed;
+                changed = try self.replaceExpr(bin_expr.right, expr_map) or changed;
+            },
+            .UnaryExpr => |un_expr| {
+                changed = try self.replaceExpr(un_expr.operand, expr_map) or changed;
+            },
+            .CallExpr => |call| {
+                for (call.args) |arg| {
+                    changed = try self.replaceExpr(arg, expr_map) or changed;
+                }
+            },
+            else => {},
+        }
+        return changed;
+    }
+
+    fn analyzeStmtForCSE(self: *Pass, stmt: ast.Stmt, expr_count: *std.StringHashMap(usize)) anyerror!void {
+        switch (stmt) {
+            .ExprStmt => |expr| {
+                try self.analyzeExprForCSE(expr.*, expr_count);
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.value) |val| {
+                    try self.analyzeExprForCSE(val.*, expr_count);
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |val| {
+                    try self.analyzeExprForCSE(val.*, expr_count);
+                }
+            },
+            .IfStmt => |if_stmt| {
+                try self.analyzeExprForCSE(if_stmt.condition.*, expr_count);
+                // Don't recurse into nested blocks for simplicity
+            },
+            .WhileStmt => |while_stmt| {
+                try self.analyzeExprForCSE(while_stmt.condition.*, expr_count);
+            },
+            else => {},
+        }
+    }
+
+    fn analyzeExprForCSE(self: *Pass, expr: ast.Expr, expr_count: *std.StringHashMap(usize)) anyerror!void {
+        switch (expr) {
+            .BinaryExpr => |bin_expr| {
+                // Only consider pure operations (no side effects)
+                const is_pure = switch (bin_expr.op) {
+                    .Add, .Sub, .Mul, .Div, .Mod,
+                    .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq,
+                    .BitAnd, .BitOr, .BitXor, .LeftShift, .RightShift => true,
+                    else => false,
+                };
+
+                if (is_pure) {
+                    // Create a simple string representation of the expression
+                    const expr_str = try self.exprToString(expr);
+                    defer self.allocator.free(expr_str);
+
+                    const entry = try expr_count.getOrPut(expr_str);
+                    if (!entry.found_existing) {
+                        // Need to dupe the key for the hashmap to own it
+                        const key_copy = try self.allocator.dupe(u8, expr_str);
+                        expr_count.put(key_copy, 1) catch {};
+                    } else {
+                        entry.value_ptr.* += 1;
+                    }
+                }
+
+                // Recursively analyze operands
+                try self.analyzeExprForCSE(bin_expr.left.*, expr_count);
+                try self.analyzeExprForCSE(bin_expr.right.*, expr_count);
+            },
+            .UnaryExpr => |un_expr| {
+                try self.analyzeExprForCSE(un_expr.operand.*, expr_count);
+            },
+            .CallExpr => |call| {
+                for (call.args) |arg| {
+                    try self.analyzeExprForCSE(arg.*, expr_count);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn exprToString(self: *Pass, expr: ast.Expr) ![]const u8 {
+        // Simple string representation for expression hashing
+        // Format: "op(left,right)" for binary, "op(operand)" for unary
+        switch (expr) {
+            .BinaryExpr => |bin_expr| {
+                const left_str = try self.exprToString(bin_expr.left.*);
+                defer self.allocator.free(left_str);
+                const right_str = try self.exprToString(bin_expr.right.*);
+                defer self.allocator.free(right_str);
+
+                const op_str = switch (bin_expr.op) {
+                    .Add => "+",
+                    .Sub => "-",
+                    .Mul => "*",
+                    .Div => "/",
+                    .Mod => "%",
+                    .Equal => "==",
+                    .NotEqual => "!=",
+                    .Less => "<",
+                    .LessEq => "<=",
+                    .Greater => ">",
+                    .GreaterEq => ">=",
+                    .BitAnd => "&",
+                    .BitOr => "|",
+                    .BitXor => "^",
+                    else => "?",
+                };
+
+                return try std.fmt.allocPrint(self.allocator, "({s}{s}{s})", .{left_str, op_str, right_str});
+            },
+            .Identifier => |id| {
+                return try std.fmt.allocPrint(self.allocator, "{s}", .{id.name});
+            },
+            .IntegerLiteral => |int_lit| {
+                return try std.fmt.allocPrint(self.allocator, "{d}", .{int_lit.value});
+            },
+            else => {
+                return try std.fmt.allocPrint(self.allocator, "?", .{});
+            },
+        }
     }
 
     fn runInlining(self: *Pass, program: *ast.Program, stats: *PassManager.OptimizationStats) !bool {

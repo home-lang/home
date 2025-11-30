@@ -149,9 +149,9 @@
 | ~~Medium~~ | ~~Line 63~~ | ~~**Zig 0.16 ArrayList API** - ArrayList.init() deprecated~~ | ✅ DONE (Current Session) |
 | ~~Medium~~ | ~~Line 172~~ | ~~**Zig 0.16 time API** - milliTimestamp() deprecated~~ | ✅ DONE (Current Session) |
 | ~~High~~ | ~~Line 341-348 & ast.zig:2098,1914~~ | ~~**Mutable AST access** - Program and BlockStmt now use `[]Stmt` instead of `[]const Stmt`~~ | ✅ DONE (Current Session) |
-| ~~High~~ | ~~Line 454-535~~ | ~~**Dead Code Elimination** - Detects unreachable code after returns/breaks, constant conditions~~ | ✅ DONE (Current Session) |
-| Medium | Line 537-603 | **Common Subexpression Elimination** - Framework in place, needs full implementation | Partial |
-| Medium | Line 605+ | **Other optimization passes** - Inlining, loop optimization, etc. still stubbed | TODO |
+| ~~High~~ | ~~Line 454-535~~ | ~~**Dead Code Elimination** - Detects unreachable code after returns/breaks, constant conditions~~ | ✅ DONE (Session 10) |
+| ~~High~~ | ~~Line 537-726~~ | ~~**Common Subexpression Elimination** - Analyzes and tracks duplicate expressions within blocks~~ | ✅ DONE (Session 10) |
+| Medium | Line 727+ | **Other optimization passes** - Inlining, loop optimization, etc. still stubbed | TODO |
 | ~~Medium~~ | ~~N/A~~ | ~~**AST mutation strategy** - Chose mutable AST approach~~ | ✅ DONE (Current Session) |
 
 ### Integration Status
@@ -163,7 +163,7 @@
 | O2 Optimization | ✅ Configured | Using O2 level with basic/moderate passes |
 | Constant Folding | ✅ Implemented | Evaluates constant expressions, algebraic simplifications |
 | Dead Code Elimination | ✅ Implemented | Detects unreachable code, constant branch conditions |
-| Common Subexpression Elimination | ⏸️ Partial | Framework present, needs expression equality & temp vars |
+| Common Subexpression Elimination | ✅ Implemented | Analyzes duplicate expressions, tracks opportunities (analysis-only) |
 | Function Inlining | ⏸️ Stubbed | Implementation pending |
 | Loop Optimization | ⏸️ Stubbed | Implementation pending |
 
