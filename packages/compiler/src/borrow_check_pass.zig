@@ -65,84 +65,89 @@ pub const BorrowCheckPass = struct {
     }
 
     /// Check a single statement
-    fn checkStatement(self: *BorrowCheckPass, stmt: *const ast.Stmt) !void {
+    fn checkStatement(self: *BorrowCheckPass, stmt: *const ast.Stmt) anyerror!void {
         switch (stmt.*) {
-            .FunctionDecl => |func_decl| {
-                try self.checkFunction(&func_decl);
+            .FnDecl => |func_decl| {
+                try self.checkFunction(func_decl);
             },
             .LetDecl => |let_decl| {
-                if (let_decl.initializer) |initializer| {
-                    try self.checkExpression(initializer);
+                if (let_decl.value) |val| {
+                    try self.checkExpression(val);
                 }
                 // Register variable as owned
-                try self.tracker.define(let_decl.name, .Int, let_decl.location);
-            },
-            .AssignmentStmt => |assign| {
-                try self.checkExpression(assign.target);
-                try self.checkExpression(assign.value);
-            },
-            .ReturnStmt => |ret_stmt| {
-                if (ret_stmt.expression) |expr| {
-                    try self.checkExpression(expr);
-                }
+                try self.tracker.define(let_decl.name, .Int, let_decl.node.loc);
             },
             .ExprStmt => |expr| {
-                try self.checkExpression(expr);
+                // Check if it's an assignment expression
+                switch (expr.*) {
+                    .AssignmentExpr => |assign| {
+                        try self.checkExpression(assign.target);
+                        try self.checkExpression(assign.value);
+                    },
+                    else => {
+                        try self.checkExpression(expr);
+                    },
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |val| {
+                    try self.checkExpression(val);
+                }
             },
             .IfStmt => |if_stmt| {
                 try self.checkExpression(if_stmt.condition);
-                try self.tracker.enterScope();
-                try self.checkBlock(&if_stmt.then_block);
-                try self.tracker.exitScope();
+                self.tracker.enterScope();
+                try self.checkBlock(if_stmt.then_block);
+                self.tracker.exitScope();
 
                 if (if_stmt.else_block) |else_block| {
-                    try self.tracker.enterScope();
-                    try self.checkBlock(&else_block);
-                    try self.tracker.exitScope();
+                    self.tracker.enterScope();
+                    try self.checkBlock(else_block);
+                    self.tracker.exitScope();
                 }
             },
             .WhileStmt => |while_stmt| {
                 try self.checkExpression(while_stmt.condition);
-                try self.tracker.enterScope();
-                try self.checkBlock(&while_stmt.body);
-                try self.tracker.exitScope();
+                self.tracker.enterScope();
+                try self.checkBlock(while_stmt.body);
+                self.tracker.exitScope();
             },
             else => {},
         }
     }
 
     /// Check function body
-    fn checkFunction(self: *BorrowCheckPass, func: *ast.FnDecl) !void {
+    fn checkFunction(self: *BorrowCheckPass, func: *ast.FnDecl) anyerror!void {
         // Enter function scope
-        try self.tracker.enterScope();
+        self.tracker.enterScope();
 
         // Register parameters
         for (func.params) |param| {
-            try self.tracker.define(param.name, .Int, param.location);
+            try self.tracker.define(param.name, .Int, param.loc);
         }
 
         // Check body
-        try self.checkBlock(&func.body);
+        try self.checkBlock(func.body);
 
         // Exit function scope
-        try self.tracker.exitScope();
+        self.tracker.exitScope();
     }
 
     /// Check block of statements
-    fn checkBlock(self: *BorrowCheckPass, block: *const ast.BlockStmt) !void {
-        for (block.statements) |*stmt| {
-            try self.checkStatement(stmt);
+    fn checkBlock(self: *BorrowCheckPass, block: *const ast.BlockStmt) anyerror!void {
+        for (block.statements) |stmt| {
+            try self.checkStatement(&stmt);
         }
     }
 
     /// Check expression for borrow violations
-    fn checkExpression(self: *BorrowCheckPass, expr: *ast.Expr) !void {
+    fn checkExpression(self: *BorrowCheckPass, expr: *ast.Expr) anyerror!void {
         switch (expr.*) {
             .Identifier => |id| {
                 // Check if variable has been moved
                 if (self.tracker.variables.get(id.name)) |info| {
                     if (info.state == .Moved) {
-                        try self.errors.append(.{
+                        try self.errors.append(self.allocator, .{
                             .kind = .UseAfterMove,
                             .location = id.node.loc,
                             .variable = id.name,
@@ -151,7 +156,7 @@ pub const BorrowCheckPass = struct {
                 }
             },
             .UnaryExpr => |un| {
-                if (un.operator == .AddressOf) {
+                if (un.op == .AddressOf) {
                     // Immutable borrow: &x
                     if (un.operand.* == .Identifier) {
                         const var_name = un.operand.Identifier.name;
@@ -159,7 +164,7 @@ pub const BorrowCheckPass = struct {
                             try self.handleBorrowError(err, var_name, un.operand.Identifier.node.loc);
                         };
                     }
-                } else if (un.operator == .MutAddressOf) {
+                } else if (un.op == .BorrowMut) {
                     // Mutable borrow: &mut x
                     if (un.operand.* == .Identifier) {
                         const var_name = un.operand.Identifier.name;
@@ -177,7 +182,7 @@ pub const BorrowCheckPass = struct {
             },
             .CallExpr => |call| {
                 try self.checkExpression(call.callee);
-                for (call.arguments) |arg| {
+                for (call.args) |arg| {
                     try self.checkExpression(arg);
 
                     // Check if argument is moved (passed by value)
@@ -216,7 +221,7 @@ pub const BorrowCheckPass = struct {
             else => return err,
         };
 
-        try self.errors.append(.{
+        try self.errors.append(self.allocator, .{
             .kind = kind,
             .location = loc,
             .variable = var_name,
@@ -242,10 +247,10 @@ pub const BorrowCheckPass = struct {
         );
         defer self.allocator.free(message);
 
-        var labels = std.ArrayList(EnhancedReporter.EnhancedDiagnostic.Label).init(self.allocator);
-        defer labels.deinit();
+        var labels: std.ArrayList(EnhancedReporter.EnhancedDiagnostic.Label) = .{};
+        defer labels.deinit(self.allocator);
 
-        try labels.append(.{
+        try labels.append(self.allocator, .{
             .location = err.location,
             .message = try self.allocator.dupe(u8, self.getLabelMessage(err.kind)),
             .style = .primary,
@@ -258,7 +263,7 @@ pub const BorrowCheckPass = struct {
             .code = try self.allocator.dupe(u8, code),
             .message = try self.allocator.dupe(u8, message),
             .location = err.location,
-            .labels = try labels.toOwnedSlice(),
+            .labels = try labels.toOwnedSlice(self.allocator),
             .help = help,
         };
 

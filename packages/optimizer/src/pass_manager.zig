@@ -1025,20 +1025,38 @@ pub const Pass = struct {
                     if (fn_map.get(fn_name)) |fn_decl| {
                         // Check if argument count matches
                         if (call.args.len == fn_decl.params.len and call.named_args.len == 0) {
-                            // For now, only inline if the function has a single return statement
+                            // Only inline if the function has a single return statement
                             if (try self.canInlineFunction(fn_decl)) {
-                                stats.functions_inlined += 1;
-                                // Note: Full inlining would require cloning and substituting the function body
-                                // This is a simplified version that marks it as changed
-                                changed = true;
+                                // Actually perform inlining by substituting the function body
+                                const return_stmt = fn_decl.body.statements[0].ReturnStmt;
+                                if (return_stmt.value) |ret_expr| {
+                                    // Create substitution map: param_name -> argument_expr
+                                    var subst_map = std.StringHashMap(*ast.Expr).init(self.allocator);
+                                    defer subst_map.deinit();
+
+                                    for (fn_decl.params, 0..) |param, i| {
+                                        try subst_map.put(param.name, call.args[i]);
+                                    }
+
+                                    // Clone and substitute the return expression
+                                    const inlined_expr = try self.cloneAndSubstitute(ret_expr, &subst_map);
+
+                                    // Replace the call expression with the inlined expression
+                                    expr.* = inlined_expr.*;
+
+                                    stats.functions_inlined += 1;
+                                    changed = true;
+                                }
                             }
                         }
                     }
                 }
 
-                // Recurse into arguments
-                for (call.args) |arg| {
-                    changed = try self.inlineInExpr(arg, fn_map, stats) or changed;
+                // Recurse into arguments (only if we didn't inline)
+                if (!changed) {
+                    for (call.args) |arg| {
+                        changed = try self.inlineInExpr(arg, fn_map, stats) or changed;
+                    }
                 }
             },
             .BinaryExpr => |bin| {
@@ -1052,6 +1070,64 @@ pub const Pass = struct {
         }
 
         return changed;
+    }
+
+    fn cloneAndSubstitute(self: *Pass, expr: *ast.Expr, subst_map: *std.StringHashMap(*ast.Expr)) !*ast.Expr {
+        const cloned = try self.allocator.create(ast.Expr);
+
+        switch (expr.*) {
+            .Identifier => |id| {
+                // Check if this identifier should be substituted
+                if (subst_map.get(id.name)) |replacement| {
+                    // Return the replacement expression directly
+                    cloned.* = replacement.*;
+                } else {
+                    cloned.* = expr.*;
+                }
+            },
+            .BinaryExpr => |bin| {
+                const left = try self.cloneAndSubstitute(bin.left, subst_map);
+                const right = try self.cloneAndSubstitute(bin.right, subst_map);
+
+                const cloned_bin = try self.allocator.create(ast.BinaryExpr);
+                cloned_bin.* = .{
+                    .node = bin.node,
+                    .left = left,
+                    .right = right,
+                    .op = bin.op,
+                };
+                cloned.* = ast.Expr{ .BinaryExpr = cloned_bin };
+            },
+            .UnaryExpr => |un| {
+                const operand = try self.cloneAndSubstitute(un.operand, subst_map);
+
+                const cloned_un = try self.allocator.create(ast.UnaryExpr);
+                cloned_un.* = .{
+                    .node = un.node,
+                    .operand = operand,
+                    .op = un.op,
+                };
+                cloned.* = ast.Expr{ .UnaryExpr = cloned_un };
+            },
+            .IntegerLiteral => |int| {
+                cloned.* = ast.Expr{ .IntegerLiteral = int };
+            },
+            .FloatLiteral => |float| {
+                cloned.* = ast.Expr{ .FloatLiteral = float };
+            },
+            .StringLiteral => |str| {
+                cloned.* = ast.Expr{ .StringLiteral = str };
+            },
+            .BooleanLiteral => |bool_lit| {
+                cloned.* = ast.Expr{ .BooleanLiteral = bool_lit };
+            },
+            else => {
+                // For other expression types, just copy
+                cloned.* = expr.*;
+            },
+        }
+
+        return cloned;
     }
 
     fn canInlineFunction(self: *Pass, fn_decl: *ast.FnDecl) !bool {

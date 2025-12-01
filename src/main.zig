@@ -783,16 +783,18 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         }
 
         // Borrow checking pass
-        std.debug.print("{s}Borrow checking...{s} (temporarily disabled)\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("{s}Borrow checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-        // TODO: Re-enable borrow checking after updating to current AST structure
-        // var borrow_checker = BorrowCheckPass.init(allocator, &enhanced_reporter);
-        // defer borrow_checker.deinit();
-        // const borrow_check_passed = try borrow_checker.check(program);
+        var borrow_checker = BorrowCheckPass.init(allocator, &enhanced_reporter);
+        defer borrow_checker.deinit();
+        const borrow_check_passed = try borrow_checker.check(program);
 
-        const borrow_check_passed = true; // Temporarily bypassed
-        _ = borrow_check_passed;
-        std.debug.print("{s}Borrow check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+        if (borrow_check_passed) {
+            std.debug.print("{s}Borrow check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+        } else {
+            std.debug.print("{s}Borrow check failed!{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.process.exit(1);
+        }
 
         // Optimization pass
         std.debug.print("{s}Running optimizations...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
