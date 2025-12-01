@@ -1478,19 +1478,315 @@ pub const Pass = struct {
     }
 
     fn runRedundancyElimination(self: *Pass, program: *ast.Program, stats: *PassManager.OptimizationStats) !bool {
-        _ = self;
-        _ = program;
-        _ = stats;
-        // Eliminate redundant loads/stores
-        return false;
+        var changed = false;
+
+        // Process all statements to eliminate redundant loads
+        for (program.statements) |stmt| {
+            changed = try self.eliminateRedundancyInStmt(stmt, stats) or changed;
+        }
+
+        return changed;
+    }
+
+    fn eliminateRedundancyInStmt(self: *Pass, stmt: ast.Stmt, stats: *PassManager.OptimizationStats) anyerror!bool {
+        var changed = false;
+
+        switch (stmt) {
+            .FnDecl => |fn_decl| {
+                changed = try self.eliminateRedundancyInBlock(fn_decl.body, stats);
+            },
+            .IfStmt => |if_stmt| {
+                changed = try self.eliminateRedundancyInBlock(if_stmt.then_block, stats);
+                if (if_stmt.else_block) |else_block| {
+                    changed = try self.eliminateRedundancyInBlock(else_block, stats) or changed;
+                }
+            },
+            .WhileStmt => |while_stmt| {
+                changed = try self.eliminateRedundancyInBlock(while_stmt.body, stats);
+            },
+            .ForStmt => |for_stmt| {
+                changed = try self.eliminateRedundancyInBlock(for_stmt.body, stats);
+            },
+            else => {},
+        }
+
+        return changed;
+    }
+
+    fn eliminateRedundancyInBlock(self: *Pass, block: *ast.BlockStmt, stats: *PassManager.OptimizationStats) anyerror!bool {
+        var changed = false;
+
+        // Track loaded expressions: map expression string → temp variable name
+        var loaded_exprs = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var it = loaded_exprs.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            loaded_exprs.deinit();
+        }
+
+        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        defer new_statements.deinit(self.allocator);
+
+        for (block.statements) |stmt| {
+            // Check if this statement contains redundant loads
+            if (stmt == .LetDecl) {
+                const let_decl = stmt.LetDecl;
+                if (let_decl.value) |val| {
+                    // Check for array index or member access that we've seen before
+                    if (val.* == .IndexExpr or val.* == .MemberExpr) {
+                        const expr_key = try self.loadExprToString(val);
+                        defer self.allocator.free(expr_key);
+
+                        if (loaded_exprs.get(expr_key)) |prev_var| {
+                            // We've already loaded this expression!
+                            // Replace the load with a reference to the previous variable
+                            const new_let = try self.allocator.create(ast.LetDecl);
+                            const prev_ident = try self.createIdentifier(prev_var, let_decl.node.loc);
+
+                            new_let.* = .{
+                                .node = let_decl.node,
+                                .name = let_decl.name,
+                                .type_name = let_decl.type_name,
+                                .value = prev_ident,
+                                .is_mutable = let_decl.is_mutable,
+                                .is_public = let_decl.is_public,
+                            };
+
+                            try new_statements.append(self.allocator, ast.Stmt{ .LetDecl = new_let });
+                            stats.redundant_loads_eliminated += 1;
+                            changed = true;
+                            continue;
+                        } else {
+                            // First time seeing this load, track it
+                            const key_copy = try self.allocator.dupe(u8, expr_key);
+                            try loaded_exprs.put(key_copy, let_decl.name);
+                        }
+                    }
+                }
+            } else if (stmt == .ExprStmt) {
+                // Stores (assignments) invalidate tracked loads
+                if (stmt.ExprStmt.* == .AssignmentExpr) {
+                    const assign = stmt.ExprStmt.AssignmentExpr;
+                    // Invalidate loads that might be affected by this store
+                    if (assign.target.* == .IndexExpr or assign.target.* == .MemberExpr) {
+                        const target_key = try self.loadExprToString(assign.target);
+                        defer self.allocator.free(target_key);
+
+                        if (loaded_exprs.get(target_key)) |_| {
+                            _ = loaded_exprs.remove(target_key);
+                        }
+                    }
+                }
+            }
+
+            try new_statements.append(self.allocator, stmt);
+
+            // Recurse into nested blocks
+            _ = try self.eliminateRedundancyInStmt(stmt, stats);
+        }
+
+        // Replace block's statements if we made changes
+        if (changed) {
+            block.statements = try new_statements.toOwnedSlice(self.allocator);
+        }
+
+        return changed;
+    }
+
+    fn loadExprToString(self: *Pass, expr: *ast.Expr) ![]const u8 {
+        var buffer: std.ArrayList(u8) = .{};
+        defer buffer.deinit(self.allocator);
+
+        try self.loadExprToStringHelper(expr, &buffer);
+        return buffer.toOwnedSlice(self.allocator);
+    }
+
+    fn loadExprToStringHelper(self: *Pass, expr: *ast.Expr, buffer: *std.ArrayList(u8)) anyerror!void {
+        switch (expr.*) {
+            .Identifier => |id| {
+                try buffer.appendSlice(self.allocator, id.name);
+            },
+            .IndexExpr => |index| {
+                try self.loadExprToStringHelper(index.array, buffer);
+                try buffer.appendSlice(self.allocator, "[");
+                try self.loadExprToStringHelper(index.index, buffer);
+                try buffer.appendSlice(self.allocator, "]");
+            },
+            .MemberExpr => |member| {
+                try self.loadExprToStringHelper(member.object, buffer);
+                try buffer.appendSlice(self.allocator, ".");
+                try buffer.appendSlice(self.allocator, member.member);
+            },
+            .IntegerLiteral => |int| {
+                const str = try std.fmt.allocPrint(self.allocator, "{d}", .{int.value});
+                defer self.allocator.free(str);
+                try buffer.appendSlice(self.allocator, str);
+            },
+            else => {
+                try buffer.appendSlice(self.allocator, "<expr>");
+            },
+        }
+    }
+
+    fn createIdentifier(self: *Pass, name: []const u8, loc: ast.SourceLocation) !*ast.Expr {
+        const expr = try self.allocator.create(ast.Expr);
+        const ident = ast.Identifier{
+            .node = .{ .type = .Identifier, .loc = loc },
+            .name = name,
+        };
+        expr.* = ast.Expr{ .Identifier = ident };
+        return expr;
     }
 
     fn runEscapeAnalysis(self: *Pass, program: *ast.Program, stats: *PassManager.OptimizationStats) !bool {
+        var changed = false;
+
+        // Track allocations and their escape status
+        var allocations = std.StringHashMap(bool).init(self.allocator);
+        defer allocations.deinit();
+
+        // Process all statements to find allocations and analyze escapes
+        for (program.statements) |stmt| {
+            try self.analyzeEscapeInStmt(stmt, &allocations, stats, &changed);
+        }
+
+        return changed;
+    }
+
+    fn analyzeEscapeInStmt(self: *Pass, stmt: ast.Stmt, allocations: *std.StringHashMap(bool), stats: *PassManager.OptimizationStats, changed: *bool) anyerror!void {
+        switch (stmt) {
+            .FnDecl => |fn_decl| {
+                // Each function has its own allocation context
+                var local_allocs = std.StringHashMap(bool).init(self.allocator);
+                defer local_allocs.deinit();
+
+                try self.analyzeEscapeInBlock(fn_decl.body, &local_allocs, stats, changed);
+            },
+            .IfStmt => |if_stmt| {
+                try self.analyzeEscapeInExpr(if_stmt.condition, allocations, changed);
+                try self.analyzeEscapeInBlock(if_stmt.then_block, allocations, stats, changed);
+                if (if_stmt.else_block) |else_block| {
+                    try self.analyzeEscapeInBlock(else_block, allocations, stats, changed);
+                }
+            },
+            .WhileStmt => |while_stmt| {
+                try self.analyzeEscapeInExpr(while_stmt.condition, allocations, changed);
+                try self.analyzeEscapeInBlock(while_stmt.body, allocations, stats, changed);
+            },
+            .ForStmt => |for_stmt| {
+                try self.analyzeEscapeInExpr(for_stmt.iterable, allocations, changed);
+                try self.analyzeEscapeInBlock(for_stmt.body, allocations, stats, changed);
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.value) |val| {
+                    // Check if this is an allocation
+                    if (self.isAllocation(val)) {
+                        // Track this variable as potentially non-escaping
+                        try allocations.put(let_decl.name, false);
+                        // If it doesn't escape, we can elide the heap allocation
+                        stats.allocations_elided += 1;
+                    }
+                    try self.analyzeEscapeInExpr(val, allocations, changed);
+                }
+            },
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.value) |val| {
+                    // Anything returned escapes
+                    self.markEscaping(val, allocations);
+                    try self.analyzeEscapeInExpr(val, allocations, changed);
+                }
+            },
+            .ExprStmt => |expr| {
+                try self.analyzeEscapeInExpr(expr, allocations, changed);
+            },
+            else => {},
+        }
+    }
+
+    fn analyzeEscapeInBlock(self: *Pass, block: *const ast.BlockStmt, allocations: *std.StringHashMap(bool), stats: *PassManager.OptimizationStats, changed: *bool) anyerror!void {
+        for (block.statements) |stmt| {
+            try self.analyzeEscapeInStmt(stmt, allocations, stats, changed);
+        }
+    }
+
+    fn analyzeEscapeInExpr(self: *Pass, expr: *ast.Expr, allocations: *std.StringHashMap(bool), changed: *bool) anyerror!void {
+        switch (expr.*) {
+            .Identifier => |id| {
+                // Just using a variable doesn't cause escape
+                _ = id;
+            },
+            .BinaryExpr => |bin| {
+                try self.analyzeEscapeInExpr(bin.left, allocations, changed);
+                try self.analyzeEscapeInExpr(bin.right, allocations, changed);
+            },
+            .UnaryExpr => |un| {
+                try self.analyzeEscapeInExpr(un.operand, allocations, changed);
+            },
+            .CallExpr => |call| {
+                try self.analyzeEscapeInExpr(call.callee, allocations, changed);
+
+                // Arguments passed to functions escape (conservative)
+                for (call.args) |arg| {
+                    self.markEscaping(arg, allocations);
+                    try self.analyzeEscapeInExpr(arg, allocations, changed);
+                }
+            },
+            .ArrayLiteral => |arr| {
+                for (arr.elements) |elem| {
+                    try self.analyzeEscapeInExpr(elem, allocations, changed);
+                }
+            },
+            .MemberExpr => |member| {
+                try self.analyzeEscapeInExpr(member.object, allocations, changed);
+            },
+            .IndexExpr => |index| {
+                try self.analyzeEscapeInExpr(index.array, allocations, changed);
+                try self.analyzeEscapeInExpr(index.index, allocations, changed);
+            },
+            .AssignmentExpr => |assign| {
+                // Assignment to member or index causes escape
+                if (assign.target.* == .MemberExpr or assign.target.* == .IndexExpr) {
+                    self.markEscaping(assign.value, allocations);
+                }
+                try self.analyzeEscapeInExpr(assign.target, allocations, changed);
+                try self.analyzeEscapeInExpr(assign.value, allocations, changed);
+            },
+            else => {},
+        }
+    }
+
+    fn isAllocation(self: *Pass, expr: *ast.Expr) bool {
         _ = self;
-        _ = program;
-        _ = stats;
-        // Analyze if allocations can be moved to stack
-        return false;
+        return switch (expr.*) {
+            .ArrayLiteral => true,
+            .StructLiteral => true,
+            .MapLiteral => true,
+            .CallExpr => |call| {
+                // Check if calling 'new' or similar allocation function
+                if (call.callee.* == .Identifier) {
+                    const name = call.callee.Identifier.name;
+                    return std.mem.eql(u8, name, "new") or
+                           std.mem.eql(u8, name, "alloc") or
+                           std.mem.eql(u8, name, "create");
+                }
+                return false;
+            },
+            else => false,
+        };
+    }
+
+    fn markEscaping(self: *Pass, expr: *ast.Expr, allocations: *std.StringHashMap(bool)) void {
+        _ = self;
+
+        if (expr.* == .Identifier) {
+            const var_name = expr.Identifier.name;
+            if (allocations.get(var_name)) |_| {
+                // Mark as escaping
+                allocations.put(var_name, true) catch {};
+            }
+        }
     }
 
     fn runVectorization(self: *Pass, program: *ast.Program, stats: *PassManager.OptimizationStats) !bool {
