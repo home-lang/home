@@ -4833,17 +4833,88 @@ pub const Parser = struct {
         }
 
         // assert!(condition, "message") → if (!(condition)) { panic("assertion failed: message"); }
-        // TODO: Fix macro expansion to handle statement vs expression conversion properly
         if (std.mem.eql(u8, name, "assert")) {
-            try self.reportError("assert! macro not yet fully implemented");
-            return null;
+            if (args.len == 0) {
+                try self.reportError("assert! macro requires at least a condition");
+                return null;
+            }
+
+            const condition = args[0];
+
+            // Extract or construct the message
+            const message = if (args.len > 1 and args[1].* == .StringLiteral)
+                try std.fmt.allocPrint(self.allocator, "assertion failed: {s}", .{args[1].StringLiteral.value})
+            else
+                try self.allocator.dupe(u8, "assertion failed");
+
+            // Create !condition (negated condition)
+            const negated_cond = try self.allocator.create(ast.Expr);
+            const unary = try self.allocator.create(ast.UnaryExpr);
+            unary.* = .{
+                .node = .{ .type = .UnaryExpr, .loc = loc },
+                .op = .Not,
+                .operand = condition,
+            };
+            negated_cond.* = ast.Expr{ .UnaryExpr = unary };
+
+            // Create panic call for then branch
+            const panic_call = try self.createPanicCall(message, loc);
+
+            // Create void expression for else branch
+            const void_expr = try self.allocator.create(ast.Expr);
+            void_expr.* = ast.Expr{ .NullLiteral = .{
+                .node = .{ .type = .NullLiteral, .loc = loc },
+            } };
+
+            // Create if expression: if (!condition) panic(message) else void
+            const if_expr = try ast.IfExpr.init(self.allocator, negated_cond, panic_call, void_expr, loc);
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .IfExpr = if_expr };
+
+            return result;
         }
 
         // debug_assert! - same as assert in debug builds, compiled out in release
-        // TODO: Fix macro expansion to handle statement vs expression conversion properly
+        // For now, treat it the same as assert! (in the future, this could check build mode)
         if (std.mem.eql(u8, name, "debug_assert")) {
-            try self.reportError("debug_assert! macro not yet fully implemented");
-            return null;
+            if (args.len == 0) {
+                try self.reportError("debug_assert! macro requires at least a condition");
+                return null;
+            }
+
+            const condition = args[0];
+
+            // Extract or construct the message
+            const message = if (args.len > 1 and args[1].* == .StringLiteral)
+                try std.fmt.allocPrint(self.allocator, "debug assertion failed: {s}", .{args[1].StringLiteral.value})
+            else
+                try self.allocator.dupe(u8, "debug assertion failed");
+
+            // Create !condition (negated condition)
+            const negated_cond = try self.allocator.create(ast.Expr);
+            const unary = try self.allocator.create(ast.UnaryExpr);
+            unary.* = .{
+                .node = .{ .type = .UnaryExpr, .loc = loc },
+                .op = .Not,
+                .operand = condition,
+            };
+            negated_cond.* = ast.Expr{ .UnaryExpr = unary };
+
+            // Create panic call for then branch
+            const panic_call = try self.createPanicCall(message, loc);
+
+            // Create void expression for else branch
+            const void_expr = try self.allocator.create(ast.Expr);
+            void_expr.* = ast.Expr{ .NullLiteral = .{
+                .node = .{ .type = .NullLiteral, .loc = loc },
+            } };
+
+            // Create if expression: if (!condition) panic(message) else void
+            const if_expr = try ast.IfExpr.init(self.allocator, negated_cond, panic_call, void_expr, loc);
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .IfExpr = if_expr };
+
+            return result;
         }
 
         // Not a built-in macro

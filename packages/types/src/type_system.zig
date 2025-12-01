@@ -82,6 +82,8 @@ pub const Type = union(enum) {
     Void,
     /// Homogeneous array type: [T]
     Array: ArrayType,
+    /// Key-value map type: Map<K, V>
+    Map: MapType,
     /// Function type with parameters and return type
     Function: FunctionType,
     /// Product type with named fields
@@ -120,6 +122,21 @@ pub const Type = union(enum) {
     pub const ArrayType = struct {
         /// Type of elements in the array
         element_type: *const Type,
+    };
+
+    /// Key-value map type (hash map/dictionary).
+    ///
+    /// Represents a hash map where keys map to values.
+    /// Both key and value types are homogeneous.
+    ///
+    /// Examples:
+    /// - `Map<string, i32>` is a map from strings to integers
+    /// - `HashMap<i32, string>` is a map from integers to strings
+    pub const MapType = struct {
+        /// Type of keys in the map
+        key_type: *const Type,
+        /// Type of values in the map
+        value_type: *const Type,
     };
 
     /// Function type with parameters and return type.
@@ -304,6 +321,10 @@ pub const Type = union(enum) {
             .Array => |a1| {
                 const a2 = other.Array;
                 return a1.element_type.equals(a2.element_type.*);
+            },
+            .Map => |m1| {
+                const m2 = other.Map;
+                return m1.key_type.equals(m2.key_type.*) and m1.value_type.equals(m2.value_type.*);
             },
             .Function => |f1| {
                 const f2 = other.Function;
@@ -2278,9 +2299,32 @@ pub const TypeChecker = struct {
             }
 
             if (std.mem.eql(u8, base_name, "HashMap") or std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Dict")) {
-                // Parse HashMap<K, V> - for now treat as generic type
-                // TODO: Add proper Map type
-                return Type.Void;
+                // Parse Map<K, V> syntax to extract key and value types
+                const comma_pos = std.mem.indexOf(u8, type_params, ",") orelse {
+                    // No comma found - invalid syntax, return Void
+                    return Type.Void;
+                };
+
+                // Extract key type (before comma)
+                const key_type_name = std.mem.trim(u8, type_params[0..comma_pos], " \t\n");
+                // Extract value type (after comma)
+                const value_type_name = std.mem.trim(u8, type_params[comma_pos + 1..], " \t\n");
+
+                // Parse both types
+                const key_type = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(key_type);
+                key_type.* = try self.parseTypeName(key_type_name);
+                try self.allocated_types.append(self.allocator, key_type);
+
+                const value_type = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(value_type);
+                value_type.* = try self.parseTypeName(value_type_name);
+                try self.allocated_types.append(self.allocator, value_type);
+
+                return Type{ .Map = .{
+                    .key_type = key_type,
+                    .value_type = value_type,
+                } };
             }
 
             // Unknown generic type - treat as void for now
