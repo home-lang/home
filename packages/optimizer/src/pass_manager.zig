@@ -1151,42 +1151,26 @@ pub const Pass = struct {
         return changed;
     }
 
-    fn optimizeLoopsInStmt(self: *Pass, stmt: ast.Stmt, stats: *PassManager.OptimizationStats) !bool {
+    fn optimizeLoopsInStmt(self: *Pass, stmt: ast.Stmt, stats: *PassManager.OptimizationStats) anyerror!bool {
         var changed = false;
 
         switch (stmt) {
             .ForStmt => |for_stmt| {
-                // Look for loop-invariant code that can be hoisted
-                changed = try self.hoistLoopInvariants(for_stmt.body, stats) or changed;
-
                 // Recurse into loop body
-                for (for_stmt.body.statements) |body_stmt| {
-                    changed = try self.optimizeLoopsInStmt(body_stmt, stats) or changed;
-                }
+                changed = try self.optimizeLoopsInBlock(for_stmt.body, stats);
             },
             .WhileStmt => |while_stmt| {
-                // Look for loop-invariant code that can be hoisted
-                changed = try self.hoistLoopInvariants(while_stmt.body, stats) or changed;
-
                 // Recurse into loop body
-                for (while_stmt.body.statements) |body_stmt| {
-                    changed = try self.optimizeLoopsInStmt(body_stmt, stats) or changed;
-                }
+                changed = try self.optimizeLoopsInBlock(while_stmt.body, stats);
             },
             .IfStmt => |if_stmt| {
-                for (if_stmt.then_block.statements) |then_stmt| {
-                    changed = try self.optimizeLoopsInStmt(then_stmt, stats) or changed;
-                }
+                changed = try self.optimizeLoopsInBlock(if_stmt.then_block, stats);
                 if (if_stmt.else_block) |else_block| {
-                    for (else_block.statements) |else_stmt| {
-                        changed = try self.optimizeLoopsInStmt(else_stmt, stats) or changed;
-                    }
+                    changed = try self.optimizeLoopsInBlock(else_block, stats) or changed;
                 }
             },
             .FnDecl => |fn_decl| {
-                for (fn_decl.body.statements) |body_stmt| {
-                    changed = try self.optimizeLoopsInStmt(body_stmt, stats) or changed;
-                }
+                changed = try self.optimizeLoopsInBlock(fn_decl.body, stats);
             },
             else => {},
         }
@@ -1194,33 +1178,70 @@ pub const Pass = struct {
         return changed;
     }
 
-    fn hoistLoopInvariants(self: *Pass, block: *ast.BlockStmt, stats: *PassManager.OptimizationStats) !bool {
+    fn optimizeLoopsInBlock(self: *Pass, block: *ast.BlockStmt, stats: *PassManager.OptimizationStats) anyerror!bool {
         var changed = false;
-
-        // Track variables defined in the loop
-        var loop_vars = std.StringHashMap(void).init(self.allocator);
-        defer loop_vars.deinit();
+        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        defer new_statements.deinit(self.allocator);
 
         for (block.statements) |stmt| {
-            if (stmt == .LetDecl) {
-                try loop_vars.put(stmt.LetDecl.name, {});
-            }
-        }
+            if (stmt == .ForStmt or stmt == .WhileStmt) {
+                // Check for loop-invariant code to hoist
+                const loop_body = if (stmt == .ForStmt) stmt.ForStmt.body else stmt.WhileStmt.body;
 
-        // Find statements that don't reference loop variables
-        for (block.statements) |stmt| {
-            if (stmt == .LetDecl) {
-                const let_decl = stmt.LetDecl;
-                if (let_decl.value) |val| {
-                    // Check if the value expression is loop-invariant
-                    if (try self.isLoopInvariant(val, &loop_vars)) {
-                        // This statement could be hoisted out of the loop
-                        // Note: Actually hoisting requires AST mutation
-                        stats.redundant_loads_eliminated += 1;
-                        changed = true;
+                // Track variables defined in the loop
+                var loop_vars = std.StringHashMap(void).init(self.allocator);
+                defer loop_vars.deinit();
+
+                for (loop_body.statements) |body_stmt| {
+                    if (body_stmt == .LetDecl) {
+                        try loop_vars.put(body_stmt.LetDecl.name, {});
                     }
                 }
+
+                // Find and hoist invariant statements
+                var loop_new_statements: std.ArrayList(ast.Stmt) = .{};
+                defer loop_new_statements.deinit(self.allocator);
+
+                for (loop_body.statements) |body_stmt| {
+                    var should_hoist = false;
+
+                    if (body_stmt == .LetDecl) {
+                        const let_decl = body_stmt.LetDecl;
+                        if (let_decl.value) |val| {
+                            // Check if the value expression is loop-invariant
+                            if (try self.isLoopInvariant(val, &loop_vars)) {
+                                // Hoist this statement out of the loop
+                                try new_statements.append(self.allocator, body_stmt);
+                                stats.redundant_loads_eliminated += 1;
+                                changed = true;
+                                should_hoist = true;
+                            }
+                        }
+                    }
+
+                    if (!should_hoist) {
+                        try loop_new_statements.append(self.allocator, body_stmt);
+                    }
+                }
+
+                // Update loop body if we hoisted anything
+                if (changed) {
+                    loop_body.statements = try loop_new_statements.toOwnedSlice(self.allocator);
+                }
+
+                // Recurse into nested loops
+                _ = try self.optimizeLoopsInBlock(loop_body, stats);
+            } else {
+                // Recurse into nested blocks
+                _ = try self.optimizeLoopsInStmt(stmt, stats);
             }
+
+            try new_statements.append(self.allocator, stmt);
+        }
+
+        // Replace block's statements if we made changes
+        if (changed) {
+            block.statements = try new_statements.toOwnedSlice(self.allocator);
         }
 
         return changed;
@@ -1263,75 +1284,197 @@ pub const Pass = struct {
 
         var changed = false;
 
-        // Unroll loops in all statements
+        // Process all top-level statements
         for (program.statements) |stmt| {
-            const stmt_changed = try self.unrollLoopsInStmt(stmt, max_iterations, stats);
-            changed = changed or stmt_changed;
+            changed = try self.unrollLoopsRecursive(stmt, max_iterations, stats) or changed;
         }
 
         return changed;
     }
 
-    fn unrollLoopsInStmt(self: *Pass, stmt: ast.Stmt, max_iterations: usize, stats: *PassManager.OptimizationStats) !bool {
+    fn unrollLoopsRecursive(self: *Pass, stmt: ast.Stmt, max_iterations: usize, stats: *PassManager.OptimizationStats) anyerror!bool {
         var changed = false;
 
         switch (stmt) {
             .ForStmt => |for_stmt| {
-                // Check if this is a range-based for loop that can be unrolled
-                if (for_stmt.iterable.* == .RangeExpr) {
-                    const range = for_stmt.iterable.RangeExpr;
-
-                    // Only unroll if both start and end are integer literals
-                    if (range.start.* == .IntegerLiteral and range.end.* == .IntegerLiteral) {
-                        const start_val = range.start.IntegerLiteral.value;
-                        const end_val = range.end.IntegerLiteral.value;
-
-                        // Calculate iteration count
-                        const iter_count = if (end_val > start_val)
-                            @as(usize, @intCast(end_val - start_val))
-                        else
-                            0;
-
-                        // Unroll if iteration count is within threshold
-                        if (iter_count > 0 and iter_count <= max_iterations) {
-                            stats.loops_unrolled += 1;
-                            changed = true;
-                            // Note: Actual unrolling would require duplicating the loop body
-                            // and substituting the loop variable with each value
-                        }
-                    }
-                }
-
-                // Recurse into loop body
-                for (for_stmt.body.statements) |body_stmt| {
-                    changed = try self.unrollLoopsInStmt(body_stmt, max_iterations, stats) or changed;
-                }
+                // Recurse into loop body first
+                changed = try self.unrollLoopsInBlock(for_stmt.body, max_iterations, stats);
             },
             .WhileStmt => |while_stmt| {
-                // Recurse into while loop body
-                for (while_stmt.body.statements) |body_stmt| {
-                    changed = try self.unrollLoopsInStmt(body_stmt, max_iterations, stats) or changed;
-                }
+                changed = try self.unrollLoopsInBlock(while_stmt.body, max_iterations, stats);
             },
             .IfStmt => |if_stmt| {
-                for (if_stmt.then_block.statements) |then_stmt| {
-                    changed = try self.unrollLoopsInStmt(then_stmt, max_iterations, stats) or changed;
-                }
+                changed = try self.unrollLoopsInBlock(if_stmt.then_block, max_iterations, stats);
                 if (if_stmt.else_block) |else_block| {
-                    for (else_block.statements) |else_stmt| {
-                        changed = try self.unrollLoopsInStmt(else_stmt, max_iterations, stats) or changed;
-                    }
+                    changed = try self.unrollLoopsInBlock(else_block, max_iterations, stats) or changed;
                 }
             },
             .FnDecl => |fn_decl| {
-                for (fn_decl.body.statements) |body_stmt| {
-                    changed = try self.unrollLoopsInStmt(body_stmt, max_iterations, stats) or changed;
-                }
+                changed = try self.unrollLoopsInBlock(fn_decl.body, max_iterations, stats);
             },
             else => {},
         }
 
         return changed;
+    }
+
+    fn unrollLoopsInBlock(self: *Pass, block: *ast.BlockStmt, max_iterations: usize, stats: *PassManager.OptimizationStats) anyerror!bool {
+        var changed = false;
+        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        defer new_statements.deinit(self.allocator);
+
+        for (block.statements) |stmt| {
+            if (stmt == .ForStmt) {
+                const for_stmt = stmt.ForStmt;
+
+                // Check if this loop can be unrolled
+                if (for_stmt.iterable.* == .RangeExpr) {
+                    const range = for_stmt.iterable.RangeExpr;
+
+                    if (range.start.* == .IntegerLiteral and range.end.* == .IntegerLiteral) {
+                        const start_val = range.start.IntegerLiteral.value;
+                        const end_val = range.end.IntegerLiteral.value;
+                        const iter_count = if (end_val > start_val)
+                            @as(usize, @intCast(end_val - start_val))
+                        else
+                            0;
+
+                        if (iter_count > 0 and iter_count <= max_iterations) {
+                            // Unroll the loop
+                            var i: i64 = start_val;
+                            while (i < end_val) : (i += 1) {
+                                // Clone each statement in the loop body and substitute the loop variable
+                                for (for_stmt.body.statements) |body_stmt| {
+                                    const unrolled_stmt = try self.cloneAndSubstituteStmt(body_stmt, for_stmt.iterator, i);
+                                    try new_statements.append(self.allocator, unrolled_stmt);
+                                }
+                            }
+
+                            stats.loops_unrolled += 1;
+                            changed = true;
+                            continue; // Don't add the original ForStmt
+                        }
+                    }
+                }
+
+                // Loop couldn't be unrolled, but recurse into its body
+                _ = try self.unrollLoopsInBlock(for_stmt.body, max_iterations, stats);
+            } else {
+                // Recurse into nested blocks
+                _ = try self.unrollLoopsRecursive(stmt, max_iterations, stats);
+            }
+
+            try new_statements.append(self.allocator, stmt);
+        }
+
+        // Replace block's statements if we made changes
+        if (changed) {
+            block.statements = try new_statements.toOwnedSlice(self.allocator);
+        }
+
+        return changed;
+    }
+
+    fn cloneAndSubstituteStmt(self: *Pass, stmt: ast.Stmt, loop_var: []const u8, value: i64) anyerror!ast.Stmt {
+        switch (stmt) {
+            .LetDecl => |let_decl| {
+                const new_let = try self.allocator.create(ast.LetDecl);
+                new_let.* = .{
+                    .node = let_decl.node,
+                    .name = let_decl.name,
+                    .type_name = let_decl.type_name,
+                    .value = if (let_decl.value) |val| try self.cloneAndSubstituteExprForLoop(val, loop_var, value) else null,
+                    .is_mutable = let_decl.is_mutable,
+                    .is_public = let_decl.is_public,
+                };
+                return ast.Stmt{ .LetDecl = new_let };
+            },
+            .ExprStmt => |expr| {
+                const new_expr = try self.cloneAndSubstituteExprForLoop(expr, loop_var, value);
+                return ast.Stmt{ .ExprStmt = new_expr };
+            },
+            else => {
+                // For other statement types, return as-is (could be extended)
+                return stmt;
+            },
+        }
+    }
+
+    fn cloneAndSubstituteExprForLoop(self: *Pass, expr: *ast.Expr, loop_var: []const u8, value: i64) anyerror!*ast.Expr {
+        const cloned = try self.allocator.create(ast.Expr);
+
+        switch (expr.*) {
+            .Identifier => |id| {
+                // If this is the loop variable, replace with the literal value
+                if (std.mem.eql(u8, id.name, loop_var)) {
+                    const int_lit = ast.IntegerLiteral{
+                        .node = id.node,
+                        .value = value,
+                    };
+                    cloned.* = ast.Expr{ .IntegerLiteral = int_lit };
+                } else {
+                    cloned.* = expr.*;
+                }
+            },
+            .BinaryExpr => |bin| {
+                const left = try self.cloneAndSubstituteExprForLoop(bin.left, loop_var, value);
+                const right = try self.cloneAndSubstituteExprForLoop(bin.right, loop_var, value);
+                const cloned_bin = try self.allocator.create(ast.BinaryExpr);
+                cloned_bin.* = .{
+                    .node = bin.node,
+                    .left = left,
+                    .right = right,
+                    .op = bin.op,
+                };
+                cloned.* = ast.Expr{ .BinaryExpr = cloned_bin };
+            },
+            .UnaryExpr => |un| {
+                const operand = try self.cloneAndSubstituteExprForLoop(un.operand, loop_var, value);
+                const cloned_un = try self.allocator.create(ast.UnaryExpr);
+                cloned_un.* = .{
+                    .node = un.node,
+                    .operand = operand,
+                    .op = un.op,
+                };
+                cloned.* = ast.Expr{ .UnaryExpr = cloned_un };
+            },
+            .CallExpr => |call| {
+                const callee = try self.cloneAndSubstituteExprForLoop(call.callee, loop_var, value);
+                var args: std.ArrayList(*ast.Expr) = .{};
+                defer args.deinit(self.allocator);
+
+                for (call.args) |arg| {
+                    const cloned_arg = try self.cloneAndSubstituteExprForLoop(arg, loop_var, value);
+                    try args.append(self.allocator, cloned_arg);
+                }
+
+                const cloned_call = try self.allocator.create(ast.CallExpr);
+                cloned_call.* = .{
+                    .node = call.node,
+                    .callee = callee,
+                    .args = try args.toOwnedSlice(self.allocator),
+                    .named_args = call.named_args, // For simplicity, don't substitute in named args
+                };
+                cloned.* = ast.Expr{ .CallExpr = cloned_call };
+            },
+            .AssignmentExpr => |assign| {
+                const target = try self.cloneAndSubstituteExprForLoop(assign.target, loop_var, value);
+                const assign_value = try self.cloneAndSubstituteExprForLoop(assign.value, loop_var, value);
+                const cloned_assign = try self.allocator.create(ast.AssignmentExpr);
+                cloned_assign.* = .{
+                    .node = assign.node,
+                    .target = target,
+                    .value = assign_value,
+                };
+                cloned.* = ast.Expr{ .AssignmentExpr = cloned_assign };
+            },
+            else => {
+                // For literals and other expressions, just copy as-is
+                cloned.* = expr.*;
+            },
+        }
+
+        return cloned;
     }
 
     fn runRedundancyElimination(self: *Pass, program: *ast.Program, stats: *PassManager.OptimizationStats) !bool {
