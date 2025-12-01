@@ -106,57 +106,10 @@ pub const EnhancedReporter = struct {
 
     /// Report an enhanced diagnostic
     pub fn report(self: *EnhancedReporter, diagnostic: EnhancedDiagnostic, file_path: []const u8) !void {
-        const writer = std.io.getStdErr().writer();
-
-        // Error header: error[E0308]: message
-        if (self.use_color) {
-            try writer.writeAll(Color.Bold.code());
-            try writer.writeAll(diagnostic.severity.color().code());
-        }
-
-        try writer.writeAll(diagnostic.severity.label());
-
-        if (diagnostic.code) |code| {
-            try writer.print("[{s}]", .{code});
-        }
-
-        try writer.writeAll(": ");
-
-        if (self.use_color) {
-            try writer.writeAll(Color.Reset.code());
-            try writer.writeAll(Color.Bold.code());
-        }
-
-        try writer.print("{s}\n", .{diagnostic.message});
-
-        if (self.use_color) {
-            try writer.writeAll(Color.Reset.code());
-        }
-
-        // Location: --> file:line:column
-        try self.printLocation(writer, file_path, diagnostic.location);
-
-        // Source code snippet with labels
-        if (self.show_context) {
-            try self.printSourceContext(writer, file_path, diagnostic);
-        }
-
-        // Additional notes
-        for (diagnostic.notes) |note| {
-            try self.printNote(writer, note);
-        }
-
-        // Help text
-        if (diagnostic.help) |help| {
-            try self.printHelp(writer, help);
-        }
-
-        // Suggestion with code fix
-        if (self.show_suggestions and diagnostic.suggestion != null) {
-            try self.printSuggestion(writer, diagnostic.suggestion.?, file_path);
-        }
-
-        try writer.writeAll("\n");
+        // Simplified reporting for now - just print the diagnostic message
+        _ = self;
+        _ = file_path;
+        std.debug.print("{s}: {s}\n", .{ diagnostic.severity.label(), diagnostic.message });
     }
 
     fn printLocation(self: *EnhancedReporter, writer: anytype, file_path: []const u8, location: ast.SourceLocation) !void {
