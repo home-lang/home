@@ -514,31 +514,116 @@ pub fn BTreeMap(comptime K: type, comptime V: type) type {
             }
         }
 
-        /// Simple iterator (in-order traversal)
-        /// Note: For production use, implement a stack-based iterator
+        /// Stack-based iterator for in-order traversal
         pub const Iterator = struct {
+            const StackEntry = struct {
+                node: *Node,
+                index: usize,
+            };
+
             map: *const Self,
-            current_key: ?K,
+            stack: std.ArrayList(StackEntry),
+            allocator: Allocator,
+            started: bool,
             finished: bool,
 
-            pub fn next(self: *Iterator) ?struct { key: K, value: V } {
+            const Entry = struct { key: K, value: V };
+
+            pub fn next(self: *Iterator) ?Entry {
                 if (self.finished) return null;
 
-                // Simple placeholder: just return null for now
-                // A full implementation would do in-order traversal
-                self.finished = true;
-                return null;
+                // If we haven't started, initialize from root
+                if (!self.started) {
+                    self.started = true;
+                    if (self.map.root) |root| {
+                        // Descend to leftmost node
+                        self.pushLeft(root);
+                    } else {
+                        self.finished = true;
+                        return null;
+                    }
+                }
+
+                // Pop current node from stack
+                if (self.stack.items.len == 0) {
+                    self.finished = true;
+                    return null;
+                }
+
+                const stack_entry = self.stack.pop() orelse {
+                    self.finished = true;
+                    return null;
+                };
+                const node = stack_entry.node;
+                const key_index = stack_entry.index;
+
+                // Get the current key-value pair
+                const entry = Entry{
+                    .key = node.keys[key_index],
+                    .value = node.values[key_index],
+                };
+
+                // Advance to next position
+                // If this is not a leaf and we have a right child for this key,
+                // descend to the leftmost node in that subtree
+                if (!node.is_leaf) {
+                    if (node.children[key_index + 1]) |right_child| {
+                        self.pushLeft(right_child);
+                    }
+                }
+
+                // If there are more keys in this node, push it back onto the stack
+                if (key_index + 1 < node.num_keys) {
+                    self.stack.append(self.allocator, .{
+                        .node = node,
+                        .index = key_index + 1,
+                    }) catch {
+                        // If append fails, mark as finished
+                        self.finished = true;
+                    };
+                }
+
+                return entry;
+            }
+
+            /// Push all nodes from current to leftmost leaf onto stack
+            fn pushLeft(self: *Iterator, start_node: *Node) void {
+                var current = start_node;
+
+                while (true) {
+                    // Push current node with index 0
+                    self.stack.append(self.allocator, .{
+                        .node = current,
+                        .index = 0,
+                    }) catch {
+                        self.finished = true;
+                        return;
+                    };
+
+                    // If leaf, we're done
+                    if (current.is_leaf) break;
+
+                    // Descend to leftmost child
+                    if (current.children[0]) |left_child| {
+                        current = left_child;
+                    } else {
+                        break;
+                    }
+                }
             }
 
             pub fn deinit(self: *Iterator) void {
-                _ = self;
+                self.stack.deinit(self.allocator);
             }
         };
 
         pub fn iterator(self: *const Self) Iterator {
+            const allocator = self.allocator;
             return Iterator{
                 .map = self,
-                .current_key = null,
+                .stack = .{},
+                .allocator = allocator,
+                .started = false,
                 .finished = self.root == null,
             };
         }
@@ -661,19 +746,70 @@ test "BTreeMap - clear" {
     try testing.expect(map.isEmpty());
 }
 
-test "BTreeMap - iterator placeholder" {
+test "BTreeMap - iterator in-order traversal" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     var map = BTreeMap(i32, i32).init(allocator);
     defer map.deinit();
 
+    // Insert keys in non-sorted order
     try map.insert(5, 50);
     try map.insert(2, 20);
+    try map.insert(8, 80);
+    try map.insert(1, 10);
+    try map.insert(3, 30);
+    try map.insert(7, 70);
+    try map.insert(9, 90);
 
-    // Iterator exists (full implementation TODO)
+    // Verify iterator returns keys in sorted order
     var iter = map.iterator();
     defer iter.deinit();
 
-    try testing.expect(true);
+    var expected_key: i32 = 1;
+    var count: usize = 0;
+
+    while (iter.next()) |entry| {
+        try testing.expectEqual(expected_key, entry.key);
+        try testing.expectEqual(expected_key * 10, entry.value);
+        expected_key += 1;
+        count += 1;
+
+        // Skip some keys (4, 6) since we didn't insert them
+        if (expected_key == 4) expected_key = 5;
+        if (expected_key == 6) expected_key = 7;
+    }
+
+    try testing.expectEqual(@as(usize, 7), count);
+}
+
+test "BTreeMap - empty iterator" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var map = BTreeMap(i32, i32).init(allocator);
+    defer map.deinit();
+
+    var iter = map.iterator();
+    defer iter.deinit();
+
+    try testing.expect(iter.next() == null);
+}
+
+test "BTreeMap - iterator single element" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var map = BTreeMap(i32, []const u8).init(allocator);
+    defer map.deinit();
+
+    try map.insert(42, "answer");
+
+    var iter = map.iterator();
+    defer iter.deinit();
+
+    const entry = iter.next().?;
+    try testing.expectEqual(@as(i32, 42), entry.key);
+    try testing.expectEqualStrings("answer", entry.value);
+    try testing.expect(iter.next() == null);
 }

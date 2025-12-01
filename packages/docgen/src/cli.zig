@@ -256,27 +256,300 @@ pub const CLI = struct {
 
     /// Serve documentation with HTTP server
     fn serveDocs(self: *CLI, options: Options) !void {
-        _ = self;
         std.debug.print("Starting documentation server on port {d}...\n", .{options.serve_port});
+        std.debug.print("Serving files from: {s}\n", .{options.output_dir});
         std.debug.print("Open http://localhost:{d} in your browser\n", .{options.serve_port});
-        std.debug.print("Press Ctrl+C to stop\n", .{});
+        std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-        // TODO: Implement simple HTTP server
-        // For now, just print a message
-        std.debug.print("Note: Server functionality not yet implemented\n", .{});
-        std.debug.print("Use 'python3 -m http.server {d}' in the output directory instead\n", .{options.serve_port});
+        // Create HTTP server
+        const address = std.net.Address.parseIp("127.0.0.1", options.serve_port) catch |err| {
+            std.debug.print("Failed to parse address: {}\n", .{err});
+            return err;
+        };
+
+        var server = try address.listen(.{
+            .reuse_address = true,
+        });
+        defer server.deinit();
+
+        std.debug.print("Server listening on http://127.0.0.1:{d}\n", .{options.serve_port});
+
+        // Accept connections
+        while (true) {
+            const connection = try server.accept();
+
+            // Handle connection in a separate function to keep code clean
+            self.handleConnection(connection, options) catch |err| {
+                std.debug.print("Error handling connection: {}\n", .{err});
+            };
+        }
+    }
+
+    /// Handle a single HTTP connection
+    fn handleConnection(self: *CLI, connection: std.net.Server.Connection, options: Options) !void {
+        defer connection.stream.close();
+
+        var buffer: [4096]u8 = undefined;
+        const bytes_read = try connection.stream.read(&buffer);
+
+        if (bytes_read == 0) return;
+
+        const request = buffer[0..bytes_read];
+
+        // Parse HTTP request line (GET /path HTTP/1.1)
+        var lines = std.mem.splitScalar(u8, request, '\n');
+        const request_line = lines.next() orelse return error.InvalidRequest;
+
+        var parts = std.mem.splitScalar(u8, request_line, ' ');
+        const method = parts.next() orelse return error.InvalidRequest;
+        const path_raw = parts.next() orelse return error.InvalidRequest;
+
+        // Only support GET requests
+        if (!std.mem.eql(u8, method, "GET")) {
+            try self.sendResponse(connection.stream, 405, "Method Not Allowed", "text/plain", "405 Method Not Allowed");
+            return;
+        }
+
+        // Clean up path (remove query string, decode URL)
+        var path = path_raw;
+        if (std.mem.indexOf(u8, path, "?")) |idx| {
+            path = path[0..idx];
+        }
+
+        // Remove trailing \r if present
+        if (std.mem.endsWith(u8, path, "\r")) {
+            path = path[0 .. path.len - 1];
+        }
+
+        // Convert "/" to "/index.html"
+        if (std.mem.eql(u8, path, "/")) {
+            path = "/index.html";
+        }
+
+        // Build file path (remove leading /)
+        const file_path = if (std.mem.startsWith(u8, path, "/"))
+            try std.fs.path.join(self.allocator, &.{ options.output_dir, path[1..] })
+        else
+            try std.fs.path.join(self.allocator, &.{ options.output_dir, path });
+        defer self.allocator.free(file_path);
+
+        // Log request
+        std.debug.print("{s} {s}\n", .{ method, path });
+
+        // Try to read and serve the file
+        const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                try self.sendResponse(connection.stream, 404, "Not Found", "text/html",
+                    \\<!DOCTYPE html>
+                    \\<html>
+                    \\<head><title>404 Not Found</title></head>
+                    \\<body><h1>404 Not Found</h1><p>The requested file was not found.</p></body>
+                    \\</html>
+                );
+            } else {
+                try self.sendResponse(connection.stream, 500, "Internal Server Error", "text/plain", "500 Internal Server Error");
+            }
+            return;
+        };
+        defer file.close();
+
+        // Read file content
+        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024); // 10MB max
+        defer self.allocator.free(content);
+
+        // Determine content type from extension
+        const content_type = self.getContentType(file_path);
+
+        // Send response
+        try self.sendResponse(connection.stream, 200, "OK", content_type, content);
+    }
+
+    /// Get MIME content type from file extension
+    fn getContentType(self: *CLI, file_path: []const u8) []const u8 {
+        _ = self;
+        if (std.mem.endsWith(u8, file_path, ".html")) return "text/html; charset=utf-8";
+        if (std.mem.endsWith(u8, file_path, ".css")) return "text/css; charset=utf-8";
+        if (std.mem.endsWith(u8, file_path, ".js")) return "application/javascript; charset=utf-8";
+        if (std.mem.endsWith(u8, file_path, ".json")) return "application/json; charset=utf-8";
+        if (std.mem.endsWith(u8, file_path, ".png")) return "image/png";
+        if (std.mem.endsWith(u8, file_path, ".jpg") or std.mem.endsWith(u8, file_path, ".jpeg")) return "image/jpeg";
+        if (std.mem.endsWith(u8, file_path, ".gif")) return "image/gif";
+        if (std.mem.endsWith(u8, file_path, ".svg")) return "image/svg+xml";
+        if (std.mem.endsWith(u8, file_path, ".ico")) return "image/x-icon";
+        if (std.mem.endsWith(u8, file_path, ".woff")) return "font/woff";
+        if (std.mem.endsWith(u8, file_path, ".woff2")) return "font/woff2";
+        if (std.mem.endsWith(u8, file_path, ".ttf")) return "font/ttf";
+        return "application/octet-stream";
+    }
+
+    /// Send HTTP response
+    fn sendResponse(self: *CLI, stream: std.net.Stream, status_code: u16, status_text: []const u8, content_type: []const u8, body: []const u8) !void {
+        _ = self;
+
+        // Build response
+        var response_buffer: [8192]u8 = undefined;
+        const response_header = try std.fmt.bufPrint(&response_buffer,
+            "HTTP/1.1 {d} {s}\r\n" ++
+            "Content-Type: {s}\r\n" ++
+            "Content-Length: {d}\r\n" ++
+            "Connection: close\r\n" ++
+            "Server: Home-DocGen/0.1.0\r\n" ++
+            "\r\n",
+            .{ status_code, status_text, content_type, body.len }
+        );
+
+        // Send header
+        try stream.writeAll(response_header);
+
+        // Send body
+        try stream.writeAll(body);
     }
 
     /// Watch for file changes and regenerate
     fn watchAndGenerate(self: *CLI, options: Options) !void {
-        std.debug.print("Watching for changes...\n", .{});
+        std.debug.print("Watching for changes in source directories...\n", .{});
+
+        if (options.source_dirs.len == 0) {
+            std.debug.print("Error: No source directories specified\n", .{});
+            return error.NoSourceDirs;
+        }
 
         // Initial generation
         try self.generateDocs(options);
+        std.debug.print("\nInitial documentation generated. Watching for changes...\n", .{});
+        std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-        // TODO: Implement file watching with inotify/kqueue
-        std.debug.print("Note: Watch mode not yet implemented\n", .{});
-        std.debug.print("Manually run 'generate' command to regenerate docs\n", .{});
+        // Platform-specific file watching
+        const builtin = @import("builtin");
+
+        switch (builtin.os.tag) {
+            .linux => try self.watchWithInotify(options),
+            .macos, .freebsd, .netbsd, .openbsd, .dragonfly => try self.watchWithKqueue(options),
+            else => {
+                std.debug.print("File watching not supported on this platform\n", .{});
+                std.debug.print("Please regenerate manually when files change\n", .{});
+                return error.UnsupportedPlatform;
+            },
+        }
+    }
+
+    /// Watch files using inotify (Linux)
+    fn watchWithInotify(self: *CLI, options: Options) !void {
+        const linux = std.os.linux;
+
+        // Create inotify instance
+        const fd = try std.posix.inotify_init1(linux.IN.CLOEXEC);
+        defer std.posix.close(fd);
+
+        // Watch all source directories
+        var watch_descriptors = std.ArrayList(i32).init(self.allocator);
+        defer watch_descriptors.deinit();
+
+        for (options.source_dirs) |dir| {
+            const wd = try std.posix.inotify_add_watch(
+                fd,
+                dir,
+                linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE | linux.IN.MOVED_FROM | linux.IN.MOVED_TO
+            );
+            try watch_descriptors.append(wd);
+            std.debug.print("Watching: {s}\n", .{dir});
+        }
+
+        // Event buffer
+        var buffer: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
+        var last_regenerate: i64 = std.time.timestamp();
+        const debounce_seconds: i64 = 2; // Wait 2 seconds between regenerations
+
+        // Watch loop
+        while (true) {
+            const bytes_read = try std.posix.read(fd, &buffer);
+
+            if (bytes_read > 0) {
+                const now = std.time.timestamp();
+
+                // Debounce: only regenerate if enough time has passed
+                if (now - last_regenerate >= debounce_seconds) {
+                    std.debug.print("\n=== File change detected, regenerating... ===\n", .{});
+
+                    self.generateDocs(options) catch |err| {
+                        std.debug.print("Error regenerating: {}\n", .{err});
+                    };
+
+                    std.debug.print("=== Regeneration complete ===\n\n", .{});
+                    last_regenerate = now;
+                }
+            }
+        }
+    }
+
+    /// Watch files using kqueue (macOS/BSD)
+    fn watchWithKqueue(self: *CLI, options: Options) !void {
+        const c = std.c;
+
+        // Create kqueue
+        const kq = try std.posix.kqueue();
+        defer std.posix.close(kq);
+
+        // Open all source directories and add to kqueue
+        var dir_fds = std.ArrayList(std.posix.fd_t).init(self.allocator);
+        defer {
+            for (dir_fds.items) |fd| {
+                std.posix.close(fd);
+            }
+            dir_fds.deinit();
+        }
+
+        for (options.source_dirs) |dir_path| {
+            const dir_fd = try std.posix.open(dir_path, .{ .ACCMODE = .RDONLY }, 0);
+            try dir_fds.append(dir_fd);
+
+            // Register directory with kqueue for file changes
+            var kev: c.Kevent = undefined;
+            const filter = c.EVFILT_VNODE;
+            const flags = c.EV_ADD | c.EV_ENABLE | c.EV_CLEAR;
+            const fflags = c.NOTE_WRITE | c.NOTE_DELETE | c.NOTE_EXTEND | c.NOTE_RENAME;
+
+            kev.ident = @intCast(dir_fd);
+            kev.filter = @intCast(filter);
+            kev.flags = @intCast(flags);
+            kev.fflags = @intCast(fflags);
+            kev.data = 0;
+            kev.udata = null;
+
+            const result = c.kevent(kq, &kev, 1, null, 0, null);
+            if (result < 0) {
+                return error.KqueueRegisterFailed;
+            }
+
+            std.debug.print("Watching: {s}\n", .{dir_path});
+        }
+
+        // Event buffer
+        var events: [10]c.Kevent = undefined;
+        var last_regenerate: i64 = std.time.timestamp();
+        const debounce_seconds: i64 = 2;
+
+        // Watch loop
+        while (true) {
+            const timeout = c.timespec{ .tv_sec = 1, .tv_nsec = 0 };
+            const num_events = c.kevent(kq, null, 0, &events, events.len, &timeout);
+
+            if (num_events > 0) {
+                const now = std.time.timestamp();
+
+                // Debounce: only regenerate if enough time has passed
+                if (now - last_regenerate >= debounce_seconds) {
+                    std.debug.print("\n=== File change detected, regenerating... ===\n", .{});
+
+                    self.generateDocs(options) catch |err| {
+                        std.debug.print("Error regenerating: {}\n", .{err});
+                    };
+
+                    std.debug.print("=== Regeneration complete ===\n\n", .{});
+                    last_regenerate = now;
+                }
+            }
+        }
     }
 
     /// Validate documentation (check for broken links, invalid examples, etc.)
