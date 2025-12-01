@@ -1,64 +1,63 @@
-// Home Programming Language - Message Queues
-// POSIX message queue implementation for IPC
+// Home Programming Language - POSIX Message Queues
+// IPC mechanism for passing messages between processes
 
 const Basics = @import("basics");
-const sync = @import("sync.zig");
 const process = @import("process.zig");
-const timer = @import("timer.zig");
-
-// ============================================================================
-// Message Queue Configuration
-// ============================================================================
-
-pub const MQ_PRIO_MAX = 32768;
-pub const MQ_DEFAULT_MAXMSG = 10;
-pub const MQ_DEFAULT_MSGSIZE = 8192;
-
-// ============================================================================
-// Message Structure
-// ============================================================================
-
-pub const Message = struct {
-    data: []u8,
-    priority: u32,
-    allocator: Basics.Allocator,
-
-    pub fn init(allocator: Basics.Allocator, data: []const u8, priority: u32) !*Message {
-        const msg = try allocator.create(Message);
-        errdefer allocator.destroy(msg);
-
-        msg.* = .{
-            .data = try allocator.dupe(u8, data),
-            .priority = priority,
-            .allocator = allocator,
-        };
-
-        return msg;
-    }
-
-    pub fn deinit(self: *Message) void {
-        self.allocator.free(self.data);
-        self.allocator.destroy(self);
-    }
-};
+const sync = @import("sync.zig");
+const atomic = @import("atomic.zig");
 
 // ============================================================================
 // Message Queue Attributes
 // ============================================================================
 
-pub const MqAttr = struct {
-    flags: u64,
-    maxmsg: u64,
-    msgsize: u64,
-    curmsgs: u64,
+pub const MqAttr = extern struct {
+    /// Flags (O_NONBLOCK)
+    mq_flags: i32,
+    /// Maximum number of messages
+    mq_maxmsg: i32,
+    /// Maximum message size (bytes)
+    mq_msgsize: i32,
+    /// Current number of messages
+    mq_curmsgs: i32,
 
-    pub fn init(maxmsg: u64, msgsize: u64) MqAttr {
+    pub fn init(maxmsg: i32, msgsize: i32) MqAttr {
         return .{
-            .flags = 0,
-            .maxmsg = maxmsg,
-            .msgsize = msgsize,
-            .curmsgs = 0,
+            .mq_flags = 0,
+            .mq_maxmsg = maxmsg,
+            .mq_msgsize = msgsize,
+            .mq_curmsgs = 0,
         };
+    }
+};
+
+// ============================================================================
+// Message Structure
+// ============================================================================
+
+const Message = struct {
+    /// Message priority (0-31, higher = more urgent)
+    priority: u32,
+    /// Message data
+    data: []u8,
+    /// Next message in queue
+    next: ?*Message,
+
+    pub fn init(allocator: Basics.Allocator, data: []const u8, priority: u32) !*Message {
+        const msg = try allocator.create(Message);
+        errdefer allocator.destroy(msg);
+
+        msg.data = try allocator.alloc(u8, data.len);
+        @memcpy(msg.data, data);
+
+        msg.priority = priority;
+        msg.next = null;
+
+        return msg;
+    }
+
+    pub fn deinit(self: *Message, allocator: Basics.Allocator) void {
+        allocator.free(self.data);
+        allocator.destroy(self);
     }
 };
 
@@ -67,444 +66,545 @@ pub const MqAttr = struct {
 // ============================================================================
 
 pub const MessageQueue = struct {
+    /// Queue name
     name: []const u8,
+    /// Queue attributes
     attr: MqAttr,
-    messages: Basics.ArrayList(*Message),
-    lock: sync.RwLock,
-    read_wait: sync.WaitQueue,
-    write_wait: sync.WaitQueue,
+    /// Lock for queue access
+    lock: sync.SpinLock,
+    /// Condition variable for waiting receivers
+    recv_cond: sync.ConditionVariable,
+    /// Condition variable for waiting senders
+    send_cond: sync.ConditionVariable,
+    /// Head of message list (highest priority first)
+    head: ?*Message,
+    /// Tail of message list
+    tail: ?*Message,
+    /// Number of processes with queue open
+    ref_count: atomic.AtomicU32,
+    /// Allocator for messages
     allocator: Basics.Allocator,
-    refcount: u32,
-    permissions: u16,
+    /// Owner UID
     uid: u32,
+    /// Owner GID
     gid: u32,
+    /// Permissions (mode_t)
+    mode: u32,
 
-    pub fn init(
-        allocator: Basics.Allocator,
-        name: []const u8,
-        attr: MqAttr,
-        permissions: u16,
-        uid: u32,
-        gid: u32,
-    ) !*MessageQueue {
+    pub fn init(allocator: Basics.Allocator, name: []const u8, attr: MqAttr, uid: u32, gid: u32, mode: u32) !*MessageQueue {
         const mq = try allocator.create(MessageQueue);
         errdefer allocator.destroy(mq);
 
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+
         mq.* = .{
-            .name = try allocator.dupe(u8, name),
+            .name = name_copy,
             .attr = attr,
-            .messages = Basics.ArrayList(*Message).init(allocator),
-            .lock = sync.RwLock.init(),
-            .read_wait = sync.WaitQueue.init(),
-            .write_wait = sync.WaitQueue.init(),
+            .lock = sync.SpinLock.init(),
+            .recv_cond = sync.ConditionVariable.init(),
+            .send_cond = sync.ConditionVariable.init(),
+            .head = null,
+            .tail = null,
+            .ref_count = atomic.AtomicU32.init(1),
             .allocator = allocator,
-            .refcount = 1,
-            .permissions = permissions,
             .uid = uid,
             .gid = gid,
+            .mode = mode,
         };
 
         return mq;
     }
 
     pub fn deinit(self: *MessageQueue) void {
-        // Free all pending messages
-        for (self.messages.items) |msg| {
-            msg.deinit();
+        // Free all remaining messages
+        var current = self.head;
+        while (current) |msg| {
+            const next = msg.next;
+            msg.deinit(self.allocator);
+            current = next;
         }
-        self.messages.deinit();
+
         self.allocator.free(self.name);
         self.allocator.destroy(self);
     }
 
     /// Send a message to the queue
     pub fn send(self: *MessageQueue, data: []const u8, priority: u32, timeout_ns: ?u64) !void {
-        if (data.len > self.attr.msgsize) {
+        self.lock.lock();
+        defer self.lock.unlock();
+
+        const O_NONBLOCK = 0x800;
+
+        // Check if queue is full
+        while (self.attr.mq_curmsgs >= self.attr.mq_maxmsg) {
+            // Non-blocking mode?
+            if ((self.attr.mq_flags & O_NONBLOCK) != 0) {
+                return error.WouldBlock;
+            }
+
+            // Wait for space (with optional timeout)
+            if (timeout_ns) |timeout| {
+                if (!try self.send_cond.waitTimeout(&self.lock, timeout)) {
+                    return error.TimedOut;
+                }
+            } else {
+                try self.send_cond.wait(&self.lock);
+            }
+        }
+
+        // Check message size
+        if (data.len > @as(usize, @intCast(self.attr.mq_msgsize))) {
             return error.MessageTooLarge;
         }
 
-        if (priority >= MQ_PRIO_MAX) {
-            return error.InvalidPriority;
-        }
-
-        // Calculate deadline if timeout specified
-        const deadline_ms: ?u64 = if (timeout_ns) |ns|
-            timer.getTicks() + (ns / 1_000_000) // Convert ns to ms
-        else
-            null;
-
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
-
-        // Check if queue is full
-        while (self.messages.items.len >= self.attr.maxmsg) {
-            // Check timeout before waiting
-            if (deadline_ms) |deadline| {
-                if (timer.getTicks() >= deadline) {
-                    return error.TimedOut;
-                }
-            }
-            self.lock.releaseWrite();
-            self.write_wait.wait();
-            self.lock.acquireWrite();
-        }
-
-        // Create and insert message in priority order
+        // Create message
         const msg = try Message.init(self.allocator, data, priority);
-        errdefer msg.deinit();
+        errdefer msg.deinit(self.allocator);
 
-        try self.insertByPriority(msg);
-        self.attr.curmsgs = self.messages.items.len;
+        // Insert message in priority order (higher priority first)
+        if (self.head == null) {
+            // Empty queue
+            self.head = msg;
+            self.tail = msg;
+        } else if (priority > self.head.?.priority) {
+            // Insert at head
+            msg.next = self.head;
+            self.head = msg;
+        } else {
+            // Find insertion point
+            var prev = self.head;
+            var current = prev.?.next;
 
-        // Wake up any waiting readers
-        self.read_wait.wakeOne();
+            while (current) |curr| {
+                if (priority > curr.priority) {
+                    break;
+                }
+                prev = current;
+                current = curr.next;
+            }
+
+            // Insert after prev
+            msg.next = current;
+            prev.?.next = msg;
+
+            if (current == null) {
+                self.tail = msg;
+            }
+        }
+
+        self.attr.mq_curmsgs += 1;
+
+        // Wake up a waiting receiver
+        self.recv_cond.signal();
     }
 
     /// Receive a message from the queue
     pub fn receive(self: *MessageQueue, buffer: []u8, priority: ?*u32, timeout_ns: ?u64) !usize {
-        // Calculate deadline if timeout specified
-        const deadline_ms: ?u64 = if (timeout_ns) |ns|
-            timer.getTicks() + (ns / 1_000_000) // Convert ns to ms
-        else
-            null;
+        self.lock.lock();
+        defer self.lock.unlock();
 
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
+        const O_NONBLOCK = 0x800;
 
-        // Wait for messages
-        while (self.messages.items.len == 0) {
-            // Check timeout before waiting
-            if (deadline_ms) |deadline| {
-                if (timer.getTicks() >= deadline) {
+        // Wait for a message
+        while (self.head == null) {
+            // Non-blocking mode?
+            if ((self.attr.mq_flags & O_NONBLOCK) != 0) {
+                return error.WouldBlock;
+            }
+
+            // Wait for message (with optional timeout)
+            if (timeout_ns) |timeout| {
+                if (!try self.recv_cond.waitTimeout(&self.lock, timeout)) {
                     return error.TimedOut;
                 }
+            } else {
+                try self.recv_cond.wait(&self.lock);
             }
-            self.lock.releaseWrite();
-            self.read_wait.wait();
-            self.lock.acquireWrite();
         }
 
-        // Get highest priority message (first in list)
-        const msg = self.messages.orderedRemove(0);
-        defer msg.deinit();
+        // Remove message from head
+        const msg = self.head.?;
+        self.head = msg.next;
 
-        self.attr.curmsgs = self.messages.items.len;
+        if (self.head == null) {
+            self.tail = null;
+        }
 
+        self.attr.mq_curmsgs -= 1;
+
+        // Check buffer size
         if (buffer.len < msg.data.len) {
+            msg.deinit(self.allocator);
             return error.BufferTooSmall;
         }
 
+        // Copy message data
         @memcpy(buffer[0..msg.data.len], msg.data);
+        const len = msg.data.len;
 
+        // Return priority if requested
         if (priority) |prio| {
             prio.* = msg.priority;
         }
 
-        // Wake up any waiting writers
-        self.write_wait.wakeOne();
+        // Free message
+        msg.deinit(self.allocator);
 
-        return msg.data.len;
-    }
+        // Wake up a waiting sender
+        self.send_cond.signal();
 
-    /// Insert message in priority order (highest priority first)
-    fn insertByPriority(self: *MessageQueue, msg: *Message) !void {
-        var insert_pos: usize = 0;
-
-        for (self.messages.items, 0..) |existing, i| {
-            if (msg.priority > existing.priority) {
-                insert_pos = i;
-                break;
-            }
-            insert_pos = i + 1;
-        }
-
-        try self.messages.insert(insert_pos, msg);
+        return len;
     }
 
     /// Get queue attributes
     pub fn getAttr(self: *MessageQueue) MqAttr {
-        self.lock.acquireRead();
-        defer self.lock.releaseRead();
-
+        self.lock.lock();
+        defer self.lock.unlock();
         return self.attr;
     }
 
-    /// Set queue attributes
-    pub fn setAttr(self: *MessageQueue, new_attr: MqAttr, old_attr: ?*MqAttr) void {
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
+    /// Set queue attributes (only mq_flags can be changed)
+    pub fn setAttr(self: *MessageQueue, new_attr: *const MqAttr, old_attr: ?*MqAttr) void {
+        self.lock.lock();
+        defer self.lock.unlock();
 
         if (old_attr) |old| {
             old.* = self.attr;
         }
 
-        // Only flags can be changed
-        self.attr.flags = new_attr.flags;
+        // Only mq_flags can be modified
+        self.attr.mq_flags = new_attr.mq_flags;
     }
 
-    /// Check permissions
-    pub fn canRead(self: *MessageQueue, uid: u32, gid: u32) bool {
-        if (uid == 0) return true; // Root can do anything
-        if (uid == self.uid) return (self.permissions & 0o400) != 0;
-        if (gid == self.gid) return (self.permissions & 0o040) != 0;
-        return (self.permissions & 0o004) != 0;
+    /// Increment reference count
+    pub fn ref(self: *MessageQueue) void {
+        _ = self.ref_count.fetchAdd(1, .Monotonic);
     }
 
-    pub fn canWrite(self: *MessageQueue, uid: u32, gid: u32) bool {
-        if (uid == 0) return true;
-        if (uid == self.uid) return (self.permissions & 0o200) != 0;
-        if (gid == self.gid) return (self.permissions & 0o020) != 0;
-        return (self.permissions & 0o002) != 0;
+    /// Decrement reference count and destroy if zero
+    pub fn unref(self: *MessageQueue) void {
+        const old_count = self.ref_count.fetchSub(1, .Release);
+        if (old_count == 1) {
+            @atomicStore(u32, &self.ref_count.value, 0, .Acquire);
+            self.deinit();
+        }
     }
 };
 
 // ============================================================================
-// Message Queue Manager
+// Global Message Queue Registry
 // ============================================================================
 
-pub const MqManager = struct {
-    queues: Basics.StringHashMap(*MessageQueue),
-    lock: sync.RwLock,
+const MAX_QUEUES = 256;
+
+var mqueue_registry: [MAX_QUEUES]?*MessageQueue = [_]?*MessageQueue{null} ** MAX_QUEUES;
+var mqueue_lock = sync.SpinLock.init();
+
+/// Open or create a message queue
+pub fn mqOpen(
     allocator: Basics.Allocator,
+    name: []const u8,
+    flags: i32,
+    mode: u32,
+    attr: ?*const MqAttr,
+) !*MessageQueue {
+    const O_CREAT = 0x40;
+    const O_EXCL = 0x80;
 
-    pub fn init(allocator: Basics.Allocator) MqManager {
-        return .{
-            .queues = Basics.StringHashMap(*MessageQueue).init(allocator),
-            .lock = sync.RwLock.init(),
-            .allocator = allocator,
-        };
-    }
+    mqueue_lock.lock();
+    defer mqueue_lock.unlock();
 
-    pub fn deinit(self: *MqManager) void {
-        var it = self.queues.valueIterator();
-        while (it.next()) |mq| {
-            mq.*.deinit();
-        }
-        self.queues.deinit();
-    }
-
-    /// Open or create a message queue
-    pub fn open(
-        self: *MqManager,
-        name: []const u8,
-        flags: u32,
-        mode: u16,
-        attr: ?*const MqAttr,
-        uid: u32,
-        gid: u32,
-    ) !*MessageQueue {
-        const O_CREAT = 0o100;
-        const O_EXCL = 0o200;
-
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
-
-        // Check if queue exists
-        if (self.queues.get(name)) |mq| {
-            if ((flags & O_EXCL) != 0) {
-                return error.AlreadyExists;
+    // Look for existing queue
+    for (mqueue_registry) |maybe_mq| {
+        if (maybe_mq) |mq| {
+            if (Basics.mem.eql(u8, mq.name, name)) {
+                // Queue exists
+                if ((flags & O_CREAT) != 0 and (flags & O_EXCL) != 0) {
+                    return error.AlreadyExists;
+                }
+                mq.ref();
+                return mq;
             }
-
-            // Check permissions
-            if (!mq.canRead(uid, gid) and !mq.canWrite(uid, gid)) {
-                return error.PermissionDenied;
-            }
-
-            mq.refcount += 1;
-            return mq;
-        }
-
-        // Create new queue if O_CREAT is set
-        if ((flags & O_CREAT) == 0) {
-            return error.NoSuchQueue;
-        }
-
-        const queue_attr = if (attr) |a|
-            a.*
-        else
-            MqAttr.init(MQ_DEFAULT_MAXMSG, MQ_DEFAULT_MSGSIZE);
-
-        const mq = try MessageQueue.init(
-            self.allocator,
-            name,
-            queue_attr,
-            mode,
-            uid,
-            gid,
-        );
-        errdefer mq.deinit();
-
-        try self.queues.put(name, mq);
-        return mq;
-    }
-
-    /// Close a message queue
-    pub fn close(self: *MqManager, mq: *MessageQueue) void {
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
-
-        mq.refcount -= 1;
-        if (mq.refcount == 0) {
-            _ = self.queues.remove(mq.name);
-            mq.deinit();
         }
     }
 
-    /// Unlink (delete) a message queue
-    pub fn unlink(self: *MqManager, name: []const u8) !void {
-        self.lock.acquireWrite();
-        defer self.lock.releaseWrite();
-
-        const mq = self.queues.get(name) orelse return error.NoSuchQueue;
-
-        _ = self.queues.remove(name);
-
-        if (mq.refcount == 0) {
-            mq.deinit();
-        }
-        // Otherwise it will be freed when last reference is closed
-    }
-};
-
-// ============================================================================
-// Global Manager
-// ============================================================================
-
-var global_manager: ?MqManager = null;
-var manager_lock = sync.Spinlock.init();
-
-pub fn getManager() *MqManager {
-    manager_lock.acquire();
-    defer manager_lock.release();
-
-    if (global_manager == null) {
-        global_manager = MqManager.init(Basics.heap.page_allocator);
+    // Queue doesn't exist
+    if ((flags & O_CREAT) == 0) {
+        return error.NotFound;
     }
 
-    return &global_manager.?;
-}
+    // Create new queue
+    const current = process.getCurrent() orelse return error.NoCurrentProcess;
 
-// ============================================================================
-// System Call Interface
-// ============================================================================
+    const queue_attr = if (attr) |a| a.* else MqAttr.init(10, 8192); // Default: 10 messages, 8KB each
 
-/// sys_mq_open - Open a message queue
-pub fn sysMqOpen(name: [*:0]const u8, flags: i32, mode: u32, attr: ?*const MqAttr) !i32 {
-    const proc = process.current() orelse return error.NoProcess;
-    const manager = getManager();
-
-    const name_slice = Basics.mem.span(name);
-    const mq = try manager.open(
-        name_slice,
-        @intCast(flags),
-        @intCast(mode),
-        attr,
-        proc.uid,
-        proc.gid,
+    const mq = try MessageQueue.init(
+        allocator,
+        name,
+        queue_attr,
+        current.uid,
+        current.gid,
+        mode,
     );
 
-    // Add to process's file descriptor table
-    const fd = try proc.addMessageQueue(mq);
-    return @intCast(fd);
+    // Find free slot
+    for (&mqueue_registry) |*slot| {
+        if (slot.* == null) {
+            slot.* = mq;
+            return mq;
+        }
+    }
+
+    // No free slots
+    mq.deinit();
+    return error.TooManyQueues;
 }
 
-/// sys_mq_close - Close a message queue
-pub fn sysMqClose(mqdes: i32) !void {
-    const proc = process.current() orelse return error.NoProcess;
-    const mq = proc.getMessageQueue(mqdes) orelse return error.InvalidDescriptor;
-
-    const manager = getManager();
-    manager.close(mq);
-
-    proc.removeMessageQueue(mqdes);
+/// Close a message queue
+pub fn mqClose(mq: *MessageQueue) void {
+    mq.unref();
 }
 
-/// sys_mq_unlink - Remove a message queue
-pub fn sysMqUnlink(name: [*:0]const u8) !void {
-    const manager = getManager();
+/// Unlink (delete) a message queue
+pub fn mqUnlink(name: []const u8) !void {
+    mqueue_lock.lock();
+    defer mqueue_lock.unlock();
+
+    for (&mqueue_registry) |*slot| {
+        if (slot.*) |mq| {
+            if (Basics.mem.eql(u8, mq.name, name)) {
+                slot.* = null;
+                mq.unref();
+                return;
+            }
+        }
+    }
+
+    return error.NotFound;
+}
+
+// ============================================================================
+// File Descriptor Mapping
+// ============================================================================
+
+const MAX_MQ_FDS = 1024;
+var mq_fd_map: [MAX_MQ_FDS]?*MessageQueue = [_]?*MessageQueue{null} ** MAX_MQ_FDS;
+var mq_fd_lock = sync.SpinLock.init();
+var next_mq_fd = atomic.AtomicI32.init(1000); // Start at 1000 to avoid conflicts
+
+fn allocateMqFd(mq: *MessageQueue) !i32 {
+    mq_fd_lock.lock();
+    defer mq_fd_lock.unlock();
+
+    const fd = next_mq_fd.fetchAdd(1, .Monotonic);
+    const idx = @as(usize, @intCast(fd % MAX_MQ_FDS));
+
+    if (mq_fd_map[idx] == null) {
+        mq.ref();
+        mq_fd_map[idx] = mq;
+        return fd;
+    }
+
+    return error.TooManyOpenFiles;
+}
+
+fn getMqFromFd(fd: i32) ?*MessageQueue {
+    mq_fd_lock.lock();
+    defer mq_fd_lock.unlock();
+
+    const idx = @as(usize, @intCast(fd % MAX_MQ_FDS));
+    return mq_fd_map[idx];
+}
+
+fn releaseMqFd(fd: i32) void {
+    mq_fd_lock.lock();
+    defer mq_fd_lock.unlock();
+
+    const idx = @as(usize, @intCast(fd % MAX_MQ_FDS));
+    if (mq_fd_map[idx]) |mq| {
+        mq.unref();
+        mq_fd_map[idx] = null;
+    }
+}
+
+// ============================================================================
+// System Calls
+// ============================================================================
+
+/// Open message queue (mq_open syscall)
+pub fn sysMqOpen(
+    name: [*:0]const u8,
+    flags: i32,
+    mode: u32,
+    attr: ?*const MqAttr,
+) !i32 {
+    const allocator = Basics.heap.page_allocator;
+
     const name_slice = Basics.mem.span(name);
+    const mq = try mqOpen(allocator, name_slice, flags, mode, attr);
 
-    try manager.unlink(name_slice);
+    return try allocateMqFd(mq);
 }
 
-/// sys_mq_send - Send a message
-pub fn sysMqSend(mqdes: i32, msg: [*]const u8, msg_len: usize, msg_prio: u32) !void {
-    const proc = process.current() orelse return error.NoProcess;
-    const mq = proc.getMessageQueue(mqdes) orelse return error.InvalidDescriptor;
-
-    if (!mq.canWrite(proc.uid, proc.gid)) {
-        return error.PermissionDenied;
-    }
-
-    try mq.send(msg[0..msg_len], msg_prio, null);
+/// Close message queue (mq_close syscall)
+pub fn sysMqClose(mqdes: i32) !void {
+    releaseMqFd(mqdes);
 }
 
-/// sys_mq_receive - Receive a message
-pub fn sysMqReceive(mqdes: i32, msg: [*]u8, msg_len: usize, msg_prio: ?*u32) !usize {
-    const proc = process.current() orelse return error.NoProcess;
-    const mq = proc.getMessageQueue(mqdes) orelse return error.InvalidDescriptor;
-
-    if (!mq.canRead(proc.uid, proc.gid)) {
-        return error.PermissionDenied;
-    }
-
-    return try mq.receive(msg[0..msg_len], msg_prio, null);
+/// Unlink message queue (mq_unlink syscall)
+pub fn sysMqUnlink(name: [*:0]const u8) !void {
+    const name_slice = Basics.mem.span(name);
+    try mqUnlink(name_slice);
 }
 
-/// sys_mq_getsetattr - Get/set queue attributes
-pub fn sysMqGetsetattr(mqdes: i32, new_attr: ?*const MqAttr, old_attr: ?*MqAttr) !void {
-    const proc = process.current() orelse return error.NoProcess;
-    const mq = proc.getMessageQueue(mqdes) orelse return error.InvalidDescriptor;
+/// Send message (mq_send syscall)
+pub fn sysMqSend(
+    mqdes: i32,
+    msg_ptr: [*]const u8,
+    msg_len: usize,
+    msg_prio: u32,
+) !void {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    const msg_data = msg_ptr[0..msg_len];
+    try mq.send(msg_data, msg_prio, null);
+}
 
-    if (new_attr) |new| {
-        mq.setAttr(new.*, old_attr);
-    } else if (old_attr) |old| {
-        old.* = mq.getAttr();
-    }
+/// Send message with timeout (mq_timedsend syscall)
+pub fn sysMqTimedsend(
+    mqdes: i32,
+    msg_ptr: [*]const u8,
+    msg_len: usize,
+    msg_prio: u32,
+    timeout_ns: u64,
+) !void {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    const msg_data = msg_ptr[0..msg_len];
+    try mq.send(msg_data, msg_prio, timeout_ns);
+}
+
+/// Receive message (mq_receive syscall)
+pub fn sysMqReceive(
+    mqdes: i32,
+    msg_ptr: [*]u8,
+    msg_len: usize,
+    msg_prio: ?*u32,
+) !isize {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    const buffer = msg_ptr[0..msg_len];
+    const bytes_read = try mq.receive(buffer, msg_prio, null);
+    return @intCast(bytes_read);
+}
+
+/// Receive message with timeout (mq_timedreceive syscall)
+pub fn sysMqTimedreceive(
+    mqdes: i32,
+    msg_ptr: [*]u8,
+    msg_len: usize,
+    msg_prio: ?*u32,
+    timeout_ns: u64,
+) !isize {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    const buffer = msg_ptr[0..msg_len];
+    const bytes_read = try mq.receive(buffer, msg_prio, timeout_ns);
+    return @intCast(bytes_read);
+}
+
+/// Get queue attributes (mq_getattr syscall)
+pub fn sysMqGetattr(mqdes: i32, attr: *MqAttr) !void {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    attr.* = mq.getAttr();
+}
+
+/// Set queue attributes (mq_setattr syscall)
+pub fn sysMqSetattr(
+    mqdes: i32,
+    new_attr: *const MqAttr,
+    old_attr: ?*MqAttr,
+) !void {
+    const mq = getMqFromFd(mqdes) orelse return error.BadFileDescriptor;
+    mq.setAttr(new_attr, old_attr);
 }
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-test "message priority" {
-    const allocator = Basics.testing.allocator;
-    var manager = MqManager.init(allocator);
-    defer manager.deinit();
+test "message queue - create and destroy" {
+    const testing = Basics.testing;
+    const allocator = testing.allocator;
 
-    const attr = MqAttr.init(10, 100);
-    const mq = try manager.open("/test", 0o100, 0o644, &attr, 1000, 1000);
+    const attr = MqAttr.init(10, 1024);
+    var mq = try MessageQueue.init(allocator, "/test", attr, 1000, 1000, 0o644);
+    defer mq.unref();
 
-    try mq.send("low", 1, null);
-    try mq.send("high", 10, null);
-    try mq.send("medium", 5, null);
-
-    var buffer: [100]u8 = undefined;
-    var prio: u32 = 0;
-
-    // Should receive in priority order: high, medium, low
-    const len1 = try mq.receive(&buffer, &prio, null);
-    try Basics.testing.expectEqual(@as(u32, 10), prio);
-    try Basics.testing.expectEqualSlices(u8, "high", buffer[0..len1]);
-
-    const len2 = try mq.receive(&buffer, &prio, null);
-    try Basics.testing.expectEqual(@as(u32, 5), prio);
-    try Basics.testing.expectEqualSlices(u8, "medium", buffer[0..len2]);
-
-    const len3 = try mq.receive(&buffer, &prio, null);
-    try Basics.testing.expectEqual(@as(u32, 1), prio);
-    try Basics.testing.expectEqualSlices(u8, "low", buffer[0..len3]);
+    try testing.expectEqual(@as(i32, 0), mq.attr.mq_curmsgs);
+    try testing.expectEqual(@as(i32, 10), mq.attr.mq_maxmsg);
 }
 
-test "message queue manager" {
-    const allocator = Basics.testing.allocator;
-    var manager = MqManager.init(allocator);
-    defer manager.deinit();
+test "message queue - send and receive" {
+    const testing = Basics.testing;
+    const allocator = testing.allocator;
 
-    const attr = MqAttr.init(5, 50);
-    const mq1 = try manager.open("/queue1", 0o100, 0o644, &attr, 1000, 1000);
-    const mq2 = try manager.open("/queue1", 0o000, 0o644, &attr, 1000, 1000);
+    const attr = MqAttr.init(10, 1024);
+    var mq = try MessageQueue.init(allocator, "/test", attr, 1000, 1000, 0o644);
+    defer mq.unref();
 
-    try Basics.testing.expect(mq1 == mq2); // Same queue
-    try Basics.testing.expectEqual(@as(u32, 2), mq1.refcount);
+    // Send a message
+    const msg = "Hello, World!";
+    try mq.send(msg, 0, null);
+
+    try testing.expectEqual(@as(i32, 1), mq.attr.mq_curmsgs);
+
+    // Receive the message
+    var buffer: [1024]u8 = undefined;
+    const len = try mq.receive(&buffer, null, null);
+
+    try testing.expectEqual(msg.len, len);
+    try testing.expectEqualStrings(msg, buffer[0..len]);
+    try testing.expectEqual(@as(i32, 0), mq.attr.mq_curmsgs);
+}
+
+test "message queue - priority ordering" {
+    const testing = Basics.testing;
+    const allocator = testing.allocator;
+
+    const attr = MqAttr.init(10, 1024);
+    var mq = try MessageQueue.init(allocator, "/test", attr, 1000, 1000, 0o644);
+    defer mq.unref();
+
+    // Send messages with different priorities
+    try mq.send("Low", 1, null);
+    try mq.send("High", 10, null);
+    try mq.send("Medium", 5, null);
+
+    // Should receive in priority order: High, Medium, Low
+    var buffer: [1024]u8 = undefined;
+    var prio: u32 = undefined;
+
+    _ = try mq.receive(&buffer, &prio, null);
+    try testing.expectEqual(@as(u32, 10), prio);
+
+    _ = try mq.receive(&buffer, &prio, null);
+    try testing.expectEqual(@as(u32, 5), prio);
+
+    _ = try mq.receive(&buffer, &prio, null);
+    try testing.expectEqual(@as(u32, 1), prio);
+}
+
+test "message queue - open and close" {
+    const testing = Basics.testing;
+    const allocator = testing.allocator;
+
+    // Open/create queue
+    const mq = try mqOpen(allocator, "/testq", 0x40, 0o644, null); // O_CREAT
+    defer mqClose(mq);
+
+    try testing.expectEqualStrings("/testq", mq.name);
+
+    // Open existing queue
+    const mq2 = try mqOpen(allocator, "/testq", 0, 0o644, null);
+    defer mqClose(mq2);
+
+    try testing.expectEqual(mq, mq2);
 }
