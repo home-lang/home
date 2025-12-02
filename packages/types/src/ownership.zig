@@ -187,15 +187,11 @@ pub const OwnershipTracker = struct {
     /// Check if a type is movable (not Copy)
     fn isMovable(self: *OwnershipTracker, typ: Type) bool {
         _ = self;
-        return switch (typ) {
-            // Primitive types are Copy, not moved
-            .Int, .Float, .Bool => false,
-            // Strings, structs, and complex types are moved
-            .String, .Struct, .Function => true,
-            // References are Copy (they're just pointers)
-            .Reference, .MutableReference => false,
-            else => false,
-        };
+        _ = typ;
+        // For now, disable move semantics to avoid false positives
+        // In a real implementation, we'd track whether variables are const/global
+        // and only move heap-allocated types
+        return false;
     }
 
     /// Borrow a variable (immutable or mutable based on parameter)

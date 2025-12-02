@@ -1299,10 +1299,9 @@ pub const Parser = struct {
         // Note: Home module symbol population disabled temporarily due to hashmap issue
         // Symbol validation will be done at type checking phase
 
-        // Parse optional selective import list: { item1, item2, ... } or ::{item1, item2}
+        // Parse optional selective import list: { item1, item2, ... }
         var imports: ?[]const []const u8 = null;
-        // Support both "import path { items }" and "import path::{ items }" (Rust-style)
-        _ = self.match(&.{.ColonColon}); // Optional :: before brace
+        // Only support "import path { items }" - NOT Rust-style "import path::{ items }"
         if (self.match(&.{.LeftBrace})) {
             var import_list = std.ArrayList([]const u8){};
             defer import_list.deinit(self.allocator);
@@ -1442,6 +1441,29 @@ pub const Parser = struct {
         if (self.match(&.{.Question})) {
             const inner_type = try self.parseTypeAnnotation();
             return try std.fmt.allocPrint(self.allocator, "?{s}", .{inner_type});
+        }
+
+        // Check for optional array type: ?[]T or ?[N]T (lexer combines ?[ into QuestionBracket)
+        if (self.match(&.{.QuestionBracket})) {
+            if (self.peek().type == .RightBracket) {
+                // ?[]T - optional dynamic array
+                _ = try self.expect(.RightBracket, "Expected ']'");
+                const elem_type = try self.parseTypeAnnotation();
+                return try std.fmt.allocPrint(self.allocator, "?[]{s}", .{elem_type});
+            }
+
+            // Check for ?[N]T syntax (optional fixed-size array)
+            if (self.check(.Integer)) {
+                const size_token = self.advance();
+                _ = try self.expect(.RightBracket, "Expected ']' after array size");
+                const elem_type = try self.parseTypeAnnotation();
+                return try std.fmt.allocPrint(self.allocator, "?[{s}]{s}", .{ size_token.lexeme, elem_type });
+            }
+
+            // ?[T] - optional element type inside brackets
+            const inner = try self.parseTypeAnnotation();
+            _ = try self.expect(.RightBracket, "Expected ']'");
+            return try std.fmt.allocPrint(self.allocator, "?[{s}]", .{inner});
         }
 
         // Check for pointer type: *T or *const T

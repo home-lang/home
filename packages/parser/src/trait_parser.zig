@@ -406,14 +406,40 @@ pub fn parseTypeExpr(self: *Parser) !*ast.TypeExpr {
     if (self.match(&.{.Ampersand})) {
         const is_mut = self.match(&.{.Mut});
         const inner = try self.parseTypeExpr();
-        
+
         type_expr.* = .{ .Reference = .{
             .is_mut = is_mut,
             .inner = inner,
         }};
         return type_expr;
     }
-    
+
+    // Handle optional types (?T)
+    if (self.match(&.{.Question})) {
+        const inner = try self.parseTypeExpr();
+        type_expr.* = .{ .Nullable = inner };
+        return type_expr;
+    }
+
+    // Handle pointer types (*T, *mut T)
+    if (self.match(&.{.Star})) {
+        const is_mut = self.match(&.{.Mut});
+        const inner = try self.parseTypeExpr();
+        type_expr.* = .{ .Pointer = .{
+            .is_mut = is_mut,
+            .inner = inner,
+        }};
+        return type_expr;
+    }
+
+    // Handle slice types ([]T)
+    if (self.match(&.{.LeftBracket})) {
+        _ = try self.expect(.RightBracket, "Expected ']' for slice type");
+        const inner = try self.parseTypeExpr();
+        type_expr.* = .{ .Array = .{ .element = inner, .size = null } };
+        return type_expr;
+    }
+
     // Handle named types and generics
     const name_token = try self.expect(.Identifier, "Expected type name");
     const type_name = try self.allocator.dupe(u8, name_token.lexeme);
