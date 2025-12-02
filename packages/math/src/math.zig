@@ -11,6 +11,11 @@ pub const special = @import("special.zig");
 pub const complex = @import("complex.zig");
 pub const vector = @import("vector.zig");
 pub const matrix = @import("matrix.zig");
+pub const quaternion = @import("quaternion.zig");
+pub const frustum = @import("frustum.zig");
+pub const easing = @import("easing.zig");
+pub const ray = @import("ray.zig");
+pub const transform = @import("transform.zig");
 
 // Re-export commonly used functions
 pub const sqrt = basic.sqrt;
@@ -43,6 +48,27 @@ pub const Vec4 = vector.Vec4;
 pub const Mat2 = matrix.Mat2;
 pub const Mat3 = matrix.Mat3;
 pub const Mat4 = matrix.Mat4;
+pub const Quat = quaternion.Quat;
+pub const Quatf = quaternion.Quatf;
+pub const Quatd = quaternion.Quatd;
+pub const Plane = frustum.Plane;
+pub const AABB = frustum.AABB;
+pub const BoundingSphere = frustum.BoundingSphere;
+pub const Frustum = frustum.Frustum;
+pub const Frustumf = frustum.Frustumf;
+pub const Easing = easing.Easing;
+pub const Easingf = easing.Easingf;
+pub const EasingType = easing.EasingType;
+pub const getEasingFn = easing.getEasingFn;
+pub const Ray = ray.Ray;
+pub const Rayf = ray.Rayf;
+pub const LineSegment = ray.LineSegment;
+pub const PickRay = ray.PickRay;
+pub const Transform = transform.Transform;
+pub const Transformf = transform.Transformf;
+pub const Transformd = transform.Transformd;
+pub const TransformNode = transform.TransformNode;
+pub const TransformNodef = transform.TransformNodef;
 
 // Constants
 pub const pi: f64 = 3.14159265358979323846;
@@ -62,4 +88,9 @@ test "math module imports" {
     _ = complex;
     _ = vector;
     _ = matrix;
+    _ = quaternion;
+    _ = frustum;
+    _ = easing;
+    _ = ray;
+    _ = transform;
 }
