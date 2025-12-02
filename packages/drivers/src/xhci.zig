@@ -361,6 +361,13 @@ pub const XhciController = struct {
     /// Number of ports
     num_ports: u8,
 
+    /// Last command completion slot ID
+    last_slot_id: u8,
+    /// Last command completion status
+    last_cmd_status: u32,
+    /// Command completion pending flag
+    cmd_pending: bool,
+
     /// Initialize xHCI controller
     pub fn init(allocator: Basics.Allocator, pci_dev: *pci.PciDevice) !*XhciController {
         const ctrl = try allocator.create(XhciController);
@@ -394,6 +401,11 @@ pub const XhciController = struct {
         const hcsparams1 = ctrl.cap_regs.hcsparams1;
         ctrl.max_slots = @intCast((hcsparams1 >> 0) & 0xFF);
         ctrl.num_ports = @intCast((hcsparams1 >> 24) & 0xFF);
+
+        // Initialize command completion tracking
+        ctrl.last_slot_id = 0;
+        ctrl.last_cmd_status = 0;
+        ctrl.cmd_pending = false;
 
         // Map port registers (starts right after operational registers)
         const port_regs_base = mmio_base + op_offset + @sizeOf(XhciOpRegs);
@@ -555,10 +567,33 @@ pub const XhciController = struct {
         var trb = Basics.mem.zeroes(Trb);
         trb.control = (@intFromEnum(TrbType.EnableSlot) << 10);
 
+        // Mark command as pending
+        self.cmd_pending = true;
+
         try self.issueCommand(trb);
 
-        // TODO: Wait for command completion event and return slot ID
-        return 1;
+        // Poll for command completion event
+        var timeout: u32 = 10000; // Timeout iterations
+        while (self.cmd_pending and timeout > 0) : (timeout -= 1) {
+            try self.processEvents();
+
+            // Small delay
+            var delay: u32 = 0;
+            while (delay < 100) : (delay += 1) {
+                asm volatile ("pause");
+            }
+        }
+
+        if (timeout == 0) {
+            return error.CommandTimeout;
+        }
+
+        // Check command status (0 = success)
+        if (self.last_cmd_status != 0) {
+            return error.CommandFailed;
+        }
+
+        return self.last_slot_id;
     }
 
     /// Address a device
@@ -646,7 +681,14 @@ pub const XhciController = struct {
         // Set up endpoint 0 context (control endpoint)
         input_ctx.endpoints[0].dw0 = 0; // EP state = disabled
         input_ctx.endpoints[0].dw1 = (4 << 3) | (0 << 16) | (8 << 16); // EP type = control, max packet = 8
-        // TODO: Set TR dequeue pointer to transfer ring
+
+        // Create transfer ring for endpoint 0
+        const ep0_ring = try TrbRing.init(self.allocator, 16);
+        const tr_ptr = ep0_ring.phys_addr;
+
+        // Set TR dequeue pointer (dw2 = low 32 bits with DCS bit, dw3 = high 32 bits)
+        input_ctx.endpoints[0].dw2 = @intCast((tr_ptr & 0xFFFFFFFF) | 1); // DCS = 1
+        input_ctx.endpoints[0].dw3 = @intCast(tr_ptr >> 32);
 
         // Address device
         const input_ctx_phys = @intFromPtr(&input_ctx);
@@ -677,7 +719,16 @@ pub const XhciController = struct {
                 },
                 .CommandCompletion => {
                     // Handle command completion
-                    Basics.debug.print("xHCI: Command completion event\n", .{});
+                    // Extract slot ID from control field (bits 24-31)
+                    const slot_id: u8 = @intCast((trb.control >> 24) & 0xFF);
+                    // Extract completion code from status field (bits 24-31)
+                    const status: u32 = (trb.status >> 24) & 0xFF;
+
+                    self.last_slot_id = slot_id;
+                    self.last_cmd_status = status;
+                    self.cmd_pending = false;
+
+                    Basics.debug.print("xHCI: Command completion event (slot={}, status={})\n", .{ slot_id, status });
                 },
                 .PortStatusChange => {
                     // Handle port status change

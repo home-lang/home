@@ -217,9 +217,17 @@ pub fn getUsage(proc: *process.Process, resource: ResourceType) u64 {
 }
 
 fn countProcesses(uid: u32) u64 {
-    _ = uid;
-    // TODO: Implement process counting by UID
-    return 1;
+    var count: u64 = 0;
+
+    // Iterate all processes and count those owned by the specified UID
+    var it = process.allProcesses();
+    while (it.next()) |proc| {
+        if (proc.uid == uid) {
+            count += 1;
+        }
+    }
+
+    return count;
 }
 
 // ============================================================================

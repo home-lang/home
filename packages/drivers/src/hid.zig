@@ -2,6 +2,7 @@
 // Keyboard, mouse, and other HID device support
 
 const Basics = @import("basics");
+const input = @import("input.zig");
 
 // ============================================================================
 // HID Class Constants
@@ -247,11 +248,18 @@ pub const KeyCode = enum(u8) {
 pub const KeyboardHandler = struct {
     /// Previous report for change detection
     prev_report: KeyboardReport,
+    /// Input event queue (optional)
+    event_queue: ?*input.InputEventQueue,
 
     pub fn init() KeyboardHandler {
         return .{
             .prev_report = KeyboardReport.init(),
+            .event_queue = null,
         };
+    }
+
+    pub fn setEventQueue(self: *KeyboardHandler, queue: *input.InputEventQueue) void {
+        self.event_queue = queue;
     }
 
     /// Handle keyboard input report
@@ -293,7 +301,7 @@ pub const KeyboardHandler = struct {
             }
 
             if (!found) {
-                self.handleKeyEvent(.KeyPress, true);
+                self.handleKeyCodeEvent(keycode, true);
                 Basics.debug.print("HID Keyboard: Key pressed: 0x{x}\n", .{keycode});
             }
         }
@@ -311,7 +319,7 @@ pub const KeyboardHandler = struct {
             }
 
             if (!found) {
-                self.handleKeyEvent(.KeyRelease, false);
+                self.handleKeyCodeEvent(prev_key, false);
                 Basics.debug.print("HID Keyboard: Key released: 0x{x}\n", .{prev_key});
             }
         }
@@ -328,11 +336,153 @@ pub const KeyboardHandler = struct {
         KeyRelease,
     };
 
+    /// Map USB HID keycode to input subsystem keycode
+    fn mapHidToInputKeyCode(hid_code: u8) ?input.KeyCode {
+        return switch (hid_code) {
+            0x04 => .a, // A
+            0x05 => .b, // B
+            0x06 => .c, // C
+            0x07 => .d, // D
+            0x08 => .e, // E
+            0x09 => .f, // F
+            0x0A => .g, // G
+            0x0B => .h, // H
+            0x0C => .i, // I
+            0x0D => .j, // J
+            0x0E => .k, // K
+            0x0F => .l, // L
+            0x10 => .m, // M
+            0x11 => .n, // N
+            0x12 => .o, // O
+            0x13 => .p, // P
+            0x14 => .q, // Q
+            0x15 => .r, // R
+            0x16 => .s, // S
+            0x17 => .t, // T
+            0x18 => .u, // U
+            0x19 => .v, // V
+            0x1A => .w, // W
+            0x1B => .x, // X
+            0x1C => .y, // Y
+            0x1D => .z, // Z
+            0x1E => .num_1,
+            0x1F => .num_2,
+            0x20 => .num_3,
+            0x21 => .num_4,
+            0x22 => .num_5,
+            0x23 => .num_6,
+            0x24 => .num_7,
+            0x25 => .num_8,
+            0x26 => .num_9,
+            0x27 => .num_0,
+            0x28 => .enter,
+            0x29 => .escape,
+            0x2A => .backspace,
+            0x2B => .tab,
+            0x2C => .space,
+            0x3A => .f1,
+            0x3B => .f2,
+            0x3C => .f3,
+            0x3D => .f4,
+            0x3E => .f5,
+            0x3F => .f6,
+            0x40 => .f7,
+            0x41 => .f8,
+            0x42 => .f9,
+            0x43 => .f10,
+            0x44 => .f11,
+            0x45 => .f12,
+            0x4F => .right,
+            0x50 => .left,
+            0x51 => .down,
+            0x52 => .up,
+            else => null,
+        };
+    }
+
     fn handleKeyEvent(self: *KeyboardHandler, event: KeyEvent, pressed: bool) void {
-        _ = self;
-        _ = event;
-        _ = pressed;
-        // TODO: Send input event to input subsystem
+        const queue = self.event_queue orelse return;
+
+        // Build modifiers from current report
+        var modifiers = input.KeyModifiers{
+            .shift = self.prev_report.modifiers.left_shift or self.prev_report.modifiers.right_shift,
+            .ctrl = self.prev_report.modifiers.left_ctrl or self.prev_report.modifiers.right_ctrl,
+            .alt = self.prev_report.modifiers.left_alt or self.prev_report.modifiers.right_alt,
+            .super = self.prev_report.modifiers.left_gui or self.prev_report.modifiers.right_gui,
+        };
+
+        // Create and send input event
+        const input_event: input.InputEvent = switch (event) {
+            .LeftCtrl => blk: {
+                const key_event = input.KeyEvent{
+                    .code = .left_ctrl,
+                    .scancode = 0x1D,
+                    .modifiers = modifiers,
+                    .character = null,
+                };
+                break :blk if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };
+            },
+            .LeftShift => blk: {
+                const key_event = input.KeyEvent{
+                    .code = .left_shift,
+                    .scancode = 0x2A,
+                    .modifiers = modifiers,
+                    .character = null,
+                };
+                break :blk if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };
+            },
+            .LeftAlt => blk: {
+                const key_event = input.KeyEvent{
+                    .code = .left_alt,
+                    .scancode = 0x38,
+                    .modifiers = modifiers,
+                    .character = null,
+                };
+                break :blk if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };
+            },
+            .LeftGui => blk: {
+                // No direct mapping for Super key in input subsystem, use escape as placeholder
+                const key_event = input.KeyEvent{
+                    .code = .escape,
+                    .scancode = 0x01,
+                    .modifiers = modifiers,
+                    .character = null,
+                };
+                break :blk if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };
+            },
+            .KeyPress, .KeyRelease => return, // Handled below in handleReport
+        };
+
+        queue.push(input_event) catch |err| {
+            Basics.debug.print("HID Keyboard: Failed to push event: {}\n", .{err});
+        };
+    }
+
+    fn handleKeyCodeEvent(self: *KeyboardHandler, hid_code: u8, pressed: bool) void {
+        const queue = self.event_queue orelse return;
+
+        // Map HID keycode to input keycode
+        const key_code = mapHidToInputKeyCode(hid_code) orelse return;
+
+        var modifiers = input.KeyModifiers{
+            .shift = self.prev_report.modifiers.left_shift or self.prev_report.modifiers.right_shift,
+            .ctrl = self.prev_report.modifiers.left_ctrl or self.prev_report.modifiers.right_ctrl,
+            .alt = self.prev_report.modifiers.left_alt or self.prev_report.modifiers.right_alt,
+            .super = self.prev_report.modifiers.left_gui or self.prev_report.modifiers.right_gui,
+        };
+
+        const key_event = input.KeyEvent{
+            .code = key_code,
+            .scancode = hid_code,
+            .modifiers = modifiers,
+            .character = null, // TODO: Add character mapping
+        };
+
+        const input_event: input.InputEvent = if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };
+
+        queue.push(input_event) catch |err| {
+            Basics.debug.print("HID Keyboard: Failed to push key event: {}\n", .{err});
+        };
     }
 };
 
@@ -387,13 +537,20 @@ pub const MouseHandler = struct {
     pos_x: i32,
     /// Accumulated Y position
     pos_y: i32,
+    /// Input event queue (optional)
+    event_queue: ?*input.InputEventQueue,
 
     pub fn init() MouseHandler {
         return .{
             .prev_report = MouseReport.init(),
             .pos_x = 0,
             .pos_y = 0,
+            .event_queue = null,
         };
+    }
+
+    pub fn setEventQueue(self: *MouseHandler, queue: *input.InputEventQueue) void {
+        self.event_queue = queue;
     }
 
     /// Handle mouse input report
@@ -445,23 +602,57 @@ pub const MouseHandler = struct {
     };
 
     fn handleMouseButton(self: *MouseHandler, button: MouseButton, pressed: bool) void {
-        _ = self;
-        _ = button;
-        _ = pressed;
-        // TODO: Send input event to input subsystem
+        const queue = self.event_queue orelse return;
+
+        const input_button: input.MouseButton = switch (button) {
+            .Left => .left,
+            .Right => .right,
+            .Middle => .middle,
+        };
+
+        const button_event = input.MouseButtonEvent{
+            .button = input_button,
+            .x = self.pos_x,
+            .y = self.pos_y,
+        };
+
+        const input_event: input.InputEvent = if (pressed) .{ .mouse_button_press = button_event } else .{ .mouse_button_release = button_event };
+
+        queue.push(input_event) catch |err| {
+            Basics.debug.print("HID Mouse: Failed to push button event: {}\n", .{err});
+        };
     }
 
     fn handleMouseMove(self: *MouseHandler, dx: i8, dy: i8) void {
-        _ = self;
-        _ = dx;
-        _ = dy;
-        // TODO: Send mouse move event to input subsystem
+        const queue = self.event_queue orelse return;
+
+        const move_event = input.MouseMoveEvent{
+            .x = self.pos_x,
+            .y = self.pos_y,
+            .dx = dx,
+            .dy = dy,
+        };
+
+        const input_event: input.InputEvent = .{ .mouse_move = move_event };
+
+        queue.push(input_event) catch |err| {
+            Basics.debug.print("HID Mouse: Failed to push move event: {}\n", .{err});
+        };
     }
 
     fn handleMouseWheel(self: *MouseHandler, delta: i8) void {
-        _ = self;
-        _ = delta;
-        // TODO: Send mouse wheel event to input subsystem
+        const queue = self.event_queue orelse return;
+
+        const scroll_event = input.MouseScrollEvent{
+            .dx = 0,
+            .dy = delta,
+        };
+
+        const input_event: input.InputEvent = .{ .mouse_scroll = scroll_event };
+
+        queue.push(input_event) catch |err| {
+            Basics.debug.print("HID Mouse: Failed to push scroll event: {}\n", .{err});
+        };
     }
 };
 
