@@ -1970,6 +1970,16 @@ pub const StructField = struct {
     name: []const u8,
     type_name: []const u8,
     loc: SourceLocation,
+    bit_width: ?u32 = null, // For bitfield: number of bits (e.g., `x: u32:4` = 4 bits)
+    default_value: ?*Expr = null, // Default value for the field
+};
+
+/// Struct layout specification
+pub const StructLayout = enum {
+    Auto, // Default ABI-compatible layout
+    Packed, // No padding, fields packed tightly
+    Extern, // C-compatible layout for FFI
+    Aligned, // Explicit alignment specified
 };
 
 /// Struct declaration
@@ -1982,6 +1992,8 @@ pub const StructDecl = struct {
     is_public: bool = false,
     attributes: []const Attribute = &.{},
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)
+    layout: StructLayout = .Auto, // Struct memory layout
+    alignment: ?u32 = null, // Explicit alignment in bytes (for Aligned layout)
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);

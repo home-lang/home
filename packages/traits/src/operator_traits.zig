@@ -420,6 +420,160 @@ pub const DerefMut = struct {
     };
 };
 
+/// PartialEq trait (== and !=)
+/// Allows types to be compared for equality
+pub const PartialEq = struct {
+    pub const name = "PartialEq";
+    pub const generic_params = [_][]const u8{"Rhs"};
+    pub const methods = [_]TraitSystem.TraitDef.MethodSignature{
+        .{
+            .name = "eq",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = true,
+        },
+        .{
+            .name = "ne",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = false, // Has default implementation: !self.eq(other)
+        },
+    };
+};
+
+/// Eq trait (reflexive equality)
+/// Marker trait for types with reflexive equality (a == a is always true)
+pub const Eq = struct {
+    pub const name = "Eq";
+    pub const super_traits = [_][]const u8{"PartialEq"};
+    pub const methods = [_]TraitSystem.TraitDef.MethodSignature{};
+};
+
+/// PartialOrd trait (< > <= >=)
+/// Allows types to be ordered (partial ordering)
+pub const PartialOrd = struct {
+    pub const name = "PartialOrd";
+    pub const generic_params = [_][]const u8{"Rhs"};
+    pub const super_traits = [_][]const u8{"PartialEq<Rhs>"};
+    pub const methods = [_]TraitSystem.TraitDef.MethodSignature{
+        .{
+            .name = "partial_cmp",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "?Ordering",
+            .is_async = false,
+            .is_required = true,
+        },
+        .{
+            .name = "lt",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = false,
+        },
+        .{
+            .name = "le",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = false,
+        },
+        .{
+            .name = "gt",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = false,
+        },
+        .{
+            .name = "ge",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Rhs" },
+            },
+            .return_type = "bool",
+            .is_async = false,
+            .is_required = false,
+        },
+    };
+};
+
+/// Ord trait (total ordering)
+/// Allows types to be totally ordered
+pub const Ord = struct {
+    pub const name = "Ord";
+    pub const super_traits = [_][]const u8{ "Eq", "PartialOrd" };
+    pub const methods = [_]TraitSystem.TraitDef.MethodSignature{
+        .{
+            .name = "cmp",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "&Self" },
+                .{ .name = "other", .type_name = "&Self" },
+            },
+            .return_type = "Ordering",
+            .is_async = false,
+            .is_required = true,
+        },
+        .{
+            .name = "max",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "Self" },
+                .{ .name = "other", .type_name = "Self" },
+            },
+            .return_type = "Self",
+            .is_async = false,
+            .is_required = false,
+        },
+        .{
+            .name = "min",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "Self" },
+                .{ .name = "other", .type_name = "Self" },
+            },
+            .return_type = "Self",
+            .is_async = false,
+            .is_required = false,
+        },
+        .{
+            .name = "clamp",
+            .params = &[_]TraitSystem.TraitDef.MethodSignature.Param{
+                .{ .name = "self", .type_name = "Self" },
+                .{ .name = "min_val", .type_name = "Self" },
+                .{ .name = "max_val", .type_name = "Self" },
+            },
+            .return_type = "Self",
+            .is_async = false,
+            .is_required = false,
+        },
+    };
+};
+
+/// Ordering enum for comparison results
+pub const Ordering = enum {
+    Less,
+    Equal,
+    Greater,
+};
+
 /// Operator to trait mapping
 pub const OperatorTraitMap = struct {
     pub fn getTraitForBinaryOp(op: []const u8) ?[]const u8 {
@@ -439,6 +593,12 @@ pub const OperatorTraitMap = struct {
             .{ "*=", "MulAssign" },
             .{ "/=", "DivAssign" },
             .{ "%=", "RemAssign" },
+            .{ "==", "PartialEq" },
+            .{ "!=", "PartialEq" },
+            .{ "<", "PartialOrd" },
+            .{ ">", "PartialOrd" },
+            .{ "<=", "PartialOrd" },
+            .{ ">=", "PartialOrd" },
         });
         return map.get(op);
     }
@@ -469,6 +629,12 @@ pub const OperatorTraitMap = struct {
             .{ "*=", "mul_assign" },
             .{ "/=", "div_assign" },
             .{ "%=", "rem_assign" },
+            .{ "==", "eq" },
+            .{ "!=", "ne" },
+            .{ "<", "lt" },
+            .{ ">", "gt" },
+            .{ "<=", "le" },
+            .{ ">=", "ge" },
         });
         return map.get(op);
     }
@@ -480,5 +646,13 @@ pub const OperatorTraitMap = struct {
             .{ "*", "deref" },
         });
         return map.get(op);
+    }
+
+    /// Check if an operator requires a trait implementation for custom types
+    pub fn requiresTrait(op: []const u8, is_primitive_type: bool) bool {
+        // Primitive types have built-in operators
+        if (is_primitive_type) return false;
+        // Custom types require trait implementations
+        return getTraitForBinaryOp(op) != null or getTraitForUnaryOp(op) != null;
     }
 };
