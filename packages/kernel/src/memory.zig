@@ -17,6 +17,50 @@ pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_ALIGN: usize = PAGE_SIZE;
 
 // ============================================================================
+// Address Translation
+// ============================================================================
+
+/// Convert virtual address to physical address
+/// NOTE: Currently assumes identity mapping for kernel addresses.
+/// In a full implementation with virtual memory, this would walk the page tables.
+pub fn virtToPhys(virt: VirtualAddress) PhysicalAddress {
+    // For kernel direct-mapped region, virtual == physical
+    // This is a common setup where the kernel is identity-mapped
+    return virt;
+}
+
+/// Convert physical address to virtual address
+/// NOTE: Currently assumes identity mapping for kernel addresses.
+pub fn physToVirt(phys: PhysicalAddress) VirtualAddress {
+    // For kernel direct-mapped region, virtual == physical
+    return phys;
+}
+
+/// Map a physical MMIO region to virtual address space
+/// Returns the virtual address where the region is mapped
+pub fn mapMmioRegion(phys: PhysicalAddress, size: usize) !VirtualAddress {
+    _ = size; // Size would be used for page table mapping in full implementation
+
+    // For now, with identity mapping, just return the physical address as virtual
+    // In a full implementation, this would:
+    // 1. Allocate virtual address space
+    // 2. Create page table entries with cache-disabled flags
+    // 3. Map the physical pages to virtual pages
+    return phys;
+}
+
+/// Unmap an MMIO region
+pub fn unmapMmioRegion(virt: VirtualAddress, size: usize) void {
+    _ = virt;
+    _ = size;
+
+    // In a full implementation, this would:
+    // 1. Remove page table entries
+    // 2. Free virtual address space
+    // 3. Invalidate TLB entries
+}
+
+// ============================================================================
 // Memory-Mapped I/O (MMIO)
 // ============================================================================
 

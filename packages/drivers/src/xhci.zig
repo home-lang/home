@@ -254,8 +254,9 @@ pub const TrbRing = struct {
         const trbs = try allocator.alloc(Trb, num_trbs);
         @memset(trbs, Basics.mem.zeroes(Trb));
 
-        // TODO: Get physical address from virtual address
-        const phys_addr: u64 = @intFromPtr(trbs.ptr);
+        // Convert virtual address to physical address for DMA
+        const virt_addr: u64 = @intFromPtr(trbs.ptr);
+        const phys_addr: u64 = memory.virtToPhys(virt_addr);
 
         return .{
             .trbs = trbs,
@@ -379,10 +380,14 @@ pub const XhciController = struct {
 
         // Map MMIO region from BAR0
         const bar0 = try pci_dev.readConfig(0x10);
-        const mmio_base = bar0 & 0xFFFFFFF0;
+        const mmio_phys = bar0 & 0xFFFFFFF0;
+
+        // Map MMIO region to virtual address space
+        // The size is estimated - a full implementation would read from PCI config
+        const mmio_size: usize = 64 * 1024; // 64KB is typical for xHCI
+        const mmio_base = try memory.mapMmioRegion(mmio_phys, mmio_size);
 
         // Map capability registers
-        // TODO: Proper MMIO mapping with virtual memory
         ctrl.cap_regs = @ptrFromInt(mmio_base);
 
         // Calculate operational registers offset
@@ -471,7 +476,12 @@ pub const XhciController = struct {
         var timeout: u32 = 1000;
         while (timeout > 0) : (timeout -= 1) {
             if ((self.op_regs.usbsts & 1) != 0) break; // HCHalted bit
-            // TODO: proper delay
+
+            // Delay ~1ms per iteration
+            var delay: u32 = 0;
+            while (delay < 10000) : (delay += 1) {
+                asm volatile ("pause");
+            }
         }
         if (timeout == 0) return error.ControllerTimeout;
 
@@ -482,7 +492,12 @@ pub const XhciController = struct {
         timeout = 1000;
         while (timeout > 0) : (timeout -= 1) {
             if ((self.op_regs.usbcmd & (1 << 1)) == 0) break;
-            // TODO: proper delay
+
+            // Delay ~1ms per iteration
+            var delay: u32 = 0;
+            while (delay < 10000) : (delay += 1) {
+                asm volatile ("pause");
+            }
         }
         if (timeout == 0) return error.ResetTimeout;
 
@@ -490,7 +505,12 @@ pub const XhciController = struct {
         timeout = 1000;
         while (timeout > 0) : (timeout -= 1) {
             if ((self.op_regs.usbsts & (1 << 11)) == 0) break; // CNR bit
-            // TODO: proper delay
+
+            // Delay ~1ms per iteration
+            var delay: u32 = 0;
+            while (delay < 10000) : (delay += 1) {
+                asm volatile ("pause");
+            }
         }
         if (timeout == 0) return error.ControllerNotReady;
     }
@@ -541,7 +561,12 @@ pub const XhciController = struct {
         var timeout: u32 = 1000;
         while (timeout > 0) : (timeout -= 1) {
             if ((self.op_regs.usbsts & 1) == 0) break; // HCHalted cleared
-            // TODO: proper delay
+
+            // Delay ~1ms per iteration
+            var delay: u32 = 0;
+            while (delay < 10000) : (delay += 1) {
+                asm volatile ("pause");
+            }
         }
         if (timeout == 0) return error.StartTimeout;
     }
@@ -643,7 +668,12 @@ pub const XhciController = struct {
                     var timeout: u32 = 1000;
                     while (timeout > 0) : (timeout -= 1) {
                         if ((port.portsc & (1 << 21)) != 0) break; // Port Reset Change
-                        // TODO: proper delay
+
+                        // Delay ~1ms per iteration
+                        var delay: u32 = 0;
+                        while (delay < 10000) : (delay += 1) {
+                            asm volatile ("pause");
+                        }
                     }
 
                     // Clear reset change bit
