@@ -477,6 +477,17 @@ pub fn setView(context: id, view: id) void {
     _ = msgSend1(context, sel("setView:"), void, view);
 }
 
+/// Disable Retina scaling for OpenGL view - makes OpenGL use 1:1 pixel mapping
+/// This is important for games that want to control their own resolution
+pub fn setWantsBestResolutionOpenGLSurface(view: id, wants: bool) void {
+    _ = msgSendBool(view, sel("setWantsBestResolutionOpenGLSurface:"), if (wants) YES else NO);
+}
+
+/// Get the backing scale factor for a window (1.0 for non-Retina, 2.0 for Retina)
+pub fn backingScaleFactor(window: id) CGFloat {
+    return msgSend(window, sel("backingScaleFactor"), CGFloat);
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
