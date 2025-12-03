@@ -556,6 +556,91 @@ pub const kVK_DownArrow: u16 = 0x7D;
 pub const kVK_UpArrow: u16 = 0x7E;
 
 // ============================================================================
+// Audio - NSSound
+// ============================================================================
+
+/// Load and play an audio file using NSSound
+pub fn playSound(path: [*:0]const u8) id {
+    const NSSound = objc_getClass("NSSound");
+    if (NSSound == null) return null;
+
+    const NSString = objc_getClass("NSString");
+    if (NSString == null) return null;
+
+    // Create NSString from path
+    const stringWithUTF8String = sel_registerName("stringWithUTF8String:");
+    const pathString = msgSendCStr(NSString, stringWithUTF8String, path);
+    if (pathString == null) return null;
+
+    // Create NSSound with file path
+    const alloc_sel = sel_registerName("alloc");
+    const sound = msgSend(NSSound, alloc_sel, id);
+    if (sound == null) return null;
+
+    const initWithContentsOfFile = sel_registerName("initWithContentsOfFile:byReference:");
+    const initialized = msgSendIdBool(sound, initWithContentsOfFile, pathString, YES);
+    if (initialized == null) return null;
+
+    // Play the sound
+    const play_sel = sel_registerName("play");
+    _ = msgSend(initialized, play_sel, BOOL);
+
+    return initialized;
+}
+
+/// Stop a playing sound
+pub fn stopSound(sound: id) void {
+    if (sound == null) return;
+    const stop_sel = sel_registerName("stop");
+    _ = msgSend(sound, stop_sel, BOOL);
+}
+
+/// Set sound to loop
+pub fn setSoundLoops(sound: id, loops: bool) void {
+    if (sound == null) return;
+    const setLoops = sel_registerName("setLoops:");
+    _ = msgSendBool(sound, setLoops, if (loops) YES else NO);
+}
+
+/// Check if sound is playing
+pub fn isSoundPlaying(sound: id) bool {
+    if (sound == null) return false;
+    const isPlaying = sel_registerName("isPlaying");
+    return msgSend(sound, isPlaying, BOOL) != 0;
+}
+
+/// Release a sound object
+pub fn releaseSound(sound: id) void {
+    if (sound == null) return;
+    const release_sel = sel_registerName("release");
+    _ = msgSend(sound, release_sel, void);
+}
+
+// Helper for msgSend with id argument and BOOL
+fn msgSendIdBool(obj: id, selector: SEL, arg1: id, arg2: BOOL) id {
+    const func = @as(*const fn (id, SEL, id, BOOL) callconv(.c) id, @ptrCast(&objc_msgSend));
+    return func(obj, selector, arg1, arg2);
+}
+
+// Helper for msgSend with BOOL argument
+fn msgSendBool(obj: id, selector: SEL, arg: BOOL) void {
+    const func = @as(*const fn (id, SEL, BOOL) callconv(.c) void, @ptrCast(&objc_msgSend));
+    return func(obj, selector, arg);
+}
+
+// Helper for msgSend with id argument (Class methods)
+fn msgSendId1(obj: id, selector: SEL, arg: id) id {
+    const func = @as(*const fn (id, SEL, id) callconv(.c) id, @ptrCast(&objc_msgSend));
+    return func(obj, selector, arg);
+}
+
+// Helper for msgSend with C string argument (for stringWithUTF8String:)
+fn msgSendCStr(obj: id, selector: SEL, arg: [*:0]const u8) id {
+    const func = @as(*const fn (id, SEL, [*:0]const u8) callconv(.c) id, @ptrCast(&objc_msgSend));
+    return func(obj, selector, arg);
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

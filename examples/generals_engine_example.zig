@@ -73,6 +73,41 @@ const UI = struct {
 };
 
 // ============================================================================
+// Screen State - Game screens like C&C Generals
+// ============================================================================
+
+const ScreenState = enum {
+    main_menu,
+    single_player_menu,
+    multiplayer_menu,
+    skirmish_setup,
+    options_menu,
+    credits,
+    loading,
+    in_game,
+};
+
+// Main menu button definitions
+const MenuButton = struct {
+    label: []const u8,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    action: ScreenState,
+};
+
+// C&C Generals style main menu buttons (positioned on right side)
+const MAIN_MENU_BUTTONS = [_]MenuButton{
+    .{ .label = "SOLO PLAY", .x = 900, .y = 280, .width = 280, .height = 50, .action = .single_player_menu },
+    .{ .label = "MULTIPLAYER", .x = 900, .y = 345, .width = 280, .height = 50, .action = .multiplayer_menu },
+    .{ .label = "OPTIONS", .x = 900, .y = 410, .width = 280, .height = 50, .action = .options_menu },
+    .{ .label = "REPLAY", .x = 900, .y = 475, .width = 280, .height = 50, .action = .main_menu },
+    .{ .label = "CREDITS", .x = 900, .y = 540, .width = 280, .height = 50, .action = .credits },
+    .{ .label = "EXIT", .x = 900, .y = 605, .width = 280, .height = 50, .action = .main_menu },
+};
+
+// ============================================================================
 // Game Components (for ECS)
 // ============================================================================
 
@@ -258,6 +293,21 @@ const GameState = struct {
     hovered_button: ?u8,
     active_build_queue: std.ArrayList(UnitType),
 
+    // Screen state (menu system)
+    current_screen: ScreenState,
+    menu_hovered_button: ?usize,
+    menu_animation_time: f32,
+
+    // UI Textures (OpenGL texture IDs)
+    main_menu_texture: gl.GLuint,
+    main_menu_texture_loaded: bool,
+    main_menu_width: u32,
+    main_menu_height: u32,
+
+    // Audio
+    menu_music: cocoa.id,
+    menu_music_playing: bool,
+
     const UnitRenderData = struct {
         x: f32,
         y: f32,
@@ -302,6 +352,15 @@ const GameState = struct {
             .is_selecting = false,
             .hovered_button = null,
             .active_build_queue = .{},
+            .current_screen = .main_menu, // Start at main menu
+            .menu_hovered_button = null,
+            .menu_animation_time = 0,
+            .main_menu_texture = 0,
+            .main_menu_texture_loaded = false,
+            .main_menu_width = 0,
+            .main_menu_height = 0,
+            .menu_music = null,
+            .menu_music_playing = false,
         };
         // Give player starting power
         self.player_resources.power_produced = 10;
@@ -383,7 +442,202 @@ const GameState = struct {
         }
     }
 
+    /// Load UI textures from game assets (TGA format)
+    pub fn loadMenuTextures(self: *GameState) !void {
+        if (self.main_menu_texture_loaded) return;
+
+        std.debug.print("\nLoading main menu texture...\n", .{});
+
+        // Path to the original main menu UI image (BMP format - uncompressed)
+        const menu_texture_path = "/Users/chrisbreuer/Code/generals/assets/ui/MainMenuBackground.bmp";
+
+        // Load BMP file
+        const file = std.fs.cwd().openFile(menu_texture_path, .{}) catch |err| {
+            std.debug.print("  Failed to open menu texture: {any}\n", .{err});
+            return;
+        };
+        defer file.close();
+
+        const stat = file.stat() catch |err| {
+            std.debug.print("  Failed to stat menu texture: {any}\n", .{err});
+            return;
+        };
+        const file_size = stat.size;
+
+        const data = self.allocator.alloc(u8, file_size) catch {
+            std.debug.print("  Failed to allocate buffer\n", .{});
+            return;
+        };
+        defer self.allocator.free(data);
+
+        // Read the file in chunks
+        var total_read: usize = 0;
+        while (total_read < file_size) {
+            const bytes_read = file.read(data[total_read..]) catch |err| {
+                std.debug.print("  Failed to read menu texture: {any}\n", .{err});
+                return;
+            };
+            if (bytes_read == 0) break;
+            total_read += bytes_read;
+        }
+
+        // Parse BMP header
+        if (data.len < 54) {
+            std.debug.print("  BMP file too small\n", .{});
+            return;
+        }
+
+        // Check BMP signature
+        if (data[0] != 'B' or data[1] != 'M') {
+            std.debug.print("  Not a BMP file\n", .{});
+            return;
+        }
+
+        // Read BMP header fields (little-endian)
+        const pixel_data_offset: u32 = @as(u32, data[10]) | (@as(u32, data[11]) << 8) | (@as(u32, data[12]) << 16) | (@as(u32, data[13]) << 24);
+        const width_raw: i32 = @bitCast(@as(u32, data[18]) | (@as(u32, data[19]) << 8) | (@as(u32, data[20]) << 16) | (@as(u32, data[21]) << 24));
+        const height_raw: i32 = @bitCast(@as(u32, data[22]) | (@as(u32, data[23]) << 8) | (@as(u32, data[24]) << 16) | (@as(u32, data[25]) << 24));
+        const bits_per_pixel: u16 = @as(u16, data[28]) | (@as(u16, data[29]) << 8);
+
+        const width: u32 = @abs(width_raw);
+        const height: u32 = @abs(height_raw);
+        const is_top_down = height_raw < 0;
+
+        std.debug.print("  BMP: {d}x{d}, {d}bpp, offset={d}, top_down={}\n", .{ width, height, bits_per_pixel, pixel_data_offset, is_top_down });
+
+        if (bits_per_pixel != 24) {
+            std.debug.print("  Only 24-bit BMP supported\n", .{});
+            return;
+        }
+
+        // BMP rows are padded to 4-byte boundaries
+        const bytes_per_pixel: u32 = 3;
+        const row_stride: u32 = ((width * bytes_per_pixel + 3) / 4) * 4;
+        const pixel_data_size: usize = @as(usize, width) * @as(usize, height) * bytes_per_pixel;
+
+        // Allocate buffer for RGB data
+        const converted = self.allocator.alloc(u8, pixel_data_size) catch {
+            std.debug.print("  Failed to allocate conversion buffer\n", .{});
+            return;
+        };
+        defer self.allocator.free(converted);
+
+        // Convert BGR to RGB and flip vertically if needed
+        var y: u32 = 0;
+        while (y < height) : (y += 1) {
+            // BMP is typically bottom-up, unless height is negative
+            const src_y: u32 = if (is_top_down) y else (height - 1 - y);
+            const src_row_offset: usize = pixel_data_offset + @as(usize, src_y) * @as(usize, row_stride);
+
+            var x: u32 = 0;
+            while (x < width) : (x += 1) {
+                const src_idx: usize = src_row_offset + @as(usize, x) * bytes_per_pixel;
+                const dst_idx: usize = (@as(usize, y) * @as(usize, width) + @as(usize, x)) * bytes_per_pixel;
+
+                if (src_idx + 2 < data.len) {
+                    // Swap BGR to RGB
+                    converted[dst_idx + 0] = data[src_idx + 2]; // R
+                    converted[dst_idx + 1] = data[src_idx + 1]; // G
+                    converted[dst_idx + 2] = data[src_idx + 0]; // B
+                }
+            }
+        }
+
+        // Store dimensions
+        self.main_menu_width = width;
+        self.main_menu_height = height;
+
+        // Generate OpenGL texture
+        var texture_ids = [_]gl.GLuint{0};
+        gl.glGenTextures(1, &texture_ids);
+        const texture_id = texture_ids[0];
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id);
+
+        // Set texture parameters
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
+
+        // Upload texture data
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGB,
+            @intCast(width),
+            @intCast(height),
+            0,
+            gl.GL_RGB,
+            gl.GL_UNSIGNED_BYTE,
+            converted.ptr,
+        );
+
+        self.main_menu_texture = texture_id;
+        self.main_menu_texture_loaded = true;
+
+        std.debug.print("  Main menu texture loaded: ID={d}, {d}x{d}\n", .{ texture_id, width, height });
+    }
+
+    /// Load and play menu background music
+    pub fn playMenuMusic(self: *GameState) void {
+        if (self.menu_music_playing) return;
+
+        std.debug.print("\nLoading menu music...\n", .{});
+
+        // Original C&C Generals main menu music is USA_06.mp3 (per Music.ini)
+        // First try the original music path, fall back to extracted audio
+        const music_paths = [_][]const u8{
+            "/Users/chrisbreuer/Code/generals/assets/audio/music/USA_06.mp3",
+            "/Users/chrisbreuer/Code/generals/assets/audio/music/theme.mp3",
+        };
+
+        for (music_paths) |path| {
+            // Check if file exists and has content (not a 0-byte placeholder)
+            const file = std.fs.openFileAbsolute(path, .{}) catch continue;
+            const stat = file.stat() catch {
+                file.close();
+                continue;
+            };
+            file.close();
+
+            if (stat.size == 0) continue; // Skip empty placeholder files
+
+            std.debug.print("  Trying: {s}\n", .{path});
+            const sound = cocoa.playSound(@ptrCast(path));
+            if (sound != null) {
+                cocoa.setSoundLoops(sound, true);
+                self.menu_music = sound;
+                self.menu_music_playing = true;
+                std.debug.print("  Menu music playing: {s}\n", .{path});
+                return;
+            }
+        }
+
+        // No valid music found - continue without audio
+        std.debug.print("  No menu music available (original game music files not found)\n", .{});
+        std.debug.print("  To enable music, extract USA_06.mp3 from the game's BIG archives\n", .{});
+    }
+
+    /// Stop menu music
+    pub fn stopMenuMusic(self: *GameState) void {
+        if (!self.menu_music_playing) return;
+
+        if (self.menu_music != null) {
+            cocoa.stopSound(self.menu_music);
+            cocoa.releaseSound(self.menu_music);
+            self.menu_music = null;
+        }
+        self.menu_music_playing = false;
+    }
+
     pub fn deinit(self: *GameState) void {
+        // Stop and release audio
+        self.stopMenuMusic();
+        // Clean up UI textures
+        if (self.main_menu_texture_loaded) {
+            const textures = [_]gl.GLuint{self.main_menu_texture};
+            gl.glDeleteTextures(1, &textures);
+        }
         self.unit_positions.deinit(self.allocator);
         self.selected_units.deinit(self.allocator);
         self.active_build_queue.deinit(self.allocator);
@@ -456,6 +710,67 @@ const GameState = struct {
     pub fn update(self: *GameState, dt: f64) void {
         self.total_time += dt;
 
+        // Handle input based on current screen
+        switch (self.current_screen) {
+            .main_menu => {
+                self.updateMainMenu();
+            },
+            .in_game => {
+                self.updateInGame(dt);
+            },
+            else => {
+                // Back to main menu on escape for other screens
+                if (self.input_state.isKeyPressed(.Escape)) {
+                    self.current_screen = .main_menu;
+                }
+            },
+        }
+    }
+
+    fn updateMainMenu(self: *GameState) void {
+        const mouse_x = self.input_state.mouse_x;
+        const mouse_y = self.input_state.mouse_y;
+        const h: f32 = @floatFromInt(WINDOW_HEIGHT);
+
+        // Check which button is hovered
+        self.menu_hovered_button = null;
+        for (MAIN_MENU_BUTTONS, 0..) |btn, i| {
+            const btn_y = h - btn.y; // Flip Y for OpenGL coordinate system
+            if (mouse_x >= btn.x and mouse_x <= btn.x + btn.width and
+                mouse_y >= btn_y - btn.height and mouse_y <= btn_y)
+            {
+                self.menu_hovered_button = i;
+                break;
+            }
+        }
+
+        // Handle click on menu button
+        if (self.input_state.isMouseButtonPressed(.Left)) {
+            if (self.menu_hovered_button) |btn_idx| {
+                const btn = MAIN_MENU_BUTTONS[btn_idx];
+
+                // Handle special actions
+                if (std.mem.eql(u8, btn.label, "EXIT")) {
+                    self.running = false;
+                    return;
+                }
+
+                // For Solo Play, go directly to in-game (skirmish)
+                if (std.mem.eql(u8, btn.label, "SOLO PLAY")) {
+                    self.current_screen = .in_game;
+                    std.debug.print("Starting game...\n", .{});
+                    return;
+                }
+
+                // Other buttons go to their screens
+                if (btn.action != .main_menu) {
+                    self.current_screen = btn.action;
+                }
+            }
+        }
+    }
+
+    fn updateInGame(self: *GameState, dt: f64) void {
         // Handle input for camera movement
         const move_speed: f32 = 200.0 * @as(f32, @floatCast(dt));
         if (self.input_state.isKeyDown(.W) or self.input_state.isKeyDown(.UpArrow)) {
@@ -479,9 +794,9 @@ const GameState = struct {
             self.camera_zoom /= 1.1;
         }
 
-        // Quit on Escape
+        // Escape returns to main menu
         if (self.input_state.isKeyPressed(.Escape)) {
-            self.running = false;
+            self.current_screen = .main_menu;
         }
 
         // Animate units slightly
@@ -494,10 +809,205 @@ const GameState = struct {
     pub fn render(self: *GameState, alpha: f64) void {
         _ = alpha;
         self.frame_count += 1;
+        self.menu_animation_time += 0.016; // ~60fps
 
         const w: f32 = @floatFromInt(WINDOW_WIDTH);
         const h: f32 = @floatFromInt(WINDOW_HEIGHT);
 
+        // Render based on current screen state
+        switch (self.current_screen) {
+            .main_menu => {
+                self.renderMainMenu(w, h);
+            },
+            .in_game => {
+                self.renderInGame(w, h);
+            },
+            else => {
+                // Other screens show main menu for now
+                self.renderMainMenu(w, h);
+            },
+        }
+
+        // Swap buffers
+        if (self.gl_context) |ctx| {
+            cocoa.flushBuffer(ctx);
+        }
+    }
+
+    /// Render C&C Generals Zero Hour Main Menu - Uses original game UI texture
+    fn renderMainMenu(self: *GameState, w: f32, h: f32) void {
+        // Setup 2D orthographic projection for UI
+        gl.glViewport(0, 0, @intFromFloat(w), @intFromFloat(h));
+        gl.glMatrixMode(gl.GL_PROJECTION);
+        gl.glLoadIdentity();
+        gl.glOrtho(0, @as(f64, w), 0, @as(f64, h), -1, 1);
+        gl.glMatrixMode(gl.GL_MODELVIEW);
+        gl.glLoadIdentity();
+
+        // Disable depth testing for 2D UI
+        gl.glDisable(gl.GL_DEPTH_TEST);
+
+        // Render the original main menu texture if loaded
+        if (self.main_menu_texture_loaded and self.main_menu_texture != 0) {
+            // Enable texturing
+            gl.glEnable(gl.GL_TEXTURE_2D);
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.main_menu_texture);
+
+            // Enable alpha blending for transparent regions
+            gl.glEnable(gl.GL_BLEND);
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+
+            // Draw full-screen textured quad with the original UI
+            // The original image is 800x600, scale to fit window while maintaining aspect ratio
+            const tex_width: f32 = @floatFromInt(self.main_menu_width);
+            const tex_height: f32 = @floatFromInt(self.main_menu_height);
+
+            // Calculate scaling to fit window (maintain aspect ratio)
+            const scale_x = w / tex_width;
+            const scale_y = h / tex_height;
+            const scale = @max(scale_x, scale_y); // Fill the screen
+
+            const scaled_width = tex_width * scale;
+            const scaled_height = tex_height * scale;
+
+            // Center the image
+            const offset_x = (w - scaled_width) / 2.0;
+            const offset_y = (h - scaled_height) / 2.0;
+
+            // Set white color to not tint the texture
+            gl.glColor4f(1.0, 1.0, 1.0, 1.0);
+
+            // Draw textured quad (note: flip V coordinate for OpenGL)
+            gl.glBegin(gl.GL_QUADS);
+            // Bottom-left (texture top-left)
+            gl.glTexCoord2f(0.0, 1.0);
+            gl.glVertex2f(offset_x, offset_y);
+            // Bottom-right (texture top-right)
+            gl.glTexCoord2f(1.0, 1.0);
+            gl.glVertex2f(offset_x + scaled_width, offset_y);
+            // Top-right (texture bottom-right)
+            gl.glTexCoord2f(1.0, 0.0);
+            gl.glVertex2f(offset_x + scaled_width, offset_y + scaled_height);
+            // Top-left (texture bottom-left)
+            gl.glTexCoord2f(0.0, 0.0);
+            gl.glVertex2f(offset_x, offset_y + scaled_height);
+            gl.glEnd();
+
+            gl.glDisable(gl.GL_TEXTURE_2D);
+            gl.glDisable(gl.GL_BLEND);
+        } else {
+            // Fallback: dark background if texture not loaded
+            gl.glBegin(gl.GL_QUADS);
+            gl.glColor3f(0.05, 0.08, 0.05);
+            gl.glVertex2f(0, 0);
+            gl.glVertex2f(w, 0);
+            gl.glColor3f(0.12, 0.15, 0.10);
+            gl.glVertex2f(w, h);
+            gl.glVertex2f(0, h);
+            gl.glEnd();
+
+            // Show loading message
+            gl.glColor3f(1.0, 1.0, 1.0);
+            drawRect(w / 2 - 100, h / 2 - 10, 200, 20);
+        }
+
+        // Re-enable depth testing for 3D content
+        gl.glEnable(gl.GL_DEPTH_TEST);
+    }
+
+    /// Render animated background for main menu (battle scene)
+    fn renderMenuBackground(self: *GameState, w: f32, h: f32) void {
+        const time = self.menu_animation_time;
+
+        // Draw animated "war zone" on left side of screen
+        // This would be a 3D scene in the actual game
+
+        // Ground/desert
+        gl.glColor3f(0.6, 0.55, 0.4);
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(0, 0);
+        gl.glVertex2f(w * 0.6, 0);
+        gl.glVertex2f(w * 0.7, h * 0.3);
+        gl.glVertex2f(0, h * 0.3);
+        gl.glEnd();
+
+        // Horizon glow (war in distance)
+        gl.glColor4f(0.8, 0.3, 0.1, 0.3 + @sin(time * 2.0) * 0.1);
+        gl.glBegin(gl.GL_QUADS);
+        gl.glVertex2f(0, h * 0.25);
+        gl.glVertex2f(w * 0.65, h * 0.25);
+        gl.glVertex2f(w * 0.65, h * 0.45);
+        gl.glVertex2f(0, h * 0.45);
+        gl.glEnd();
+
+        // Animated explosions (circles)
+        const explosion_positions = [_][2]f32{
+            .{ 150, 280 },
+            .{ 350, 320 },
+            .{ 250, 250 },
+            .{ 450, 300 },
+            .{ 100, 350 },
+        };
+
+        for (explosion_positions, 0..) |pos, i| {
+            const phase = time * 3.0 + @as(f32, @floatFromInt(i)) * 1.5;
+            const pulse = @abs(@sin(phase));
+            const size = 20.0 + pulse * 30.0;
+            const alpha = 0.3 + pulse * 0.4;
+
+            // Orange/red explosion glow
+            gl.glColor4f(1.0, 0.5 + pulse * 0.3, 0.1, alpha);
+            drawCircle(pos[0], pos[1], size);
+        }
+
+        // Smoke columns rising
+        const smoke_positions = [_]f32{ 200, 400, 300, 150, 500 };
+        for (smoke_positions) |smoke_x| {
+            const smoke_phase = time + smoke_x * 0.01;
+            const smoke_y = h * 0.3 + @mod(smoke_phase * 50.0, 200.0);
+            const smoke_alpha = 0.3 - (@mod(smoke_phase * 50.0, 200.0) / 200.0) * 0.3;
+            const smoke_size = 30.0 + (@mod(smoke_phase * 50.0, 200.0) / 200.0) * 20.0;
+
+            gl.glColor4f(0.3, 0.3, 0.3, smoke_alpha);
+            drawCircle(smoke_x + @sin(smoke_y * 0.05) * 10, smoke_y, smoke_size);
+        }
+
+        // Silhouette of buildings/structures
+        gl.glColor3f(0.08, 0.1, 0.08);
+        // Building 1
+        drawRect(100, h * 0.3, 60, 100);
+        drawRect(110, h * 0.3 + 100, 40, 40);
+        // Building 2
+        drawRect(250, h * 0.3, 80, 80);
+        // Tower
+        drawRect(400, h * 0.3, 30, 150);
+        drawRect(390, h * 0.3 + 150, 50, 20);
+        // Damaged building
+        gl.glBegin(gl.GL_TRIANGLES);
+        gl.glVertex2f(500, h * 0.3);
+        gl.glVertex2f(580, h * 0.3);
+        gl.glVertex2f(540, h * 0.3 + 120);
+        gl.glEnd();
+
+        // Moving vehicles (simple rectangles)
+        const vehicle_x = @mod(time * 30.0, 700.0);
+        gl.glColor3f(0.2, 0.25, 0.15);
+        drawRect(vehicle_x, h * 0.28, 40, 20);
+        drawRect(vehicle_x + 100, h * 0.26, 50, 25);
+
+        // Flying aircraft (triangles)
+        const aircraft_x = w * 0.6 - @mod(time * 80.0, 800.0);
+        const aircraft_y = h * 0.6 + @sin(time * 2.0) * 20.0;
+        gl.glColor3f(0.15, 0.2, 0.15);
+        gl.glBegin(gl.GL_TRIANGLES);
+        gl.glVertex2f(aircraft_x, aircraft_y);
+        gl.glVertex2f(aircraft_x - 60, aircraft_y - 15);
+        gl.glVertex2f(aircraft_x - 60, aircraft_y + 15);
+        gl.glEnd();
+    }
+
+    /// Render the in-game view with all UI elements
+    fn renderInGame(self: *GameState, w: f32, h: f32) void {
         // Clear screen with desert color
         gl.glClearColor(0.76, 0.70, 0.50, 1.0);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
@@ -548,11 +1058,6 @@ const GameState = struct {
         self.renderBottomPanel(w, h);
         self.renderMinimap(w, h);
         self.renderCommandPanel(w, h);
-
-        // Swap buffers
-        if (self.gl_context) |ctx| {
-            cocoa.flushBuffer(ctx);
-        }
     }
 
     fn renderTerrain(self: *GameState) void {
@@ -1480,6 +1985,12 @@ pub fn main() !void {
     // Load W3D models from game assets
     std.debug.print("\nLoading 3D models...\n", .{});
     try game_state.loadModels();
+
+    // Load UI textures (main menu background, etc.)
+    try game_state.loadMenuTextures();
+
+    // Start menu music
+    game_state.playMenuMusic();
 
     // Set up OpenGL for 3D rendering
     gl.glEnable(gl.GL_DEPTH_TEST);
