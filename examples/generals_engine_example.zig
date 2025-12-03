@@ -28,6 +28,9 @@ const game_network = @import("game_network");
 const game_replay = @import("game_replay");
 const game_mods = @import("game_mods");
 
+// W3D Model loading
+const w3d_loader = @import("w3d_loader");
+
 // Window dimensions
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 720;
@@ -191,6 +194,25 @@ const PlayerResources = struct {
 // Game State
 // ============================================================================
 
+// Loaded W3D model with GPU-ready data
+const LoadedModel = struct {
+    model: *w3d_loader.W3DModel,
+    scale: f32,
+};
+
+// Model cache for unit types
+const UnitModelCache = struct {
+    ranger: ?LoadedModel = null,
+    crusader_tank: ?LoadedModel = null,
+    paladin_tank: ?LoadedModel = null,
+    battlemaster: ?LoadedModel = null,
+    overlord: ?LoadedModel = null,
+    red_guard: ?LoadedModel = null,
+    technical: ?LoadedModel = null,
+    scorpion: ?LoadedModel = null,
+    marauder: ?LoadedModel = null,
+};
+
 const GameState = struct {
     allocator: std.mem.Allocator,
     world: game_ecs.SimpleWorld,
@@ -202,9 +224,17 @@ const GameState = struct {
     gl_context: cocoa.id,
     input_state: input_mod.InputState,
 
-    // Camera
+    // W3D Model loading
+    w3d: w3d_loader.W3DLoader,
+    model_cache: UnitModelCache,
+    models_loaded: bool,
+    assets_path: []const u8,
+
+    // Camera - 3D perspective for proper model viewing
     camera_x: f32,
     camera_y: f32,
+    camera_z: f32, // Height above ground
+    camera_pitch: f32, // Looking down angle
     camera_zoom: f32,
 
     // Game time
@@ -231,6 +261,7 @@ const GameState = struct {
     const UnitRenderData = struct {
         x: f32,
         y: f32,
+        z: f32, // Height for 3D rendering
         unit_type: UnitType,
         team: u8,
         faction: Faction,
@@ -238,6 +269,7 @@ const GameState = struct {
         max_health: f32,
         selected: bool,
         entity_id: u32,
+        rotation: f32, // Y-axis rotation in radians
     };
 
     pub fn init(allocator: std.mem.Allocator) !*GameState {
@@ -250,8 +282,14 @@ const GameState = struct {
             .window = null,
             .gl_context = null,
             .input_state = input_mod.InputState.init(allocator),
+            .w3d = w3d_loader.W3DLoader.init(allocator),
+            .model_cache = .{},
+            .models_loaded = false,
+            .assets_path = "/Users/chrisbreuer/Code/generals/Generals.app/Contents/Resources/assets",
             .camera_x = 0,
-            .camera_y = 0,
+            .camera_y = -200, // Pull back to see scene
+            .camera_z = 300, // Height for isometric-like view
+            .camera_pitch = 0.7, // ~40 degrees down
             .camera_zoom = 1.0,
             .total_time = 0,
             .frame_count = 0,
@@ -271,6 +309,80 @@ const GameState = struct {
         return self;
     }
 
+    /// Load W3D models from game assets
+    pub fn loadModels(self: *GameState) !void {
+        if (self.models_loaded) return;
+
+        std.debug.print("\nLoading W3D models...\n", .{});
+
+        // Path to actual game W3D files from patch directory
+        const patch_w3d_path = "/Users/chrisbreuer/Code/generals-game-patch/Patch104pZH/GameFilesEdited/Art/W3D/";
+        const resources_path = "/Users/chrisbreuer/Code/generals/Generals.app/Contents/Resources/assets/models/";
+
+        // Load building models for testing (these are actual W3D files)
+        var models_loaded_count: u32 = 0;
+
+        // Try to load barracks model (building - shows W3D parsing works)
+        const barracks_paths = [_][]const u8{
+            patch_w3d_path ++ "ABBarracks_D.W3D",
+            resources_path ++ "ABBarracks_D.W3D",
+        };
+        for (barracks_paths) |path| {
+            if (try self.w3d.load(path)) |model| {
+                if (model.meshes.len > 0) {
+                    self.model_cache.ranger = .{ .model = model, .scale = 0.02 };
+                    std.debug.print("  Loaded: {s} ({d} meshes)\n", .{ path, model.meshes.len });
+                    models_loaded_count += 1;
+                    break;
+                }
+            }
+        }
+
+        // Load power plant for tanks
+        const power_paths = [_][]const u8{
+            patch_w3d_path ++ "ABPwrPlant_D.W3D",
+            resources_path ++ "ABPwrPlant_D.W3D",
+        };
+        for (power_paths) |path| {
+            if (try self.w3d.load(path)) |model| {
+                if (model.meshes.len > 0) {
+                    self.model_cache.crusader_tank = .{ .model = model, .scale = 0.02 };
+                    self.model_cache.paladin_tank = .{ .model = model, .scale = 0.025 };
+                    self.model_cache.battlemaster = .{ .model = model, .scale = 0.02 };
+                    self.model_cache.overlord = .{ .model = model, .scale = 0.03 };
+                    std.debug.print("  Loaded: {s} ({d} meshes)\n", .{ path, model.meshes.len });
+                    models_loaded_count += 1;
+                    break;
+                }
+            }
+        }
+
+        // Load helix for aircraft/vehicles
+        const helix_paths = [_][]const u8{
+            patch_w3d_path ++ "NVHelix_D.W3D",
+        };
+        for (helix_paths) |path| {
+            if (try self.w3d.load(path)) |model| {
+                if (model.meshes.len > 0) {
+                    self.model_cache.technical = .{ .model = model, .scale = 0.015 };
+                    self.model_cache.scorpion = .{ .model = model, .scale = 0.012 };
+                    self.model_cache.marauder = .{ .model = model, .scale = 0.015 };
+                    std.debug.print("  Loaded: {s} ({d} meshes)\n", .{ path, model.meshes.len });
+                    models_loaded_count += 1;
+                    break;
+                }
+            }
+        }
+
+        self.models_loaded = true;
+        if (models_loaded_count > 0) {
+            std.debug.print("Model loading complete: {d} models loaded.\n", .{models_loaded_count});
+        } else {
+            std.debug.print("No models loaded - using placeholder graphics.\n", .{});
+            std.debug.print("(To see 3D models, W3D assets need to be extracted from game BIG archives)\n", .{});
+        }
+    }
+
     pub fn deinit(self: *GameState) void {
         self.unit_positions.deinit(self.allocator);
         self.selected_units.deinit(self.allocator);
@@ -278,6 +390,7 @@ const GameState = struct {
         self.input_state.deinit();
         self.world.deinit();
         self.pathfinder.deinit();
+        self.w3d.deinit();
         if (self.gl_context) |ctx| {
             cocoa.release(ctx);
         }
@@ -319,6 +432,7 @@ const GameState = struct {
         try self.unit_positions.append(self.allocator, .{
             .x = x,
             .y = y,
+            .z = 0, // Ground level
             .unit_type = unit_type,
             .team = team,
             .faction = faction,
@@ -326,6 +440,7 @@ const GameState = struct {
             .max_health = max_health,
             .selected = false,
             .entity_id = entity.id,
+            .rotation = 0, // Facing forward
         });
 
         std.debug.print("Spawned {s} ({s}) at ({d:.1}, {d:.1})\n", .{
@@ -509,9 +624,22 @@ const GameState = struct {
             const shadow_size = getUnitSize(unit.unit_type) * 0.8;
             drawOval(unit.x + 3, unit.y - 3, shadow_size, shadow_size * 0.5);
 
-            // Draw unit with faction color
-            gl.glColor3f(color[0], color[1], color[2]);
-            drawUnitShape(unit.unit_type, unit.x, unit.y);
+            // Try to render actual W3D model if available
+            const model_opt = self.getModelForUnit(unit.unit_type);
+            if (model_opt) |loaded_model| {
+                // Only render if model has meshes
+                if (loaded_model.model.meshes.len > 0) {
+                    self.renderW3DModel(loaded_model, unit.x, unit.y, unit.z, unit.rotation, color);
+                } else {
+                    // Fallback if model has no meshes
+                    gl.glColor3f(color[0], color[1], color[2]);
+                    drawUnitShape(unit.unit_type, unit.x, unit.y);
+                }
+            } else {
+                // Fallback to placeholder shapes
+                gl.glColor3f(color[0], color[1], color[2]);
+                drawUnitShape(unit.unit_type, unit.x, unit.y);
+            }
 
             // Health bar background
             const bar_width: f32 = 30;
@@ -532,6 +660,64 @@ const GameState = struct {
             }
             drawRect(unit.x - bar_width / 2, bar_y, bar_width * health_pct, bar_height);
         }
+    }
+
+    /// Get the loaded W3D model for a unit type
+    fn getModelForUnit(self: *GameState, unit_type: UnitType) ?LoadedModel {
+        return switch (unit_type) {
+            .ranger, .missile_defender, .infantry => self.model_cache.ranger,
+            .crusader_tank => self.model_cache.crusader_tank,
+            .paladin_tank => self.model_cache.paladin_tank,
+            .battlemaster, .tank => self.model_cache.battlemaster,
+            .overlord => self.model_cache.overlord,
+            .red_guard, .tank_hunter => self.model_cache.red_guard,
+            .technical, .humvee => self.model_cache.technical,
+            .scorpion_tank => self.model_cache.scorpion,
+            .marauder_tank => self.model_cache.marauder,
+            else => null, // Buildings and other units use placeholders for now
+        };
+    }
+
+    /// Render a W3D model at the given position using legacy OpenGL
+    fn renderW3DModel(self: *GameState, loaded_model: LoadedModel, x: f32, y: f32, z: f32, rotation: f32, color: [3]f32) void {
+        _ = self;
+
+        const model = loaded_model.model;
+        const scale = loaded_model.scale * 0.5; // Scale down for game view
+
+        // Save matrix state
+        gl.glPushMatrix();
+
+        // Transform to unit position
+        gl.glTranslatef(x, y, z);
+        gl.glRotatef(rotation * 180.0 / std.math.pi, 0, 0, 1); // Rotate around Z axis
+        gl.glScalef(scale, scale, scale);
+
+        // Render each mesh in the model with faction color
+        gl.glColor3f(color[0], color[1], color[2]);
+
+        for (model.meshes) |mesh| {
+            if (mesh.vertices.len == 0 or mesh.triangles.len == 0) continue;
+
+            // Render triangles using immediate mode (legacy OpenGL)
+            gl.glBegin(gl.GL_TRIANGLES);
+            for (mesh.triangles) |tri| {
+                // Render each vertex
+                for (tri.indices) |idx| {
+                    if (idx < mesh.vertices.len) {
+                        const v = mesh.vertices[idx];
+                        // Simple shading based on normal direction (pseudo-lighting)
+                        const shade = 0.5 + v.normal.y * 0.3 + v.normal.z * 0.2;
+                        gl.glColor3f(color[0] * shade, color[1] * shade, color[2] * shade);
+                        gl.glVertex3f(v.position.x, v.position.y, v.position.z);
+                    }
+                }
+            }
+            gl.glEnd();
+        }
+
+        // Restore matrix state
+        gl.glPopMatrix();
     }
 
     fn renderTopBar(self: *GameState, w: f32, h: f32) void {
@@ -1290,6 +1476,14 @@ pub fn main() !void {
     // Create window and OpenGL context
     std.debug.print("\nInitializing graphics...\n", .{});
     try initWindow(game_state);
+
+    // Load W3D models from game assets
+    std.debug.print("\nLoading 3D models...\n", .{});
+    try game_state.loadModels();
+
+    // Set up OpenGL for 3D rendering
+    gl.glEnable(gl.GL_DEPTH_TEST);
+    gl.glDepthFunc(gl.GL_LEQUAL);
 
     std.debug.print("\n╔══════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║  Controls:                                               ║\n", .{});

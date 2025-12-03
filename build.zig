@@ -884,6 +884,9 @@ pub fn build(b: *std.Build) void {
     generals_example.root_module.addImport("game_network", game_network_pkg);
     generals_example.root_module.addImport("game_replay", game_replay_pkg);
     generals_example.root_module.addImport("game_mods", game_mods_pkg);
+    // W3D model loading
+    const w3d_loader_pkg = createPackage(b, "packages/game/src/w3d_loader.zig", target, optimize, zig_test_framework);
+    generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
     // Link macOS frameworks
     generals_example.linkFramework("Cocoa");
     generals_example.linkFramework("OpenGL");
