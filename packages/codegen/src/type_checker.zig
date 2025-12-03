@@ -128,11 +128,35 @@ pub const TypeChecker = struct {
     }
 
     pub fn deinit(self: *TypeChecker) void {
+        // Free SimpleType pointers in variables map
+        var var_iter = self.variables.valueIterator();
+        while (var_iter.next()) |var_type| {
+            self.freeSimpleType(var_type.*);
+        }
         self.variables.deinit();
+
+        // Free function signature return_type pointers and param_types slices
+        var func_iter = self.functions.valueIterator();
+        while (func_iter.next()) |func_sig| {
+            // Free param_types (each element may contain Array pointers)
+            for (func_sig.param_types) |param_type| {
+                self.freeSimpleType(param_type);
+            }
+            self.allocator.free(func_sig.param_types);
+
+            // Free the return_type pointer and its contents
+            self.freeSimpleType(func_sig.return_type.*);
+            self.allocator.destroy(func_sig.return_type);
+        }
         self.functions.deinit();
 
+        // Free SimpleType pointers in struct fields
         var struct_iter = self.structs.valueIterator();
         while (struct_iter.next()) |fields| {
+            var field_iter = fields.valueIterator();
+            while (field_iter.next()) |field_type| {
+                self.freeSimpleType(field_type.*);
+            }
             fields.deinit();
         }
         self.structs.deinit();
@@ -143,6 +167,30 @@ pub const TypeChecker = struct {
             self.allocator.free(err.message);
         }
         self.errors.deinit();
+    }
+
+    /// Recursively free SimpleType pointers (for Array types)
+    fn freeSimpleType(self: *TypeChecker, simple_type: SimpleType) void {
+        switch (simple_type) {
+            .Array => |elem_ptr| {
+                // Recursively free nested array types
+                self.freeSimpleType(elem_ptr.*);
+                // Free the element type pointer itself
+                self.allocator.destroy(elem_ptr);
+            },
+            .Function => |func| {
+                // Free param_types
+                for (func.param_types) |param_type| {
+                    self.freeSimpleType(param_type);
+                }
+                self.allocator.free(func.param_types);
+                // Free return_type
+                self.freeSimpleType(func.return_type.*);
+                self.allocator.destroy(func.return_type);
+            },
+            // Other types don't have heap-allocated data
+            else => {},
+        }
     }
 
     /// Add a type error
