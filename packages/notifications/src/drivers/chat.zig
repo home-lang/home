@@ -636,7 +636,7 @@ pub const MemoryDriver = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .sent_messages = std.ArrayList(ChatMessage).init(allocator),
+            .sent_messages = .empty,
             .reactions = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
         };
         return self;
@@ -659,7 +659,7 @@ pub const MemoryDriver = struct {
 
     fn send(ptr: *anyopaque, message: ChatMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.sent_messages.append(message) catch {
+        self.sent_messages.append(self.allocator, message) catch {
             return NotificationResult.err("memory", "Failed to store message");
         };
         return NotificationResult.ok("memory", "mem_chat_12345");
@@ -692,19 +692,19 @@ pub const MemoryDriver = struct {
         const key = message_id;
         const result = self.reactions.getOrPut(key) catch return false;
         if (!result.found_existing) {
-            result.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            result.value_ptr.* = .empty;
         }
-        result.value_ptr.append(emoji) catch return false;
+        result.value_ptr.append(self.allocator, emoji) catch return false;
         return true;
     }
 
     fn deinit(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.sent_messages.deinit();
+        self.sent_messages.deinit(self.allocator);
 
         var it = self.reactions.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.reactions.deinit();
 

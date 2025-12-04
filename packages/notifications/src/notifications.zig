@@ -1,4 +1,11 @@
 const std = @import("std");
+const posix = std.posix;
+
+/// Helper to get current timestamp (Zig 0.16 compatible)
+fn getTimestamp() i64 {
+    const ts = posix.clock_gettime(.REALTIME) catch return 0;
+    return ts.sec;
+}
 
 // Re-export drivers
 pub const email = @import("drivers/email.zig");
@@ -48,7 +55,7 @@ pub const NotificationResult = struct {
             .error_message = null,
             .status = .sent,
             .provider = provider,
-            .timestamp = std.time.timestamp(),
+            .timestamp = getTimestamp(),
         };
     }
 
@@ -59,7 +66,7 @@ pub const NotificationResult = struct {
             .error_message = error_message,
             .status = .failed,
             .provider = provider,
-            .timestamp = std.time.timestamp(),
+            .timestamp = getTimestamp(),
         };
     }
 };
@@ -197,8 +204,8 @@ pub const NotificationManager = struct {
         channels: []const NotificationType,
         content: BroadcastContent,
     ) ![]NotificationResult {
-        var results = std.ArrayList(NotificationResult).init(self.allocator);
-        errdefer results.deinit();
+        var results: std.ArrayList(NotificationResult) = .empty;
+        errdefer results.deinit(self.allocator);
 
         for (channels) |channel| {
             const result = switch (channel) {
@@ -207,10 +214,10 @@ pub const NotificationManager = struct {
                 .push => if (content.push_message) |msg| try self.sendPush(msg) else continue,
                 .chat => if (content.chat_message) |msg| try self.sendChat(msg) else continue,
             };
-            try results.append(result);
+            try results.append(self.allocator, result);
         }
 
-        return results.toOwnedSlice();
+        return results.toOwnedSlice(self.allocator);
     }
 };
 

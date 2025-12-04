@@ -557,7 +557,7 @@ pub const MemoryDriver = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .sent_messages = std.ArrayList(EmailMessage).init(allocator),
+            .sent_messages = .empty,
         };
         return self;
     }
@@ -576,7 +576,7 @@ pub const MemoryDriver = struct {
 
     fn send(ptr: *anyopaque, message: EmailMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.sent_messages.append(message) catch {
+        self.sent_messages.append(self.allocator, message) catch {
             return NotificationResult.err("memory", "Failed to store message");
         };
         return NotificationResult.ok("memory", "mem_msg_12345");
@@ -597,7 +597,7 @@ pub const MemoryDriver = struct {
 
     fn deinit(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.sent_messages.deinit();
+        self.sent_messages.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
