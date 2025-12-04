@@ -2,6 +2,7 @@
 ///
 /// A high-performance HTTP client with support for GET, POST, PUT, DELETE, etc.
 /// Features automatic JSON handling, timeouts, retries, and connection pooling.
+/// Uses std.http.Client for reliable HTTPS support.
 ///
 /// Example usage:
 /// ```home
@@ -18,7 +19,6 @@
 ///     .send();
 /// ```
 const std = @import("std");
-const net = std.net;
 const Method = @import("method.zig").Method;
 const Headers = @import("headers.zig").Headers;
 
@@ -255,136 +255,105 @@ pub const Client = struct {
         return RequestBuilder.init(self, method, url);
     }
 
-    /// Execute a request
+    /// Execute a request using std.http.Client for HTTPS support
     fn execute(self: *Client, builder: *RequestBuilder) !Response {
         const start_time = std.time.milliTimestamp();
 
+        // Use std.http.Client for proper TLS support
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
         // Parse URL
-        const url = try Url.parse(builder.url);
+        const uri = try std.Uri.parse(builder.url);
 
-        // Build request
-        var request_buf = std.ArrayList(u8).init(self.allocator);
-        defer request_buf.deinit();
+        // Collect headers
+        var extra_headers: std.ArrayList(std.http.Header) = .empty;
+        defer extra_headers.deinit(self.allocator);
 
-        const full_path = try url.fullPath(self.allocator);
-        defer self.allocator.free(full_path);
-
-        // Request line
-        try request_buf.writer().print("{s} {s} HTTP/1.1\r\n", .{ @tagName(builder.method), full_path });
-
-        // Host header
-        if (url.port != 80 and url.port != 443) {
-            try request_buf.writer().print("Host: {s}:{d}\r\n", .{ url.host, url.port });
-        } else {
-            try request_buf.writer().print("Host: {s}\r\n", .{url.host});
-        }
-
-        // Default headers
+        // Add default headers
         var default_it = self.default_headers.entries.iterator();
         while (default_it.next()) |entry| {
             if (!builder.headers.entries.contains(entry.key_ptr.*)) {
-                try request_buf.writer().print("{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                try extra_headers.append(self.allocator, .{ .name = entry.key_ptr.*, .value = entry.value_ptr.* });
             }
         }
 
-        // Request headers
+        // Add request headers
         var headers_it = builder.headers.entries.iterator();
         while (headers_it.next()) |entry| {
-            try request_buf.writer().print("{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            try extra_headers.append(self.allocator, .{ .name = entry.key_ptr.*, .value = entry.value_ptr.* });
         }
 
-        // Content-Length if body
+        // Convert method
+        const http_method: std.http.Method = switch (builder.method) {
+            .GET => .GET,
+            .POST => .POST,
+            .PUT => .PUT,
+            .PATCH => .PATCH,
+            .DELETE => .DELETE,
+            .HEAD => .HEAD,
+            .OPTIONS => .OPTIONS,
+            .CONNECT => .CONNECT,
+            .TRACE => .TRACE,
+        };
+
+        // Server header buffer
+        var server_header_buf: [16384]u8 = undefined;
+
+        // Open request
+        var req = try http_client.open(
+            http_method,
+            uri,
+            .{
+                .server_header_buffer = &server_header_buf,
+                .extra_headers = extra_headers.items,
+            },
+        );
+        defer req.deinit();
+
+        // Set content length if body present
         if (builder.body.len > 0) {
-            try request_buf.writer().print("Content-Length: {d}\r\n", .{builder.body.len});
+            req.transfer_encoding = .{ .content_length = builder.body.len };
         }
 
-        // End headers
-        try request_buf.appendSlice("\r\n");
+        // Send request
+        try req.send();
 
-        // Body
+        // Write body if present
         if (builder.body.len > 0) {
-            try request_buf.appendSlice(builder.body);
+            try req.writer().writeAll(builder.body);
+            try req.finish();
         }
 
-        // Connect and send
-        const address = try net.Address.resolveIp(url.host, url.port);
-        var stream = try net.tcpConnectToAddress(address);
-        defer stream.close();
+        // Wait for response
+        try req.wait();
 
-        _ = try stream.writeAll(request_buf.items);
+        // Read response body
+        const body = try req.reader().readAllAlloc(self.allocator, 1024 * 1024 * 10); // 10MB max
 
-        // Read response
+        // Build response
         var response = Response.init(self.allocator);
-        errdefer response.deinit();
-
-        var response_buf: [8192]u8 = undefined;
-        var total_read: usize = 0;
-        var response_data = std.ArrayList(u8).init(self.allocator);
-        defer response_data.deinit();
-
-        while (true) {
-            const bytes_read = try stream.read(&response_buf);
-            if (bytes_read == 0) break;
-
-            try response_data.appendSlice(response_buf[0..bytes_read]);
-            total_read += bytes_read;
-
-            // Check if we have full headers
-            if (std.mem.indexOf(u8, response_data.items, "\r\n\r\n")) |header_end| {
-                // Parse headers to check for Content-Length or Transfer-Encoding
-                const headers_section = response_data.items[0..header_end];
-                var lines = std.mem.splitSequence(u8, headers_section, "\r\n");
-                _ = lines.next(); // Skip status line
-
-                var content_length: ?usize = null;
-                var chunked = false;
-
-                while (lines.next()) |line| {
-                    if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
-                        const value = std.mem.trim(u8, line["content-length:".len..], " ");
-                        content_length = std.fmt.parseInt(usize, value, 10) catch null;
-                    } else if (std.ascii.startsWithIgnoreCase(line, "transfer-encoding:")) {
-                        const value = std.mem.trim(u8, line["transfer-encoding:".len..], " ");
-                        chunked = std.ascii.indexOfIgnoreCase(value, "chunked") != null;
-                    }
-                }
-
-                const body_start = header_end + 4;
-                if (chunked) {
-                    // For chunked encoding, read until we get 0\r\n terminator
-                    if (std.mem.indexOf(u8, response_data.items[body_start..], "0\r\n")) |_| {
-                        break; // Got the final chunk
-                    }
-                    // Continue reading for more chunks
-                } else if (content_length) |len| {
-                    // Check if we have the full body
-                    if (response_data.items.len >= body_start + len) {
-                        break;
-                    }
-                    // Continue reading
-                } else {
-                    // No content-length or chunked, assume response is complete
-                    break;
-                }
-            }
-        }
-
-        // Parse response
-        try self.parseResponse(&response, response_data.items);
-
+        response.status_code = @intFromEnum(req.status);
+        response.body = body;
         response.url = try self.allocator.dupe(u8, builder.url);
         response.elapsed_ms = @intCast(std.time.milliTimestamp() - start_time);
+
+        // Copy status text
+        const status_phrase = req.status.phrase() orelse "";
+        response.status_text = try self.allocator.dupe(u8, status_phrase);
 
         // Handle redirects
         if (response.isRedirect() and self.config.follow_redirects) {
             if (builder.redirect_count < self.config.max_redirects) {
-                if (response.headers.get("Location")) |location| {
-                    builder.redirect_count += 1;
-                    response.deinit();
-
-                    // Update URL and retry
-                    builder.url = location;
-                    return self.execute(builder);
+                // Check for Location header in response
+                var header_it = req.response.iterateHeaders();
+                while (header_it.next()) |h| {
+                    if (std.ascii.eqlIgnoreCase(h.name, "location")) {
+                        builder.redirect_count += 1;
+                        response.deinit();
+                        builder.url = h.value;
+                        return self.execute(builder);
+                    }
                 }
             }
         }

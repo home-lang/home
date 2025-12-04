@@ -292,6 +292,7 @@ pub const SlackDriver = struct {
     sent_count: usize = 0,
 
     const Self = @This();
+    const SLACK_API_BASE = "https://slack.com/api";
 
     pub fn init(allocator: std.mem.Allocator, config: ChatConfig) !*Self {
         const self = try allocator.create(Self);
@@ -317,48 +318,530 @@ pub const SlackDriver = struct {
         };
     }
 
+    fn isWebhookUrl(token: []const u8) bool {
+        return std.mem.startsWith(u8, token, "https://hooks.slack.com/");
+    }
+
+    fn escapeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        for (input) |c| {
+            switch (c) {
+                '"' => try result.appendSlice(allocator, "\\\""),
+                '\\' => try result.appendSlice(allocator, "\\\\"),
+                '\n' => try result.appendSlice(allocator, "\\n"),
+                '\r' => try result.appendSlice(allocator, "\\r"),
+                '\t' => try result.appendSlice(allocator, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        var buf: [6]u8 = undefined;
+                        const hex = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch continue;
+                        try result.appendSlice(allocator, hex);
+                    } else {
+                        try result.append(allocator, c);
+                    }
+                },
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    fn buildWebhookPayload(allocator: std.mem.Allocator, message: ChatMessage) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        try json.appendSlice(allocator, "{\"text\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"");
+
+        if (message.username) |username| {
+            const escaped_username = try escapeJsonString(allocator, username);
+            defer allocator.free(escaped_username);
+            try json.appendSlice(allocator, ",\"username\":\"");
+            try json.appendSlice(allocator, escaped_username);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        if (message.avatar_url) |icon| {
+            const escaped_icon = try escapeJsonString(allocator, icon);
+            defer allocator.free(escaped_icon);
+            try json.appendSlice(allocator, ",\"icon_url\":\"");
+            try json.appendSlice(allocator, escaped_icon);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        // Add blocks if provided
+        if (message.blocks) |blocks| {
+            try json.appendSlice(allocator, ",\"blocks\":");
+            try json.appendSlice(allocator, blocks);
+        }
+
+        try json.appendSlice(allocator, "}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
+    fn buildApiPayload(allocator: std.mem.Allocator, message: ChatMessage, thread_ts: ?[]const u8) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        const escaped_channel = try escapeJsonString(allocator, message.channel);
+        defer allocator.free(escaped_channel);
+
+        try json.appendSlice(allocator, "{\"channel\":\"");
+        try json.appendSlice(allocator, escaped_channel);
+        try json.appendSlice(allocator, "\",\"text\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"");
+
+        if (message.username) |username| {
+            const escaped_username = try escapeJsonString(allocator, username);
+            defer allocator.free(escaped_username);
+            try json.appendSlice(allocator, ",\"username\":\"");
+            try json.appendSlice(allocator, escaped_username);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        if (message.avatar_url) |icon| {
+            const escaped_icon = try escapeJsonString(allocator, icon);
+            defer allocator.free(escaped_icon);
+            try json.appendSlice(allocator, ",\"icon_url\":\"");
+            try json.appendSlice(allocator, escaped_icon);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        // Thread support
+        const thread_id = thread_ts orelse message.thread_id;
+        if (thread_id) |tid| {
+            const escaped_tid = try escapeJsonString(allocator, tid);
+            defer allocator.free(escaped_tid);
+            try json.appendSlice(allocator, ",\"thread_ts\":\"");
+            try json.appendSlice(allocator, escaped_tid);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        // Add blocks if provided
+        if (message.blocks) |blocks| {
+            try json.appendSlice(allocator, ",\"blocks\":");
+            try json.appendSlice(allocator, blocks);
+        }
+
+        // Link unfurling options
+        if (!message.unfurl_links) {
+            try json.appendSlice(allocator, ",\"unfurl_links\":false");
+        }
+        if (!message.unfurl_media) {
+            try json.appendSlice(allocator, ",\"unfurl_media\":false");
+        }
+
+        try json.appendSlice(allocator, "}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
     fn send(ptr: *anyopaque, message: ChatMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // For webhooks: POST {webhook_url}
-        // For API: POST https://slack.com/api/chat.postMessage
-        // Authorization: Bearer {token}
+        const token = self.config.slack_token orelse {
+            return NotificationResult.err("slack", "No Slack token configured");
+        };
+
+        // Determine if using webhook or API
+        if (isWebhookUrl(token)) {
+            return sendViaWebhook(self, token, message);
+        } else {
+            return sendViaApi(self, token, message, null);
+        }
+    }
+
+    fn sendViaWebhook(self: *Self, webhook_url: []const u8, message: ChatMessage) NotificationResult {
+        const json_body = buildWebhookPayload(self.allocator, message) catch |err| {
+            return NotificationResult.err("slack", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        // Parse webhook URL
+        const uri = std.Uri.parse(webhook_url) catch {
+            return NotificationResult.err("slack", "Invalid webhook URL");
+        };
+
+        // Create HTTP client
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        // Setup request
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("slack", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        // Send request
+        req.send() catch {
+            return NotificationResult.err("slack", "Failed to send request");
+        };
+
+        // Write body
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("slack", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("slack", "Failed to finish request");
+        };
+
+        // Wait for response
+        req.wait() catch {
+            return NotificationResult.err("slack", "Failed to get response");
+        };
+
+        // Check response status
+        if (req.status != .ok) {
+            return NotificationResult.err("slack", "Webhook request failed");
+        }
 
         self.sent_count += 1;
-        return NotificationResult.ok("slack", "1234567890.123456");
+        return NotificationResult.ok("slack", "webhook_sent");
+    }
+
+    fn sendViaApi(self: *Self, token: []const u8, message: ChatMessage, thread_ts: ?[]const u8) NotificationResult {
+        const json_body = buildApiPayload(self.allocator, message, thread_ts) catch |err| {
+            return NotificationResult.err("slack", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        // Build auth header
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch {
+            return NotificationResult.err("slack", "Token too long");
+        };
+
+        // Parse API URL
+        const api_url = SLACK_API_BASE ++ "/chat.postMessage";
+        const uri = std.Uri.parse(api_url) catch {
+            return NotificationResult.err("slack", "Invalid API URL");
+        };
+
+        // Create HTTP client
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        // Setup request
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("slack", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        // Send request
+        req.send() catch {
+            return NotificationResult.err("slack", "Failed to send request");
+        };
+
+        // Write body
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("slack", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("slack", "Failed to finish request");
+        };
+
+        // Wait for response
+        req.wait() catch {
+            return NotificationResult.err("slack", "Failed to get response");
+        };
+
+        // Read response body
+        var response_body: [4096]u8 = undefined;
+        const body_len = req.reader().readAll(&response_body) catch {
+            return NotificationResult.err("slack", "Failed to read response");
+        };
+        const response_str = response_body[0..body_len];
+
+        // Check for API success (Slack returns {"ok":true,...})
+        if (std.mem.indexOf(u8, response_str, "\"ok\":true")) |_| {
+            // Try to extract message timestamp (ts) as message ID
+            if (std.mem.indexOf(u8, response_str, "\"ts\":\"")) |ts_start| {
+                const ts_begin = ts_start + 6;
+                if (std.mem.indexOfPos(u8, response_str, ts_begin, "\"")) |ts_end| {
+                    const message_ts = response_str[ts_begin..ts_end];
+                    self.sent_count += 1;
+                    return NotificationResult.ok("slack", message_ts);
+                }
+            }
+            self.sent_count += 1;
+            return NotificationResult.ok("slack", null);
+        } else {
+            // Extract error message if present
+            if (std.mem.indexOf(u8, response_str, "\"error\":\"")) |err_start| {
+                const err_begin = err_start + 9;
+                if (std.mem.indexOfPos(u8, response_str, err_begin, "\"")) |err_end| {
+                    _ = response_str[err_begin..err_end];
+                }
+            }
+            return NotificationResult.err("slack", "API request failed");
+        }
     }
 
     fn sendToThread(ptr: *anyopaque, channel: []const u8, thread_id: []const u8, message: ChatMessage) NotificationResult {
-        _ = channel;
-        _ = thread_id;
-        return send(ptr, message);
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.slack_token orelse {
+            return NotificationResult.err("slack", "No Slack token configured");
+        };
+
+        if (isWebhookUrl(token)) {
+            // Webhooks don't support threading directly
+            return sendViaWebhook(self, token, message);
+        }
+
+        // Create modified message with channel
+        var thread_msg = message;
+        thread_msg.channel = channel;
+        return sendViaApi(self, token, thread_msg, thread_id);
     }
 
     fn updateMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8, new_text: []const u8) NotificationResult {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = new_text;
-        // POST https://slack.com/api/chat.update
-        return NotificationResult.ok("slack", null);
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.slack_token orelse {
+            return NotificationResult.err("slack", "No Slack token configured");
+        };
+
+        if (isWebhookUrl(token)) {
+            return NotificationResult.err("slack", "Update not supported via webhook");
+        }
+
+        // Build JSON payload for chat.update
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_channel = escapeJsonString(self.allocator, channel) catch |err| {
+            return NotificationResult.err("slack", @errorName(err));
+        };
+        defer self.allocator.free(escaped_channel);
+
+        const escaped_ts = escapeJsonString(self.allocator, message_id) catch |err| {
+            return NotificationResult.err("slack", @errorName(err));
+        };
+        defer self.allocator.free(escaped_ts);
+
+        const escaped_text = escapeJsonString(self.allocator, new_text) catch |err| {
+            return NotificationResult.err("slack", @errorName(err));
+        };
+        defer self.allocator.free(escaped_text);
+
+        json.appendSlice(self.allocator, "{\"channel\":\"") catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_channel) catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\",\"ts\":\"") catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_ts) catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\",\"text\":\"") catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_text) catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\"}") catch {
+            return NotificationResult.err("slack", "OutOfMemory");
+        };
+
+        // Build auth header
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch {
+            return NotificationResult.err("slack", "Token too long");
+        };
+
+        const api_url = SLACK_API_BASE ++ "/chat.update";
+        const uri = std.Uri.parse(api_url) catch {
+            return NotificationResult.err("slack", "Invalid API URL");
+        };
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("slack", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.send() catch {
+            return NotificationResult.err("slack", "Failed to send request");
+        };
+
+        req.writer().writeAll(json.items) catch {
+            return NotificationResult.err("slack", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("slack", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("slack", "Failed to get response");
+        };
+
+        var response_body: [4096]u8 = undefined;
+        const body_len = req.reader().readAll(&response_body) catch {
+            return NotificationResult.err("slack", "Failed to read response");
+        };
+        const response_str = response_body[0..body_len];
+
+        if (std.mem.indexOf(u8, response_str, "\"ok\":true")) |_| {
+            return NotificationResult.ok("slack", message_id);
+        }
+        return NotificationResult.err("slack", "Update failed");
     }
 
     fn deleteMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        // POST https://slack.com/api/chat.delete
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.slack_token orelse return false;
+
+        if (isWebhookUrl(token)) {
+            return false; // Delete not supported via webhook
+        }
+
+        // Build JSON payload for chat.delete
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_channel = escapeJsonString(self.allocator, channel) catch return false;
+        defer self.allocator.free(escaped_channel);
+
+        const escaped_ts = escapeJsonString(self.allocator, message_id) catch return false;
+        defer self.allocator.free(escaped_ts);
+
+        json.appendSlice(self.allocator, "{\"channel\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_channel) catch return false;
+        json.appendSlice(self.allocator, "\",\"ts\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_ts) catch return false;
+        json.appendSlice(self.allocator, "\"}") catch return false;
+
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch return false;
+
+        const api_url = SLACK_API_BASE ++ "/chat.delete";
+        const uri = std.Uri.parse(api_url) catch return false;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch return false;
+        defer req.deinit();
+
+        req.send() catch return false;
+        req.writer().writeAll(json.items) catch return false;
+        req.finish() catch return false;
+        req.wait() catch return false;
+
+        var response_body: [4096]u8 = undefined;
+        const body_len = req.reader().readAll(&response_body) catch return false;
+        const response_str = response_body[0..body_len];
+
+        return std.mem.indexOf(u8, response_str, "\"ok\":true") != null;
     }
 
     fn addReaction(ptr: *anyopaque, channel: []const u8, message_id: []const u8, emoji: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = emoji;
-        // POST https://slack.com/api/reactions.add
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.slack_token orelse return false;
+
+        if (isWebhookUrl(token)) {
+            return false; // Reactions not supported via webhook
+        }
+
+        // Build JSON payload for reactions.add
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_channel = escapeJsonString(self.allocator, channel) catch return false;
+        defer self.allocator.free(escaped_channel);
+
+        const escaped_ts = escapeJsonString(self.allocator, message_id) catch return false;
+        defer self.allocator.free(escaped_ts);
+
+        const escaped_emoji = escapeJsonString(self.allocator, emoji) catch return false;
+        defer self.allocator.free(escaped_emoji);
+
+        json.appendSlice(self.allocator, "{\"channel\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_channel) catch return false;
+        json.appendSlice(self.allocator, "\",\"timestamp\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_ts) catch return false;
+        json.appendSlice(self.allocator, "\",\"name\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_emoji) catch return false;
+        json.appendSlice(self.allocator, "\"}") catch return false;
+
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch return false;
+
+        const api_url = SLACK_API_BASE ++ "/reactions.add";
+        const uri = std.Uri.parse(api_url) catch return false;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch return false;
+        defer req.deinit();
+
+        req.send() catch return false;
+        req.writer().writeAll(json.items) catch return false;
+        req.finish() catch return false;
+        req.wait() catch return false;
+
+        var response_body: [4096]u8 = undefined;
+        const body_len = req.reader().readAll(&response_body) catch return false;
+        const response_str = response_body[0..body_len];
+
+        return std.mem.indexOf(u8, response_str, "\"ok\":true") != null;
     }
 
     fn deinit(ptr: *anyopaque) void {
@@ -378,6 +861,7 @@ pub const DiscordDriver = struct {
     sent_count: usize = 0,
 
     const Self = @This();
+    const DISCORD_API_BASE = "https://discord.com/api/v10";
 
     pub fn init(allocator: std.mem.Allocator, config: ChatConfig) !*Self {
         const self = try allocator.create(Self);
@@ -403,48 +887,438 @@ pub const DiscordDriver = struct {
         };
     }
 
+    fn isWebhookUrl(token: []const u8) bool {
+        return std.mem.startsWith(u8, token, "https://discord.com/api/webhooks/") or
+            std.mem.startsWith(u8, token, "https://discordapp.com/api/webhooks/");
+    }
+
+    fn escapeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        for (input) |c| {
+            switch (c) {
+                '"' => try result.appendSlice(allocator, "\\\""),
+                '\\' => try result.appendSlice(allocator, "\\\\"),
+                '\n' => try result.appendSlice(allocator, "\\n"),
+                '\r' => try result.appendSlice(allocator, "\\r"),
+                '\t' => try result.appendSlice(allocator, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        var buf: [6]u8 = undefined;
+                        const hex = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch continue;
+                        try result.appendSlice(allocator, hex);
+                    } else {
+                        try result.append(allocator, c);
+                    }
+                },
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    fn buildWebhookPayload(allocator: std.mem.Allocator, message: ChatMessage) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        try json.appendSlice(allocator, "{\"content\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"");
+
+        if (message.username) |username| {
+            const escaped_username = try escapeJsonString(allocator, username);
+            defer allocator.free(escaped_username);
+            try json.appendSlice(allocator, ",\"username\":\"");
+            try json.appendSlice(allocator, escaped_username);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        if (message.avatar_url) |avatar| {
+            const escaped_avatar = try escapeJsonString(allocator, avatar);
+            defer allocator.free(escaped_avatar);
+            try json.appendSlice(allocator, ",\"avatar_url\":\"");
+            try json.appendSlice(allocator, escaped_avatar);
+            try json.appendSlice(allocator, "\"");
+        }
+
+        // Add embeds if blocks are provided (Discord uses embeds)
+        if (message.blocks) |embeds| {
+            try json.appendSlice(allocator, ",\"embeds\":");
+            try json.appendSlice(allocator, embeds);
+        }
+
+        try json.appendSlice(allocator, "}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
+    fn buildApiPayload(allocator: std.mem.Allocator, message: ChatMessage) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        try json.appendSlice(allocator, "{\"content\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"");
+
+        // Add embeds if blocks are provided
+        if (message.blocks) |embeds| {
+            try json.appendSlice(allocator, ",\"embeds\":");
+            try json.appendSlice(allocator, embeds);
+        }
+
+        // Reply support
+        if (message.reply_to) |reply_id| {
+            const escaped_reply = try escapeJsonString(allocator, reply_id);
+            defer allocator.free(escaped_reply);
+            try json.appendSlice(allocator, ",\"message_reference\":{\"message_id\":\"");
+            try json.appendSlice(allocator, escaped_reply);
+            try json.appendSlice(allocator, "\"}");
+        }
+
+        try json.appendSlice(allocator, "}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
     fn send(ptr: *anyopaque, message: ChatMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // For webhooks: POST {webhook_url}
-        // For API: POST https://discord.com/api/v10/channels/{channel_id}/messages
-        // Authorization: Bot {token}
+        const token = self.config.discord_token orelse {
+            return NotificationResult.err("discord", "No Discord token configured");
+        };
 
-        self.sent_count += 1;
-        return NotificationResult.ok("discord", "1234567890123456789");
+        if (isWebhookUrl(token)) {
+            return sendViaWebhook(self, token, message);
+        } else {
+            return sendViaApi(self, token, message);
+        }
+    }
+
+    fn sendViaWebhook(self: *Self, webhook_url: []const u8, message: ChatMessage) NotificationResult {
+        const json_body = buildWebhookPayload(self.allocator, message) catch |err| {
+            return NotificationResult.err("discord", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        const uri = std.Uri.parse(webhook_url) catch {
+            return NotificationResult.err("discord", "Invalid webhook URL");
+        };
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("discord", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.send() catch {
+            return NotificationResult.err("discord", "Failed to send request");
+        };
+
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("discord", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("discord", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("discord", "Failed to get response");
+        };
+
+        // Discord webhooks return 204 No Content on success
+        if (req.status == .no_content or req.status == .ok) {
+            self.sent_count += 1;
+            return NotificationResult.ok("discord", "webhook_sent");
+        }
+
+        return NotificationResult.err("discord", "Webhook request failed");
+    }
+
+    fn sendViaApi(self: *Self, token: []const u8, message: ChatMessage) NotificationResult {
+        const json_body = buildApiPayload(self.allocator, message) catch |err| {
+            return NotificationResult.err("discord", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        // Build auth header
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bot {s}", .{token}) catch {
+            return NotificationResult.err("discord", "Token too long");
+        };
+
+        // Build API URL with channel ID
+        var url_buf: [512]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "{s}/channels/{s}/messages", .{ DISCORD_API_BASE, message.channel }) catch {
+            return NotificationResult.err("discord", "Channel ID too long");
+        };
+
+        const uri = std.Uri.parse(api_url) catch {
+            return NotificationResult.err("discord", "Invalid API URL");
+        };
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("discord", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.send() catch {
+            return NotificationResult.err("discord", "Failed to send request");
+        };
+
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("discord", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("discord", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("discord", "Failed to get response");
+        };
+
+        if (req.status == .ok or req.status == .created) {
+            // Read response to get message ID
+            var response_body: [4096]u8 = undefined;
+            const body_len = req.reader().readAll(&response_body) catch {
+                self.sent_count += 1;
+                return NotificationResult.ok("discord", null);
+            };
+            const response_str = response_body[0..body_len];
+
+            // Extract message ID from response
+            if (std.mem.indexOf(u8, response_str, "\"id\":\"")) |id_start| {
+                const id_begin = id_start + 6;
+                if (std.mem.indexOfPos(u8, response_str, id_begin, "\"")) |id_end| {
+                    const message_id = response_str[id_begin..id_end];
+                    self.sent_count += 1;
+                    return NotificationResult.ok("discord", message_id);
+                }
+            }
+
+            self.sent_count += 1;
+            return NotificationResult.ok("discord", null);
+        }
+
+        return NotificationResult.err("discord", "API request failed");
     }
 
     fn sendToThread(ptr: *anyopaque, channel: []const u8, thread_id: []const u8, message: ChatMessage) NotificationResult {
+        const self: *Self = @ptrCast(@alignCast(ptr));
         _ = channel;
-        _ = thread_id;
-        return send(ptr, message);
+
+        const token = self.config.discord_token orelse {
+            return NotificationResult.err("discord", "No Discord token configured");
+        };
+
+        if (isWebhookUrl(token)) {
+            return sendViaWebhook(self, token, message);
+        }
+
+        // For Discord, thread_id is the channel ID of the thread
+        var thread_msg = message;
+        thread_msg.channel = thread_id;
+        return sendViaApi(self, token, thread_msg);
     }
 
     fn updateMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8, new_text: []const u8) NotificationResult {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = new_text;
-        // PATCH https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}
-        return NotificationResult.ok("discord", null);
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.discord_token orelse {
+            return NotificationResult.err("discord", "No Discord token configured");
+        };
+
+        if (isWebhookUrl(token)) {
+            return NotificationResult.err("discord", "Update not supported via webhook");
+        }
+
+        // Build JSON payload
+        const escaped_text = escapeJsonString(self.allocator, new_text) catch |err| {
+            return NotificationResult.err("discord", @errorName(err));
+        };
+        defer self.allocator.free(escaped_text);
+
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        json.appendSlice(self.allocator, "{\"content\":\"") catch {
+            return NotificationResult.err("discord", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_text) catch {
+            return NotificationResult.err("discord", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\"}") catch {
+            return NotificationResult.err("discord", "OutOfMemory");
+        };
+
+        // Build auth header
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bot {s}", .{token}) catch {
+            return NotificationResult.err("discord", "Token too long");
+        };
+
+        // Build API URL
+        var url_buf: [512]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "{s}/channels/{s}/messages/{s}", .{ DISCORD_API_BASE, channel, message_id }) catch {
+            return NotificationResult.err("discord", "URL too long");
+        };
+
+        const uri = std.Uri.parse(api_url) catch {
+            return NotificationResult.err("discord", "Invalid API URL");
+        };
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.PATCH, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("discord", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.send() catch {
+            return NotificationResult.err("discord", "Failed to send request");
+        };
+
+        req.writer().writeAll(json.items) catch {
+            return NotificationResult.err("discord", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("discord", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("discord", "Failed to get response");
+        };
+
+        if (req.status == .ok) {
+            return NotificationResult.ok("discord", message_id);
+        }
+        return NotificationResult.err("discord", "Update failed");
     }
 
     fn deleteMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        // DELETE https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.discord_token orelse return false;
+
+        if (isWebhookUrl(token)) {
+            return false;
+        }
+
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bot {s}", .{token}) catch return false;
+
+        var url_buf: [512]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "{s}/channels/{s}/messages/{s}", .{ DISCORD_API_BASE, channel, message_id }) catch return false;
+
+        const uri = std.Uri.parse(api_url) catch return false;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.DELETE, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+            },
+        }) catch return false;
+        defer req.deinit();
+
+        req.send() catch return false;
+        req.finish() catch return false;
+        req.wait() catch return false;
+
+        return req.status == .no_content or req.status == .ok;
     }
 
     fn addReaction(ptr: *anyopaque, channel: []const u8, message_id: []const u8, emoji: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = emoji;
-        // PUT https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        const token = self.config.discord_token orelse return false;
+
+        if (isWebhookUrl(token)) {
+            return false;
+        }
+
+        var auth_buf: [256]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bot {s}", .{token}) catch return false;
+
+        // URL encode the emoji
+        var emoji_encoded: std.ArrayList(u8) = .empty;
+        defer emoji_encoded.deinit(self.allocator);
+
+        for (emoji) |c| {
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_' or c == '.') {
+                emoji_encoded.append(self.allocator, c) catch return false;
+            } else {
+                var buf: [3]u8 = undefined;
+                const encoded = std.fmt.bufPrint(&buf, "%{X:0>2}", .{c}) catch return false;
+                emoji_encoded.appendSlice(self.allocator, encoded) catch return false;
+            }
+        }
+
+        var url_buf: [512]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "{s}/channels/{s}/messages/{s}/reactions/{s}/@me", .{
+            DISCORD_API_BASE,
+            channel,
+            message_id,
+            emoji_encoded.items,
+        }) catch return false;
+
+        const uri = std.Uri.parse(api_url) catch return false;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.PUT, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+            },
+        }) catch return false;
+        defer req.deinit();
+
+        req.send() catch return false;
+        req.finish() catch return false;
+        req.wait() catch return false;
+
+        return req.status == .no_content or req.status == .ok;
     }
 
     fn deinit(ptr: *anyopaque) void {
@@ -489,20 +1363,138 @@ pub const TeamsDriver = struct {
         };
     }
 
+    fn escapeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        for (input) |c| {
+            switch (c) {
+                '"' => try result.appendSlice(allocator, "\\\""),
+                '\\' => try result.appendSlice(allocator, "\\\\"),
+                '\n' => try result.appendSlice(allocator, "\\n"),
+                '\r' => try result.appendSlice(allocator, "\\r"),
+                '\t' => try result.appendSlice(allocator, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        var buf: [6]u8 = undefined;
+                        const hex = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch continue;
+                        try result.appendSlice(allocator, hex);
+                    } else {
+                        try result.append(allocator, c);
+                    }
+                },
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    fn buildAdaptiveCardPayload(allocator: std.mem.Allocator, message: ChatMessage) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        // Build Adaptive Card format for Teams
+        try json.appendSlice(allocator,
+            \\{"type":"message","attachments":[{"contentType":"application/vnd.microsoft.card.adaptive","content":{
+        );
+        try json.appendSlice(allocator,
+            \\"type":"AdaptiveCard","$schema":"http://adaptivecards.io/schemas/adaptive-card.json","version":"1.4","body":[
+        );
+
+        // Add text block
+        try json.appendSlice(allocator, "{\"type\":\"TextBlock\",\"text\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\",\"wrap\":true}");
+
+        try json.appendSlice(allocator, "]}}]}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
+    fn buildSimplePayload(allocator: std.mem.Allocator, message: ChatMessage) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        // Simple message card format (legacy but widely supported)
+        try json.appendSlice(allocator, "{\"@type\":\"MessageCard\",\"@context\":\"http://schema.org/extensions\",");
+        try json.appendSlice(allocator, "\"text\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
     fn send(ptr: *anyopaque, message: ChatMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // POST {webhook_url}
-        // Teams uses Adaptive Cards format
+        const webhook_url = self.config.teams_webhook orelse {
+            return NotificationResult.err("teams", "No Teams webhook configured");
+        };
 
-        self.sent_count += 1;
-        return NotificationResult.ok("teams", "teams_msg_12345");
+        // Build payload - use Adaptive Card if blocks provided, otherwise simple card
+        const json_body = if (message.blocks != null)
+            buildAdaptiveCardPayload(self.allocator, message) catch |err| {
+                return NotificationResult.err("teams", @errorName(err));
+            }
+        else
+            buildSimplePayload(self.allocator, message) catch |err| {
+                return NotificationResult.err("teams", @errorName(err));
+            };
+        defer self.allocator.free(json_body);
+
+        const uri = std.Uri.parse(webhook_url) catch {
+            return NotificationResult.err("teams", "Invalid webhook URL");
+        };
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("teams", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.send() catch {
+            return NotificationResult.err("teams", "Failed to send request");
+        };
+
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("teams", "Failed to write body");
+        };
+
+        req.finish() catch {
+            return NotificationResult.err("teams", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("teams", "Failed to get response");
+        };
+
+        // Teams returns 200 OK with "1" on success
+        if (req.status == .ok) {
+            self.sent_count += 1;
+            return NotificationResult.ok("teams", "webhook_sent");
+        }
+
+        return NotificationResult.err("teams", "Webhook request failed");
     }
 
     fn sendToThread(ptr: *anyopaque, channel: []const u8, thread_id: []const u8, message: ChatMessage) NotificationResult {
         _ = channel;
         _ = thread_id;
+        // Teams webhooks don't support threading
         return send(ptr, message);
     }
 
@@ -546,6 +1538,7 @@ pub const TelegramDriver = struct {
     sent_count: usize = 0,
 
     const Self = @This();
+    const TELEGRAM_API_BASE = "https://api.telegram.org/bot";
 
     pub fn init(allocator: std.mem.Allocator, config: ChatConfig) !*Self {
         const self = try allocator.create(Self);
@@ -571,47 +1564,295 @@ pub const TelegramDriver = struct {
         };
     }
 
+    fn escapeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        for (input) |c| {
+            switch (c) {
+                '"' => try result.appendSlice(allocator, "\\\""),
+                '\\' => try result.appendSlice(allocator, "\\\\"),
+                '\n' => try result.appendSlice(allocator, "\\n"),
+                '\r' => try result.appendSlice(allocator, "\\r"),
+                '\t' => try result.appendSlice(allocator, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        var buf: [6]u8 = undefined;
+                        const hex = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch continue;
+                        try result.appendSlice(allocator, hex);
+                    } else {
+                        try result.append(allocator, c);
+                    }
+                },
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    fn buildSendMessagePayload(allocator: std.mem.Allocator, message: ChatMessage, reply_to: ?[]const u8) ![]u8 {
+        var json: std.ArrayList(u8) = .empty;
+        errdefer json.deinit(allocator);
+
+        const escaped_text = try escapeJsonString(allocator, message.text);
+        defer allocator.free(escaped_text);
+
+        const escaped_chat = try escapeJsonString(allocator, message.channel);
+        defer allocator.free(escaped_chat);
+
+        try json.appendSlice(allocator, "{\"chat_id\":\"");
+        try json.appendSlice(allocator, escaped_chat);
+        try json.appendSlice(allocator, "\",\"text\":\"");
+        try json.appendSlice(allocator, escaped_text);
+        try json.appendSlice(allocator, "\"");
+
+        // Parse mode (HTML, Markdown, MarkdownV2)
+        if (message.parse_mode) |mode| {
+            const escaped_mode = try escapeJsonString(allocator, mode);
+            defer allocator.free(escaped_mode);
+            try json.appendSlice(allocator, ",\"parse_mode\":\"");
+            try json.appendSlice(allocator, escaped_mode);
+            try json.appendSlice(allocator, "\"");
+        } else if (message.format == .markdown) {
+            try json.appendSlice(allocator, ",\"parse_mode\":\"MarkdownV2\"");
+        }
+
+        // Reply to message
+        const reply_id = reply_to orelse message.reply_to;
+        if (reply_id) |rid| {
+            try json.appendSlice(allocator, ",\"reply_to_message_id\":");
+            try json.appendSlice(allocator, rid);
+        }
+
+        // Disable link preview if unfurl is disabled
+        if (!message.unfurl_links) {
+            try json.appendSlice(allocator, ",\"disable_web_page_preview\":true");
+        }
+
+        // Silent notification for low priority
+        if (message.priority == .low) {
+            try json.appendSlice(allocator, ",\"disable_notification\":true");
+        }
+
+        try json.appendSlice(allocator, "}");
+
+        return json.toOwnedSlice(allocator);
+    }
+
+    fn makeApiRequest(self: *Self, method: []const u8, json_body: []const u8) ![]u8 {
+        const token = self.config.telegram_token orelse return error.NoToken;
+
+        // Build API URL
+        var url_buf: [512]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "{s}{s}/{s}", .{ TELEGRAM_API_BASE, token, method }) catch return error.UrlTooLong;
+
+        const uri = std.Uri.parse(api_url) catch return error.InvalidUrl;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var server_header_buf: [16384]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch return error.ConnectionFailed;
+        defer req.deinit();
+
+        req.send() catch return error.SendFailed;
+        req.writer().writeAll(json_body) catch return error.WriteFailed;
+        req.finish() catch return error.FinishFailed;
+        req.wait() catch return error.ResponseFailed;
+
+        if (req.status != .ok) {
+            return error.RequestFailed;
+        }
+
+        // Read response
+        var response_body: [4096]u8 = undefined;
+        const body_len = req.reader().readAll(&response_body) catch return error.ReadFailed;
+
+        const result = try self.allocator.alloc(u8, body_len);
+        @memcpy(result, response_body[0..body_len]);
+        return result;
+    }
+
     fn send(ptr: *anyopaque, message: ChatMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // POST https://api.telegram.org/bot{token}/sendMessage
+        if (self.config.telegram_token == null) {
+            return NotificationResult.err("telegram", "No Telegram token configured");
+        }
 
-        self.sent_count += 1;
-        return NotificationResult.ok("telegram", "12345");
+        const json_body = buildSendMessagePayload(self.allocator, message, null) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        const response = self.makeApiRequest("sendMessage", json_body) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(response);
+
+        // Check for success and extract message_id
+        if (std.mem.indexOf(u8, response, "\"ok\":true")) |_| {
+            if (std.mem.indexOf(u8, response, "\"message_id\":")) |id_start| {
+                const id_begin = id_start + 13;
+                var id_end = id_begin;
+                while (id_end < response.len and response[id_end] >= '0' and response[id_end] <= '9') {
+                    id_end += 1;
+                }
+                if (id_end > id_begin) {
+                    const message_id = response[id_begin..id_end];
+                    self.sent_count += 1;
+                    return NotificationResult.ok("telegram", message_id);
+                }
+            }
+            self.sent_count += 1;
+            return NotificationResult.ok("telegram", null);
+        }
+
+        return NotificationResult.err("telegram", "API request failed");
     }
 
     fn sendToThread(ptr: *anyopaque, channel: []const u8, thread_id: []const u8, message: ChatMessage) NotificationResult {
+        const self: *Self = @ptrCast(@alignCast(ptr));
         _ = channel;
-        _ = thread_id;
+
+        if (self.config.telegram_token == null) {
+            return NotificationResult.err("telegram", "No Telegram token configured");
+        }
+
         // Telegram uses reply_to_message_id for threading
-        return send(ptr, message);
+        const json_body = buildSendMessagePayload(self.allocator, message, thread_id) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
+
+        const response = self.makeApiRequest("sendMessage", json_body) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(response);
+
+        if (std.mem.indexOf(u8, response, "\"ok\":true")) |_| {
+            self.sent_count += 1;
+            return NotificationResult.ok("telegram", null);
+        }
+
+        return NotificationResult.err("telegram", "API request failed");
     }
 
     fn updateMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8, new_text: []const u8) NotificationResult {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = new_text;
-        // POST https://api.telegram.org/bot{token}/editMessageText
-        return NotificationResult.ok("telegram", null);
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        if (self.config.telegram_token == null) {
+            return NotificationResult.err("telegram", "No Telegram token configured");
+        }
+
+        // Build editMessageText payload
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_chat = escapeJsonString(self.allocator, channel) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(escaped_chat);
+
+        const escaped_text = escapeJsonString(self.allocator, new_text) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(escaped_text);
+
+        json.appendSlice(self.allocator, "{\"chat_id\":\"") catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_chat) catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\",\"message_id\":") catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, message_id) catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, ",\"text\":\"") catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, escaped_text) catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+        json.appendSlice(self.allocator, "\"}") catch {
+            return NotificationResult.err("telegram", "OutOfMemory");
+        };
+
+        const response = self.makeApiRequest("editMessageText", json.items) catch |err| {
+            return NotificationResult.err("telegram", @errorName(err));
+        };
+        defer self.allocator.free(response);
+
+        if (std.mem.indexOf(u8, response, "\"ok\":true")) |_| {
+            return NotificationResult.ok("telegram", message_id);
+        }
+
+        return NotificationResult.err("telegram", "Update failed");
     }
 
     fn deleteMessage(ptr: *anyopaque, channel: []const u8, message_id: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        // POST https://api.telegram.org/bot{token}/deleteMessage
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        if (self.config.telegram_token == null) {
+            return false;
+        }
+
+        // Build deleteMessage payload
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_chat = escapeJsonString(self.allocator, channel) catch return false;
+        defer self.allocator.free(escaped_chat);
+
+        json.appendSlice(self.allocator, "{\"chat_id\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_chat) catch return false;
+        json.appendSlice(self.allocator, "\",\"message_id\":") catch return false;
+        json.appendSlice(self.allocator, message_id) catch return false;
+        json.appendSlice(self.allocator, "}") catch return false;
+
+        const response = self.makeApiRequest("deleteMessage", json.items) catch return false;
+        defer self.allocator.free(response);
+
+        return std.mem.indexOf(u8, response, "\"ok\":true") != null;
     }
 
     fn addReaction(ptr: *anyopaque, channel: []const u8, message_id: []const u8, emoji: []const u8) bool {
-        _ = ptr;
-        _ = channel;
-        _ = message_id;
-        _ = emoji;
-        // POST https://api.telegram.org/bot{token}/setMessageReaction
-        return true;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        if (self.config.telegram_token == null) {
+            return false;
+        }
+
+        // Build setMessageReaction payload
+        var json: std.ArrayList(u8) = .empty;
+        defer json.deinit(self.allocator);
+
+        const escaped_chat = escapeJsonString(self.allocator, channel) catch return false;
+        defer self.allocator.free(escaped_chat);
+
+        const escaped_emoji = escapeJsonString(self.allocator, emoji) catch return false;
+        defer self.allocator.free(escaped_emoji);
+
+        json.appendSlice(self.allocator, "{\"chat_id\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_chat) catch return false;
+        json.appendSlice(self.allocator, "\",\"message_id\":") catch return false;
+        json.appendSlice(self.allocator, message_id) catch return false;
+        json.appendSlice(self.allocator, ",\"reaction\":[{\"type\":\"emoji\",\"emoji\":\"") catch return false;
+        json.appendSlice(self.allocator, escaped_emoji) catch return false;
+        json.appendSlice(self.allocator, "\"}]}") catch return false;
+
+        const response = self.makeApiRequest("setMessageReaction", json.items) catch return false;
+        defer self.allocator.free(response);
+
+        return std.mem.indexOf(u8, response, "\"ok\":true") != null;
     }
 
     fn deinit(ptr: *anyopaque) void {

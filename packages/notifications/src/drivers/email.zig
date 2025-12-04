@@ -174,6 +174,7 @@ pub const SendGridDriver = struct {
     sent_count: usize = 0,
 
     const Self = @This();
+    const SENDGRID_API_URL = "https://api.sendgrid.com/v3/mail/send";
 
     pub fn init(allocator: std.mem.Allocator, config: EmailConfig) !*Self {
         const self = try allocator.create(Self);
@@ -198,16 +199,174 @@ pub const SendGridDriver = struct {
 
     fn send(ptr: *anyopaque, message: EmailMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // In a real implementation, this would make HTTP request to SendGrid API
-        // POST https://api.sendgrid.com/v3/mail/send
-        // with Authorization: Bearer {api_key}
+        // Build SendGrid API request body
+        const json_body = buildSendGridPayload(self.allocator, message) catch |err| {
+            return NotificationResult.err("sendgrid", @errorName(err));
+        };
+        defer self.allocator.free(json_body);
 
-        self.sent_count += 1;
+        // Make HTTP request to SendGrid API
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
 
-        // Simulate successful send
-        return NotificationResult.ok("sendgrid", "sg_msg_12345");
+        const api_key = self.config.api_key orelse {
+            return NotificationResult.err("sendgrid", "API key not configured");
+        };
+
+        // Prepare authorization header
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{api_key}) catch {
+            return NotificationResult.err("sendgrid", "Failed to build auth header");
+        };
+
+        const uri = std.Uri.parse(SENDGRID_API_URL) catch {
+            return NotificationResult.err("sendgrid", "Invalid API URL");
+        };
+
+        var server_header_buf: [8192]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        }) catch {
+            return NotificationResult.err("sendgrid", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.transfer_encoding = .{ .content_length = json_body.len };
+        req.send() catch {
+            return NotificationResult.err("sendgrid", "Failed to send request");
+        };
+
+        req.writer().writeAll(json_body) catch {
+            return NotificationResult.err("sendgrid", "Failed to write body");
+        };
+        req.finish() catch {
+            return NotificationResult.err("sendgrid", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("sendgrid", "Failed to get response");
+        };
+
+        const status = @intFromEnum(req.status);
+        if (status >= 200 and status < 300) {
+            self.sent_count += 1;
+            // SendGrid returns message ID in X-Message-Id header
+            var header_it = req.response.iterateHeaders();
+            while (header_it.next()) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "x-message-id")) {
+                    const msg_id = self.allocator.dupe(u8, h.value) catch null;
+                    return NotificationResult.ok("sendgrid", msg_id);
+                }
+            }
+            return NotificationResult.ok("sendgrid", null);
+        } else {
+            // Read error response
+            const error_body = req.reader().readAllAlloc(self.allocator, 4096) catch {
+                return NotificationResult.err("sendgrid", "Request failed with unknown error");
+            };
+            defer self.allocator.free(error_body);
+
+            var error_msg_buf: [256]u8 = undefined;
+            const error_msg = std.fmt.bufPrint(&error_msg_buf, "HTTP {d}: {s}", .{ status, error_body[0..@min(error_body.len, 100)] }) catch "Request failed";
+            return NotificationResult.err("sendgrid", error_msg);
+        }
+    }
+
+    fn buildSendGridPayload(allocator: std.mem.Allocator, message: EmailMessage) ![]u8 {
+        // Build SendGrid v3 API JSON payload
+        var json_buf: std.ArrayList(u8) = .empty;
+        errdefer json_buf.deinit(allocator);
+
+        const writer = json_buf.writer(allocator);
+
+        try writer.writeAll("{\"personalizations\":[{\"to\":[");
+
+        // Recipients
+        for (message.to, 0..) |recipient, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("{\"email\":\"");
+            try writer.writeAll(recipient.address);
+            try writer.writeAll("\"");
+            if (recipient.name) |name| {
+                try writer.writeAll(",\"name\":\"");
+                try writer.writeAll(name);
+                try writer.writeAll("\"");
+            }
+            try writer.writeAll("}");
+        }
+        try writer.writeAll("]");
+
+        // CC
+        if (message.cc) |cc_list| {
+            try writer.writeAll(",\"cc\":[");
+            for (cc_list, 0..) |cc, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("{\"email\":\"");
+                try writer.writeAll(cc.address);
+                try writer.writeAll("\"}");
+            }
+            try writer.writeAll("]");
+        }
+
+        // BCC
+        if (message.bcc) |bcc_list| {
+            try writer.writeAll(",\"bcc\":[");
+            for (bcc_list, 0..) |bcc, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("{\"email\":\"");
+                try writer.writeAll(bcc.address);
+                try writer.writeAll("\"}");
+            }
+            try writer.writeAll("]");
+        }
+
+        try writer.writeAll("}],\"from\":{\"email\":\"");
+        try writer.writeAll(message.from.address);
+        try writer.writeAll("\"");
+        if (message.from.name) |name| {
+            try writer.writeAll(",\"name\":\"");
+            try writer.writeAll(name);
+            try writer.writeAll("\"");
+        }
+        try writer.writeAll("},\"subject\":\"");
+        try writeJsonEscaped(writer, message.subject);
+        try writer.writeAll("\",\"content\":[");
+
+        var has_content = false;
+        if (message.text) |text| {
+            try writer.writeAll("{\"type\":\"text/plain\",\"value\":\"");
+            try writeJsonEscaped(writer, text);
+            try writer.writeAll("\"}");
+            has_content = true;
+        }
+        if (message.html) |html| {
+            if (has_content) try writer.writeAll(",");
+            try writer.writeAll("{\"type\":\"text/html\",\"value\":\"");
+            try writeJsonEscaped(writer, html);
+            try writer.writeAll("\"}");
+        }
+
+        try writer.writeAll("]}");
+
+        return json_buf.toOwnedSlice(allocator);
+    }
+
+    fn writeJsonEscaped(writer: anytype, str: []const u8) !void {
+        for (str) |c| {
+            switch (c) {
+                '"' => try writer.writeAll("\\\""),
+                '\\' => try writer.writeAll("\\\\"),
+                '\n' => try writer.writeAll("\\n"),
+                '\r' => try writer.writeAll("\\r"),
+                '\t' => try writer.writeAll("\\t"),
+                else => try writer.writeByte(c),
+            }
+        }
     }
 
     fn sendBatch(ptr: *anyopaque, messages: []const EmailMessage) []NotificationResult {

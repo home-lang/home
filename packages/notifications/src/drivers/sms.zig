@@ -196,14 +196,142 @@ pub const TwilioDriver = struct {
 
     fn send(ptr: *anyopaque, message: SmsMessage) NotificationResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        _ = message;
 
-        // POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json
-        // with Basic auth: account_sid:auth_token
-        // Form data: To, From, Body
+        const account_sid = self.config.account_sid orelse {
+            return NotificationResult.err("twilio", "Account SID not configured");
+        };
+        const auth_token = self.config.auth_token orelse {
+            return NotificationResult.err("twilio", "Auth token not configured");
+        };
 
-        self.sent_count += 1;
-        return NotificationResult.ok("twilio", "SM12345678901234567890123456789012");
+        // Build Twilio API URL
+        var url_buf: [256]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "https://api.twilio.com/2010-04-01/Accounts/{s}/Messages.json", .{account_sid}) catch {
+            return NotificationResult.err("twilio", "Failed to build API URL");
+        };
+
+        // Build form data body
+        const form_body = buildFormBody(self.allocator, message) catch |err| {
+            return NotificationResult.err("twilio", @errorName(err));
+        };
+        defer self.allocator.free(form_body);
+
+        // Make HTTP request with Basic auth
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        // Build Basic auth header
+        var credentials_buf: [256]u8 = undefined;
+        const credentials = std.fmt.bufPrint(&credentials_buf, "{s}:{s}", .{ account_sid, auth_token }) catch {
+            return NotificationResult.err("twilio", "Failed to build credentials");
+        };
+
+        // Base64 encode credentials
+        const encoder = std.base64.standard.Encoder;
+        var encoded_buf: [512]u8 = undefined;
+        const encoded = encoder.encode(&encoded_buf, credentials);
+
+        var auth_buf: [600]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Basic {s}", .{encoded}) catch {
+            return NotificationResult.err("twilio", "Failed to build auth header");
+        };
+
+        const uri = std.Uri.parse(api_url) catch {
+            return NotificationResult.err("twilio", "Invalid API URL");
+        };
+
+        var server_header_buf: [8192]u8 = undefined;
+        var req = http_client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+                .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
+            },
+        }) catch {
+            return NotificationResult.err("twilio", "Failed to open connection");
+        };
+        defer req.deinit();
+
+        req.transfer_encoding = .{ .content_length = form_body.len };
+        req.send() catch {
+            return NotificationResult.err("twilio", "Failed to send request");
+        };
+
+        req.writer().writeAll(form_body) catch {
+            return NotificationResult.err("twilio", "Failed to write body");
+        };
+        req.finish() catch {
+            return NotificationResult.err("twilio", "Failed to finish request");
+        };
+
+        req.wait() catch {
+            return NotificationResult.err("twilio", "Failed to get response");
+        };
+
+        const status = @intFromEnum(req.status);
+        if (status >= 200 and status < 300) {
+            self.sent_count += 1;
+
+            // Parse JSON response to get message SID
+            const response_body = req.reader().readAllAlloc(self.allocator, 4096) catch {
+                return NotificationResult.ok("twilio", null);
+            };
+            defer self.allocator.free(response_body);
+
+            // Extract "sid" from JSON response (simple parsing)
+            if (std.mem.indexOf(u8, response_body, "\"sid\":\"")) |sid_start| {
+                const start = sid_start + 7;
+                if (std.mem.indexOf(u8, response_body[start..], "\"")) |sid_end| {
+                    const sid = self.allocator.dupe(u8, response_body[start .. start + sid_end]) catch null;
+                    return NotificationResult.ok("twilio", sid);
+                }
+            }
+            return NotificationResult.ok("twilio", null);
+        } else {
+            const error_body = req.reader().readAllAlloc(self.allocator, 4096) catch {
+                return NotificationResult.err("twilio", "Request failed");
+            };
+            defer self.allocator.free(error_body);
+
+            var error_msg_buf: [256]u8 = undefined;
+            const error_msg = std.fmt.bufPrint(&error_msg_buf, "HTTP {d}: {s}", .{ status, error_body[0..@min(error_body.len, 100)] }) catch "Request failed";
+            return NotificationResult.err("twilio", error_msg);
+        }
+    }
+
+    fn buildFormBody(allocator: std.mem.Allocator, message: SmsMessage) ![]u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(allocator);
+
+        const writer = buf.writer(allocator);
+
+        try writer.writeAll("To=");
+        try urlEncode(writer, message.to);
+        try writer.writeAll("&From=");
+        try urlEncode(writer, message.from);
+        try writer.writeAll("&Body=");
+        try urlEncode(writer, message.body);
+
+        // Add media URL if present
+        if (message.media_url) |media| {
+            try writer.writeAll("&MediaUrl=");
+            try urlEncode(writer, media);
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    fn urlEncode(writer: anytype, str: []const u8) !void {
+        const hex = "0123456789ABCDEF";
+        for (str) |c| {
+            if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
+                try writer.writeByte(c);
+            } else {
+                try writer.writeByte('%');
+                try writer.writeByte(hex[c >> 4]);
+                try writer.writeByte(hex[c & 0x0F]);
+            }
+        }
     }
 
     fn sendBatch(ptr: *anyopaque, messages: []const SmsMessage) []NotificationResult {
@@ -229,8 +357,54 @@ pub const TwilioDriver = struct {
     }
 
     fn getBalance(ptr: *anyopaque) ?f64 {
-        _ = ptr;
-        // Would fetch from Twilio API
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        // Fetch balance from Twilio API
+        const account_sid = self.config.account_sid orelse return null;
+        const auth_token = self.config.auth_token orelse return null;
+
+        var url_buf: [256]u8 = undefined;
+        const api_url = std.fmt.bufPrint(&url_buf, "https://api.twilio.com/2010-04-01/Accounts/{s}/Balance.json", .{account_sid}) catch return null;
+
+        var http_client = std.http.Client{ .allocator = self.allocator };
+        defer http_client.deinit();
+
+        var credentials_buf: [256]u8 = undefined;
+        const credentials = std.fmt.bufPrint(&credentials_buf, "{s}:{s}", .{ account_sid, auth_token }) catch return null;
+
+        const encoder = std.base64.standard.Encoder;
+        var encoded_buf: [512]u8 = undefined;
+        const encoded = encoder.encode(&encoded_buf, credentials);
+
+        var auth_buf: [600]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Basic {s}", .{encoded}) catch return null;
+
+        const uri = std.Uri.parse(api_url) catch return null;
+
+        var server_header_buf: [8192]u8 = undefined;
+        var req = http_client.open(.GET, uri, .{
+            .server_header_buffer = &server_header_buf,
+            .extra_headers = &[_]std.http.Header{
+                .{ .name = "Authorization", .value = auth_header },
+            },
+        }) catch return null;
+        defer req.deinit();
+
+        req.send() catch return null;
+        req.wait() catch return null;
+
+        if (@intFromEnum(req.status) == 200) {
+            const body = req.reader().readAllAlloc(self.allocator, 4096) catch return null;
+            defer self.allocator.free(body);
+
+            // Parse "balance" from JSON
+            if (std.mem.indexOf(u8, body, "\"balance\":\"")) |start| {
+                const val_start = start + 11;
+                if (std.mem.indexOf(u8, body[val_start..], "\"")) |end| {
+                    return std.fmt.parseFloat(f64, body[val_start .. val_start + end]) catch null;
+                }
+            }
+        }
         return null;
     }
 };
