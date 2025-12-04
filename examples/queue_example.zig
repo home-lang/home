@@ -8,7 +8,7 @@ pub fn main() !void {
 
     // Create queue with default configuration
     const config = queue_mod.QueueConfig.default();
-    var queue = queue_mod.Queue.init(allocator, config);
+    var queue = try queue_mod.Queue.init(allocator, config);
     defer queue.deinit();
 
     std.debug.print("\n=== Home Queue System Example ===\n\n", .{});
@@ -17,7 +17,7 @@ pub fn main() !void {
     std.debug.print("1. Dispatching a simple job...\n", .{});
     const job1 = try queue.dispatch("default", "Send email to user@example.com");
     std.debug.print("   Job ID: {s}\n", .{job1.id});
-    std.debug.print("   Queue: {s}\n", .{job1.queue});
+    std.debug.print("   Queue: {s}\n", .{job1.queue_name});
     std.debug.print("   Payload: {s}\n", .{job1.payload});
     std.debug.print("   Status: {s}\n\n", .{@tagName(job1.status)});
 
@@ -25,11 +25,16 @@ pub fn main() !void {
     std.debug.print("2. Dispatching a delayed job (60 seconds)...\n", .{});
     const job2 = try queue.dispatchAfter(60, "emails", "Send weekly newsletter");
     std.debug.print("   Job ID: {s}\n", .{job2.id});
-    std.debug.print("   Delay: {d} seconds\n\n", .{job2.delay.?});
+    std.debug.print("   Delay until: {d}\n\n", .{job2.delay_until.?});
 
     // Example 3: Dispatch synchronously
     std.debug.print("3. Dispatching synchronous job...\n", .{});
-    try queue.dispatchSync("default", "Log analytics event");
+    const sync_handler = struct {
+        fn handle(j: *queue_mod.Job) !void {
+            std.debug.print("   Executing sync job: {s}\n", .{j.payload});
+        }
+    }.handle;
+    try queue.dispatchSync("default", "Log analytics event", sync_handler);
     std.debug.print("   Job executed immediately\n\n", .{});
 
     // Example 4: Check queue status
@@ -54,16 +59,16 @@ pub fn main() !void {
 
     // Example 6: Batch jobs
     std.debug.print("6. Creating batch of jobs...\n", .{});
-    const batch = try queue_mod.Batch.init(allocator, "batch_001");
+    const batch = try queue_mod.Batch.create(allocator, "batch_001");
     defer batch.deinit();
 
-    const batch_job1 = try queue_mod.Job.init(allocator, "batch", "Task 1");
-    const batch_job2 = try queue_mod.Job.init(allocator, "batch", "Task 2");
-    const batch_job3 = try queue_mod.Job.init(allocator, "batch", "Task 3");
+    const batch_job1 = try queue_mod.Job.create(allocator, "batch_job_1", "batch", "Task 1");
+    const batch_job2 = try queue_mod.Job.create(allocator, "batch_job_2", "batch", "Task 2");
+    const batch_job3 = try queue_mod.Job.create(allocator, "batch_job_3", "batch", "Task 3");
 
-    try batch.add(batch_job1);
-    try batch.add(batch_job2);
-    try batch.add(batch_job3);
+    _ = try batch.add(batch_job1);
+    _ = try batch.add(batch_job2);
+    _ = try batch.add(batch_job3);
 
     std.debug.print("   Batch ID: {s}\n", .{batch.id});
     std.debug.print("   Jobs in batch: {d}\n", .{batch.jobs.items.len});
@@ -76,7 +81,7 @@ pub fn main() !void {
     std.debug.print("7. Processing all pending jobs...\n", .{});
     const handler = struct {
         fn process(j: *queue_mod.Job) !void {
-            std.debug.print("   [{s}] {s}\n", .{ j.queue, j.payload });
+            std.debug.print("   [{s}] {s}\n", .{ j.queue_name, j.payload });
             // Sleep removed for Zig 0.16 compatibility
         }
     }.process;

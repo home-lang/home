@@ -48,7 +48,7 @@ pub const BackoffConfig = struct {
     factor: f64 = 2.0,
     max_delay_ms: u64 = 60000,
     jitter: bool = false,
-    custom_delays: ?[]const u64 = null, // Array of delays for custom strategy
+    custom_delays: ?[]const u64 = null,
 
     pub fn none() BackoffConfig {
         return .{ .strategy = .none };
@@ -96,7 +96,6 @@ pub const BackoffConfig = struct {
         return config;
     }
 
-    /// Calculate delay for a given attempt number (0-indexed)
     pub fn calculateDelay(self: *const BackoffConfig, attempt: u32) u64 {
         var delay: u64 = switch (self.strategy) {
             .none => 0,
@@ -119,14 +118,11 @@ pub const BackoffConfig = struct {
             },
         };
 
-        // Cap at max delay
         delay = @min(delay, self.max_delay_ms);
 
-        // Add jitter (0-25% of delay)
         if (self.jitter and delay > 0) {
-            // Simple pseudo-random jitter based on current time
             const jitter_amount = delay / 4;
-            const time_ns: u64 = @intCast(@mod(std.time.nanoTimestamp(), @as(i128, @intCast(jitter_amount + 1))));
+            const time_ns: u64 = @intCast(@mod(getNanoTimestamp(), @as(i128, @intCast(jitter_amount + 1))));
             delay += time_ns;
         }
 
@@ -170,13 +166,13 @@ pub const JobContext = struct {
 /// Enhanced Job structure with fluent API support
 pub const Job = struct {
     id: []const u8,
-    name: []const u8, // Job name/type (e.g., "SendWelcomeEmail")
+    name: []const u8,
     queue_name: []const u8,
     payload: []const u8,
     attempts: u32,
     max_attempts: u32,
-    delay_until: ?i64, // Unix timestamp when job should run
-    timeout_ms: u64, // Job execution timeout
+    delay_until: ?i64,
+    timeout_ms: u64,
     status: JobStatus,
     created_at: i64,
     started_at: ?i64,
@@ -185,27 +181,25 @@ pub const Job = struct {
     error_message: ?[]const u8,
     backoff: BackoffConfig,
     tags: ?[]const []const u8,
-    priority: u8, // 0 = highest, 255 = lowest
-    unique_key: ?[]const u8, // For preventing duplicate jobs
+    priority: u8,
+    unique_key: ?[]const u8,
     context: ?*JobContext,
     allocator: std.mem.Allocator,
 
-    // Callbacks (optional)
     on_success: ?*const fn (*Job) void,
     on_failure: ?*const fn (*Job, anyerror) void,
     on_finally: ?*const fn (*Job) void,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, queue_name: []const u8, payload: []const u8) !*Self {
-        const job = try allocator.create(Self);
+    pub fn create(allocator: std.mem.Allocator, name: []const u8, queue_name: []const u8, payload: []const u8) !*Self {
+        const self = try allocator.create(Self);
 
-        // Generate unique ID
         var buf: [32]u8 = undefined;
-        const job_id = @intFromPtr(job);
+        const job_id = @intFromPtr(self);
         const id = try std.fmt.bufPrint(&buf, "job_{x}", .{job_id});
 
-        job.* = Self{
+        self.* = Self{
             .id = try allocator.dupe(u8, id),
             .name = try allocator.dupe(u8, name),
             .queue_name = try allocator.dupe(u8, queue_name),
@@ -213,16 +207,16 @@ pub const Job = struct {
             .attempts = 0,
             .max_attempts = 3,
             .delay_until = null,
-            .timeout_ms = 60000, // 1 minute default
+            .timeout_ms = 60000,
             .status = .pending,
-            .created_at = std.time.timestamp(),
+            .created_at = getTimestamp(),
             .started_at = null,
             .completed_at = null,
             .failed_at = null,
             .error_message = null,
             .backoff = BackoffConfig.exponential(1000, 2.0),
             .tags = null,
-            .priority = 128, // Normal priority
+            .priority = 128,
             .unique_key = null,
             .context = null,
             .allocator = allocator,
@@ -231,7 +225,7 @@ pub const Job = struct {
             .on_finally = null,
         };
 
-        return job;
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -252,69 +246,56 @@ pub const Job = struct {
         self.allocator.destroy(self);
     }
 
-    // Fluent API methods
-
-    /// Set the number of retry attempts
     pub fn tries(self: *Self, count: u32) *Self {
         self.max_attempts = count;
         return self;
     }
 
-    /// Set execution timeout in milliseconds
     pub fn timeout(self: *Self, ms: u64) *Self {
         self.timeout_ms = ms;
         return self;
     }
 
-    /// Set timeout in seconds
     pub fn timeoutSeconds(self: *Self, seconds: u64) *Self {
         self.timeout_ms = seconds * 1000;
         return self;
     }
 
-    /// Delay execution by specified seconds
     pub fn delay(self: *Self, seconds: i64) *Self {
-        self.delay_until = std.time.timestamp() + seconds;
+        self.delay_until = getTimestamp() + seconds;
         return self;
     }
 
-    /// Delay execution until specific timestamp
     pub fn delayUntil(self: *Self, timestamp: i64) *Self {
         self.delay_until = timestamp;
         return self;
     }
 
-    /// Set backoff strategy
     pub fn withBackoff(self: *Self, config: BackoffConfig) *Self {
         self.backoff = config;
         return self;
     }
 
-    /// Set fixed backoff delays as array (e.g., [10, 30, 60] seconds)
     pub fn backoffArray(self: *Self, delays: []const u64) *Self {
         self.backoff = BackoffConfig.custom(delays);
         return self;
     }
 
-    /// Set job priority (0 = highest, 255 = lowest)
-    pub fn withPriority(self: *Self, priority: u8) *Self {
-        self.priority = priority;
+    pub fn withPriority(self: *Self, prio: u8) *Self {
+        self.priority = prio;
         return self;
     }
 
-    /// High priority job
     pub fn highPriority(self: *Self) *Self {
         self.priority = 32;
         return self;
     }
 
-    /// Low priority job
     pub fn lowPriority(self: *Self) *Self {
         self.priority = 224;
         return self;
     }
 
-    /// Set unique key to prevent duplicate jobs
     pub fn unique(self: *Self, key: []const u8) !*Self {
         if (self.unique_key) |old| {
             self.allocator.free(old);
@@ -323,31 +304,25 @@ pub const Job = struct {
         return self;
     }
 
-    /// Set job context
     pub fn withContext(self: *Self, ctx: *JobContext) *Self {
         self.context = ctx;
         return self;
     }
 
-    /// Set success callback
     pub fn onSuccess(self: *Self, callback: *const fn (*Job) void) *Self {
         self.on_success = callback;
         return self;
     }
 
-    /// Set failure callback
     pub fn onFailure(self: *Self, callback: *const fn (*Job, anyerror) void) *Self {
         self.on_failure = callback;
         return self;
     }
 
-    /// Set finally callback (runs after success or failure)
     pub fn onFinally(self: *Self, callback: *const fn (*Job) void) *Self {
         self.on_finally = callback;
         return self;
     }
-
-    // Status methods
 
     pub fn incrementAttempts(self: *Self) void {
         self.attempts += 1;
@@ -355,18 +330,18 @@ pub const Job = struct {
             self.status = .retrying;
         } else {
             self.status = .failed;
-            self.failed_at = std.time.timestamp();
+            self.failed_at = getTimestamp();
         }
     }
 
     pub fn markAsProcessing(self: *Self) void {
         self.status = .processing;
-        self.started_at = std.time.timestamp();
+        self.started_at = getTimestamp();
     }
 
     pub fn markAsCompleted(self: *Self) void {
         self.status = .completed;
-        self.completed_at = std.time.timestamp();
+        self.completed_at = getTimestamp();
         if (self.on_success) |callback| {
             callback(self);
         }
@@ -377,7 +352,7 @@ pub const Job = struct {
 
     pub fn markAsFailed(self: *Self, err: anyerror) void {
         self.status = .failed;
-        self.failed_at = std.time.timestamp();
+        self.failed_at = getTimestamp();
         if (self.on_failure) |callback| {
             callback(self, err);
         }
@@ -396,12 +371,11 @@ pub const Job = struct {
 
     pub fn isReady(self: *Self) bool {
         if (self.delay_until) |until| {
-            return std.time.timestamp() >= until;
+            return getTimestamp() >= until;
         }
         return true;
     }
 
-    /// Get the delay for next retry
     pub fn getRetryDelay(self: *Self) u64 {
         return self.backoff.calculateDelay(self.attempts);
     }
@@ -416,109 +390,107 @@ pub const Job = struct {
 
 /// Job builder for creating jobs with fluent API
 pub const JobBuilder = struct {
-    job: *Job,
-    queue: *Queue,
+    built_job: *Job,
+    queue_ref: *Queue,
 
     const Self = @This();
 
-    pub fn init(queue: *Queue, name: []const u8, payload: []const u8) !Self {
-        const job = try Job.init(queue.allocator, name, queue.config.default_queue, payload);
+    pub fn init(q: *Queue, name: []const u8, payload: []const u8) !Self {
+        const j = try Job.create(q.allocator, name, q.config.default_queue, payload);
         return .{
-            .job = job,
-            .queue = queue,
+            .built_job = j,
+            .queue_ref = q,
         };
     }
 
     pub fn onQueue(self: *Self, queue_name: []const u8) !*Self {
-        self.queue.allocator.free(self.job.queue_name);
-        self.job.queue_name = try self.queue.allocator.dupe(u8, queue_name);
+        self.queue_ref.allocator.free(self.built_job.queue_name);
+        self.built_job.queue_name = try self.queue_ref.allocator.dupe(u8, queue_name);
         return self;
     }
 
     pub fn tries(self: *Self, count: u32) *Self {
-        _ = self.job.tries(count);
+        _ = self.built_job.tries(count);
         return self;
     }
 
     pub fn timeout(self: *Self, ms: u64) *Self {
-        _ = self.job.timeout(ms);
+        _ = self.built_job.timeout(ms);
         return self;
     }
 
     pub fn timeoutSeconds(self: *Self, seconds: u64) *Self {
-        _ = self.job.timeoutSeconds(seconds);
+        _ = self.built_job.timeoutSeconds(seconds);
         return self;
     }
 
     pub fn delay(self: *Self, seconds: i64) *Self {
-        _ = self.job.delay(seconds);
+        _ = self.built_job.delay(seconds);
         return self;
     }
 
     pub fn delayUntil(self: *Self, timestamp: i64) *Self {
-        _ = self.job.delayUntil(timestamp);
+        _ = self.built_job.delayUntil(timestamp);
         return self;
     }
 
     pub fn withBackoff(self: *Self, config: BackoffConfig) *Self {
-        _ = self.job.withBackoff(config);
+        _ = self.built_job.withBackoff(config);
         return self;
     }
 
     pub fn backoffArray(self: *Self, delays: []const u64) *Self {
-        _ = self.job.backoffArray(delays);
+        _ = self.built_job.backoffArray(delays);
         return self;
     }
 
-    pub fn withPriority(self: *Self, priority: u8) *Self {
-        _ = self.job.withPriority(priority);
+    pub fn withPriority(self: *Self, prio: u8) *Self {
+        _ = self.built_job.withPriority(prio);
         return self;
     }
 
     pub fn highPriority(self: *Self) *Self {
-        _ = self.job.highPriority();
+        _ = self.built_job.highPriority();
         return self;
     }
 
     pub fn lowPriority(self: *Self) *Self {
-        _ = self.job.lowPriority();
+        _ = self.built_job.lowPriority();
         return self;
     }
 
     pub fn unique(self: *Self, key: []const u8) !*Self {
-        _ = try self.job.unique(key);
+        _ = try self.built_job.unique(key);
         return self;
     }
 
     pub fn onSuccess(self: *Self, callback: *const fn (*Job) void) *Self {
-        _ = self.job.onSuccess(callback);
+        _ = self.built_job.onSuccess(callback);
         return self;
     }
 
     pub fn onFailure(self: *Self, callback: *const fn (*Job, anyerror) void) *Self {
-        _ = self.job.onFailure(callback);
+        _ = self.built_job.onFailure(callback);
         return self;
     }
 
     pub fn onFinally(self: *Self, callback: *const fn (*Job) void) *Self {
-        _ = self.job.onFinally(callback);
+        _ = self.built_job.onFinally(callback);
         return self;
     }
 
-    /// Dispatch the job to the queue
     pub fn dispatch(self: *Self) !*Job {
-        return try self.queue.addJob(self.job);
+        return try self.queue_ref.addJob(self.built_job);
     }
 
-    /// Execute the job immediately (synchronously)
     pub fn dispatchNow(self: *Self, handler: *const fn (*Job) anyerror!void) !void {
-        defer self.job.deinit();
-        self.job.markAsProcessing();
-        handler(self.job) catch |err| {
-            self.job.markAsFailed(err);
+        defer self.built_job.deinit();
+        self.built_job.markAsProcessing();
+        handler(self.built_job) catch |err| {
+            self.built_job.markAsFailed(err);
             return err;
         };
-        self.job.markAsCompleted();
+        self.built_job.markAsCompleted();
     }
 };
 
@@ -526,11 +498,10 @@ pub const JobBuilder = struct {
 pub const QueueConfig = struct {
     connection: ConnectionType,
     default_queue: []const u8,
-    retry_after: i64, // Seconds before a stale job is retried
+    retry_after: i64,
     max_jobs: usize,
-    poll_interval_ms: u64, // How often to poll for new jobs
+    poll_interval_ms: u64,
 
-    // Driver-specific configurations
     redis_url: ?[]const u8,
     database_table: ?[]const u8,
     sqs_queue_url: ?[]const u8,
@@ -589,15 +560,15 @@ pub const QueueDriver = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        push: *const fn (ptr: *anyopaque, job: *Job) anyerror!void,
+        push: *const fn (ptr: *anyopaque, j: *Job) anyerror!void,
         pop: *const fn (ptr: *anyopaque, queue_name: []const u8) ?*Job,
         size: *const fn (ptr: *anyopaque, queue_name: []const u8) usize,
         clear: *const fn (ptr: *anyopaque, queue_name: []const u8) void,
-        deinit: *const fn (ptr: *anyopaque) void,
+        deinitFn: *const fn (ptr: *anyopaque) void,
     };
 
-    pub fn push(self: *QueueDriver, job: *Job) !void {
-        return self.vtable.push(self.ptr, job);
+    pub fn push(self: *QueueDriver, j: *Job) !void {
+        return self.vtable.push(self.ptr, j);
     }
 
     pub fn pop(self: *QueueDriver, queue_name: []const u8) ?*Job {
@@ -612,8 +583,8 @@ pub const QueueDriver = struct {
         self.vtable.clear(self.ptr, queue_name);
     }
 
-    pub fn deinit(self: *QueueDriver) void {
-        self.vtable.deinit(self.ptr);
+    pub fn deinitDriver(self: *QueueDriver) void {
+        self.vtable.deinitFn(self.ptr);
     }
 };
 
@@ -639,46 +610,45 @@ pub const MemoryQueueDriver = struct {
         return .{
             .ptr = self,
             .vtable = &.{
-                .push = push,
-                .pop = pop,
-                .size = size,
-                .clear = clear,
-                .deinit = deinit,
+                .push = pushFn,
+                .pop = popFn,
+                .size = sizeFn,
+                .clear = clearFn,
+                .deinitFn = deinitFn,
             },
         };
     }
 
-    fn push(ptr: *anyopaque, job: *Job) anyerror!void {
+    fn pushFn(ptr: *anyopaque, j: *Job) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const result = try self.queues.getOrPut(job.queue_name);
+        const result = try self.queues.getOrPut(j.queue_name);
         if (!result.found_existing) {
-            result.value_ptr.* = std.ArrayList(*Job).init(self.allocator);
+            result.value_ptr.* = .empty;
         }
 
         // Insert by priority (lower priority number = higher priority)
         var insert_idx: usize = result.value_ptr.items.len;
         for (result.value_ptr.items, 0..) |existing_job, i| {
-            if (job.priority < existing_job.priority) {
+            if (j.priority < existing_job.priority) {
                 insert_idx = i;
                 break;
             }
         }
 
-        try result.value_ptr.insert(insert_idx, job);
+        try result.value_ptr.insert(self.allocator, insert_idx, j);
     }
 
-    fn pop(ptr: *anyopaque, queue_name: []const u8) ?*Job {
+    fn popFn(ptr: *anyopaque, queue_name: []const u8) ?*Job {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.queues.get(queue_name)) |*queue_jobs| {
-            // Find first ready job
-            for (queue_jobs.items, 0..) |job, i| {
-                if (job.isReady()) {
+        if (self.queues.getPtr(queue_name)) |queue_jobs| {
+            for (queue_jobs.items, 0..) |j, i| {
+                if (j.isReady()) {
                     return queue_jobs.orderedRemove(i);
                 }
             }
@@ -687,7 +657,7 @@ pub const MemoryQueueDriver = struct {
         return null;
     }
 
-    fn size(ptr: *anyopaque, queue_name: []const u8) usize {
+    fn sizeFn(ptr: *anyopaque, queue_name: []const u8) usize {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -698,28 +668,28 @@ pub const MemoryQueueDriver = struct {
         return 0;
     }
 
-    fn clear(ptr: *anyopaque, queue_name: []const u8) void {
+    fn clearFn(ptr: *anyopaque, queue_name: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.mutex.lock();
         defer self.mutex.unlock();
 
         if (self.queues.getPtr(queue_name)) |queue_jobs| {
-            for (queue_jobs.items) |job| {
-                job.deinit();
+            for (queue_jobs.items) |j| {
+                j.deinit();
             }
             queue_jobs.clearRetainingCapacity();
         }
     }
 
-    fn deinit(ptr: *anyopaque) void {
+    fn deinitFn(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
         var it = self.queues.iterator();
         while (it.next()) |entry| {
-            for (entry.value_ptr.items) |job| {
-                job.deinit();
+            for (entry.value_ptr.items) |j| {
+                j.deinit();
             }
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.queues.deinit();
         self.allocator.destroy(self);
@@ -742,7 +712,7 @@ pub const Queue = struct {
         return .{
             .config = config,
             .driver = mem_driver.driver(),
-            .failed_jobs = std.ArrayList(*Job).init(allocator),
+            .failed_jobs = .empty,
             .unique_keys = std.StringHashMap(void).init(allocator),
             .allocator = allocator,
             .mutex = .{},
@@ -750,22 +720,19 @@ pub const Queue = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.failed_jobs.items) |job| {
-            job.deinit();
+        for (self.failed_jobs.items) |j| {
+            j.deinit();
         }
-        self.failed_jobs.deinit();
+        self.failed_jobs.deinit(self.allocator);
         self.unique_keys.deinit();
-        self.driver.deinit();
+        self.driver.deinitDriver();
     }
 
-    /// Create a job builder
     pub fn job(self: *Self, name: []const u8, payload: []const u8) !JobBuilder {
         return JobBuilder.init(self, name, payload);
     }
 
-    /// Add a job directly
     pub fn addJob(self: *Self, new_job: *Job) !*Job {
-        // Check uniqueness
         if (new_job.unique_key) |key| {
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -780,15 +747,13 @@ pub const Queue = struct {
         return new_job;
     }
 
-    /// Legacy dispatch method
     pub fn dispatch(self: *Self, queue_name: []const u8, payload: []const u8) !*Job {
-        const new_job = try Job.init(self.allocator, "default", queue_name, payload);
+        const new_job = try Job.create(self.allocator, "default", queue_name, payload);
         return try self.addJob(new_job);
     }
 
-    /// Dispatch a job synchronously (execute immediately)
     pub fn dispatchSync(self: *Self, queue_name: []const u8, payload: []const u8, handler: *const fn (*Job) anyerror!void) !void {
-        const new_job = try Job.init(self.allocator, "sync", queue_name, payload);
+        const new_job = try Job.create(self.allocator, "sync", queue_name, payload);
         defer new_job.deinit();
 
         new_job.markAsProcessing();
@@ -799,24 +764,20 @@ pub const Queue = struct {
         new_job.markAsCompleted();
     }
 
-    /// Dispatch a job with delay
     pub fn dispatchAfter(self: *Self, delay_seconds: i64, queue_name: []const u8, payload: []const u8) !*Job {
-        const new_job = try Job.init(self.allocator, "delayed", queue_name, payload);
+        const new_job = try Job.create(self.allocator, "delayed", queue_name, payload);
         _ = new_job.delay(delay_seconds);
         return try self.addJob(new_job);
     }
 
-    /// Get next pending job
     pub fn getNextJob(self: *Self) ?*Job {
         return self.driver.pop(self.config.default_queue);
     }
 
-    /// Get next job from specific queue
     pub fn getNextJobFrom(self: *Self, queue_name: []const u8) ?*Job {
         return self.driver.pop(queue_name);
     }
 
-    /// Process a job with handler
     pub fn processJob(self: *Self, process_job: *Job, handler: *const fn (*Job) anyerror!void) !void {
         process_job.markAsProcessing();
 
@@ -824,16 +785,14 @@ pub const Queue = struct {
             process_job.incrementAttempts();
 
             if (process_job.canRetry()) {
-                // Calculate retry delay and re-queue
                 const delay_ms = process_job.getRetryDelay();
-                process_job.delay_until = std.time.timestamp() + @as(i64, @intCast(delay_ms / 1000));
+                process_job.delay_until = getTimestamp() + @as(i64, @intCast(delay_ms / 1000));
                 try self.driver.push(process_job);
             } else {
                 process_job.markAsFailed(err);
                 self.mutex.lock();
                 defer self.mutex.unlock();
-                try self.failed_jobs.append(process_job);
-                // Remove unique key if exists
+                try self.failed_jobs.append(self.allocator, process_job);
                 if (process_job.unique_key) |key| {
                     _ = self.unique_keys.remove(key);
                 }
@@ -843,7 +802,6 @@ pub const Queue = struct {
         };
 
         process_job.markAsCompleted();
-        // Remove unique key if exists
         if (process_job.unique_key) |key| {
             self.mutex.lock();
             defer self.mutex.unlock();
@@ -851,68 +809,61 @@ pub const Queue = struct {
         }
     }
 
-    /// Get number of pending jobs
     pub fn pendingCount(self: *Self) usize {
         return self.driver.size(self.config.default_queue);
     }
 
-    /// Get number of pending jobs in specific queue
     pub fn pendingCountIn(self: *Self, queue_name: []const u8) usize {
         return self.driver.size(queue_name);
     }
 
-    /// Get number of failed jobs
     pub fn failedCount(self: *Self) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.failed_jobs.items.len;
     }
 
-    /// Get failed jobs
     pub fn getFailedJobs(self: *Self) []const *Job {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.failed_jobs.items;
     }
 
-    /// Clear failed jobs
     pub fn clearFailed(self: *Self) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.failed_jobs.items) |failed_job| {
-            failed_job.deinit();
+        for (self.failed_jobs.items) |j| {
+            j.deinit();
         }
         self.failed_jobs.clearRetainingCapacity();
     }
 
-    /// Retry all failed jobs
     pub fn retryFailed(self: *Self) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.failed_jobs.items) |failed_job| {
-            failed_job.status = .pending;
-            failed_job.attempts = 0;
-            failed_job.error_message = null;
-            failed_job.delay_until = null;
-            try self.driver.push(failed_job);
+        for (self.failed_jobs.items) |j| {
+            j.status = .pending;
+            j.attempts = 0;
+            j.error_message = null;
+            j.delay_until = null;
+            try self.driver.push(j);
         }
 
         self.failed_jobs.clearRetainingCapacity();
     }
 
-    /// Retry a specific failed job by ID
     pub fn retryFailedById(self: *Self, id: []const u8) !bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.failed_jobs.items, 0..) |failed_job, i| {
-            if (std.mem.eql(u8, failed_job.id, id)) {
-                failed_job.status = .pending;
-                failed_job.attempts = 0;
-                failed_job.error_message = null;
-                try self.driver.push(failed_job);
+        for (self.failed_jobs.items, 0..) |j, i| {
+            if (std.mem.eql(u8, j.id, id)) {
+                j.status = .pending;
+                j.attempts = 0;
+                j.error_message = null;
+                try self.driver.push(j);
                 _ = self.failed_jobs.swapRemove(i);
                 return true;
             }
@@ -921,7 +872,6 @@ pub const Queue = struct {
         return false;
     }
 
-    /// Flush all jobs (for testing)
     pub fn flush(self: *Self) void {
         self.driver.clear(self.config.default_queue);
         self.clearFailed();
@@ -941,7 +891,7 @@ pub const JobChain = struct {
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
-            .jobs = std.ArrayList(*Job).init(allocator),
+            .jobs = .empty,
             .allocator = allocator,
             .current_index = 0,
             .on_chain_complete = null,
@@ -950,14 +900,14 @@ pub const JobChain = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.jobs.items) |chain_job| {
-            chain_job.deinit();
+        for (self.jobs.items) |j| {
+            j.deinit();
         }
-        self.jobs.deinit();
+        self.jobs.deinit(self.allocator);
     }
 
-    pub fn add(self: *Self, chain_job: *Job) !*Self {
-        try self.jobs.append(chain_job);
+    pub fn add(self: *Self, j: *Job) !*Self {
+        try self.jobs.append(self.allocator, j);
         return self;
     }
 
@@ -971,18 +921,17 @@ pub const JobChain = struct {
         return self;
     }
 
-    /// Execute the chain
     pub fn execute(self: *Self, handler: *const fn (*Job) anyerror!void) !void {
-        for (self.jobs.items) |chain_job| {
-            chain_job.markAsProcessing();
-            handler(chain_job) catch |err| {
-                chain_job.markAsFailed(err);
+        for (self.jobs.items) |j| {
+            j.markAsProcessing();
+            handler(j) catch |err| {
+                j.markAsFailed(err);
                 if (self.on_chain_failure) |callback| {
-                    callback(self, chain_job, err);
+                    callback(self, j, err);
                 }
                 return err;
             };
-            chain_job.markAsCompleted();
+            j.markAsCompleted();
             self.current_index += 1;
         }
 
@@ -994,7 +943,7 @@ pub const JobChain = struct {
 
 /// Queue worker
 pub const Worker = struct {
-    queue: *Queue,
+    queue_ref: *Queue,
     queue_names: []const []const u8,
     running: std.atomic.Value(bool),
     allocator: std.mem.Allocator,
@@ -1002,29 +951,26 @@ pub const Worker = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, queue: *Queue) Self {
+    pub fn init(allocator: std.mem.Allocator, q: *Queue) Self {
         return .{
-            .queue = queue,
-            .queue_names = &[_][]const u8{queue.config.default_queue},
+            .queue_ref = q,
+            .queue_names = &[_][]const u8{q.config.default_queue},
             .running = std.atomic.Value(bool).init(false),
             .allocator = allocator,
-            .sleep_ms = queue.config.poll_interval_ms,
+            .sleep_ms = q.config.poll_interval_ms,
         };
     }
 
-    /// Set which queues to process
     pub fn watchQueues(self: *Self, queues: []const []const u8) *Self {
         self.queue_names = queues;
         return self;
     }
 
-    /// Set poll interval
     pub fn pollEvery(self: *Self, ms: u64) *Self {
         self.sleep_ms = ms;
         return self;
     }
 
-    /// Start processing jobs
     pub fn work(self: *Self, handler: *const fn (*Job) anyerror!void) !void {
         self.running.store(true, .release);
 
@@ -1032,9 +978,9 @@ pub const Worker = struct {
             var found_job = false;
 
             for (self.queue_names) |queue_name| {
-                if (self.queue.getNextJobFrom(queue_name)) |worker_job| {
+                if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
-                    self.queue.processJob(worker_job, handler) catch {};
+                    self.queue_ref.processJob(j, handler) catch {};
                 }
             }
 
@@ -1044,7 +990,6 @@ pub const Worker = struct {
         }
     }
 
-    /// Process a single batch of jobs
     pub fn workOnce(self: *Self, handler: *const fn (*Job) anyerror!void, max_jobs: usize) !usize {
         var processed: usize = 0;
 
@@ -1052,9 +997,9 @@ pub const Worker = struct {
             var found_job = false;
 
             for (self.queue_names) |queue_name| {
-                if (self.queue.getNextJobFrom(queue_name)) |worker_job| {
+                if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
-                    self.queue.processJob(worker_job, handler) catch {};
+                    self.queue_ref.processJob(j, handler) catch {};
                     processed += 1;
                     break;
                 }
@@ -1066,7 +1011,6 @@ pub const Worker = struct {
         return processed;
     }
 
-    /// Stop the worker
     pub fn stop(self: *Self) void {
         self.running.store(false, .release);
     }
@@ -1082,11 +1026,11 @@ pub const Batch = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, id: []const u8) !*Self {
+    pub fn create(allocator: std.mem.Allocator, id: []const u8) !*Self {
         const batch = try allocator.create(Self);
         batch.* = .{
             .id = try allocator.dupe(u8, id),
-            .jobs = std.ArrayList(*Job).init(allocator),
+            .jobs = .empty,
             .allocator = allocator,
             .on_complete = null,
             .on_failure = null,
@@ -1095,16 +1039,16 @@ pub const Batch = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.jobs.items) |batch_job| {
-            batch_job.deinit();
+        for (self.jobs.items) |j| {
+            j.deinit();
         }
-        self.jobs.deinit();
+        self.jobs.deinit(self.allocator);
         self.allocator.free(self.id);
         self.allocator.destroy(self);
     }
 
-    pub fn add(self: *Self, batch_job: *Job) !*Self {
-        try self.jobs.append(batch_job);
+    pub fn add(self: *Self, j: *Job) !*Self {
+        try self.jobs.append(self.allocator, j);
         return self;
     }
 
@@ -1118,17 +1062,16 @@ pub const Batch = struct {
         return self;
     }
 
-    pub fn dispatch(self: *Self, queue: *Queue) !void {
-        for (self.jobs.items) |batch_job| {
-            try queue.driver.push(batch_job);
+    pub fn dispatch(self: *Self, q: *Queue) !void {
+        for (self.jobs.items) |j| {
+            try q.driver.push(j);
         }
-        // Transfer ownership - clear local list
         self.jobs.clearRetainingCapacity();
     }
 
     pub fn isComplete(self: *Self) bool {
-        for (self.jobs.items) |batch_job| {
-            if (batch_job.status != .completed) {
+        for (self.jobs.items) |j| {
+            if (j.status != .completed) {
                 return false;
             }
         }
@@ -1136,8 +1079,8 @@ pub const Batch = struct {
     }
 
     pub fn hasFailures(self: *Self) bool {
-        for (self.jobs.items) |batch_job| {
-            if (batch_job.status == .failed) {
+        for (self.jobs.items) |j| {
+            if (j.status == .failed) {
                 return true;
             }
         }
@@ -1146,18 +1089,18 @@ pub const Batch = struct {
 
     pub fn completedCount(self: *Self) usize {
         var count: usize = 0;
-        for (self.jobs.items) |batch_job| {
-            if (batch_job.status == .completed) {
+        for (self.jobs.items) |j| {
+            if (j.status == .completed) {
                 count += 1;
             }
         }
         return count;
     }
 
-    pub fn failedCount(self: *Self) usize {
+    pub fn failedCountBatch(self: *Self) usize {
         var count: usize = 0;
-        for (self.jobs.items) |batch_job| {
-            if (batch_job.status == .failed) {
+        for (self.jobs.items) |j| {
+            if (j.status == .failed) {
                 count += 1;
             }
         }
@@ -1168,15 +1111,15 @@ pub const Batch = struct {
 // Tests
 test "job creation with fluent api" {
     const allocator = std.testing.allocator;
-    const job_instance = try Job.init(allocator, "SendEmail", "emails", "{\"to\": \"test@example.com\"}");
-    defer job_instance.deinit();
+    const j = try Job.create(allocator, "SendEmail", "emails", "{\"to\": \"test@example.com\"}");
+    defer j.deinit();
 
-    _ = job_instance.tries(5).timeout(30000).delay(60).highPriority();
+    _ = j.tries(5).timeout(30000).delay(60).highPriority();
 
-    try std.testing.expectEqual(@as(u32, 5), job_instance.max_attempts);
-    try std.testing.expectEqual(@as(u64, 30000), job_instance.timeout_ms);
-    try std.testing.expectEqual(@as(u8, 32), job_instance.priority);
-    try std.testing.expect(job_instance.delay_until != null);
+    try std.testing.expectEqual(@as(u32, 5), j.max_attempts);
+    try std.testing.expectEqual(@as(u64, 30000), j.timeout_ms);
+    try std.testing.expectEqual(@as(u8, 32), j.priority);
+    try std.testing.expect(j.delay_until != null);
 }
 
 test "backoff strategy calculations" {
@@ -1185,42 +1128,42 @@ test "backoff strategy calculations" {
     try std.testing.expectEqual(@as(u64, 1000), fixed.calculateDelay(5));
 
     const expo = BackoffConfig.exponential(1000, 2.0);
-    try std.testing.expectEqual(@as(u64, 1000), expo.calculateDelay(0)); // 1000 * 2^0
-    try std.testing.expectEqual(@as(u64, 2000), expo.calculateDelay(1)); // 1000 * 2^1
-    try std.testing.expectEqual(@as(u64, 4000), expo.calculateDelay(2)); // 1000 * 2^2
+    try std.testing.expectEqual(@as(u64, 1000), expo.calculateDelay(0));
+    try std.testing.expectEqual(@as(u64, 2000), expo.calculateDelay(1));
+    try std.testing.expectEqual(@as(u64, 4000), expo.calculateDelay(2));
 
     const custom_delays = [_]u64{ 1000, 5000, 10000 };
     const custom = BackoffConfig.custom(&custom_delays);
     try std.testing.expectEqual(@as(u64, 1000), custom.calculateDelay(0));
     try std.testing.expectEqual(@as(u64, 5000), custom.calculateDelay(1));
     try std.testing.expectEqual(@as(u64, 10000), custom.calculateDelay(2));
-    try std.testing.expectEqual(@as(u64, 10000), custom.calculateDelay(5)); // Capped at last value
+    try std.testing.expectEqual(@as(u64, 10000), custom.calculateDelay(5));
 }
 
 test "queue with job builder" {
     const allocator = std.testing.allocator;
-    var queue = try Queue.init(allocator, QueueConfig.default());
-    defer queue.deinit();
+    var q = try Queue.init(allocator, QueueConfig.default());
+    defer q.deinit();
 
-    var builder = try queue.job("ProcessPayment", "{\"amount\": 100}");
+    var builder = try q.job("ProcessPayment", "{\"amount\": 100}");
     _ = builder.tries(3).timeout(5000).highPriority();
     const created_job = try builder.dispatch();
 
     try std.testing.expectEqualStrings("ProcessPayment", created_job.name);
     try std.testing.expectEqual(@as(u32, 3), created_job.max_attempts);
-    try std.testing.expectEqual(@as(usize, 1), queue.pendingCount());
+    try std.testing.expectEqual(@as(usize, 1), q.pendingCount());
 }
 
 test "unique job prevention" {
     const allocator = std.testing.allocator;
-    var queue = try Queue.init(allocator, QueueConfig.default());
-    defer queue.deinit();
+    var q = try Queue.init(allocator, QueueConfig.default());
+    defer q.deinit();
 
-    var builder1 = try queue.job("SendEmail", "{}");
+    var builder1 = try q.job("SendEmail", "{}");
     _ = try builder1.unique("email_user_123");
     _ = try builder1.dispatch();
 
-    var builder2 = try queue.job("SendEmail", "{}");
+    var builder2 = try q.job("SendEmail", "{}");
     _ = try builder2.unique("email_user_123");
 
     const result = builder2.dispatch();
@@ -1229,18 +1172,16 @@ test "unique job prevention" {
 
 test "worker processes jobs" {
     const allocator = std.testing.allocator;
-    var queue = try Queue.init(allocator, QueueConfig.default());
-    defer queue.deinit();
+    var q = try Queue.init(allocator, QueueConfig.default());
+    defer q.deinit();
 
-    _ = try queue.dispatch("default", "job1");
-    _ = try queue.dispatch("default", "job2");
+    _ = try q.dispatch("default", "job1");
+    _ = try q.dispatch("default", "job2");
 
-    var worker = Worker.init(allocator, &queue);
+    var worker = Worker.init(allocator, &q);
 
     const Handler = struct {
-        fn handle(_: *Job) anyerror!void {
-            // Process job
-        }
+        fn handle(_: *Job) anyerror!void {}
     };
 
     const processed = try worker.workOnce(Handler.handle, 10);

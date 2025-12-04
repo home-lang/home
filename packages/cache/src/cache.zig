@@ -1,4 +1,11 @@
 const std = @import("std");
+const posix = std.posix;
+
+/// Helper to get current timestamp (Zig 0.16 compatible)
+fn getTimestamp() i64 {
+    const ts = posix.clock_gettime(.REALTIME) catch return 0;
+    return ts.sec;
+}
 
 /// Cache driver types
 pub const CacheDriverType = enum {
@@ -18,7 +25,7 @@ pub const CacheEntry = struct {
 
     pub fn init(allocator: std.mem.Allocator, value: []const u8, ttl_seconds: ?i64) !*CacheEntry {
         const entry = try allocator.create(CacheEntry);
-        const now = std.time.timestamp();
+        const now = getTimestamp();
 
         entry.* = .{
             .value = try allocator.dupe(u8, value),
@@ -44,14 +51,14 @@ pub const CacheEntry = struct {
 
     pub fn isExpired(self: *const CacheEntry) bool {
         if (self.expires_at) |expires| {
-            return std.time.timestamp() >= expires;
+            return getTimestamp() >= expires;
         }
         return false;
     }
 
     pub fn remainingTtl(self: *const CacheEntry) ?i64 {
         if (self.expires_at) |expires| {
-            const remaining = expires - std.time.timestamp();
+            const remaining = expires - getTimestamp();
             return if (remaining > 0) remaining else 0;
         }
         return null;
@@ -294,12 +301,12 @@ pub const MemoryCacheDriver = struct {
 
     fn pruneExpired(self: *Self) void {
         var it = self.cache.iterator();
-        var to_remove = std.ArrayList([]const u8).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove: std.ArrayList([]const u8) = .empty;
+        defer to_remove.deinit(self.allocator);
 
         while (it.next()) |entry| {
             if (entry.value_ptr.*.entry.isExpired()) {
-                to_remove.append(entry.key_ptr.*) catch continue;
+                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
@@ -443,21 +450,21 @@ pub const MemoryCacheDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var result = std.ArrayList([]const u8).init(self.allocator);
+        var result: std.ArrayList([]const u8) = .empty;
         var it = self.cache.iterator();
 
         while (it.next()) |entry| {
             if (pattern) |p| {
                 // Simple wildcard matching
                 if (matchPattern(entry.key_ptr.*, p)) {
-                    result.append(entry.key_ptr.*) catch continue;
+                    result.append(self.allocator, entry.key_ptr.*) catch continue;
                 }
             } else {
-                result.append(entry.key_ptr.*) catch continue;
+                result.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
-        return result.toOwnedSlice() catch &[_][]const u8{};
+        return result.toOwnedSlice(self.allocator) catch &[_][]const u8{};
     }
 
     fn deinit(ptr: *anyopaque) void {
@@ -573,7 +580,7 @@ pub const FilesystemCacheDriver = struct {
         const expires_at = std.mem.readInt(i64, header_buf[4..12], .little);
 
         // Check expiration
-        if (expires_at != 0 and std.time.timestamp() >= expires_at) {
+        if (expires_at != 0 and getTimestamp() >= expires_at) {
             std.fs.cwd().deleteFile(path) catch {};
             return null;
         }
@@ -604,7 +611,7 @@ pub const FilesystemCacheDriver = struct {
         defer file.close();
 
         const effective_ttl = ttl orelse self.config.default_ttl;
-        const expires_at: i64 = if (effective_ttl) |t| std.time.timestamp() + t else 0;
+        const expires_at: i64 = if (effective_ttl) |t| getTimestamp() + t else 0;
 
         // Write header
         var header_buf: [12]u8 = undefined;

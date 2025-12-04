@@ -1,4 +1,11 @@
 const std = @import("std");
+const posix = std.posix;
+
+/// Helper to get current timestamp (Zig 0.16 compatible)
+fn getTimestamp() i64 {
+    const ts = posix.clock_gettime(.REALTIME) catch return 0;
+    return ts.sec;
+}
 
 /// Realtime driver types
 pub const RealtimeDriverType = enum {
@@ -47,7 +54,7 @@ pub const BroadcastMessage = struct {
             .data = data,
             .channel_type = .public,
             .except_socket_id = null,
-            .timestamp = std.time.timestamp(),
+            .timestamp = getTimestamp(),
         };
     }
 
@@ -401,7 +408,7 @@ pub const SocketIODriver = struct {
 
         var room_it = self.rooms.iterator();
         while (room_it.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.rooms.deinit();
 
@@ -427,7 +434,7 @@ pub const MemoryDriver = struct {
             .config = config,
             .state = .disconnected,
             .subscriptions = std.StringHashMap(SubscriptionCallback).init(allocator),
-            .messages = std.ArrayList(BroadcastMessage).init(allocator),
+            .messages = .empty,
             .mutex = .{},
         };
         return self;
@@ -488,7 +495,7 @@ pub const MemoryDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.messages.append(message);
+        try self.messages.append(self.allocator, message);
 
         // Deliver to subscribers
         if (self.subscriptions.get(message.channel)) |callback| {
@@ -500,12 +507,12 @@ pub const MemoryDriver = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         _ = channel;
         // Return channel names as "subscribers" for testing
-        var result = std.ArrayList([]const u8).init(self.allocator);
+        var result: std.ArrayList([]const u8) = .empty;
         var it = self.subscriptions.keyIterator();
         while (it.next()) |key| {
-            result.append(key.*) catch continue;
+            result.append(self.allocator, key.*) catch continue;
         }
-        return result.toOwnedSlice() catch &[_][]const u8{};
+        return result.toOwnedSlice(self.allocator) catch &[_][]const u8{};
     }
 
     fn deinit(ptr: *anyopaque) void {
@@ -516,7 +523,7 @@ pub const MemoryDriver = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.subscriptions.deinit();
-        self.messages.deinit();
+        self.messages.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -666,7 +673,7 @@ pub const Channel = struct {
             .data = data,
             .channel_type = self.channel_type,
             .except_socket_id = null,
-            .timestamp = std.time.timestamp(),
+            .timestamp = getTimestamp(),
         };
         return self.broadcast.driver.broadcast(message);
     }

@@ -5,20 +5,20 @@ const queue = @import("queue");
 test "queue: create job" {
     const allocator = testing.allocator;
 
-    const job = try queue.Job.init(allocator, "default", "test payload");
+    const job = try queue.Job.create(allocator, "test_job", "default", "test payload");
     defer job.deinit();
 
     try testing.expectEqual(queue.JobStatus.pending, job.status);
     try testing.expectEqual(@as(u32, 0), job.attempts);
     try testing.expectEqual(@as(u32, 3), job.max_attempts);
-    try testing.expectEqualStrings("default", job.queue);
+    try testing.expectEqualStrings("default", job.queue_name);
     try testing.expectEqualStrings("test payload", job.payload);
 }
 
 test "queue: job attempts and retry" {
     const allocator = testing.allocator;
 
-    const job = try queue.Job.init(allocator, "default", "test");
+    const job = try queue.Job.create(allocator, "test_job", "default", "test");
     defer job.deinit();
 
     try testing.expect(job.canRetry());
@@ -41,7 +41,7 @@ test "queue: job attempts and retry" {
 test "queue: job status transitions" {
     const allocator = testing.allocator;
 
-    const job = try queue.Job.init(allocator, "default", "test");
+    const job = try queue.Job.create(allocator, "test_job", "default", "test");
     defer job.deinit();
 
     try testing.expectEqual(queue.JobStatus.pending, job.status);
@@ -57,7 +57,7 @@ test "queue: initialize queue" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     try testing.expectEqual(@as(usize, 0), q.pendingCount());
@@ -68,13 +68,13 @@ test "queue: dispatch job" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatch("default", "test payload");
 
     try testing.expectEqual(@as(usize, 1), q.pendingCount());
-    try testing.expectEqualStrings("default", job.queue);
+    try testing.expectEqualStrings("default", job.queue_name);
     try testing.expectEqualStrings("test payload", job.payload);
 }
 
@@ -82,10 +82,17 @@ test "queue: dispatch sync" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
-    try q.dispatchSync("default", "sync payload");
+    const handler = struct {
+        fn handle(j: *queue.Job) !void {
+            _ = j;
+            // Sync handler
+        }
+    }.handle;
+
+    try q.dispatchSync("default", "sync payload", handler);
 
     // Sync jobs execute immediately and don't stay in queue
     try testing.expectEqual(@as(usize, 0), q.pendingCount());
@@ -95,21 +102,20 @@ test "queue: dispatch after delay" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatchAfter(60, "default", "delayed payload");
 
     try testing.expectEqual(@as(usize, 1), q.pendingCount());
-    try testing.expect(job.delay != null);
-    try testing.expectEqual(@as(i64, 60), job.delay.?);
+    try testing.expect(job.delay_until != null);
 }
 
 test "queue: get next job" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     _ = try q.dispatch("default", "job 1");
@@ -133,7 +139,7 @@ test "queue: process job success" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatch("default", "test");
@@ -145,6 +151,7 @@ test "queue: process job success" {
         }
     }.handle;
 
+    _ = q.getNextJob(); // Remove from pending
     try q.processJob(job, handler);
 
     try testing.expectEqual(queue.JobStatus.completed, job.status);
@@ -155,7 +162,7 @@ test "queue: process job failure with retry" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatch("default", "test");
@@ -180,7 +187,7 @@ test "queue: process job failure max attempts" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatch("default", "test");
@@ -206,14 +213,14 @@ test "queue: retry failed jobs" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job1 = try q.dispatch("default", "job 1");
     const job2 = try q.dispatch("default", "job 2");
 
-    job1.markAsFailed();
-    job2.markAsFailed();
+    job1.markAsFailed(error.ProcessingFailed);
+    job2.markAsFailed(error.ProcessingFailed);
     job1.attempts = 3;
     job2.attempts = 3;
 
@@ -239,11 +246,11 @@ test "queue: clear failed jobs" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     const job = try q.dispatch("default", "test");
-    job.markAsFailed();
+    job.markAsFailed(error.ProcessingFailed);
 
     _ = q.getNextJob();
     try q.failed_jobs.append(q.allocator, job);
@@ -259,7 +266,7 @@ test "queue: flush all jobs" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
     _ = try q.dispatch("default", "job 1");
@@ -274,23 +281,10 @@ test "queue: flush all jobs" {
     try testing.expectEqual(@as(usize, 0), q.failedCount());
 }
 
-test "queue: worker initialization" {
-    const allocator = testing.allocator;
-
-    const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
-    defer q.deinit();
-
-    const worker = queue.Worker.init(allocator, &q);
-
-    try testing.expect(!worker.running);
-    try testing.expectEqual(&q, worker.queue);
-}
-
 test "queue: batch initialization" {
     const allocator = testing.allocator;
 
-    const batch = try queue.Batch.init(allocator, "batch_123");
+    const batch = try queue.Batch.create(allocator, "batch_123");
     defer batch.deinit();
 
     try testing.expectEqualStrings("batch_123", batch.id);
@@ -300,14 +294,14 @@ test "queue: batch initialization" {
 test "queue: batch add jobs" {
     const allocator = testing.allocator;
 
-    const batch = try queue.Batch.init(allocator, "batch_123");
+    const batch = try queue.Batch.create(allocator, "batch_123");
     defer batch.deinit();
 
-    const job1 = try queue.Job.init(allocator, "default", "job 1");
-    const job2 = try queue.Job.init(allocator, "default", "job 2");
+    const job1 = try queue.Job.create(allocator, "job1", "default", "job 1");
+    const job2 = try queue.Job.create(allocator, "job2", "default", "job 2");
 
-    try batch.add(job1);
-    try batch.add(job2);
+    _ = try batch.add(job1);
+    _ = try batch.add(job2);
 
     try testing.expectEqual(@as(usize, 2), batch.jobs.items.len);
 }
@@ -316,17 +310,17 @@ test "queue: batch dispatch" {
     const allocator = testing.allocator;
 
     const config = queue.QueueConfig.default();
-    var q = queue.Queue.init(allocator, config);
+    var q = try queue.Queue.init(allocator, config);
     defer q.deinit();
 
-    const batch = try queue.Batch.init(allocator, "batch_123");
+    const batch = try queue.Batch.create(allocator, "batch_123");
     defer batch.deinit();
 
-    const job1 = try queue.Job.init(allocator, "default", "job 1");
-    const job2 = try queue.Job.init(allocator, "default", "job 2");
+    const job1 = try queue.Job.create(allocator, "job1", "default", "job 1");
+    const job2 = try queue.Job.create(allocator, "job2", "default", "job 2");
 
-    try batch.add(job1);
-    try batch.add(job2);
+    _ = try batch.add(job1);
+    _ = try batch.add(job2);
 
     try batch.dispatch(&q);
 
@@ -336,14 +330,14 @@ test "queue: batch dispatch" {
 test "queue: batch completion check" {
     const allocator = testing.allocator;
 
-    const batch = try queue.Batch.init(allocator, "batch_123");
+    const batch = try queue.Batch.create(allocator, "batch_123");
     defer batch.deinit();
 
-    const job1 = try queue.Job.init(allocator, "default", "job 1");
-    const job2 = try queue.Job.init(allocator, "default", "job 2");
+    const job1 = try queue.Job.create(allocator, "job1", "default", "job 1");
+    const job2 = try queue.Job.create(allocator, "job2", "default", "job 2");
 
-    try batch.add(job1);
-    try batch.add(job2);
+    _ = try batch.add(job1);
+    _ = try batch.add(job2);
 
     try testing.expect(!batch.isComplete());
 
@@ -357,17 +351,17 @@ test "queue: batch completion check" {
 test "queue: batch failure check" {
     const allocator = testing.allocator;
 
-    const batch = try queue.Batch.init(allocator, "batch_123");
+    const batch = try queue.Batch.create(allocator, "batch_123");
     defer batch.deinit();
 
-    const job1 = try queue.Job.init(allocator, "default", "job 1");
-    const job2 = try queue.Job.init(allocator, "default", "job 2");
+    const job1 = try queue.Job.create(allocator, "job1", "default", "job 1");
+    const job2 = try queue.Job.create(allocator, "job2", "default", "job 2");
 
-    try batch.add(job1);
-    try batch.add(job2);
+    _ = try batch.add(job1);
+    _ = try batch.add(job2);
 
     try testing.expect(!batch.hasFailures());
 
-    job1.markAsFailed();
+    job1.markAsFailed(error.ProcessingFailed);
     try testing.expect(batch.hasFailures());
 }

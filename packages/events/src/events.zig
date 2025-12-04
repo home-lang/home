@@ -45,7 +45,7 @@ pub fn EventEmitter(comptime Events: type) type {
             return .{
                 .allocator = allocator,
                 .listeners = ListenerMap.init(allocator),
-                .wildcard_listeners = std.ArrayList(WildcardHandler).init(allocator),
+                .wildcard_listeners = .empty,
                 .mutex = .{},
             };
         }
@@ -53,10 +53,10 @@ pub fn EventEmitter(comptime Events: type) type {
         pub fn deinit(self: *Self) void {
             var it = self.listeners.iterator();
             while (it.next()) |entry| {
-                entry.value_ptr.deinit();
+                entry.value_ptr.deinit(self.allocator);
             }
             self.listeners.deinit();
-            self.wildcard_listeners.deinit();
+            self.wildcard_listeners.deinit(self.allocator);
         }
 
         /// Register an event handler
@@ -83,7 +83,7 @@ pub fn EventEmitter(comptime Events: type) type {
         pub fn onAny(self: *Self, handler: WildcardHandler) !void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            try self.wildcard_listeners.append(handler);
+            try self.wildcard_listeners.append(self.allocator, handler);
         }
 
         fn addListener(self: *Self, event: []const u8, handler: *const anyopaque, priority: Priority, once_flag: bool) !void {
@@ -92,7 +92,7 @@ pub fn EventEmitter(comptime Events: type) type {
 
             const result = try self.listeners.getOrPut(event);
             if (!result.found_existing) {
-                result.value_ptr.* = std.ArrayList(AnyListener).init(self.allocator);
+                result.value_ptr.* = .empty;
             }
 
             const listener = AnyListener{
@@ -109,7 +109,7 @@ pub fn EventEmitter(comptime Events: type) type {
                     break;
                 }
             }
-            try result.value_ptr.insert(insert_idx, listener);
+            try result.value_ptr.insert(self.allocator, insert_idx, listener);
         }
 
         /// Remove an event handler
@@ -143,8 +143,8 @@ pub fn EventEmitter(comptime Events: type) type {
             const listeners = if (self.listeners.get(event)) |list| list.items else &[_]AnyListener{};
 
             // Copy once listeners to remove after
-            var to_remove = std.ArrayList(usize).init(self.allocator);
-            defer to_remove.deinit();
+            var to_remove: std.ArrayList(usize) = .empty;
+            defer to_remove.deinit(self.allocator);
 
             self.mutex.unlock();
 
@@ -153,7 +153,7 @@ pub fn EventEmitter(comptime Events: type) type {
                 const handler: Handler(Events.getEventType(event)) = @ptrCast(listener.handler_ptr);
                 handler(data);
                 if (listener.once) {
-                    to_remove.append(i) catch {};
+                    to_remove.append(self.allocator, i) catch {};
                 }
             }
 
@@ -194,12 +194,12 @@ pub fn EventEmitter(comptime Events: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            var names = std.ArrayList([]const u8).init(self.allocator);
+            var names: std.ArrayList([]const u8) = .empty;
             var it = self.listeners.keyIterator();
             while (it.next()) |key| {
-                names.append(key.*) catch continue;
+                names.append(self.allocator, key.*) catch continue;
             }
-            return names.toOwnedSlice() catch &[_][]const u8{};
+            return names.toOwnedSlice(self.allocator) catch &[_][]const u8{};
         }
 
         /// Remove all listeners
@@ -231,7 +231,7 @@ pub const SimpleEmitter = struct {
         return .{
             .allocator = allocator,
             .handlers = std.StringHashMap(std.ArrayList(SimpleHandler)).init(allocator),
-            .wildcard_handlers = std.ArrayList(WildcardHandler).init(allocator),
+            .wildcard_handlers = .empty,
             .mutex = .{},
         };
     }
@@ -239,10 +239,10 @@ pub const SimpleEmitter = struct {
     pub fn deinit(self: *Self) void {
         var it = self.handlers.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.handlers.deinit();
-        self.wildcard_handlers.deinit();
+        self.wildcard_handlers.deinit(self.allocator);
     }
 
     /// Register a handler for an event
@@ -252,16 +252,16 @@ pub const SimpleEmitter = struct {
 
         const result = try self.handlers.getOrPut(event);
         if (!result.found_existing) {
-            result.value_ptr.* = std.ArrayList(SimpleHandler).init(self.allocator);
+            result.value_ptr.* = .empty;
         }
-        try result.value_ptr.append(handler);
+        try result.value_ptr.append(self.allocator, handler);
     }
 
     /// Register a wildcard handler
     pub fn onAny(self: *Self, handler: WildcardHandler) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.wildcard_handlers.append(handler);
+        try self.wildcard_handlers.append(self.allocator, handler);
     }
 
     /// Remove a handler
