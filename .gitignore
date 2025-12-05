@@ -25,3 +25,6 @@ packages/.DS_Store
 /packages/events/.zig-cache
 /packages/storage/.zig-cache
 /packages/websocket/.zig-cache
+/packages/session/.zig-cache
+/packages/auth/.zig-cache
+/packages/validation/.zig-cache
