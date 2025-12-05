@@ -31,3 +31,6 @@ packages/.DS_Store
 /packages/queue/.zig-cache
 /packages/notifications/.zig-cache
 /packages/cache/.zig-cache
+/packages/ratelimit/.zig-cache
+/packages/i18n/.zig-cache
+/packages/scheduler/.zig-cache
