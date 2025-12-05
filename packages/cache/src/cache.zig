@@ -574,7 +574,7 @@ pub const FilesystemCacheDriver = struct {
 
         // Read header (key_len:u32, ttl:i64, key:...)
         var header_buf: [12]u8 = undefined;
-        _ = file.readAll(&header_buf) catch return null;
+        _ = file.preadAll(&header_buf, 0) catch return null;
 
         const key_len = std.mem.readInt(u32, header_buf[0..4], .little);
         const expires_at = std.mem.readInt(i64, header_buf[4..12], .little);
@@ -588,14 +588,22 @@ pub const FilesystemCacheDriver = struct {
         // Read and verify key
         const stored_key = self.allocator.alloc(u8, key_len) catch return null;
         defer self.allocator.free(stored_key);
-        _ = file.readAll(stored_key) catch return null;
+        _ = file.preadAll(stored_key, 12) catch return null;
 
         if (!std.mem.eql(u8, stored_key, key)) {
             return null; // Hash collision
         }
 
-        // Read value
-        const value = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return null;
+        // Read value - get file size and read remaining
+        const stat = file.stat() catch return null;
+        const value_start: usize = 12 + key_len;
+        if (stat.size <= value_start) return null;
+        const value_size = stat.size - value_start;
+        const value = self.allocator.alloc(u8, value_size) catch return null;
+        _ = file.preadAll(value, value_start) catch {
+            self.allocator.free(value);
+            return null;
+        };
         return value;
     }
 
@@ -719,7 +727,7 @@ pub const RedisCacheDriver = struct {
             };
         }
 
-        pub fn connect(self: *Redis) !void {
+        pub fn connect(self: *Redis) anyerror!void {
             if (self.socket != null) return;
 
             // Create socket
@@ -915,14 +923,14 @@ pub const RedisCacheDriver = struct {
             const len = try self.readInteger();
             if (len < 0) return null;
 
-            const size: usize = @intCast(len);
-            var data = try self.allocator.alloc(u8, size);
+            const data_size: usize = @intCast(len);
+            var data = try self.allocator.alloc(u8, data_size);
             errdefer self.allocator.free(data);
 
             var read: usize = 0;
-            while (read < size) {
+            while (read < data_size) {
                 if (self.read_pos >= self.read_len) try self.fillBuffer();
-                const available = @min(self.read_len - self.read_pos, size - read);
+                const available = @min(self.read_len - self.read_pos, data_size - read);
                 @memcpy(data[read .. read + available], self.read_buffer[self.read_pos .. self.read_pos + available]);
                 read += available;
                 self.read_pos += available;

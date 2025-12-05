@@ -28,3 +28,6 @@ packages/.DS_Store
 /packages/session/.zig-cache
 /packages/auth/.zig-cache
 /packages/validation/.zig-cache
+/packages/queue/.zig-cache
+/packages/notifications/.zig-cache
+/packages/cache/.zig-cache
