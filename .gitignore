@@ -22,3 +22,6 @@ packages/.DS_Store
 /packages/io/.zig-cache
 /packages/video/.zig-cache
 /packages/audio/.zig-cache
+/packages/events/.zig-cache
+/packages/storage/.zig-cache
+/packages/websocket/.zig-cache

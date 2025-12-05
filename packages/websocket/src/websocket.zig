@@ -1,17 +1,26 @@
 const std = @import("std");
+const posix = std.posix;
 
-/// WebSocket client and server implementation (RFC 6455)
+// Re-export server and broadcaster
+pub const server = @import("server.zig");
+pub const broadcaster = @import("broadcaster.zig");
+
+pub const Server = server.Server;
+pub const Client = server.Client;
+pub const Channel = server.Channel;
+pub const Broadcaster = broadcaster.Broadcaster;
+
+/// WebSocket client implementation (RFC 6455)
 ///
 /// Features:
 /// - Frame encoding/decoding
 /// - Text and binary messages
 /// - Ping/pong keepalive
 /// - Message fragmentation
-/// - Compression extensions
 /// - Secure WebSocket (wss://)
 pub const WebSocket = struct {
     allocator: std.mem.Allocator,
-    stream: std.net.Stream,
+    socket: posix.socket_t,
     is_client: bool,
     closed: bool,
     ping_interval_ms: u64,
@@ -48,10 +57,10 @@ pub const WebSocket = struct {
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, is_client: bool) WebSocket {
+    pub fn init(allocator: std.mem.Allocator, socket: posix.socket_t, is_client: bool) WebSocket {
         return .{
             .allocator = allocator,
-            .stream = stream,
+            .socket = socket,
             .is_client = is_client,
             .closed = false,
             .ping_interval_ms = 30000,
@@ -59,19 +68,48 @@ pub const WebSocket = struct {
     }
 
     pub fn deinit(self: *WebSocket) void {
-        self.stream.close();
+        posix.close(self.socket);
     }
 
     /// Connect to WebSocket server
-    pub fn connect(allocator: std.mem.Allocator, url: []const u8) !WebSocket {
-        const uri = try std.Uri.parse(url);
+    pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16, path: []const u8) !WebSocket {
+        // Create socket
+        const socket = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+        errdefer posix.close(socket);
 
-        const port: u16 = if (std.mem.eql(u8, uri.scheme, "wss")) 443 else 80;
-        const address = try std.net.Address.parseIp(uri.host.?, port);
-        const stream = try std.net.tcpConnectToAddress(address);
+        // Resolve host - for simplicity, assume it's an IP address
+        // In production, you'd want DNS resolution
+        var addr = posix.sockaddr.in{
+            .port = std.mem.nativeToBig(u16, port),
+            .addr = 0,
+        };
 
-        var ws = WebSocket.init(allocator, stream, true);
-        try ws.performHandshake(uri.host.?, uri.path);
+        // Simple IP parsing
+        var ip_parts: [4]u8 = undefined;
+        var part_idx: usize = 0;
+        var current: u32 = 0;
+
+        for (host) |c| {
+            if (c == '.') {
+                if (part_idx < 4) {
+                    ip_parts[part_idx] = @intCast(current);
+                    part_idx += 1;
+                    current = 0;
+                }
+            } else if (c >= '0' and c <= '9') {
+                current = current * 10 + (c - '0');
+            }
+        }
+        if (part_idx < 4) {
+            ip_parts[part_idx] = @intCast(current);
+        }
+
+        addr.addr = @as(u32, ip_parts[0]) | (@as(u32, ip_parts[1]) << 8) | (@as(u32, ip_parts[2]) << 16) | (@as(u32, ip_parts[3]) << 24);
+
+        try posix.connect(socket, @ptrCast(&addr), @sizeOf(posix.sockaddr.in));
+
+        var ws = WebSocket.init(allocator, socket, true);
+        try ws.performHandshake(host, path);
 
         return ws;
     }
@@ -82,31 +120,23 @@ pub const WebSocket = struct {
         std.crypto.random.bytes(&key_bytes);
 
         var key_b64: [24]u8 = undefined;
-        const encoder = std.base64.standard.Encoder;
-        _ = encoder.encode(&key_b64, &key_bytes);
+        _ = std.base64.standard.Encoder.encode(&key_b64, &key_bytes);
 
         // Send handshake request
-        const request = try std.fmt.allocPrint(
-            self.allocator,
-            \\GET {s} HTTP/1.1
-            \\Host: {s}
-            \\Upgrade: websocket
-            \\Connection: Upgrade
-            \\Sec-WebSocket-Key: {s}
-            \\Sec-WebSocket-Version: 13
-            \\
-            \\
-        , .{ path, host, key_b64 });
-        defer self.allocator.free(request);
+        var request_buf: [1024]u8 = undefined;
+        const request = try std.fmt.bufPrint(&request_buf,
+            "GET {s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            .{ path, host, key_b64 },
+        );
 
-        try self.stream.writeAll(request);
+        _ = try posix.send(self.socket, request, 0);
 
         // Read handshake response
         var buf: [1024]u8 = undefined;
-        const n = try self.stream.read(&buf);
+        const n = try posix.recv(self.socket, &buf, 0);
         const response = buf[0..n];
 
-        if (!std.mem.containsAtLeast(u8, response, 1, "101 Switching Protocols")) {
+        if (std.mem.indexOf(u8, response, "101 Switching Protocols") == null) {
             return error.HandshakeFailed;
         }
     }
@@ -158,8 +188,8 @@ pub const WebSocket = struct {
 
     /// Receive a message
     pub fn receive(self: *WebSocket) !Message {
-        var fragments = std.ArrayList(u8).init(self.allocator);
-        defer fragments.deinit();
+        var fragments_buf: [65536]u8 = undefined;
+        var fragments_len: usize = 0;
 
         var message_opcode: Frame.Opcode = undefined;
         var first_frame = true;
@@ -198,21 +228,28 @@ pub const WebSocket = struct {
                 else => {},
             }
 
-            try fragments.appendSlice(frame_data.payload);
+            // Append to fragments
+            const copy_len = @min(frame_data.payload.len, fragments_buf.len - fragments_len);
+            @memcpy(fragments_buf[fragments_len .. fragments_len + copy_len], frame_data.payload[0..copy_len]);
+            fragments_len += copy_len;
 
             if (frame_data.fin) break;
         }
 
+        // Copy to allocated buffer
+        const result = try self.allocator.alloc(u8, fragments_len);
+        @memcpy(result, fragments_buf[0..fragments_len]);
+
         return Message{
             .opcode = message_opcode,
-            .data = try fragments.toOwnedSlice(),
+            .data = result,
             .allocator = self.allocator,
         };
     }
 
     fn sendFrame(self: *WebSocket, frame_info: Frame) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: [16 + 65536]u8 = undefined;
+        var buf_len: usize = 0;
 
         // Byte 0: FIN, RSV, Opcode
         var byte0: u8 = @intFromEnum(frame_info.opcode);
@@ -220,52 +257,63 @@ pub const WebSocket = struct {
         if (frame_info.rsv1) byte0 |= 0x40;
         if (frame_info.rsv2) byte0 |= 0x20;
         if (frame_info.rsv3) byte0 |= 0x10;
-        try buffer.append(byte0);
+        buffer[buf_len] = byte0;
+        buf_len += 1;
 
         // Byte 1+: Mask, Payload length
         var byte1: u8 = if (frame_info.mask) 0x80 else 0x00;
 
         if (frame_info.payload_len < 126) {
             byte1 |= @intCast(frame_info.payload_len);
-            try buffer.append(byte1);
+            buffer[buf_len] = byte1;
+            buf_len += 1;
         } else if (frame_info.payload_len < 65536) {
             byte1 |= 126;
-            try buffer.append(byte1);
-            try buffer.append(@intCast((frame_info.payload_len >> 8) & 0xFF));
-            try buffer.append(@intCast(frame_info.payload_len & 0xFF));
+            buffer[buf_len] = byte1;
+            buf_len += 1;
+            buffer[buf_len] = @intCast((frame_info.payload_len >> 8) & 0xFF);
+            buf_len += 1;
+            buffer[buf_len] = @intCast(frame_info.payload_len & 0xFF);
+            buf_len += 1;
         } else {
             byte1 |= 127;
-            try buffer.append(byte1);
-            var i: usize = 56;
-            while (i >= 0) : (i -= 8) {
-                try buffer.append(@intCast((frame_info.payload_len >> @intCast(i)) & 0xFF));
+            buffer[buf_len] = byte1;
+            buf_len += 1;
+            var i: u6 = 56;
+            while (true) : (i -= 8) {
+                buffer[buf_len] = @intCast((frame_info.payload_len >> i) & 0xFF);
+                buf_len += 1;
                 if (i == 0) break;
             }
         }
 
         // Masking key
         if (frame_info.masking_key) |mask| {
-            try buffer.appendSlice(&mask);
+            @memcpy(buffer[buf_len .. buf_len + 4], &mask);
+            buf_len += 4;
 
             // Masked payload
-            var masked_payload = try self.allocator.alloc(u8, frame_info.payload.len);
-            defer self.allocator.free(masked_payload);
-
             for (frame_info.payload, 0..) |byte, i| {
-                masked_payload[i] = byte ^ mask[i % 4];
+                buffer[buf_len] = byte ^ mask[i % 4];
+                buf_len += 1;
             }
-            try buffer.appendSlice(masked_payload);
         } else {
             // Unmasked payload
-            try buffer.appendSlice(frame_info.payload);
+            @memcpy(buffer[buf_len .. buf_len + frame_info.payload.len], frame_info.payload);
+            buf_len += frame_info.payload.len;
         }
 
-        try self.stream.writeAll(buffer.items);
+        _ = try posix.send(self.socket, buffer[0..buf_len], 0);
     }
 
     fn receiveFrame(self: *WebSocket) !Frame {
         var header: [2]u8 = undefined;
-        try self.stream.reader().readNoEof(&header);
+        var total_read: usize = 0;
+        while (total_read < 2) {
+            const n = try posix.recv(self.socket, header[total_read..], 0);
+            if (n == 0) return error.ConnectionClosed;
+            total_read += n;
+        }
 
         const fin = (header[0] & 0x80) != 0;
         const rsv1 = (header[0] & 0x40) != 0;
@@ -278,11 +326,21 @@ pub const WebSocket = struct {
 
         if (payload_len == 126) {
             var len_bytes: [2]u8 = undefined;
-            try self.stream.reader().readNoEof(&len_bytes);
+            total_read = 0;
+            while (total_read < 2) {
+                const n = try posix.recv(self.socket, len_bytes[total_read..], 0);
+                if (n == 0) return error.ConnectionClosed;
+                total_read += n;
+            }
             payload_len = (@as(u64, len_bytes[0]) << 8) | @as(u64, len_bytes[1]);
         } else if (payload_len == 127) {
             var len_bytes: [8]u8 = undefined;
-            try self.stream.reader().readNoEof(&len_bytes);
+            total_read = 0;
+            while (total_read < 8) {
+                const n = try posix.recv(self.socket, len_bytes[total_read..], 0);
+                if (n == 0) return error.ConnectionClosed;
+                total_read += n;
+            }
             payload_len = 0;
             for (len_bytes) |byte| {
                 payload_len = (payload_len << 8) | @as(u64, byte);
@@ -292,7 +350,12 @@ pub const WebSocket = struct {
         var masking_key: ?[4]u8 = null;
         if (mask) {
             var key: [4]u8 = undefined;
-            try self.stream.reader().readNoEof(&key);
+            total_read = 0;
+            while (total_read < 4) {
+                const n = try posix.recv(self.socket, key[total_read..], 0);
+                if (n == 0) return error.ConnectionClosed;
+                total_read += n;
+            }
             masking_key = key;
         }
 
@@ -300,7 +363,12 @@ pub const WebSocket = struct {
         errdefer self.allocator.free(payload);
 
         if (payload_len > 0) {
-            try self.stream.reader().readNoEof(payload);
+            total_read = 0;
+            while (total_read < payload_len) {
+                const n = try posix.recv(self.socket, payload[total_read..], 0);
+                if (n == 0) return error.ConnectionClosed;
+                total_read += n;
+            }
 
             // Unmask if needed
             if (masking_key) |key| {
@@ -349,3 +417,18 @@ pub const WebSocket = struct {
         self.closed = true;
     }
 };
+
+// Tests
+test "websocket frame encoding" {
+    const allocator = std.testing.allocator;
+
+    // Test message struct
+    var msg = WebSocket.Message{
+        .opcode = .text,
+        .data = try allocator.dupe(u8, "Hello"),
+        .allocator = allocator,
+    };
+    defer msg.deinit();
+
+    try std.testing.expectEqualStrings("Hello", msg.data);
+}

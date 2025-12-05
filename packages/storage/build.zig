@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Module for use as dependency
-    _ = b.createModule(.{
-        .root_source_file = b.path("src/websocket.zig"),
+    const storage_mod = b.createModule(.{
+        .root_source_file = b.path("src/storage.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -14,13 +14,15 @@ pub fn build(b: *std.Build) void {
     // Tests
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/websocket.zig"),
+            .root_source_file = b.path("src/storage.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run websocket tests");
+    const test_step = b.step("test", "Run storage tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    _ = storage_mod;
 }
