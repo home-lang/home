@@ -34,3 +34,5 @@ packages/.DS_Store
 /packages/ratelimit/.zig-cache
 /packages/i18n/.zig-cache
 /packages/scheduler/.zig-cache
+/packages/mail/.zig-cache
+/packages/logging/.zig-cache
