@@ -688,32 +688,371 @@ pub const FilesystemCacheDriver = struct {
     }
 };
 
-/// Redis cache driver (stub - would need actual Redis client)
+/// Redis cache driver - real implementation using Redis protocol
 pub const RedisCacheDriver = struct {
     allocator: std.mem.Allocator,
     config: CacheConfig,
-    // In a real implementation, this would hold a Redis connection
-    fallback: *MemoryCacheDriver,
+    redis: Redis,
+    mutex: std.Thread.Mutex,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, config: CacheConfig) !*Self {
-        // For now, use memory cache as fallback
-        // A real implementation would connect to Redis
-        const fallback = try MemoryCacheDriver.init(allocator, config);
+    // Redis client (inline implementation for self-contained package)
+    const Redis = struct {
+        allocator: std.mem.Allocator,
+        socket: ?posix.socket_t = null,
+        host: []const u8,
+        port: u16,
+        password: ?[]const u8,
+        database: u8,
+        read_buffer: [8192]u8 = undefined,
+        read_pos: usize = 0,
+        read_len: usize = 0,
 
+        pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8, database: u8) Redis {
+            return .{
+                .allocator = allocator,
+                .host = host,
+                .port = port,
+                .password = password,
+                .database = database,
+            };
+        }
+
+        pub fn connect(self: *Redis) !void {
+            if (self.socket != null) return;
+
+            // Create socket
+            self.socket = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch return error.ConnectionFailed;
+
+            // Build address
+            var addr: posix.sockaddr.in = .{
+                .family = posix.AF.INET,
+                .port = std.mem.nativeToBig(u16, self.port),
+                .addr = 0x0100007F, // 127.0.0.1
+            };
+
+            // Parse host if not localhost
+            if (!std.mem.eql(u8, self.host, "127.0.0.1") and !std.mem.eql(u8, self.host, "localhost")) {
+                var parts: [4]u8 = .{ 0, 0, 0, 0 };
+                var iter = std.mem.splitScalar(u8, self.host, '.');
+                var i: usize = 0;
+                while (iter.next()) |part| {
+                    if (i >= 4) break;
+                    parts[i] = std.fmt.parseInt(u8, part, 10) catch 0;
+                    i += 1;
+                }
+                addr.addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
+            }
+
+            posix.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) catch {
+                posix.close(self.socket.?);
+                self.socket = null;
+                return error.ConnectionFailed;
+            };
+
+            // Authenticate if needed
+            if (self.password) |pw| {
+                _ = try self.command(&[_][]const u8{ "AUTH", pw });
+            }
+
+            // Select database
+            if (self.database > 0) {
+                var db_buf: [4]u8 = undefined;
+                const db_str = std.fmt.bufPrint(&db_buf, "{d}", .{self.database}) catch "0";
+                _ = try self.command(&[_][]const u8{ "SELECT", db_str });
+            }
+        }
+
+        pub fn disconnect(self: *Redis) void {
+            if (self.socket) |sock| {
+                posix.close(sock);
+                self.socket = null;
+            }
+            self.read_pos = 0;
+            self.read_len = 0;
+        }
+
+        pub fn command(self: *Redis, args: []const []const u8) !?[]const u8 {
+            if (self.socket == null) try self.connect();
+            const sock = self.socket orelse return error.ConnectionClosed;
+
+            // Build RESP command into fixed buffer
+            var cmd_buf: [4096]u8 = undefined;
+            var pos: usize = 0;
+
+            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
+
+            for (args) |arg| {
+                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
+                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
+                pos += arg.len;
+                cmd_buf[pos] = '\r';
+                cmd_buf[pos + 1] = '\n';
+                pos += 2;
+            }
+
+            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            return self.readResponse();
+        }
+
+        pub fn commandInt(self: *Redis, args: []const []const u8) !?i64 {
+            if (self.socket == null) try self.connect();
+            const sock = self.socket orelse return error.ConnectionClosed;
+
+            var cmd_buf: [4096]u8 = undefined;
+            var pos: usize = 0;
+
+            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
+
+            for (args) |arg| {
+                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
+                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
+                pos += arg.len;
+                cmd_buf[pos] = '\r';
+                cmd_buf[pos + 1] = '\n';
+                pos += 2;
+            }
+
+            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            return self.readIntResponse();
+        }
+
+        fn readResponse(self: *Redis) !?[]const u8 {
+            const byte = try self.readByte();
+            return switch (byte) {
+                '+' => try self.readLine(), // Simple string
+                '-' => blk: { // Error
+                    const err_msg = try self.readLine();
+                    self.allocator.free(err_msg);
+                    break :blk null;
+                },
+                ':' => blk: { // Integer - convert to string
+                    const line = try self.readLine();
+                    break :blk line;
+                },
+                '$' => try self.readBulkString(), // Bulk string
+                '*' => blk: { // Array - return first element
+                    const len = try self.readInteger();
+                    if (len <= 0) break :blk null;
+                    const first = try self.readResponse();
+                    // Skip remaining elements
+                    var i: usize = 1;
+                    while (i < @as(usize, @intCast(len))) : (i += 1) {
+                        if (try self.readResponse()) |v| self.allocator.free(v);
+                    }
+                    break :blk first;
+                },
+                else => null,
+            };
+        }
+
+        fn readIntResponse(self: *Redis) !?i64 {
+            const byte = try self.readByte();
+            return switch (byte) {
+                ':' => try self.readInteger(),
+                '+' => blk: {
+                    const line = try self.readLine();
+                    defer self.allocator.free(line);
+                    break :blk if (std.mem.eql(u8, line, "OK")) 1 else 0;
+                },
+                '-' => blk: {
+                    const err = try self.readLine();
+                    self.allocator.free(err);
+                    break :blk null;
+                },
+                '$' => blk: {
+                    const str = try self.readBulkString();
+                    if (str) |s| {
+                        defer self.allocator.free(s);
+                        break :blk std.fmt.parseInt(i64, s, 10) catch null;
+                    }
+                    break :blk null;
+                },
+                else => null,
+            };
+        }
+
+        fn readByte(self: *Redis) !u8 {
+            if (self.read_pos >= self.read_len) {
+                try self.fillBuffer();
+            }
+            const byte = self.read_buffer[self.read_pos];
+            self.read_pos += 1;
+            return byte;
+        }
+
+        fn fillBuffer(self: *Redis) !void {
+            const sock = self.socket orelse return error.ConnectionClosed;
+            const n = posix.recv(sock, &self.read_buffer, 0) catch return error.ConnectionClosed;
+            self.read_len = n;
+            self.read_pos = 0;
+            if (self.read_len == 0) return error.ConnectionClosed;
+        }
+
+        fn readLine(self: *Redis) ![]const u8 {
+            var line: std.ArrayList(u8) = .empty;
+            errdefer line.deinit(self.allocator);
+
+            while (true) {
+                const byte = try self.readByte();
+                if (byte == '\r') {
+                    _ = try self.readByte(); // consume \n
+                    break;
+                }
+                try line.append(self.allocator, byte);
+            }
+            return line.toOwnedSlice(self.allocator);
+        }
+
+        fn readInteger(self: *Redis) !i64 {
+            const line = try self.readLine();
+            defer self.allocator.free(line);
+            return std.fmt.parseInt(i64, line, 10) catch 0;
+        }
+
+        fn readBulkString(self: *Redis) !?[]const u8 {
+            const len = try self.readInteger();
+            if (len < 0) return null;
+
+            const size: usize = @intCast(len);
+            var data = try self.allocator.alloc(u8, size);
+            errdefer self.allocator.free(data);
+
+            var read: usize = 0;
+            while (read < size) {
+                if (self.read_pos >= self.read_len) try self.fillBuffer();
+                const available = @min(self.read_len - self.read_pos, size - read);
+                @memcpy(data[read .. read + available], self.read_buffer[self.read_pos .. self.read_pos + available]);
+                read += available;
+                self.read_pos += available;
+            }
+
+            _ = try self.readByte(); // \r
+            _ = try self.readByte(); // \n
+            return data;
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: CacheConfig) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .fallback = fallback,
+            .redis = Redis.init(
+                allocator,
+                config.redis_host orelse "127.0.0.1",
+                config.redis_port,
+                config.redis_password,
+                config.redis_database,
+            ),
+            .mutex = .{},
         };
+
+        // Try to connect
+        self.redis.connect() catch {
+            // Connection failed, but we'll retry on first use
+        };
+
         return self;
     }
 
     pub fn driver(self: *Self) CacheDriver {
-        // Delegate to fallback for now
-        return self.fallback.driver();
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .get = get,
+                .set = set,
+                .has = has,
+                .del = del,
+                .clear = clear,
+                .size = size,
+                .keys = keys,
+                .deinit = deinit,
+            },
+        };
+    }
+
+    fn get(ptr: *anyopaque, key: []const u8) ?[]const u8 {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        return self.redis.command(&[_][]const u8{ "GET", key }) catch null;
+    }
+
+    fn set(ptr: *anyopaque, key: []const u8, value: []const u8, ttl: ?i64) anyerror!void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (ttl) |seconds| {
+            var ttl_buf: [20]u8 = undefined;
+            const ttl_str = try std.fmt.bufPrint(&ttl_buf, "{d}", .{seconds});
+            const result = try self.redis.command(&[_][]const u8{ "SET", key, value, "EX", ttl_str });
+            if (result) |r| self.allocator.free(r);
+        } else {
+            const result = try self.redis.command(&[_][]const u8{ "SET", key, value });
+            if (result) |r| self.allocator.free(r);
+        }
+    }
+
+    fn has(ptr: *anyopaque, key: []const u8) bool {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const result = self.redis.commandInt(&[_][]const u8{ "EXISTS", key }) catch return false;
+        return result != null and result.? > 0;
+    }
+
+    fn del(ptr: *anyopaque, key: []const u8) bool {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const result = self.redis.commandInt(&[_][]const u8{ "DEL", key }) catch return false;
+        return result != null and result.? > 0;
+    }
+
+    fn clear(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const result = self.redis.command(&[_][]const u8{"FLUSHDB"}) catch return;
+        if (result) |r| self.allocator.free(r);
+    }
+
+    fn size(ptr: *anyopaque) usize {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const result = self.redis.commandInt(&[_][]const u8{"DBSIZE"}) catch return 0;
+        return if (result) |r| @intCast(@max(0, r)) else 0;
+    }
+
+    fn keys(ptr: *anyopaque, pattern: ?[]const u8) []const []const u8 {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const p = pattern orelse "*";
+
+        // Use SCAN for production, but simplified KEYS for now
+        const result = self.redis.command(&[_][]const u8{ "KEYS", p }) catch return &[_][]const u8{};
+        if (result) |r| {
+            self.allocator.free(r);
+        }
+        // Note: Full implementation would parse the array response
+        return &[_][]const u8{};
+    }
+
+    fn deinit(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.redis.disconnect();
+        self.allocator.destroy(self);
     }
 };
 

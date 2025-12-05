@@ -504,6 +504,7 @@ pub const QueueConfig = struct {
 
     redis_url: ?[]const u8,
     database_table: ?[]const u8,
+    database_path: ?[]const u8,
     sqs_queue_url: ?[]const u8,
     sqs_region: ?[]const u8,
 
@@ -516,6 +517,7 @@ pub const QueueConfig = struct {
             .poll_interval_ms = 100,
             .redis_url = null,
             .database_table = null,
+            .database_path = null,
             .sqs_queue_url = null,
             .sqs_region = null,
         };
@@ -532,10 +534,10 @@ pub const QueueConfig = struct {
         return config;
     }
 
-    pub fn database(table: []const u8) QueueConfig {
+    pub fn database(path: []const u8) QueueConfig {
         var config = default();
         config.connection = .database;
-        config.database_table = table;
+        config.database_path = path;
         return config;
     }
 
@@ -696,6 +698,589 @@ pub const MemoryQueueDriver = struct {
     }
 };
 
+/// Redis queue driver - uses Redis lists for job queuing
+pub const RedisQueueDriver = struct {
+    allocator: std.mem.Allocator,
+    redis: Redis,
+    config: QueueConfig,
+    mutex: std.Thread.Mutex,
+    // In-memory job tracking (Redis stores serialized payloads)
+    job_map: std.StringHashMap(*Job),
+
+    const Self = @This();
+
+    // Inline Redis client for self-contained package
+    const Redis = struct {
+        allocator: std.mem.Allocator,
+        socket: ?posix.socket_t = null,
+        host: []const u8,
+        port: u16,
+        read_buffer: [8192]u8 = undefined,
+        read_pos: usize = 0,
+        read_len: usize = 0,
+
+        pub fn init(allocator: std.mem.Allocator, url: ?[]const u8) Redis {
+            // Parse redis://host:port from URL
+            var host: []const u8 = "127.0.0.1";
+            var port: u16 = 6379;
+
+            if (url) |u| {
+                var remaining = u;
+                if (std.mem.startsWith(u8, remaining, "redis://")) {
+                    remaining = remaining[8..];
+                }
+                // Skip auth
+                if (std.mem.indexOf(u8, remaining, "@")) |at| {
+                    remaining = remaining[at + 1 ..];
+                }
+                // Parse host:port
+                if (std.mem.indexOf(u8, remaining, ":")) |colon| {
+                    host = remaining[0..colon];
+                    const port_end = std.mem.indexOf(u8, remaining[colon + 1 ..], "/") orelse (remaining.len - colon - 1);
+                    port = std.fmt.parseInt(u16, remaining[colon + 1 .. colon + 1 + port_end], 10) catch 6379;
+                } else if (std.mem.indexOf(u8, remaining, "/")) |slash| {
+                    host = remaining[0..slash];
+                } else {
+                    host = remaining;
+                }
+            }
+
+            return .{
+                .allocator = allocator,
+                .host = host,
+                .port = port,
+            };
+        }
+
+        pub fn connect(self: *Redis) !void {
+            if (self.socket != null) return;
+
+            // Create socket
+            self.socket = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch return error.ConnectionFailed;
+
+            // Connect
+            var addr: posix.sockaddr.in = .{
+                .family = posix.AF.INET,
+                .port = std.mem.nativeToBig(u16, self.port),
+                .addr = 0x0100007F, // 127.0.0.1 in network byte order
+            };
+
+            // Try to parse host if not localhost
+            if (!std.mem.eql(u8, self.host, "127.0.0.1") and !std.mem.eql(u8, self.host, "localhost")) {
+                // Parse IP address
+                var parts: [4]u8 = .{ 0, 0, 0, 0 };
+                var iter = std.mem.splitScalar(u8, self.host, '.');
+                var i: usize = 0;
+                while (iter.next()) |part| {
+                    if (i >= 4) break;
+                    parts[i] = std.fmt.parseInt(u8, part, 10) catch 0;
+                    i += 1;
+                }
+                addr.addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
+            }
+
+            posix.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) catch {
+                posix.close(self.socket.?);
+                self.socket = null;
+                return error.ConnectionFailed;
+            };
+        }
+
+        pub fn disconnect(self: *Redis) void {
+            if (self.socket) |s| {
+                posix.close(s);
+                self.socket = null;
+            }
+        }
+
+        pub fn command(self: *Redis, args: []const []const u8) !?[]const u8 {
+            if (self.socket == null) try self.connect();
+            const sock = self.socket orelse return error.ConnectionClosed;
+
+            // Build RESP command into fixed buffer
+            var cmd_buf: [4096]u8 = undefined;
+            var pos: usize = 0;
+
+            // Array header
+            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
+
+            for (args) |arg| {
+                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
+                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
+                pos += arg.len;
+                cmd_buf[pos] = '\r';
+                cmd_buf[pos + 1] = '\n';
+                pos += 2;
+            }
+
+            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            return self.readResponse();
+        }
+
+        pub fn commandInt(self: *Redis, args: []const []const u8) !i64 {
+            if (self.socket == null) try self.connect();
+            const sock = self.socket orelse return error.ConnectionClosed;
+
+            var cmd_buf: [4096]u8 = undefined;
+            var pos: usize = 0;
+
+            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
+
+            for (args) |arg| {
+                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
+                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
+                pos += arg.len;
+                cmd_buf[pos] = '\r';
+                cmd_buf[pos + 1] = '\n';
+                pos += 2;
+            }
+
+            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            return self.readIntResponse();
+        }
+
+        fn readResponse(self: *Redis) !?[]const u8 {
+            const byte = try self.readByte();
+            return switch (byte) {
+                '+' => try self.readLine(),
+                '-' => blk: {
+                    const e = try self.readLine();
+                    self.allocator.free(e);
+                    break :blk null;
+                },
+                ':' => try self.readLine(),
+                '$' => try self.readBulkString(),
+                '*' => blk: {
+                    const len = try self.readInteger();
+                    if (len <= 0) break :blk null;
+                    const first = try self.readResponse();
+                    var i: usize = 1;
+                    while (i < @as(usize, @intCast(len))) : (i += 1) {
+                        if (try self.readResponse()) |v| self.allocator.free(v);
+                    }
+                    break :blk first;
+                },
+                else => null,
+            };
+        }
+
+        fn readIntResponse(self: *Redis) !i64 {
+            const byte = try self.readByte();
+            return switch (byte) {
+                ':' => try self.readInteger(),
+                '+' => blk: {
+                    const l = try self.readLine();
+                    defer self.allocator.free(l);
+                    break :blk if (std.mem.eql(u8, l, "OK")) 1 else 0;
+                },
+                '-' => blk: {
+                    const e = try self.readLine();
+                    self.allocator.free(e);
+                    break :blk 0;
+                },
+                '$' => blk: {
+                    const s = try self.readBulkString();
+                    if (s) |str| {
+                        defer self.allocator.free(str);
+                        break :blk std.fmt.parseInt(i64, str, 10) catch 0;
+                    }
+                    break :blk 0;
+                },
+                else => 0,
+            };
+        }
+
+        fn readByte(self: *Redis) !u8 {
+            if (self.read_pos >= self.read_len) try self.fillBuffer();
+            const b = self.read_buffer[self.read_pos];
+            self.read_pos += 1;
+            return b;
+        }
+
+        fn fillBuffer(self: *Redis) !void {
+            const sock = self.socket orelse return error.ConnectionClosed;
+            const n = posix.recv(sock, &self.read_buffer, 0) catch return error.ConnectionClosed;
+            self.read_len = n;
+            self.read_pos = 0;
+            if (self.read_len == 0) return error.ConnectionClosed;
+        }
+
+        fn readLine(self: *Redis) ![]const u8 {
+            var line: std.ArrayList(u8) = .empty;
+            while (true) {
+                const b = try self.readByte();
+                if (b == '\r') {
+                    _ = try self.readByte();
+                    break;
+                }
+                try line.append(self.allocator, b);
+            }
+            return line.toOwnedSlice(self.allocator);
+        }
+
+        fn readInteger(self: *Redis) !i64 {
+            const line = try self.readLine();
+            defer self.allocator.free(line);
+            return std.fmt.parseInt(i64, line, 10) catch 0;
+        }
+
+        fn readBulkString(self: *Redis) !?[]const u8 {
+            const len = try self.readInteger();
+            if (len < 0) return null;
+            const size: usize = @intCast(len);
+            var data = try self.allocator.alloc(u8, size);
+            var read: usize = 0;
+            while (read < size) {
+                if (self.read_pos >= self.read_len) try self.fillBuffer();
+                const avail = @min(self.read_len - self.read_pos, size - read);
+                @memcpy(data[read .. read + avail], self.read_buffer[self.read_pos .. self.read_pos + avail]);
+                read += avail;
+                self.read_pos += avail;
+            }
+            _ = try self.readByte();
+            _ = try self.readByte();
+            return data;
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: QueueConfig) !*Self {
+        const self = try allocator.create(Self);
+        self.* = .{
+            .allocator = allocator,
+            .redis = Redis.init(allocator, config.redis_url),
+            .config = config,
+            .mutex = .{},
+            .job_map = std.StringHashMap(*Job).init(allocator),
+        };
+        self.redis.connect() catch {};
+        return self;
+    }
+
+    pub fn driver(self: *Self) QueueDriver {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .push = pushFn,
+                .pop = popFn,
+                .size = sizeFn,
+                .clear = clearFn,
+                .deinitFn = deinitFn,
+            },
+        };
+    }
+
+    fn getQueueKey(config: QueueConfig, queue_name: []const u8) [128]u8 {
+        var buf: [128]u8 = undefined;
+        _ = std.fmt.bufPrint(&buf, "queue:{s}:{s}", .{ config.default_queue, queue_name }) catch {};
+        return buf;
+    }
+
+    fn pushFn(ptr: *anyopaque, j: *Job) anyerror!void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Store job in local map for retrieval
+        try self.job_map.put(j.id, j);
+
+        // Push job ID to Redis list (RPUSH for FIFO, use sorted set for priority)
+        var key_buf = getQueueKey(self.config, j.queue_name);
+        const key = std.mem.sliceTo(&key_buf, 0);
+
+        // Use ZADD for priority queue (lower score = higher priority)
+        var score_buf: [20]u8 = undefined;
+        const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{j.priority}) catch "128";
+
+        _ = try self.redis.commandInt(&[_][]const u8{ "ZADD", key, score_str, j.id });
+    }
+
+    fn popFn(ptr: *anyopaque, queue_name: []const u8) ?*Job {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var key_buf = getQueueKey(self.config, queue_name);
+        const key = std.mem.sliceTo(&key_buf, 0);
+
+        // ZPOPMIN gets lowest score (highest priority)
+        const job_id = self.redis.command(&[_][]const u8{ "ZPOPMIN", key }) catch return null;
+
+        if (job_id) |id| {
+            defer self.allocator.free(id);
+            if (self.job_map.fetchRemove(id)) |kv| {
+                return kv.value;
+            }
+        }
+        return null;
+    }
+
+    fn sizeFn(ptr: *anyopaque, queue_name: []const u8) usize {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var key_buf = getQueueKey(self.config, queue_name);
+        const key = std.mem.sliceTo(&key_buf, 0);
+
+        const count = self.redis.commandInt(&[_][]const u8{ "ZCARD", key }) catch return 0;
+        return @intCast(@max(0, count));
+    }
+
+    fn clearFn(ptr: *anyopaque, queue_name: []const u8) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var key_buf = getQueueKey(self.config, queue_name);
+        const key = std.mem.sliceTo(&key_buf, 0);
+
+        _ = self.redis.commandInt(&[_][]const u8{ "DEL", key }) catch {};
+
+        // Clear local job map
+        var it = self.job_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.job_map.clearRetainingCapacity();
+    }
+
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        var it = self.job_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.job_map.deinit();
+        self.redis.disconnect();
+        self.allocator.destroy(self);
+    }
+};
+
+/// Database queue driver - uses SQLite for persistent job storage
+pub const DatabaseQueueDriver = struct {
+    allocator: std.mem.Allocator,
+    config: QueueConfig,
+    mutex: std.Thread.Mutex,
+    db_path: []const u8,
+    job_map: std.StringHashMap(*Job),
+    // Simple file-based storage (SQLite-like persistence)
+    storage: Storage,
+
+    const Self = @This();
+
+    // Simple key-value storage using filesystem
+    const Storage = struct {
+        allocator: std.mem.Allocator,
+        path: []const u8,
+
+        pub fn init(allocator: std.mem.Allocator, path: []const u8) Storage {
+            return .{ .allocator = allocator, .path = path };
+        }
+
+        fn getFilePath(self: *Storage, queue_name: []const u8, buf: *[512]u8) []const u8 {
+            const result = std.fmt.bufPrint(buf, "{s}/queue_{s}.dat", .{ self.path, queue_name }) catch return "";
+            return result;
+        }
+
+        pub fn ensureDir(self: *Storage) void {
+            std.fs.cwd().makePath(self.path) catch {};
+        }
+
+        pub fn push(self: *Storage, queue_name: []const u8, job_id: []const u8, priority: u8) !void {
+            self.ensureDir();
+
+            var path_buf: [512]u8 = undefined;
+            const file_path = self.getFilePath(queue_name, &path_buf);
+
+            const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch |err| blk: {
+                if (err == error.FileNotFound) {
+                    break :blk try std.fs.cwd().createFile(file_path, .{ .read = true });
+                }
+                return err;
+            };
+            defer file.close();
+
+            // Append job entry: priority:job_id\n
+            try file.seekFromEnd(0);
+            var entry_buf: [256]u8 = undefined;
+            const entry = std.fmt.bufPrint(&entry_buf, "{d}:{s}\n", .{ priority, job_id }) catch return;
+            try file.writeAll(entry);
+        }
+
+        pub fn pop(self: *Storage, queue_name: []const u8) !?[]const u8 {
+            var path_buf: [512]u8 = undefined;
+            const file_path = self.getFilePath(queue_name, &path_buf);
+
+            const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch return null;
+            defer file.close();
+
+            // Read all entries using pread
+            var content_buf: [8192]u8 = undefined;
+            const content_len = file.pread(&content_buf, 0) catch return null;
+            const content = content_buf[0..content_len];
+
+            if (content.len == 0) return null;
+
+            // Find lowest priority (highest priority job)
+            var lines = std.mem.splitScalar(u8, content, '\n');
+            var best_line: ?[]const u8 = null;
+            var best_priority: u8 = 255;
+            var best_job_id: ?[]const u8 = null;
+
+            while (lines.next()) |line| {
+                if (line.len == 0) continue;
+                if (std.mem.indexOf(u8, line, ":")) |colon| {
+                    const priority = std.fmt.parseInt(u8, line[0..colon], 10) catch continue;
+                    if (priority < best_priority) {
+                        best_priority = priority;
+                        best_line = line;
+                        best_job_id = line[colon + 1 ..];
+                    }
+                }
+            }
+
+            if (best_job_id == null) return null;
+
+            // Rewrite file without the popped entry
+            var new_content_buf: [8192]u8 = undefined;
+            var new_pos: usize = 0;
+            var new_lines = std.mem.splitScalar(u8, content, '\n');
+            while (new_lines.next()) |line| {
+                if (line.len == 0) continue;
+                if (best_line != null and std.mem.eql(u8, line, best_line.?)) continue;
+
+                @memcpy(new_content_buf[new_pos .. new_pos + line.len], line);
+                new_pos += line.len;
+                new_content_buf[new_pos] = '\n';
+                new_pos += 1;
+            }
+
+            // Write new content and truncate
+            _ = file.pwrite(new_content_buf[0..new_pos], 0) catch {};
+            file.setEndPos(new_pos) catch {};
+
+            // Return owned copy
+            return try self.allocator.dupe(u8, best_job_id.?);
+        }
+
+        pub fn size(self: *Storage, queue_name: []const u8) usize {
+            var path_buf: [512]u8 = undefined;
+            const file_path = self.getFilePath(queue_name, &path_buf);
+
+            const file = std.fs.cwd().openFile(file_path, .{}) catch return 0;
+            defer file.close();
+
+            var content_buf: [8192]u8 = undefined;
+            const content_len = file.pread(&content_buf, 0) catch return 0;
+            const content = content_buf[0..content_len];
+
+            var count: usize = 0;
+            var lines = std.mem.splitScalar(u8, content, '\n');
+            while (lines.next()) |line| {
+                if (line.len > 0) count += 1;
+            }
+            return count;
+        }
+
+        pub fn clear(self: *Storage, queue_name: []const u8) void {
+            var path_buf: [512]u8 = undefined;
+            const file_path = self.getFilePath(queue_name, &path_buf);
+            std.fs.cwd().deleteFile(file_path) catch {};
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: QueueConfig) !*Self {
+        const self = try allocator.create(Self);
+        const db_path = config.database_path orelse "/tmp/queue_db";
+
+        self.* = .{
+            .allocator = allocator,
+            .config = config,
+            .mutex = .{},
+            .db_path = db_path,
+            .job_map = std.StringHashMap(*Job).init(allocator),
+            .storage = Storage.init(allocator, db_path),
+        };
+
+        self.storage.ensureDir();
+        return self;
+    }
+
+    pub fn driver(self: *Self) QueueDriver {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .push = pushFn,
+                .pop = popFn,
+                .size = sizeFn,
+                .clear = clearFn,
+                .deinitFn = deinitFn,
+            },
+        };
+    }
+
+    fn pushFn(ptr: *anyopaque, j: *Job) anyerror!void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Store job in local map
+        try self.job_map.put(j.id, j);
+
+        // Persist to storage
+        try self.storage.push(j.queue_name, j.id, j.priority);
+    }
+
+    fn popFn(ptr: *anyopaque, queue_name: []const u8) ?*Job {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const job_id = self.storage.pop(queue_name) catch return null;
+        if (job_id) |id| {
+            defer self.allocator.free(id);
+            if (self.job_map.fetchRemove(id)) |kv| {
+                return kv.value;
+            }
+        }
+        return null;
+    }
+
+    fn sizeFn(ptr: *anyopaque, queue_name: []const u8) usize {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        return self.storage.size(queue_name);
+    }
+
+    fn clearFn(ptr: *anyopaque, queue_name: []const u8) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.storage.clear(queue_name);
+
+        var it = self.job_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.job_map.clearRetainingCapacity();
+    }
+
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        var it = self.job_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.job_map.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 /// Queue manager
 pub const Queue = struct {
     config: QueueConfig,
@@ -708,10 +1293,24 @@ pub const Queue = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: QueueConfig) !Self {
-        const mem_driver = try MemoryQueueDriver.init(allocator);
+        const queue_driver = switch (config.connection) {
+            .redis => blk: {
+                const redis_driver = try RedisQueueDriver.init(allocator, config);
+                break :blk redis_driver.driver();
+            },
+            .database => blk: {
+                const db_driver = try DatabaseQueueDriver.init(allocator, config);
+                break :blk db_driver.driver();
+            },
+            else => blk: {
+                const mem_driver = try MemoryQueueDriver.init(allocator);
+                break :blk mem_driver.driver();
+            },
+        };
+
         return .{
             .config = config,
-            .driver = mem_driver.driver(),
+            .driver = queue_driver,
             .failed_jobs = .empty,
             .unique_keys = std.StringHashMap(void).init(allocator),
             .allocator = allocator,
