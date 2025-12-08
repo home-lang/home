@@ -41,3 +41,5 @@ packages/.DS_Store
 /packages/http-client/.zig-cache
 /packages/middleware/.zig-cache
 /packages/templates/.zig-cache
+/packages/database/.zig-cache
+/packages/routing/.zig-cache

@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Module for use as dependency
-    const database_module = b.createModule(.{
-        .root_source_file = b.path("src/database.zig"),
+    _ = b.createModule(.{
+        .root_source_file = b.path("src/routing.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -14,14 +14,13 @@ pub fn build(b: *std.Build) void {
     // Tests
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/database_test.zig"),
+            .root_source_file = b.path("src/routing.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    unit_tests.root_module.addImport("database", database_module);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run database tests");
+    const test_step = b.step("test", "Run routing tests");
     test_step.dependOn(&run_unit_tests.step);
 }
