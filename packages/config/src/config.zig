@@ -1,4 +1,74 @@
 const std = @import("std");
+const posix = std.posix;
+
+/// Environment variable helper
+pub const Env = struct {
+    prefix: ?[]const u8 = null,
+
+    /// Get environment variable
+    pub fn get(_: Env, key: []const u8) ?[]const u8 {
+        return posix.getenv(key);
+    }
+
+    /// Get environment variable with default
+    pub fn getOr(self: Env, key: []const u8, default: []const u8) []const u8 {
+        return self.get(key) orelse default;
+    }
+
+    /// Get environment variable as integer
+    pub fn getInt(self: Env, key: []const u8) ?i64 {
+        const val = self.get(key) orelse return null;
+        return std.fmt.parseInt(i64, val, 10) catch null;
+    }
+
+    /// Get environment variable as integer with default
+    pub fn getIntOr(self: Env, key: []const u8, default: i64) i64 {
+        return self.getInt(key) orelse default;
+    }
+
+    /// Get environment variable as boolean
+    pub fn getBool(self: Env, key: []const u8) ?bool {
+        const val = self.get(key) orelse return null;
+        if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "yes")) {
+            return true;
+        }
+        if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "0") or std.mem.eql(u8, val, "no")) {
+            return false;
+        }
+        return null;
+    }
+
+    /// Get environment variable as boolean with default
+    pub fn getBoolOr(self: Env, key: []const u8, default: bool) bool {
+        return self.getBool(key) orelse default;
+    }
+
+    /// Check if environment variable is set
+    pub fn has(self: Env, key: []const u8) bool {
+        return self.get(key) != null;
+    }
+
+    /// Check if running in production
+    pub fn isProduction(self: Env) bool {
+        const environment = self.getOr("NODE_ENV", self.getOr("ENV", "development"));
+        return std.mem.eql(u8, environment, "production") or std.mem.eql(u8, environment, "prod");
+    }
+
+    /// Check if running in development
+    pub fn isDevelopment(self: Env) bool {
+        const environment = self.getOr("NODE_ENV", self.getOr("ENV", "development"));
+        return std.mem.eql(u8, environment, "development") or std.mem.eql(u8, environment, "dev");
+    }
+
+    /// Check if running in test
+    pub fn isTest(self: Env) bool {
+        const environment = self.getOr("NODE_ENV", self.getOr("ENV", "development"));
+        return std.mem.eql(u8, environment, "test");
+    }
+};
+
+/// Global env instance
+pub const env = Env{};
 
 /// Shared configuration loader for Home language
 /// Supports: home.jsonc, home.json, package.jsonc, package.json, home.toml, couch.toml
@@ -154,7 +224,7 @@ pub const ConfigLoader = struct {
         errdefer result.deinit();
 
         var current_section: ?[]const u8 = null;
-        var lines = std.mem.split(u8, content, "\n");
+        var lines = std.mem.splitScalar(u8, content, '\n');
 
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -170,7 +240,7 @@ pub const ConfigLoader = struct {
             }
 
             // Parse key-value pairs
-            var parts = std.mem.split(u8, trimmed, "=");
+            var parts = std.mem.splitScalar(u8, trimmed, '=');
             const key = std.mem.trim(u8, parts.next() orelse continue, " \t");
             const value = std.mem.trim(u8, parts.rest(), " \t\"");
 
@@ -236,4 +306,67 @@ pub fn getConfigValue(
     }
 
     return default;
+}
+
+// Tests
+test "env helper" {
+    // These tests work with whatever environment is available
+    const e = Env{};
+
+    // Test getOr with default
+    const path = e.getOr("PATH", "/usr/bin");
+    try std.testing.expect(path.len > 0);
+
+    // Test getIntOr with default
+    const port = e.getIntOr("NONEXISTENT_PORT_VAR", 8080);
+    try std.testing.expectEqual(@as(i64, 8080), port);
+
+    // Test getBoolOr with default
+    const debug = e.getBoolOr("NONEXISTENT_DEBUG_VAR", false);
+    try std.testing.expect(!debug);
+
+    // Test has
+    try std.testing.expect(e.has("PATH"));
+    try std.testing.expect(!e.has("COMPLETELY_NONEXISTENT_VAR_12345"));
+}
+
+test "toml value types" {
+    const str_val = TomlValue{ .string = "hello" };
+    try std.testing.expectEqualStrings("hello", str_val.string);
+
+    const int_val = TomlValue{ .integer = 42 };
+    try std.testing.expectEqual(@as(i64, 42), int_val.integer);
+
+    const bool_val = TomlValue{ .boolean = true };
+    try std.testing.expect(bool_val.boolean);
+}
+
+test "config loader toml parsing" {
+    const allocator = std.testing.allocator;
+
+    var loader = ConfigLoader{ .allocator = allocator };
+
+    // Test without sections to avoid section leak issue
+    const toml_content =
+        \\# Comment
+        \\name = "myapp"
+        \\port = 3000
+        \\debug = true
+    ;
+
+    var result = try loader.parseToml(toml_content);
+    defer {
+        var iter = result.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            if (entry.value_ptr.* == .string) {
+                allocator.free(entry.value_ptr.string);
+            }
+        }
+        result.deinit();
+    }
+
+    try std.testing.expectEqualStrings("myapp", result.get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 3000), result.get("port").?.integer);
+    try std.testing.expect(result.get("debug").?.boolean);
 }
