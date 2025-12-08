@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
 
     // Library
     const lib = b.addStaticLibrary(.{
-        .name = "aws",
-        .root_source_file = b.path("src/aws.zig"),
+        .name = "cloud",
+        .root_source_file = b.path("src/cloud.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -15,13 +15,13 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     // Module for use as dependency
-    _ = b.addModule("aws", .{
-        .root_source_file = b.path("src/aws.zig"),
+    _ = b.addModule("cloud", .{
+        .root_source_file = b.path("src/cloud.zig"),
     });
 
     // Tests
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/aws.zig"),
+        .root_source_file = b.path("src/cloud.zig"),
         .target = target,
         .optimize = optimize,
     });

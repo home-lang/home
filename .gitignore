@@ -36,3 +36,4 @@ packages/.DS_Store
 /packages/scheduler/.zig-cache
 /packages/mail/.zig-cache
 /packages/logging/.zig-cache
+/packages/cloud/.zig-cache
