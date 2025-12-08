@@ -39,3 +39,5 @@ packages/.DS_Store
 /packages/cloud/.zig-cache
 /packages/config/.zig-cache
 /packages/http-client/.zig-cache
+/packages/middleware/.zig-cache
+/packages/templates/.zig-cache
