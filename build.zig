@@ -116,6 +116,9 @@ pub fn build(b: *std.Build) void {
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
     const http_pkg = createPackage(b, "packages/http/src/http.zig", target, optimize, zig_test_framework);
 
+    // Cloud infrastructure package
+    const cloud_pkg = createPackage(b, "packages/cloud/src/cloud.zig", target, optimize, zig_test_framework);
+
     // Graphics packages (for games)
     const opengl_pkg = createPackage(b, "packages/graphics/src/opengl.zig", target, optimize, zig_test_framework);
     opengl_pkg.addImport("ffi", ffi_pkg);
@@ -224,6 +227,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("file", file_pkg);
     exe.root_module.addImport("network", network_pkg);
     exe.root_module.addImport("http", http_pkg);
+    exe.root_module.addImport("cloud", cloud_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -533,6 +537,18 @@ pub fn build(b: *std.Build) void {
 
     const run_signal_tests = b.addRunArtifact(signal_tests);
 
+    // Cloud tests
+    const cloud_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/cloud/tests/cloudformation_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cloud_tests.root_module.addImport("cloud", cloud_pkg);
+
+    const run_cloud_tests = b.addRunArtifact(cloud_tests);
+
     // MAC tests
     const mac_tests = b.addTest(.{
         .root_module = mac_pkg,
@@ -568,6 +584,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_env_tests.step);
     test_step.dependOn(&run_syscall_tests.step);
     test_step.dependOn(&run_signal_tests.step);
+    test_step.dependOn(&run_cloud_tests.step);
     test_step.dependOn(&run_mac_tests.step);
     test_step.dependOn(&run_tpm_tests.step);
 

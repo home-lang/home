@@ -1,12 +1,35 @@
 const std = @import("std");
 const posix = std.posix;
 
-// Re-export services
+// Re-export AWS services (runtime clients)
 pub const sqs = @import("sqs.zig");
 pub const ses = @import("ses.zig");
 pub const sns = @import("sns.zig");
 pub const dynamodb = @import("dynamodb.zig");
 pub const s3 = @import("s3.zig");
+
+// Re-export CloudFormation infrastructure-as-code modules
+pub const cloudformation = @import("cloudformation.zig");
+pub const resources = @import("resources/resources.zig");
+pub const presets = @import("presets.zig");
+
+// Convenience re-exports for CloudFormation
+pub const Builder = cloudformation.Builder;
+pub const Template = cloudformation.Template;
+pub const CfValue = cloudformation.CfValue;
+pub const Fn = cloudformation.Fn;
+pub const Resource = cloudformation.Resource;
+pub const Parameter = cloudformation.Parameter;
+pub const Output = cloudformation.Output;
+
+// Resource modules
+pub const Storage = resources.Storage;
+pub const Compute = resources.Compute;
+pub const Database = resources.Database;
+pub const Network = resources.Network;
+
+// Presets
+pub const Presets = presets.Presets;
 
 /// AWS region definitions
 pub const Region = enum {
