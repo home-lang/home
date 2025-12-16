@@ -1,429 +1,281 @@
+// Input Validation Framework for Home Programming Language
+//
+// This module provides comprehensive input validation with:
+// - Recursion depth limits to prevent stack overflow
+// - Input size limits to prevent memory exhaustion
+// - Resource limits for parsing/compilation
+// - Structured error reporting
+
 const std = @import("std");
 
-// Re-export modules
-pub const rules = @import("rules.zig");
-pub const messages = @import("messages.zig");
+/// Validation configuration for resource limits
+pub const ValidationConfig = struct {
+    /// Maximum recursion depth for nested structures
+    max_recursion_depth: usize = 256,
+    /// Maximum input size in bytes
+    max_input_size: usize = 10 * 1024 * 1024, // 10MB
+    /// Maximum number of tokens
+    max_tokens: usize = 1_000_000,
+    /// Maximum AST node count
+    max_ast_nodes: usize = 500_000,
+    /// Maximum string literal length
+    max_string_length: usize = 1 * 1024 * 1024, // 1MB
+    /// Maximum array literal size
+    max_array_size: usize = 100_000,
+    /// Maximum function parameter count
+    max_parameters: usize = 255,
+    /// Maximum local variable count per function
+    max_locals: usize = 65535,
+    /// Maximum nesting depth for types
+    max_type_depth: usize = 64,
+    /// Maximum generic type parameter count
+    max_type_params: usize = 32,
+    /// Maximum import depth (circular import detection)
+    max_import_depth: usize = 100,
+    /// Maximum match/switch arms
+    max_match_arms: usize = 1000,
+    /// Maximum struct field count
+    max_struct_fields: usize = 1000,
+    /// Maximum enum variant count
+    max_enum_variants: usize = 65535,
+    /// Timeout for parsing in milliseconds (0 = no timeout)
+    parse_timeout_ms: u64 = 30000,
+    /// Timeout for type checking in milliseconds
+    typecheck_timeout_ms: u64 = 60000,
+    /// Timeout for code generation in milliseconds
+    codegen_timeout_ms: u64 = 120000,
 
-/// Validation error
-pub const ValidationError = struct {
-    field: []const u8,
-    rule: []const u8,
-    message: []const u8,
-};
-
-/// Stored rules for a field
-const FieldRules = struct {
-    rules: []Rule,
-};
-
-/// Validation result
-pub const ValidationResult = struct {
-    allocator: std.mem.Allocator,
-    errors: std.ArrayListUnmanaged(ValidationError),
-    validated_data: std.StringHashMap([]const u8),
-
-    const Self = @This();
-
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Create a strict configuration for untrusted input
+    pub fn strict() ValidationConfig {
         return .{
-            .allocator = allocator,
-            .errors = .empty,
-            .validated_data = std.StringHashMap([]const u8).init(allocator),
+            .max_recursion_depth = 64,
+            .max_input_size = 1 * 1024 * 1024,
+            .max_tokens = 100_000,
+            .max_ast_nodes = 50_000,
+            .max_string_length = 64 * 1024,
+            .max_array_size = 10_000,
+            .max_parameters = 32,
+            .max_locals = 1024,
+            .max_type_depth = 16,
+            .max_type_params = 8,
+            .max_import_depth = 20,
+            .max_match_arms = 256,
+            .max_struct_fields = 256,
+            .max_enum_variants = 4096,
+            .parse_timeout_ms = 5000,
+            .typecheck_timeout_ms = 10000,
+            .codegen_timeout_ms = 30000,
         };
     }
 
-    pub fn deinit(self: *Self) void {
-        for (self.errors.items) |err| {
-            self.allocator.free(err.field);
-            self.allocator.free(err.rule);
-            self.allocator.free(err.message);
-        }
-        self.errors.deinit(self.allocator);
-
-        var iter = self.validated_data.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.validated_data.deinit();
-    }
-
-    pub fn passes(self: *Self) bool {
-        return self.errors.items.len == 0;
-    }
-
-    pub fn fails(self: *Self) bool {
-        return self.errors.items.len > 0;
-    }
-
-    pub fn addError(self: *Self, field: []const u8, rule: []const u8, message: []const u8) !void {
-        try self.errors.append(self.allocator, .{
-            .field = try self.allocator.dupe(u8, field),
-            .rule = try self.allocator.dupe(u8, rule),
-            .message = try self.allocator.dupe(u8, message),
-        });
-    }
-
-    pub fn getErrors(self: *Self, field: []const u8) []const ValidationError {
-        var count: usize = 0;
-        for (self.errors.items) |err| {
-            if (std.mem.eql(u8, err.field, field)) {
-                count += 1;
-            }
-        }
-
-        if (count == 0) return &[_]ValidationError{};
-
-        // Return all errors for field
-        const result = self.allocator.alloc(ValidationError, count) catch return &[_]ValidationError{};
-        var idx: usize = 0;
-        for (self.errors.items) |err| {
-            if (std.mem.eql(u8, err.field, field)) {
-                result[idx] = err;
-                idx += 1;
-            }
-        }
-        return result;
-    }
-
-    pub fn firstError(self: *Self, field: []const u8) ?[]const u8 {
-        for (self.errors.items) |err| {
-            if (std.mem.eql(u8, err.field, field)) {
-                return err.message;
-            }
-        }
-        return null;
-    }
-
-    pub fn allErrors(self: *Self) []const ValidationError {
-        return self.errors.items;
-    }
-};
-
-/// Rule type union
-pub const Rule = union(enum) {
-    required: void,
-    nullable: void,
-    string: void,
-    integer: void,
-    float: void,
-    boolean: void,
-    email: void,
-    url: void,
-    alpha: void,
-    alphanumeric: void,
-    numeric: void,
-    min: usize,
-    max: usize,
-    between: struct { min: usize, max: usize },
-    min_length: usize,
-    max_length: usize,
-    length: usize,
-    in_list: []const []const u8,
-    not_in: []const []const u8,
-    regex: []const u8,
-    confirmed: []const u8, // field name of confirmation
-    same: []const u8, // field name to compare
-    different: []const u8, // field name to differ from
-    uuid: void,
-    date: void,
-    ip: void,
-    ipv4: void,
-    ipv6: void,
-    json: void,
-    accepted: void, // true, "true", "yes", "on", "1"
-    digits: usize,
-    starts_with: []const u8,
-    ends_with: []const u8,
-    contains: []const u8,
-    custom: *const fn (value: ?[]const u8, data: std.StringHashMap([]const u8)) bool,
-};
-
-/// Validator for request data
-pub const Validator = struct {
-    allocator: std.mem.Allocator,
-    rules_map: std.StringHashMap([]Rule),
-    custom_messages: std.StringHashMap([]const u8),
-    message_provider: messages.MessageProvider,
-
-    const Self = @This();
-
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Create a permissive configuration for trusted input
+    pub fn permissive() ValidationConfig {
         return .{
-            .allocator = allocator,
-            .rules_map = std.StringHashMap([]Rule).init(allocator),
-            .custom_messages = std.StringHashMap([]const u8).init(allocator),
-            .message_provider = messages.MessageProvider.init(allocator),
+            .max_recursion_depth = 1024,
+            .max_input_size = 100 * 1024 * 1024,
+            .max_tokens = 10_000_000,
+            .max_ast_nodes = 5_000_000,
+            .max_string_length = 10 * 1024 * 1024,
+            .max_array_size = 1_000_000,
+            .max_parameters = 255,
+            .max_locals = 65535,
+            .max_type_depth = 128,
+            .max_type_params = 64,
+            .max_import_depth = 500,
+            .max_match_arms = 10000,
+            .max_struct_fields = 10000,
+            .max_enum_variants = 100000,
+            .parse_timeout_ms = 0,
+            .typecheck_timeout_ms = 0,
+            .codegen_timeout_ms = 0,
         };
-    }
-
-    pub fn deinit(self: *Self) void {
-        var iter = self.rules_map.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.rules_map.deinit();
-
-        var msg_iter = self.custom_messages.iterator();
-        while (msg_iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.custom_messages.deinit();
-
-        self.message_provider.deinit();
-    }
-
-    /// Add rules for a field
-    pub fn addRules(self: *Self, field: []const u8, field_rules: []const Rule) !void {
-        const key = try self.allocator.dupe(u8, field);
-        errdefer self.allocator.free(key);
-
-        const rules_copy = try self.allocator.alloc(Rule, field_rules.len);
-        @memcpy(rules_copy, field_rules);
-
-        try self.rules_map.put(key, rules_copy);
-    }
-
-    /// Add custom error message for field.rule
-    pub fn setMessage(self: *Self, key: []const u8, message: []const u8) !void {
-        const k = try self.allocator.dupe(u8, key);
-        errdefer self.allocator.free(k);
-
-        const v = try self.allocator.dupe(u8, message);
-        try self.custom_messages.put(k, v);
-    }
-
-    /// Validate data against rules
-    pub fn validate(self: *Self, data: std.StringHashMap([]const u8)) !ValidationResult {
-        var result = ValidationResult.init(self.allocator);
-        errdefer result.deinit();
-
-        var iter = self.rules_map.iterator();
-        while (iter.next()) |entry| {
-            const field = entry.key_ptr.*;
-            const field_rules = entry.value_ptr.*;
-            const value = data.get(field);
-
-            // Check if field is nullable
-            var is_nullable = false;
-            for (field_rules) |rule| {
-                if (rule == .nullable) {
-                    is_nullable = true;
-                    break;
-                }
-            }
-
-            // Skip validation if nullable and value is null/empty
-            if (is_nullable and (value == null or value.?.len == 0)) {
-                continue;
-            }
-
-            // Validate each rule
-            for (field_rules) |rule| {
-                const passed = self.validateRule(field, rule, value, data);
-                if (!passed) {
-                    const message = self.getMessage(field, rule);
-                    try result.addError(field, getRuleName(rule), message);
-                }
-            }
-
-            // Store validated value
-            if (value) |v| {
-                const key_copy = try self.allocator.dupe(u8, field);
-                const val_copy = try self.allocator.dupe(u8, v);
-                try result.validated_data.put(key_copy, val_copy);
-            }
-        }
-
-        return result;
-    }
-
-    fn validateRule(self: *Self, field: []const u8, rule: Rule, value: ?[]const u8, data: std.StringHashMap([]const u8)) bool {
-        _ = self;
-        _ = field;
-
-        return switch (rule) {
-            .required => value != null and value.?.len > 0,
-            .nullable => true,
-            .string => value != null,
-            .integer => if (value) |v| rules.isInteger(v) else true,
-            .float => if (value) |v| rules.isFloat(v) else true,
-            .boolean => if (value) |v| rules.isBoolean(v) else true,
-            .email => if (value) |v| rules.isEmail(v) else true,
-            .url => if (value) |v| rules.isUrl(v) else true,
-            .alpha => if (value) |v| rules.isAlpha(v) else true,
-            .alphanumeric => if (value) |v| rules.isAlphanumeric(v) else true,
-            .numeric => if (value) |v| rules.isNumeric(v) else true,
-            .min => |min| if (value) |v| rules.minValue(v, min) else true,
-            .max => |max| if (value) |v| rules.maxValue(v, max) else true,
-            .between => |b| if (value) |v| rules.between(v, b.min, b.max) else true,
-            .min_length => |min| if (value) |v| v.len >= min else true,
-            .max_length => |max| if (value) |v| v.len <= max else true,
-            .length => |len| if (value) |v| v.len == len else true,
-            .in_list => |list| if (value) |v| rules.inList(v, list) else true,
-            .not_in => |list| if (value) |v| !rules.inList(v, list) else true,
-            .regex => |pattern| if (value) |v| rules.matchesRegex(v, pattern) else true,
-            .confirmed => |confirm_field| blk: {
-                const confirm_value = data.get(confirm_field);
-                if (value == null and confirm_value == null) break :blk true;
-                if (value == null or confirm_value == null) break :blk false;
-                break :blk std.mem.eql(u8, value.?, confirm_value.?);
-            },
-            .same => |other_field| blk: {
-                const other_value = data.get(other_field);
-                if (value == null and other_value == null) break :blk true;
-                if (value == null or other_value == null) break :blk false;
-                break :blk std.mem.eql(u8, value.?, other_value.?);
-            },
-            .different => |other_field| blk: {
-                const other_value = data.get(other_field);
-                if (value == null or other_value == null) break :blk true;
-                break :blk !std.mem.eql(u8, value.?, other_value.?);
-            },
-            .uuid => if (value) |v| rules.isUuid(v) else true,
-            .date => if (value) |v| rules.isDate(v) else true,
-            .ip => if (value) |v| rules.isIp(v) else true,
-            .ipv4 => if (value) |v| rules.isIpv4(v) else true,
-            .ipv6 => if (value) |v| rules.isIpv6(v) else true,
-            .json => if (value) |v| rules.isJson(v) else true,
-            .accepted => if (value) |v| rules.isAccepted(v) else false,
-            .digits => |count| if (value) |v| rules.hasDigits(v, count) else true,
-            .starts_with => |prefix| if (value) |v| std.mem.startsWith(u8, v, prefix) else true,
-            .ends_with => |suffix| if (value) |v| std.mem.endsWith(u8, v, suffix) else true,
-            .contains => |substr| if (value) |v| std.mem.indexOf(u8, v, substr) != null else true,
-            .custom => |func| func(value, data),
-        };
-    }
-
-    fn getMessage(self: *Self, field: []const u8, rule: Rule) []const u8 {
-        const rule_name = getRuleName(rule);
-
-        // Check for custom message: field.rule
-        var key_buf: [256]u8 = undefined;
-        const key = std.fmt.bufPrint(&key_buf, "{s}.{s}", .{ field, rule_name }) catch return "Validation failed";
-
-        if (self.custom_messages.get(key)) |custom| {
-            return custom;
-        }
-
-        // Fall back to default message
-        return self.message_provider.getMessage(rule_name);
     }
 };
 
-fn getRuleName(rule: Rule) []const u8 {
-    return switch (rule) {
-        .required => "required",
-        .nullable => "nullable",
-        .string => "string",
-        .integer => "integer",
-        .float => "float",
-        .boolean => "boolean",
-        .email => "email",
-        .url => "url",
-        .alpha => "alpha",
-        .alphanumeric => "alphanumeric",
-        .numeric => "numeric",
-        .min => "min",
-        .max => "max",
-        .between => "between",
-        .min_length => "min_length",
-        .max_length => "max_length",
-        .length => "length",
-        .in_list => "in_list",
-        .not_in => "not_in",
-        .regex => "regex",
-        .confirmed => "confirmed",
-        .same => "same",
-        .different => "different",
-        .uuid => "uuid",
-        .date => "date",
-        .ip => "ip",
-        .ipv4 => "ipv4",
-        .ipv6 => "ipv6",
-        .json => "json",
-        .accepted => "accepted",
-        .digits => "digits",
-        .starts_with => "starts_with",
-        .ends_with => "ends_with",
-        .contains => "contains",
-        .custom => "custom",
+/// Validation error types
+pub const ValidationError = error{
+    InputTooLarge,
+    RecursionDepthExceeded,
+    TooManyTokens,
+    TooManyAstNodes,
+    StringTooLong,
+    ArrayTooLarge,
+    TooManyParameters,
+    TooManyLocals,
+    TypeNestingTooDeep,
+    TooManyTypeParams,
+    ImportDepthExceeded,
+    TooManyMatchArms,
+    TooManyStructFields,
+    TooManyEnumVariants,
+    Timeout,
+    MemoryLimitExceeded,
+    InvalidUtf8,
+    NullByteInInput,
+};
+
+/// Validation context for tracking state during validation
+pub const ValidationContext = struct {
+    config: ValidationConfig,
+    current_recursion_depth: usize = 0,
+    token_count: usize = 0,
+    ast_node_count: usize = 0,
+    import_depth: usize = 0,
+    start_time: i64,
+    phase: Phase = .parsing,
+
+    pub const Phase = enum { parsing, type_checking, code_generation };
+
+    pub fn init(config: ValidationConfig) ValidationContext {
+        return .{ .config = config, .start_time = std.time.milliTimestamp() };
+    }
+
+    pub fn enterRecursion(self: *ValidationContext) ValidationError!void {
+        self.current_recursion_depth += 1;
+        if (self.current_recursion_depth > self.config.max_recursion_depth) {
+            return ValidationError.RecursionDepthExceeded;
+        }
+    }
+
+    pub fn exitRecursion(self: *ValidationContext) void {
+        if (self.current_recursion_depth > 0) self.current_recursion_depth -= 1;
+    }
+
+    pub fn recordToken(self: *ValidationContext) ValidationError!void {
+        self.token_count += 1;
+        if (self.token_count > self.config.max_tokens) return ValidationError.TooManyTokens;
+    }
+
+    pub fn recordAstNode(self: *ValidationContext) ValidationError!void {
+        self.ast_node_count += 1;
+        if (self.ast_node_count > self.config.max_ast_nodes) return ValidationError.TooManyAstNodes;
+    }
+
+    pub fn enterImport(self: *ValidationContext) ValidationError!void {
+        self.import_depth += 1;
+        if (self.import_depth > self.config.max_import_depth) return ValidationError.ImportDepthExceeded;
+    }
+
+    pub fn exitImport(self: *ValidationContext) void {
+        if (self.import_depth > 0) self.import_depth -= 1;
+    }
+
+    pub fn checkTimeout(self: *ValidationContext) ValidationError!void {
+        const timeout_ms = switch (self.phase) {
+            .parsing => self.config.parse_timeout_ms,
+            .type_checking => self.config.typecheck_timeout_ms,
+            .code_generation => self.config.codegen_timeout_ms,
+        };
+        if (timeout_ms == 0) return;
+        const elapsed = std.time.milliTimestamp() - self.start_time;
+        if (elapsed > @as(i64, @intCast(timeout_ms))) return ValidationError.Timeout;
+    }
+
+    pub fn setPhase(self: *ValidationContext, phase: Phase) void {
+        self.phase = phase;
+        self.start_time = std.time.milliTimestamp();
+    }
+};
+
+/// Input validator for checking raw input before processing
+pub const InputValidator = struct {
+    config: ValidationConfig,
+
+    pub fn init(config: ValidationConfig) InputValidator {
+        return .{ .config = config };
+    }
+
+    pub fn validateInput(self: *const InputValidator, input: []const u8) ValidationError!void {
+        if (input.len > self.config.max_input_size) return ValidationError.InputTooLarge;
+        if (!std.unicode.utf8ValidateSlice(input)) return ValidationError.InvalidUtf8;
+        if (std.mem.indexOfScalar(u8, input, 0) != null) return ValidationError.NullByteInInput;
+    }
+
+    pub fn validateString(self: *const InputValidator, str: []const u8) ValidationError!void {
+        if (str.len > self.config.max_string_length) return ValidationError.StringTooLong;
+    }
+
+    pub fn validateArraySize(self: *const InputValidator, size: usize) ValidationError!void {
+        if (size > self.config.max_array_size) return ValidationError.ArrayTooLarge;
+    }
+
+    pub fn validateParameterCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_parameters) return ValidationError.TooManyParameters;
+    }
+
+    pub fn validateLocalCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_locals) return ValidationError.TooManyLocals;
+    }
+
+    pub fn validateTypeDepth(self: *const InputValidator, depth: usize) ValidationError!void {
+        if (depth > self.config.max_type_depth) return ValidationError.TypeNestingTooDeep;
+    }
+
+    pub fn validateTypeParamCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_type_params) return ValidationError.TooManyTypeParams;
+    }
+
+    pub fn validateMatchArmCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_match_arms) return ValidationError.TooManyMatchArms;
+    }
+
+    pub fn validateStructFieldCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_struct_fields) return ValidationError.TooManyStructFields;
+    }
+
+    pub fn validateEnumVariantCount(self: *const InputValidator, count: usize) ValidationError!void {
+        if (count > self.config.max_enum_variants) return ValidationError.TooManyEnumVariants;
+    }
+};
+
+/// RAII guard for recursion depth tracking
+pub const RecursionGuard = struct {
+    context: *ValidationContext,
+
+    pub fn init(context: *ValidationContext) ValidationError!RecursionGuard {
+        try context.enterRecursion();
+        return .{ .context = context };
+    }
+
+    pub fn deinit(self: RecursionGuard) void {
+        self.context.exitRecursion();
+    }
+};
+
+/// RAII guard for import depth tracking
+pub const ImportGuard = struct {
+    context: *ValidationContext,
+
+    pub fn init(context: *ValidationContext) ValidationError!ImportGuard {
+        try context.enterImport();
+        return .{ .context = context };
+    }
+
+    pub fn deinit(self: ImportGuard) void {
+        self.context.exitImport();
+    }
+};
+
+/// Format validation error for display
+pub fn formatValidationError(err: ValidationError) []const u8 {
+    return switch (err) {
+        ValidationError.InputTooLarge => "Input exceeds maximum allowed size",
+        ValidationError.RecursionDepthExceeded => "Maximum recursion depth exceeded",
+        ValidationError.TooManyTokens => "Input contains too many tokens",
+        ValidationError.TooManyAstNodes => "Input generates too many AST nodes",
+        ValidationError.StringTooLong => "String literal exceeds maximum length",
+        ValidationError.ArrayTooLarge => "Array literal exceeds maximum size",
+        ValidationError.TooManyParameters => "Function has too many parameters",
+        ValidationError.TooManyLocals => "Function has too many local variables",
+        ValidationError.TypeNestingTooDeep => "Type nesting exceeds maximum depth",
+        ValidationError.TooManyTypeParams => "Too many generic type parameters",
+        ValidationError.ImportDepthExceeded => "Import depth exceeded",
+        ValidationError.TooManyMatchArms => "Match expression has too many arms",
+        ValidationError.TooManyStructFields => "Struct has too many fields",
+        ValidationError.TooManyEnumVariants => "Enum has too many variants",
+        ValidationError.Timeout => "Operation timed out",
+        ValidationError.MemoryLimitExceeded => "Memory limit exceeded",
+        ValidationError.InvalidUtf8 => "Input contains invalid UTF-8 encoding",
+        ValidationError.NullByteInInput => "Input contains null bytes",
     };
-}
-
-/// Quick validation helper
-pub fn make(allocator: std.mem.Allocator, data: std.StringHashMap([]const u8), field_rules: anytype) !ValidationResult {
-    var validator = Validator.init(allocator);
-    defer validator.deinit();
-
-    // Add rules from tuple
-    inline for (field_rules) |fr| {
-        try validator.addRules(fr[0], fr[1]);
-    }
-
-    return validator.validate(data);
-}
-
-// Tests
-test "validator basic" {
-    const allocator = std.testing.allocator;
-
-    var validator = Validator.init(allocator);
-    defer validator.deinit();
-
-    try validator.addRules("name", &[_]Rule{ .required, .{ .min_length = 3 } });
-    try validator.addRules("email", &[_]Rule{ .required, .email });
-
-    // Test with valid data
-    var data = std.StringHashMap([]const u8).init(allocator);
-    defer data.deinit();
-    try data.put("name", "John");
-    try data.put("email", "john@example.com");
-
-    var result = try validator.validate(data);
-    defer result.deinit();
-
-    try std.testing.expect(result.passes());
-}
-
-test "validator fails" {
-    const allocator = std.testing.allocator;
-
-    var validator = Validator.init(allocator);
-    defer validator.deinit();
-
-    try validator.addRules("name", &[_]Rule{.required});
-    try validator.addRules("email", &[_]Rule{.email});
-
-    // Test with invalid data
-    var data = std.StringHashMap([]const u8).init(allocator);
-    defer data.deinit();
-    try data.put("name", "");
-    try data.put("email", "not-an-email");
-
-    var result = try validator.validate(data);
-    defer result.deinit();
-
-    try std.testing.expect(result.fails());
-    try std.testing.expect(result.errors.items.len == 2);
-}
-
-test "validator nullable" {
-    const allocator = std.testing.allocator;
-
-    var validator = Validator.init(allocator);
-    defer validator.deinit();
-
-    try validator.addRules("nickname", &[_]Rule{ .nullable, .{ .min_length = 3 } });
-
-    // Test with empty data (should pass because nullable)
-    var data = std.StringHashMap([]const u8).init(allocator);
-    defer data.deinit();
-
-    var result = try validator.validate(data);
-    defer result.deinit();
-
-    try std.testing.expect(result.passes());
 }

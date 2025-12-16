@@ -458,14 +458,53 @@ pub const KeyboardHandler = struct {
         };
     }
 
+    /// Map HID keycode to printable character (US keyboard layout)
+    fn mapHidToCharacter(hid_code: u8, shift: bool) ?u8 {
+        // Lowercase letters (0x04-0x1D map to a-z)
+        if (hid_code >= 0x04 and hid_code <= 0x1D) {
+            const base: u8 = if (shift) 'A' else 'a';
+            return base + (hid_code - 0x04);
+        }
+
+        // Numbers (0x1E-0x27 map to 1-0)
+        if (hid_code >= 0x1E and hid_code <= 0x27) {
+            if (shift) {
+                const shifted = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
+                return shifted[hid_code - 0x1E];
+            }
+            const numbers = [_]u8{ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' };
+            return numbers[hid_code - 0x1E];
+        }
+
+        // Special characters
+        return switch (hid_code) {
+            0x28 => '\n', // Enter
+            0x2B => '\t', // Tab
+            0x2C => ' ',  // Space
+            0x2D => if (shift) '_' else '-',
+            0x2E => if (shift) '+' else '=',
+            0x2F => if (shift) '{' else '[',
+            0x30 => if (shift) '}' else ']',
+            0x31 => if (shift) '|' else '\\',
+            0x33 => if (shift) ':' else ';',
+            0x34 => if (shift) '"' else '\'',
+            0x35 => if (shift) '~' else '`',
+            0x36 => if (shift) '<' else ',',
+            0x37 => if (shift) '>' else '.',
+            0x38 => if (shift) '?' else '/',
+            else => null,
+        };
+    }
+
     fn handleKeyCodeEvent(self: *KeyboardHandler, hid_code: u8, pressed: bool) void {
         const queue = self.event_queue orelse return;
 
         // Map HID keycode to input keycode
         const key_code = mapHidToInputKeyCode(hid_code) orelse return;
 
+        const shift = self.prev_report.modifiers.left_shift or self.prev_report.modifiers.right_shift;
         var modifiers = input.KeyModifiers{
-            .shift = self.prev_report.modifiers.left_shift or self.prev_report.modifiers.right_shift,
+            .shift = shift,
             .ctrl = self.prev_report.modifiers.left_ctrl or self.prev_report.modifiers.right_ctrl,
             .alt = self.prev_report.modifiers.left_alt or self.prev_report.modifiers.right_alt,
             .super = self.prev_report.modifiers.left_gui or self.prev_report.modifiers.right_gui,
@@ -475,7 +514,7 @@ pub const KeyboardHandler = struct {
             .code = key_code,
             .scancode = hid_code,
             .modifiers = modifiers,
-            .character = null, // TODO: Add character mapping
+            .character = mapHidToCharacter(hid_code, shift),
         };
 
         const input_event: input.InputEvent = if (pressed) .{ .key_press = key_event } else .{ .key_release = key_event };

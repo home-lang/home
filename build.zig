@@ -62,6 +62,12 @@ pub fn build(b: *std.Build) void {
     // Profiling
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
 
+    // Coverage and sanitizers
+    const enable_coverage = b.option(bool, "coverage", "Enable code coverage instrumentation") orelse false;
+    const enable_sanitize_address = b.option(bool, "sanitize-address", "Enable AddressSanitizer for memory error detection") orelse false;
+    const enable_sanitize_undefined = b.option(bool, "sanitize-undefined", "Enable UndefinedBehaviorSanitizer") orelse false;
+    const enable_sanitize_thread = b.option(bool, "sanitize-thread", "Enable ThreadSanitizer for data race detection") orelse false;
+
     // Create package modules using helper function (with zig-test-framework)
     const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize, zig_test_framework);
     const ast_pkg = createPackage(b, "packages/ast/src/ast.zig", target, optimize, zig_test_framework);
@@ -238,6 +244,10 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "parallel_build", parallel_build);
     build_options.addOption(bool, "extra_safety", extra_safety);
     build_options.addOption(bool, "enable_profiling", enable_profiling);
+    build_options.addOption(bool, "enable_coverage", enable_coverage);
+    build_options.addOption(bool, "enable_sanitize_address", enable_sanitize_address);
+    build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
+    build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
 
     // Add build options to executable
     exe.root_module.addImport("build_options", build_options.createModule());
