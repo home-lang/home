@@ -26,6 +26,28 @@ const generics_mod = @import("generics.zig");
 pub const GenericHandler = generics_mod.GenericHandler;
 pub const TypeParameter = generics_mod.TypeParameter;
 pub const GenericUtils = generics_mod.GenericUtils;
+const ts_types = @import("typescript_types.zig");
+pub const IntersectionType = ts_types.IntersectionType;
+pub const ConditionalType = ts_types.ConditionalType;
+pub const MappedType = ts_types.MappedType;
+pub const KeyofType = ts_types.KeyofType;
+pub const TypeofType = ts_types.TypeofType;
+pub const InferType = ts_types.InferType;
+pub const LiteralType = ts_types.LiteralType;
+pub const TemplateLiteralType = ts_types.TemplateLiteralType;
+pub const UtilityTypes = ts_types.UtilityTypes;
+pub const TypeInterner = ts_types.TypeInterner;
+// New advanced types
+pub const IndexAccessType = ts_types.IndexAccessType;
+pub const BrandedType = ts_types.BrandedType;
+pub const OpaqueType = ts_types.OpaqueType;
+pub const StringManipulationType = ts_types.StringManipulationType;
+pub const Variance = ts_types.Variance;
+pub const VariantTypeParam = ts_types.VariantTypeParam;
+pub const TypeGuard = ts_types.TypeGuard;
+pub const TypePredicate = ts_types.TypePredicate;
+pub const RecursiveTypeAlias = ts_types.RecursiveTypeAlias;
+pub const checkVariance = ts_types.checkVariance;
 
 /// Home's static type system with support for advanced features.
 ///
@@ -80,6 +102,12 @@ pub const Type = union(enum) {
     String,
     /// Unit/void type (no value)
     Void,
+    /// Bottom type (uninhabited) - represents impossible values
+    /// Used for functions that never return, exhaustive pattern matching
+    Never,
+    /// Top type - represents unknown/any type that requires checking
+    /// Safer than a raw "any" - forces explicit narrowing before use
+    Unknown,
     /// Homogeneous array type: [T]
     Array: ArrayType,
     /// Key-value map type: Map<K, V>
@@ -104,6 +132,29 @@ pub const Type = union(enum) {
     Reference: *const Type,
     /// Mutable borrowed reference: &mut T
     MutableReference: *const Type,
+
+    // === TypeScript-like Advanced Types ===
+
+    /// Intersection type: A & B (must satisfy ALL types)
+    Intersection: IntersectionTypeInfo,
+    /// Conditional type: T extends U ? X : Y
+    Conditional: ConditionalTypeInfo,
+    /// Mapped type: { [K in keyof T]: V }
+    Mapped: MappedTypeInfo,
+    /// keyof operator: keyof T (union of property keys)
+    Keyof: *const Type,
+    /// typeof operator: typeof expr
+    Typeof: TypeofInfo,
+    /// infer keyword for conditional type extraction
+    Infer: InferInfo,
+    /// Literal type: exact value types ("hello", 42, true)
+    Literal: LiteralTypeInfo,
+    /// Template literal type: `${string}_${number}`
+    TemplateLiteral: TemplateLiteralInfo,
+    /// Branded/nominal type: Brand<T, "name">
+    Branded: BrandedTypeInfo,
+    /// Index access type: T[K]
+    IndexAccess: IndexAccessTypeInfo,
 
     /// Type variable information for type inference
     pub const TypeVarInfo = struct {
@@ -275,6 +326,102 @@ pub const Type = union(enum) {
         };
     };
 
+    // === TypeScript-like Type Info Structs ===
+
+    /// Intersection type info: A & B
+    /// Value must satisfy ALL constituent types simultaneously.
+    pub const IntersectionTypeInfo = struct {
+        /// Types that must all be satisfied
+        types: []const *const Type,
+    };
+
+    /// Conditional type info: T extends U ? X : Y
+    /// Type-level conditional evaluation.
+    pub const ConditionalTypeInfo = struct {
+        /// The type being checked
+        check_type: *const Type,
+        /// The type to extend/compare against
+        extends_type: *const Type,
+        /// Result type if check passes
+        true_type: *const Type,
+        /// Result type if check fails
+        false_type: *const Type,
+    };
+
+    /// Mapped type info: { [K in keyof T]: V }
+    /// Transforms properties according to a mapping function.
+    pub const MappedTypeInfo = struct {
+        /// Source type to map over
+        source_type: *const Type,
+        /// Key variable name (e.g., "K")
+        key_var: []const u8,
+        /// Value type expression
+        value_type: *const Type,
+    };
+
+    /// typeof operator info
+    pub const TypeofInfo = struct {
+        /// Expression name to extract type from
+        expression_name: []const u8,
+        /// Resolved type (filled during type checking)
+        resolved_type: ?*const Type,
+    };
+
+    /// infer keyword info for conditional types
+    pub const InferInfo = struct {
+        /// Name for the inferred type variable
+        name: []const u8,
+        /// Optional constraint on the inferred type
+        constraint: ?*const Type,
+    };
+
+    /// Literal type info for exact value types
+    pub const LiteralTypeInfo = union(enum) {
+        /// String literal: "hello"
+        string: []const u8,
+        /// Integer literal: 42
+        integer: i64,
+        /// Float literal: 3.14
+        float: f64,
+        /// Boolean literal: true/false
+        boolean: bool,
+        /// Null literal
+        null_type,
+        /// Undefined literal
+        undefined_type,
+    };
+
+    /// Template literal type info: `prefix_${T}_suffix`
+    pub const TemplateLiteralInfo = struct {
+        /// Parts of the template
+        parts: []const Part,
+
+        pub const Part = union(enum) {
+            /// Literal string part
+            literal: []const u8,
+            /// Type placeholder
+            type_placeholder: *const Type,
+        };
+    };
+
+    /// Branded/nominal type info: Brand<T, "name">
+    /// Creates a distinct type from a base type for nominal safety.
+    pub const BrandedTypeInfo = struct {
+        /// The underlying base type
+        base_type: *const Type,
+        /// Unique brand identifier
+        brand: []const u8,
+    };
+
+    /// Index access type info: T[K]
+    /// Accesses a property type from an object/tuple using a key.
+    pub const IndexAccessTypeInfo = struct {
+        /// The object/tuple type to access
+        object_type: *const Type,
+        /// The index/key type
+        index_type: *const Type,
+    };
+
     /// Check if two types are equivalent.
     ///
     /// Performs structural equality for most types, but uses nominal
@@ -317,7 +464,7 @@ pub const Type = union(enum) {
                 const tv2 = other.TypeVar;
                 return tv1.id == tv2.id;
             },
-            .Int, .I8, .I16, .I32, .I64, .I128, .U8, .U16, .U32, .U64, .U128, .Float, .F32, .F64, .Bool, .String, .Void => true,
+            .Int, .I8, .I16, .I32, .I64, .I128, .U8, .U16, .U32, .U64, .U128, .Float, .F32, .F64, .Bool, .String, .Void, .Never, .Unknown => true,
             .Array => |a1| {
                 const a2 = other.Array;
                 return a1.element_type.equals(a2.element_type.*);
@@ -376,6 +523,75 @@ pub const Type = union(enum) {
                 return std.mem.eql(u8, union1.name, union2.name);
             },
             .Optional => |o1| o1.equals(other.Optional.*),
+            // TypeScript-like types
+            .Intersection => |inter1| {
+                const inter2 = other.Intersection;
+                if (inter1.types.len != inter2.types.len) return false;
+                for (inter1.types, inter2.types) |t1, t2| {
+                    if (!t1.equals(t2.*)) return false;
+                }
+                return true;
+            },
+            .Conditional => |c1| {
+                const c2 = other.Conditional;
+                return c1.check_type.equals(c2.check_type.*) and
+                    c1.extends_type.equals(c2.extends_type.*) and
+                    c1.true_type.equals(c2.true_type.*) and
+                    c1.false_type.equals(c2.false_type.*);
+            },
+            .Mapped => |m1| {
+                const m2 = other.Mapped;
+                return m1.source_type.equals(m2.source_type.*) and
+                    std.mem.eql(u8, m1.key_var, m2.key_var) and
+                    m1.value_type.equals(m2.value_type.*);
+            },
+            .Keyof => |k1| k1.equals(other.Keyof.*),
+            .Typeof => |t1| {
+                const t2 = other.Typeof;
+                return std.mem.eql(u8, t1.expression_name, t2.expression_name);
+            },
+            .Infer => |inf1| {
+                const inf2 = other.Infer;
+                return std.mem.eql(u8, inf1.name, inf2.name);
+            },
+            .Literal => |l1| {
+                const l2 = other.Literal;
+                return switch (l1) {
+                    .string => |s| if (l2 == .string) std.mem.eql(u8, s, l2.string) else false,
+                    .integer => |i| if (l2 == .integer) i == l2.integer else false,
+                    .float => |f| if (l2 == .float) f == l2.float else false,
+                    .boolean => |b| if (l2 == .boolean) b == l2.boolean else false,
+                    .null_type => l2 == .null_type,
+                    .undefined_type => l2 == .undefined_type,
+                };
+            },
+            .TemplateLiteral => |tl1| {
+                const tl2 = other.TemplateLiteral;
+                if (tl1.parts.len != tl2.parts.len) return false;
+                for (tl1.parts, tl2.parts) |p1, p2| {
+                    switch (p1) {
+                        .literal => |lit| {
+                            if (p2 != .literal) return false;
+                            if (!std.mem.eql(u8, lit, p2.literal)) return false;
+                        },
+                        .type_placeholder => |ty| {
+                            if (p2 != .type_placeholder) return false;
+                            if (!ty.equals(p2.type_placeholder.*)) return false;
+                        },
+                    }
+                }
+                return true;
+            },
+            .Branded => |b1| {
+                const b2 = other.Branded;
+                return std.mem.eql(u8, b1.brand, b2.brand) and
+                    b1.base_type.equals(b2.base_type.*);
+            },
+            .IndexAccess => |ia1| {
+                const ia2 = other.IndexAccess;
+                return ia1.object_type.equals(ia2.object_type.*) and
+                    ia1.index_type.equals(ia2.index_type.*);
+            },
         };
     }
 
@@ -400,6 +616,8 @@ pub const Type = union(enum) {
             .Bool => try writer.writeAll("bool"),
             .String => try writer.writeAll("string"),
             .Void => try writer.writeAll("void"),
+            .Never => try writer.writeAll("never"),
+            .Unknown => try writer.writeAll("unknown"),
             .Function => |f| {
                 try writer.writeAll("fn(");
                 for (f.params, 0..) |param, i| {
@@ -421,6 +639,53 @@ pub const Type = union(enum) {
             },
             .Union => |u| try writer.print("union {s}", .{u.name}),
             .Optional => |o| try writer.print("{}?", .{o.*}),
+            // TypeScript-like types
+            .Intersection => |inter| {
+                for (inter.types, 0..) |ty, idx| {
+                    if (idx > 0) try writer.writeAll(" & ");
+                    try writer.print("{}", .{ty.*});
+                }
+            },
+            .Conditional => |cond| {
+                try writer.print("{} extends {} ? {} : {}", .{
+                    cond.check_type.*,
+                    cond.extends_type.*,
+                    cond.true_type.*,
+                    cond.false_type.*,
+                });
+            },
+            .Mapped => |mapped| {
+                try writer.print("{{ [{s} in keyof {}]: {} }}", .{
+                    mapped.key_var,
+                    mapped.source_type.*,
+                    mapped.value_type.*,
+                });
+            },
+            .Keyof => |k| try writer.print("keyof {}", .{k.*}),
+            .Typeof => |t| try writer.print("typeof {s}", .{t.expression_name}),
+            .Infer => |inf| try writer.print("infer {s}", .{inf.name}),
+            .Literal => |lit| {
+                switch (lit) {
+                    .string => |s| try writer.print("\"{s}\"", .{s}),
+                    .integer => |i| try writer.print("{}", .{i}),
+                    .float => |f| try writer.print("{d}", .{f}),
+                    .boolean => |b| try writer.print("{}", .{b}),
+                    .null_type => try writer.writeAll("null"),
+                    .undefined_type => try writer.writeAll("undefined"),
+                }
+            },
+            .TemplateLiteral => |tl| {
+                try writer.writeAll("`");
+                for (tl.parts) |part| {
+                    switch (part) {
+                        .literal => |s| try writer.writeAll(s),
+                        .type_placeholder => |ty| try writer.print("${{{}}}", .{ty.*}),
+                    }
+                }
+                try writer.writeAll("`");
+            },
+            .Branded => |b| try writer.print("Brand<{}, \"{s}\">", .{ b.base_type.*, b.brand }),
+            .IndexAccess => |ia| try writer.print("{}[{}]", .{ ia.object_type.*, ia.index_type.* }),
             else => try writer.writeAll("<complex-type>"),
         }
     }
