@@ -595,6 +595,144 @@ pub const Type = union(enum) {
         };
     }
 
+    /// Check if this type is a subtype of another type.
+    /// Subtyping rules:
+    /// - Never is a subtype of all types (bottom type)
+    /// - All types are subtypes of Unknown (top type)
+    /// - T is subtype of T? (Optional)
+    /// - &mut T is subtype of &T (mutable ref to immutable ref)
+    /// - Covariance for return types, contravariance for parameters
+    /// - Structural subtyping for structs (all fields must match)
+    pub fn isSubtype(self: Type, supertype: Type) bool {
+        // Equal types are always subtypes
+        if (self.equals(supertype)) return true;
+
+        // Never is subtype of everything (bottom type)
+        if (self == .Never) return true;
+
+        // Everything is subtype of Unknown (top type)
+        if (supertype == .Unknown) return true;
+
+        // T is subtype of T? (value can be assigned to optional) - check before switch
+        if (std.meta.activeTag(supertype) == .Optional) {
+            return self.equals(supertype.Optional.*);
+        }
+
+        // Mutable reference is subtype of immutable reference
+        if (std.meta.activeTag(self) == .MutableReference and std.meta.activeTag(supertype) == .Reference) {
+            return self.MutableReference.equals(supertype.Reference.*);
+        }
+
+        // Function subtyping (covariant return, contravariant params)
+        if (std.meta.activeTag(self) == .Function and std.meta.activeTag(supertype) == .Function) {
+            const f1 = self.Function;
+            const f2 = supertype.Function;
+
+            // Return type must be covariant (subtype)
+            if (!f1.return_type.isSubtype(f2.return_type.*)) return false;
+
+            // Parameters must be contravariant (supertype)
+            if (f1.params.len != f2.params.len) return false;
+            for (f1.params, f2.params) |p1, p2| {
+                // Note: contravariance - p2 must be subtype of p1
+                if (!p2.isSubtype(p1)) return false;
+            }
+            return true;
+        }
+
+        // Array subtyping (covariant for immutable)
+        if (std.meta.activeTag(self) == .Array and std.meta.activeTag(supertype) == .Array) {
+            return self.Array.element_type.isSubtype(supertype.Array.element_type.*);
+        }
+
+        // Struct subtyping (all fields must be subtypes)
+        if (std.meta.activeTag(self) == .Struct and std.meta.activeTag(supertype) == .Struct) {
+            const s1 = self.Struct;
+            const s2 = supertype.Struct;
+
+            // Subtype struct must have at least all fields of supertype
+            for (s2.fields) |super_field| {
+                var found = false;
+                for (s1.fields) |sub_field| {
+                    if (std.mem.eql(u8, sub_field.name, super_field.name)) {
+                        if (!sub_field.type.isSubtype(super_field.type)) return false;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
+
+        // Handle specific subtyping rules for primitives
+        return switch (self) {
+            // Integer subtyping: smaller signed integers can widen to larger
+            .I8 => supertype == .I16 or supertype == .I32 or supertype == .I64 or supertype == .I128 or supertype == .Int,
+            .I16 => supertype == .I32 or supertype == .I64 or supertype == .I128 or supertype == .Int,
+            .I32 => supertype == .I64 or supertype == .I128 or supertype == .Int,
+            .I64 => supertype == .I128 or supertype == .Int,
+            .Int => supertype == .I64, // Int resolves to I64
+
+            // Unsigned integer subtyping
+            .U8 => supertype == .U16 or supertype == .U32 or supertype == .U64 or supertype == .U128,
+            .U16 => supertype == .U32 or supertype == .U64 or supertype == .U128,
+            .U32 => supertype == .U64 or supertype == .U128,
+            .U64 => supertype == .U128,
+
+            // Float subtyping
+            .F32 => supertype == .F64 or supertype == .Float,
+            .Float => supertype == .F64, // Float resolves to F64
+
+            else => false,
+        };
+    }
+
+    /// Check if a value of this type can be assigned to a variable of the target type.
+    /// This is stricter than subtyping for mutable contexts.
+    /// - For immutable contexts: uses subtyping rules
+    /// - For mutable contexts: requires invariance (exact equality)
+    pub fn isAssignable(self: Type, target: Type, mutable_context: bool) bool {
+        // In mutable context, require exact equality (invariance)
+        if (mutable_context) {
+            return self.equals(target);
+        }
+
+        // In immutable context, use subtyping
+        return self.isSubtype(target);
+    }
+
+    /// Check if this type can be coerced to another type.
+    /// Coercion is implicit conversion that may involve computation.
+    pub fn canCoerceTo(self: Type, target: Type) bool {
+        // Subtype relationship allows coercion
+        if (self.isSubtype(target)) return true;
+
+        // Additional coercion rules
+        return switch (self) {
+            // Integer literals can coerce to any integer type
+            .Literal => |lit| {
+                if (lit == .integer) {
+                    return switch (target) {
+                        .Int, .I8, .I16, .I32, .I64, .I128, .U8, .U16, .U32, .U64, .U128 => true,
+                        else => false,
+                    };
+                }
+                if (lit == .float) {
+                    return target == .Float or target == .F32 or target == .F64;
+                }
+                if (lit == .string) {
+                    return target == .String;
+                }
+                if (lit == .boolean) {
+                    return target == .Bool;
+                }
+                return false;
+            },
+            else => false,
+        };
+    }
+
     pub fn format(self: Type, comptime fmt: []const u8, options: anytype, writer: anytype) !void {
         _ = fmt;
         _ = options;
