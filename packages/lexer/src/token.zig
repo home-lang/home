@@ -38,14 +38,22 @@ pub const TokenType = enum {
     // One or two character tokens
     Plus, // +
     PlusEqual, // +=
+    PlusBang, // +! (checked add, panics on overflow)
+    PlusQuestion, // +? (saturating/wrapping add, returns Option)
     Minus, // -
     MinusEqual, // -=
+    MinusBang, // -! (checked sub, panics on overflow)
+    MinusQuestion, // -? (saturating/wrapping sub, returns Option)
     Star, // *
     StarStar, // ** (power)
     StarEqual, // *=
+    StarBang, // *! (checked mul, panics on overflow)
+    StarQuestion, // *? (saturating/wrapping mul, returns Option)
     Slash, // /
     TildeSlash, // ~/ (integer division)
     SlashEqual, // /=
+    SlashBang, // /! (checked div, panics on div by zero)
+    SlashQuestion, // /? (checked div, returns Option)
     Percent, // %
     PercentEqual, // %=
     Bang, // !
@@ -96,9 +104,11 @@ pub const TokenType = enum {
     Do,
     Dyn,
     Else,
+    Ensures, // ensures clause for function contracts
     Finally,
     Guard,
     Enum,
+    Extend, // extend keyword for extension methods
     False,
     Fn,
     For,
@@ -106,6 +116,7 @@ pub const TokenType = enum {
     Impl,
     Import,
     In,
+    Is, // is keyword for type narrowing
     It,
     Let,
     Loop,
@@ -115,6 +126,7 @@ pub const TokenType = enum {
     Null,
     Or,
     Pub,
+    Requires, // requires clause for function contracts
     Return,
     SelfType,
     SelfValue,
@@ -173,14 +185,22 @@ pub const TokenType = enum {
             .At => "@",
             .Plus => "+",
             .PlusEqual => "+=",
+            .PlusBang => "+!",
+            .PlusQuestion => "+?",
             .Minus => "-",
             .MinusEqual => "-=",
+            .MinusBang => "-!",
+            .MinusQuestion => "-?",
             .Star => "*",
             .StarStar => "**",
             .StarEqual => "*=",
+            .StarBang => "*!",
+            .StarQuestion => "*?",
             .Slash => "/",
             .TildeSlash => "~/",
             .SlashEqual => "/=",
+            .SlashBang => "/!",
+            .SlashQuestion => "/?",
             .Percent => "%",
             .PercentEqual => "%=",
             .Bang => "!",
@@ -224,9 +244,11 @@ pub const TokenType = enum {
             .Do => "do",
             .Dyn => "dyn",
             .Else => "else",
+            .Ensures => "ensures",
             .Finally => "finally",
             .Guard => "guard",
             .Enum => "enum",
+            .Extend => "extend",
             .False => "false",
             .Fn => "fn",
             .For => "for",
@@ -234,6 +256,7 @@ pub const TokenType = enum {
             .Impl => "impl",
             .Import => "import",
             .In => "in",
+            .Is => "is",
             .It => "it",
             .Let => "let",
             .Loop => "loop",
@@ -243,6 +266,7 @@ pub const TokenType = enum {
             .Null => "null",
             .Or => "or",
             .Pub => "pub",
+            .Requires => "requires",
             .Return => "return",
             .SelfType => "Self",
             .SelfValue => "self",
@@ -357,9 +381,11 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "do", .Do },
     .{ "dyn", .Dyn },
     .{ "else", .Else },
+    .{ "ensures", .Ensures },
     .{ "finally", .Finally },
     .{ "guard", .Guard },
     .{ "enum", .Enum },
+    .{ "extend", .Extend },
     .{ "false", .False },
     .{ "fn", .Fn },
     .{ "for", .For },
@@ -367,6 +393,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "impl", .Impl },
     .{ "import", .Import },
     .{ "in", .In },
+    .{ "is", .Is },
     .{ "it", .It },
     .{ "let", .Let },
     .{ "loop", .Loop },
@@ -376,6 +403,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "null", .Null },
     .{ "or", .Or },
     .{ "pub", .Pub },
+    .{ "requires", .Requires },
     .{ "return", .Return },
     .{ "Self", .SelfType },
     .{ "self", .SelfValue },

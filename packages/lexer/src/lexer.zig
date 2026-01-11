@@ -965,15 +965,17 @@ pub const Lexer = struct {
             else
                 self.makeToken(.Question),
             '@' => self.makeToken(.At),
-            '+' => if (self.match('=')) self.makeToken(.PlusEqual) else self.makeToken(.Plus),
-            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else self.makeToken(.Minus),
-            '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else self.makeToken(.Star),
+            '+' => if (self.match('=')) self.makeToken(.PlusEqual) else if (self.match('!')) self.makeToken(.PlusBang) else if (self.match('?')) self.makeToken(.PlusQuestion) else self.makeToken(.Plus),
+            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else if (self.match('!')) self.makeToken(.MinusBang) else if (self.match('?')) self.makeToken(.MinusQuestion) else self.makeToken(.Minus),
+            '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else if (self.match('!')) self.makeToken(.StarBang) else if (self.match('?')) self.makeToken(.StarQuestion) else self.makeToken(.Star),
             '/' => blk: {
                 // Check for doc comment ///
                 if (self.peek() == '/' and self.peekNext() == '/') {
                     break :blk self.docComment();
                 }
                 if (self.match('=')) break :blk self.makeToken(.SlashEqual);
+                if (self.match('!')) break :blk self.makeToken(.SlashBang);
+                if (self.match('?')) break :blk self.makeToken(.SlashQuestion);
                 break :blk self.makeToken(.Slash);
             },
             '%' => if (self.match('=')) self.makeToken(.PercentEqual) else self.makeToken(.Percent),

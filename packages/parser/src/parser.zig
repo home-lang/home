@@ -103,12 +103,12 @@ const Precedence = enum(u8) {
             .Caret => .BitXor,
             .Ampersand => .BitAnd,
             .EqualEqual, .BangEqual => .Equality,
-            .Less, .LessEqual, .Greater, .GreaterEqual => .Comparison,
+            .Less, .LessEqual, .Greater, .GreaterEqual, .Is => .Comparison,
             .As => .TypeCast,
             .DotDot, .DotDotEqual => .Range,
             .LeftShift, .RightShift => .Shift,
-            .Plus, .Minus => .Term,
-            .Star, .Slash, .Percent, .TildeSlash => .Factor,
+            .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion => .Term,
+            .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion => .Factor,
             .StarStar => .Power,
             .LeftParen, .LeftBracket, .Dot, .ColonColon, .QuestionDot => .Call,
             else => .None,
@@ -618,6 +618,7 @@ pub const Parser = struct {
         }
 
         if (self.match(&.{.Impl})) return self.implDeclaration();
+        if (self.match(&.{.Extend})) return self.extendDeclaration();
 
         if (self.match(&.{.Fn})) {
             var stmt = try self.functionDeclaration(is_test, is_extern);
@@ -817,6 +818,49 @@ pub const Parser = struct {
             return_type = try self.parseTypeAnnotation();
         }
 
+        // Parse contract clauses: requires and ensures
+        var requires_clauses = std.ArrayList(ast.ContractClause){};
+        defer requires_clauses.deinit(self.allocator);
+        var ensures_clauses = std.ArrayList(ast.ContractClause){};
+        defer ensures_clauses.deinit(self.allocator);
+
+        // Parse requires clauses (preconditions)
+        while (self.match(&.{.Requires})) {
+            const condition = try self.expression();
+            var message: ?[]const u8 = null;
+            // Optional message: requires expr, "message"
+            if (self.match(&.{.Comma})) {
+                const msg_token = try self.expect(.String, "Expected string message after ','");
+                // Remove quotes from string
+                message = if (msg_token.lexeme.len >= 2)
+                    msg_token.lexeme[1 .. msg_token.lexeme.len - 1]
+                else
+                    msg_token.lexeme;
+            }
+            try requires_clauses.append(self.allocator, .{
+                .condition = condition,
+                .message = message,
+            });
+        }
+
+        // Parse ensures clauses (postconditions)
+        // Syntax: ensures |result| condition or ensures condition
+        while (self.match(&.{.Ensures})) {
+            const condition = try self.expression();
+            var message: ?[]const u8 = null;
+            if (self.match(&.{.Comma})) {
+                const msg_token = try self.expect(.String, "Expected string message after ','");
+                message = if (msg_token.lexeme.len >= 2)
+                    msg_token.lexeme[1 .. msg_token.lexeme.len - 1]
+                else
+                    msg_token.lexeme;
+            }
+            try ensures_clauses.append(self.allocator, .{
+                .condition = condition,
+                .message = message,
+            });
+        }
+
         // Parse optional where clause (skip it for now - just consume tokens until '{' or newline for extern)
         if (self.match(&.{.Where})) {
             // Consume where clause: TYPE: TRAIT (+ TRAIT)* (, TYPE: TRAIT (+ TRAIT)*)*
@@ -851,6 +895,10 @@ pub const Parser = struct {
             is_test,
             ast.SourceLocation.fromToken(name_token),
         );
+
+        // Set contract clauses
+        fn_decl.requires_clauses = try requires_clauses.toOwnedSlice(self.allocator);
+        fn_decl.ensures_clauses = try ensures_clauses.toOwnedSlice(self.allocator);
 
         return ast.Stmt{ .FnDecl = fn_decl };
     }
@@ -2747,10 +2795,12 @@ pub const Parser = struct {
 
         // Parse postfix/infix expressions
         while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
-            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash })) {
+            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash, .PlusBang, .MinusBang, .StarBang, .SlashBang, .PlusQuestion, .MinusQuestion, .StarQuestion, .SlashQuestion })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .EqualEqual, .BangEqual, .Less, .LessEqual, .Greater, .GreaterEqual })) {
                 expr = try self.binary(expr);
+            } else if (self.match(&.{.Is})) {
+                expr = try self.isExpr(expr);
             } else if (self.match(&.{ .AmpersandAmpersand, .PipePipe, .And, .Or })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .Ampersand, .Pipe, .Caret, .LeftShift, .RightShift })) {
@@ -2832,6 +2882,70 @@ pub const Parser = struct {
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .RangeExpr = range_expr };
+        return result;
+    }
+
+    /// Parse a try-else expression (try expr else { default })
+    /// Allows extracting values from Result/Option types with a fallback
+    fn tryElseExpr(self: *Parser) !*ast.Expr {
+        const try_token = self.previous();
+
+        // Parse the expression to try
+        const operand = try self.parsePrecedence(.Assignment);
+
+        // Check for else branch
+        var else_branch: ?*ast.Expr = null;
+        if (self.match(&.{.Else})) {
+            // Parse the else expression
+            if (self.check(.LeftBrace)) {
+                _ = self.advance();
+                else_branch = try self.blockExprParse();
+            } else {
+                else_branch = try self.expression();
+            }
+        }
+
+        // Create TryExpr with optional else branch
+        const try_expr = if (else_branch) |eb|
+            try ast.TryExpr.initWithElse(
+                self.allocator,
+                operand,
+                eb,
+                ast.SourceLocation.fromToken(try_token),
+            )
+        else
+            try ast.TryExpr.init(
+                self.allocator,
+                operand,
+                ast.SourceLocation.fromToken(try_token),
+            );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TryExpr = try_expr };
+        return result;
+    }
+
+    /// Parse an is expression for type narrowing (e.g., value is string, value is not null)
+    fn isExpr(self: *Parser, value: *ast.Expr) !*ast.Expr {
+        const is_token = self.previous();
+
+        // Check for "is not" syntax
+        const negated = self.match(&.{.Not});
+
+        // Expect a type identifier after 'is' (or 'is not')
+        const type_token = try self.expect(.Identifier, "Expected type name after 'is'");
+        const type_name = type_token.lexeme;
+
+        const is_expr = try ast.IsExpr.init(
+            self.allocator,
+            value,
+            type_name,
+            negated,
+            ast.SourceLocation.fromToken(is_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .IsExpr = is_expr };
         return result;
     }
 
@@ -3735,6 +3849,11 @@ pub const Parser = struct {
         // Match expression: match value { pattern => expr, ... }
         if (self.match(&.{.Match})) {
             return try self.matchExpr();
+        }
+
+        // Try-else expression: try expr else { default }
+        if (self.match(&.{.Try})) {
+            return try self.tryElseExpr();
         }
 
         // Closure expression: |params| body or |params| { body }
@@ -4791,6 +4910,16 @@ pub const Parser = struct {
             .TildeSlash => .IntDiv,
             .Percent => .Mod,
             .StarStar => .Power,
+            // Checked arithmetic (panic on overflow)
+            .PlusBang => .CheckedAdd,
+            .MinusBang => .CheckedSub,
+            .StarBang => .CheckedMul,
+            .SlashBang => .CheckedDiv,
+            // Saturating arithmetic (returns Option)
+            .PlusQuestion => .SaturatingAdd,
+            .MinusQuestion => .SaturatingSub,
+            .StarQuestion => .SaturatingMul,
+            .SlashQuestion => .SaturatingDiv,
             .EqualEqual => .Equal,
             .BangEqual => .NotEqual,
             .Less => .Less,
@@ -5029,6 +5158,7 @@ pub const Parser = struct {
     // Trait parsing methods
     pub const traitDeclaration = trait_parser.parseTraitDeclaration;
     pub const implDeclaration = trait_parser.parseImplDeclaration;
+    pub const extendDeclaration = trait_parser.parseExtendDeclaration;
     pub const parseWhereClause = trait_parser.parseWhereClause;
     pub const parseTypeExpr = trait_parser.parseTypeExpr;
 

@@ -11,6 +11,7 @@ pub const AttributeName = attribute_nodes.AttributeName;
 pub const trait_nodes = @import("trait_nodes.zig");
 pub const TraitDecl = trait_nodes.TraitDecl;
 pub const ImplDecl = trait_nodes.ImplDecl;
+pub const ExtendDecl = trait_nodes.ExtendDecl;
 pub const TraitMethod = trait_nodes.TraitMethod;
 pub const AssociatedType = trait_nodes.AssociatedType;
 pub const WhereClause = trait_nodes.WhereClause;
@@ -142,6 +143,7 @@ pub const NodeType = enum {
     ElvisExpr,
     SafeIndexExpr,
     IfExpr,
+    IsExpr,
     ReturnExpr,
     MatchExpr,
     TupleExpr,
@@ -179,6 +181,7 @@ pub const NodeType = enum {
     UnionDecl,
     TraitDecl,
     ImplDecl,
+    ExtendDecl,
     AssertStmt,
     ReturnStmt,
     IfStmt,
@@ -534,6 +537,16 @@ pub const BinaryOp = enum {
     IntDiv, // ~/ (integer division)
     Mod, // %
     Power, // ** (exponentiation)
+    // Checked arithmetic - panic on overflow/error
+    CheckedAdd, // +! (panics on overflow)
+    CheckedSub, // -! (panics on overflow)
+    CheckedMul, // *! (panics on overflow)
+    CheckedDiv, // /! (panics on div by zero)
+    // Saturating/wrapping arithmetic - returns Option
+    SaturatingAdd, // +? (returns Option, None on overflow)
+    SaturatingSub, // -? (returns Option, None on overflow)
+    SaturatingMul, // *? (returns Option, None on overflow)
+    SaturatingDiv, // /? (returns Option, None on div by zero)
     Equal, // ==
     NotEqual, // !=
     Less, // <
@@ -720,12 +733,26 @@ pub const StaticCallExpr = struct {
 pub const TryExpr = struct {
     node: Node,
     operand: *Expr,
+    /// Optional else branch for try...else syntax (e.g., try parse() else { default })
+    else_branch: ?*Expr = null,
 
     pub fn init(allocator: std.mem.Allocator, operand: *Expr, loc: SourceLocation) !*TryExpr {
         const expr = try allocator.create(TryExpr);
         expr.* = .{
             .node = .{ .type = .TryExpr, .loc = loc },
             .operand = operand,
+            .else_branch = null,
+        };
+        return expr;
+    }
+
+    /// Create a try-else expression (try operand else default_value)
+    pub fn initWithElse(allocator: std.mem.Allocator, operand: *Expr, else_branch: *Expr, loc: SourceLocation) !*TryExpr {
+        const expr = try allocator.create(TryExpr);
+        expr.* = .{
+            .node = .{ .type = .TryExpr, .loc = loc },
+            .operand = operand,
+            .else_branch = else_branch,
         };
         return expr;
     }
@@ -1035,6 +1062,27 @@ pub const IfExpr = struct {
     }
 };
 
+/// Is expression - type narrowing check
+/// Example: if (value is string) { value.len() }
+/// Returns true if value is of the specified type, enabling type narrowing in the branch
+pub const IsExpr = struct {
+    node: Node,
+    value: *Expr,
+    type_name: []const u8,
+    negated: bool, // true for "is not" syntax
+
+    pub fn init(allocator: std.mem.Allocator, value: *Expr, type_name: []const u8, negated: bool, loc: SourceLocation) !*IsExpr {
+        const expr = try allocator.create(IsExpr);
+        expr.* = .{
+            .node = .{ .type = .IsExpr, .loc = loc },
+            .value = value,
+            .type_name = type_name,
+            .negated = negated,
+        };
+        return expr;
+    }
+};
+
 /// Block expression - a sequence of statements as an expression
 /// Example: { let x = 1; x + 1 }
 pub const BlockExpr = struct {
@@ -1287,6 +1335,7 @@ pub const Expr = union(NodeType) {
     ElvisExpr: *ElvisExpr,
     SafeIndexExpr: *SafeIndexExpr,
     IfExpr: *IfExpr,
+    IsExpr: *IsExpr,
     ReturnExpr: *ReturnExpr,
     MatchExpr: *MatchExpr,
     TupleExpr: *TupleExpr,
@@ -1322,6 +1371,7 @@ pub const Expr = union(NodeType) {
     UnionDecl: void,
     TraitDecl: void,
     ImplDecl: void,
+    ExtendDecl: *ExtendDecl,
     AssertStmt: void,
     ReturnStmt: void,
     IfStmt: void,
@@ -1892,6 +1942,7 @@ pub const Stmt = union(NodeType) {
     ElvisExpr: void,
     SafeIndexExpr: void,
     IfExpr: void,
+    IsExpr: void,
     ReturnExpr: void,
     MatchExpr: void,
     TupleExpr: void,
@@ -1929,6 +1980,7 @@ pub const Stmt = union(NodeType) {
     UnionDecl: *UnionDecl,
     TraitDecl: *TraitDecl,
     ImplDecl: *ImplDecl,
+    ExtendDecl: *ExtendDecl,
     AssertStmt: *AssertStmt,
     ReturnStmt: *ReturnStmt,
     IfStmt: *IfStmt,
@@ -2094,6 +2146,14 @@ pub const TypeAliasDecl = struct {
 };
 
 /// Function declaration
+/// Contract clause for design-by-contract
+pub const ContractClause = struct {
+    /// The condition expression that must hold
+    condition: *Expr,
+    /// Optional error message when contract fails
+    message: ?[]const u8 = null,
+};
+
 pub const FnDecl = struct {
     node: Node,
     name: []const u8,
@@ -2108,6 +2168,11 @@ pub const FnDecl = struct {
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)
+    /// Preconditions that must hold on function entry (requires clauses)
+    requires_clauses: []const ContractClause = &.{},
+    /// Postconditions that must hold on function exit (ensures clauses)
+    /// In ensures clauses, |result| binds the return value
+    ensures_clauses: []const ContractClause = &.{},
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);

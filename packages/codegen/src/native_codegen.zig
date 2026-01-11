@@ -5212,6 +5212,103 @@ pub const NativeCodegen = struct {
                         // Logical right shift (unsigned)
                         try self.assembler.shrRegCl(.rax);
                     },
+                    // Checked arithmetic operators - panic on overflow
+                    .CheckedAdd => {
+                        // add rax, rcx; trap on overflow
+                        try self.assembler.addRegReg(.rax, .rcx);
+                        // Jump past int3 if no overflow
+                        const jno_patch = try self.assembler.jnoRel8(0);
+                        // int3 for panic (only reached on overflow)
+                        try self.assembler.int3();
+                        // Patch jno to skip past int3
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .CheckedSub => {
+                        try self.assembler.subRegReg(.rax, .rcx);
+                        const jno_patch = try self.assembler.jnoRel8(0);
+                        try self.assembler.int3();
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .CheckedMul => {
+                        try self.assembler.imulRegReg(.rax, .rcx);
+                        // imul sets OF on overflow
+                        const jno_patch = try self.assembler.jnoRel8(0);
+                        try self.assembler.int3();
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .CheckedDiv => {
+                        // Check for division by zero before dividing
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        const jz_patch = try self.assembler.jzRel8(0); // Jump to panic if zero
+                        // Perform division
+                        try self.assembler.cqo();
+                        try self.assembler.idivReg(.rcx);
+                        // Jump past panic
+                        const jmp_patch = try self.assembler.jmpRel8(0);
+                        // Patch jz to here (panic point)
+                        const panic_pos = self.assembler.code.items.len;
+                        const jz_offset = @as(i8, @intCast(@as(i64, @intCast(panic_pos)) - @as(i64, @intCast(jz_patch + 2))));
+                        self.assembler.patchJz8(jz_patch, jz_offset);
+                        // int3 for panic
+                        try self.assembler.int3();
+                        // Patch jmp to skip panic
+                        const end_pos = self.assembler.code.items.len;
+                        const jmp_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jmp_patch + 2))));
+                        self.assembler.patchJmp8(jmp_patch, jmp_offset);
+                    },
+                    // Saturating arithmetic - return 0 (representing None) on overflow
+                    .SaturatingAdd => {
+                        try self.assembler.addRegReg(.rax, .rcx);
+                        // On overflow, set result to 0 (None)
+                        const jno_patch = try self.assembler.jnoRel8(0); // Jump if no overflow
+                        // Overflow occurred - return 0
+                        try self.assembler.movRegImm64(.rax, 0);
+                        // Patch jno to skip the zero assignment
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .SaturatingSub => {
+                        try self.assembler.subRegReg(.rax, .rcx);
+                        const jno_patch = try self.assembler.jnoRel8(0);
+                        try self.assembler.movRegImm64(.rax, 0);
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .SaturatingMul => {
+                        try self.assembler.imulRegReg(.rax, .rcx);
+                        const jno_patch = try self.assembler.jnoRel8(0);
+                        try self.assembler.movRegImm64(.rax, 0);
+                        const end_pos = self.assembler.code.items.len;
+                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
+                        self.assembler.patchJno8(jno_patch, jno_offset);
+                    },
+                    .SaturatingDiv => {
+                        // Check for division by zero - return 0 if divisor is zero
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        const jnz_patch = try self.assembler.jnzRel8(0); // Jump if not zero (proceed with division)
+                        // Divisor is zero - return 0
+                        try self.assembler.movRegImm64(.rax, 0);
+                        const jmp_patch = try self.assembler.jmpRel8(0); // Jump to end
+                        // Patch jnz to here (division point)
+                        const div_pos = self.assembler.code.items.len;
+                        const jnz_offset = @as(i8, @intCast(@as(i64, @intCast(div_pos)) - @as(i64, @intCast(jnz_patch + 2))));
+                        self.assembler.patchJnz8(jnz_patch, jnz_offset);
+                        // Perform division
+                        try self.assembler.cqo();
+                        try self.assembler.idivReg(.rcx);
+                        // Patch jmp to skip to end
+                        const end_pos = self.assembler.code.items.len;
+                        const jmp_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jmp_patch + 2))));
+                        self.assembler.patchJmp8(jmp_patch, jmp_offset);
+                    },
                     else => {
                         std.debug.print("Unsupported binary op in native codegen: {}\n", .{binary.op});
                         return error.UnsupportedFeature;
@@ -7083,6 +7180,63 @@ pub const NativeCodegen = struct {
                 } else {
                     // Empty string
                     try self.assembler.movRegImm64(.rax, 0);
+                }
+            },
+
+            .IsExpr => |is_expr| {
+                // Type narrowing expression: value is TypeName
+                // Returns true (1) if the value is of the specified type, false (0) otherwise
+                //
+                // For enum types, this checks the tag value
+                // For Option<T>, checks if Some or None
+                // For Result<T, E>, checks if Ok or Err
+
+                // Generate code for the value expression
+                // The value could be an enum pointer, so rax will point to the enum
+                try self.generateExpr(is_expr.value);
+
+                // rax now contains the value/pointer to check
+                // For enum types, first word is the tag
+
+                // Check the type name to determine what we're checking for
+                const type_name = is_expr.type_name;
+
+                // Check for common Option/Result variants
+                if (std.mem.eql(u8, type_name, "Some") or std.mem.eql(u8, type_name, "Ok")) {
+                    // Some/Ok typically has tag 0
+                    // Load tag from pointer in rax
+                    try self.assembler.movRegMem(.rcx, .rax, 0); // Load tag into rcx
+                    // Compare tag with 0 (Some/Ok)
+                    try self.assembler.cmpRegImm(.rcx, 0);
+                    // Set result: 1 if tag == 0, 0 otherwise
+                    try self.assembler.setzReg(.rax);
+                    try self.assembler.movzxReg64Reg8(.rax, .rax);
+                } else if (std.mem.eql(u8, type_name, "None") or std.mem.eql(u8, type_name, "Err")) {
+                    // None/Err typically has tag 1
+                    try self.assembler.movRegMem(.rcx, .rax, 0); // Load tag
+                    try self.assembler.cmpRegImm(.rcx, 1);
+                    try self.assembler.setzReg(.rax);
+                    try self.assembler.movzxReg64Reg8(.rax, .rax);
+                } else if (self.enum_layouts.get(type_name)) |_| {
+                    // Check if the value's tag matches this enum type
+                    // For full enum type checks, compare runtime type info
+                    // This is a simplified version that checks if the enum is valid
+                    try self.assembler.movRegMem(.rcx, .rax, 0); // Load tag
+                    // Assume enum is valid (non-negative tag)
+                    try self.assembler.cmpRegImm(.rcx, 0);
+                    // Set to 1 if tag >= 0 (always true for valid enums)
+                    try self.assembler.movRegImm64(.rax, 1);
+                } else {
+                    // For primitive type checks, use a simplified approach
+                    // In a full implementation, this would check runtime type tags
+                    // For now, just return true (1) as a placeholder
+                    try self.assembler.movRegImm64(.rax, 1);
+                }
+
+                // Handle negation if "is not" syntax
+                if (is_expr.negated) {
+                    // Invert the result: xor rax, 1
+                    try self.assembler.xorRegImm32(.rax, 1);
                 }
             },
 

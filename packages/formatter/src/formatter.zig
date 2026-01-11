@@ -241,6 +241,16 @@ pub const Formatter = struct {
             .IntDiv => "~/",
             .Mod => "%",
             .Power => "**",
+            // Checked arithmetic (panic on overflow)
+            .CheckedAdd => "+!",
+            .CheckedSub => "-!",
+            .CheckedMul => "*!",
+            .CheckedDiv => "/!",
+            // Saturating arithmetic (returns Option)
+            .SaturatingAdd => "+?",
+            .SaturatingSub => "-?",
+            .SaturatingMul => "*?",
+            .SaturatingDiv => "/?",
             .Equal => "==",
             .NotEqual => "!=",
             .Less => "<",

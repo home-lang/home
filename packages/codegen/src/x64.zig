@@ -363,6 +363,16 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
     }
 
+    /// xor reg, imm32 (XOR with immediate, sign-extended to 64 bits)
+    pub fn xorRegImm32(self: *Assembler, dst: Register, value: i32) !void {
+        // REX.W + 81 /6 id
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0x81);
+        try self.emitModRM(0b11, 6, @intFromEnum(dst)); // /6 for xor
+        const value_bytes = @as([4]u8, @bitCast(value));
+        try self.code.appendSlice(self.allocator, &value_bytes);
+    }
+
     /// and reg, reg (bitwise AND)
     pub fn andRegReg(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 21 /r
@@ -827,6 +837,59 @@ pub const Assembler = struct {
         return pos;
     }
 
+    /// jo rel8 - Jump if overflow (short)
+    pub fn joRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x70);
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// jno rel8 - Jump if no overflow (short)
+    pub fn jnoRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x71);
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// jz rel8 - Jump if zero (short) - same as je
+    pub fn jzRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x74); // Same opcode as je
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// jnz rel8 - Jump if not zero (short) - same as jne
+    pub fn jnzRel8(self: *Assembler, offset: i8) !usize {
+        const pos = self.code.items.len;
+        try self.code.append(self.allocator, 0x75); // Same opcode as jne
+        try self.code.append(self.allocator, @bitCast(offset));
+        return pos;
+    }
+
+    /// int3 - Software breakpoint (trap)
+    pub fn int3(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xCC);
+    }
+
+    /// ud2 - Undefined instruction (always triggers invalid opcode exception)
+    pub fn ud2(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x0B);
+    }
+
+    /// Patch jz rel8 at position
+    pub fn patchJz8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
+    /// Patch jnz rel8 at position
+    pub fn patchJnz8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
     /// Patch je rel8 at position
     pub fn patchJe8(self: *Assembler, pos: usize, offset: i8) void {
         self.code.items[pos + 1] = @bitCast(offset);
@@ -839,6 +902,16 @@ pub const Assembler = struct {
 
     /// Patch jmp rel8 at position
     pub fn patchJmp8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
+    /// Patch jo rel8 at position
+    pub fn patchJo8(self: *Assembler, pos: usize, offset: i8) void {
+        self.code.items[pos + 1] = @bitCast(offset);
+    }
+
+    /// Patch jno rel8 at position
+    pub fn patchJno8(self: *Assembler, pos: usize, offset: i8) void {
         self.code.items[pos + 1] = @bitCast(offset);
     }
 

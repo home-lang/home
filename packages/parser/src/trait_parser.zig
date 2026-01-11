@@ -321,6 +321,86 @@ pub fn parseImplDeclaration(self: *Parser) !ast.Stmt {
     return ast.Stmt{ .ImplDecl = impl_decl };
 }
 
+/// Parse an extend declaration (extension methods)
+/// Grammar: extend TypeExpr '{' methods* '}'
+/// Example: extend string { fn is_email(&self): bool { ... } }
+pub fn parseExtendDeclaration(self: *Parser) !ast.Stmt {
+    const extend_token = self.previous();
+
+    // Parse optional generic parameters
+    var generic_params = std.ArrayList(ast.GenericParam).empty;
+    defer generic_params.deinit(self.allocator);
+
+    if (self.match(&.{.Less})) {
+        while (!self.check(.Greater) and !self.isAtEnd()) {
+            const param_token = try self.expect(.Identifier, "Expected generic parameter name");
+            const param_name = try self.allocator.dupe(u8, param_token.lexeme);
+
+            var bounds = std.ArrayList([]const u8).empty;
+            defer bounds.deinit(self.allocator);
+
+            if (self.match(&.{.Colon})) {
+                while (true) {
+                    const bound_token = try self.expect(.Identifier, "Expected trait bound");
+                    const bound = try self.allocator.dupe(u8, bound_token.lexeme);
+                    try bounds.append(self.allocator, bound);
+
+                    if (!self.match(&.{.Plus})) break;
+                }
+            }
+
+            try generic_params.append(self.allocator, .{
+                .name = param_name,
+                .bounds = try bounds.toOwnedSlice(self.allocator),
+                .default_type = null,
+            });
+
+            if (!self.match(&.{.Comma})) break;
+        }
+
+        _ = try self.expect(.Greater, "Expected '>' after generic parameters");
+    }
+
+    // Parse the target type to extend
+    const target_type = try self.parseTypeExpr();
+
+    // Parse optional where clause
+    var where_clause: ?*ast.WhereClause = null;
+    if (self.match(&.{.Where})) {
+        where_clause = try self.parseWhereClause();
+    }
+
+    // Parse extend body
+    _ = try self.expect(.LeftBrace, "Expected '{' after extend declaration");
+
+    var methods = std.ArrayList(*ast.FnDecl).empty;
+    defer methods.deinit(self.allocator);
+
+    while (!self.check(.RightBrace) and !self.isAtEnd()) {
+        // Parse method (must be a function)
+        _ = self.match(&.{.Async}); // optional async
+        _ = try self.expect(.Fn, "Expected 'fn' in extend block");
+
+        const method_stmt = try self.functionDeclaration(false, false);
+        if (method_stmt == .FnDecl) {
+            try methods.append(self.allocator, method_stmt.FnDecl);
+        }
+    }
+
+    _ = try self.expect(.RightBrace, "Expected '}' after extend body");
+
+    const extend_decl = try self.allocator.create(ast.ExtendDecl);
+    extend_decl.* = ast.ExtendDecl.init(
+        target_type,
+        try generic_params.toOwnedSlice(self.allocator),
+        try methods.toOwnedSlice(self.allocator),
+        where_clause,
+        ast.SourceLocation.fromToken(extend_token),
+    );
+
+    return ast.Stmt{ .ExtendDecl = extend_decl };
+}
+
 /// Parse a where clause
 /// Grammar: where TYPE: TRAIT (+ TRAIT)* (, TYPE: TRAIT (+ TRAIT)*)*
 pub fn parseWhereClause(self: *Parser) !*ast.WhereClause {

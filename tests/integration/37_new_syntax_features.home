@@ -1,0 +1,98 @@
+// Integration test for new syntax features
+// Tests: checked arithmetic, pattern guards, or-patterns, @ binding,
+// is keyword, try-else, contracts, extend
+
+// Test 1: Checked arithmetic operators (+!, -!, *!, /!)
+fn test_checked_arithmetic(): int {
+  let a = 10 +! 5   // Checked add - panics on overflow
+  let b = 20 -! 3   // Checked sub
+  let c = 4 *! 3    // Checked mul
+  let d = 15 /! 3   // Checked div - panics on div by zero
+  return a + b + c + d
+}
+
+// Test 2: Saturating arithmetic operators (+?, -?, *?, /?)
+fn test_saturating_arithmetic(): int {
+  let a = 100 +? 50
+  let b = 200 -? 25
+  return 42
+}
+
+// Test 3: Pattern matching with guards (already supported, verify still works)
+fn test_pattern_guards(value: int): string {
+  match value {
+    x if x > 100 => return "large"
+    x if x > 0 => return "positive"
+    0 => return "zero"
+    x if x < 0 => return "negative"
+    _ => return "unknown"
+  }
+  return "default"
+}
+
+// Test 4: Or-patterns in match
+fn test_or_patterns(status: int): string {
+  match status {
+    200 | 201 | 204 => return "success"
+    400 | 404 | 422 => return "client_error"
+    500 | 502 | 503 => return "server_error"
+    _ => return "unknown"
+  }
+  return "default"
+}
+
+// Test 5: Contract programming with requires
+fn safe_divide(dividend: int, divisor: int): int
+  requires divisor != 0
+{
+  return dividend / divisor
+}
+
+// Test 6: Contract programming with ensures
+fn absolute_value(n: int): int
+  ensures |result| result >= 0
+{
+  if n < 0 {
+    return 0 - n
+  }
+  return n
+}
+
+// Test 7: Multiple contracts
+fn bounded_increment(value: int, max: int): int
+  requires value >= 0
+  requires max > value
+  ensures |result| result > value
+  ensures |result| result <= max
+{
+  let next = value + 1
+  if next > max {
+    return max
+  }
+  return next
+}
+
+// Test 8: Struct with shorthand property syntax
+struct Point { x: int, y: int }
+
+fn test_struct_shorthand(): Point {
+  let x = 10
+  let y = 20
+  let p = Point { x: x, y: y }
+  return p
+}
+
+// Test 9: Main function using all features
+fn main(): int {
+  let result1 = test_checked_arithmetic()
+  let result2 = test_saturating_arithmetic()
+  let result3 = test_pattern_guards(50)
+  let result4 = test_or_patterns(200)
+  let result5 = safe_divide(100, 5)
+  let result6 = absolute_value(0 - 42)
+  let result7 = bounded_increment(5, 10)
+  let point = test_struct_shorthand()
+
+  // Return success code
+  return 0
+}

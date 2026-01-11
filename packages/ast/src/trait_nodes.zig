@@ -150,6 +150,50 @@ pub const ImplDecl = struct {
     }
 };
 
+/// Extension declaration for adding methods to existing types
+/// Example: extend string { fn is_email(&self): bool { ... } }
+/// Unlike impl, extend doesn't implement a trait - it adds standalone methods
+pub const ExtendDecl = struct {
+    node: Node,
+    /// The type being extended (e.g., "string", "int", "Vec<T>")
+    target_type: *TypeExpr,
+    /// Generic parameters for the extension (e.g., extend<T> Vec<T> { ... })
+    generic_params: []const GenericParam,
+    /// Methods being added to the type
+    methods: []const *FnDecl,
+    /// Where clause constraints
+    where_clause: ?*WhereClause,
+
+    pub fn init(
+        target_type: *TypeExpr,
+        generic_params: []const GenericParam,
+        methods: []const *FnDecl,
+        where_clause: ?*WhereClause,
+        loc: SourceLocation,
+    ) ExtendDecl {
+        return .{
+            .node = .{ .type = .ExtendDecl, .loc = loc },
+            .target_type = target_type,
+            .generic_params = generic_params,
+            .methods = methods,
+            .where_clause = where_clause,
+        };
+    }
+
+    pub fn deinit(self: *ExtendDecl, allocator: std.mem.Allocator) void {
+        allocator.destroy(self.target_type);
+        allocator.free(self.generic_params);
+        for (self.methods) |method| {
+            allocator.destroy(method);
+        }
+        allocator.free(self.methods);
+        if (self.where_clause) |wc| {
+            wc.deinit(allocator);
+            allocator.destroy(wc);
+        }
+    }
+};
+
 /// Where clause for complex trait bounds
 /// Example: where T: Clone + Debug, U: Display
 pub const WhereClause = struct {
