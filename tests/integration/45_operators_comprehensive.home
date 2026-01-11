@@ -1,0 +1,461 @@
+// Comprehensive Operators and Expressions Tests
+// Tests: arithmetic, comparison, logical, bitwise, special operators
+
+// ============================================
+// Test 1: Basic arithmetic operators
+// ============================================
+fn test_arithmetic(): i32 {
+    let a = 10;
+    let b = 3;
+
+    let sum = a + b;       // 13
+    let diff = a - b;      // 7
+    let prod = a * b;      // 30
+    let quot = a / b;      // 3
+    let rem = a % b;       // 1
+
+    if (sum != 13) { return 1; }
+    if (diff != 7) { return 2; }
+    if (prod != 30) { return 3; }
+    if (quot != 3) { return 4; }
+    if (rem != 1) { return 5; }
+
+    // Negative numbers
+    let neg = -5;
+    if (neg + 10 != 5) { return 6; }
+    if (neg * -2 != 10) { return 7; }
+
+    return 0;
+}
+
+// ============================================
+// Test 2: Power operator
+// ============================================
+fn test_power(): i32 {
+    let base = 2;
+
+    if (2 ** 0 != 1) { return 1; }
+    if (2 ** 1 != 2) { return 2; }
+    if (2 ** 3 != 8) { return 3; }
+    if (2 ** 10 != 1024) { return 4; }
+    if (3 ** 4 != 81) { return 5; }
+
+    return 0;
+}
+
+// ============================================
+// Test 3: Integer division
+// ============================================
+fn test_integer_division(): i32 {
+    // Truncating division (~/)
+    if (10 ~/ 3 != 3) { return 1; }
+    if (15 ~/ 4 != 3) { return 2; }
+    if (7 ~/ 2 != 3) { return 3; }
+
+    // Negative truncating division
+    if (-10 ~/ 3 != -3) { return 4; }
+    if (10 ~/ -3 != -3) { return 5; }
+
+    return 0;
+}
+
+// ============================================
+// Test 4: Comparison operators
+// ============================================
+fn test_comparison(): i32 {
+    let a = 10;
+    let b = 20;
+    let c = 10;
+
+    // Equality
+    if ((a == c) != true) { return 1; }
+    if ((a == b) != false) { return 2; }
+
+    // Inequality
+    if ((a != b) != true) { return 3; }
+    if ((a != c) != false) { return 4; }
+
+    // Less than
+    if ((a < b) != true) { return 5; }
+    if ((b < a) != false) { return 6; }
+
+    // Greater than
+    if ((b > a) != true) { return 7; }
+    if ((a > b) != false) { return 8; }
+
+    // Less than or equal
+    if ((a <= c) != true) { return 9; }
+    if ((a <= b) != true) { return 10; }
+
+    // Greater than or equal
+    if ((a >= c) != true) { return 11; }
+    if ((b >= a) != true) { return 12; }
+
+    return 0;
+}
+
+// ============================================
+// Test 5: Logical operators
+// ============================================
+fn test_logical(): i32 {
+    let t = true;
+    let f = false;
+
+    // AND
+    if ((t and t) != true) { return 1; }
+    if ((t and f) != false) { return 2; }
+    if ((f and t) != false) { return 3; }
+    if ((f and f) != false) { return 4; }
+
+    // OR
+    if ((t or t) != true) { return 5; }
+    if ((t or f) != true) { return 6; }
+    if ((f or t) != true) { return 7; }
+    if ((f or f) != false) { return 8; }
+
+    // NOT
+    if ((!t) != false) { return 9; }
+    if ((!f) != true) { return 10; }
+
+    // Combined
+    if ((t and !f) != true) { return 11; }
+    if ((!t or f) != false) { return 12; }
+
+    return 0;
+}
+
+// ============================================
+// Test 6: Bitwise operators
+// ============================================
+fn test_bitwise(): i32 {
+    let a = 0b1010;  // 10
+    let b = 0b1100;  // 12
+
+    // AND
+    let and_result = a & b;  // 0b1000 = 8
+    if (and_result != 8) { return 1; }
+
+    // OR
+    let or_result = a | b;   // 0b1110 = 14
+    if (or_result != 14) { return 2; }
+
+    // XOR
+    let xor_result = a ^ b;  // 0b0110 = 6
+    if (xor_result != 6) { return 3; }
+
+    // NOT (complement)
+    let not_result = ~a & 0xFF;  // depends on bit width
+    if (not_result != 245) { return 4; }
+
+    // Left shift
+    let lshift = a << 2;  // 10 << 2 = 40
+    if (lshift != 40) { return 5; }
+
+    // Right shift
+    let rshift = a >> 1;  // 10 >> 1 = 5
+    if (rshift != 5) { return 6; }
+
+    return 0;
+}
+
+// ============================================
+// Test 7: Ternary operator
+// ============================================
+fn test_ternary(): i32 {
+    let a = 10;
+    let b = 20;
+
+    let max = a > b ? a : b;
+    if (max != 20) { return 1; }
+
+    let min = a < b ? a : b;
+    if (min != 10) { return 2; }
+
+    // Nested ternary
+    let x = 5;
+    let category = x < 0 ? "negative" : x == 0 ? "zero" : "positive";
+    if (category != "positive") { return 3; }
+
+    // With expressions
+    let result = (a + b > 25) ? (a * 2) : (b * 2);
+    if (result != 20) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 8: Null coalescing operator (??)
+// ============================================
+enum Maybe {
+    Just(i32),
+    Nothing
+}
+
+fn get_value(m: Maybe): i32 {
+    match m {
+        Maybe.Just(v) => return v,
+        Maybe.Nothing => return 0,
+    }
+}
+
+fn test_null_coalesce(): i32 {
+    // With nullable/optional values
+    let val1: Maybe = Maybe.Just(42);
+    let val2: Maybe = Maybe.Nothing;
+
+    // Simulating null coalescing
+    let r1 = get_value(val1);
+    if (r1 != 42) { return 1; }
+
+    let r2 = get_value(val2);
+    if (r2 != 0) { return 2; }
+
+    // Direct null coalescing (if supported)
+    let x: i32 = 10;
+    let result = x ?? 100;
+    if (result != 10) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 9: Pipe operator (|>)
+// ============================================
+fn double(x: i32): i32 { return x * 2; }
+fn increment(x: i32): i32 { return x + 1; }
+fn square(x: i32): i32 { return x * x; }
+
+fn test_pipe_operator(): i32 {
+    // Simple pipe
+    let result1 = 5 |> double;
+    if (result1 != 10) { return 1; }
+
+    // Chained pipes
+    let result2 = 5 |> double |> increment;
+    if (result2 != 11) { return 2; }
+
+    // Multiple pipes
+    let result3 = 2 |> double |> double |> double;
+    if (result3 != 16) { return 3; }
+
+    // Complex pipeline
+    let result4 = 3 |> increment |> double |> square;
+    // (3 + 1) = 4, * 2 = 8, ^2 = 64
+    if (result4 != 64) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 10: Spread operator (...)
+// ============================================
+fn test_spread(): i32 {
+    let arr1 = [1, 2, 3];
+    let arr2 = [4, 5, 6];
+
+    // Spread into new array
+    let combined = [...arr1, ...arr2];
+    if (combined[0] != 1) { return 1; }
+    if (combined[3] != 4) { return 2; }
+    if (combined[5] != 6) { return 3; }
+
+    // Spread with additional elements
+    let extended = [0, ...arr1, 10];
+    if (extended[0] != 0) { return 4; }
+    if (extended[4] != 10) { return 5; }
+
+    return 0;
+}
+
+// ============================================
+// Test 11: Checked arithmetic (+!, -!, *!)
+// ============================================
+fn test_checked_arithmetic(): i32 {
+    let a = 10;
+    let b = 5;
+
+    // These will panic on overflow instead of wrapping
+    let sum = a +! b;
+    if (sum != 15) { return 1; }
+
+    let diff = a -! b;
+    if (diff != 5) { return 2; }
+
+    let prod = a *! b;
+    if (prod != 50) { return 3; }
+
+    let quot = a /! b;
+    if (quot != 2) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 12: Saturating arithmetic (+?, -?, *?)
+// ============================================
+fn test_saturating_arithmetic(): i32 {
+    let a = 100;
+    let b = 50;
+
+    // Saturating operations clamp to min/max instead of overflowing
+    let sum = a +? b;
+    if (sum != 150) { return 1; }
+
+    let diff = a -? b;
+    if (diff != 50) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 13: Compound assignment operators
+// ============================================
+fn test_compound_assignment(): i32 {
+    let mut x = 10;
+
+    x += 5;
+    if (x != 15) { return 1; }
+
+    x -= 3;
+    if (x != 12) { return 2; }
+
+    x *= 2;
+    if (x != 24) { return 3; }
+
+    x /= 4;
+    if (x != 6) { return 4; }
+
+    x %= 4;
+    if (x != 2) { return 5; }
+
+    // Bitwise compound
+    let mut y = 0b1010;
+    y &= 0b1100;
+    if (y != 0b1000) { return 6; }
+
+    y = 0b1010;
+    y |= 0b0101;
+    if (y != 0b1111) { return 7; }
+
+    y = 0b1111;
+    y ^= 0b0101;
+    if (y != 0b1010) { return 8; }
+
+    return 0;
+}
+
+// ============================================
+// Test 14: Operator precedence
+// ============================================
+fn test_precedence(): i32 {
+    // Power before multiplication
+    if (2 * 3 ** 2 != 18) { return 1; }  // 2 * 9 = 18
+
+    // Multiplication before addition
+    if (2 + 3 * 4 != 14) { return 2; }  // 2 + 12 = 14
+
+    // Parentheses override
+    if ((2 + 3) * 4 != 20) { return 3; }
+
+    // Comparison and logical
+    if ((5 > 3 and 2 < 4) != true) { return 4; }
+
+    // Complex expression
+    let result = 2 + 3 * 4 ** 2 - 10 / 2;
+    // 2 + 3 * 16 - 5 = 2 + 48 - 5 = 45
+    if (result != 45) { return 5; }
+
+    return 0;
+}
+
+// ============================================
+// Main test runner
+// ============================================
+fn main(): i32 {
+    let t1 = test_arithmetic();
+    if (t1 != 0) {
+        print("test_arithmetic failed\n");
+        return 1;
+    }
+
+    let t2 = test_power();
+    if (t2 != 0) {
+        print("test_power failed\n");
+        return 2;
+    }
+
+    let t3 = test_integer_division();
+    if (t3 != 0) {
+        print("test_integer_division failed\n");
+        return 3;
+    }
+
+    let t4 = test_comparison();
+    if (t4 != 0) {
+        print("test_comparison failed\n");
+        return 4;
+    }
+
+    let t5 = test_logical();
+    if (t5 != 0) {
+        print("test_logical failed\n");
+        return 5;
+    }
+
+    let t6 = test_bitwise();
+    if (t6 != 0) {
+        print("test_bitwise failed\n");
+        return 6;
+    }
+
+    let t7 = test_ternary();
+    if (t7 != 0) {
+        print("test_ternary failed\n");
+        return 7;
+    }
+
+    let t8 = test_null_coalesce();
+    if (t8 != 0) {
+        print("test_null_coalesce failed\n");
+        return 8;
+    }
+
+    let t9 = test_pipe_operator();
+    if (t9 != 0) {
+        print("test_pipe_operator failed\n");
+        return 9;
+    }
+
+    let t10 = test_spread();
+    if (t10 != 0) {
+        print("test_spread failed\n");
+        return 10;
+    }
+
+    let t11 = test_checked_arithmetic();
+    if (t11 != 0) {
+        print("test_checked_arithmetic failed\n");
+        return 11;
+    }
+
+    let t12 = test_saturating_arithmetic();
+    if (t12 != 0) {
+        print("test_saturating_arithmetic failed\n");
+        return 12;
+    }
+
+    let t13 = test_compound_assignment();
+    if (t13 != 0) {
+        print("test_compound_assignment failed\n");
+        return 13;
+    }
+
+    let t14 = test_precedence();
+    if (t14 != 0) {
+        print("test_precedence failed\n");
+        return 14;
+    }
+
+    print("All operator tests passed!\n");
+    return 0;
+}

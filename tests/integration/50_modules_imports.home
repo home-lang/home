@@ -1,0 +1,350 @@
+// Comprehensive Module and Import Tests
+// Tests: module declarations, imports, exports, visibility
+
+// ============================================
+// Module declarations
+// ============================================
+mod math {
+    pub fn add(a: i32, b: i32): i32 {
+        return a + b;
+    }
+
+    pub fn subtract(a: i32, b: i32): i32 {
+        return a - b;
+    }
+
+    pub fn multiply(a: i32, b: i32): i32 {
+        return a * b;
+    }
+
+    fn private_helper(): i32 {
+        return 42;
+    }
+
+    pub const PI = 3;
+    pub const E = 2;
+}
+
+mod geometry {
+    pub struct Point {
+        pub x: i32,
+        pub y: i32
+    }
+
+    pub struct Rectangle {
+        pub top_left: Point,
+        pub width: i32,
+        pub height: i32
+    }
+
+    pub fn distance(p1: Point, p2: Point): i32 {
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
+        return dx * dx + dy * dy;  // squared distance
+    }
+
+    pub fn area(rect: Rectangle): i32 {
+        return rect.width * rect.height;
+    }
+}
+
+mod utils {
+    pub mod string_utils {
+        pub fn is_empty(s: string): bool {
+            return s.len() == 0;
+        }
+
+        pub fn repeat(s: string, n: i32): string {
+            let mut result = "";
+            let mut i = 0;
+            while (i < n) {
+                result = result + s;
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+
+    pub mod array_utils {
+        pub fn sum(arr: [i32]): i32 {
+            let mut total = 0;
+            for (item in arr) {
+                total = total + item;
+            }
+            return total;
+        }
+
+        pub fn max(arr: [i32]): i32 {
+            let mut maximum = arr[0];
+            for (item in arr) {
+                if (item > maximum) {
+                    maximum = item;
+                }
+            }
+            return maximum;
+        }
+    }
+}
+
+// ============================================
+// Test 1: Using module functions
+// ============================================
+fn test_module_functions(): i32 {
+    let sum = math.add(10, 20);
+    if (sum != 30) { return 1; }
+
+    let diff = math.subtract(50, 30);
+    if (diff != 20) { return 2; }
+
+    let product = math.multiply(6, 7);
+    if (product != 42) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 2: Using module constants
+// ============================================
+fn test_module_constants(): i32 {
+    if (math.PI != 3) { return 1; }
+    if (math.E != 2) { return 2; }
+
+    let circle_area = math.PI * 10 * 10;  // Simplified
+    if (circle_area != 300) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 3: Using module structs
+// ============================================
+fn test_module_structs(): i32 {
+    let p1 = geometry.Point { x: 0, y: 0 };
+    let p2 = geometry.Point { x: 3, y: 4 };
+
+    let dist_sq = geometry.distance(p1, p2);
+    if (dist_sq != 25) { return 1; }  // 3^2 + 4^2 = 25
+
+    let rect = geometry.Rectangle {
+        top_left: geometry.Point { x: 0, y: 0 },
+        width: 10,
+        height: 5
+    };
+
+    let area = geometry.area(rect);
+    if (area != 50) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 4: Nested modules
+// ============================================
+fn test_nested_modules(): i32 {
+    let is_empty = utils.string_utils.is_empty("");
+    if (is_empty != true) { return 1; }
+
+    let not_empty = utils.string_utils.is_empty("hello");
+    if (not_empty != false) { return 2; }
+
+    let repeated = utils.string_utils.repeat("ab", 3);
+    if (repeated != "ababab") { return 3; }
+
+    let arr = [1, 2, 3, 4, 5];
+    let sum = utils.array_utils.sum(arr);
+    if (sum != 15) { return 4; }
+
+    let maximum = utils.array_utils.max(arr);
+    if (maximum != 5) { return 5; }
+
+    return 0;
+}
+
+// ============================================
+// Test 5: Import with use statement
+// ============================================
+use math.{add, subtract};
+use geometry.Point;
+use utils.string_utils.is_empty;
+
+fn test_use_imports(): i32 {
+    // Direct access after use
+    let sum = add(5, 5);
+    if (sum != 10) { return 1; }
+
+    let diff = subtract(20, 5);
+    if (diff != 15) { return 2; }
+
+    let p = Point { x: 1, y: 2 };
+    if (p.x != 1) { return 3; }
+
+    if (is_empty("") != true) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 6: Import with alias
+// ============================================
+use math as m;
+use geometry.Point as Pt;
+use utils.array_utils as arr;
+
+fn test_aliased_imports(): i32 {
+    let sum = m.add(100, 200);
+    if (sum != 300) { return 1; }
+
+    let p = Pt { x: 10, y: 20 };
+    if (p.x + p.y != 30) { return 2; }
+
+    let total = arr.sum([10, 20, 30]);
+    if (total != 60) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 7: Wildcard imports
+// ============================================
+use math.*;
+
+fn test_wildcard_imports(): i32 {
+    // All public items from math are now in scope
+    let sum = add(1, 2);
+    let diff = subtract(5, 3);
+    let prod = multiply(4, 5);
+
+    if (sum != 3) { return 1; }
+    if (diff != 2) { return 2; }
+    if (prod != 20) { return 3; }
+    if (PI != 3) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 8: Re-exports
+// ============================================
+mod facade {
+    pub use math.add;
+    pub use math.multiply;
+    pub use geometry.Point;
+
+    pub fn combined(a: i32, b: i32): i32 {
+        return add(a, multiply(a, b));
+    }
+}
+
+fn test_reexports(): i32 {
+    let sum = facade.add(2, 3);
+    if (sum != 5) { return 1; }
+
+    let prod = facade.multiply(4, 5);
+    if (prod != 20) { return 2; }
+
+    let p = facade.Point { x: 1, y: 1 };
+    if (p.x != 1) { return 3; }
+
+    let result = facade.combined(3, 4);
+    // add(3, multiply(3, 4)) = add(3, 12) = 15
+    if (result != 15) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 9: Module with private internals
+// ============================================
+mod encapsulated {
+    struct InternalState {
+        value: i32
+    }
+
+    let mut state = InternalState { value: 0 };
+
+    pub fn get_value(): i32 {
+        return state.value;
+    }
+
+    pub fn set_value(v: i32) {
+        state.value = v;
+    }
+
+    pub fn increment() {
+        state.value = state.value + 1;
+    }
+}
+
+fn test_encapsulation(): i32 {
+    encapsulated.set_value(10);
+    if (encapsulated.get_value() != 10) { return 1; }
+
+    encapsulated.increment();
+    if (encapsulated.get_value() != 11) { return 2; }
+
+    encapsulated.increment();
+    encapsulated.increment();
+    if (encapsulated.get_value() != 13) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 10: Module initialization
+// ============================================
+mod initialized {
+    const INIT_VALUE = compute_init();
+
+    fn compute_init(): i32 {
+        return 42;
+    }
+
+    pub fn get_init(): i32 {
+        return INIT_VALUE;
+    }
+}
+
+fn test_module_init(): i32 {
+    let init = initialized.get_init();
+    if (init != 42) { return 1; }
+
+    return 0;
+}
+
+// ============================================
+// Main test runner
+// ============================================
+fn main(): i32 {
+    let t1 = test_module_functions();
+    if (t1 != 0) { print("test_module_functions failed\n"); return 1; }
+
+    let t2 = test_module_constants();
+    if (t2 != 0) { print("test_module_constants failed\n"); return 2; }
+
+    let t3 = test_module_structs();
+    if (t3 != 0) { print("test_module_structs failed\n"); return 3; }
+
+    let t4 = test_nested_modules();
+    if (t4 != 0) { print("test_nested_modules failed\n"); return 4; }
+
+    let t5 = test_use_imports();
+    if (t5 != 0) { print("test_use_imports failed\n"); return 5; }
+
+    let t6 = test_aliased_imports();
+    if (t6 != 0) { print("test_aliased_imports failed\n"); return 6; }
+
+    let t7 = test_wildcard_imports();
+    if (t7 != 0) { print("test_wildcard_imports failed\n"); return 7; }
+
+    let t8 = test_reexports();
+    if (t8 != 0) { print("test_reexports failed\n"); return 8; }
+
+    let t9 = test_encapsulation();
+    if (t9 != 0) { print("test_encapsulation failed\n"); return 9; }
+
+    let t10 = test_module_init();
+    if (t10 != 0) { print("test_module_init failed\n"); return 10; }
+
+    print("All module and import tests passed!\n");
+    return 0;
+}

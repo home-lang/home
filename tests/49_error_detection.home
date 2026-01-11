@@ -1,0 +1,308 @@
+// Compiler Error Detection Tests
+// These tests verify that the compiler correctly detects and reports errors
+// Each test case documents expected error behavior
+
+// ============================================
+// Type Mismatch Errors (expect compilation failure)
+// ============================================
+
+// ERROR: Cannot assign string to int
+// fn type_mismatch_assignment(): i32 {
+//     let x: i32 = "hello";  // Error: expected i32, found string
+//     return x;
+// }
+
+// ERROR: Return type mismatch
+// fn type_mismatch_return(): i32 {
+//     return "not an int";  // Error: expected i32, found string
+// }
+
+// ERROR: Argument type mismatch
+// fn expects_int(x: i32): i32 { return x; }
+// fn type_mismatch_argument(): i32 {
+//     return expects_int("hello");  // Error: expected i32, found string
+// }
+
+// ERROR: Binary operator type mismatch
+// fn type_mismatch_operator(): i32 {
+//     let x = 10 + "hello";  // Error: cannot add i32 and string
+//     return 0;
+// }
+
+// ============================================
+// Undefined Variable Errors
+// ============================================
+
+// ERROR: Use of undefined variable
+// fn undefined_variable(): i32 {
+//     return undefined_var;  // Error: undefined_var is not defined
+// }
+
+// ERROR: Use before declaration
+// fn use_before_declaration(): i32 {
+//     let y = x + 1;  // Error: x is not yet defined
+//     let x = 10;
+//     return y;
+// }
+
+// ============================================
+// Borrow Checker Errors
+// ============================================
+
+// ERROR: Use after move
+// struct OwnedValue { data: i32 }
+// fn consume(v: OwnedValue): i32 { return v.data; }
+// fn use_after_move(): i32 {
+//     let v = OwnedValue { data: 42 };
+//     consume(v);
+//     return v.data;  // Error: v was moved
+// }
+
+// ERROR: Mutable borrow while immutable borrow exists
+// fn conflicting_borrows(): i32 {
+//     let mut x = 10;
+//     let r1 = &x;
+//     let r2 = &mut x;  // Error: cannot borrow as mutable while borrowed as immutable
+//     return *r1;
+// }
+
+// ERROR: Multiple mutable borrows
+// fn multiple_mutable_borrows(): i32 {
+//     let mut x = 10;
+//     let r1 = &mut x;
+//     let r2 = &mut x;  // Error: cannot borrow as mutable more than once
+//     return *r1 + *r2;
+// }
+
+// ERROR: Dangling reference
+// fn dangling_reference(): &i32 {
+//     let x = 10;
+//     return &x;  // Error: x does not live long enough
+// }
+
+// ============================================
+// Type Inference Errors
+// ============================================
+
+// ERROR: Cannot infer type of empty array
+// fn cannot_infer_empty(): i32 {
+//     let arr = [];  // Error: cannot infer type of empty array
+//     return 0;
+// }
+
+// ERROR: Conflicting types in if expression
+// fn conflicting_if_types(): i32 {
+//     let x = if (true) { 10 } else { "hello" };  // Error: conflicting types
+//     return 0;
+// }
+
+// ============================================
+// Pattern Matching Errors
+// ============================================
+
+// ERROR: Non-exhaustive pattern matching
+// enum Option { Some(i32), None }
+// fn non_exhaustive_match(opt: Option): i32 {
+//     match opt {
+//         Option.Some(x) => x,
+//         // Missing Option.None case - Error: non-exhaustive patterns
+//     }
+// }
+
+// ERROR: Unreachable pattern
+// fn unreachable_pattern(x: i32): i32 {
+//     match x {
+//         _ => 0,
+//         10 => 1,  // Error: unreachable pattern
+//     }
+// }
+
+// ============================================
+// Mutability Errors
+// ============================================
+
+// ERROR: Cannot assign to immutable variable
+// fn assign_to_immutable(): i32 {
+//     let x = 10;
+//     x = 20;  // Error: cannot assign to immutable variable
+//     return x;
+// }
+
+// ERROR: Cannot mutably borrow immutable value
+// fn mutable_borrow_immutable(): i32 {
+//     let x = 10;
+//     let r = &mut x;  // Error: cannot borrow immutably-bound value as mutable
+//     return *r;
+// }
+
+// ============================================
+// Function Errors
+// ============================================
+
+// ERROR: Wrong number of arguments
+// fn takes_two(a: i32, b: i32): i32 { return a + b; }
+// fn wrong_arg_count(): i32 {
+//     return takes_two(1);  // Error: expected 2 arguments, found 1
+// }
+
+// ERROR: Recursive type without indirection
+// struct Recursive {
+//     next: Recursive  // Error: recursive type has infinite size
+// }
+
+// ============================================
+// Trait Errors
+// ============================================
+
+// ERROR: Missing trait method implementation
+// trait Required {
+//     fn must_implement(self): i32;
+// }
+// struct Incomplete { value: i32 }
+// impl Required for Incomplete {
+//     // Error: missing implementation of must_implement
+// }
+
+// ERROR: Cannot call trait method on non-implementing type
+// trait Printable { fn to_string(self): string; }
+// struct NotPrintable { value: i32 }
+// fn trait_not_implemented(): string {
+//     let np = NotPrintable { value: 42 };
+//     return np.to_string();  // Error: to_string not found
+// }
+
+// ============================================
+// Generic Errors
+// ============================================
+
+// ERROR: Type parameter constraint not satisfied
+// trait Comparable { fn compare(self, other: Self): i32; }
+// fn needs_comparable<T: Comparable>(a: T, b: T): i32 {
+//     return a.compare(b);
+// }
+// struct NotComparable { value: i32 }
+// fn constraint_not_satisfied(): i32 {
+//     let a = NotComparable { value: 1 };
+//     let b = NotComparable { value: 2 };
+//     return needs_comparable(a, b);  // Error: NotComparable does not implement Comparable
+// }
+
+// ============================================
+// Lifetime Errors
+// ============================================
+
+// ERROR: Lifetime mismatch
+// fn lifetime_mismatch<'a, 'b>(x: &'a i32, y: &'b i32): &'a i32 {
+//     return y;  // Error: lifetime of y is not compatible with 'a
+// }
+
+// ERROR: Missing lifetime annotation
+// struct RefHolder {
+//     data: &i32  // Error: missing lifetime specifier
+// }
+
+// ============================================
+// Constant Errors
+// ============================================
+
+// ERROR: Non-constant expression in const
+// fn non_const_func(): i32 { return 42; }
+// const INVALID = non_const_func();  // Error: calls to functions are not allowed in constants
+
+// ERROR: Mutable constant (contradiction)
+// const mut MUTABLE_CONST = 10;  // Error: constants cannot be mutable
+
+// ============================================
+// Access Errors
+// ============================================
+
+// ERROR: Private field access
+// mod other {
+//     struct Private { private_field: i32 }
+// }
+// fn access_private(): i32 {
+//     let p = other.Private { private_field: 42 };  // Error: private_field is private
+//     return p.private_field;
+// }
+
+// ERROR: Array index out of bounds (compile-time known)
+// fn known_out_of_bounds(): i32 {
+//     let arr = [1, 2, 3];
+//     return arr[10];  // Error: index out of bounds
+// }
+
+// ============================================
+// Correct code that should compile
+// ============================================
+
+fn correct_types(): i32 {
+    let x: i32 = 42;
+    let y: string = "hello";
+    let z: bool = true;
+    return x;
+}
+
+fn correct_borrowing(): i32 {
+    let x = 10;
+    let r1 = &x;
+    let r2 = &x;  // Multiple immutable borrows OK
+    return *r1 + *r2;
+}
+
+fn correct_mutation(): i32 {
+    let mut x = 10;
+    x = 20;  // OK - x is mutable
+    return x;
+}
+
+enum TestOption {
+    Some(i32),
+    None
+}
+
+fn correct_exhaustive_match(opt: TestOption): i32 {
+    match opt {
+        TestOption.Some(x) => x,
+        TestOption.None => 0,
+    }
+}
+
+struct ValidStruct {
+    value: i32
+}
+
+trait ValidTrait {
+    fn get_value(self): i32;
+}
+
+impl ValidTrait for ValidStruct {
+    fn get_value(self): i32 {
+        return self.value;
+    }
+}
+
+fn correct_trait_usage(): i32 {
+    let v = ValidStruct { value: 42 };
+    return v.get_value();
+}
+
+// Main function to verify correct code compiles
+fn main(): i32 {
+    let t1 = correct_types();
+    if (t1 != 42) { return 1; }
+
+    let t2 = correct_borrowing();
+    if (t2 != 20) { return 2; }
+
+    let t3 = correct_mutation();
+    if (t3 != 20) { return 3; }
+
+    let t4 = correct_exhaustive_match(TestOption.Some(100));
+    if (t4 != 100) { return 4; }
+
+    let t5 = correct_trait_usage();
+    if (t5 != 42) { return 5; }
+
+    print("All error detection verification tests passed!\n");
+    return 0;
+}

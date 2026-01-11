@@ -1,0 +1,392 @@
+// Comprehensive Ownership and Borrowing Tests
+// Tests: move semantics, borrowing, lifetimes, references
+
+// ============================================
+// Test 1: Basic ownership transfer
+// ============================================
+struct OwnedData {
+    value: i32
+}
+
+fn take_ownership(data: OwnedData): i32 {
+    return data.value;
+}
+
+fn test_ownership_transfer(): i32 {
+    let data = OwnedData { value: 42 };
+    let result = take_ownership(data);
+    // After this, `data` is moved and cannot be used
+
+    if (result != 42) { return 1; }
+    return 0;
+}
+
+// ============================================
+// Test 2: Borrowing with references
+// ============================================
+fn borrow_value(data: &OwnedData): i32 {
+    return data.value;
+}
+
+fn test_borrowing(): i32 {
+    let data = OwnedData { value: 100 };
+
+    // Borrow the data (doesn't move it)
+    let val1 = borrow_value(&data);
+    let val2 = borrow_value(&data);  // Can borrow multiple times
+
+    if (val1 != 100) { return 1; }
+    if (val2 != 100) { return 2; }
+
+    // Original still accessible
+    if (data.value != 100) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 3: Mutable borrowing
+// ============================================
+fn mutate_value(data: &mut OwnedData, new_val: i32) {
+    data.value = new_val;
+}
+
+fn test_mutable_borrow(): i32 {
+    let mut data = OwnedData { value: 10 };
+
+    mutate_value(&mut data, 50);
+
+    if (data.value != 50) { return 1; }
+
+    mutate_value(&mut data, 100);
+
+    if (data.value != 100) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 4: Multiple immutable borrows
+// ============================================
+fn sum_refs(a: &i32, b: &i32, c: &i32): i32 {
+    return *a + *b + *c;
+}
+
+fn test_multiple_immutable_borrows(): i32 {
+    let x = 10;
+    let y = 20;
+    let z = 30;
+
+    // Multiple immutable borrows at the same time
+    let result = sum_refs(&x, &y, &z);
+
+    if (result != 60) { return 1; }
+
+    // Can still use original values
+    if (x != 10) { return 2; }
+    if (y != 20) { return 3; }
+    if (z != 30) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 5: Returning references
+// ============================================
+struct Container {
+    items: [i32]
+}
+
+fn get_first(container: &Container): &i32 {
+    return &container.items[0];
+}
+
+fn get_last(container: &Container): &i32 {
+    let len = 3;  // Assuming fixed length for test
+    return &container.items[len - 1];
+}
+
+fn test_returning_references(): i32 {
+    let container = Container { items: [1, 2, 3] };
+
+    let first = get_first(&container);
+    let last = get_last(&container);
+
+    if (*first != 1) { return 1; }
+    if (*last != 3) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 6: Scope-based cleanup
+// ============================================
+struct Resource {
+    id: i32
+}
+
+fn use_resource(r: Resource): i32 {
+    let id = r.id;
+    // Resource is dropped at end of function
+    return id;
+}
+
+fn test_scope_cleanup(): i32 {
+    let result: i32 = 0;
+
+    {
+        let r1 = Resource { id: 1 };
+        let val = use_resource(r1);
+        // r1 is consumed by use_resource
+    }
+
+    {
+        let r2 = Resource { id: 2 };
+        // r2 is dropped at end of this block
+    }
+
+    return 0;
+}
+
+// ============================================
+// Test 7: Clone for explicit copies
+// ============================================
+struct Cloneable {
+    data: i32
+}
+
+impl Clone for Cloneable {
+    fn clone(self): Cloneable {
+        return Cloneable { data: self.data };
+    }
+}
+
+fn test_clone(): i32 {
+    let original = Cloneable { data: 42 };
+    let copy = original.clone();
+
+    // Both are accessible
+    if (original.data != 42) { return 1; }
+    if (copy.data != 42) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 8: Copy types (value semantics)
+// ============================================
+fn test_copy_types(): i32 {
+    // Primitive types are Copy
+    let x = 10;
+    let y = x;  // Copy, not move
+
+    // Both are still valid
+    if (x != 10) { return 1; }
+    if (y != 10) { return 2; }
+
+    let mut a = 5;
+    let b = a;
+    a = 10;
+
+    // b still has the old value (it was copied)
+    if (a != 10) { return 3; }
+    if (b != 5) { return 4; }
+
+    return 0;
+}
+
+// ============================================
+// Test 9: Reference counting (Rc)
+// ============================================
+struct Shared<T> {
+    value: T,
+    ref_count: i32
+}
+
+fn share<T>(value: T): Shared<T> {
+    return Shared { value: value, ref_count: 1 };
+}
+
+fn clone_shared<T>(s: &mut Shared<T>): &Shared<T> {
+    s.ref_count = s.ref_count + 1;
+    return s;
+}
+
+fn test_reference_counting(): i32 {
+    let mut shared = share(42);
+
+    // Initial ref count
+    if (shared.ref_count != 1) { return 1; }
+
+    // Clone increases ref count
+    let clone1 = clone_shared(&mut shared);
+    if (shared.ref_count != 2) { return 2; }
+
+    let clone2 = clone_shared(&mut shared);
+    if (shared.ref_count != 3) { return 3; }
+
+    return 0;
+}
+
+// ============================================
+// Test 10: Lifetime annotations
+// ============================================
+fn longest<'a>(x: &'a string, y: &'a string): &'a string {
+    if (x.len() > y.len()) {
+        return x;
+    }
+    return y;
+}
+
+fn test_lifetimes(): i32 {
+    let s1 = "hello";
+    let s2 = "world!";
+
+    let result = longest(&s1, &s2);
+    // result is valid as long as both s1 and s2 are valid
+
+    if (result != "world!") { return 1; }
+
+    return 0;
+}
+
+// ============================================
+// Test 11: Interior mutability (Cell pattern)
+// ============================================
+struct Cell<T> {
+    mut value: T
+}
+
+fn new_cell<T>(value: T): Cell<T> {
+    return Cell { value: value };
+}
+
+fn cell_get<T>(cell: &Cell<T>): T {
+    return cell.value;
+}
+
+fn cell_set<T>(cell: &Cell<T>, value: T) {
+    cell.value = value;
+}
+
+fn test_interior_mutability(): i32 {
+    let cell = new_cell(10);
+
+    let v1 = cell_get(&cell);
+    if (v1 != 10) { return 1; }
+
+    cell_set(&cell, 20);
+
+    let v2 = cell_get(&cell);
+    if (v2 != 20) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 12: Drop trait
+// ============================================
+trait Drop {
+    fn drop(self);
+}
+
+struct FileHandle {
+    fd: i32
+}
+
+impl Drop for FileHandle {
+    fn drop(self) {
+        // Cleanup logic would go here
+        // close(self.fd);
+    }
+}
+
+fn test_drop(): i32 {
+    {
+        let file = FileHandle { fd: 42 };
+        // file.drop() is called automatically at end of scope
+    }
+    // Resource is cleaned up
+
+    return 0;
+}
+
+// ============================================
+// Main test runner
+// ============================================
+fn main(): i32 {
+    let t1 = test_ownership_transfer();
+    if (t1 != 0) {
+        print("test_ownership_transfer failed\n");
+        return 1;
+    }
+
+    let t2 = test_borrowing();
+    if (t2 != 0) {
+        print("test_borrowing failed\n");
+        return 2;
+    }
+
+    let t3 = test_mutable_borrow();
+    if (t3 != 0) {
+        print("test_mutable_borrow failed\n");
+        return 3;
+    }
+
+    let t4 = test_multiple_immutable_borrows();
+    if (t4 != 0) {
+        print("test_multiple_immutable_borrows failed\n");
+        return 4;
+    }
+
+    let t5 = test_returning_references();
+    if (t5 != 0) {
+        print("test_returning_references failed\n");
+        return 5;
+    }
+
+    let t6 = test_scope_cleanup();
+    if (t6 != 0) {
+        print("test_scope_cleanup failed\n");
+        return 6;
+    }
+
+    let t7 = test_clone();
+    if (t7 != 0) {
+        print("test_clone failed\n");
+        return 7;
+    }
+
+    let t8 = test_copy_types();
+    if (t8 != 0) {
+        print("test_copy_types failed\n");
+        return 8;
+    }
+
+    let t9 = test_reference_counting();
+    if (t9 != 0) {
+        print("test_reference_counting failed\n");
+        return 9;
+    }
+
+    let t10 = test_lifetimes();
+    if (t10 != 0) {
+        print("test_lifetimes failed\n");
+        return 10;
+    }
+
+    let t11 = test_interior_mutability();
+    if (t11 != 0) {
+        print("test_interior_mutability failed\n");
+        return 11;
+    }
+
+    let t12 = test_drop();
+    if (t12 != 0) {
+        print("test_drop failed\n");
+        return 12;
+    }
+
+    print("All ownership and borrowing tests passed!\n");
+    return 0;
+}
