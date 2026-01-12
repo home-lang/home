@@ -67,6 +67,8 @@ pub const Interpreter = struct {
     continue_target: ?LoopTarget,
     /// Registry for impl methods: type_name -> (method_name -> FnDecl)
     impl_methods: std.StringHashMap(std.StringHashMap(*ast.FnDecl)),
+    /// Whether to print verbose test output (each test name)
+    verbose_tests: bool,
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) !*Interpreter {
         const interpreter = try allocator.create(Interpreter);
@@ -90,6 +92,7 @@ pub const Interpreter = struct {
         interpreter.break_target = null;
         interpreter.continue_target = null;
         interpreter.impl_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
+        interpreter.verbose_tests = true; // Default to verbose for backward compatibility
 
         return interpreter;
     }
@@ -106,6 +109,11 @@ pub const Interpreter = struct {
         interpreter.debug_enabled = true;
         interpreter.source_file = source_file;
         return interpreter;
+    }
+
+    /// Set whether to print verbose test output (each test name)
+    pub fn setVerboseTests(self: *Interpreter, verbose: bool) void {
+        self.verbose_tests = verbose;
     }
 
     pub fn deinit(self: *Interpreter) void {
@@ -190,183 +198,299 @@ pub const Interpreter = struct {
                 const condition = try self.evaluateExpression(if_stmt.condition, env);
 
                 if (condition.isTrue()) {
-                    for (if_stmt.then_block.statements) |then_stmt| {
-                        self.executeStatement(then_stmt, env) catch |err| {
-                            if (err == error.Return) return err;
-                            return err;
-                        };
-                    }
-                } else if (if_stmt.else_block) |else_block| {
-                    for (else_block.statements) |else_stmt| {
-                        self.executeStatement(else_stmt, env) catch |err| {
-                            if (err == error.Return) return err;
-                            return err;
-                        };
-                    }
-                }
+                    // Create scope for then block (for defer support)
+                    var then_env = Environment.init(self.arena.allocator(), env);
+                    defer then_env.deinit();
 
-                // Arena allocator will clean up
+                    var then_err: ?InterpreterError = null;
+                    for (if_stmt.then_block.statements) |then_stmt| {
+                        self.executeStatement(then_stmt, &then_env) catch |err| {
+                            then_err = err;
+                            break;
+                        };
+                    }
+
+                    // Execute defers at end of then block
+                    const defers = then_env.getDefers();
+                    var i: usize = defers.len;
+                    while (i > 0) {
+                        i -= 1;
+                        _ = self.evaluateExpression(defers[i], &then_env) catch {};
+                    }
+
+                    if (then_err) |err| return err;
+                } else if (if_stmt.else_block) |else_block| {
+                    // Create scope for else block
+                    var else_env = Environment.init(self.arena.allocator(), env);
+                    defer else_env.deinit();
+
+                    var else_err: ?InterpreterError = null;
+                    for (else_block.statements) |else_stmt| {
+                        self.executeStatement(else_stmt, &else_env) catch |err| {
+                            else_err = err;
+                            break;
+                        };
+                    }
+
+                    // Execute defers at end of else block
+                    const defers = else_env.getDefers();
+                    var i: usize = defers.len;
+                    while (i > 0) {
+                        i -= 1;
+                        _ = self.evaluateExpression(defers[i], &else_env) catch {};
+                    }
+
+                    if (else_err) |err| return err;
+                }
             },
             .WhileStmt => |while_stmt| {
-                // Push loop onto stack (no labels in AST yet)
-                try self.loop_labels.append(self.allocator, null);
+                // Push loop onto stack with its label
+                try self.loop_labels.append(self.allocator, while_stmt.label);
                 defer _ = self.loop_labels.pop();
 
                 outer: while (true) {
                     const condition = try self.evaluateExpression(while_stmt.condition, env);
                     const should_continue = condition.isTrue();
-                    // Arena allocator will clean up
 
                     if (!should_continue) break;
 
+                    // Create a new scope for each iteration (for defer support)
+                    var iter_env = Environment.init(self.arena.allocator(), env);
+                    defer iter_env.deinit();
+
+                    var iter_err: ?InterpreterError = null;
                     for (while_stmt.body.statements) |body_stmt| {
-                        self.executeStatement(body_stmt, env) catch |err| {
-                            if (err == error.Return) return err;
-                            if (err == error.Break) {
-                                // Check if break targets this loop
-                                if (try self.shouldBreakHere(null)) {
-                                    break :outer; // Break the outer while loop
-                                } else {
-                                    // Propagate to outer loop
-                                    return err;
-                                }
-                            }
-                            if (err == error.Continue) {
-                                // Check if continue targets this loop
-                                if (try self.shouldContinueHere(null)) {
-                                    break; // Continue to next iteration
-                                } else {
-                                    // Propagate to outer loop
-                                    return err;
-                                }
-                            }
-                            return err;
+                        self.executeStatement(body_stmt, &iter_env) catch |err| {
+                            iter_err = err;
+                            break;
                         };
+                    }
+
+                    // Execute defers at end of iteration
+                    const defers = iter_env.getDefers();
+                    var i: usize = defers.len;
+                    while (i > 0) {
+                        i -= 1;
+                        _ = self.evaluateExpression(defers[i], &iter_env) catch {};
+                    }
+
+                    // Handle errors after defers
+                    if (iter_err) |err| {
+                        if (err == error.Return) return err;
+                        if (err == error.Break) {
+                            if (try self.shouldBreakHere(while_stmt.label)) {
+                                break :outer;
+                            } else {
+                                return err;
+                            }
+                        }
+                        if (err == error.Continue) {
+                            if (try self.shouldContinueHere(while_stmt.label)) {
+                                continue :outer;
+                            } else {
+                                return err;
+                            }
+                        }
+                        return err;
                     }
                 }
             },
             .ForStmt => |for_stmt| {
-                // For now, we only support iterating over integer ranges (BinaryExpr with ..)
-                // In the future, this should support arrays and other iterables
-
-                // Create a new scope for the loop variable
-                var loop_env = Environment.init(self.arena.allocator(), env);
-                defer loop_env.deinit();
-
-                // Evaluate the iterable - for now assume it's a range or array
+                // Evaluate the iterable
                 const iterable_value = try self.evaluateExpression(for_stmt.iterable, env);
-                // Arena allocator will clean up
 
-                // For simple demonstration, if iterable is an integer, iterate from 0 to that value
-                // This is a simplified implementation - full implementation would need array support
                 if (iterable_value == .Int) {
                     const max = iterable_value.Int;
                     var i: i64 = 0;
-                    while (i < max) : (i += 1) {
-                        // If there's an index variable (enumerate syntax), define it
+                    outer_int: while (i < max) : (i += 1) {
+                        // Create per-iteration scope for defer support
+                        var iter_env = Environment.init(self.arena.allocator(), env);
+                        defer iter_env.deinit();
+
                         if (for_stmt.index) |index_var| {
-                            if (i == 0) {
-                                try loop_env.define(index_var, Value{ .Int = i });
-                            } else {
-                                try loop_env.set(index_var, Value{ .Int = i });
-                            }
+                            try iter_env.define(index_var, Value{ .Int = i });
                         }
+                        try iter_env.define(for_stmt.iterator, Value{ .Int = i });
 
-                        // Define the iterator variable in loop scope on first iteration, update on subsequent
-                        if (i == 0) {
-                            try loop_env.define(for_stmt.iterator, Value{ .Int = i });
-                        } else {
-                            try loop_env.set(for_stmt.iterator, Value{ .Int = i });
-                        }
-
-                        var broke = false;
+                        var iter_err: ?InterpreterError = null;
                         for (for_stmt.body.statements) |body_stmt| {
-                            self.executeStatement(body_stmt, &loop_env) catch |err| {
-                                if (err == error.Return) return err;
-                                if (err == error.Break) {
-                                    broke = true;
-                                    break;
-                                }
-                                if (err == error.Continue) break; // Continue to next iteration
-                                return err;
+                            self.executeStatement(body_stmt, &iter_env) catch |err| {
+                                iter_err = err;
+                                break;
                             };
                         }
-                        if (broke) break;
+
+                        // Execute defers at end of iteration
+                        const defers = iter_env.getDefers();
+                        var di: usize = defers.len;
+                        while (di > 0) {
+                            di -= 1;
+                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
+                        }
+
+                        if (iter_err) |err| {
+                            if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                if (try self.shouldBreakHere(for_stmt.label)) {
+                                    break :outer_int;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                if (try self.shouldContinueHere(for_stmt.label)) {
+                                    continue :outer_int;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            return err;
+                        }
                     }
                 } else if (iterable_value == .Array) {
-                    // Iterate over array elements
                     const arr = iterable_value.Array;
-                    for (arr, 0..) |elem, idx| {
+                    outer_arr: for (arr, 0..) |elem, idx| {
+                        var iter_env = Environment.init(self.arena.allocator(), env);
+                        defer iter_env.deinit();
+
                         const i: i64 = @intCast(idx);
-                        // If there's an index variable (enumerate syntax), define it
                         if (for_stmt.index) |index_var| {
-                            if (idx == 0) {
-                                try loop_env.define(index_var, Value{ .Int = i });
-                            } else {
-                                try loop_env.set(index_var, Value{ .Int = i });
-                            }
+                            try iter_env.define(index_var, Value{ .Int = i });
                         }
+                        try iter_env.define(for_stmt.iterator, elem);
 
-                        // Define the iterator variable with the current element
-                        if (idx == 0) {
-                            try loop_env.define(for_stmt.iterator, elem);
-                        } else {
-                            try loop_env.set(for_stmt.iterator, elem);
-                        }
-
-                        var broke = false;
+                        var iter_err: ?InterpreterError = null;
                         for (for_stmt.body.statements) |body_stmt| {
-                            self.executeStatement(body_stmt, &loop_env) catch |err| {
-                                if (err == error.Return) return err;
-                                if (err == error.Break) {
-                                    broke = true;
-                                    break;
-                                }
-                                if (err == error.Continue) break;
-                                return err;
+                            self.executeStatement(body_stmt, &iter_env) catch |err| {
+                                iter_err = err;
+                                break;
                             };
                         }
-                        if (broke) break;
+
+                        const defers = iter_env.getDefers();
+                        var di: usize = defers.len;
+                        while (di > 0) {
+                            di -= 1;
+                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
+                        }
+
+                        if (iter_err) |err| {
+                            if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                if (try self.shouldBreakHere(for_stmt.label)) {
+                                    break :outer_arr;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                if (try self.shouldContinueHere(for_stmt.label)) {
+                                    continue :outer_arr;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            return err;
+                        }
                     }
                 } else if (iterable_value == .Range) {
-                    // Iterate over range
                     const range = iterable_value.Range;
                     var current = range.start;
                     var idx: i64 = 0;
                     const end_condition = if (range.inclusive) range.end + 1 else range.end;
-                    while (current < end_condition) : ({
+                    outer_range: while (current < end_condition) : ({
                         current += range.step;
                         idx += 1;
                     }) {
-                        // If there's an index variable (enumerate syntax), define it
+                        var iter_env = Environment.init(self.arena.allocator(), env);
+                        defer iter_env.deinit();
+
                         if (for_stmt.index) |index_var| {
-                            if (idx == 0) {
-                                try loop_env.define(index_var, Value{ .Int = idx });
-                            } else {
-                                try loop_env.set(index_var, Value{ .Int = idx });
-                            }
+                            try iter_env.define(index_var, Value{ .Int = idx });
                         }
+                        try iter_env.define(for_stmt.iterator, Value{ .Int = current });
 
-                        // Define the iterator variable with the current range value
-                        if (idx == 0) {
-                            try loop_env.define(for_stmt.iterator, Value{ .Int = current });
-                        } else {
-                            try loop_env.set(for_stmt.iterator, Value{ .Int = current });
-                        }
-
-                        var broke = false;
+                        var iter_err: ?InterpreterError = null;
                         for (for_stmt.body.statements) |body_stmt| {
-                            self.executeStatement(body_stmt, &loop_env) catch |err| {
-                                if (err == error.Return) return err;
-                                if (err == error.Break) {
-                                    broke = true;
-                                    break;
-                                }
-                                if (err == error.Continue) break;
-                                return err;
+                            self.executeStatement(body_stmt, &iter_env) catch |err| {
+                                iter_err = err;
+                                break;
                             };
                         }
-                        if (broke) break;
+
+                        const defers = iter_env.getDefers();
+                        var di: usize = defers.len;
+                        while (di > 0) {
+                            di -= 1;
+                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
+                        }
+
+                        if (iter_err) |err| {
+                            if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                if (try self.shouldBreakHere(for_stmt.label)) {
+                                    break :outer_range;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                if (try self.shouldContinueHere(for_stmt.label)) {
+                                    continue :outer_range;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            return err;
+                        }
+                    }
+                } else if (iterable_value == .String) {
+                    // String iteration - iterate over characters as integers (char codes)
+                    const str = iterable_value.String;
+                    outer_str: for (str, 0..) |byte, idx| {
+                        var iter_env = Environment.init(self.arena.allocator(), env);
+                        defer iter_env.deinit();
+
+                        const i: i64 = @intCast(idx);
+                        if (for_stmt.index) |index_var| {
+                            try iter_env.define(index_var, Value{ .Int = i });
+                        }
+                        // Each character is represented as its integer code (like char literals)
+                        try iter_env.define(for_stmt.iterator, Value{ .Int = @as(i64, byte) });
+
+                        var iter_err: ?InterpreterError = null;
+                        for (for_stmt.body.statements) |body_stmt| {
+                            self.executeStatement(body_stmt, &iter_env) catch |err| {
+                                iter_err = err;
+                                break;
+                            };
+                        }
+
+                        const defers = iter_env.getDefers();
+                        var di: usize = defers.len;
+                        while (di > 0) {
+                            di -= 1;
+                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
+                        }
+
+                        if (iter_err) |err| {
+                            if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                if (try self.shouldBreakHere(for_stmt.label)) {
+                                    break :outer_str;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                if (try self.shouldContinueHere(for_stmt.label)) {
+                                    continue :outer_str;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            return err;
+                        }
                     }
                 }
             },
@@ -457,11 +581,25 @@ pub const Interpreter = struct {
                 var block_env = Environment.init(self.arena.allocator(), env);
                 defer block_env.deinit();
 
+                var block_err: ?InterpreterError = null;
                 for (block.statements) |block_stmt| {
                     self.executeStatement(block_stmt, &block_env) catch |err| {
-                        if (err == error.Return) return err;
-                        return err;
+                        block_err = err;
+                        break;
                     };
+                }
+
+                // Execute defers in reverse order (LIFO)
+                const defers = block_env.getDefers();
+                var i: usize = defers.len;
+                while (i > 0) {
+                    i -= 1;
+                    _ = self.evaluateExpression(defers[i], &block_env) catch {};
+                }
+
+                // Propagate any error that occurred
+                if (block_err) |err| {
+                    return err;
                 }
             },
             .ExprStmt => |expr| {
@@ -592,10 +730,9 @@ pub const Interpreter = struct {
                 }
             },
             .DeferStmt => |defer_stmt| {
-                // For a full implementation, we'd need a defer stack
-                // For now, just evaluate the expression (simplified)
-                // In a real implementation, this would be executed at scope exit
-                _ = try self.evaluateExpression(defer_stmt.body, env);
+                // Add the deferred expression to the current scope's defer list
+                // It will be executed when the scope exits (in reverse order)
+                try env.addDefer(defer_stmt.body);
             },
             .UnionDecl => |_| {
                 // Union declarations are type-level constructs
@@ -624,7 +761,9 @@ pub const Interpreter = struct {
             },
             .ItTestDecl => |it_test| {
                 // Execute test and report result
-                std.debug.print("  it {s} ... ", .{it_test.description});
+                if (self.verbose_tests) {
+                    std.debug.print("  it {s} ... ", .{it_test.description});
+                }
 
                 var test_env = Environment.init(self.arena.allocator(), env);
                 defer test_env.deinit();
@@ -642,9 +781,16 @@ pub const Interpreter = struct {
                 }
 
                 if (test_passed) {
-                    std.debug.print("PASS\n", .{});
+                    if (self.verbose_tests) {
+                        std.debug.print("PASS\n", .{});
+                    }
                 } else {
-                    std.debug.print("FAIL\n", .{});
+                    if (self.verbose_tests) {
+                        std.debug.print("FAIL\n", .{});
+                    } else {
+                        // In quiet mode, still show which test failed
+                        std.debug.print("  FAIL: {s}\n", .{it_test.description});
+                    }
                     return error.RuntimeError;
                 }
             },
@@ -742,6 +888,19 @@ pub const Interpreter = struct {
                 return Value{ .Array = elements };
             },
             .Identifier => |id| {
+                // Handle built-in constants
+                if (std.mem.eql(u8, id.name, "None")) {
+                    // None - the empty Option variant
+                    var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                    return Value{ .Struct = .{ .type_name = "None", .fields = fields }};
+                }
+                if (std.mem.eql(u8, id.name, "true")) {
+                    return Value{ .Bool = true };
+                }
+                if (std.mem.eql(u8, id.name, "false")) {
+                    return Value{ .Bool = false };
+                }
+
                 if (env.get(id.name)) |value| {
                     return value;
                 }
@@ -764,23 +923,35 @@ pub const Interpreter = struct {
                 const array_value = try self.evaluateExpression(index.array, env);
                 const index_value = try self.evaluateExpression(index.index, env);
 
-                if (array_value != .Array) {
-                    std.debug.print("Cannot index non-array value\n", .{});
-                    return error.TypeMismatch;
-                }
-
                 if (index_value != .Int) {
-                    std.debug.print("Array index must be an integer\n", .{});
+                    std.debug.print("Array/string index must be an integer\n", .{});
                     return error.TypeMismatch;
                 }
 
                 const idx = index_value.Int;
-                if (idx < 0 or idx >= @as(i64, @intCast(array_value.Array.len))) {
-                    std.debug.print("Array index out of bounds: {d}\n", .{idx});
-                    return error.RuntimeError;
+
+                // Handle array indexing
+                if (array_value == .Array) {
+                    if (idx < 0 or idx >= @as(i64, @intCast(array_value.Array.len))) {
+                        std.debug.print("Array index out of bounds: {d}\n", .{idx});
+                        return error.RuntimeError;
+                    }
+                    return array_value.Array[@as(usize, @intCast(idx))];
                 }
 
-                return array_value.Array[@as(usize, @intCast(idx))];
+                // Handle string indexing - returns character code (Int)
+                if (array_value == .String) {
+                    const str = array_value.String;
+                    if (idx < 0 or idx >= @as(i64, @intCast(str.len))) {
+                        std.debug.print("String index out of bounds: {d}\n", .{idx});
+                        return error.RuntimeError;
+                    }
+                    // Return the character code as an integer (like char literal)
+                    return Value{ .Int = @as(i64, str[@as(usize, @intCast(idx))]) };
+                }
+
+                std.debug.print("Cannot index non-array/non-string value\n", .{});
+                return error.TypeMismatch;
             },
             .SliceExpr => |slice| {
                 const array_value = try self.evaluateExpression(slice.array, env);
@@ -1147,6 +1318,272 @@ pub const Interpreter = struct {
                 // Not a future - just return the value (synchronous await)
                 return awaited_value;
             },
+            .ElvisExpr => |elvis| {
+                // Elvis operator: left ?: right
+                // Returns left if truthy, otherwise right
+                const left = try self.evaluateExpression(elvis.left, env);
+
+                // Check if left is "falsy"
+                const is_falsy = switch (left) {
+                    .Void => true,
+                    .Bool => |b| !b,
+                    .Int => |i| i == 0,
+                    .String => |s| s.len == 0,
+                    else => false,
+                };
+
+                if (is_falsy) {
+                    return try self.evaluateExpression(elvis.right, env);
+                }
+                return left;
+            },
+            .CharLiteral => |lit| {
+                // Parse character literal (e.g., 'a', '\n', '\x41')
+                const char_str = lit.value;
+
+                // Remove surrounding quotes if present
+                const inner = if (char_str.len >= 2 and char_str[0] == '\'' and char_str[char_str.len - 1] == '\'')
+                    char_str[1 .. char_str.len - 1]
+                else
+                    char_str;
+
+                if (inner.len == 0) {
+                    std.debug.print("Empty character literal\n", .{});
+                    return error.RuntimeError;
+                }
+
+                // Handle escape sequences
+                if (inner[0] == '\\' and inner.len >= 2) {
+                    const char_val: i64 = switch (inner[1]) {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        '0' => 0,
+                        'x' => blk: {
+                            // Hex escape \xNN
+                            if (inner.len >= 4) {
+                                const hex_val = std.fmt.parseInt(u8, inner[2..4], 16) catch 0;
+                                break :blk hex_val;
+                            }
+                            break :blk 0;
+                        },
+                        else => inner[1],
+                    };
+                    return Value{ .Int = char_val };
+                }
+
+                // Simple character
+                return Value{ .Int = @as(i64, inner[0]) };
+            },
+            .TypeCastExpr => |cast| {
+                // Type cast: value as TargetType
+                const value = try self.evaluateExpression(cast.value, env);
+                const target = cast.target_type;
+
+                // Integer to integer casts
+                if (value == .Int) {
+                    const int_val = value.Int;
+                    if (std.mem.eql(u8, target, "i8")) {
+                        return Value{ .Int = @as(i64, @as(i8, @truncate(int_val))) };
+                    } else if (std.mem.eql(u8, target, "i16")) {
+                        return Value{ .Int = @as(i64, @as(i16, @truncate(int_val))) };
+                    } else if (std.mem.eql(u8, target, "i32")) {
+                        return Value{ .Int = @as(i64, @as(i32, @truncate(int_val))) };
+                    } else if (std.mem.eql(u8, target, "i64")) {
+                        return Value{ .Int = int_val };
+                    } else if (std.mem.eql(u8, target, "u8")) {
+                        return Value{ .Int = @as(i64, @as(u8, @truncate(@as(u64, @bitCast(int_val))))) };
+                    } else if (std.mem.eql(u8, target, "u16")) {
+                        return Value{ .Int = @as(i64, @as(u16, @truncate(@as(u64, @bitCast(int_val))))) };
+                    } else if (std.mem.eql(u8, target, "u32")) {
+                        return Value{ .Int = @as(i64, @as(u32, @truncate(@as(u64, @bitCast(int_val))))) };
+                    } else if (std.mem.eql(u8, target, "u64")) {
+                        return Value{ .Int = @as(i64, @bitCast(@as(u64, @bitCast(int_val)))) };
+                    } else if (std.mem.eql(u8, target, "f32") or std.mem.eql(u8, target, "f64")) {
+                        return Value{ .Float = @as(f64, @floatFromInt(int_val)) };
+                    } else if (std.mem.eql(u8, target, "char")) {
+                        return Value{ .Int = int_val };
+                    } else if (std.mem.eql(u8, target, "bool")) {
+                        return Value{ .Bool = int_val != 0 };
+                    }
+                }
+
+                // Float to integer casts
+                if (value == .Float) {
+                    const float_val = value.Float;
+                    if (std.mem.eql(u8, target, "i32") or std.mem.eql(u8, target, "i64") or
+                        std.mem.eql(u8, target, "i8") or std.mem.eql(u8, target, "i16")) {
+                        return Value{ .Int = @as(i64, @intFromFloat(float_val)) };
+                    } else if (std.mem.eql(u8, target, "f32") or std.mem.eql(u8, target, "f64")) {
+                        return Value{ .Float = float_val };
+                    }
+                }
+
+                // Bool to integer cast
+                if (value == .Bool) {
+                    const bool_val = value.Bool;
+                    if (std.mem.eql(u8, target, "i32") or std.mem.eql(u8, target, "i64") or
+                        std.mem.eql(u8, target, "i8") or std.mem.eql(u8, target, "i16")) {
+                        return Value{ .Int = if (bool_val) 1 else 0 };
+                    }
+                }
+
+                // Return original value if cast type not recognized
+                return value;
+            },
+            .ArrayRepeat => |repeat| {
+                // Array repeat: [value; count]
+                const value = try self.evaluateExpression(repeat.value, env);
+
+                // Get count from either count_expr or count string
+                const count: usize = if (repeat.count_expr) |count_expr| blk: {
+                    const count_val = try self.evaluateExpression(count_expr, env);
+                    if (count_val != .Int) {
+                        std.debug.print("Array repeat count must be an integer\n", .{});
+                        return error.TypeMismatch;
+                    }
+                    if (count_val.Int < 0) {
+                        std.debug.print("Array repeat count cannot be negative\n", .{});
+                        return error.RuntimeError;
+                    }
+                    break :blk @as(usize, @intCast(count_val.Int));
+                } else blk: {
+                    const parsed = std.fmt.parseInt(usize, repeat.count, 10) catch {
+                        std.debug.print("Invalid array repeat count: {s}\n", .{repeat.count});
+                        return error.RuntimeError;
+                    };
+                    break :blk parsed;
+                };
+
+                // Create array with repeated values
+                const elements = try self.arena.allocator().alloc(Value, count);
+                for (elements) |*elem| {
+                    elem.* = value;
+                }
+
+                return Value{ .Array = elements };
+            },
+            .TryExpr => |try_expr| {
+                // Try expression: expr? or expr else default
+                const operand_result = self.evaluateExpression(try_expr.operand, env) catch |err| {
+                    // If there's an else branch, use it as default
+                    if (try_expr.else_branch) |else_branch| {
+                        return try self.evaluateExpression(else_branch, env);
+                    }
+                    // Otherwise propagate the error
+                    return err;
+                };
+
+                // Check if the result is an error variant (Err)
+                if (operand_result == .Struct) {
+                    if (std.mem.eql(u8, operand_result.Struct.type_name, "Err")) {
+                        if (try_expr.else_branch) |else_branch| {
+                            return try self.evaluateExpression(else_branch, env);
+                        }
+                        // Propagate error by returning it
+                        return error.RuntimeError;
+                    }
+                    // If it's Ok, unwrap the value
+                    if (std.mem.eql(u8, operand_result.Struct.type_name, "Ok")) {
+                        if (operand_result.Struct.fields.get("value")) |inner_value| {
+                            return inner_value;
+                        }
+                        if (operand_result.Struct.fields.get("0")) |inner_value| {
+                            return inner_value;
+                        }
+                        return operand_result;
+                    }
+                }
+
+                // Check for None (Option type)
+                if (operand_result == .Void) {
+                    if (try_expr.else_branch) |else_branch| {
+                        return try self.evaluateExpression(else_branch, env);
+                    }
+                    return error.RuntimeError;
+                }
+
+                // If result has Some wrapper, unwrap it
+                if (operand_result == .Struct) {
+                    if (std.mem.eql(u8, operand_result.Struct.type_name, "Some")) {
+                        if (operand_result.Struct.fields.get("value")) |inner_value| {
+                            return inner_value;
+                        }
+                        if (operand_result.Struct.fields.get("0")) |inner_value| {
+                            return inner_value;
+                        }
+                    }
+                }
+
+                return operand_result;
+            },
+            .SafeIndexExpr => |safe_index| {
+                // Safe index: arr?[idx] - returns null for out of bounds
+                const array_value = try self.evaluateExpression(safe_index.object, env);
+                const index_value = try self.evaluateExpression(safe_index.index, env);
+
+                // If array is null/void, return void
+                if (array_value == .Void) {
+                    return Value.Void;
+                }
+
+                if (array_value != .Array) {
+                    return Value.Void;
+                }
+
+                if (index_value != .Int) {
+                    return Value.Void;
+                }
+
+                const idx = index_value.Int;
+                const arr_len = @as(i64, @intCast(array_value.Array.len));
+
+                // Return void for out of bounds instead of error
+                if (idx < 0 or idx >= arr_len) {
+                    return Value.Void;
+                }
+
+                return array_value.Array[@as(usize, @intCast(idx))];
+            },
+            .IsExpr => |is_expr| {
+                // Is expression: value is Type
+                const value = try self.evaluateExpression(is_expr.value, env);
+                const type_name = is_expr.type_name;
+                const negated = is_expr.negated;
+
+                const matches = switch (value) {
+                    .Int => std.mem.eql(u8, type_name, "i32") or
+                            std.mem.eql(u8, type_name, "i64") or
+                            std.mem.eql(u8, type_name, "int") or
+                            std.mem.eql(u8, type_name, "number"),
+                    .Float => std.mem.eql(u8, type_name, "f32") or
+                              std.mem.eql(u8, type_name, "f64") or
+                              std.mem.eql(u8, type_name, "float") or
+                              std.mem.eql(u8, type_name, "number"),
+                    .Bool => std.mem.eql(u8, type_name, "bool") or
+                             std.mem.eql(u8, type_name, "boolean"),
+                    .String => std.mem.eql(u8, type_name, "string") or
+                               std.mem.eql(u8, type_name, "str"),
+                    .Array => std.mem.eql(u8, type_name, "array") or
+                              std.mem.startsWith(u8, type_name, "["),
+                    .Struct => |s| std.mem.eql(u8, type_name, s.type_name) or
+                                   std.mem.eql(u8, type_name, "Ok") and std.mem.eql(u8, s.type_name, "Ok") or
+                                   std.mem.eql(u8, type_name, "Err") and std.mem.eql(u8, s.type_name, "Err") or
+                                   std.mem.eql(u8, type_name, "Some") and std.mem.eql(u8, s.type_name, "Some"),
+                    .Void => std.mem.eql(u8, type_name, "null") or
+                             std.mem.eql(u8, type_name, "None") or
+                             std.mem.eql(u8, type_name, "void"),
+                    .Function, .Closure => std.mem.eql(u8, type_name, "function") or
+                                           std.mem.eql(u8, type_name, "fn"),
+                    else => false,
+                };
+
+                const result = if (negated) !matches else matches;
+                return Value{ .Bool = result };
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -1177,6 +1614,20 @@ pub const Interpreter = struct {
             .And => Value{ .Bool = left.isTrue() and right.isTrue() },
             .Or => Value{ .Bool = left.isTrue() or right.isTrue() },
             .BitAnd, .BitOr, .BitXor, .LeftShift, .RightShift => try self.applyBitwise(left, right, binary.op),
+            // Checked arithmetic with Option (returns Option-like value)
+            .SaturatingAdd => try self.applyCheckedArithmetic(left, right, .SaturatingAdd),
+            .SaturatingSub => try self.applyCheckedArithmetic(left, right, .SaturatingSub),
+            .SaturatingMul => try self.applyCheckedArithmetic(left, right, .SaturatingMul),
+            .SaturatingDiv => try self.applyCheckedArithmetic(left, right, .SaturatingDiv),
+            // Clamping arithmetic (clamps to bounds)
+            .ClampAdd => try self.applyClampingArithmetic(left, right, .ClampAdd),
+            .ClampSub => try self.applyClampingArithmetic(left, right, .ClampSub),
+            .ClampMul => try self.applyClampingArithmetic(left, right, .ClampMul),
+            // Panic-on-overflow arithmetic
+            .CheckedAdd => try self.applyPanicArithmetic(left, right, .CheckedAdd),
+            .CheckedSub => try self.applyPanicArithmetic(left, right, .CheckedSub),
+            .CheckedMul => try self.applyPanicArithmetic(left, right, .CheckedMul),
+            .CheckedDiv => try self.applyPanicArithmetic(left, right, .CheckedDiv),
             else => {
                 std.debug.print("Unimplemented binary operator\n", .{});
                 return error.RuntimeError;
@@ -1260,18 +1711,161 @@ pub const Interpreter = struct {
                 try env.set(id.name, value);
                 return value;
             },
-            .IndexExpr => {
+            .IndexExpr => |index_expr| {
                 // Array element assignment: arr[i] = value
-                // Arrays are immutable slices in the interpreter
-                // Would require mutable array type to implement
-                std.debug.print("Assignment to array elements requires mutable array support\n", .{});
+                // We need to get the array, create a modified copy, and store it back
+
+                // Get the index value
+                const index_value = try self.evaluateExpression(index_expr.index, env);
+                const idx = switch (index_value) {
+                    .Int => |i| blk: {
+                        if (i < 0) {
+                            std.debug.print("Array index cannot be negative: {d}\n", .{i});
+                            return error.RuntimeError;
+                        }
+                        break :blk @as(usize, @intCast(i));
+                    },
+                    else => {
+                        std.debug.print("Array index must be an integer\n", .{});
+                        return error.RuntimeError;
+                    },
+                };
+
+                // Handle simple identifier case: arr[i] = value
+                if (index_expr.array.* == .Identifier) {
+                    const id = index_expr.array.Identifier;
+                    const arr_value = env.get(id.name) orelse {
+                        std.debug.print("Undefined array: {s}\n", .{id.name});
+                        return error.RuntimeError;
+                    };
+
+                    if (arr_value != .Array) {
+                        std.debug.print("Cannot index into non-array value\n", .{});
+                        return error.RuntimeError;
+                    }
+
+                    const arr = arr_value.Array;
+                    if (idx >= arr.len) {
+                        std.debug.print("Array index out of bounds: {d} >= {d}\n", .{idx, arr.len});
+                        return error.RuntimeError;
+                    }
+
+                    // Create a mutable copy of the array
+                    const new_arr = try self.arena.allocator().alloc(Value, arr.len);
+                    @memcpy(new_arr, arr);
+
+                    // Update the element
+                    new_arr[idx] = value;
+
+                    // Store the new array back
+                    try env.set(id.name, Value{ .Array = new_arr });
+                    return value;
+                }
+
+                // Handle nested access like obj.arr[i] = value
+                if (index_expr.array.* == .MemberExpr) {
+                    const member = index_expr.array.MemberExpr;
+
+                    // Get the base object identifier
+                    if (member.object.* == .Identifier) {
+                        const obj_id = member.object.Identifier;
+                        const obj_value = env.get(obj_id.name) orelse {
+                            std.debug.print("Undefined object: {s}\n", .{obj_id.name});
+                            return error.RuntimeError;
+                        };
+
+                        if (obj_value == .Struct) {
+                            const inst = obj_value.Struct;
+
+                            // Get the array field
+                            const arr_field = inst.fields.get(member.member) orelse {
+                                std.debug.print("Unknown field: {s}\n", .{member.member});
+                                return error.RuntimeError;
+                            };
+
+                            if (arr_field != .Array) {
+                                std.debug.print("Cannot index into non-array field\n", .{});
+                                return error.RuntimeError;
+                            }
+
+                            const arr = arr_field.Array;
+                            if (idx >= arr.len) {
+                                std.debug.print("Array index out of bounds: {d} >= {d}\n", .{idx, arr.len});
+                                return error.RuntimeError;
+                            }
+
+                            // Create a mutable copy of the array
+                            const new_arr = try self.arena.allocator().alloc(Value, arr.len);
+                            @memcpy(new_arr, arr);
+                            new_arr[idx] = value;
+
+                            // Create new fields map with updated array
+                            var new_fields = std.StringHashMap(Value).init(self.arena.allocator());
+                            var it = inst.fields.iterator();
+                            while (it.next()) |entry| {
+                                if (std.mem.eql(u8, entry.key_ptr.*, member.member)) {
+                                    try new_fields.put(entry.key_ptr.*, Value{ .Array = new_arr });
+                                } else {
+                                    try new_fields.put(entry.key_ptr.*, entry.value_ptr.*);
+                                }
+                            }
+
+                            // Store the updated struct back
+                            const new_struct = Value{ .Struct = .{
+                                .type_name = inst.type_name,
+                                .fields = new_fields,
+                            }};
+                            try env.set(obj_id.name, new_struct);
+                            return value;
+                        }
+                    }
+                }
+
+                std.debug.print("Complex array element assignment not supported\n", .{});
                 return error.RuntimeError;
             },
-            .MemberExpr => {
+            .MemberExpr => |member| {
                 // Struct field assignment: obj.field = value
-                // The current interpreter design returns values by copy,
-                // so mutating fields of structs requires reference semantics
-                std.debug.print("Assignment to struct fields requires mutable reference support\n", .{});
+                // Handle simple case: identifier.field = value
+                if (member.object.* == .Identifier) {
+                    const obj_id = member.object.Identifier;
+                    const obj_value = env.get(obj_id.name) orelse {
+                        std.debug.print("Undefined variable: {s}\n", .{obj_id.name});
+                        return error.RuntimeError;
+                    };
+
+                    if (obj_value == .Struct) {
+                        const inst = obj_value.Struct;
+
+                        // Create new fields map with updated field
+                        var new_fields = std.StringHashMap(Value).init(self.arena.allocator());
+                        var it = inst.fields.iterator();
+                        var found = false;
+                        while (it.next()) |entry| {
+                            if (std.mem.eql(u8, entry.key_ptr.*, member.member)) {
+                                try new_fields.put(entry.key_ptr.*, value);
+                                found = true;
+                            } else {
+                                try new_fields.put(entry.key_ptr.*, entry.value_ptr.*);
+                            }
+                        }
+
+                        if (!found) {
+                            std.debug.print("Unknown field: {s}\n", .{member.member});
+                            return error.RuntimeError;
+                        }
+
+                        // Store the updated struct back
+                        const new_struct = Value{ .Struct = .{
+                            .type_name = inst.type_name,
+                            .fields = new_fields,
+                        }};
+                        try env.set(obj_id.name, new_struct);
+                        return value;
+                    }
+                }
+
+                std.debug.print("Complex struct field assignment not supported\n", .{});
                 return error.RuntimeError;
             },
             .UnaryExpr => |unary| {
@@ -1350,7 +1944,9 @@ pub const Interpreter = struct {
 
             // Handle array methods
             if (obj_value == .Array) {
-                return try self.evaluateArrayMethod(obj_value.Array, member.member, call.args, env);
+                // Check if object is an identifier (for in-place mutation of mutating methods)
+                const var_name: ?[]const u8 = if (member.object.* == .Identifier) member.object.Identifier.name else null;
+                return try self.evaluateArrayMethod(obj_value.Array, member.member, call.args, env, var_name);
             }
 
             // Handle range methods
@@ -1384,15 +1980,48 @@ pub const Interpreter = struct {
                 return try self.builtinPrint(call.args, env);
             } else if (std.mem.eql(u8, func_name, "assert")) {
                 return try self.builtinAssert(call.args, env);
+            } else if (std.mem.eql(u8, func_name, "Ok")) {
+                // Ok(value) - creates Result success variant
+                if (call.args.len != 1) {
+                    std.debug.print("Ok() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const inner_value = try self.evaluateExpression(call.args[0], env);
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("value", inner_value);
+                try fields.put("0", inner_value);
+                return Value{ .Struct = .{ .type_name = "Ok", .fields = fields }};
+            } else if (std.mem.eql(u8, func_name, "Err")) {
+                // Err(value) - creates Result error variant
+                if (call.args.len != 1) {
+                    std.debug.print("Err() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const inner_value = try self.evaluateExpression(call.args[0], env);
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("value", inner_value);
+                try fields.put("0", inner_value);
+                return Value{ .Struct = .{ .type_name = "Err", .fields = fields }};
+            } else if (std.mem.eql(u8, func_name, "Some")) {
+                // Some(value) - creates Option some variant
+                if (call.args.len != 1) {
+                    std.debug.print("Some() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const inner_value = try self.evaluateExpression(call.args[0], env);
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("value", inner_value);
+                try fields.put("0", inner_value);
+                return Value{ .Struct = .{ .type_name = "Some", .fields = fields }};
             }
 
             // Look up user-defined function or closure
             if (env.get(func_name)) |func_value| {
                 if (func_value == .Function) {
-                    return try self.callUserFunction(func_value.Function, call.args, env);
+                    return try self.callUserFunctionWithNamed(func_value.Function, call.args, call.named_args, env);
                 }
                 if (func_value == .Closure) {
-                    return try self.callClosure(func_value.Closure, call.args, env);
+                    return try self.callClosureWithNamed(func_value.Closure, call.args, call.named_args, env);
                 }
             }
 
@@ -1403,10 +2032,10 @@ pub const Interpreter = struct {
         // Handle calling closure expressions directly (e.g., (|x| x + 1)(5))
         const callee_value = try self.evaluateExpression(call.callee, env);
         if (callee_value == .Closure) {
-            return try self.callClosure(callee_value.Closure, call.args, env);
+            return try self.callClosureWithNamed(callee_value.Closure, call.args, call.named_args, env);
         }
         if (callee_value == .Function) {
-            return try self.callUserFunction(callee_value.Function, call.args, env);
+            return try self.callUserFunctionWithNamed(callee_value.Function, call.args, call.named_args, env);
         }
 
         std.debug.print("Cannot call non-function value\n", .{});
@@ -1440,13 +2069,121 @@ pub const Interpreter = struct {
             return try self.evaluateExpression(expr, &closure_env);
         } else if (closure.body_block) |block| {
             // Execute block and return last expression or void
+            var closure_err: ?InterpreterError = null;
             for (block.statements) |stmt| {
                 self.executeStatement(stmt, &closure_env) catch |err| {
-                    if (err == error.Return) {
-                        return self.return_value orelse Value.Void;
-                    }
-                    return err;
+                    closure_err = err;
+                    break;
                 };
+            }
+
+            // Execute defers in reverse order before returning
+            const defers = closure_env.getDefers();
+            var i: usize = defers.len;
+            while (i > 0) {
+                i -= 1;
+                _ = self.evaluateExpression(defers[i], &closure_env) catch {};
+            }
+
+            // Handle return or error
+            if (closure_err) |err| {
+                if (err == error.Return) {
+                    return self.return_value orelse Value.Void;
+                }
+                return err;
+            }
+            return Value.Void;
+        }
+
+        return Value.Void;
+    }
+
+    /// Call a closure with named arguments support
+    fn callClosureWithNamed(self: *Interpreter, closure: ClosureValue, args: []const *const ast.Expr, named_args: []const ast.NamedArg, env: *Environment) InterpreterError!Value {
+        // For closures without named arguments, use the simple path
+        if (named_args.len == 0) {
+            return self.callClosure(closure, args, env);
+        }
+
+        // Create new environment for closure execution
+        var closure_env = Environment.init(self.arena.allocator(), env);
+
+        // Bind captured variables
+        for (closure.captured_names, 0..) |name, i| {
+            try closure_env.define(name, closure.captured_values[i]);
+        }
+
+        // Track which parameters have been bound
+        var bound = try self.arena.allocator().alloc(bool, closure.param_names.len);
+        for (bound) |*b| b.* = false;
+
+        // First, bind positional arguments
+        for (args, 0..) |arg, i| {
+            if (i >= closure.param_names.len) {
+                std.debug.print("Too many positional arguments for closure\n", .{});
+                return error.InvalidArguments;
+            }
+            const arg_value = try self.evaluateExpression(arg, env);
+            try closure_env.define(closure.param_names[i], arg_value);
+            bound[i] = true;
+        }
+
+        // Then, bind named arguments
+        for (named_args) |named_arg| {
+            var found_idx: ?usize = null;
+            for (closure.param_names, 0..) |param_name, idx| {
+                if (std.mem.eql(u8, param_name, named_arg.name)) {
+                    found_idx = idx;
+                    break;
+                }
+            }
+
+            if (found_idx) |idx| {
+                if (bound[idx]) {
+                    std.debug.print("Duplicate argument for parameter '{s}'\n", .{named_arg.name});
+                    return error.InvalidArguments;
+                }
+                const arg_value = try self.evaluateExpression(named_arg.value, env);
+                try closure_env.define(named_arg.name, arg_value);
+                bound[idx] = true;
+            } else {
+                std.debug.print("Unknown parameter '{s}' for closure\n", .{named_arg.name});
+                return error.InvalidArguments;
+            }
+        }
+
+        // Check that all parameters are bound (closures don't have defaults)
+        for (closure.param_names, 0..) |param_name, i| {
+            if (!bound[i]) {
+                std.debug.print("Missing required argument '{s}' for closure\n", .{param_name});
+                return error.InvalidArguments;
+            }
+        }
+
+        // Execute closure body
+        if (closure.body_expr) |expr| {
+            return try self.evaluateExpression(expr, &closure_env);
+        } else if (closure.body_block) |block| {
+            var closure_err: ?InterpreterError = null;
+            for (block.statements) |stmt| {
+                self.executeStatement(stmt, &closure_env) catch |err| {
+                    closure_err = err;
+                    break;
+                };
+            }
+
+            const defers = closure_env.getDefers();
+            var i: usize = defers.len;
+            while (i > 0) {
+                i -= 1;
+                _ = self.evaluateExpression(defers[i], &closure_env) catch {};
+            }
+
+            if (closure_err) |err| {
+                if (err == error.Return) {
+                    return self.return_value orelse Value.Void;
+                }
+                return err;
             }
             return Value.Void;
         }
@@ -1645,7 +2382,8 @@ pub const Interpreter = struct {
     }
 
     /// Evaluate array method calls
-    fn evaluateArrayMethod(self: *Interpreter, arr: []const Value, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+    /// var_name is provided when the array comes from a variable (for in-place mutation)
+    fn evaluateArrayMethod(self: *Interpreter, arr: []const Value, method: []const u8, args: []const *const ast.Expr, env: *Environment, var_name: ?[]const u8) InterpreterError!Value {
         // len() / length() - returns array length
         if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
             return Value{ .Int = @as(i64, @intCast(arr.len)) };
@@ -1672,7 +2410,7 @@ pub const Interpreter = struct {
             return arr[arr.len - 1];
         }
 
-        // push(value) - returns new array with value appended
+        // push(value) - appends value to array (mutates in place if on a variable)
         if (std.mem.eql(u8, method, "push")) {
             if (args.len != 1) {
                 std.debug.print("push() requires exactly 1 argument\n", .{});
@@ -1682,30 +2420,45 @@ pub const Interpreter = struct {
             var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             @memcpy(new_arr[0..arr.len], arr);
             new_arr[arr.len] = new_value;
-            return Value{ .Array = new_arr };
+            const result = Value{ .Array = new_arr };
+            // If we have a variable name, update it in place
+            if (var_name) |name| {
+                try env.set(name, result);
+            }
+            return result;
         }
 
-        // pop() - returns new array without last element
+        // pop() - removes and returns last element (mutates in place if on a variable)
         if (std.mem.eql(u8, method, "pop")) {
             if (arr.len == 0) {
-                return Value{ .Array = &.{} };
+                return Value{ .Void = {} };
             }
+            const popped_value = arr[arr.len - 1];
             const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
             @memcpy(new_arr, arr[0 .. arr.len - 1]);
-            return Value{ .Array = new_arr };
+            // If we have a variable name, update it in place
+            if (var_name) |name| {
+                try env.set(name, Value{ .Array = new_arr });
+            }
+            return popped_value; // Return the popped element
         }
 
-        // shift() - returns new array without first element
+        // shift() - removes and returns first element (mutates in place if on a variable)
         if (std.mem.eql(u8, method, "shift")) {
             if (arr.len == 0) {
-                return Value{ .Array = &.{} };
+                return Value{ .Void = {} };
             }
+            const shifted_value = arr[0];
             const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
             @memcpy(new_arr, arr[1..]);
-            return Value{ .Array = new_arr };
+            // If we have a variable name, update it in place
+            if (var_name) |name| {
+                try env.set(name, Value{ .Array = new_arr });
+            }
+            return shifted_value; // Return the shifted element
         }
 
-        // unshift(value) - returns new array with value prepended
+        // unshift(value) - prepends value to array (mutates in place if on a variable)
         if (std.mem.eql(u8, method, "unshift")) {
             if (args.len != 1) {
                 std.debug.print("unshift() requires exactly 1 argument\n", .{});
@@ -1715,7 +2468,12 @@ pub const Interpreter = struct {
             var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             new_arr[0] = new_value;
             @memcpy(new_arr[1..], arr);
-            return Value{ .Array = new_arr };
+            const result = Value{ .Array = new_arr };
+            // If we have a variable name, update it in place
+            if (var_name) |name| {
+                try env.set(name, result);
+            }
+            return result;
         }
 
         // concat(other_array) - returns new array with both arrays concatenated
@@ -1975,50 +2733,93 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunction(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
-        // Count required parameters (those without default values)
-        var required_params: usize = 0;
-        for (func.params) |param| {
-            if (param.default_value == null) {
-                required_params += 1;
-            }
-        }
+        return self.callUserFunctionWithNamed(func, args, &.{}, parent_env);
+    }
 
-        // Check argument count - must have at least required params, at most all params
-        if (args.len < required_params or args.len > func.params.len) {
-            if (required_params == func.params.len) {
-                std.debug.print("Function {s} expects {d} arguments, got {d}\n", .{ func.name, func.params.len, args.len });
-            } else {
-                std.debug.print("Function {s} expects {d}-{d} arguments, got {d}\n", .{ func.name, required_params, func.params.len, args.len });
-            }
-            return error.InvalidArguments;
-        }
-
+    fn callUserFunctionWithNamed(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, named_args: []const ast.NamedArg, parent_env: *Environment) InterpreterError!Value {
         // Create new environment for function scope
         var func_env = Environment.init(self.arena.allocator(), parent_env);
         defer func_env.deinit();
 
-        // Bind parameters to arguments (with default value support)
-        for (func.params, 0..) |param, i| {
-            const arg_value = if (i < args.len)
-                try self.evaluateExpression(args[i], parent_env)
-            else if (param.default_value) |default|
-                try self.evaluateExpression(default, parent_env)
-            else
+        // Track which parameters have been bound
+        var bound = try self.arena.allocator().alloc(bool, func.params.len);
+        for (bound) |*b| b.* = false;
+
+        // First, bind positional arguments
+        for (args, 0..) |arg, i| {
+            if (i >= func.params.len) {
+                std.debug.print("Too many positional arguments for function {s}\n", .{func.name});
                 return error.InvalidArguments;
-            try func_env.define(param.name, arg_value);
+            }
+            const arg_value = try self.evaluateExpression(arg, parent_env);
+            try func_env.define(func.params[i].name, arg_value);
+            bound[i] = true;
+        }
+
+        // Then, bind named arguments
+        for (named_args) |named_arg| {
+            // Find the parameter index by name
+            var found_idx: ?usize = null;
+            for (func.params, 0..) |param, idx| {
+                if (std.mem.eql(u8, param.name, named_arg.name)) {
+                    found_idx = idx;
+                    break;
+                }
+            }
+
+            if (found_idx) |idx| {
+                if (bound[idx]) {
+                    std.debug.print("Duplicate argument for parameter '{s}'\n", .{named_arg.name});
+                    return error.InvalidArguments;
+                }
+                const arg_value = try self.evaluateExpression(named_arg.value, parent_env);
+                try func_env.define(named_arg.name, arg_value);
+                bound[idx] = true;
+            } else {
+                std.debug.print("Unknown parameter '{s}' for function {s}\n", .{ named_arg.name, func.name });
+                return error.InvalidArguments;
+            }
+        }
+
+        // Finally, fill in defaults for any unbound parameters
+        for (func.params, 0..) |param, i| {
+            if (!bound[i]) {
+                if (param.default_value) |default| {
+                    const default_value = try self.evaluateExpression(default, parent_env);
+                    try func_env.define(param.name, default_value);
+                } else {
+                    std.debug.print("Missing required argument '{s}' for function {s}\n", .{ param.name, func.name });
+                    return error.InvalidArguments;
+                }
+            }
         }
 
         // Execute function body
+        var func_err: ?InterpreterError = null;
         for (func.body.statements) |stmt| {
             self.executeStatement(stmt, &func_env) catch |err| {
-                if (err == error.Return) {
-                    // Return statement was executed
-                    const ret_value = self.return_value.?;
-                    self.return_value = null;
-                    return ret_value;
-                }
-                return err;
+                func_err = err;
+                break;
             };
+        }
+
+        // Execute defers in reverse order before returning
+        const defers = func_env.getDefers();
+        var i: usize = defers.len;
+        while (i > 0) {
+            i -= 1;
+            _ = self.evaluateExpression(defers[i], &func_env) catch {};
+        }
+
+        // Handle return or error
+        if (func_err) |err| {
+            if (err == error.Return) {
+                // Return statement was executed
+                const ret_value = self.return_value.?;
+                self.return_value = null;
+                return ret_value;
+            }
+            return err;
         }
 
         // No explicit return, return void
@@ -2072,16 +2873,31 @@ pub const Interpreter = struct {
         }
 
         // Execute method body
+        var method_err: ?InterpreterError = null;
         for (method.body.statements) |stmt| {
             self.executeStatement(stmt, &method_env) catch |err| {
-                if (err == error.Return) {
-                    // Return statement was executed
-                    const ret_value = self.return_value.?;
-                    self.return_value = null;
-                    return ret_value;
-                }
-                return err;
+                method_err = err;
+                break;
             };
+        }
+
+        // Execute defers in reverse order before returning
+        const defers = method_env.getDefers();
+        var i: usize = defers.len;
+        while (i > 0) {
+            i -= 1;
+            _ = self.evaluateExpression(defers[i], &method_env) catch {};
+        }
+
+        // Handle return or error
+        if (method_err) |err| {
+            if (err == error.Return) {
+                // Return statement was executed
+                const ret_value = self.return_value.?;
+                self.return_value = null;
+                return ret_value;
+            }
+            return err;
         }
 
         // No explicit return, return void
@@ -2525,6 +3341,98 @@ pub const Interpreter = struct {
                 return error.InvalidOperation;
             },
         } };
+    }
+
+    /// Apply checked arithmetic that returns Option (Some/None)
+    fn applyCheckedArithmetic(self: *Interpreter, left: Value, right: Value, op: ast.BinaryOp) InterpreterError!Value {
+        if (left != .Int or right != .Int) {
+            std.debug.print("Checked arithmetic requires integer operands\n", .{});
+            return error.TypeMismatch;
+        }
+
+        const l = left.Int;
+        const r = right.Int;
+
+        // Perform checked arithmetic and return Some(result) or None
+        const result_opt: ?i64 = switch (op) {
+            .SaturatingAdd => std.math.add(i64, l, r) catch null,
+            .SaturatingSub => std.math.sub(i64, l, r) catch null,
+            .SaturatingMul => std.math.mul(i64, l, r) catch null,
+            .SaturatingDiv => if (r == 0) null else @divTrunc(l, r),
+            else => null,
+        };
+
+        if (result_opt) |result| {
+            // Return Some(value) as a struct
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            fields.put("value", Value{ .Int = result }) catch {
+                return error.RuntimeError;
+            };
+            return Value{ .Struct = value_mod.StructValue{
+                .type_name = "Some",
+                .fields = fields,
+            } };
+        } else {
+            // Return None (represented as Void)
+            return Value.Void;
+        }
+    }
+
+    /// Apply clamping/saturating arithmetic (clamps to i64 bounds)
+    fn applyClampingArithmetic(self: *Interpreter, left: Value, right: Value, op: ast.BinaryOp) InterpreterError!Value {
+        _ = self;
+        if (left != .Int or right != .Int) {
+            std.debug.print("Clamping arithmetic requires integer operands\n", .{});
+            return error.TypeMismatch;
+        }
+
+        const l = left.Int;
+        const r = right.Int;
+
+        // Perform saturating arithmetic (clamp to bounds on overflow)
+        const result: i64 = switch (op) {
+            .ClampAdd => std.math.add(i64, l, r) catch if (l > 0) std.math.maxInt(i64) else std.math.minInt(i64),
+            .ClampSub => std.math.sub(i64, l, r) catch if (l > 0) std.math.maxInt(i64) else std.math.minInt(i64),
+            .ClampMul => std.math.mul(i64, l, r) catch if ((l > 0) == (r > 0)) std.math.maxInt(i64) else std.math.minInt(i64),
+            else => l,
+        };
+
+        return Value{ .Int = result };
+    }
+
+    /// Apply panic-on-overflow arithmetic
+    fn applyPanicArithmetic(self: *Interpreter, left: Value, right: Value, op: ast.BinaryOp) InterpreterError!Value {
+        _ = self;
+        if (left != .Int or right != .Int) {
+            std.debug.print("Panic arithmetic requires integer operands\n", .{});
+            return error.TypeMismatch;
+        }
+
+        const l = left.Int;
+        const r = right.Int;
+
+        // Perform checked arithmetic, panic on overflow
+        const result: i64 = switch (op) {
+            .CheckedAdd => std.math.add(i64, l, r) catch {
+                std.debug.print("Integer overflow in checked addition\n", .{});
+                return error.RuntimeError;
+            },
+            .CheckedSub => std.math.sub(i64, l, r) catch {
+                std.debug.print("Integer overflow in checked subtraction\n", .{});
+                return error.RuntimeError;
+            },
+            .CheckedMul => std.math.mul(i64, l, r) catch {
+                std.debug.print("Integer overflow in checked multiplication\n", .{});
+                return error.RuntimeError;
+            },
+            .CheckedDiv => if (r == 0) {
+                std.debug.print("Division by zero in checked division\n", .{});
+                return error.RuntimeError;
+            } else @divTrunc(l, r),
+            else => l,
+        };
+
+        return Value{ .Int = result };
     }
 
     fn areEqual(self: *Interpreter, left: Value, right: Value) InterpreterError!bool {

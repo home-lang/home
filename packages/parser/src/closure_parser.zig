@@ -38,35 +38,40 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     // Check for 'move' keyword
     const is_move = self.match(&.{.Identifier}) and std.mem.eql(u8, self.previous().lexeme, "move");
 
-    // Expect opening pipe
-    _ = try self.expect(.Pipe, "Expected '|' to start closure parameters");
-    
     // Parse parameters
     var params = std.ArrayList(ast.ClosureParam){ .items = &.{}, .capacity = 0 };
     defer params.deinit(self.allocator);
-    
-    while (!self.check(.Pipe) and !self.isAtEnd()) {
-        const is_mut = self.match(&.{.Mut});
-        
-        const param_token = try self.expect(.Identifier, "Expected parameter name");
-        const param_name = try self.allocator.dupe(u8, param_token.lexeme);
-        
-        // Optional type annotation
-        var type_annotation: ?*ast.closure_nodes.TypeExpr = null;
-        if (self.match(&.{.Colon})) {
-            type_annotation = try parseClosureTypeExpr(self);
+
+    // Handle zero-parameter case: || is tokenized as PipePipe
+    if (self.match(&.{.PipePipe})) {
+        // Zero-parameter closure - pipes already consumed
+    } else {
+        // Normal case: |params| or | |
+        _ = try self.expect(.Pipe, "Expected '|' to start closure parameters");
+
+        while (!self.check(.Pipe) and !self.isAtEnd()) {
+            const is_mut = self.match(&.{.Mut});
+
+            const param_token = try self.expect(.Identifier, "Expected parameter name");
+            const param_name = try self.allocator.dupe(u8, param_token.lexeme);
+
+            // Optional type annotation
+            var type_annotation: ?*ast.closure_nodes.TypeExpr = null;
+            if (self.match(&.{.Colon})) {
+                type_annotation = try parseClosureTypeExpr(self);
+            }
+
+            try params.append(self.allocator, .{
+                .name = param_name,
+                .type_annotation = type_annotation,
+                .is_mut = is_mut,
+            });
+
+            if (!self.match(&.{.Comma})) break;
         }
-        
-        try params.append(self.allocator, .{
-            .name = param_name,
-            .type_annotation = type_annotation,
-            .is_mut = is_mut,
-        });
-        
-        if (!self.match(&.{.Comma})) break;
+
+        _ = try self.expect(.Pipe, "Expected '|' after closure parameters");
     }
-    
-    _ = try self.expect(.Pipe, "Expected '|' after closure parameters");
     
     // Optional return type (TypeScript-style with colon)
     var return_type: ?*ast.closure_nodes.TypeExpr = null;

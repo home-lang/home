@@ -38,17 +38,20 @@ pub const TokenType = enum {
     // One or two character tokens
     Plus, // +
     PlusEqual, // +=
-    PlusBang, // +! (checked add, panics on overflow)
-    PlusQuestion, // +? (saturating/wrapping add, returns Option)
+    PlusBang, // +! (panics on overflow)
+    PlusQuestion, // +? (checked add, returns Option)
+    PlusPipe, // +| (saturating add, clamps to bounds)
     Minus, // -
     MinusEqual, // -=
-    MinusBang, // -! (checked sub, panics on overflow)
-    MinusQuestion, // -? (saturating/wrapping sub, returns Option)
+    MinusBang, // -! (panics on overflow)
+    MinusQuestion, // -? (checked sub, returns Option)
+    MinusPipe, // -| (saturating sub, clamps to bounds)
     Star, // *
     StarStar, // ** (power)
     StarEqual, // *=
-    StarBang, // *! (checked mul, panics on overflow)
-    StarQuestion, // *? (saturating/wrapping mul, returns Option)
+    StarBang, // *! (panics on overflow)
+    StarQuestion, // *? (checked mul, returns Option)
+    StarPipe, // *| (saturating mul, clamps to bounds)
     Slash, // /
     TildeSlash, // ~/ (integer division)
     SlashEqual, // /=
@@ -187,15 +190,18 @@ pub const TokenType = enum {
             .PlusEqual => "+=",
             .PlusBang => "+!",
             .PlusQuestion => "+?",
+            .PlusPipe => "+|",
             .Minus => "-",
             .MinusEqual => "-=",
             .MinusBang => "-!",
             .MinusQuestion => "-?",
+            .MinusPipe => "-|",
             .Star => "*",
             .StarStar => "**",
             .StarEqual => "*=",
             .StarBang => "*!",
             .StarQuestion => "*?",
+            .StarPipe => "*|",
             .Slash => "/",
             .TildeSlash => "~/",
             .SlashEqual => "/=",

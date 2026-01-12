@@ -1,0 +1,111 @@
+// Array Repeat Syntax Test Suite
+// Tests [value; count] array initialization
+
+// ============================================================================
+// BASIC ARRAY REPEAT
+// ============================================================================
+
+it("should create array with repeated value") {
+    let arr = [0; 5];
+    assert(arr.len() == 5);
+    assert(arr[0] == 0);
+    assert(arr[4] == 0);
+}
+
+it("should repeat non-zero value") {
+    let arr = [42; 3];
+    assert(arr.len() == 3);
+    assert(arr[0] == 42);
+    assert(arr[1] == 42);
+    assert(arr[2] == 42);
+}
+
+it("should create single element array") {
+    let arr = [100; 1];
+    assert(arr.len() == 1);
+    assert(arr[0] == 100);
+}
+
+// ============================================================================
+// DIFFERENT TYPES
+// ============================================================================
+
+it("should repeat boolean values") {
+    let arr = [true; 4];
+    assert(arr.len() == 4);
+    assert(arr[0] == true);
+    assert(arr[3] == true);
+}
+
+it("should repeat string values") {
+    let arr = ["hello"; 3];
+    assert(arr.len() == 3);
+    assert(arr[0] == "hello");
+    assert(arr[2] == "hello");
+}
+
+it("should repeat float values") {
+    let arr = [3.14; 2];
+    assert(arr.len() == 2);
+    assert(arr[0] == 3.14);
+    assert(arr[1] == 3.14);
+}
+
+// ============================================================================
+// REPEAT WITH EXPRESSIONS
+// ============================================================================
+
+it("should repeat computed value") {
+    let x = 10;
+    let arr = [x * 2; 3];
+    assert(arr[0] == 20);
+    assert(arr[1] == 20);
+    assert(arr[2] == 20);
+}
+
+it("should repeat with computed count") {
+    let count = 2 + 2;
+    let arr = [1; count];
+    assert(arr.len() == 4);
+}
+
+// ============================================================================
+// OPERATIONS ON REPEATED ARRAYS
+// ============================================================================
+
+it("should sum repeated array") {
+    let arr = [5; 4];
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
+    assert(sum == 20);
+}
+
+it("should modify repeated array") {
+    let mut arr = [0; 5];
+    let mut i = 0;
+    while (i < arr.len()) {
+        arr[i] = i * 2;
+        i = i + 1;
+    }
+    assert(arr[0] == 0);
+    assert(arr[2] == 4);
+    assert(arr[4] == 8);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should create empty array with zero count") {
+    let arr = [1; 0];
+    assert(arr.len() == 0);
+}
+
+it("should handle large repeat count") {
+    let arr = [1; 100];
+    assert(arr.len() == 100);
+    assert(arr[99] == 1);
+}
+

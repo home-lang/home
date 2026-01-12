@@ -22,6 +22,8 @@ const Value = @import("value.zig").Value;
 ///
 /// When looking up `z`, it's found immediately. When looking up `x`,
 /// the search walks through Block -> Function -> Global.
+const ast = @import("ast");
+
 pub const Environment = struct {
     /// Hash map of variable name -> value for this scope
     bindings: std.StringHashMap(Value),
@@ -29,6 +31,8 @@ pub const Environment = struct {
     parent: ?*Environment,
     /// Allocator for variable names
     allocator: std.mem.Allocator,
+    /// Deferred expressions to execute when scope exits (in reverse order)
+    defers: std.ArrayList(*ast.Expr),
 
     /// Create a new environment, optionally nested in a parent scope.
     ///
@@ -42,7 +46,19 @@ pub const Environment = struct {
             .bindings = std.StringHashMap(Value).init(allocator),
             .parent = parent,
             .allocator = allocator,
+            .defers = .{ .items = &.{}, .capacity = 0 },
         };
+    }
+
+    /// Add a deferred expression to execute when this scope exits
+    pub fn addDefer(self: *Environment, expr: *ast.Expr) !void {
+        try self.defers.append(self.allocator, expr);
+    }
+
+    /// Get all defers in reverse order (for execution)
+    pub fn getDefers(self: *Environment) []*ast.Expr {
+        // Return slice - caller should iterate in reverse
+        return self.defers.items;
     }
 
     /// Clean up the environment's resources.

@@ -1,0 +1,101 @@
+// Elvis Operator Test Suite
+// Tests ?: operator for default value when falsy
+
+// ============================================================================
+// BASIC ELVIS OPERATOR
+// ============================================================================
+
+it("should return left value when truthy") {
+    let x = 42;
+    let result = x ?: 0;
+    assert(result == 42);
+}
+
+it("should return right value when null") {
+    let x = null;
+    let result = x ?: 100;
+    assert(result == 100);
+}
+
+it("should return right value when zero") {
+    let x = 0;
+    let result = x ?: 10;
+    assert(result == 10);
+}
+
+it("should return right value when false") {
+    let x = false;
+    let result = x ?: true;
+    assert(result == true);
+}
+
+it("should return right value when empty string") {
+    let x = "";
+    let result = x ?: "default";
+    assert(result == "default");
+}
+
+// ============================================================================
+// CHAINED ELVIS
+// ============================================================================
+
+it("should chain elvis operators") {
+    let a = null;
+    let b = null;
+    let c = 42;
+    let result = a ?: b ?: c;
+    assert(result == 42);
+}
+
+it("should return first truthy value") {
+    let a = null;
+    let b = 10;
+    let c = 20;
+    let result = a ?: b ?: c;
+    assert(result == 10);
+}
+
+// ============================================================================
+// ELVIS WITH EXPRESSIONS
+// ============================================================================
+
+it("should work with computed values") {
+    fn maybe_null(x: i32): i32 {
+        if (x > 0) { return x; }
+        return null;
+    }
+    let result = maybe_null(-5) ?: 100;
+    assert(result == 100);
+}
+
+it("should work with function calls") {
+    fn get_value(): i32 {
+        return 42;
+    }
+    let x = null;
+    let result = x ?: get_value();
+    assert(result == 42);
+}
+
+// ============================================================================
+// COMPARISON WITH NULL COALESCE
+// ============================================================================
+
+it("should differ from null coalesce for zero") {
+    let x = 0;
+    let elvis_result = x ?: 99;
+    let coalesce_result = x ?? 99;
+    // Elvis treats 0 as falsy, null coalesce doesn't
+    assert(elvis_result == 99);
+    assert(coalesce_result == 0);
+}
+
+it("should differ from null coalesce for false") {
+    let x = false;
+    let elvis_result = x ?: true;
+    let coalesce_result = x ?? true;
+    // Elvis treats false as falsy, null coalesce doesn't
+    assert(elvis_result == true);
+    assert(coalesce_result == false);
+}
+

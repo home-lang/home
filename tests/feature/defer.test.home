@@ -1,0 +1,170 @@
+// Defer Statement Test Suite
+// Tests defer for cleanup operations
+
+// ============================================================================
+// BASIC DEFER
+// ============================================================================
+
+it("should execute defer at end of scope") {
+    let mut x = 0;
+    {
+        defer { x = 100; }
+        x = 10;
+        assert(x == 10);
+    }
+    assert(x == 100);
+}
+
+it("should execute multiple defers in reverse order") {
+    let mut result = "";
+    {
+        defer { result = result + "3"; }
+        defer { result = result + "2"; }
+        defer { result = result + "1"; }
+    }
+    assert(result == "123");
+}
+
+// ============================================================================
+// DEFER IN FUNCTIONS
+// ============================================================================
+
+it("should execute defer before return") {
+    let mut cleanup_called = false;
+
+    fn do_work(): i32 {
+        defer { cleanup_called = true; }
+        return 42;
+    }
+
+    let result = do_work();
+    assert(result == 42);
+    assert(cleanup_called == true);
+}
+
+it("should execute defer on early return") {
+    let mut counter = 0;
+
+    fn early_exit(x: i32): i32 {
+        defer { counter = counter + 1; }
+        if (x < 0) {
+            return 0;
+        }
+        return x;
+    }
+
+    early_exit(-5);
+    assert(counter == 1);
+    early_exit(10);
+    assert(counter == 2);
+}
+
+// ============================================================================
+// DEFER IN LOOPS
+// ============================================================================
+
+it("should execute defer each iteration") {
+    let mut count = 0;
+    let mut i = 0;
+    while (i < 3) {
+        defer { count = count + 1; }
+        i = i + 1;
+    }
+    assert(count == 3);
+}
+
+it("should execute defer on break") {
+    let mut cleanup = false;
+    let mut i = 0;
+    while (i < 10) {
+        defer { cleanup = true; }
+        if (i == 5) {
+            break;
+        }
+        i = i + 1;
+    }
+    assert(cleanup == true);
+}
+
+// ============================================================================
+// NESTED DEFER
+// ============================================================================
+
+it("should handle nested defers") {
+    let mut order = "";
+    {
+        defer { order = order + "outer"; }
+        {
+            defer { order = order + "inner"; }
+        }
+    }
+    assert(order == "innerouter");
+}
+
+it("should execute defer in nested functions") {
+    let mut log = "";
+
+    fn outer() {
+        defer { log = log + "outer"; }
+        fn inner() {
+            defer { log = log + "inner"; }
+        }
+        inner();
+    }
+
+    outer();
+    assert(log == "innerouter");
+}
+
+// ============================================================================
+// DEFER WITH CONDITIONALS
+// ============================================================================
+
+it("should only defer when scope entered") {
+    let mut result = 0;
+    let condition = false;
+
+    if (condition) {
+        defer { result = 100; }
+    }
+    assert(result == 0);
+}
+
+it("should defer in true branch") {
+    let mut result = 0;
+    let condition = true;
+
+    if (condition) {
+        defer { result = 100; }
+    }
+    assert(result == 100);
+}
+
+// ============================================================================
+// DEFER WITH VALUES
+// ============================================================================
+
+it("should capture value at defer time") {
+    let mut x = 10;
+    let mut captured = 0;
+    {
+        defer { captured = x; }
+        x = 20;
+    }
+    // defer captures x at execution time (end of scope)
+    assert(captured == 20);
+}
+
+it("should use defer for resource cleanup pattern") {
+    let mut resource_open = true;
+
+    fn use_resource() {
+        defer { resource_open = false; }
+        // use resource here
+        assert(resource_open == true);
+    }
+
+    use_resource();
+    assert(resource_open == false);
+}
+

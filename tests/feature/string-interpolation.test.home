@@ -1,0 +1,109 @@
+// String Interpolation Test Suite
+// Tests string interpolation with ${} syntax
+
+// ============================================================================
+// BASIC INTERPOLATION
+// ============================================================================
+
+it("should interpolate simple variable") {
+    let name = "World";
+    let result = "Hello, ${name}!";
+    assert(result == "Hello, World!");
+}
+
+it("should interpolate integer") {
+    let x = 42;
+    let result = "The answer is ${x}";
+    assert(result == "The answer is 42");
+}
+
+it("should interpolate boolean") {
+    let flag = true;
+    let result = "Flag is ${flag}";
+    assert(result == "Flag is true");
+}
+
+// ============================================================================
+// MULTIPLE INTERPOLATIONS
+// ============================================================================
+
+it("should handle multiple interpolations") {
+    let a = "Alice";
+    let b = "Bob";
+    let result = "${a} and ${b} are friends";
+    assert(result == "Alice and Bob are friends");
+}
+
+it("should interpolate adjacent values") {
+    let x = 1;
+    let y = 2;
+    let result = "${x}${y}";
+    assert(result == "12");
+}
+
+// ============================================================================
+// EXPRESSION INTERPOLATION
+// ============================================================================
+
+it("should interpolate arithmetic expression") {
+    let a = 10;
+    let b = 20;
+    let result = "Sum is ${a + b}";
+    assert(result == "Sum is 30");
+}
+
+it("should interpolate function call") {
+    fn double(x: i32): i32 {
+        return x * 2;
+    }
+    let result = "Double of 5 is ${double(5)}";
+    assert(result == "Double of 5 is 10");
+}
+
+it("should interpolate method call") {
+    let arr = [1, 2, 3];
+    let result = "Array length is ${arr.len()}";
+    assert(result == "Array length is 3");
+}
+
+// ============================================================================
+// NESTED INTERPOLATION
+// ============================================================================
+
+it("should handle nested expressions") {
+    let x = 5;
+    let result = "Result: ${x * (x + 1)}";
+    assert(result == "Result: 30");
+}
+
+it("should interpolate struct field") {
+    struct Person {
+        name: string,
+        age: i32
+    }
+    let p = Person { name: "Charlie", age: 30 };
+    let result = "${p.name} is ${p.age} years old";
+    assert(result == "Charlie is 30 years old");
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle empty interpolation result") {
+    let s = "";
+    let result = "Value: ${s}";
+    assert(result == "Value: ");
+}
+
+it("should handle special characters in interpolation") {
+    let text = "Hello\nWorld";
+    let result = "Text: ${text}";
+    assert(result == "Text: Hello\nWorld");
+}
+
+it("should handle dollar sign in regular string") {
+    let result = "Price: $100";
+    assert(result == "Price: $100");
+}
+

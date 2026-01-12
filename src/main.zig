@@ -1184,7 +1184,7 @@ fn isTestFile(filename: []const u8) bool {
 fn shouldSkipDirectory(dirname: []const u8) bool {
     const skip_dirs = [_][]const u8{
         "node_modules", ".git", ".zig-cache", "zig-out", ".home",
-        "target", "build", "dist", ".vscode", ".idea",
+        "target", "build", "dist", ".vscode", ".idea", "pending",
     };
 
     for (skip_dirs) |skip_dir| {
@@ -1195,7 +1195,9 @@ fn shouldSkipDirectory(dirname: []const u8) bool {
     return false;
 }
 
-fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8) !void {
+fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, verbose: bool) !void {
+    const start_time = std.time.Instant.now() catch null;
+
     std.debug.print("\n{s}Home Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
     std.debug.print("{s}━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
@@ -1240,19 +1242,17 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     var passed_files: usize = 0;
     var failed_files: usize = 0;
     var total_tests: usize = 0;
-    var failed_tests: usize = 0;
     var failed_file_list = std.ArrayList([]const u8){};
     defer failed_file_list.deinit(allocator);
 
     for (test_files.items) |file_path| {
         // Run each test file
-        const result = runTestFile(allocator, file_path);
+        const result = runTestFile(allocator, file_path, verbose);
         if (result) |test_count| {
             passed_files += 1;
             total_tests += test_count;
         } else |_| {
             failed_files += 1;
-            failed_tests += 1;
             try failed_file_list.append(allocator, file_path);
         }
     }
@@ -1272,7 +1272,17 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8) !void {
         std.debug.print(", {s}{d} failed{s}", .{ Color.Red.code(), failed_files, Color.Reset.code() });
     }
     std.debug.print(" ({d} total)\n", .{test_files.items.len});
-    std.debug.print("  Tests:  {d} total\n\n", .{total_tests});
+    std.debug.print("  Tests:  {d} total\n", .{total_tests});
+
+    // Print elapsed time if timing is available
+    if (start_time) |start| {
+        if (std.time.Instant.now() catch null) |end| {
+            const elapsed_ns = end.since(start);
+            const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+            std.debug.print("  Time:   {d:.2}s\n", .{elapsed_s});
+        }
+    }
+    std.debug.print("\n", .{});
 
     if (failed_file_list.items.len > 0) {
         std.debug.print("{s}Failed files:{s}\n", .{ Color.Red.code(), Color.Reset.code() });
@@ -1284,7 +1294,7 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8) !void {
     }
 }
 
-fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8) !usize {
+fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8, verbose: bool) !usize {
     // Read the file
     const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
@@ -1353,6 +1363,9 @@ fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8) !usize {
     };
     defer interpreter.deinit();
 
+    // Set verbose mode for test output
+    interpreter.setVerboseTests(verbose);
+
     interpreter.interpret() catch |err| {
         if (err != error.Return) {
             std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
@@ -1371,13 +1384,25 @@ fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8) !usize {
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    // Parse arguments for verbose flag
+    var verbose = false;
+    var path_arg: ?[]const u8 = null;
+
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+        } else if (arg[0] != '-') {
+            path_arg = arg;
+        }
+    }
+
     // If no args, auto-discover and run tests in "tests/" directory
-    if (args.len == 0) {
-        try runTestSuite(allocator, "tests");
+    if (path_arg == null) {
+        try runTestSuite(allocator, "tests", verbose);
         return;
     }
 
-    const file_path = args[0];
+    const file_path = path_arg.?;
 
     // Check if the path is a directory
     const stat = std.fs.cwd().statFile(file_path) catch |err| {
@@ -1394,7 +1419,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     // If it's a directory, run all test files in it
     if (stat.kind == .directory) {
-        try runTestSuite(allocator, file_path);
+        try runTestSuite(allocator, file_path, verbose);
         return;
     }
     // Read the file

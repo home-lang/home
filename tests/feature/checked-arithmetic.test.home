@@ -1,0 +1,112 @@
+// Checked Arithmetic Test Suite
+// Tests checked and saturating arithmetic operators
+
+// ============================================================================
+// CHECKED ADDITION (+?)
+// ============================================================================
+
+it("should perform checked addition") {
+    let a = 100;
+    let b = 50;
+    let result = a +? b;
+    // Result is Some struct with value field
+    assert(result.value == 150);
+}
+
+it("should perform checked addition with negative") {
+    let a = 100;
+    let b = -30;
+    let result = a +? b;
+    assert(result.value == 70);
+}
+
+// ============================================================================
+// CHECKED SUBTRACTION (-?)
+// ============================================================================
+
+it("should perform checked subtraction") {
+    let a = 100;
+    let b = 30;
+    let result = a -? b;
+    assert(result.value == 70);
+}
+
+it("should perform checked subtraction with negative result") {
+    let a = 30;
+    let b = 100;
+    let result = a -? b;
+    assert(result.value == -70);
+}
+
+// ============================================================================
+// CHECKED MULTIPLICATION (*?)
+// ============================================================================
+
+it("should perform checked multiplication") {
+    let a = 10;
+    let b = 20;
+    let result = a *? b;
+    assert(result.value == 200);
+}
+
+it("should perform checked multiplication with negative") {
+    let a = -10;
+    let b = 5;
+    let result = a *? b;
+    assert(result.value == -50);
+}
+
+// ============================================================================
+// SATURATING/CLAMPING ADDITION (+|)
+// ============================================================================
+
+it("should perform saturating addition") {
+    let a = 100;
+    let b = 50;
+    let result = a +| b;
+    assert(result == 150);
+}
+
+it("should perform saturating addition with negative") {
+    let a = 100;
+    let b = -30;
+    let result = a +| b;
+    assert(result == 70);
+}
+
+// ============================================================================
+// SATURATING/CLAMPING SUBTRACTION (-|)
+// ============================================================================
+
+it("should perform saturating subtraction") {
+    let a = 100;
+    let b = 30;
+    let result = a -| b;
+    assert(result == 70);
+}
+
+it("should perform saturating subtraction with negative") {
+    let a = 50;
+    let b = 100;
+    let result = a -| b;
+    assert(result == -50);
+}
+
+// ============================================================================
+// SATURATING/CLAMPING MULTIPLICATION (*|)
+// ============================================================================
+
+it("should perform saturating multiplication") {
+    let a = 10;
+    let b = 5;
+    let result = a *| b;
+    assert(result == 50);
+}
+
+it("should perform saturating multiplication with negative") {
+    let a = -10;
+    let b = 5;
+    let result = a *| b;
+    assert(result == -50);
+}
+

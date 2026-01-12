@@ -1,0 +1,142 @@
+// Map/Dictionary Test Suite
+// Tests map/dictionary data structure
+
+// ============================================================================
+// BASIC MAP OPERATIONS
+// ============================================================================
+
+it("should create empty map") {
+    let map: Map<string, i32> = {};
+    assert(map.len() == 0);
+}
+
+it("should create map with initial values") {
+    let map = { "a": 1, "b": 2, "c": 3 };
+    assert(map.len() == 3);
+}
+
+it("should get value by key") {
+    let map = { "name": "Alice", "city": "NYC" };
+    assert(map["name"] == "Alice");
+    assert(map["city"] == "NYC");
+}
+
+it("should set value by key") {
+    let mut map = { "x": 10 };
+    map["x"] = 20;
+    assert(map["x"] == 20);
+}
+
+it("should add new key-value pair") {
+    let mut map = { "a": 1 };
+    map["b"] = 2;
+    assert(map.len() == 2);
+    assert(map["b"] == 2);
+}
+
+// ============================================================================
+// MAP METHODS
+// ============================================================================
+
+it("should check if key exists") {
+    let map = { "foo": 42 };
+    assert(map.contains_key("foo") == true);
+    assert(map.contains_key("bar") == false);
+}
+
+it("should get value with default") {
+    let map = { "a": 1 };
+    assert(map.get("a") == Some(1));
+    assert(map.get("b") == None);
+}
+
+it("should remove key") {
+    let mut map = { "a": 1, "b": 2 };
+    let removed = map.remove("a");
+    assert(removed == Some(1));
+    assert(map.len() == 1);
+    assert(map.contains_key("a") == false);
+}
+
+it("should clear map") {
+    let mut map = { "a": 1, "b": 2 };
+    map.clear();
+    assert(map.len() == 0);
+}
+
+// ============================================================================
+// ITERATING OVER MAPS
+// ============================================================================
+
+it("should iterate over keys") {
+    let map = { "a": 1, "b": 2 };
+    let mut count = 0;
+    for (key in map.keys()) {
+        count = count + 1;
+    }
+    assert(count == 2);
+}
+
+it("should iterate over values") {
+    let map = { "a": 10, "b": 20 };
+    let mut sum = 0;
+    for (value in map.values()) {
+        sum = sum + value;
+    }
+    assert(sum == 30);
+}
+
+it("should iterate over entries") {
+    let map = { "x": 1, "y": 2 };
+    let mut count = 0;
+    for ((key, value) in map.entries()) {
+        count = count + value;
+    }
+    assert(count == 3);
+}
+
+// ============================================================================
+// DIFFERENT KEY TYPES
+// ============================================================================
+
+it("should use integer keys") {
+    let map = { 1: "one", 2: "two" };
+    assert(map[1] == "one");
+    assert(map[2] == "two");
+}
+
+it("should use string keys with special chars") {
+    let map = { "hello-world": 42, "foo_bar": 100 };
+    assert(map["hello-world"] == 42);
+}
+
+// ============================================================================
+// NESTED MAPS
+// ============================================================================
+
+it("should handle nested maps") {
+    let map = {
+        "person": {
+            "name": "Bob",
+            "age": 30
+        }
+    };
+    assert(map["person"]["name"] == "Bob");
+}
+
+// ============================================================================
+// SAFE MAP ACCESS
+// ============================================================================
+
+it("should use safe access for missing keys") {
+    let map = { "a": 1 };
+    let result = map?["b"] ?? 0;
+    assert(result == 0);
+}
+
+it("should return value for existing key with safe access") {
+    let map = { "a": 42 };
+    let result = map?["a"] ?? 0;
+    assert(result == 42);
+}
+

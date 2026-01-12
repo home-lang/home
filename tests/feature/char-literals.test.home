@@ -1,0 +1,112 @@
+// Character Literals Test Suite
+// Tests char type and character literals
+
+// ============================================================================
+// BASIC CHAR LITERALS
+// ============================================================================
+
+it("should declare char variables") {
+    let c = 'a';
+    assert(c == 'a');
+}
+
+it("should compare char values") {
+    let a = 'x';
+    let b = 'x';
+    let c = 'y';
+    assert(a == b);
+    assert(a != c);
+}
+
+it("should store different characters") {
+    let letter = 'Z';
+    let digit = '5';
+    let symbol = '@';
+    assert(letter == 'Z');
+    assert(digit == '5');
+    assert(symbol == '@');
+}
+
+// ============================================================================
+// ESCAPE SEQUENCES
+// ============================================================================
+
+it("should handle newline escape") {
+    let nl = '\n';
+    assert(nl == '\n');
+}
+
+it("should handle tab escape") {
+    let tab = '\t';
+    assert(tab == '\t');
+}
+
+it("should handle carriage return escape") {
+    let cr = '\r';
+    assert(cr == '\r');
+}
+
+it("should handle backslash escape") {
+    let bs = '\\';
+    assert(bs == '\\');
+}
+
+it("should handle single quote escape") {
+    let sq = '\'';
+    assert(sq == '\'');
+}
+
+// ============================================================================
+// CHAR IN STRINGS
+// ============================================================================
+
+it("should get char from string") {
+    let s = "hello";
+    let c = s[0];
+    assert(c == 'h');
+}
+
+it("should iterate chars in string") {
+    let s = "abc";
+    let mut chars = [];
+    for (c in s) {
+        chars.push(c);
+    }
+    assert(chars[0] == 'a');
+    assert(chars[1] == 'b');
+    assert(chars[2] == 'c');
+}
+
+// ============================================================================
+// CHAR COMPARISONS
+// ============================================================================
+
+it("should compare char ordering") {
+    let a = 'a';
+    let b = 'b';
+    assert(a < b);
+    assert(b > a);
+}
+
+it("should check char ranges") {
+    let c = 'm';
+    assert(c >= 'a');
+    assert(c <= 'z');
+}
+
+// ============================================================================
+// CHAR TO INT CONVERSION
+// ============================================================================
+
+it("should convert char to int") {
+    let c = 'A';
+    let code = c as i32;
+    assert(code == 65);
+}
+
+it("should convert int to char") {
+    let code = 66;
+    let c = code as char;
+    assert(c == 'B');
+}
+

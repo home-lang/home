@@ -223,6 +223,7 @@ pub const Lexer = struct {
         var has_interpolation = false;
 
         // First pass: scan to detect if string has interpolation
+        // Look for ${...} syntax
         var temp_pos = self.current;
         while (temp_pos < self.source.len) {
             const c = self.source[temp_pos];
@@ -234,7 +235,8 @@ pub const Lexer = struct {
                 }
                 continue;
             }
-            if (c == '{') {
+            // Check for ${ interpolation sequence
+            if (c == '$' and temp_pos + 1 < self.source.len and self.source[temp_pos + 1] == '{') {
                 has_interpolation = true;
                 break;
             }
@@ -405,9 +407,19 @@ pub const Lexer = struct {
     }
 
     /// Lex an interpolated string part
+    /// Looks for ${...} syntax for interpolation
     fn interpolatedString(self: *Lexer) Token {
-        // Scan until we hit { or "
-        while (self.peek() != '{' and self.peek() != '"' and !self.isAtEnd()) {
+        // Scan until we hit ${ or "
+        while (!self.isAtEnd()) {
+            // Check for ${ interpolation
+            if (self.peek() == '$' and self.peekNext() == '{') {
+                break;
+            }
+            // Check for end of string
+            if (self.peek() == '"') {
+                break;
+            }
+            // Handle escape sequences
             if (self.peek() == '\\') {
                 _ = self.advance(); // consume backslash
                 if (self.isAtEnd()) {
@@ -416,7 +428,7 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                    'n', 't', 'r', '"', '\\', '\'', '0', '$' => {
                         _ = self.advance();
                     },
                     'x' => {
@@ -464,7 +476,8 @@ pub const Lexer = struct {
             return self.makeToken(.Invalid);
         }
 
-        if (self.peek() == '{') {
+        if (self.peek() == '$' and self.peekNext() == '{') {
+            _ = self.advance(); // consume $
             _ = self.advance(); // consume {
             self.in_interpolation = true;
             self.interpolation_brace_depth = 1;
@@ -477,10 +490,23 @@ pub const Lexer = struct {
     }
 
     /// Continue scanning an interpolated string after an expression
+    /// Looks for ${...} syntax for interpolation
     fn continueInterpolatedString(self: *Lexer) Token {
-        // We're at the } that closes the interpolation expression
-        // Scan until next { or closing "
-        while (self.peek() != '{' and self.peek() != '"' and !self.isAtEnd()) {
+        // The } that closes the interpolation expression was already consumed
+        // Update start to skip the } for the token lexeme
+        self.start = self.current;
+
+        // Scan until next ${ or closing "
+        while (!self.isAtEnd()) {
+            // Check for ${ interpolation
+            if (self.peek() == '$' and self.peekNext() == '{') {
+                break;
+            }
+            // Check for end of string
+            if (self.peek() == '"') {
+                break;
+            }
+            // Handle escape sequences
             if (self.peek() == '\\') {
                 _ = self.advance();
                 if (self.isAtEnd()) {
@@ -489,7 +515,7 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                    'n', 't', 'r', '"', '\\', '\'', '0', '$' => {
                         _ = self.advance();
                     },
                     'x' => {
@@ -537,8 +563,9 @@ pub const Lexer = struct {
             return self.makeToken(.Invalid);
         }
 
-        if (self.peek() == '{') {
-            _ = self.advance();
+        if (self.peek() == '$' and self.peekNext() == '{') {
+            _ = self.advance(); // consume $
+            _ = self.advance(); // consume {
             self.interpolation_brace_depth = 1;
             return self.makeToken(.StringInterpolationMid);
         } else {
@@ -875,6 +902,18 @@ pub const Lexer = struct {
         return self.makeToken(token_type);
     }
 
+    /// Scan a label identifier (e.g., 'outer for labeled loops)
+    /// The leading ' has already been consumed
+    fn labelIdentifier(self: *Lexer) Token {
+        // Scan the rest of the identifier (after the ')
+        while (std.ascii.isAlphanumeric(self.peek()) or self.peek() == '_') {
+            _ = self.advance();
+        }
+
+        // Return as an identifier token (including the leading ')
+        return self.makeToken(.Identifier);
+    }
+
     /// Scan and return the next token from the source
     ///
     /// This is the main lexing function that recognizes and returns
@@ -916,8 +955,20 @@ pub const Lexer = struct {
             return self.string();
         }
 
-        // Character literals
+        // Character literals or label identifiers (like 'outer for labeled loops)
         if (c == '\'') {
+            // Check if this is a label (like 'outer) or char literal (like 'a')
+            // Labels: ' followed by alphabetic/underscore, then more identifier chars
+            // Char literals: ' followed by char (or escape), then '
+            const next = self.peek();
+            if (std.ascii.isAlphabetic(next) or next == '_') {
+                // Could be label or char literal - check if char after next is '
+                const after_next = self.peekNext();
+                if (after_next != '\'') {
+                    // It's a label like 'outer - scan as identifier (including the ')
+                    return self.labelIdentifier();
+                }
+            }
             return self.charLiteral();
         }
 
@@ -965,9 +1016,9 @@ pub const Lexer = struct {
             else
                 self.makeToken(.Question),
             '@' => self.makeToken(.At),
-            '+' => if (self.match('=')) self.makeToken(.PlusEqual) else if (self.match('!')) self.makeToken(.PlusBang) else if (self.match('?')) self.makeToken(.PlusQuestion) else self.makeToken(.Plus),
-            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else if (self.match('!')) self.makeToken(.MinusBang) else if (self.match('?')) self.makeToken(.MinusQuestion) else self.makeToken(.Minus),
-            '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else if (self.match('!')) self.makeToken(.StarBang) else if (self.match('?')) self.makeToken(.StarQuestion) else self.makeToken(.Star),
+            '+' => if (self.match('=')) self.makeToken(.PlusEqual) else if (self.match('!')) self.makeToken(.PlusBang) else if (self.match('?')) self.makeToken(.PlusQuestion) else if (self.match('|')) self.makeToken(.PlusPipe) else self.makeToken(.Plus),
+            '-' => if (self.match('>')) self.makeToken(.Arrow) else if (self.match('=')) self.makeToken(.MinusEqual) else if (self.match('!')) self.makeToken(.MinusBang) else if (self.match('?')) self.makeToken(.MinusQuestion) else if (self.match('|')) self.makeToken(.MinusPipe) else self.makeToken(.Minus),
+            '*' => if (self.match('*')) self.makeToken(.StarStar) else if (self.match('=')) self.makeToken(.StarEqual) else if (self.match('!')) self.makeToken(.StarBang) else if (self.match('?')) self.makeToken(.StarQuestion) else if (self.match('|')) self.makeToken(.StarPipe) else self.makeToken(.Star),
             '/' => blk: {
                 // Check for doc comment ///
                 if (self.peek() == '/' and self.peekNext() == '/') {

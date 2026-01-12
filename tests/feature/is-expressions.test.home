@@ -1,0 +1,54 @@
+// Is Expression Test Suite
+// Tests 'is' keyword for type checking
+
+// ============================================================================
+// BASIC TYPE CHECKING
+// ============================================================================
+
+it("should check integer type") {
+    let x = 42;
+    assert(x is i32);
+}
+
+it("should check string type") {
+    let x = "hello";
+    assert(x is string);
+}
+
+it("should check bool type") {
+    let x = true;
+    assert(x is bool);
+}
+
+it("should check float type") {
+    let x = 3.14;
+    assert(x is f64);
+}
+
+// ============================================================================
+// IS WITH NULL CHECKING
+// ============================================================================
+
+it("should check for null") {
+    let x = null;
+    assert(x == null);
+}
+
+it("should check for non-null") {
+    let x = 42;
+    assert(x != null);
+}
+
+// ============================================================================
+// IS WITH STRUCT TYPES
+// ============================================================================
+
+it("should check struct type") {
+    struct Point {
+        x: i32,
+        y: i32
+    }
+    let p = Point { x: 1, y: 2 };
+    assert(p is Point);
+}
+

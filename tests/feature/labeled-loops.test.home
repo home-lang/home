@@ -1,0 +1,216 @@
+// Labeled Loops Test Suite
+// Tests labeled break and continue
+
+// ============================================================================
+// LABELED BREAK
+// ============================================================================
+
+it("should break out of outer loop with label") {
+    let mut sum = 0;
+    'outer: while (true) {
+        let mut j = 0;
+        while (j < 10) {
+            sum = sum + 1;
+            if (sum == 5) {
+                break 'outer;
+            }
+            j = j + 1;
+        }
+    }
+    assert(sum == 5);
+}
+
+it("should break inner loop without label") {
+    let mut count = 0;
+    let mut i = 0;
+    while (i < 3) {
+        let mut j = 0;
+        while (j < 10) {
+            if (j == 2) {
+                break;
+            }
+            count = count + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    assert(count == 6);
+}
+
+it("should break specific loop with label") {
+    let mut result = 0;
+    'outer: while (true) {
+        'inner: while (true) {
+            result = result + 1;
+            if (result == 3) {
+                break 'outer;
+            }
+        }
+    }
+    assert(result == 3);
+}
+
+// ============================================================================
+// LABELED CONTINUE
+// ============================================================================
+
+it("should continue outer loop with label") {
+    let mut outer_count = 0;
+    let mut inner_count = 0;
+
+    'outer: while (outer_count < 3) {
+        let mut j = 0;
+        while (j < 5) {
+            inner_count = inner_count + 1;
+            if (j == 2) {
+                outer_count = outer_count + 1;
+                continue 'outer;
+            }
+            j = j + 1;
+        }
+        outer_count = outer_count + 1;
+    }
+    assert(inner_count == 9);
+}
+
+it("should skip to next outer iteration") {
+    let mut processed = 0;
+
+    'outer: while (processed < 10) {
+        let mut inner = 0;
+        while (inner < 5) {
+            processed = processed + 1;
+            if (processed % 3 == 0) {
+                continue 'outer;
+            }
+            inner = inner + 1;
+        }
+    }
+    assert(processed >= 10);
+}
+
+// ============================================================================
+// NESTED LABELED LOOPS
+// ============================================================================
+
+it("should handle deeply nested labels") {
+    let mut a = 0;
+    let mut b = 0;
+    let mut c = 0;
+    'level1: while (a < 10) {
+        b = 0;
+        'level2: while (b < 10) {
+            c = 0;
+            while (c < 10) {
+                if (a + b + c == 5) {
+                    break 'level1;
+                }
+                c = c + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    assert(a + b + c == 5);
+}
+
+it("should break middle loop with label") {
+    let mut result = 0;
+    let mut i = 0;
+    while (i < 3) {
+        'middle: while (true) {
+            let mut k = 0;
+            while (k < 5) {
+                result = result + 1;
+                if (k == 2) {
+                    break 'middle;
+                }
+                k = k + 1;
+            }
+        }
+        i = i + 1;
+    }
+    assert(result == 9);
+}
+
+// ============================================================================
+// LABELED FOR LOOPS
+// ============================================================================
+
+it("should label for loops") {
+    let arr1 = [1, 2, 3];
+    let arr2 = [4, 5, 6];
+    let mut found = false;
+
+    'search: for (x in arr1) {
+        for (y in arr2) {
+            if (x + y == 7) {
+                found = true;
+                break 'search;
+            }
+        }
+    }
+    assert(found == true);
+}
+
+it("should continue outer for loop") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+
+    'outer: for (x in arr) {
+        let mut i = 0;
+        while (i < 3) {
+            if (x == 3) {
+                continue 'outer;
+            }
+            sum = sum + x;
+            i = i + 1;
+        }
+    }
+    assert(sum == 36);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle label without break") {
+    let mut x = 0;
+    'label: while (x < 5) {
+        x = x + 1;
+    }
+    assert(x == 5);
+}
+
+it("should handle single iteration with labeled break") {
+    let mut ran = false;
+    'once: while (true) {
+        ran = true;
+        break 'once;
+    }
+    assert(ran == true);
+}
+
+it("should combine labeled and unlabeled breaks") {
+    let mut outer_runs = 0;
+    let mut inner_runs = 0;
+
+    'outer: while (outer_runs < 5) {
+        outer_runs = outer_runs + 1;
+        let mut j = 0;
+        while (j < 10) {
+            inner_runs = inner_runs + 1;
+            if (j == 3) {
+                break;  // Break inner loop only
+            }
+            if (inner_runs > 15) {
+                break 'outer;  // Break outer loop
+            }
+            j = j + 1;
+        }
+    }
+    // After 4 full iterations (16 inner runs), 5th iteration starts but breaks 'outer at inner_runs=17
+    assert(outer_runs == 5);
+    assert(inner_runs == 17);
+}
+

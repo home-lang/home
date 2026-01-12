@@ -1,0 +1,82 @@
+// Safe Navigation Test Suite
+// Tests ?. and ?[ operators for null-safe access
+
+// ============================================================================
+// BASIC SAFE NAVIGATION
+// ============================================================================
+
+it("should return null for null object access") {
+    let obj = null;
+    let result = obj?.field;
+    assert(result == null);
+}
+
+it("should return value for non-null access") {
+    struct Person {
+        name: string,
+        age: i32
+    }
+    let p = Person { name: "Alice", age: 30 };
+    let result = p?.name;
+    assert(result == "Alice");
+}
+
+it("should chain safe navigation") {
+    struct Inner {
+        value: i32
+    }
+    struct Outer {
+        inner: Inner
+    }
+    let o = Outer { inner: Inner { value: 42 } };
+    let result = o?.inner?.value;
+    assert(result == 42);
+}
+
+// ============================================================================
+// SAFE INDEX ACCESS
+// ============================================================================
+
+it("should return null for null array access") {
+    let arr = null;
+    let result = arr?[0];
+    assert(result == null);
+}
+
+it("should return value for valid index") {
+    let arr = [10, 20, 30];
+    let result = arr?[1];
+    assert(result == 20);
+}
+
+it("should return null for out of bounds") {
+    let arr = [10, 20, 30];
+    let result = arr?[10];
+    assert(result == null);
+}
+
+// ============================================================================
+// COMBINING WITH NULL COALESCING
+// ============================================================================
+
+it("should combine with null coalesce") {
+    let obj = null;
+    let result = obj?.field ?? "default";
+    assert(result == "default");
+}
+
+it("should use value when not null") {
+    struct Data {
+        value: i32
+    }
+    let d = Data { value: 100 };
+    let result = d?.value ?? 0;
+    assert(result == 100);
+}
+
+it("should combine safe index with coalesce") {
+    let arr = [1, 2, 3];
+    let result = arr?[99] ?? 0;
+    assert(result == 0);
+}
+

@@ -246,11 +246,15 @@ pub const Formatter = struct {
             .CheckedSub => "-!",
             .CheckedMul => "*!",
             .CheckedDiv => "/!",
-            // Saturating arithmetic (returns Option)
+            // Checked arithmetic with Option (returns Option)
             .SaturatingAdd => "+?",
             .SaturatingSub => "-?",
             .SaturatingMul => "*?",
             .SaturatingDiv => "/?",
+            // Clamping arithmetic (clamps to bounds)
+            .ClampAdd => "+|",
+            .ClampSub => "-|",
+            .ClampMul => "*|",
             .Equal => "==",
             .NotEqual => "!=",
             .Less => "<",

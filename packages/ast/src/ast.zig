@@ -542,11 +542,15 @@ pub const BinaryOp = enum {
     CheckedSub, // -! (panics on overflow)
     CheckedMul, // *! (panics on overflow)
     CheckedDiv, // /! (panics on div by zero)
-    // Saturating/wrapping arithmetic - returns Option
+    // Checked arithmetic with Option return - returns Option
     SaturatingAdd, // +? (returns Option, None on overflow)
     SaturatingSub, // -? (returns Option, None on overflow)
     SaturatingMul, // *? (returns Option, None on overflow)
     SaturatingDiv, // /? (returns Option, None on div by zero)
+    // Clamping arithmetic - clamps to type bounds
+    ClampAdd, // +| (saturates to max/min on overflow)
+    ClampSub, // -| (saturates to max/min on underflow)
+    ClampMul, // *| (saturates to max/min on overflow)
     Equal, // ==
     NotEqual, // !=
     Less, // <
@@ -1588,11 +1592,13 @@ pub const IfLetStmt = struct {
     }
 };
 
-/// While statement
+/// While statement with optional label for break/continue
 pub const WhileStmt = struct {
     node: Node,
     condition: *Expr,
     body: *BlockStmt,
+    /// Optional label for labeled break/continue (e.g., 'outer: while ...)
+    label: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, condition: *Expr, body: *BlockStmt, loc: SourceLocation) !*WhileStmt {
         const stmt = try allocator.create(WhileStmt);
@@ -1600,12 +1606,24 @@ pub const WhileStmt = struct {
             .node = .{ .type = .WhileStmt, .loc = loc },
             .condition = condition,
             .body = body,
+            .label = null,
+        };
+        return stmt;
+    }
+
+    pub fn initWithLabel(allocator: std.mem.Allocator, condition: *Expr, body: *BlockStmt, label: []const u8, loc: SourceLocation) !*WhileStmt {
+        const stmt = try allocator.create(WhileStmt);
+        stmt.* = .{
+            .node = .{ .type = .WhileStmt, .loc = loc },
+            .condition = condition,
+            .body = body,
+            .label = label,
         };
         return stmt;
     }
 };
 
-/// For statement
+/// For statement with optional label for break/continue
 pub const ForStmt = struct {
     node: Node,
     iterator: []const u8,
@@ -1615,6 +1633,8 @@ pub const ForStmt = struct {
     index: ?[]const u8 = null,
     /// Optional tuple bindings for destructuring (e.g., for (a, b, c) in items)
     tuple_bindings: ?[]const []const u8 = null,
+    /// Optional label for labeled break/continue (e.g., 'outer: for ...)
+    label: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, iterator: []const u8, iterable: *Expr, body: *BlockStmt, index: ?[]const u8, loc: SourceLocation) !*ForStmt {
         const stmt = try allocator.create(ForStmt);
@@ -1625,6 +1645,7 @@ pub const ForStmt = struct {
             .body = body,
             .index = index,
             .tuple_bindings = null,
+            .label = null,
         };
         return stmt;
     }
@@ -1639,6 +1660,22 @@ pub const ForStmt = struct {
             .body = body,
             .index = null,
             .tuple_bindings = bindings,
+            .label = null,
+        };
+        return stmt;
+    }
+
+    /// Initialize with a label for break/continue
+    pub fn initWithLabel(allocator: std.mem.Allocator, iterator: []const u8, iterable: *Expr, body: *BlockStmt, index: ?[]const u8, label: []const u8, loc: SourceLocation) !*ForStmt {
+        const stmt = try allocator.create(ForStmt);
+        stmt.* = .{
+            .node = .{ .type = .ForStmt, .loc = loc },
+            .iterator = iterator,
+            .iterable = iterable,
+            .body = body,
+            .index = index,
+            .tuple_bindings = null,
+            .label = label,
         };
         return stmt;
     }

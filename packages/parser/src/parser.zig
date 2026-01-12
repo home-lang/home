@@ -107,8 +107,8 @@ const Precedence = enum(u8) {
             .As => .TypeCast,
             .DotDot, .DotDotEqual => .Range,
             .LeftShift, .RightShift => .Shift,
-            .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion => .Term,
-            .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion => .Factor,
+            .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion, .PlusPipe, .MinusPipe => .Term,
+            .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion, .StarPipe => .Factor,
             .StarStar => .Power,
             .LeftParen, .LeftBracket, .Dot, .ColonColon, .QuestionDot => .Call,
             else => .None,
@@ -1897,6 +1897,23 @@ pub const Parser = struct {
 
     /// Parse a statement
     fn statement(self: *Parser) !ast.Stmt {
+        // Check for labeled loop: 'label: while/for/loop
+        if (self.check(.Identifier) and self.peek().lexeme.len > 0 and self.peek().lexeme[0] == '\'') {
+            const label_token = self.advance();
+            const label = label_token.lexeme[1..]; // Strip the leading '
+
+            // Expect colon after label
+            _ = try self.expect(.Colon, "Expected ':' after loop label");
+
+            // Now parse the loop statement with the label
+            if (self.match(&.{.While})) return self.whileStatementWithLabel(label);
+            if (self.match(&.{.Loop})) return self.loopStatementWithLabel(label);
+            if (self.match(&.{.For})) return self.forStatementWithLabel(label);
+
+            try self.reportError("Expected 'while', 'for', or 'loop' after label");
+            return error.UnexpectedToken;
+        }
+
         if (self.match(&.{.Assert})) return self.assertStatement();
         if (self.match(&.{.Return})) return self.returnStatement();
         if (self.match(&.{.If})) return self.ifStatement();
@@ -2085,6 +2102,26 @@ pub const Parser = struct {
         return ast.Stmt{ .WhileStmt = stmt };
     }
 
+    /// Parse a while statement with a label
+    fn whileStatementWithLabel(self: *Parser, label: []const u8) !ast.Stmt {
+        const while_token = self.previous();
+        const condition = try self.expression();
+        errdefer ast.Program.deinitExpr(condition, self.allocator);
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        const stmt = try ast.WhileStmt.initWithLabel(
+            self.allocator,
+            condition,
+            body,
+            label,
+            ast.SourceLocation.fromToken(while_token),
+        );
+
+        return ast.Stmt{ .WhileStmt = stmt };
+    }
+
     /// Parse a loop statement (infinite loop, desugared to while(true))
     fn loopStatement(self: *Parser) !ast.Stmt {
         const loop_token = self.previous();
@@ -2102,6 +2139,30 @@ pub const Parser = struct {
             self.allocator,
             true_lit,
             body,
+            ast.SourceLocation.fromToken(loop_token),
+        );
+
+        return ast.Stmt{ .WhileStmt = stmt };
+    }
+
+    /// Parse a loop statement with a label
+    fn loopStatementWithLabel(self: *Parser, label: []const u8) !ast.Stmt {
+        const loop_token = self.previous();
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        // Create a true boolean literal as the condition
+        const true_lit = try self.allocator.create(ast.Expr);
+        true_lit.* = ast.Expr{
+            .BooleanLiteral = ast.BooleanLiteral.init(true, ast.SourceLocation.fromToken(loop_token)),
+        };
+
+        const stmt = try ast.WhileStmt.initWithLabel(
+            self.allocator,
+            true_lit,
+            body,
+            label,
             ast.SourceLocation.fromToken(loop_token),
         );
 
@@ -2207,6 +2268,52 @@ pub const Parser = struct {
             iterable,
             body,
             index,
+            ast.SourceLocation.fromToken(for_token),
+        );
+
+        return ast.Stmt{ .ForStmt = stmt };
+    }
+
+    /// Parse a for statement with a label
+    fn forStatementWithLabel(self: *Parser, label: []const u8) !ast.Stmt {
+        const for_token = self.previous();
+
+        // Handle optional parentheses: for (x in items) or for x in items
+        const has_paren = self.match(&.{.LeftParen});
+
+        const first_token = try self.expect(.Identifier, "Expected iterator variable name");
+        const first_name = first_token.lexeme;
+
+        // Check for enumerate syntax: for index, item in items
+        var index: ?[]const u8 = null;
+        var iterator: []const u8 = first_name;
+
+        if (self.match(&.{.Comma})) {
+            // First identifier is the index, second is the iterator
+            index = first_name;
+            const iterator_token = try self.expect(.Identifier, "Expected iterator variable name after ','");
+            iterator = iterator_token.lexeme;
+        }
+
+        _ = try self.expect(.In, "Expected 'in' after iterator variable");
+
+        const iterable = try self.expression();
+        errdefer ast.Program.deinitExpr(iterable, self.allocator);
+
+        if (has_paren) {
+            _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
+        }
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        const stmt = try ast.ForStmt.initWithLabel(
+            self.allocator,
+            iterator,
+            iterable,
+            body,
+            index,
+            label,
             ast.SourceLocation.fromToken(for_token),
         );
 
@@ -2920,7 +3027,7 @@ pub const Parser = struct {
 
         // Parse postfix/infix expressions
         while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
-            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash, .PlusBang, .MinusBang, .StarBang, .SlashBang, .PlusQuestion, .MinusQuestion, .StarQuestion, .SlashQuestion })) {
+            if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash, .PlusBang, .MinusBang, .StarBang, .SlashBang, .PlusQuestion, .MinusQuestion, .StarQuestion, .SlashQuestion, .PlusPipe, .MinusPipe, .StarPipe })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .EqualEqual, .BangEqual, .Less, .LessEqual, .Greater, .GreaterEqual })) {
                 expr = try self.binary(expr);
@@ -2962,6 +3069,9 @@ pub const Parser = struct {
                 expr = try self.safeNavExpr(expr);
             } else if (self.match(&.{.Question})) {
                 expr = try self.tryExpr(expr);
+            } else if (self.match(&.{.Else})) {
+                // expr else default - unwrap Result/Option with fallback
+                expr = try self.elseExpr(expr);
             } else {
                 break;
             }
@@ -3045,6 +3155,30 @@ pub const Parser = struct {
                 operand,
                 ast.SourceLocation.fromToken(try_token),
             );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TryExpr = try_expr };
+        return result;
+    }
+
+    /// Parse an else expression (expr else default) for unwrapping Result/Option with fallback
+    /// This is syntactic sugar equivalent to: try expr else default
+    fn elseExpr(self: *Parser, operand: *ast.Expr) !*ast.Expr {
+        const else_token = self.previous();
+
+        // Parse the else expression (default value)
+        const else_branch = if (self.check(.LeftBrace)) blk: {
+            _ = self.advance();
+            break :blk try self.blockExprParse();
+        } else try self.parsePrecedence(.Assignment);
+
+        // Create TryExpr with else branch (same as 'try expr else default')
+        const try_expr = try ast.TryExpr.initWithElse(
+            self.allocator,
+            operand,
+            else_branch,
+            ast.SourceLocation.fromToken(else_token),
+        );
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .TryExpr = try_expr };
@@ -4002,8 +4136,8 @@ pub const Parser = struct {
             return try self.tryElseExpr();
         }
 
-        // Closure expression: |params| body or |params| { body }
-        if (self.check(.Pipe)) {
+        // Closure expression: |params| body or || body (zero params)
+        if (self.check(.Pipe) or self.check(.PipePipe)) {
             return try self.parseClosureExpr();
         }
 
@@ -4992,8 +5126,13 @@ pub const Parser = struct {
         var exprs_list = std.ArrayList(ast.Expr){ .items = &.{}, .capacity = 0 };
         defer exprs_list.deinit(self.allocator);
 
-        // Add first part (text before first {)
-        const first_part = start_token.lexeme[1 .. start_token.lexeme.len - 1]; // Remove " and {
+        // Add first part (text before first ${)
+        // Lexeme is: "text${ (starts with ", ends with ${)
+        // We want just "text"
+        const first_part = if (start_token.lexeme.len >= 3)
+            start_token.lexeme[1 .. start_token.lexeme.len - 2] // Remove " and ${
+        else
+            "";
         try parts_list.append(self.allocator, first_part);
 
         // Parse expressions and middle parts
@@ -5015,13 +5154,21 @@ pub const Parser = struct {
             // Check what comes next
             if (self.match(&.{.StringInterpolationMid})) {
                 // More interpolation coming
+                // Lexeme is: text${ (no leading }, ends with ${)
                 const mid_token = self.previous();
-                const mid_part = mid_token.lexeme[1 .. mid_token.lexeme.len - 1]; // Remove } and {
+                const mid_part = if (mid_token.lexeme.len >= 2)
+                    mid_token.lexeme[0 .. mid_token.lexeme.len - 2] // Remove ${
+                else
+                    "";
                 try parts_list.append(self.allocator, mid_part);
             } else if (self.match(&.{.StringInterpolationEnd})) {
                 // End of interpolation
+                // Lexeme is: text" (no leading }, ends with ")
                 const end_token = self.previous();
-                const end_part = end_token.lexeme[1 .. end_token.lexeme.len - 1]; // Remove } and "
+                const end_part = if (end_token.lexeme.len >= 1)
+                    end_token.lexeme[0 .. end_token.lexeme.len - 1] // Remove "
+                else
+                    "";
                 try parts_list.append(self.allocator, end_part);
                 break;
             } else {
@@ -5061,11 +5208,15 @@ pub const Parser = struct {
             .MinusBang => .CheckedSub,
             .StarBang => .CheckedMul,
             .SlashBang => .CheckedDiv,
-            // Saturating arithmetic (returns Option)
+            // Checked arithmetic with Option (returns Option)
             .PlusQuestion => .SaturatingAdd,
             .MinusQuestion => .SaturatingSub,
             .StarQuestion => .SaturatingMul,
             .SlashQuestion => .SaturatingDiv,
+            // Clamping/saturating arithmetic (clamps to bounds)
+            .PlusPipe => .ClampAdd,
+            .MinusPipe => .ClampSub,
+            .StarPipe => .ClampMul,
             .EqualEqual => .Equal,
             .BangEqual => .NotEqual,
             .Less => .Less,

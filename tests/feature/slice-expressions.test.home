@@ -1,0 +1,84 @@
+// Slice Expressions Test Suite
+// Tests array slicing syntax
+
+// ============================================================================
+// BASIC ARRAY SLICING
+// ============================================================================
+
+it("should slice array with start and end") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..4];
+    assert(slice.len() == 3);
+    assert(slice[0] == 2);
+    assert(slice[1] == 3);
+    assert(slice[2] == 4);
+}
+
+it("should slice from beginning") {
+    let arr = [10, 20, 30, 40];
+    let slice = arr[..2];
+    assert(slice.len() == 2);
+    assert(slice[0] == 10);
+    assert(slice[1] == 20);
+}
+
+it("should slice to end") {
+    let arr = [10, 20, 30, 40];
+    let slice = arr[2..];
+    assert(slice.len() == 2);
+    assert(slice[0] == 30);
+    assert(slice[1] == 40);
+}
+
+it("should slice entire array") {
+    let arr = [1, 2, 3];
+    let slice = arr[..];
+    assert(slice.len() == 3);
+}
+
+// ============================================================================
+// SLICE OPERATIONS
+// ============================================================================
+
+it("should iterate over slice") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..4];
+    let mut sum = 0;
+    for (x in slice) {
+        sum = sum + x;
+    }
+    assert(sum == 9);
+}
+
+it("should get length of slice") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[2..5];
+    assert(slice.len() == 3);
+}
+
+it("should chain slice operations") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let slice1 = arr[2..8];
+    let slice2 = slice1[1..4];
+    assert(slice2.len() == 3);
+    assert(slice2[0] == 4);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle empty slice") {
+    let arr = [1, 2, 3];
+    let slice = arr[1..1];
+    assert(slice.len() == 0);
+}
+
+it("should handle slice at boundaries") {
+    let arr = [1, 2, 3];
+    let slice = arr[0..3];
+    assert(slice.len() == 3);
+    assert(slice[0] == 1);
+    assert(slice[2] == 3);
+}
+

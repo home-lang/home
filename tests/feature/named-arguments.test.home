@@ -1,0 +1,91 @@
+// Named Arguments Test Suite
+// Tests named/keyword arguments in function calls
+
+// ============================================================================
+// BASIC NAMED ARGUMENTS
+// ============================================================================
+
+it("should call function with named arguments") {
+    fn greet(name: string, greeting: string): string {
+        return greeting + ", " + name;
+    }
+    let result = greet(name: "Alice", greeting: "Hello");
+    assert(result == "Hello, Alice");
+}
+
+it("should allow named arguments in any order") {
+    fn create_point(x: i32, y: i32, z: i32): i32 {
+        return x * 100 + y * 10 + z;
+    }
+    let result = create_point(z: 3, x: 1, y: 2);
+    assert(result == 123);
+}
+
+it("should mix positional and named arguments") {
+    fn calculate(base: i32, multiplier: i32, offset: i32): i32 {
+        return base * multiplier + offset;
+    }
+    let result = calculate(10, offset: 5, multiplier: 3);
+    assert(result == 35);
+}
+
+// ============================================================================
+// DEFAULT VALUES WITH NAMED ARGUMENTS
+// ============================================================================
+
+it("should use default values with named args") {
+    fn configure(host: i32 = 100, port: i32 = 8080): i32 {
+        return host + port;
+    }
+    let result = configure(port: 3000);
+    assert(result == 3100);
+}
+
+it("should override specific defaults") {
+    fn settings(a: i32 = 1, b: i32 = 2, c: i32 = 3): i32 {
+        return a + b + c;
+    }
+    let result = settings(b: 20);
+    assert(result == 24);
+}
+
+// ============================================================================
+// NAMED ARGUMENTS IN STRUCT CONSTRUCTORS
+// ============================================================================
+
+it("should use named args in struct construction") {
+    struct Person {
+        name: string,
+        age: i32,
+        active: bool
+    }
+    let p = Person { age: 30, name: "Charlie", active: true };
+    assert(p.name == "Charlie");
+    assert(p.age == 30);
+    assert(p.active == true);
+}
+
+// ============================================================================
+// NAMED ARGUMENTS WITH COMPLEX TYPES
+// ============================================================================
+
+it("should pass arrays as named arguments") {
+    fn sum_array(arr: [i32], multiplier: i32): i32 {
+        let mut total = 0;
+        for (x in arr) {
+            total = total + x;
+        }
+        return total * multiplier;
+    }
+    let result = sum_array(multiplier: 2, arr: [1, 2, 3]);
+    assert(result == 12);
+}
+
+it("should pass functions as named arguments") {
+    fn apply(value: i32, operation: fn(i32): i32): i32 {
+        return operation(value);
+    }
+    let result = apply(operation: |x| x * 2, value: 21);
+    assert(result == 42);
+}
+

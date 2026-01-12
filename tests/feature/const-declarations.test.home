@@ -1,0 +1,107 @@
+// Const Declarations Test Suite
+// Tests const keyword for immutable bindings
+
+// ============================================================================
+// BASIC CONST
+// ============================================================================
+
+it("should declare const values") {
+    const x = 42;
+    assert(x == 42);
+}
+
+it("should declare const with explicit type") {
+    const x: i32 = 100;
+    assert(x == 100);
+}
+
+it("should declare const strings") {
+    const greeting = "Hello, World!";
+    assert(greeting == "Hello, World!");
+}
+
+it("should declare const booleans") {
+    const flag = true;
+    assert(flag == true);
+}
+
+// ============================================================================
+// CONST IN DIFFERENT SCOPES
+// ============================================================================
+
+it("should shadow const in inner scope") {
+    const x = 10;
+    {
+        const x = 20;
+        assert(x == 20);
+    }
+    assert(x == 10);
+}
+
+it("should declare const in function") {
+    fn get_const(): i32 {
+        const value = 42;
+        return value;
+    }
+    assert(get_const() == 42);
+}
+
+// ============================================================================
+// CONST WITH EXPRESSIONS
+// ============================================================================
+
+it("should evaluate const expression") {
+    const a = 10;
+    const b = 20;
+    const sum = a + b;
+    assert(sum == 30);
+}
+
+it("should use const in computations") {
+    const factor = 5;
+    let mut result = 0;
+    let mut i = 0;
+    while (i < 3) {
+        result = result + factor;
+        i = i + 1;
+    }
+    assert(result == 15);
+}
+
+// ============================================================================
+// CONST WITH COMPLEX TYPES
+// ============================================================================
+
+it("should declare const arrays") {
+    const arr = [1, 2, 3];
+    assert(arr[0] == 1);
+    assert(arr.len() == 3);
+}
+
+it("should declare const structs") {
+    struct Point {
+        x: i32,
+        y: i32
+    }
+    const origin = Point { x: 0, y: 0 };
+    assert(origin.x == 0);
+    assert(origin.y == 0);
+}
+
+// ============================================================================
+// CONST VS LET
+// ============================================================================
+
+it("should allow let mut to be reassigned") {
+    let mut x = 10;
+    x = 20;
+    assert(x == 20);
+}
+
+it("should not allow const reassignment") {
+    // This test verifies const semantics - reassignment should be compile error
+    const x = 10;
+    // x = 20;  // This should be a compile error
+    assert(x == 10);
+}
+

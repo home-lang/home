@@ -1,0 +1,128 @@
+// Type Casting Test Suite
+// Tests 'as' keyword for type conversions
+
+// ============================================================================
+// INTEGER CONVERSIONS
+// ============================================================================
+
+it("should cast i32 to i64") {
+    let x: i32 = 42;
+    let y = x as i64;
+    assert(y == 42);
+}
+
+it("should cast i64 to i32") {
+    let x: i64 = 100;
+    let y = x as i32;
+    assert(y == 100);
+}
+
+it("should cast signed to unsigned") {
+    let x: i32 = 50;
+    let y = x as u32;
+    assert(y == 50);
+}
+
+it("should cast unsigned to signed") {
+    let x: u32 = 100;
+    let y = x as i32;
+    assert(y == 100);
+}
+
+// ============================================================================
+// FLOAT CONVERSIONS
+// ============================================================================
+
+it("should cast i32 to f64") {
+    let x: i32 = 42;
+    let y = x as f64;
+    assert(y == 42.0);
+}
+
+it("should cast f64 to i32 truncating") {
+    let x: f64 = 3.7;
+    let y = x as i32;
+    assert(y == 3);
+}
+
+it("should cast f32 to f64") {
+    let x: f32 = 1.5;
+    let y = x as f64;
+    assert(y == 1.5);
+}
+
+// ============================================================================
+// CHAR CONVERSIONS
+// ============================================================================
+
+it("should cast char to i32") {
+    let c = 'A';
+    let code = c as i32;
+    assert(code == 65);
+}
+
+it("should cast i32 to char") {
+    let code: i32 = 66;
+    let c = code as char;
+    assert(c == 'B');
+}
+
+it("should round-trip char through int") {
+    let original = 'Z';
+    let code = original as i32;
+    let back = code as char;
+    assert(back == original);
+}
+
+// ============================================================================
+// BOOL CONVERSIONS
+// ============================================================================
+
+it("should cast bool to i32") {
+    let t = true;
+    let f = false;
+    assert((t as i32) == 1);
+    assert((f as i32) == 0);
+}
+
+it("should cast i32 to bool") {
+    let zero: i32 = 0;
+    let nonzero: i32 = 42;
+    assert((zero as bool) == false);
+    assert((nonzero as bool) == true);
+}
+
+// ============================================================================
+// NARROWING CONVERSIONS
+// ============================================================================
+
+it("should truncate on narrowing cast") {
+    let x: i32 = 256;
+    let y = x as i8;
+    assert(y == 0);
+}
+
+it("should wrap on overflow in narrowing") {
+    let x: i32 = 130;
+    let y = x as i8;
+    // 130 as i8 wraps to -126
+    assert(y == -126);
+}
+
+// ============================================================================
+// CASTING IN EXPRESSIONS
+// ============================================================================
+
+it("should cast in arithmetic expression") {
+    let a: i32 = 5;
+    let b: f64 = 2.0;
+    let result = (a as f64) / b;
+    assert(result == 2.5);
+}
+
+it("should cast in comparison") {
+    let a: i32 = 42;
+    let b: i64 = 42;
+    assert((a as i64) == b);
+}
+
