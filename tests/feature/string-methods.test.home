@@ -1,0 +1,110 @@
+// String Methods Test Suite
+// Tests built-in string methods
+
+it("should get string length") {
+    assert("hello".len() == 5);
+    assert("".len() == 0);
+    assert("a".len() == 1);
+    assert("hello world".len() == 11);
+}
+
+it("should convert to upper case") {
+    assert("hello".upper() == "HELLO");
+    assert("Hello World".upper() == "HELLO WORLD");
+    assert("ALREADY UPPER".upper() == "ALREADY UPPER");
+    assert("mixed123".upper() == "MIXED123");
+}
+
+it("should convert to lower case") {
+    assert("HELLO".lower() == "hello");
+    assert("Hello World".lower() == "hello world");
+    assert("already lower".lower() == "already lower");
+    assert("MIXED123".lower() == "mixed123");
+}
+
+it("should trim whitespace") {
+    assert("  hello  ".trim() == "hello");
+    assert("hello".trim() == "hello");
+    assert("   ".trim() == "");
+    assert("  hello".trim() == "hello");
+    assert("hello  ".trim() == "hello");
+}
+
+it("should check contains") {
+    let s = "hello world";
+    assert(s.contains("hello") == true);
+    assert(s.contains("world") == true);
+    assert(s.contains(" ") == true);
+    assert(s.contains("xyz") == false);
+    assert(s.contains("") == true);
+}
+
+it("should check starts_with") {
+    let s = "hello world";
+    assert(s.starts_with("hello") == true);
+    assert(s.starts_with("h") == true);
+    assert(s.starts_with("") == true);
+    assert(s.starts_with("world") == false);
+    assert(s.starts_with("Hello") == false);
+}
+
+it("should check ends_with") {
+    let s = "hello world";
+    assert(s.ends_with("world") == true);
+    assert(s.ends_with("d") == true);
+    assert(s.ends_with("") == true);
+    assert(s.ends_with("hello") == false);
+    assert(s.ends_with("World") == false);
+}
+
+it("should reverse string") {
+    assert("hello".reverse() == "olleh");
+    assert("a".reverse() == "a");
+    assert("ab".reverse() == "ba");
+    assert("abcdef".reverse() == "fedcba");
+}
+
+it("should replace substring") {
+    assert("hello world".replace("world", "there") == "hello there");
+    assert("aaa".replace("a", "b") == "bbb");
+    assert("hello".replace("x", "y") == "hello");
+    assert("hello hello".replace("hello", "hi") == "hi hi");
+}
+
+it("should split string") {
+    let parts = "a,b,c".split(",");
+    assert(parts[0] == "a");
+    assert(parts[1] == "b");
+    assert(parts[2] == "c");
+}
+
+it("should split by space") {
+    let words = "hello world test".split(" ");
+    assert(words[0] == "hello");
+    assert(words[1] == "world");
+    assert(words[2] == "test");
+}
+
+it("should chain string methods") {
+    let s = "  HELLO  ";
+    assert(s.trim().lower() == "hello");
+}
+
+it("should use methods on variables") {
+    let greeting = "Hello, World!";
+    let len = greeting.len();
+    assert(len == 13);
+
+    let upper = greeting.upper();
+    assert(upper == "HELLO, WORLD!");
+}
+
+it("should use methods in conditionals") {
+    let input = "  test  ";
+    if (input.trim().len() > 0) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+

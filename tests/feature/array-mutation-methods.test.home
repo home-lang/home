@@ -1,0 +1,172 @@
+// Array Mutation Methods Test Suite
+// Tests array methods that return new arrays (functional style)
+
+it("should push element to array") {
+    let arr = [1, 2, 3];
+    let result = arr.push(4);
+    assert(result.len() == 4);
+    assert(result[3] == 4);
+    // Original unchanged (immutable)
+    assert(arr.len() == 3);
+}
+
+it("should push to empty array") {
+    let empty: [i32] = [];
+    let result = empty.push(42);
+    assert(result.len() == 1);
+    assert(result[0] == 42);
+}
+
+it("should chain push calls") {
+    let arr = [1];
+    let result = arr.push(2).push(3);
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+}
+
+it("should pop element from array") {
+    let arr = [1, 2, 3];
+    let result = arr.pop();
+    assert(result.len() == 2);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+}
+
+it("should pop from single element array") {
+    let arr = [42];
+    let result = arr.pop();
+    assert(result.len() == 0);
+}
+
+it("should handle pop on empty array") {
+    let empty: [i32] = [];
+    let result = empty.pop();
+    assert(result.len() == 0);
+}
+
+it("should shift element from array") {
+    let arr = [1, 2, 3];
+    let result = arr.shift();
+    assert(result.len() == 2);
+    assert(result[0] == 2);
+    assert(result[1] == 3);
+}
+
+it("should shift from single element array") {
+    let arr = [42];
+    let result = arr.shift();
+    assert(result.len() == 0);
+}
+
+it("should handle shift on empty array") {
+    let empty: [i32] = [];
+    let result = empty.shift();
+    assert(result.len() == 0);
+}
+
+it("should unshift element to array") {
+    let arr = [2, 3];
+    let result = arr.unshift(1);
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+}
+
+it("should unshift to empty array") {
+    let empty: [i32] = [];
+    let result = empty.unshift(42);
+    assert(result.len() == 1);
+    assert(result[0] == 42);
+}
+
+it("should concat two arrays") {
+    let a = [1, 2];
+    let b = [3, 4];
+    let result = a.concat(b);
+    assert(result.len() == 4);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+    assert(result[3] == 4);
+}
+
+it("should concat empty arrays") {
+    let a: [i32] = [];
+    let b = [1, 2];
+    let result1 = a.concat(b);
+    assert(result1.len() == 2);
+
+    let c = [1, 2];
+    let d: [i32] = [];
+    let result2 = c.concat(d);
+    assert(result2.len() == 2);
+}
+
+it("should reverse array") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.reverse();
+    assert(result[0] == 5);
+    assert(result[1] == 4);
+    assert(result[2] == 3);
+    assert(result[3] == 2);
+    assert(result[4] == 1);
+}
+
+it("should reverse single element") {
+    let arr = [42];
+    let result = arr.reverse();
+    assert(result[0] == 42);
+}
+
+it("should reverse empty array") {
+    let empty: [i32] = [];
+    let result = empty.reverse();
+    assert(result.len() == 0);
+}
+
+it("should check contains") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.contains(3) == true);
+    assert(arr.contains(6) == false);
+}
+
+it("should check contains on empty array") {
+    let empty: [i32] = [];
+    assert(empty.contains(1) == false);
+}
+
+it("should find index_of element") {
+    let arr = [10, 20, 30, 40];
+    assert(arr.index_of(10) == 0);
+    assert(arr.index_of(30) == 2);
+    assert(arr.index_of(40) == 3);
+    assert(arr.index_of(50) == -1);
+}
+
+it("should join array elements") {
+    let arr = [1, 2, 3];
+    let result = arr.join(",");
+    assert(result == "1,2,3");
+}
+
+it("should join with different separator") {
+    let arr = [1, 2, 3];
+    let result = arr.join(" - ");
+    assert(result == "1 - 2 - 3");
+}
+
+it("should join single element") {
+    let arr = [42];
+    let result = arr.join(",");
+    assert(result == "42");
+}
+
+it("should join string array") {
+    let arr = ["a", "b", "c"];
+    let result = arr.join("");
+    assert(result == "abc");
+}
+

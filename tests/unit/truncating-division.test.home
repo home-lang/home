@@ -1,0 +1,60 @@
+// Truncating Division Test Suite
+// Tests the ~/ integer division operator
+
+it("should truncate toward zero") {
+    assert((10 ~/ 3) == 3);
+    assert((11 ~/ 3) == 3);
+    assert((12 ~/ 3) == 4);
+}
+
+it("should handle exact division") {
+    assert((10 ~/ 2) == 5);
+    assert((15 ~/ 5) == 3);
+    assert((100 ~/ 10) == 10);
+}
+
+it("should handle division by one") {
+    assert((42 ~/ 1) == 42);
+    assert((100 ~/ 1) == 100);
+}
+
+it("should handle larger quotients") {
+    assert((100 ~/ 7) == 14);
+    assert((1000 ~/ 11) == 90);
+}
+
+it("should work with negative dividend") {
+    assert((-10 ~/ 3) == -3);
+    assert((-11 ~/ 3) == -3);
+}
+
+it("should work with negative divisor") {
+    assert((10 ~/ -3) == -3);
+    assert((11 ~/ -3) == -3);
+}
+
+it("should work with both negative") {
+    assert((-10 ~/ -3) == 3);
+    assert((-11 ~/ -3) == 3);
+}
+
+it("should work in expressions") {
+    let a = 17;
+    let b = 5;
+    let result = a ~/ b;
+    assert(result == 3);
+}
+
+it("should combine with other operators") {
+    let x = (20 ~/ 3) + 5;
+    assert(x == 11);
+}
+
+it("should work in function") {
+    fn safe_divide(a: i32, b: i32): i32 {
+        return a ~/ b;
+    }
+    assert(safe_divide(100, 7) == 14);
+    assert(safe_divide(50, 8) == 6);
+}
+

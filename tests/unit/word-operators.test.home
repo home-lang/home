@@ -1,0 +1,82 @@
+// Word-Based Logical Operators Test Suite
+// Tests 'and' and 'or' keywords as alternatives to && and ||
+
+it("should use and keyword") {
+    assert((true and true) == true);
+    assert((true and false) == false);
+    assert((false and true) == false);
+    assert((false and false) == false);
+}
+
+it("should use or keyword") {
+    assert((true or true) == true);
+    assert((true or false) == true);
+    assert((false or true) == true);
+    assert((false or false) == false);
+}
+
+it("should mix and/or") {
+    assert((true and true or false) == true);
+    assert((false or true and true) == true);
+    assert((false and true or true) == true);
+}
+
+it("should work with comparisons") {
+    let x = 10;
+    assert((x > 5 and x < 20) == true);
+    assert((x < 5 or x > 8) == true);
+}
+
+it("should work in conditionals") {
+    let a = true;
+    let b = false;
+    let mut result = 0;
+    if (a and !b) {
+        result = 1;
+    }
+    assert(result == 1);
+}
+
+it("should work with variables") {
+    let flag1 = true;
+    let flag2 = false;
+    let flag3 = true;
+    assert((flag1 and flag3) == true);
+    assert((flag1 or flag2) == true);
+    assert((flag2 and flag3) == false);
+}
+
+it("should chain and operations") {
+    let a = true;
+    let b = true;
+    let c = true;
+    let d = false;
+    assert((a and b and c) == true);
+    assert((a and b and c and d) == false);
+}
+
+it("should chain or operations") {
+    let a = false;
+    let b = false;
+    let c = false;
+    let d = true;
+    assert((a or b or c) == false);
+    assert((a or b or c or d) == true);
+}
+
+it("should work in function") {
+    fn check(a: bool, b: bool): bool {
+        return a and b;
+    }
+    assert(check(true, true) == true);
+    assert(check(true, false) == false);
+}
+
+it("should combine with not") {
+    let a = true;
+    let b = false;
+    assert((a and !b) == true);
+    assert((!a or b) == false);
+    assert(!(!a and !b) == true);
+}
+

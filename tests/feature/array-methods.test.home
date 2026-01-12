@@ -1,0 +1,73 @@
+// Array Methods Test Suite
+// Tests built-in array methods
+
+it("should get array length") {
+    assert([1, 2, 3].len() == 3);
+    assert([].len() == 0);
+    assert([42].len() == 1);
+    assert([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].len() == 10);
+}
+
+it("should get length of string array") {
+    let names = ["Alice", "Bob", "Charlie"];
+    assert(names.len() == 3);
+}
+
+it("should use length in loops") {
+    let arr = [10, 20, 30, 40, 50];
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < arr.len()) {
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+    assert(sum == 150);
+}
+
+it("should use length in conditionals") {
+    let arr = [1, 2, 3];
+    if (arr.len() > 0) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+
+it("should compare lengths") {
+    let a = [1, 2, 3];
+    let b = [1, 2, 3, 4, 5];
+    assert(a.len() < b.len());
+    assert(b.len() > a.len());
+}
+
+it("should use length with nested arrays") {
+    let matrix = [[1, 2], [3, 4], [5, 6]];
+    assert(matrix.len() == 3);
+    assert(matrix[0].len() == 2);
+}
+
+it("should work with empty arrays") {
+    let empty: [i32] = [];
+    assert(empty.len() == 0);
+}
+
+it("should get length after slicing") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..4];
+    assert(slice.len() == 3);
+}
+
+it("should use length in functions") {
+    fn count_elements(arr: [i32]): i32 {
+        return arr.len();
+    }
+    assert(count_elements([1, 2, 3]) == 3);
+    assert(count_elements([1]) == 1);
+}
+
+it("should chain with other operations") {
+    let arr = [1, 2, 3, 4, 5];
+    let half_len = arr.len() / 2;
+    assert(half_len == 2);
+}
+

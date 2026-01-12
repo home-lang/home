@@ -1,0 +1,57 @@
+// Bitwise NOT Test Suite
+// Tests the ~ bitwise complement operator
+
+it("should complement bits") {
+    let a = 0b1010;  // 10
+    let result = ~a & 0xFF;  // Mask to 8 bits
+    assert(result == 245);  // 0b11110101
+}
+
+it("should complement zero") {
+    let result = ~0 & 0xFF;
+    assert(result == 255);
+}
+
+it("should complement all ones") {
+    let result = ~0xFF & 0xFF;
+    assert(result == 0);
+}
+
+it("should work with hex values") {
+    let a = 0xF0;
+    let result = ~a & 0xFF;
+    assert(result == 0x0F);
+}
+
+it("should combine with AND") {
+    let a = 0b11001100;
+    let b = 0b10101010;
+    let result = ~a & b & 0xFF;
+    assert(result == 0b00100010);
+}
+
+it("should combine with OR") {
+    let a = 0b00001111;
+    let result = (~a | 0x0F) & 0xFF;
+    assert(result == 0xFF);
+}
+
+it("should double complement equal original") {
+    let a = 42;
+    let result = ~~a;
+    assert(result == a);
+}
+
+it("should work in expressions") {
+    let mask = 0xFF;
+    let value = 0b10101010;
+    let inverted = ~value & mask;
+    assert(inverted == 0b01010101);
+}
+
+it("should handle single bit") {
+    let bit = 0b00000001;
+    let result = ~bit & 0xFF;
+    assert(result == 0b11111110);
+}
+

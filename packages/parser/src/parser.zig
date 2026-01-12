@@ -1283,6 +1283,49 @@ pub const Parser = struct {
 
             // Store as "fn" to indicate function type - actual type will be handled by type system
             target_type = "fn";
+        } else if (self.check(.LeftParen)) {
+            // Parse tuple type: (T1, T2, ...)
+            _ = self.advance(); // consume '('
+            var tuple_str = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer tuple_str.deinit(self.allocator);
+            try tuple_str.append(self.allocator, '(');
+
+            var first = true;
+            while (!self.check(.RightParen) and !self.isAtEnd()) {
+                if (!first) {
+                    try tuple_str.appendSlice(self.allocator, ", ");
+                }
+                first = false;
+
+                // Parse type (could be identifier or nested tuple/array)
+                const type_str = try self.parseTypeString();
+                try tuple_str.appendSlice(self.allocator, type_str);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after tuple type");
+            try tuple_str.append(self.allocator, ')');
+            target_type = try tuple_str.toOwnedSlice(self.allocator);
+        } else if (self.check(.LeftBracket)) {
+            // Parse array type: [T] or [T; N]
+            _ = self.advance(); // consume '['
+            var arr_str = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer arr_str.deinit(self.allocator);
+            try arr_str.append(self.allocator, '[');
+
+            const elem_type = try self.parseTypeString();
+            try arr_str.appendSlice(self.allocator, elem_type);
+
+            // Check for fixed-size array [T; N]
+            if (self.match(&.{.Semicolon})) {
+                try arr_str.appendSlice(self.allocator, "; ");
+                const size_token = try self.expect(.Integer, "Expected array size");
+                try arr_str.appendSlice(self.allocator, size_token.lexeme);
+            }
+
+            _ = try self.expect(.RightBracket, "Expected ']' after array type");
+            try arr_str.append(self.allocator, ']');
+            target_type = try arr_str.toOwnedSlice(self.allocator);
         } else {
             const target_type_token = try self.expect(.Identifier, "Expected target type");
             target_type = target_type_token.lexeme;
@@ -1296,6 +1339,49 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .TypeAliasDecl = type_alias_decl };
+    }
+
+    /// Parse a type string for type alias (handles identifiers, tuples, arrays)
+    fn parseTypeString(self: *Parser) ![]const u8 {
+        if (self.check(.LeftParen)) {
+            // Tuple type
+            _ = self.advance();
+            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer result.deinit(self.allocator);
+            try result.append(self.allocator, '(');
+
+            var first = true;
+            while (!self.check(.RightParen) and !self.isAtEnd()) {
+                if (!first) try result.appendSlice(self.allocator, ", ");
+                first = false;
+                const inner = try self.parseTypeString();
+                try result.appendSlice(self.allocator, inner);
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.RightParen, "Expected ')' in tuple type");
+            try result.append(self.allocator, ')');
+            return try result.toOwnedSlice(self.allocator);
+        } else if (self.check(.LeftBracket)) {
+            // Array type
+            _ = self.advance();
+            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            defer result.deinit(self.allocator);
+            try result.append(self.allocator, '[');
+            const inner = try self.parseTypeString();
+            try result.appendSlice(self.allocator, inner);
+            if (self.match(&.{.Semicolon})) {
+                try result.appendSlice(self.allocator, "; ");
+                const size = try self.expect(.Integer, "Expected array size");
+                try result.appendSlice(self.allocator, size.lexeme);
+            }
+            _ = try self.expect(.RightBracket, "Expected ']' in array type");
+            try result.append(self.allocator, ']');
+            return try result.toOwnedSlice(self.allocator);
+        } else {
+            // Simple identifier type
+            const tok = try self.expect(.Identifier, "Expected type name");
+            return tok.lexeme;
+        }
     }
 
     /// Parse an import declaration
@@ -2355,10 +2441,10 @@ pub const Parser = struct {
 
                 // Create IntLiteral expressions for start and end
                 const start_expr = try self.allocator.create(ast.Expr);
-                start_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(start_value, ast.SourceLocation.fromToken(token)) };
+                start_expr.* = ast.Expr{ .Integer = ast.Integer.init(start_value, ast.SourceLocation.fromToken(token)) };
 
                 const end_expr = try self.allocator.create(ast.Expr);
-                end_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(end_value, ast.SourceLocation.fromToken(end_token)) };
+                end_expr.* = ast.Expr{ .Integer = ast.Integer.init(end_value, ast.SourceLocation.fromToken(end_token)) };
 
                 pattern.* = ast.Pattern{ .Range = .{ .start = start_expr, .end = end_expr, .inclusive = inclusive } };
                 return pattern;
@@ -3698,7 +3784,7 @@ pub const Parser = struct {
             const token = self.previous();
             const value = std.fmt.parseInt(i64, token.lexeme, 10) catch 0;
             const expr = try self.allocator.create(ast.Expr);
-            expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(value, ast.SourceLocation.fromToken(token)) };
+            expr.* = ast.Expr{ .Integer = ast.Integer.init(value, ast.SourceLocation.fromToken(token)) };
             return expr;
         }
 
@@ -4124,7 +4210,7 @@ pub const Parser = struct {
 
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .IntegerLiteral = ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
+                .Integer = ast.Integer.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
             };
             return expr;
         }

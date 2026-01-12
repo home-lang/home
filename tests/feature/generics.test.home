@@ -1,0 +1,96 @@
+// Generics Test Suite
+// Tests generic functions and structs
+
+fn identity<T>(value: T): T {
+    return value;
+}
+
+fn first<T>(a: T, b: T): T {
+    return a;
+}
+
+fn second<T>(a: T, b: T): T {
+    return b;
+}
+
+it("should work with identity function") {
+    assert(identity(42) == 42);
+    assert(identity(100) == 100);
+    assert(identity(-5) == -5);
+}
+
+it("should work with first/second") {
+    assert(first(10, 20) == 10);
+    assert(second(10, 20) == 20);
+}
+
+fn pair_sum<T>(a: T, b: T): T {
+    return a + b;
+}
+
+it("should work with arithmetic") {
+    assert(pair_sum(10, 20) == 30);
+    assert(pair_sum(5, 7) == 12);
+}
+
+struct Box<T> {
+    value: T
+}
+
+it("should support generic structs") {
+    let int_box = Box { value: 42 };
+    assert(int_box.value == 42);
+}
+
+struct Pair<T> {
+    first: T,
+    second: T
+}
+
+it("should support pair struct") {
+    let p = Pair { first: 10, second: 20 };
+    assert(p.first == 10);
+    assert(p.second == 20);
+    assert(p.first + p.second == 30);
+}
+
+fn get_box_value<T>(box: Box<T>): T {
+    return box.value;
+}
+
+it("should pass generic struct to function") {
+    let b = Box { value: 100 };
+    assert(get_box_value(b) == 100);
+}
+
+fn make_box<T>(val: T): Box<T> {
+    return Box { value: val };
+}
+
+it("should return generic struct from function") {
+    let b = make_box(55);
+    assert(b.value == 55);
+}
+
+struct Triple<T> {
+    a: T,
+    b: T,
+    c: T
+}
+
+it("should work with triple") {
+    let t = Triple { a: 1, b: 2, c: 3 };
+    assert(t.a + t.b + t.c == 6);
+}
+
+fn swap_pair<T>(p: Pair<T>): Pair<T> {
+    return Pair { first: p.second, second: p.first };
+}
+
+it("should swap pair values") {
+    let original = Pair { first: 10, second: 20 };
+    let swapped = swap_pair(original);
+    assert(swapped.first == 20);
+    assert(swapped.second == 10);
+}
+

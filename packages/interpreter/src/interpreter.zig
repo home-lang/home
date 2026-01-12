@@ -3,6 +3,7 @@ const ast = @import("ast");
 const value_mod = @import("value.zig");
 pub const Value = value_mod.Value;
 const FunctionValue = value_mod.FunctionValue;
+const ClosureValue = value_mod.ClosureValue;
 const EnumVariantInfo = value_mod.EnumVariantInfo;
 const EnumTypeValue = value_mod.EnumTypeValue;
 const Environment = @import("environment.zig").Environment;
@@ -1057,13 +1058,49 @@ pub const Interpreter = struct {
 
                 return Value.Void;
             },
-            .ClosureExpr => |_| {
-                // Closures have a different structure (ClosureParam vs Parameter)
-                // and a different body type (ClosureBody vs BlockStmt).
-                // For now, closures are not fully supported at runtime.
-                // Return Void as a placeholder.
-                std.debug.print("Closures are not yet fully implemented in the interpreter\n", .{});
-                return Value.Void;
+            .ClosureExpr => |closure| {
+                // Extract parameter names
+                const param_names = try self.arena.allocator().alloc([]const u8, closure.params.len);
+                for (closure.params, 0..) |param, i| {
+                    param_names[i] = param.name;
+                }
+
+                // Get body (expression or block)
+                var body_expr: ?*ast.Expr = null;
+                var body_block: ?*ast.BlockStmt = null;
+                switch (closure.body) {
+                    .Expression => |e| body_expr = e,
+                    .Block => |b| body_block = b,
+                }
+
+                // Capture variables from current environment
+                // For simplicity, capture all variables that are referenced in the closure
+                // (In a full implementation, we'd analyze the closure body to find captures)
+                const captured_names = try self.arena.allocator().alloc([]const u8, closure.captures.len);
+                const captured_values = try self.arena.allocator().alloc(Value, closure.captures.len);
+                for (closure.captures, 0..) |capture, i| {
+                    captured_names[i] = capture.name;
+                    // Look up the captured variable in the current environment
+                    if (env.get(capture.name)) |val| {
+                        captured_values[i] = val;
+                    } else {
+                        // Variable not found - might be available at call time
+                        captured_values[i] = Value.Void;
+                    }
+                }
+
+                return Value{ .Closure = ClosureValue{
+                    .param_names = param_names,
+                    .body_expr = body_expr,
+                    .body_block = body_block,
+                    .captured_names = captured_names,
+                    .captured_values = captured_values,
+                } };
+            },
+            .ComptimeExpr => |comptime_expr| {
+                // At runtime, comptime expressions just evaluate their inner expression
+                // The "compile-time" aspect is handled during compilation/type-checking
+                return try self.evaluateExpression(comptime_expr.expression, env);
             },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
@@ -1246,10 +1283,13 @@ pub const Interpreter = struct {
                 return try self.builtinAssert(call.args, env);
             }
 
-            // Look up user-defined function
+            // Look up user-defined function or closure
             if (env.get(func_name)) |func_value| {
                 if (func_value == .Function) {
                     return try self.callUserFunction(func_value.Function, call.args, env);
+                }
+                if (func_value == .Closure) {
+                    return try self.callClosure(func_value.Closure, call.args, env);
                 }
             }
 
@@ -1257,8 +1297,58 @@ pub const Interpreter = struct {
             return error.UndefinedFunction;
         }
 
-        std.debug.print("Complex function calls not yet supported\n", .{});
+        // Handle calling closure expressions directly (e.g., (|x| x + 1)(5))
+        const callee_value = try self.evaluateExpression(call.callee, env);
+        if (callee_value == .Closure) {
+            return try self.callClosure(callee_value.Closure, call.args, env);
+        }
+        if (callee_value == .Function) {
+            return try self.callUserFunction(callee_value.Function, call.args, env);
+        }
+
+        std.debug.print("Cannot call non-function value\n", .{});
         return error.RuntimeError;
+    }
+
+    /// Call a closure with given arguments
+    fn callClosure(self: *Interpreter, closure: ClosureValue, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+        // Check argument count
+        if (args.len != closure.param_names.len) {
+            std.debug.print("Closure expects {d} arguments, got {d}\n", .{ closure.param_names.len, args.len });
+            return error.InvalidArguments;
+        }
+
+        // Create new environment for closure execution
+        var closure_env = Environment.init(self.arena.allocator(), env);
+
+        // Bind captured variables
+        for (closure.captured_names, 0..) |name, i| {
+            try closure_env.define(name, closure.captured_values[i]);
+        }
+
+        // Evaluate arguments and bind parameters
+        for (closure.param_names, 0..) |param_name, i| {
+            const arg_value = try self.evaluateExpression(args[i], env);
+            try closure_env.define(param_name, arg_value);
+        }
+
+        // Execute closure body
+        if (closure.body_expr) |expr| {
+            return try self.evaluateExpression(expr, &closure_env);
+        } else if (closure.body_block) |block| {
+            // Execute block and return last expression or void
+            for (block.statements) |stmt| {
+                self.executeStatement(stmt, &closure_env) catch |err| {
+                    if (err == error.Return) {
+                        return self.return_value orelse Value.Void;
+                    }
+                    return err;
+                };
+            }
+            return Value.Void;
+        }
+
+        return Value.Void;
     }
 
     /// Evaluate string method calls
@@ -1453,10 +1543,6 @@ pub const Interpreter = struct {
 
     /// Evaluate array method calls
     fn evaluateArrayMethod(self: *Interpreter, arr: []const Value, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
-        _ = self;
-        _ = env;
-        _ = args;
-
         // len() / length() - returns array length
         if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
             return Value{ .Int = @as(i64, @intCast(arr.len)) };
@@ -1470,7 +1556,7 @@ pub const Interpreter = struct {
         // first() - get first element
         if (std.mem.eql(u8, method, "first")) {
             if (arr.len == 0) {
-                return Value.Void; // or could return null/none
+                return Value.Void;
             }
             return arr[0];
         }
@@ -1483,8 +1569,202 @@ pub const Interpreter = struct {
             return arr[arr.len - 1];
         }
 
+        // push(value) - returns new array with value appended
+        if (std.mem.eql(u8, method, "push")) {
+            if (args.len != 1) {
+                std.debug.print("push() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const new_value = try self.evaluateExpression(args[0], env);
+            var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
+            @memcpy(new_arr[0..arr.len], arr);
+            new_arr[arr.len] = new_value;
+            return Value{ .Array = new_arr };
+        }
+
+        // pop() - returns new array without last element
+        if (std.mem.eql(u8, method, "pop")) {
+            if (arr.len == 0) {
+                return Value{ .Array = &.{} };
+            }
+            const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
+            @memcpy(new_arr, arr[0 .. arr.len - 1]);
+            return Value{ .Array = new_arr };
+        }
+
+        // shift() - returns new array without first element
+        if (std.mem.eql(u8, method, "shift")) {
+            if (arr.len == 0) {
+                return Value{ .Array = &.{} };
+            }
+            const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
+            @memcpy(new_arr, arr[1..]);
+            return Value{ .Array = new_arr };
+        }
+
+        // unshift(value) - returns new array with value prepended
+        if (std.mem.eql(u8, method, "unshift")) {
+            if (args.len != 1) {
+                std.debug.print("unshift() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const new_value = try self.evaluateExpression(args[0], env);
+            var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
+            new_arr[0] = new_value;
+            @memcpy(new_arr[1..], arr);
+            return Value{ .Array = new_arr };
+        }
+
+        // concat(other_array) - returns new array with both arrays concatenated
+        if (std.mem.eql(u8, method, "concat")) {
+            if (args.len != 1) {
+                std.debug.print("concat() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const other_val = try self.evaluateExpression(args[0], env);
+            if (other_val != .Array) {
+                std.debug.print("concat() argument must be an array\n", .{});
+                return error.TypeMismatch;
+            }
+            const other = other_val.Array;
+            var new_arr = try self.arena.allocator().alloc(Value, arr.len + other.len);
+            @memcpy(new_arr[0..arr.len], arr);
+            @memcpy(new_arr[arr.len..], other);
+            return Value{ .Array = new_arr };
+        }
+
+        // reverse() - returns new reversed array
+        if (std.mem.eql(u8, method, "reverse")) {
+            var new_arr = try self.arena.allocator().alloc(Value, arr.len);
+            for (arr, 0..) |elem, i| {
+                new_arr[arr.len - 1 - i] = elem;
+            }
+            return Value{ .Array = new_arr };
+        }
+
+        // contains(value) - check if array contains a value
+        if (std.mem.eql(u8, method, "contains")) {
+            if (args.len != 1) {
+                std.debug.print("contains() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const search_val = try self.evaluateExpression(args[0], env);
+            for (arr) |elem| {
+                if (valuesEqual(elem, search_val)) {
+                    return Value{ .Bool = true };
+                }
+            }
+            return Value{ .Bool = false };
+        }
+
+        // index_of(value) - returns index of value or -1 if not found
+        if (std.mem.eql(u8, method, "index_of")) {
+            if (args.len != 1) {
+                std.debug.print("index_of() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const search_val = try self.evaluateExpression(args[0], env);
+            for (arr, 0..) |elem, i| {
+                if (valuesEqual(elem, search_val)) {
+                    return Value{ .Int = @as(i64, @intCast(i)) };
+                }
+            }
+            return Value{ .Int = -1 };
+        }
+
+        // join(separator) - join array elements with separator string
+        if (std.mem.eql(u8, method, "join")) {
+            var separator: []const u8 = ",";
+            if (args.len >= 1) {
+                const sep_val = try self.evaluateExpression(args[0], env);
+                if (sep_val != .String) {
+                    std.debug.print("join() separator must be a string\n", .{});
+                    return error.TypeMismatch;
+                }
+                separator = sep_val.String;
+            }
+            // Calculate total length
+            var total_len: usize = 0;
+            for (arr, 0..) |elem, i| {
+                total_len += valueStringLenForJoin(elem);
+                if (i < arr.len - 1) {
+                    total_len += separator.len;
+                }
+            }
+            // Build result string
+            var result = try self.arena.allocator().alloc(u8, total_len);
+            var pos: usize = 0;
+            for (arr, 0..) |elem, i| {
+                const elem_str = try self.valueToStringForJoin(elem);
+                @memcpy(result[pos .. pos + elem_str.len], elem_str);
+                pos += elem_str.len;
+                if (i < arr.len - 1) {
+                    @memcpy(result[pos .. pos + separator.len], separator);
+                    pos += separator.len;
+                }
+            }
+            return Value{ .String = result };
+        }
+
         std.debug.print("Unknown array method: {s}\n", .{method});
         return error.UndefinedFunction;
+    }
+
+    /// Helper to check if two values are equal
+    fn valuesEqual(a: Value, b: Value) bool {
+        if (@intFromEnum(a) != @intFromEnum(b)) return false;
+        return switch (a) {
+            .Int => |av| av == b.Int,
+            .Float => |av| av == b.Float,
+            .Bool => |av| av == b.Bool,
+            .String => |av| std.mem.eql(u8, av, b.String),
+            .Void => true,
+            else => false,
+        };
+    }
+
+    /// Helper to get string representation length of a value
+    fn valueStringLenForJoin(val: Value) usize {
+        return switch (val) {
+            .Int => |i| blk: {
+                if (i == 0) break :blk 1;
+                var n = if (i < 0) -i else i;
+                var len: usize = if (i < 0) 1 else 0;
+                while (n > 0) : (n = @divTrunc(n, 10)) {
+                    len += 1;
+                }
+                break :blk len;
+            },
+            .Float => 10, // Approximate
+            .Bool => |b| if (b) 4 else 5,
+            .String => |s| s.len,
+            .Void => 4,
+            else => 8,
+        };
+    }
+
+    /// Convert value to string for join
+    fn valueToStringForJoin(self: *Interpreter, val: Value) ![]const u8 {
+        return switch (val) {
+            .Int => |i| blk: {
+                var buf: [32]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{i}) catch "<int>";
+                const result = try self.arena.allocator().alloc(u8, slice.len);
+                @memcpy(result, slice);
+                break :blk result;
+            },
+            .Float => |f| blk: {
+                var buf: [64]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{f}) catch "<float>";
+                const result = try self.arena.allocator().alloc(u8, slice.len);
+                @memcpy(result, slice);
+                break :blk result;
+            },
+            .Bool => |b| if (b) "true" else "false",
+            .String => |s| s,
+            .Void => "void",
+            else => "<value>",
+        };
     }
 
     /// Evaluate range method calls
@@ -1796,6 +2076,7 @@ pub const Interpreter = struct {
             },
             .Struct => |s| std.debug.print("<{s} instance>", .{s.type_name}),
             .Function => |f| std.debug.print("<fn {s}>", .{f.name}),
+            .Closure => std.debug.print("<closure>", .{}),
             .Range => |r| {
                 if (r.inclusive) {
                     std.debug.print("{d}..={d}", .{ r.start, r.end });
@@ -1826,6 +2107,7 @@ pub const Interpreter = struct {
             },
             .Struct => |s| std.debug.print("Struct({s})", .{s.type_name}),
             .Function => |f| std.debug.print("Function({s})", .{f.name}),
+            .Closure => std.debug.print("Closure(...)", .{}),
             .EnumType => |e| std.debug.print("EnumType({s})", .{e.name}),
             .Void => std.debug.print("Void", .{}),
         }
@@ -1852,6 +2134,7 @@ pub const Interpreter = struct {
                 },
                 .Struct => |s| std.debug.print("<{s} instance>", .{s.type_name}),
                 .Function => |f| std.debug.print("<fn {s}>", .{f.name}),
+                .Closure => std.debug.print("<closure>", .{}),
                 .Range => |r| {
                     if (r.inclusive) {
                         std.debug.print("{d}..={d}", .{ r.start, r.end });
@@ -2079,6 +2362,7 @@ pub const Interpreter = struct {
             .Struct => return false, // Struct comparison not implemented
             .Void => return right == .Void,
             .Function => return false, // Functions are not comparable
+            .Closure => return false, // Closures are not comparable
             .Range => |l| switch (right) {
                 .Range => |r| return l.start == r.start and l.end == r.end and l.inclusive == r.inclusive and l.step == r.step,
                 else => return false,
@@ -2182,6 +2466,7 @@ pub const Interpreter = struct {
                 const str = try std.fmt.allocPrint(self.arena.allocator(), "<fn {s}>", .{f.name});
                 break :blk str;
             },
+            .Closure => "<closure>",
             .Range => |r| blk: {
                 const str = if (r.inclusive)
                     try std.fmt.allocPrint(self.arena.allocator(), "{d}..={d}", .{ r.start, r.end })

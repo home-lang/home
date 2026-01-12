@@ -1,0 +1,66 @@
+// Type Aliases Test Suite
+// Tests the type keyword for creating type aliases
+
+type Integer = i32;
+type Text = string;
+type Flag = bool;
+
+it("should use basic type aliases") {
+    let x: Integer = 42;
+    assert(x == 42);
+}
+
+it("should use string type alias") {
+    let s: Text = "hello";
+    assert(s == "hello");
+}
+
+it("should use bool type alias") {
+    let f: Flag = true;
+    assert(f == true);
+}
+
+type Number = i32;
+
+fn add_numbers(a: Number, b: Number): Number {
+    return a + b;
+}
+
+it("should use aliases in function signatures") {
+    let result = add_numbers(10, 20);
+    assert(result == 30);
+}
+
+// Note: Tuple type aliases like `type Point2D = (i32, i32)` not yet supported
+// Note: Array type aliases like `type IntArray = [i32]` not yet supported
+
+type Coordinate = i32;
+
+struct Position {
+    x: Coordinate,
+    y: Coordinate
+}
+
+it("should use aliases in structs") {
+    let pos = Position { x: 5, y: 10 };
+    assert(pos.x == 5);
+    assert(pos.y == 10);
+}
+
+type Counter = i32;
+
+it("should use aliases with mut") {
+    let mut count: Counter = 0;
+    count = count + 1;
+    assert(count == 1);
+}
+
+type Score = i32;
+
+it("should use aliases in expressions") {
+    let a: Score = 50;
+    let b: Score = 30;
+    let total: Score = a + b;
+    assert(total == 80);
+}
+

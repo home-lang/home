@@ -1,0 +1,85 @@
+// Inclusive Range Test Suite
+// Tests the ..= inclusive range operator
+
+it("should iterate inclusive range") {
+    let mut sum = 0;
+    for (i in 1..=5) {
+        sum = sum + i;
+    }
+    assert(sum == 15);  // 1+2+3+4+5
+}
+
+it("should include end value") {
+    let mut count = 0;
+    for (i in 0..=3) {
+        count = count + 1;
+    }
+    assert(count == 4);  // 0, 1, 2, 3
+}
+
+it("should work with single element") {
+    let mut sum = 0;
+    for (i in 5..=5) {
+        sum = sum + i;
+    }
+    assert(sum == 5);
+}
+
+it("should work with larger ranges") {
+    let mut sum = 0;
+    for (i in 1..=10) {
+        sum = sum + i;
+    }
+    assert(sum == 55);
+}
+
+it("should work in factorial") {
+    let mut product = 1;
+    for (i in 1..=5) {
+        product = product * i;
+    }
+    assert(product == 120);
+}
+
+it("should work with variable bounds") {
+    let start = 3;
+    let end = 7;
+    let mut sum = 0;
+    for (i in start..=end) {
+        sum = sum + i;
+    }
+    assert(sum == 25);  // 3+4+5+6+7
+}
+
+it("should work starting from zero") {
+    let mut sum = 0;
+    for (i in 0..=4) {
+        sum = sum + i;
+    }
+    assert(sum == 10);  // 0+1+2+3+4
+}
+
+it("should compare with exclusive range") {
+    let mut inclusive_sum = 0;
+    for (i in 1..=5) {
+        inclusive_sum = inclusive_sum + i;
+    }
+
+    let mut exclusive_sum = 0;
+    for (i in 1..6) {
+        exclusive_sum = exclusive_sum + i;
+    }
+
+    assert(inclusive_sum == exclusive_sum);
+}
+
+it("should work in nested loops") {
+    let mut total = 0;
+    for (i in 1..=3) {
+        for (j in 1..=3) {
+            total = total + 1;
+        }
+    }
+    assert(total == 9);
+}
+

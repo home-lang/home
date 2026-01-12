@@ -1,0 +1,34 @@
+// Comptime Test Suite
+// Tests compile-time evaluation
+
+it("should evaluate simple comptime") {
+    let x = comptime 5 * 10;
+    assert(x == 50);
+}
+
+it("should evaluate comptime arithmetic") {
+    let a = comptime 2 ** 8;
+    assert(a == 256);
+}
+
+it("should evaluate comptime with variable") {
+    let factor = comptime 3;
+    let result = factor * 10;
+    assert(result == 30);
+}
+
+it("should evaluate nested comptime") {
+    let inner = comptime comptime 5 + 5;
+    assert(inner == 10);
+}
+
+it("should work in expressions") {
+    let result = 5 + comptime 10 * 2;
+    assert(result == 25);
+}
+
+it("should work with parentheses") {
+    let x = comptime (3 + 4) * 2;
+    assert(x == 14);
+}
+

@@ -1,0 +1,94 @@
+// Closures Test Suite
+// Tests functions that capture variables from enclosing scope
+
+it("should capture outer variable") {
+    let multiplier = 3;
+    fn multiply(x: i32): i32 {
+        return x * multiplier;
+    }
+    assert(multiply(5) == 15);
+}
+
+it("should capture multiple variables") {
+    let a = 10;
+    let b = 20;
+    fn add_both(x: i32): i32 {
+        return x + a + b;
+    }
+    assert(add_both(5) == 35);
+}
+
+it("should work with nested functions") {
+    let factor = 2;
+    fn outer(x: i32): i32 {
+        fn inner(y: i32): i32 {
+            return y * factor;
+        }
+        return inner(x) + factor;
+    }
+    assert(outer(5) == 12);  // (5 * 2) + 2
+}
+
+it("should capture string variables") {
+    let prefix = "Hello, ";
+    fn greet(name: string): string {
+        return prefix + name;
+    }
+    assert(greet("World") == "Hello, World");
+}
+
+it("should capture boolean variables") {
+    let should_double = true;
+    fn maybe_double(x: i32): i32 {
+        if (should_double) {
+            return x * 2;
+        }
+        return x;
+    }
+    assert(maybe_double(5) == 10);
+}
+
+it("should work in higher-order context") {
+    let base = 100;
+    fn add_base(x: i32): i32 {
+        return x + base;
+    }
+    fn apply(f: fn(i32): i32, x: i32): i32 {
+        return f(x);
+    }
+    assert(apply(add_base, 50) == 150);
+}
+
+it("should capture from deeply nested scope") {
+    let level1 = 1;
+    fn outer(): i32 {
+        let level2 = 10;
+        fn inner(): i32 {
+            return level1 + level2;
+        }
+        return inner();
+    }
+    assert(outer() == 11);
+}
+
+it("should work with array captured") {
+    let offsets = [1, 2, 3];
+    fn sum_with_offset(x: i32): i32 {
+        let mut total = x;
+        for (o in offsets) {
+            total = total + o;
+        }
+        return total;
+    }
+    assert(sum_with_offset(10) == 16);
+}
+
+it("should capture struct values") {
+    struct Config { multiplier: i32 }
+    let config = Config { multiplier: 5 };
+    fn apply_config(x: i32): i32 {
+        return x * config.multiplier;
+    }
+    assert(apply_config(3) == 15);
+}
+

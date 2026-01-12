@@ -1,0 +1,84 @@
+// Higher-Order Functions Test Suite
+// Tests functions as parameters and return values
+
+fn double(x: i32): i32 { return x * 2; }
+fn triple(x: i32): i32 { return x * 3; }
+fn square(x: i32): i32 { return x * x; }
+fn increment(x: i32): i32 { return x + 1; }
+fn negate(x: i32): i32 { return 0 - x; }
+
+fn apply(f: fn(i32): i32, x: i32): i32 {
+    return f(x);
+}
+
+fn apply_twice(f: fn(i32): i32, x: i32): i32 {
+    return f(f(x));
+}
+
+fn compose(f: fn(i32): i32, g: fn(i32): i32, x: i32): i32 {
+    return f(g(x));
+}
+
+it("should pass function as parameter") {
+    let result = apply(double, 5);
+    assert(result == 10);
+}
+
+it("should pass different functions") {
+    assert(apply(double, 5) == 10);
+    assert(apply(triple, 5) == 15);
+    assert(apply(square, 5) == 25);
+}
+
+it("should apply function twice") {
+    assert(apply_twice(double, 3) == 12);
+    assert(apply_twice(increment, 0) == 2);
+    assert(apply_twice(square, 2) == 16);
+}
+
+it("should compose functions") {
+    // compose(double, increment, 5) = double(increment(5)) = double(6) = 12
+    assert(compose(double, increment, 5) == 12);
+    // compose(square, double, 3) = square(double(3)) = square(6) = 36
+    assert(compose(square, double, 3) == 36);
+}
+
+it("should work with negative results") {
+    assert(apply(negate, 5) == -5);
+    assert(apply_twice(negate, 5) == 5);
+}
+
+it("should chain multiple higher-order calls") {
+    let step1 = apply(double, 5);     // 10
+    let step2 = apply(increment, step1);  // 11
+    let step3 = apply(square, step2);     // 121
+    assert(step3 == 121);
+}
+
+fn map_value(f: fn(i32): i32, values: [i32]): i32 {
+    let mut sum = 0;
+    for (v in values) {
+        sum = sum + f(v);
+    }
+    return sum;
+}
+
+it("should work with arrays") {
+    let arr = [1, 2, 3, 4, 5];
+    let sum_doubled = map_value(double, arr);
+    assert(sum_doubled == 30);
+}
+
+fn select(condition: bool, f: fn(i32): i32, g: fn(i32): i32, x: i32): i32 {
+    if (condition) {
+        return f(x);
+    } else {
+        return g(x);
+    }
+}
+
+it("should conditionally apply functions") {
+    assert(select(true, double, triple, 5) == 10);
+    assert(select(false, double, triple, 5) == 15);
+}
+

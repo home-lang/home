@@ -1,0 +1,82 @@
+// Default Parameters Test Suite
+// Tests functions with default parameter values
+
+fn greet(name: string = "World"): string {
+    return "Hello, " + name + "!";
+}
+
+fn add(a: i32, b: i32 = 10): i32 {
+    return a + b;
+}
+
+fn calculate(a: i32, b: i32 = 5, c: i32 = 1): i32 {
+    return (a + b) * c;
+}
+
+fn power_default(base: i32, exp: i32 = 2): i32 {
+    let mut result = 1;
+    let mut i = 0;
+    while (i < exp) {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+it("should use default when no arg provided") {
+    assert(greet() == "Hello, World!");
+}
+
+it("should use provided arg over default") {
+    assert(greet("Alice") == "Hello, Alice!");
+}
+
+it("should work with numeric defaults") {
+    assert(add(5) == 15);
+    assert(add(5, 20) == 25);
+}
+
+it("should handle multiple defaults") {
+    assert(calculate(10) == 15);         // (10 + 5) * 1
+    assert(calculate(10, 10) == 20);     // (10 + 10) * 1
+    assert(calculate(10, 10, 2) == 40);  // (10 + 10) * 2
+}
+
+it("should work with power function") {
+    assert(power_default(3) == 9);       // 3^2
+    assert(power_default(2) == 4);       // 2^2
+    assert(power_default(2, 3) == 8);    // 2^3
+    assert(power_default(5, 3) == 125);  // 5^3
+}
+
+fn with_bool_default(flag: bool = true): i32 {
+    if (flag) { return 1; }
+    return 0;
+}
+
+it("should work with boolean defaults") {
+    assert(with_bool_default() == 1);
+    assert(with_bool_default(false) == 0);
+    assert(with_bool_default(true) == 1);
+}
+
+fn range_sum(start: i32 = 0, end: i32 = 10, step: i32 = 1): i32 {
+    let mut sum = 0;
+    let mut i = start;
+    while (i < end) {
+        sum = sum + i;
+        i = i + step;
+    }
+    return sum;
+}
+
+it("should work with all defaults") {
+    assert(range_sum() == 45);  // 0..10 step 1
+}
+
+it("should work with partial defaults") {
+    assert(range_sum(5) == 35);       // 5..10 step 1
+    assert(range_sum(0, 5) == 10);    // 0..5 step 1
+    assert(range_sum(0, 10, 2) == 20); // 0, 2, 4, 6, 8
+}
+

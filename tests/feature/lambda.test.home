@@ -1,0 +1,62 @@
+// Lambda/Closure Test Suite
+// Tests anonymous functions with |param| syntax
+
+it("should create and call simple lambda") {
+    let double = |x| x * 2;
+    assert(double(5) == 10);
+}
+
+it("should work with multiple parameters") {
+    let add = |a, b| a + b;
+    assert(add(3, 4) == 7);
+}
+
+it("should work with no parameters") {
+    let get_five = || 5;
+    assert(get_five() == 5);
+}
+
+it("should capture outer variable") {
+    let multiplier = 3;
+    let mult = |x| x * multiplier;
+    assert(mult(4) == 12);
+}
+
+it("should capture multiple variables") {
+    let a = 10;
+    let b = 20;
+    let sum_with = |x| x + a + b;
+    assert(sum_with(5) == 35);
+}
+
+it("should chain lambda calls") {
+    let inc = |x| x + 1;
+    let dbl = |x| x * 2;
+    assert(dbl(inc(5)) == 12);
+}
+
+it("should work with arithmetic") {
+    let square = |n| n * n;
+    assert(square(5) == 25);
+    assert(square(10) == 100);
+}
+
+it("should work with conditionals in body") {
+    let abs = |x| if (x < 0) { -x } else { x };
+    assert(abs(-5) == 5);
+    assert(abs(5) == 5);
+}
+
+it("should work with comparison") {
+    let is_positive = |x| x > 0;
+    assert(is_positive(5) == true);
+    assert(is_positive(-5) == false);
+}
+
+it("should store in variable and call later") {
+    let op = |x| x + 100;
+    let a = 5;
+    let result = op(a);
+    assert(result == 105);
+}
+

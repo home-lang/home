@@ -1,0 +1,83 @@
+// If Expressions Test Suite
+// Tests if/else as expressions that return values
+
+it("should return value from if expression") {
+    let x = 10;
+    let result = if (x > 5) { 100 } else { 0 };
+    assert(result == 100);
+}
+
+it("should return else value when condition false") {
+    let x = 3;
+    let result = if (x > 5) { 100 } else { 0 };
+    assert(result == 0);
+}
+
+it("should work with else if chains") {
+    let x = 50;
+    let result = if (x < 0) { -1 }
+                 else if (x == 0) { 0 }
+                 else if (x < 10) { 1 }
+                 else if (x < 100) { 2 }
+                 else { 3 };
+    assert(result == 2);
+}
+
+it("should assign to variable directly") {
+    let a = 7;
+    let sign = if (a > 0) { 1 } else if (a < 0) { -1 } else { 0 };
+    assert(sign == 1);
+}
+
+it("should work with string results") {
+    let age = 25;
+    let category = if (age < 18) { "minor" } else { "adult" };
+    assert(category == "adult");
+}
+
+it("should nest if expressions") {
+    let x = 10;
+    let y = 5;
+    let result = if (x > 0) {
+        if (y > 0) { "both positive" } else { "x positive" }
+    } else {
+        "x not positive"
+    };
+    assert(result == "both positive");
+}
+
+it("should use in function return") {
+    fn classify(n: i32): string {
+        return if (n < 0) { "negative" }
+               else if (n == 0) { "zero" }
+               else { "positive" };
+    }
+    assert(classify(-5) == "negative");
+    assert(classify(0) == "zero");
+    assert(classify(5) == "positive");
+}
+
+it("should work in arithmetic") {
+    let x = 3;
+    let bonus = if (x > 5) { 100 } else { 50 };
+    let total = x * 10 + bonus;
+    assert(total == 80);
+}
+
+it("should handle complex conditions") {
+    let a = 5;
+    let b = 10;
+    let result = if (a > 0 && b > a) { a + b } else { 0 };
+    assert(result == 15);
+}
+
+it("should work with comparisons inside") {
+    let score = 85;
+    let grade = if (score >= 90) { 4 }
+                else if (score >= 80) { 3 }
+                else if (score >= 70) { 2 }
+                else if (score >= 60) { 1 }
+                else { 0 };
+    assert(grade == 3);
+}
+

@@ -16,6 +16,21 @@ pub const FunctionValue = struct {
     body: *ast.BlockStmt,
 };
 
+/// Closure value representation with captured environment.
+///
+/// Stores an anonymous function along with the values it captured
+/// from its defining scope.
+pub const ClosureValue = struct {
+    /// Parameter names for the closure
+    param_names: []const []const u8,
+    /// Closure body - either an expression or block
+    body_expr: ?*ast.Expr,
+    body_block: ?*ast.BlockStmt,
+    /// Captured variable names and their values
+    captured_names: []const []const u8,
+    captured_values: []const Value,
+};
+
 /// Struct instance value at runtime.
 ///
 /// Represents an instance of a struct type with its field values.
@@ -92,6 +107,8 @@ pub const Value = union(enum) {
     Struct: StructValue,
     /// Function or closure
     Function: FunctionValue,
+    /// Anonymous closure with captures
+    Closure: ClosureValue,
     /// Range for iteration
     Range: RangeValue,
     /// Enum type (for accessing enum variants like Color.Red)
@@ -124,6 +141,7 @@ pub const Value = union(enum) {
             },
             .Struct => |s| try writer.print("<{s} instance>", .{s.type_name}),
             .Function => |f| try writer.print("<fn {s}>", .{f.name}),
+            .Closure => try writer.writeAll("<closure>"),
             .Range => |r| {
                 if (r.inclusive) {
                     try writer.print("{d}..={d}", .{ r.start, r.end });
@@ -165,6 +183,7 @@ pub const Value = union(enum) {
             .Struct => true,
             .Void => false,
             .Function => true,
+            .Closure => true,
             .Range => true,
             .EnumType => true,
         };
