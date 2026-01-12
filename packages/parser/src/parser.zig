@@ -94,7 +94,7 @@ const Precedence = enum(u8) {
         return switch (token_type) {
             .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
             .Question => .Ternary,
-            .QuestionQuestion, .QuestionColon => .NullCoalesce,
+            .QuestionQuestion, .QuestionColon, .Else => .NullCoalesce,
             .QuestionBracket => .Call,
             .PipePipe, .Or => .Or,
             .AmpersandAmpersand, .And => .And,
@@ -4141,9 +4141,106 @@ pub const Parser = struct {
             return try self.parseClosureExpr();
         }
 
-        // Block expression: { stmt1; stmt2; expr }
+        // Block expression or Map literal: { stmt1; stmt2; expr } or { "key": value }
         // Only parse as block if it's a bare '{' not preceded by type name
         if (self.match(&.{.LeftBrace})) {
+            const brace_token = self.previous();
+
+            // Empty braces {} - treat as empty map
+            if (self.check(.RightBrace)) {
+                _ = self.advance();
+                const map_literal = try ast.MapLiteral.init(
+                    self.allocator,
+                    &.{},
+                    ast.SourceLocation.fromToken(brace_token),
+                );
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .MapLiteral = map_literal };
+                return expr;
+            }
+
+            // Check if this looks like a map literal: { key : value, ... }
+            // Save position to backtrack if needed
+            const checkpoint = self.current;
+
+            // Try to parse as potential map - skip the first expression
+            var looks_like_map = false;
+            var paren_depth: usize = 0;
+            var bracket_depth: usize = 0;
+            var brace_depth: usize = 0;
+
+            // Scan tokens to find if there's a colon at the top level (indicating map)
+            while (!self.isAtEnd() and self.current < self.tokens.len) {
+                const token = self.tokens[self.current];
+
+                // Track nested structures
+                if (token.type == .LeftParen) paren_depth += 1
+                else if (token.type == .RightParen) {
+                    if (paren_depth > 0) paren_depth -= 1;
+                }
+                else if (token.type == .LeftBracket) bracket_depth += 1
+                else if (token.type == .RightBracket) {
+                    if (bracket_depth > 0) bracket_depth -= 1;
+                }
+                else if (token.type == .LeftBrace) brace_depth += 1
+                else if (token.type == .RightBrace) {
+                    if (brace_depth > 0) {
+                        brace_depth -= 1;
+                    } else {
+                        // We've reached the end of our block/map without finding a colon
+                        break;
+                    }
+                }
+                // At top level (depth 0), colon indicates map literal
+                else if (token.type == .Colon and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    looks_like_map = true;
+                    break;
+                }
+                // At top level, semicolon or let/const/etc. indicates block
+                else if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
+                    if (token.type == .Semicolon or token.type == .Let or token.type == .Const or
+                        token.type == .If or token.type == .While or token.type == .For or
+                        token.type == .Return or token.type == .Fn) {
+                        // Definitely a block
+                        break;
+                    }
+                }
+
+                self.current += 1;
+            }
+
+            // Restore position
+            self.current = checkpoint;
+
+            if (looks_like_map) {
+                // Parse as map literal
+                var entries = std.ArrayList(ast.MapEntry){ .items = &.{}, .capacity = 0 };
+                defer entries.deinit(self.allocator);
+
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const key = try self.expression();
+                    _ = try self.expect(.Colon, "Expected ':' after map key");
+                    const value = try self.expression();
+
+                    try entries.append(self.allocator, .{ .key = key, .value = value });
+
+                    if (!self.match(&.{.Comma})) break;
+                }
+
+                _ = try self.expect(.RightBrace, "Expected '}' after map entries");
+
+                const map_literal = try ast.MapLiteral.init(
+                    self.allocator,
+                    try entries.toOwnedSlice(self.allocator),
+                    ast.SourceLocation.fromToken(brace_token),
+                );
+
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .MapLiteral = map_literal };
+                return expr;
+            }
+
+            // Otherwise parse as block expression
             return try self.blockExprParse();
         }
 

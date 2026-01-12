@@ -1,0 +1,127 @@
+// Try Expression Test Suite
+// Tests ? operator and else for error handling
+
+// ============================================================================
+// BASIC TRY WITH ELSE
+// ============================================================================
+
+it("should use default on error") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) {
+            return Err("negative");
+        }
+        return Ok(x);
+    }
+
+    let result = may_fail(-5) else 0;
+    assert(result == 0);
+}
+
+it("should use value on success") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) {
+            return Err("negative");
+        }
+        return Ok(x);
+    }
+
+    let result = may_fail(10) else 0;
+    assert(result == 10);
+}
+
+// ============================================================================
+// OK AND ERR CONSTRUCTORS
+// ============================================================================
+
+it("should create Ok values") {
+    let result = Ok(42);
+    assert(result == Ok(42));
+}
+
+it("should create Err values") {
+    let result = Err("error message");
+    assert(result == Err("error message"));
+}
+
+// ============================================================================
+// RESULT COMPARISON
+// ============================================================================
+
+it("should compare Ok values correctly") {
+    let a = Ok(10);
+    let b = Ok(10);
+    let c = Ok(20);
+    assert(a == b);
+    assert(a != c);
+}
+
+it("should compare Err values correctly") {
+    let a = Err("error");
+    let b = Err("error");
+    let c = Err("different");
+    assert(a == b);
+    assert(a != c);
+}
+
+it("should not compare Ok with Err") {
+    let ok = Ok(42);
+    let err = Err("error");
+    assert(ok != err);
+}
+
+// ============================================================================
+// TRY-ELSE WITH BLOCK
+// ============================================================================
+
+it("should use else block for error handling") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) {
+            return Err("negative");
+        }
+        return Ok(x);
+    }
+
+    let result = may_fail(-1) else {
+        -100
+    };
+    assert(result == -100);
+}
+
+// ============================================================================
+// CHAINED TRY-ELSE
+// ============================================================================
+
+it("should chain try-else operations") {
+    fn get_value(key: string): Result<i32, string> {
+        if (key == "valid") {
+            return Ok(100);
+        }
+        return Err("not found");
+    }
+
+    let val1 = get_value("valid") else 0;
+    let val2 = get_value("invalid") else 0;
+    assert(val1 == 100);
+    assert(val2 == 0);
+}
+
+// ============================================================================
+// TRY EXPRESSION WITH FUNCTION CALL
+// ============================================================================
+
+it("should propagate Ok value through try") {
+    fn safe_div(a: i32, b: i32): Result<i32, string> {
+        if (b == 0) {
+            return Err("division by zero");
+        }
+        return Ok(a / b);
+    }
+
+    fn compute(): Result<i32, string> {
+        let x = safe_div(10, 2)?;
+        return Ok(x * 2);
+    }
+
+    let result = compute();
+    assert(result == Ok(10));
+}

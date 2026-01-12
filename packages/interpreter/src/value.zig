@@ -89,6 +89,14 @@ pub const EnumTypeValue = struct {
     variants: []const EnumVariantInfo,
 };
 
+/// Map/Dictionary value at runtime.
+///
+/// Represents a key-value mapping with string keys.
+pub const MapValue = struct {
+    /// Key -> Value mapping
+    entries: std.StringHashMap(Value),
+};
+
 /// Runtime value types for the Home interpreter
 ///
 /// MEMORY OWNERSHIP MODEL:
@@ -135,6 +143,8 @@ pub const Value = union(enum) {
     Reference: ReferenceValue,
     /// Future value for async operations
     Future: FutureValue,
+    /// Map/Dictionary with string keys
+    Map: MapValue,
 
     /// Format this value for display (implements std.fmt formatting).
     ///
@@ -181,6 +191,18 @@ pub const Value = union(enum) {
                     try writer.writeAll("<pending future>");
                 }
             },
+            .Map => |m| {
+                try writer.writeAll("{");
+                var iter = m.entries.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) try writer.writeAll(", ");
+                    first = false;
+                    try writer.print("\"{s}\": ", .{entry.key_ptr.*});
+                    try entry.value_ptr.format(writer);
+                }
+                try writer.writeAll("}");
+            },
         }
     }
 
@@ -216,6 +238,7 @@ pub const Value = union(enum) {
             .EnumType => true,
             .Reference => true,
             .Future => |f| f.is_resolved,
+            .Map => |m| m.entries.count() > 0,
         };
     }
 

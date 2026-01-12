@@ -7,6 +7,7 @@ const ClosureValue = value_mod.ClosureValue;
 const ReferenceValue = value_mod.ReferenceValue;
 const EnumVariantInfo = value_mod.EnumVariantInfo;
 const EnumTypeValue = value_mod.EnumTypeValue;
+const MapValue = value_mod.MapValue;
 const Environment = @import("environment.zig").Environment;
 pub const Debugger = @import("debugger.zig").Debugger;
 
@@ -891,7 +892,7 @@ pub const Interpreter = struct {
                 // Handle built-in constants
                 if (std.mem.eql(u8, id.name, "None")) {
                     // None - the empty Option variant
-                    var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                    const fields = std.StringHashMap(Value).init(self.arena.allocator());
                     return Value{ .Struct = .{ .type_name = "None", .fields = fields }};
                 }
                 if (std.mem.eql(u8, id.name, "true")) {
@@ -923,6 +924,26 @@ pub const Interpreter = struct {
                 const array_value = try self.evaluateExpression(index.array, env);
                 const index_value = try self.evaluateExpression(index.index, env);
 
+                // Handle map indexing - key can be string or int converted to string
+                if (array_value == .Map) {
+                    const key_str = switch (index_value) {
+                        .String => |s| s,
+                        .Int => |i| blk: {
+                            const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                            break :blk buf;
+                        },
+                        else => {
+                            std.debug.print("Map key must be a string or integer\n", .{});
+                            return error.TypeMismatch;
+                        },
+                    };
+                    if (array_value.Map.entries.get(key_str)) |val| {
+                        return val;
+                    }
+                    std.debug.print("Map key not found: {s}\n", .{key_str});
+                    return error.RuntimeError;
+                }
+
                 if (index_value != .Int) {
                     std.debug.print("Array/string index must be an integer\n", .{});
                     return error.TypeMismatch;
@@ -950,7 +971,7 @@ pub const Interpreter = struct {
                     return Value{ .Int = @as(i64, str[@as(usize, @intCast(idx))]) };
                 }
 
-                std.debug.print("Cannot index non-array/non-string value\n", .{});
+                std.debug.print("Cannot index non-array/non-string/non-map value\n", .{});
                 return error.TypeMismatch;
             },
             .SliceExpr => |slice| {
@@ -1521,16 +1542,33 @@ pub const Interpreter = struct {
                 return operand_result;
             },
             .SafeIndexExpr => |safe_index| {
-                // Safe index: arr?[idx] - returns null for out of bounds
-                const array_value = try self.evaluateExpression(safe_index.object, env);
+                // Safe index: arr?[idx] or map?[key] - returns null for out of bounds / missing key
+                const container_value = try self.evaluateExpression(safe_index.object, env);
                 const index_value = try self.evaluateExpression(safe_index.index, env);
 
-                // If array is null/void, return void
-                if (array_value == .Void) {
+                // If container is null/void, return void
+                if (container_value == .Void) {
                     return Value.Void;
                 }
 
-                if (array_value != .Array) {
+                // Handle map safe access
+                if (container_value == .Map) {
+                    const key_str = switch (index_value) {
+                        .String => |s| s,
+                        .Int => |i| blk: {
+                            const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                            break :blk buf;
+                        },
+                        else => return Value.Void,
+                    };
+                    if (container_value.Map.entries.get(key_str)) |val| {
+                        return val;
+                    }
+                    return Value.Void;
+                }
+
+                // Handle array safe access
+                if (container_value != .Array) {
                     return Value.Void;
                 }
 
@@ -1539,14 +1577,14 @@ pub const Interpreter = struct {
                 }
 
                 const idx = index_value.Int;
-                const arr_len = @as(i64, @intCast(array_value.Array.len));
+                const arr_len = @as(i64, @intCast(container_value.Array.len));
 
                 // Return void for out of bounds instead of error
                 if (idx < 0 or idx >= arr_len) {
                     return Value.Void;
                 }
 
-                return array_value.Array[@as(usize, @intCast(idx))];
+                return container_value.Array[@as(usize, @intCast(idx))];
             },
             .IsExpr => |is_expr| {
                 // Is expression: value is Type
@@ -1583,6 +1621,29 @@ pub const Interpreter = struct {
 
                 const result = if (negated) !matches else matches;
                 return Value{ .Bool = result };
+            },
+            .MapLiteral => |map_lit| {
+                var entries = std.StringHashMap(Value).init(self.arena.allocator());
+                for (map_lit.entries) |entry| {
+                    const key_value = try self.evaluateExpression(entry.key, env);
+                    const value = try self.evaluateExpression(entry.value, env);
+
+                    // Key must be a string for now
+                    const key_str = switch (key_value) {
+                        .String => |s| s,
+                        .Int => |i| blk: {
+                            const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                            break :blk buf;
+                        },
+                        else => {
+                            std.debug.print("Map keys must be strings or integers\n", .{});
+                            return error.TypeMismatch;
+                        },
+                    };
+
+                    try entries.put(key_str, value);
+                }
+                return Value{ .Map = .{ .entries = entries } };
             },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
@@ -1712,39 +1773,64 @@ pub const Interpreter = struct {
                 return value;
             },
             .IndexExpr => |index_expr| {
-                // Array element assignment: arr[i] = value
-                // We need to get the array, create a modified copy, and store it back
-
-                // Get the index value
+                // Array or Map element assignment: arr[i] = value or map[key] = value
                 const index_value = try self.evaluateExpression(index_expr.index, env);
-                const idx = switch (index_value) {
-                    .Int => |i| blk: {
-                        if (i < 0) {
-                            std.debug.print("Array index cannot be negative: {d}\n", .{i});
-                            return error.RuntimeError;
-                        }
-                        break :blk @as(usize, @intCast(i));
-                    },
-                    else => {
-                        std.debug.print("Array index must be an integer\n", .{});
-                        return error.RuntimeError;
-                    },
-                };
 
-                // Handle simple identifier case: arr[i] = value
+                // Handle simple identifier case: arr[i] = value or map[key] = value
                 if (index_expr.array.* == .Identifier) {
                     const id = index_expr.array.Identifier;
-                    const arr_value = env.get(id.name) orelse {
-                        std.debug.print("Undefined array: {s}\n", .{id.name});
+                    const container_value = env.get(id.name) orelse {
+                        std.debug.print("Undefined variable: {s}\n", .{id.name});
                         return error.RuntimeError;
                     };
 
-                    if (arr_value != .Array) {
-                        std.debug.print("Cannot index into non-array value\n", .{});
+                    // Handle Map assignment
+                    if (container_value == .Map) {
+                        const key_str = switch (index_value) {
+                            .String => |s| s,
+                            .Int => |i| blk: {
+                                const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                                break :blk buf;
+                            },
+                            else => {
+                                std.debug.print("Map key must be a string or integer\n", .{});
+                                return error.RuntimeError;
+                            },
+                        };
+
+                        // Create new map with updated entry
+                        var new_entries = std.StringHashMap(Value).init(self.arena.allocator());
+                        var iter = container_value.Map.entries.iterator();
+                        while (iter.next()) |entry| {
+                            try new_entries.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
+                        try new_entries.put(key_str, value);
+
+                        try env.set(id.name, Value{ .Map = .{ .entries = new_entries } });
+                        return value;
+                    }
+
+                    // Handle Array assignment
+                    if (container_value != .Array) {
+                        std.debug.print("Cannot index into non-array/non-map value\n", .{});
                         return error.RuntimeError;
                     }
 
-                    const arr = arr_value.Array;
+                    const idx = switch (index_value) {
+                        .Int => |i| blk: {
+                            if (i < 0) {
+                                std.debug.print("Array index cannot be negative: {d}\n", .{i});
+                                return error.RuntimeError;
+                            }
+                            break :blk @as(usize, @intCast(i));
+                        },
+                        else => {
+                            std.debug.print("Array index must be an integer\n", .{});
+                            return error.RuntimeError;
+                        },
+                    };
+
+                    const arr = container_value.Array;
                     if (idx >= arr.len) {
                         std.debug.print("Array index out of bounds: {d} >= {d}\n", .{idx, arr.len});
                         return error.RuntimeError;
@@ -1765,6 +1851,21 @@ pub const Interpreter = struct {
                 // Handle nested access like obj.arr[i] = value
                 if (index_expr.array.* == .MemberExpr) {
                     const member = index_expr.array.MemberExpr;
+
+                    // Compute index for nested access
+                    const nested_idx = switch (index_value) {
+                        .Int => |i| blk: {
+                            if (i < 0) {
+                                std.debug.print("Array index cannot be negative: {d}\n", .{i});
+                                return error.RuntimeError;
+                            }
+                            break :blk @as(usize, @intCast(i));
+                        },
+                        else => {
+                            std.debug.print("Array index must be an integer\n", .{});
+                            return error.RuntimeError;
+                        },
+                    };
 
                     // Get the base object identifier
                     if (member.object.* == .Identifier) {
@@ -1789,15 +1890,15 @@ pub const Interpreter = struct {
                             }
 
                             const arr = arr_field.Array;
-                            if (idx >= arr.len) {
-                                std.debug.print("Array index out of bounds: {d} >= {d}\n", .{idx, arr.len});
+                            if (nested_idx >= arr.len) {
+                                std.debug.print("Array index out of bounds: {d} >= {d}\n", .{nested_idx, arr.len});
                                 return error.RuntimeError;
                             }
 
                             // Create a mutable copy of the array
                             const new_arr = try self.arena.allocator().alloc(Value, arr.len);
                             @memcpy(new_arr, arr);
-                            new_arr[idx] = value;
+                            new_arr[nested_idx] = value;
 
                             // Create new fields map with updated array
                             var new_fields = std.StringHashMap(Value).init(self.arena.allocator());
@@ -1949,6 +2050,12 @@ pub const Interpreter = struct {
                 return try self.evaluateArrayMethod(obj_value.Array, member.member, call.args, env, var_name);
             }
 
+            // Handle map methods
+            if (obj_value == .Map) {
+                const var_name: ?[]const u8 = if (member.object.* == .Identifier) member.object.Identifier.name else null;
+                return try self.evaluateMapMethod(obj_value.Map, member.member, call.args, env, var_name);
+            }
+
             // Handle range methods
             if (obj_value == .Range) {
                 return try self.evaluateRangeMethod(obj_value.Range, member.member, call.args, env);
@@ -1967,7 +2074,7 @@ pub const Interpreter = struct {
                 return error.UndefinedFunction;
             }
 
-            std.debug.print("Method calls only supported on strings, arrays, ranges, enums, and structs\n", .{});
+            std.debug.print("Method calls only supported on strings, arrays, maps, ranges, enums, and structs\n", .{});
             return error.RuntimeError;
         }
 
@@ -2410,8 +2517,9 @@ pub const Interpreter = struct {
             return arr[arr.len - 1];
         }
 
-        // push(value) - appends value to array (mutates in place if on a variable)
+        // push(value) - returns new array with value appended (functional style, does not mutate)
         if (std.mem.eql(u8, method, "push")) {
+            _ = var_name; // Not used - functional style
             if (args.len != 1) {
                 std.debug.print("push() requires exactly 1 argument\n", .{});
                 return error.InvalidArguments;
@@ -2420,46 +2528,34 @@ pub const Interpreter = struct {
             var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             @memcpy(new_arr[0..arr.len], arr);
             new_arr[arr.len] = new_value;
-            const result = Value{ .Array = new_arr };
-            // If we have a variable name, update it in place
-            if (var_name) |name| {
-                try env.set(name, result);
-            }
-            return result;
+            return Value{ .Array = new_arr };
         }
 
-        // pop() - removes and returns last element (mutates in place if on a variable)
+        // pop() - returns new array with last element removed (functional style, does not mutate)
         if (std.mem.eql(u8, method, "pop")) {
+            _ = var_name; // Not used - functional style
             if (arr.len == 0) {
-                return Value{ .Void = {} };
+                return Value{ .Array = &.{} };
             }
-            const popped_value = arr[arr.len - 1];
             const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
             @memcpy(new_arr, arr[0 .. arr.len - 1]);
-            // If we have a variable name, update it in place
-            if (var_name) |name| {
-                try env.set(name, Value{ .Array = new_arr });
-            }
-            return popped_value; // Return the popped element
+            return Value{ .Array = new_arr };
         }
 
-        // shift() - removes and returns first element (mutates in place if on a variable)
+        // shift() - returns new array with first element removed (functional style, does not mutate)
         if (std.mem.eql(u8, method, "shift")) {
+            _ = var_name; // Not used - functional style
             if (arr.len == 0) {
-                return Value{ .Void = {} };
+                return Value{ .Array = &.{} };
             }
-            const shifted_value = arr[0];
             const new_arr = try self.arena.allocator().alloc(Value, arr.len - 1);
             @memcpy(new_arr, arr[1..]);
-            // If we have a variable name, update it in place
-            if (var_name) |name| {
-                try env.set(name, Value{ .Array = new_arr });
-            }
-            return shifted_value; // Return the shifted element
+            return Value{ .Array = new_arr };
         }
 
-        // unshift(value) - prepends value to array (mutates in place if on a variable)
+        // unshift(value) - returns new array with value prepended (functional style, does not mutate)
         if (std.mem.eql(u8, method, "unshift")) {
+            _ = var_name; // Not used - functional style
             if (args.len != 1) {
                 std.debug.print("unshift() requires exactly 1 argument\n", .{});
                 return error.InvalidArguments;
@@ -2468,12 +2564,7 @@ pub const Interpreter = struct {
             var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             new_arr[0] = new_value;
             @memcpy(new_arr[1..], arr);
-            const result = Value{ .Array = new_arr };
-            // If we have a variable name, update it in place
-            if (var_name) |name| {
-                try env.set(name, result);
-            }
-            return result;
+            return Value{ .Array = new_arr };
         }
 
         // concat(other_array) - returns new array with both arrays concatenated
@@ -2568,6 +2659,159 @@ pub const Interpreter = struct {
         }
 
         std.debug.print("Unknown array method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    /// Evaluate map/dictionary method calls
+    fn evaluateMapMethod(self: *Interpreter, map: MapValue, method: []const u8, args: []const *const ast.Expr, env: *Environment, var_name: ?[]const u8) InterpreterError!Value {
+        // len() / length() - returns map size
+        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
+            return Value{ .Int = @as(i64, @intCast(map.entries.count())) };
+        }
+
+        // is_empty() - check if map is empty
+        if (std.mem.eql(u8, method, "is_empty")) {
+            return Value{ .Bool = map.entries.count() == 0 };
+        }
+
+        // contains_key(key) - check if key exists
+        if (std.mem.eql(u8, method, "contains_key")) {
+            if (args.len != 1) {
+                std.debug.print("contains_key() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const key_val = try self.evaluateExpression(args[0], env);
+            const key_str = switch (key_val) {
+                .String => |s| s,
+                .Int => |i| blk: {
+                    const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                    break :blk buf;
+                },
+                else => {
+                    std.debug.print("contains_key() argument must be a string or integer\n", .{});
+                    return error.TypeMismatch;
+                },
+            };
+            return Value{ .Bool = map.entries.contains(key_str) };
+        }
+
+        // get(key) - returns Some(value) or None
+        if (std.mem.eql(u8, method, "get")) {
+            if (args.len != 1) {
+                std.debug.print("get() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const key_val = try self.evaluateExpression(args[0], env);
+            const key_str = switch (key_val) {
+                .String => |s| s,
+                .Int => |i| blk: {
+                    const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                    break :blk buf;
+                },
+                else => {
+                    std.debug.print("get() argument must be a string or integer\n", .{});
+                    return error.TypeMismatch;
+                },
+            };
+            if (map.entries.get(key_str)) |val| {
+                // Return Some(value)
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("value", val);
+                return Value{ .Struct = .{ .type_name = "Some", .fields = fields } };
+            }
+            // Return None
+            const none_fields = std.StringHashMap(Value).init(self.arena.allocator());
+            return Value{ .Struct = .{ .type_name = "None", .fields = none_fields } };
+        }
+
+        // remove(key) - removes key and returns Some(value) or None
+        if (std.mem.eql(u8, method, "remove")) {
+            if (args.len != 1) {
+                std.debug.print("remove() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const key_val = try self.evaluateExpression(args[0], env);
+            const key_str = switch (key_val) {
+                .String => |s| s,
+                .Int => |i| blk: {
+                    const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                    break :blk buf;
+                },
+                else => {
+                    std.debug.print("remove() argument must be a string or integer\n", .{});
+                    return error.TypeMismatch;
+                },
+            };
+
+            // Create new map without the key
+            var new_entries = std.StringHashMap(Value).init(self.arena.allocator());
+            var removed_value: ?Value = null;
+            var iter = map.entries.iterator();
+            while (iter.next()) |entry| {
+                if (std.mem.eql(u8, entry.key_ptr.*, key_str)) {
+                    removed_value = entry.value_ptr.*;
+                } else {
+                    try new_entries.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+
+            // Update variable if we have a name
+            if (var_name) |name| {
+                try env.set(name, Value{ .Map = .{ .entries = new_entries } });
+            }
+
+            if (removed_value) |val| {
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("value", val);
+                return Value{ .Struct = .{ .type_name = "Some", .fields = fields } };
+            }
+            const none_fields = std.StringHashMap(Value).init(self.arena.allocator());
+            return Value{ .Struct = .{ .type_name = "None", .fields = none_fields } };
+        }
+
+        // clear() - removes all entries
+        if (std.mem.eql(u8, method, "clear")) {
+            if (var_name) |name| {
+                const new_entries = std.StringHashMap(Value).init(self.arena.allocator());
+                try env.set(name, Value{ .Map = .{ .entries = new_entries } });
+            }
+            return Value.Void;
+        }
+
+        // keys() - returns array of keys
+        if (std.mem.eql(u8, method, "keys")) {
+            var keys_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var iter = map.entries.keyIterator();
+            while (iter.next()) |key| {
+                try keys_list.append(self.arena.allocator(), Value{ .String = key.* });
+            }
+            return Value{ .Array = try keys_list.toOwnedSlice(self.arena.allocator()) };
+        }
+
+        // values() - returns array of values
+        if (std.mem.eql(u8, method, "values")) {
+            var values_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var iter = map.entries.valueIterator();
+            while (iter.next()) |val| {
+                try values_list.append(self.arena.allocator(), val.*);
+            }
+            return Value{ .Array = try values_list.toOwnedSlice(self.arena.allocator()) };
+        }
+
+        // entries() - returns array of [key, value] pairs
+        if (std.mem.eql(u8, method, "entries")) {
+            var entries_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var iter = map.entries.iterator();
+            while (iter.next()) |entry| {
+                const pair = try self.arena.allocator().alloc(Value, 2);
+                pair[0] = Value{ .String = entry.key_ptr.* };
+                pair[1] = entry.value_ptr.*;
+                try entries_list.append(self.arena.allocator(), Value{ .Array = pair });
+            }
+            return Value{ .Array = try entries_list.toOwnedSlice(self.arena.allocator()) };
+        }
+
+        std.debug.print("Unknown map method: {s}\n", .{method});
         return error.UndefinedFunction;
     }
 
@@ -3076,6 +3320,17 @@ pub const Interpreter = struct {
                     std.debug.print("<pending future>", .{});
                 }
             },
+            .Map => |m| {
+                std.debug.print("{{", .{});
+                var iter = m.entries.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) std.debug.print(", ", .{});
+                    first = false;
+                    std.debug.print("\"{s}\": {any}", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+                std.debug.print("}}", .{});
+            },
         }
     }
 
@@ -3108,6 +3363,7 @@ pub const Interpreter = struct {
                     std.debug.print("Future(pending)", .{});
                 }
             },
+            .Map => |m| std.debug.print("Map({d} entries)", .{m.entries.count()}),
         }
     }
 
@@ -3149,6 +3405,17 @@ pub const Interpreter = struct {
                     } else {
                         std.debug.print("<pending future>", .{});
                     }
+                },
+                .Map => |m| {
+                    std.debug.print("{{", .{});
+                    var iter = m.entries.iterator();
+                    var first = true;
+                    while (iter.next()) |entry| {
+                        if (!first) std.debug.print(", ", .{});
+                        first = false;
+                        std.debug.print("\"{s}\": {any}", .{ entry.key_ptr.*, entry.value_ptr.* });
+                    }
+                    std.debug.print("}}", .{});
                 },
             }
         }
@@ -3436,7 +3703,6 @@ pub const Interpreter = struct {
     }
 
     fn areEqual(self: *Interpreter, left: Value, right: Value) InterpreterError!bool {
-        _ = self;
         switch (left) {
             .Int => |l| switch (right) {
                 .Int => |r| return l == r,
@@ -3456,8 +3722,32 @@ pub const Interpreter = struct {
                 .String => |r| return std.mem.eql(u8, l, r),
                 else => return false,
             },
-            .Array => return false, // Array comparison not implemented
-            .Struct => return false, // Struct comparison not implemented
+            .Array => |l_arr| switch (right) {
+                .Array => |r_arr| {
+                    if (l_arr.len != r_arr.len) return false;
+                    for (l_arr, r_arr) |l_elem, r_elem| {
+                        if (!try self.areEqual(l_elem, r_elem)) return false;
+                    }
+                    return true;
+                },
+                else => return false,
+            },
+            .Struct => |l| switch (right) {
+                .Struct => |r| {
+                    // Compare type names first
+                    if (!std.mem.eql(u8, l.type_name, r.type_name)) return false;
+                    // Compare field counts
+                    if (l.fields.count() != r.fields.count()) return false;
+                    // Compare each field
+                    var iter = l.fields.iterator();
+                    while (iter.next()) |entry| {
+                        const r_val = r.fields.get(entry.key_ptr.*) orelse return false;
+                        if (!try self.areEqual(entry.value_ptr.*, r_val)) return false;
+                    }
+                    return true;
+                },
+                else => return false,
+            },
             .Void => return right == .Void,
             .Function => return false, // Functions are not comparable
             .Closure => return false, // Closures are not comparable
@@ -3471,6 +3761,7 @@ pub const Interpreter = struct {
             },
             .Reference => return false, // References are not directly comparable
             .Future => return false, // Futures are not directly comparable
+            .Map => return false, // Maps are not directly comparable
         }
     }
 
@@ -3589,6 +3880,24 @@ pub const Interpreter = struct {
                 else
                     try std.fmt.allocPrint(self.arena.allocator(), "<pending future>", .{});
                 break :blk str;
+            },
+            .Map => |m| blk: {
+                var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                defer buf.deinit(self.arena.allocator());
+                try buf.appendSlice(self.arena.allocator(), "{");
+                var iter = m.entries.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) try buf.appendSlice(self.arena.allocator(), ", ");
+                    first = false;
+                    try buf.appendSlice(self.arena.allocator(), "\"");
+                    try buf.appendSlice(self.arena.allocator(), entry.key_ptr.*);
+                    try buf.appendSlice(self.arena.allocator(), "\": ");
+                    const val_str = try self.valueToString(entry.value_ptr.*);
+                    try buf.appendSlice(self.arena.allocator(), val_str);
+                }
+                try buf.appendSlice(self.arena.allocator(), "}");
+                break :blk try self.arena.allocator().dupe(u8, buf.items);
             },
         };
     }
