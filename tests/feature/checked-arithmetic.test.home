@@ -110,3 +110,561 @@ it("should perform saturating multiplication with negative") {
     assert(result == -50);
 }
 
+// ============================================================================
+// EDGE CASES - CHECKED ADDITION WITH ZERO
+// ============================================================================
+
+it("should add zero with checked addition") {
+    let a = 42;
+    let result = a +? 0;
+    assert(result.value == 42);
+}
+
+it("should add to zero with checked addition") {
+    let a = 0;
+    let result = a +? 100;
+    assert(result.value == 100);
+}
+
+it("should add two zeros with checked addition") {
+    let result = 0 +? 0;
+    assert(result.value == 0);
+}
+
+// ============================================================================
+// EDGE CASES - CHECKED SUBTRACTION WITH ZERO
+// ============================================================================
+
+it("should subtract zero with checked subtraction") {
+    let a = 42;
+    let result = a -? 0;
+    assert(result.value == 42);
+}
+
+it("should subtract from zero with checked subtraction") {
+    let result = 0 -? 50;
+    assert(result.value == -50);
+}
+
+it("should subtract same number from itself") {
+    let a = 100;
+    let result = a -? a;
+    assert(result.value == 0);
+}
+
+// ============================================================================
+// EDGE CASES - CHECKED MULTIPLICATION WITH ZERO/ONE
+// ============================================================================
+
+it("should multiply by zero with checked multiplication") {
+    let a = 1000;
+    let result = a *? 0;
+    assert(result.value == 0);
+}
+
+it("should multiply zero by number") {
+    let result = 0 *? 999;
+    assert(result.value == 0);
+}
+
+it("should multiply by one with checked multiplication") {
+    let a = 42;
+    let result = a *? 1;
+    assert(result.value == 42);
+}
+
+it("should multiply by negative one with checked multiplication") {
+    let a = 42;
+    let result = a *? -1;
+    assert(result.value == -42);
+}
+
+// ============================================================================
+// EDGE CASES - SATURATING ADDITION WITH ZERO
+// ============================================================================
+
+it("should add zero with saturating addition") {
+    let a = 42;
+    let result = a +| 0;
+    assert(result == 42);
+}
+
+it("should add to zero with saturating addition") {
+    let result = 0 +| 100;
+    assert(result == 100);
+}
+
+it("should add two zeros with saturating addition") {
+    let result = 0 +| 0;
+    assert(result == 0);
+}
+
+// ============================================================================
+// EDGE CASES - SATURATING SUBTRACTION WITH ZERO
+// ============================================================================
+
+it("should subtract zero with saturating subtraction") {
+    let a = 42;
+    let result = a -| 0;
+    assert(result == 42);
+}
+
+it("should subtract from zero with saturating subtraction") {
+    let result = 0 -| 50;
+    assert(result == -50);
+}
+
+it("should subtract same number from itself with saturating") {
+    let a = 100;
+    let result = a -| a;
+    assert(result == 0);
+}
+
+// ============================================================================
+// EDGE CASES - SATURATING MULTIPLICATION WITH ZERO/ONE
+// ============================================================================
+
+it("should multiply by zero with saturating multiplication") {
+    let a = 1000;
+    let result = a *| 0;
+    assert(result == 0);
+}
+
+it("should multiply zero by number with saturating") {
+    let result = 0 *| 999;
+    assert(result == 0);
+}
+
+it("should multiply by one with saturating multiplication") {
+    let a = 42;
+    let result = a *| 1;
+    assert(result == 42);
+}
+
+it("should multiply by negative one with saturating") {
+    let a = 42;
+    let result = a *| -1;
+    assert(result == -42);
+}
+
+// ============================================================================
+// EDGE CASES - CHECKED ARITHMETIC WITH VARIABLES
+// ============================================================================
+
+it("should use checked addition with variables") {
+    let x = 25;
+    let y = 17;
+    let result = x +? y;
+    assert(result.value == 42);
+}
+
+it("should use checked subtraction with variables") {
+    let x = 100;
+    let y = 58;
+    let result = x -? y;
+    assert(result.value == 42);
+}
+
+it("should use checked multiplication with variables") {
+    let x = 6;
+    let y = 7;
+    let result = x *? y;
+    assert(result.value == 42);
+}
+
+// ============================================================================
+// EDGE CASES - SATURATING ARITHMETIC WITH VARIABLES
+// ============================================================================
+
+it("should use saturating addition with variables") {
+    let x = 25;
+    let y = 17;
+    let result = x +| y;
+    assert(result == 42);
+}
+
+it("should use saturating subtraction with variables") {
+    let x = 100;
+    let y = 58;
+    let result = x -| y;
+    assert(result == 42);
+}
+
+it("should use saturating multiplication with variables") {
+    let x = 6;
+    let y = 7;
+    let result = x *| y;
+    assert(result == 42);
+}
+
+// ============================================================================
+// EDGE CASES - CHECKED ARITHMETIC IN CONDITIONS
+// ============================================================================
+
+it("should use checked addition result in condition") {
+    let a = 20;
+    let b = 22;
+    let result = a +? b;
+    if (result.value == 42) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+
+it("should use checked subtraction result in condition") {
+    let a = 50;
+    let b = 8;
+    let result = a -? b;
+    let is_answer = result.value == 42;
+    assert(is_answer == true);
+}
+
+it("should use checked multiplication result in condition") {
+    let a = 7;
+    let b = 6;
+    let result = a *? b;
+    assert(result.value > 40 and result.value < 50);
+}
+
+// ============================================================================
+// EDGE CASES - SATURATING ARITHMETIC IN CONDITIONS
+// ============================================================================
+
+it("should use saturating addition in condition") {
+    let a = 20;
+    let b = 22;
+    let result = a +| b;
+    if (result == 42) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+
+it("should compare saturating results") {
+    let a = 100 +| 50;
+    let b = 200 -| 50;
+    assert(a == 150);
+    assert(b == 150);
+    assert(a == b);
+}
+
+// ============================================================================
+// EDGE CASES - NEGATIVE NUMBERS
+// ============================================================================
+
+it("should handle two negative numbers with checked addition") {
+    let a = -20;
+    let b = -22;
+    let result = a +? b;
+    assert(result.value == -42);
+}
+
+it("should handle two negative numbers with checked subtraction") {
+    let a = -10;
+    let b = -50;
+    let result = a -? b;
+    assert(result.value == 40);
+}
+
+it("should handle two negative numbers with checked multiplication") {
+    let a = -6;
+    let b = -7;
+    let result = a *? b;
+    assert(result.value == 42);
+}
+
+it("should handle two negative numbers with saturating addition") {
+    let a = -20;
+    let b = -22;
+    let result = a +| b;
+    assert(result == -42);
+}
+
+it("should handle two negative numbers with saturating subtraction") {
+    let a = -10;
+    let b = -50;
+    let result = a -| b;
+    assert(result == 40);
+}
+
+it("should handle two negative numbers with saturating multiplication") {
+    let a = -6;
+    let b = -7;
+    let result = a *| b;
+    assert(result == 42);
+}
+
+// ============================================================================
+// EDGE CASES - LARGE NUMBERS
+// ============================================================================
+
+it("should handle large numbers with checked addition") {
+    let a = 1000000;
+    let b = 2000000;
+    let result = a +? b;
+    assert(result.value == 3000000);
+}
+
+it("should handle large numbers with checked subtraction") {
+    let a = 5000000;
+    let b = 3000000;
+    let result = a -? b;
+    assert(result.value == 2000000);
+}
+
+it("should handle large numbers with checked multiplication") {
+    let a = 1000;
+    let b = 1000;
+    let result = a *? b;
+    assert(result.value == 1000000);
+}
+
+it("should handle large numbers with saturating addition") {
+    let a = 1000000;
+    let b = 2000000;
+    let result = a +| b;
+    assert(result == 3000000);
+}
+
+it("should handle large numbers with saturating subtraction") {
+    let a = 5000000;
+    let b = 3000000;
+    let result = a -| b;
+    assert(result == 2000000);
+}
+
+it("should handle large numbers with saturating multiplication") {
+    let a = 1000;
+    let b = 1000;
+    let result = a *| b;
+    assert(result == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - MIXED OPERATIONS
+// ============================================================================
+
+it("should mix checked and regular arithmetic") {
+    let a = 10 +? 20;
+    let b = a.value + 12;
+    assert(b == 42);
+}
+
+it("should mix saturating and regular arithmetic") {
+    let a = 10 +| 20;
+    let b = a + 12;
+    assert(b == 42);
+}
+
+it("should use checked result in further calculations") {
+    let a = 5 *? 8;
+    let b = a.value + 2;
+    assert(b == 42);
+}
+
+it("should use saturating result in further calculations") {
+    let a = 5 *| 8;
+    let b = a + 2;
+    assert(b == 42);
+}
+
+// ============================================================================
+// EDGE CASES - IN LOOPS
+// ============================================================================
+
+it("should use checked addition in loop") {
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 5) {
+        let added = sum +? 10;
+        sum = added.value;
+        i = i + 1;
+    }
+    assert(sum == 50);
+}
+
+it("should use saturating addition in loop") {
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 5) {
+        sum = sum +| 10;
+        i = i + 1;
+    }
+    assert(sum == 50);
+}
+
+it("should accumulate with checked multiplication") {
+    let mut product = 1;
+    let mut i = 0;
+    while (i < 3) {
+        let mult = product *? 2;
+        product = mult.value;
+        i = i + 1;
+    }
+    assert(product == 8);
+}
+
+it("should accumulate with saturating multiplication") {
+    let mut product = 1;
+    let mut i = 0;
+    while (i < 3) {
+        product = product *| 2;
+        i = i + 1;
+    }
+    assert(product == 8);
+}
+
+// ============================================================================
+// EDGE CASES - IN FUNCTIONS
+// ============================================================================
+
+it("should use checked addition in function") {
+    fn safe_add(a: i32, b: i32): i32 {
+        let result = a +? b;
+        return result.value;
+    }
+    assert(safe_add(20, 22) == 42);
+}
+
+it("should use saturating addition in function") {
+    fn clamp_add(a: i32, b: i32): i32 {
+        return a +| b;
+    }
+    assert(clamp_add(20, 22) == 42);
+}
+
+it("should use checked multiplication in function") {
+    fn safe_mult(a: i32, b: i32): i32 {
+        let result = a *? b;
+        return result.value;
+    }
+    assert(safe_mult(6, 7) == 42);
+}
+
+it("should use saturating multiplication in function") {
+    fn clamp_mult(a: i32, b: i32): i32 {
+        return a *| b;
+    }
+    assert(clamp_mult(6, 7) == 42);
+}
+
+// ============================================================================
+// EDGE CASES - COMPARISONS
+// ============================================================================
+
+it("should compare checked addition results") {
+    let a = 10 +? 20;
+    let b = 15 +? 15;
+    assert(a.value == b.value);
+}
+
+it("should compare checked with saturating results") {
+    let checked = 10 +? 32;
+    let saturating = 10 +| 32;
+    assert(checked.value == saturating);
+}
+
+it("should compare order with checked arithmetic") {
+    let a = 10 +? 5;
+    let b = 10 +? 10;
+    assert(a.value < b.value);
+}
+
+it("should compare order with saturating arithmetic") {
+    let a = 10 +| 5;
+    let b = 10 +| 10;
+    assert(a < b);
+}
+
+// ============================================================================
+// EDGE CASES - EXPRESSION COMBINATIONS
+// ============================================================================
+
+it("should use checked in complex expression") {
+    let base = 10;
+    let factor = 4;
+    let result = base +? (factor * 2);
+    assert(result.value == 18);
+}
+
+it("should use saturating in complex expression") {
+    let base = 10;
+    let factor = 4;
+    let result = base +| (factor * 2);
+    assert(result == 18);
+}
+
+it("should chain checked operations with extraction") {
+    let a = 10 +? 20;
+    let b = a.value -? 5;
+    assert(b.value == 25);
+}
+
+it("should chain saturating operations") {
+    let a = 10 +| 20;
+    let b = a -| 5;
+    assert(b == 25);
+}
+
+// ============================================================================
+// EDGE CASES - WITH ARRAYS
+// ============================================================================
+
+it("should use checked arithmetic with array elements") {
+    let arr = [10, 20, 30];
+    let result = arr[0] +? arr[1];
+    assert(result.value == 30);
+}
+
+it("should use saturating arithmetic with array elements") {
+    let arr = [10, 20, 30];
+    let result = arr[0] +| arr[1];
+    assert(result == 30);
+}
+
+it("should use checked multiplication with array length") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.len() *? 2;
+    assert(result.value == 10);
+}
+
+it("should use saturating multiplication with array length") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.len() *| 2;
+    assert(result == 10);
+}
+
+// ============================================================================
+// EDGE CASES - BOUNDARY VALUES
+// ============================================================================
+
+it("should handle small positive with checked addition") {
+    let a = 1;
+    let b = 1;
+    let result = a +? b;
+    assert(result.value == 2);
+}
+
+it("should handle small positive with saturating addition") {
+    let a = 1;
+    let b = 1;
+    let result = a +| b;
+    assert(result == 2);
+}
+
+it("should handle negative one with checked subtraction") {
+    let a = 0;
+    let b = 1;
+    let result = a -? b;
+    assert(result.value == -1);
+}
+
+it("should handle negative one with saturating subtraction") {
+    let a = 0;
+    let b = 1;
+    let result = a -| b;
+    assert(result == -1);
+}
+

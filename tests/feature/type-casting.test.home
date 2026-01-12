@@ -126,3 +126,326 @@ it("should cast in comparison") {
     assert((a as i64) == b);
 }
 
+// ============================================================================
+// EDGE CASES - ZERO VALUES
+// ============================================================================
+
+it("should cast zero between int types") {
+    let x: i32 = 0;
+    assert((x as i64) == 0);
+    assert((x as u32) == 0);
+    assert((x as i8) == 0);
+}
+
+it("should cast zero to float") {
+    let x: i32 = 0;
+    let y = x as f64;
+    assert(y == 0.0);
+}
+
+it("should cast zero float to int") {
+    let x: f64 = 0.0;
+    let y = x as i32;
+    assert(y == 0);
+}
+
+// ============================================================================
+// EDGE CASES - NEGATIVE VALUES
+// ============================================================================
+
+it("should cast negative i32 to i64") {
+    let x: i32 = -100;
+    let y = x as i64;
+    assert(y == -100);
+}
+
+it("should cast negative i64 to i32") {
+    let x: i64 = -50;
+    let y = x as i32;
+    assert(y == -50);
+}
+
+it("should cast negative int to float") {
+    let x: i32 = -42;
+    let y = x as f64;
+    assert(y == -42.0);
+}
+
+it("should truncate negative float to int") {
+    let x: f64 = -3.7;
+    let y = x as i32;
+    assert(y == -3);
+}
+
+// ============================================================================
+// EDGE CASES - FLOAT TRUNCATION
+// ============================================================================
+
+it("should truncate small fraction") {
+    let x: f64 = 5.1;
+    let y = x as i32;
+    assert(y == 5);
+}
+
+it("should truncate large fraction") {
+    let x: f64 = 9.9;
+    let y = x as i32;
+    assert(y == 9);
+}
+
+it("should truncate exactly half") {
+    let x: f64 = 5.5;
+    let y = x as i32;
+    assert(y == 5);
+}
+
+it("should truncate negative fraction") {
+    let x: f64 = -5.9;
+    let y = x as i32;
+    assert(y == -5);
+}
+
+// ============================================================================
+// EDGE CASES - CHAR ASCII VALUES
+// ============================================================================
+
+it("should cast lowercase letter to int") {
+    let c = 'a';
+    let code = c as i32;
+    assert(code == 97);
+}
+
+it("should cast digit char to int") {
+    let c = '0';
+    let code = c as i32;
+    assert(code == 48);
+}
+
+it("should cast space to int") {
+    let c = ' ';
+    let code = c as i32;
+    assert(code == 32);
+}
+
+it("should cast newline to int") {
+    let c = '\n';
+    let code = c as i32;
+    assert(code == 10);
+}
+
+// ============================================================================
+// EDGE CASES - INT TO CHAR
+// ============================================================================
+
+it("should cast digit ascii to char") {
+    let code = 57;
+    let c = code as char;
+    assert(c == '9');
+}
+
+it("should cast lowercase ascii to char") {
+    let code = 122;
+    let c = code as char;
+    assert(c == 'z');
+}
+
+it("should round-trip through ascii") {
+    let original = 'm';
+    let code = original as i32;
+    let back = code as char;
+    assert(back == 'm');
+    assert(code == 109);
+}
+
+// ============================================================================
+// EDGE CASES - BOOL CONVERSIONS
+// ============================================================================
+
+it("should cast true to i32") {
+    let t = true;
+    assert((t as i32) == 1);
+}
+
+it("should cast false to i32") {
+    let f = false;
+    assert((f as i32) == 0);
+}
+
+it("should cast various ints to bool") {
+    assert((0 as bool) == false);
+    assert((1 as bool) == true);
+    assert((100 as bool) == true);
+    assert((-1 as bool) == true);
+}
+
+// ============================================================================
+// EDGE CASES - LARGE VALUES
+// ============================================================================
+
+it("should cast large i32 to i64") {
+    let x: i32 = 1000000;
+    let y = x as i64;
+    assert(y == 1000000);
+}
+
+it("should cast large i32 to f64") {
+    let x: i32 = 999999;
+    let y = x as f64;
+    assert(y == 999999.0);
+}
+
+it("should preserve precision for large ints") {
+    let x: i32 = 123456;
+    let y = x as i64;
+    let z = y as i32;
+    assert(z == 123456);
+}
+
+// ============================================================================
+// EDGE CASES - CASTING IN EXPRESSIONS
+// ============================================================================
+
+it("should cast in addition") {
+    let a: i32 = 10;
+    let b: i64 = 20;
+    let result = (a as i64) + b;
+    assert(result == 30);
+}
+
+it("should cast in subtraction") {
+    let a: f64 = 10.5;
+    let b: i32 = 3;
+    let result = a - (b as f64);
+    assert(result == 7.5);
+}
+
+it("should cast in multiplication") {
+    let a: i32 = 5;
+    let b: f64 = 2.5;
+    let result = (a as f64) * b;
+    assert(result == 12.5);
+}
+
+it("should cast in modulo") {
+    let a: i64 = 17;
+    let b: i32 = 5;
+    let result = (a as i32) % b;
+    assert(result == 2);
+}
+
+// ============================================================================
+// EDGE CASES - CASTING IN CONDITIONS
+// ============================================================================
+
+it("should use cast in if condition") {
+    let x: i64 = 100;
+    let y: i32 = 100;
+    let result = if ((x as i32) == y) { "equal" } else { "not equal" };
+    assert(result == "equal");
+}
+
+it("should use cast in comparison") {
+    let a: i32 = 50;
+    let b: i64 = 40;
+    assert((a as i64) > b);
+}
+
+// ============================================================================
+// EDGE CASES - CASTING IN FUNCTIONS
+// ============================================================================
+
+it("should cast function parameter") {
+    fn process(x: i64): i64 {
+        return x * 2;
+    }
+    let val: i32 = 21;
+    assert(process(val as i64) == 42);
+}
+
+it("should cast function return value") {
+    fn get_big(): i64 {
+        return 100;
+    }
+    let result: i32 = get_big() as i32;
+    assert(result == 100);
+}
+
+// ============================================================================
+// EDGE CASES - CASTING IN LOOPS
+// ============================================================================
+
+it("should cast in loop iteration") {
+    let mut sum: i64 = 0;
+    let values = [1, 2, 3, 4, 5];
+    for (v in values) {
+        sum = sum + (v as i64);
+    }
+    assert(sum == 15);
+}
+
+it("should cast loop counter") {
+    let mut result: f64 = 0.0;
+    let mut i = 1;
+    while (i <= 4) {
+        result = result + (i as f64);
+        i = i + 1;
+    }
+    assert(result == 10.0);
+}
+
+// ============================================================================
+// EDGE CASES - CHAINED CASTS
+// ============================================================================
+
+it("should chain int casts") {
+    let x: i8 = 42;
+    let y = ((x as i32) as i64) as i32;
+    assert(y == 42);
+}
+
+it("should chain through float") {
+    let x: i32 = 10;
+    let y = ((x as f64) as i64) as i32;
+    assert(y == 10);
+}
+
+// ============================================================================
+// EDGE CASES - CASTING WITH ARRAYS
+// ============================================================================
+
+it("should cast array element") {
+    let arr: [i32] = [10, 20, 30];
+    let val = arr[1] as i64;
+    assert(val == 20);
+}
+
+it("should cast array length") {
+    let arr = [1, 2, 3, 4, 5];
+    let len = arr.len() as f64;
+    assert(len == 5.0);
+}
+
+// ============================================================================
+// EDGE CASES - EDGE INT VALUES
+// ============================================================================
+
+it("should cast small positive i8 range value") {
+    let x: i32 = 127;
+    let y = x as i8;
+    assert(y == 127);
+}
+
+it("should cast one to various types") {
+    let one: i32 = 1;
+    assert((one as i8) == 1);
+    assert((one as i64) == 1);
+    assert((one as f64) == 1.0);
+    assert((one as bool) == true);
+}
+
+it("should cast negative one to i64") {
+    let neg: i32 = -1;
+    let result = neg as i64;
+    assert(result == -1);
+}
+

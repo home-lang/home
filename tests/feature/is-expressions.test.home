@@ -52,3 +52,175 @@ it("should check struct type") {
     assert(p is Point);
 }
 
+// ============================================================================
+// EDGE CASES - INTEGER TYPES
+// ============================================================================
+
+it("should check zero is i32") {
+    let x = 0;
+    assert(x is i32);
+}
+
+it("should check negative is i32") {
+    let x = -42;
+    assert(x is i32);
+}
+
+it("should check large positive is i32") {
+    let x = 1000000;
+    assert(x is i32);
+}
+
+// ============================================================================
+// EDGE CASES - STRING VALUES
+// ============================================================================
+
+it("should check empty string type") {
+    let x = "";
+    assert(x is string);
+}
+
+it("should check single char string type") {
+    let x = "a";
+    assert(x is string);
+}
+
+it("should check string with spaces") {
+    let x = "hello world";
+    assert(x is string);
+}
+
+it("should check string with special chars") {
+    let x = "hello\nworld";
+    assert(x is string);
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN VALUES
+// ============================================================================
+
+it("should check false is bool") {
+    let x = false;
+    assert(x is bool);
+}
+
+it("should check true is bool") {
+    let x = true;
+    assert(x is bool);
+}
+
+it("should check expression result is bool") {
+    let x = 5 > 3;
+    assert(x is bool);
+}
+
+// ============================================================================
+// EDGE CASES - FLOAT VALUES
+// ============================================================================
+
+it("should check zero float type") {
+    let x = 0.0;
+    assert(x is f64);
+}
+
+it("should check negative float type") {
+    let x = -3.14;
+    assert(x is f64);
+}
+
+it("should check small float type") {
+    let x = 0.001;
+    assert(x is f64);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT VARIATIONS
+// ============================================================================
+
+it("should check different struct types") {
+    struct Point { x: i32, y: i32 }
+    struct Size { width: i32, height: i32 }
+    let p = Point { x: 0, y: 0 };
+    let s = Size { width: 10, height: 20 };
+    assert(p is Point);
+    assert(s is Size);
+}
+
+it("should check struct with single field") {
+    struct Wrapper { value: i32 }
+    let w = Wrapper { value: 42 };
+    assert(w is Wrapper);
+}
+
+it("should check struct with boolean field") {
+    struct Status { active: bool }
+    let s = Status { active: true };
+    assert(s is Status);
+}
+
+// ============================================================================
+// EDGE CASES - IS IN CONDITIONALS
+// ============================================================================
+
+it("should use is in if condition") {
+    let x = 42;
+    let mut result = 0;
+    if (x is i32) {
+        result = 1;
+    }
+    assert(result == 1);
+}
+
+it("should use is with logical and") {
+    let x = 42;
+    let y = "hello";
+    let result = (x is i32) and (y is string);
+    assert(result == true);
+}
+
+it("should use is with logical or") {
+    let x = 42;
+    let result = (x is i32) or (x is string);
+    assert(result == true);
+}
+
+// ============================================================================
+// EDGE CASES - IS IN FUNCTIONS
+// ============================================================================
+
+it("should use is in function") {
+    fn check_int(val: i32): bool {
+        return val is i32;
+    }
+    assert(check_int(42) == true);
+    assert(check_int(0) == true);
+    assert(check_int(-100) == true);
+}
+
+it("should use is in function with string") {
+    fn check_string(val: string): bool {
+        return val is string;
+    }
+    assert(check_string("hello") == true);
+    assert(check_string("") == true);
+}
+
+// ============================================================================
+// EDGE CASES - IS WITH COMPUTED VALUES
+// ============================================================================
+
+it("should check computed value type") {
+    let x = 5 + 10;
+    assert(x is i32);
+}
+
+it("should check string concat result type") {
+    let x = "hello" + " world";
+    assert(x is string);
+}
+
+it("should check comparison result type") {
+    let x = 10 > 5;
+    assert(x is bool);
+}
+

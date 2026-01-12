@@ -105,3 +105,229 @@ it("should not allow const reassignment") {
     assert(x == 10);
 }
 
+// ============================================================================
+// EDGE CASES - CONST WITH DIFFERENT TYPES
+// ============================================================================
+
+it("should declare const float") {
+    const pi = 3.14159;
+    assert(pi > 3.14);
+    assert(pi < 3.15);
+}
+
+it("should declare const negative numbers") {
+    const neg = -42;
+    assert(neg == -42);
+    assert(neg < 0);
+}
+
+it("should declare const with zero") {
+    const zero = 0;
+    assert(zero == 0);
+}
+
+it("should declare const with large number") {
+    const big = 1000000;
+    assert(big == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - CONST WITH OPERATORS
+// ============================================================================
+
+it("should use const in multiplication") {
+    const factor = 7;
+    const result = factor * 6;
+    assert(result == 42);
+}
+
+it("should use const in division") {
+    const total = 100;
+    const parts = 4;
+    const each = total / parts;
+    assert(each == 25);
+}
+
+it("should use const in modulo") {
+    const num = 17;
+    const mod = 5;
+    const remainder = num % mod;
+    assert(remainder == 2);
+}
+
+it("should use const in comparison") {
+    const threshold = 50;
+    const value = 75;
+    assert(value > threshold);
+    assert(threshold < value);
+}
+
+// ============================================================================
+// EDGE CASES - CONST IN CONDITIONS
+// ============================================================================
+
+it("should use const in if condition") {
+    const limit = 100;
+    const score = 85;
+    let result = if (score >= limit) { "pass" } else { "fail" };
+    assert(result == "fail");
+}
+
+it("should use const in while condition") {
+    const max_iter = 5;
+    let mut count = 0;
+    let mut i = 0;
+    while (i < max_iter) {
+        count = count + 1;
+        i = i + 1;
+    }
+    assert(count == 5);
+}
+
+it("should use const in match expression") {
+    const code = 200;
+    let status = match code {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Unknown"
+    };
+    assert(status == "OK");
+}
+
+// ============================================================================
+// EDGE CASES - CONST WITH FUNCTIONS
+// ============================================================================
+
+it("should pass const to function") {
+    fn add(a: i32, b: i32): i32 { return a + b; }
+    const x = 10;
+    const y = 20;
+    assert(add(x, y) == 30);
+}
+
+it("should use const as function default") {
+    fn greet(name: string = "World"): string {
+        return "Hello, " + name;
+    }
+    const greeting = greet();
+    assert(greeting == "Hello, World");
+}
+
+it("should use const from outer scope in function") {
+    const multiplier = 10;
+    fn scale(value: i32): i32 {
+        return value * multiplier;
+    }
+    assert(scale(5) == 50);
+}
+
+// ============================================================================
+// EDGE CASES - CONST STRING OPERATIONS
+// ============================================================================
+
+it("should use const string methods") {
+    const text = "  hello  ";
+    const trimmed = text.trim();
+    assert(trimmed == "hello");
+}
+
+it("should concat const strings") {
+    const first = "Hello";
+    const second = "World";
+    const result = first + " " + second;
+    assert(result == "Hello World");
+}
+
+it("should use const string length") {
+    const message = "Hello";
+    const len = message.len();
+    assert(len == 5);
+}
+
+// ============================================================================
+// EDGE CASES - CONST ARRAYS
+// ============================================================================
+
+it("should access const array elements") {
+    const primes = [2, 3, 5, 7, 11];
+    assert(primes[0] == 2);
+    assert(primes[4] == 11);
+}
+
+it("should use const array in loop") {
+    const values = [10, 20, 30];
+    let mut sum = 0;
+    for (v in values) {
+        sum = sum + v;
+    }
+    assert(sum == 60);
+}
+
+it("should get const array length") {
+    const items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    assert(items.len() == 10);
+}
+
+// ============================================================================
+// EDGE CASES - CONST TUPLES
+// ============================================================================
+
+it("should declare const tuple") {
+    const point = (10, 20);
+    assert(point[0] == 10);
+    assert(point[1] == 20);
+}
+
+it("should use const tuple length") {
+    const triple = (1, 2, 3);
+    assert(triple.len() == 3);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED CONST
+// ============================================================================
+
+it("should use nested const scopes") {
+    const outer = 100;
+    {
+        const inner = 50;
+        const combined = outer + inner;
+        assert(combined == 150);
+    }
+    assert(outer == 100);
+}
+
+it("should shadow const in multiple levels") {
+    const x = 1;
+    {
+        const x = 2;
+        {
+            const x = 3;
+            assert(x == 3);
+        }
+        assert(x == 2);
+    }
+    assert(x == 1);
+}
+
+// ============================================================================
+// EDGE CASES - CONST WITH BOOLEAN LOGIC
+// ============================================================================
+
+it("should use const in boolean and") {
+    const a = true;
+    const b = true;
+    assert(a and b);
+}
+
+it("should use const in boolean or") {
+    const a = false;
+    const b = true;
+    assert(a or b);
+}
+
+it("should use const with not") {
+    const flag = false;
+    assert(!flag == true);
+}
+

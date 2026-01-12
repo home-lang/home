@@ -105,3 +105,269 @@ it("should infer in match expression") {
     assert(category == 1);
 }
 
+// ============================================================================
+// EDGE CASES - NUMERIC INFERENCE
+// ============================================================================
+
+it("should infer zero as integer") {
+    let zero = 0;
+    let result = zero + 1;
+    assert(result == 1);
+}
+
+it("should infer large numbers") {
+    let large = 1000000;
+    let doubled = large * 2;
+    assert(doubled == 2000000);
+}
+
+it("should infer negative numbers") {
+    let neg = -100;
+    let abs_val = 0 - neg;
+    assert(abs_val == 100);
+}
+
+it("should infer from division") {
+    let a = 100;
+    let b = 4;
+    let result = a / b;
+    assert(result == 25);
+}
+
+it("should infer from modulo") {
+    let a = 17;
+    let b = 5;
+    let remainder = a % b;
+    assert(remainder == 2);
+}
+
+// ============================================================================
+// EDGE CASES - STRING INFERENCE
+// ============================================================================
+
+it("should infer empty string") {
+    let empty = "";
+    let result = empty + "test";
+    assert(result == "test");
+}
+
+it("should infer string from method") {
+    let s = "hello";
+    let len = s.len();
+    assert(len == 5);
+}
+
+it("should infer from string concatenation") {
+    let a = "foo";
+    let b = "bar";
+    let combined = a + b;
+    assert(combined == "foobar");
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN INFERENCE
+// ============================================================================
+
+it("should infer from equality") {
+    let a = 5;
+    let b = 5;
+    let equal = a == b;
+    assert(equal == true);
+}
+
+it("should infer from inequality") {
+    let a = 5;
+    let b = 10;
+    let not_equal = a != b;
+    assert(not_equal == true);
+}
+
+it("should infer from combined comparisons") {
+    let x = 5;
+    let in_range = x > 0 and x < 10;
+    assert(in_range == true);
+}
+
+it("should infer from or expression") {
+    let a = false;
+    let b = true;
+    let result = a or b;
+    assert(result == true);
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY INFERENCE
+// ============================================================================
+
+it("should infer array type from elements") {
+    let arr = [10, 20, 30];
+    let sum = arr[0] + arr[1] + arr[2];
+    assert(sum == 60);
+}
+
+it("should infer from array method") {
+    let arr = [1, 2, 3, 4, 5];
+    let length = arr.len();
+    assert(length == 5);
+}
+
+it("should infer from iterated element") {
+    let arr = [1, 2, 3];
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
+    assert(sum == 6);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT FIELD INFERENCE
+// ============================================================================
+
+it("should infer struct field types") {
+    struct Point { x: i32, y: i32 }
+    let p = Point { x: 10, y: 20 };
+    let sum = p.x + p.y;
+    assert(sum == 30);
+}
+
+it("should infer nested struct access") {
+    struct Inner { value: i32 }
+    struct Outer { inner: Inner }
+    let o = Outer { inner: Inner { value: 42 } };
+    let v = o.inner.value;
+    assert(v == 42);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION INFERENCE
+// ============================================================================
+
+it("should infer from nested function calls") {
+    fn add(a: i32, b: i32): i32 { return a + b; }
+    fn mult(x: i32, y: i32): i32 { return x * y; }
+    let result = add(mult(2, 3), mult(4, 5));
+    assert(result == 26);
+}
+
+it("should infer from function returning bool") {
+    fn is_positive(x: i32): bool { return x > 0; }
+    let result = is_positive(5);
+    assert(result == true);
+}
+
+it("should infer from function returning string") {
+    fn greet(name: string): string { return "Hello, " + name; }
+    let msg = greet("World");
+    assert(msg == "Hello, World");
+}
+
+// ============================================================================
+// EDGE CASES - EXPRESSION INFERENCE
+// ============================================================================
+
+it("should infer from ternary") {
+    let flag = true;
+    let value = if (flag) { 10 } else { 20 };
+    assert(value == 10);
+}
+
+it("should infer from complex expression") {
+    let a = 2;
+    let b = 3;
+    let c = 4;
+    let result = (a + b) * c;
+    assert(result == 20);
+}
+
+it("should infer from parenthesized expression") {
+    let x = ((5 + 3) * 2);
+    assert(x == 16);
+}
+
+// ============================================================================
+// EDGE CASES - MUTABLE VARIABLE INFERENCE
+// ============================================================================
+
+it("should infer mutable integer") {
+    let mut x = 0;
+    x = x + 10;
+    x = x * 2;
+    assert(x == 20);
+}
+
+it("should infer mutable string") {
+    let mut s = "hello";
+    s = s + " world";
+    assert(s == "hello world");
+}
+
+it("should infer mutable bool") {
+    let mut flag = true;
+    flag = !flag;
+    assert(flag == false);
+}
+
+// ============================================================================
+// EDGE CASES - LOOP INFERENCE
+// ============================================================================
+
+it("should infer loop counter") {
+    let mut count = 0;
+    let mut i = 0;
+    while (i < 5) {
+        count = count + 1;
+        i = i + 1;
+    }
+    assert(count == 5);
+}
+
+it("should infer for loop variable") {
+    let mut product = 1;
+    for (i in 1..5) {
+        product = product * i;
+    }
+    assert(product == 24);
+}
+
+// ============================================================================
+// EDGE CASES - MATCH INFERENCE
+// ============================================================================
+
+it("should infer from match with multiple arms") {
+    let x = 3;
+    let result = match (x) {
+        1 => 10,
+        2 => 20,
+        3 => 30,
+        _ => 0,
+    };
+    assert(result == 30);
+}
+
+it("should infer string from match") {
+    let n = 1;
+    let name = match (n) {
+        1 => "one",
+        2 => "two",
+        _ => "other",
+    };
+    assert(name == "one");
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE INFERENCE
+// ============================================================================
+
+it("should infer closure parameter") {
+    let double = |x| x * 2;
+    let result = double(5);
+    assert(result == 10);
+}
+
+it("should infer closure with multiple params") {
+    let add = |a, b| a + b;
+    let result = add(3, 4);
+    assert(result == 7);
+}
+

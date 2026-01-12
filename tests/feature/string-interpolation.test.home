@@ -107,3 +107,249 @@ it("should handle dollar sign in regular string") {
     assert(result == "Price: $100");
 }
 
+// ============================================================================
+// EDGE CASES - NUMBER FORMATTING
+// ============================================================================
+
+it("should interpolate negative numbers") {
+    let x = -42;
+    let result = "Value: ${x}";
+    assert(result == "Value: -42");
+}
+
+it("should interpolate zero") {
+    let x = 0;
+    let result = "Count: ${x}";
+    assert(result == "Count: 0");
+}
+
+it("should interpolate large numbers") {
+    let big = 1000000;
+    let result = "Big: ${big}";
+    assert(result == "Big: 1000000");
+}
+
+// ============================================================================
+// EDGE CASES - COMPLEX EXPRESSIONS
+// ============================================================================
+
+it("should interpolate subtraction") {
+    let a = 100;
+    let b = 58;
+    let result = "Diff: ${a - b}";
+    assert(result == "Diff: 42");
+}
+
+it("should interpolate multiplication") {
+    let x = 6;
+    let y = 7;
+    let result = "Product: ${x * y}";
+    assert(result == "Product: 42");
+}
+
+it("should interpolate division") {
+    let total = 100;
+    let parts = 4;
+    let result = "Each: ${total / parts}";
+    assert(result == "Each: 25");
+}
+
+it("should interpolate modulo") {
+    let num = 17;
+    let mod = 5;
+    let result = "Remainder: ${num % mod}";
+    assert(result == "Remainder: 2");
+}
+
+it("should interpolate complex arithmetic") {
+    let a = 10;
+    let b = 3;
+    let result = "Result: ${a * b + 12}";
+    assert(result == "Result: 42");
+}
+
+// ============================================================================
+// EDGE CASES - STRING METHODS IN INTERPOLATION
+// ============================================================================
+
+it("should interpolate string length") {
+    let text = "hello";
+    let result = "Length: ${text.len()}";
+    assert(result == "Length: 5");
+}
+
+it("should interpolate string upper") {
+    let text = "hello";
+    let result = "Upper: ${text.upper()}";
+    assert(result == "Upper: HELLO");
+}
+
+it("should interpolate string trim") {
+    let text = "  hi  ";
+    let result = "Trimmed: ${text.trim()}";
+    assert(result == "Trimmed: hi");
+}
+
+it("should interpolate string reverse") {
+    let text = "abc";
+    let result = "Reversed: ${text.reverse()}";
+    assert(result == "Reversed: cba");
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY METHODS IN INTERPOLATION
+// ============================================================================
+
+it("should interpolate array length") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = "Array has ${arr.len()} elements";
+    assert(result == "Array has 5 elements");
+}
+
+it("should interpolate array sum") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = "Sum: ${arr.sum()}";
+    assert(result == "Sum: 15");
+}
+
+it("should interpolate array first") {
+    let arr = [10, 20, 30];
+    let result = "First: ${arr.first()}";
+    assert(result == "First: 10");
+}
+
+it("should interpolate array last") {
+    let arr = [10, 20, 30];
+    let result = "Last: ${arr.last()}";
+    assert(result == "Last: 30");
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN INTERPOLATION
+// ============================================================================
+
+it("should interpolate true") {
+    let flag = true;
+    let result = "Is active: ${flag}";
+    assert(result == "Is active: true");
+}
+
+it("should interpolate false") {
+    let flag = false;
+    let result = "Is active: ${flag}";
+    assert(result == "Is active: false");
+}
+
+it("should interpolate boolean comparison") {
+    let a = 10;
+    let b = 5;
+    let result = "Greater: ${a > b}";
+    assert(result == "Greater: true");
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE TYPES
+// ============================================================================
+
+it("should mix strings and numbers") {
+    let name = "Alice";
+    let age = 25;
+    let result = "${name} is ${age}";
+    assert(result == "Alice is 25");
+}
+
+it("should interpolate many values") {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let result = "${a} ${b} ${c}";
+    assert(result == "1 2 3");
+}
+
+it("should interpolate with surrounding text") {
+    let x = 42;
+    let result = "prefix ${x} middle ${x} suffix";
+    assert(result == "prefix 42 middle 42 suffix");
+}
+
+// ============================================================================
+// EDGE CASES - CONDITIONALS IN INTERPOLATION
+// ============================================================================
+
+it("should interpolate ternary expression") {
+    let score = 85;
+    let grade = if (score >= 60) { "pass" } else { "fail" };
+    let result = "Grade: ${grade}";
+    assert(result == "Grade: pass");
+}
+
+it("should interpolate conditional result") {
+    let n = 7;
+    let parity = if (n % 2 == 0) { "even" } else { "odd" };
+    let result = "${n} is ${parity}";
+    assert(result == "7 is odd");
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION CALLS
+// ============================================================================
+
+it("should interpolate multi-arg function") {
+    fn add(a: i32, b: i32): i32 { return a + b; }
+    let result = "Sum: ${add(10, 32)}";
+    assert(result == "Sum: 42");
+}
+
+it("should interpolate chained method calls") {
+    let text = "  HELLO  ";
+    let result = "Result: ${text.trim().lower()}";
+    assert(result == "Result: hello");
+}
+
+// ============================================================================
+// EDGE CASES - LOOPS AND INTERPOLATION
+// ============================================================================
+
+it("should use interpolation in loop") {
+    let mut result = "";
+    let mut i = 1;
+    while (i <= 3) {
+        result = result + "${i} ";
+        i = i + 1;
+    }
+    assert(result == "1 2 3 ");
+}
+
+it("should interpolate loop variable") {
+    let arr = ["a", "b", "c"];
+    let mut result = "";
+    for (item in arr) {
+        result = result + "${item}";
+    }
+    assert(result == "abc");
+}
+
+// ============================================================================
+// EDGE CASES - SPECIAL STRINGS
+// ============================================================================
+
+it("should interpolate empty string") {
+    let empty = "";
+    let result = "[${empty}]";
+    assert(result == "[]");
+}
+
+it("should interpolate single character") {
+    let c = "x";
+    let result = "${c}${c}${c}";
+    assert(result == "xxx");
+}
+
+it("should handle consecutive interpolations") {
+    let a = "A";
+    let b = "B";
+    let c = "C";
+    let result = "${a}${b}${c}";
+    assert(result == "ABC");
+}
+

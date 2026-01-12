@@ -128,3 +128,234 @@ it("should handle GCD edge cases") {
     assert(gcd(7, 7) == 7);
     assert(gcd(100, 1) == 1);
 }
+
+// ============================================================================
+// EDGE CASES - FACTORIAL BOUNDARIES
+// ============================================================================
+
+it("should compute factorial of small numbers") {
+    assert(factorial(8) == 40320);
+    assert(factorial(9) == 362880);
+    assert(factorial(10) == 3628800);
+}
+
+// ============================================================================
+// EDGE CASES - FIBONACCI SEQUENCE
+// ============================================================================
+
+it("should compute early fibonacci numbers") {
+    assert(fibonacci(9) == 34);
+    assert(fibonacci(11) == 89);
+    assert(fibonacci(12) == 144);
+}
+
+// ============================================================================
+// EDGE CASES - SUM TO N
+// ============================================================================
+
+it("should sum to small numbers") {
+    assert(sum_to(1) == 1);
+    assert(sum_to(2) == 3);
+    assert(sum_to(3) == 6);
+}
+
+it("should handle sum_to with larger numbers") {
+    assert(sum_to(50) == 1275);
+}
+
+// ============================================================================
+// EDGE CASES - POWER FUNCTION
+// ============================================================================
+
+it("should handle power with base 0") {
+    assert(power(0, 0) == 1);  // Mathematical convention
+    assert(power(0, 1) == 0);
+    assert(power(0, 5) == 0);
+}
+
+it("should handle power with exponent 1") {
+    assert(power(1, 1) == 1);
+    assert(power(5, 1) == 5);
+    assert(power(10, 1) == 10);
+}
+
+it("should compute larger powers") {
+    assert(power(2, 8) == 256);
+    assert(power(3, 3) == 27);
+    assert(power(5, 3) == 125);
+}
+
+// ============================================================================
+// EDGE CASES - GCD VARIATIONS
+// ============================================================================
+
+it("should handle GCD with same numbers") {
+    assert(gcd(1, 1) == 1);
+    assert(gcd(10, 10) == 10);
+    assert(gcd(100, 100) == 100);
+}
+
+it("should handle GCD with coprime numbers") {
+    assert(gcd(3, 7) == 1);
+    assert(gcd(11, 13) == 1);
+    assert(gcd(8, 15) == 1);
+}
+
+it("should handle GCD with one dividing other") {
+    assert(gcd(4, 8) == 4);
+    assert(gcd(8, 4) == 4);
+    assert(gcd(3, 9) == 3);
+}
+
+// ============================================================================
+// EDGE CASES - LCM VARIATIONS
+// ============================================================================
+
+it("should compute LCM with same numbers") {
+    assert(lcm(5, 5) == 5);
+    assert(lcm(10, 10) == 10);
+}
+
+it("should compute LCM with coprime numbers") {
+    assert(lcm(3, 7) == 21);
+    assert(lcm(5, 7) == 35);
+}
+
+it("should compute LCM with one dividing other") {
+    assert(lcm(3, 9) == 9);
+    assert(lcm(4, 12) == 12);
+}
+
+// ============================================================================
+// EDGE CASES - COUNT DIGITS
+// ============================================================================
+
+it("should count digits for single digit") {
+    assert(count_digits(0) == 1);
+    assert(count_digits(5) == 1);
+    assert(count_digits(9) == 1);
+}
+
+it("should count digits for multi-digit") {
+    assert(count_digits(10) == 2);
+    assert(count_digits(99) == 2);
+    assert(count_digits(100) == 3);
+    assert(count_digits(1000) == 4);
+    assert(count_digits(12345) == 5);
+}
+
+// ============================================================================
+// EDGE CASES - MUTUAL RECURSION
+// ============================================================================
+
+it("should handle mutual recursion for various numbers") {
+    assert(is_even(2) == true);
+    assert(is_even(10) == true);
+    assert(is_odd(1) == true);
+    assert(is_odd(3) == true);
+    assert(is_odd(9) == true);
+    assert(is_even(9) == false);
+    assert(is_odd(10) == false);
+}
+
+// ============================================================================
+// EDGE CASES - CUSTOM RECURSIVE FUNCTIONS
+// ============================================================================
+
+fn multiply_recursive(a: i32, b: i32): i32 {
+    if (b == 0) { return 0; }
+    if (b == 1) { return a; }
+    return a + multiply_recursive(a, b - 1);
+}
+
+it("should multiply recursively") {
+    assert(multiply_recursive(3, 4) == 12);
+    assert(multiply_recursive(5, 5) == 25);
+    assert(multiply_recursive(7, 0) == 0);
+    assert(multiply_recursive(10, 1) == 10);
+}
+
+fn sum_array_recursive(arr: [i32], idx: i32): i32 {
+    if (idx >= arr.len()) { return 0; }
+    return arr[idx] + sum_array_recursive(arr, idx + 1);
+}
+
+it("should sum array recursively") {
+    assert(sum_array_recursive([1, 2, 3, 4, 5], 0) == 15);
+    assert(sum_array_recursive([10, 20, 30], 0) == 60);
+    assert(sum_array_recursive([], 0) == 0);
+}
+
+fn reverse_sum(n: i32): i32 {
+    if (n == 0) { return 0; }
+    return (n % 10) + reverse_sum(n / 10);
+}
+
+it("should compute digit sum recursively") {
+    assert(reverse_sum(123) == 6);  // 1+2+3
+    assert(reverse_sum(999) == 27); // 9+9+9
+    assert(reverse_sum(100) == 1);  // 1+0+0
+    assert(reverse_sum(0) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - RECURSION WITH CONDITIONS
+// ============================================================================
+
+fn collatz_steps(n: i32, steps: i32): i32 {
+    if (n == 1) { return steps; }
+    if (n % 2 == 0) {
+        return collatz_steps(n / 2, steps + 1);
+    }
+    return collatz_steps(3 * n + 1, steps + 1);
+}
+
+it("should compute collatz sequence steps") {
+    assert(collatz_steps(1, 0) == 0);
+    assert(collatz_steps(2, 0) == 1);
+    assert(collatz_steps(4, 0) == 2);
+    assert(collatz_steps(8, 0) == 3);
+}
+
+fn ackermann_limited(m: i32, n: i32): i32 {
+    // Limited version to avoid stack overflow
+    if (m == 0) { return n + 1; }
+    if (n == 0) { return ackermann_limited(m - 1, 1); }
+    return ackermann_limited(m - 1, ackermann_limited(m, n - 1));
+}
+
+it("should compute limited ackermann") {
+    assert(ackermann_limited(0, 0) == 1);
+    assert(ackermann_limited(0, 5) == 6);
+    assert(ackermann_limited(1, 0) == 2);
+    assert(ackermann_limited(1, 1) == 3);
+    assert(ackermann_limited(2, 2) == 7);
+}
+
+// ============================================================================
+// EDGE CASES - TAIL-LIKE RECURSION
+// ============================================================================
+
+fn factorial_tail(n: i32, acc: i32): i32 {
+    if (n <= 1) { return acc; }
+    return factorial_tail(n - 1, n * acc);
+}
+
+it("should compute factorial with accumulator") {
+    assert(factorial_tail(5, 1) == 120);
+    assert(factorial_tail(6, 1) == 720);
+    assert(factorial_tail(1, 1) == 1);
+    assert(factorial_tail(0, 1) == 1);
+}
+
+fn fibonacci_tail(n: i32, a: i32, b: i32): i32 {
+    if (n == 0) { return a; }
+    return fibonacci_tail(n - 1, b, a + b);
+}
+
+it("should compute fibonacci with accumulator") {
+    assert(fibonacci_tail(0, 0, 1) == 0);
+    assert(fibonacci_tail(1, 0, 1) == 1);
+    assert(fibonacci_tail(10, 0, 1) == 55);
+    assert(fibonacci_tail(15, 0, 1) == 610);
+}

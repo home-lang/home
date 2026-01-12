@@ -99,3 +99,247 @@ it("should differ from null coalesce for false") {
     assert(coalesce_result == false);
 }
 
+// ============================================================================
+// EDGE CASES - TRUTHY NUMERIC VALUES
+// ============================================================================
+
+it("should return positive number") {
+    let x = 1;
+    assert((x ?: 0) == 1);
+}
+
+it("should return negative number as truthy") {
+    let x = -5;
+    assert((x ?: 0) == -5);
+}
+
+it("should return large number") {
+    let x = 1000000;
+    assert((x ?: 0) == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - TRUTHY STRING VALUES
+// ============================================================================
+
+it("should return non-empty string") {
+    let x = "hello";
+    assert((x ?: "default") == "hello");
+}
+
+it("should return string with space") {
+    let x = " ";
+    assert((x ?: "default") == " ");
+}
+
+it("should return string with single char") {
+    let x = "a";
+    assert((x ?: "default") == "a");
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE ELVIS CHAIN
+// ============================================================================
+
+it("should chain three values") {
+    let a = null;
+    let b = null;
+    let c = 100;
+    assert((a ?: b ?: c) == 100);
+}
+
+it("should stop at first truthy") {
+    let a = null;
+    let b = 50;
+    let c = 100;
+    assert((a ?: b ?: c) == 50);
+}
+
+it("should handle all null chain") {
+    let a = null;
+    let b = null;
+    let c = null;
+    let result = a ?: b ?: c ?: 999;
+    assert(result == 999);
+}
+
+it("should handle long chain") {
+    let a = null;
+    let b = null;
+    let c = null;
+    let d = null;
+    let e = 42;
+    assert((a ?: b ?: c ?: d ?: e) == 42);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS WITH EXPRESSIONS
+// ============================================================================
+
+it("should use expression on right side") {
+    let x = null;
+    assert((x ?: 10 + 5) == 15);
+}
+
+it("should use expression on left side") {
+    fn maybe_value(): i32 {
+        return 0;
+    }
+    assert((maybe_value() ?: 100) == 100);
+}
+
+it("should evaluate right only when needed") {
+    let x = 42;
+    assert((x ?: 999) == 42);  // 999 should not be used
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS IN CONDITIONALS
+// ============================================================================
+
+it("should use elvis result in if") {
+    let x = null;
+    let value = x ?: 10;
+    let result = if (value > 5) { "big" } else { "small" };
+    assert(result == "big");
+}
+
+it("should combine elvis with comparison") {
+    let x = null;
+    let y = 100;
+    let max = if ((x ?: 0) > (y ?: 0)) { x ?: 0 } else { y ?: 0 };
+    assert(max == 100);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS IN LOOPS
+// ============================================================================
+
+it("should use elvis in loop body") {
+    let values = [1, 0, 3, 0, 5];
+    let mut sum = 0;
+    for (v in values) {
+        sum = sum + (v ?: 10);
+    }
+    assert(sum == 29);  // 1 + 10 + 3 + 10 + 5
+}
+
+it("should use elvis for loop bound") {
+    let limit = 0;
+    let mut count = 0;
+    let mut i = 0;
+    while (i < (limit ?: 5)) {
+        count = count + 1;
+        i = i + 1;
+    }
+    assert(count == 5);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS WITH STRUCTS
+// ============================================================================
+
+it("should use elvis with struct field") {
+    struct Config { timeout: i32 }
+    let c = Config { timeout: 0 };
+    let timeout = c.timeout ?: 30;
+    assert(timeout == 30);  // 0 is falsy
+}
+
+it("should use elvis with non-zero struct field") {
+    struct Config { timeout: i32 }
+    let c = Config { timeout: 60 };
+    let timeout = c.timeout ?: 30;
+    assert(timeout == 60);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS WITH FUNCTION CALLS
+// ============================================================================
+
+fn get_null(): i32 {
+    return null;
+}
+
+fn get_zero(): i32 {
+    return 0;
+}
+
+fn get_value(): i32 {
+    return 42;
+}
+
+it("should use elvis with null-returning function") {
+    assert((get_null() ?: 100) == 100);
+}
+
+it("should use elvis with zero-returning function") {
+    assert((get_zero() ?: 100) == 100);
+}
+
+it("should use elvis with value-returning function") {
+    assert((get_value() ?: 100) == 42);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS VS NULL COALESCE
+// ============================================================================
+
+it("should treat empty string differently") {
+    let s = "";
+    let elvis = s ?: "default";
+    let coalesce = s ?? "default";
+    assert(elvis == "default");
+    assert(coalesce == "");
+}
+
+it("should treat zero int differently") {
+    let n = 0;
+    let elvis = n ?: 99;
+    let coalesce = n ?? 99;
+    assert(elvis == 99);
+    assert(coalesce == 0);
+}
+
+it("should treat null the same") {
+    let n = null;
+    let elvis = n ?: 99;
+    let coalesce = n ?? 99;
+    assert(elvis == 99);
+    assert(coalesce == 99);
+}
+
+// ============================================================================
+// EDGE CASES - ELVIS IN EXPRESSIONS
+// ============================================================================
+
+it("should use elvis result in arithmetic") {
+    let x = 0;
+    let result = (x ?: 10) * 2;
+    assert(result == 20);
+}
+
+it("should use elvis result in string concat") {
+    let prefix = "";
+    let result = (prefix ?: ">>") + "hello";
+    assert(result == ">>hello");
+}
+
+// ============================================================================
+// EDGE CASES - NESTED ELVIS
+// ============================================================================
+
+it("should handle elvis in function argument") {
+    fn double(x: i32): i32 {
+        return x * 2;
+    }
+    let n = 0;
+    assert(double(n ?: 5) == 10);
+}
+
+it("should handle elvis with computed values") {
+    let base = 0;
+    let fallback = 5 + 5;
+    assert((base ?: fallback) == 10);
+}
+

@@ -112,3 +112,285 @@ it("should return enum from function") {
     };
     assert(is_active == true);
 }
+
+// ============================================================================
+// EDGE CASES - ENUM VARIANT COMPARISON
+// ============================================================================
+
+it("should match all Direction variants") {
+    let n = match (Direction.North) { Direction.North => 1, Direction.South => 2, Direction.East => 3, Direction.West => 4 };
+    let s = match (Direction.South) { Direction.North => 1, Direction.South => 2, Direction.East => 3, Direction.West => 4 };
+    let e = match (Direction.East) { Direction.North => 1, Direction.South => 2, Direction.East => 3, Direction.West => 4 };
+    let w = match (Direction.West) { Direction.North => 1, Direction.South => 2, Direction.East => 3, Direction.West => 4 };
+    assert(n == 1);
+    assert(s == 2);
+    assert(e == 3);
+    assert(w == 4);
+}
+
+it("should match all Priority variants") {
+    let l = match (Priority.Low) { Priority.Low => 1, Priority.Medium => 2, Priority.High => 3, Priority.Critical => 4 };
+    let m = match (Priority.Medium) { Priority.Low => 1, Priority.Medium => 2, Priority.High => 3, Priority.Critical => 4 };
+    let h = match (Priority.High) { Priority.Low => 1, Priority.Medium => 2, Priority.High => 3, Priority.Critical => 4 };
+    let c = match (Priority.Critical) { Priority.Low => 1, Priority.Medium => 2, Priority.High => 3, Priority.Critical => 4 };
+    assert(l == 1);
+    assert(m == 2);
+    assert(h == 3);
+    assert(c == 4);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM WITH PAYLOAD VALUES
+// ============================================================================
+
+it("should handle Ok with zero") {
+    let r: Result = Result.Ok(0);
+    let val = match (r) {
+        Result.Ok(x) => x,
+        Result.Err(msg) => -1,
+    };
+    assert(val == 0);
+}
+
+it("should handle Ok with negative") {
+    let r: Result = Result.Ok(-100);
+    let val = match (r) {
+        Result.Ok(x) => x,
+        Result.Err(msg) => 0,
+    };
+    assert(val == -100);
+}
+
+it("should handle Ok with large number") {
+    let r: Result = Result.Ok(999999);
+    let val = match (r) {
+        Result.Ok(x) => x,
+        Result.Err(msg) => 0,
+    };
+    assert(val == 999999);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM IN CONDITIONALS
+// ============================================================================
+
+it("should use enum in if condition via match") {
+    let status = Status.Active;
+    let code = match (status) {
+        Status.Active => 1,
+        Status.Inactive => 0,
+        Status.Pending => 2,
+    };
+    let mut result = 0;
+    if (code == 1) {
+        result = 100;
+    }
+    assert(result == 100);
+}
+
+fn is_pending(s: Status): bool {
+    return match (s) {
+        Status.Pending => true,
+        Status.Active => false,
+        Status.Inactive => false,
+    };
+}
+
+it("should check pending status") {
+    assert(is_pending(Status.Pending) == true);
+    assert(is_pending(Status.Active) == false);
+    assert(is_pending(Status.Inactive) == false);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM IN LOOPS
+// ============================================================================
+
+it("should iterate over enum array") {
+    let statuses = [Status.Active, Status.Inactive, Status.Pending];
+    let mut active_count = 0;
+    for (s in statuses) {
+        let is_active = match (s) {
+            Status.Active => true,
+            Status.Inactive => false,
+            Status.Pending => false,
+        };
+        if (is_active) {
+            active_count = active_count + 1;
+        }
+    }
+    assert(active_count == 1);
+}
+
+it("should count colors in array") {
+    let colors = [Color.Red, Color.Red, Color.Green, Color.Blue, Color.Red];
+    let mut red_count = 0;
+    for (c in colors) {
+        let is_red = match (c) {
+            Color.Red => true,
+            Color.Green => false,
+            Color.Blue => false,
+        };
+        if (is_red) {
+            red_count = red_count + 1;
+        }
+    }
+    assert(red_count == 3);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM TRANSFORMATION
+// ============================================================================
+
+fn to_code(c: Color): i32 {
+    return match (c) {
+        Color.Red => 0xFF0000,
+        Color.Green => 0x00FF00,
+        Color.Blue => 0x0000FF,
+    };
+}
+
+it("should convert color to code") {
+    assert(to_code(Color.Red) == 0xFF0000);
+    assert(to_code(Color.Green) == 0x00FF00);
+    assert(to_code(Color.Blue) == 0x0000FF);
+}
+
+fn opposite_direction(d: Direction): Direction {
+    return match (d) {
+        Direction.North => Direction.South,
+        Direction.South => Direction.North,
+        Direction.East => Direction.West,
+        Direction.West => Direction.East,
+    };
+}
+
+it("should get opposite direction") {
+    let opp_n = opposite_direction(Direction.North);
+    let opp_s = opposite_direction(Direction.South);
+    let opp_e = opposite_direction(Direction.East);
+    let opp_w = opposite_direction(Direction.West);
+
+    assert(match (opp_n) { Direction.South => true, _ => false } == true);
+    assert(match (opp_s) { Direction.North => true, _ => false } == true);
+    assert(match (opp_e) { Direction.West => true, _ => false } == true);
+    assert(match (opp_w) { Direction.East => true, _ => false } == true);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM PAYLOAD MANIPULATION
+// ============================================================================
+
+fn double_ok(r: Result): Result {
+    return match (r) {
+        Result.Ok(x) => Result.Ok(x * 2),
+        Result.Err(msg) => r,
+    };
+}
+
+it("should double Ok value") {
+    let r: Result = Result.Ok(21);
+    let doubled = double_ok(r);
+    let val = match (doubled) {
+        Result.Ok(x) => x,
+        Result.Err(msg) => 0,
+    };
+    assert(val == 42);
+}
+
+it("should preserve Err") {
+    let r: Result = Result.Err("error");
+    let doubled = double_ok(r);
+    let is_err = match (doubled) {
+        Result.Ok(x) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM IN NESTED STRUCTURES
+// ============================================================================
+
+it("should use enum in nested match") {
+    let outer: Status = Status.Active;
+    let inner: Color = Color.Green;
+
+    let result = match (outer) {
+        Status.Active => match (inner) {
+            Color.Red => 1,
+            Color.Green => 2,
+            Color.Blue => 3,
+        },
+        Status.Inactive => 0,
+        Status.Pending => -1,
+    };
+    assert(result == 2);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE ENUMS
+// ============================================================================
+
+enum Size { Small, Medium, Large }
+enum Shape { Circle, Square, Triangle }
+
+it("should define and use additional enums") {
+    let s = Size.Medium;
+    let sh = Shape.Square;
+
+    let size_val = match (s) {
+        Size.Small => 1,
+        Size.Medium => 2,
+        Size.Large => 3,
+    };
+    let shape_val = match (sh) {
+        Shape.Circle => 10,
+        Shape.Square => 20,
+        Shape.Triangle => 30,
+    };
+    assert(size_val == 2);
+    assert(shape_val == 20);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM DEFAULT CASE
+// ============================================================================
+
+fn priority_level(p: Priority): i32 {
+    return match (p) {
+        Priority.Critical => 100,
+        Priority.High => 75,
+        Priority.Medium => 50,
+        Priority.Low => 25,
+    };
+}
+
+it("should get priority levels") {
+    assert(priority_level(Priority.Critical) == 100);
+    assert(priority_level(Priority.High) == 75);
+    assert(priority_level(Priority.Medium) == 50);
+    assert(priority_level(Priority.Low) == 25);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM STORED IN VARIABLE
+// ============================================================================
+
+it("should store and retrieve enum") {
+    let mut current = Status.Inactive;
+    let val1 = match (current) {
+        Status.Active => 1,
+        Status.Inactive => 0,
+        Status.Pending => 2,
+    };
+    assert(val1 == 0);
+
+    current = Status.Active;
+    let val2 = match (current) {
+        Status.Active => 1,
+        Status.Inactive => 0,
+        Status.Pending => 2,
+    };
+    assert(val2 == 1);
+}

@@ -71,3 +71,308 @@ it("should chain with other operations") {
     assert(half_len == 2);
 }
 
+// ============================================================================
+// FIRST AND LAST METHODS
+// ============================================================================
+
+it("should get first element") {
+    let arr = [10, 20, 30];
+    assert(arr.first() == 10);
+}
+
+it("should get last element") {
+    let arr = [10, 20, 30];
+    assert(arr.last() == 30);
+}
+
+it("should get first and last of single element") {
+    let arr = [42];
+    assert(arr.first() == 42);
+    assert(arr.last() == 42);
+}
+
+it("should get first of string array") {
+    let names = ["Alice", "Bob", "Charlie"];
+    assert(names.first() == "Alice");
+}
+
+it("should get last of string array") {
+    let names = ["Alice", "Bob", "Charlie"];
+    assert(names.last() == "Charlie");
+}
+
+// ============================================================================
+// PUSH METHOD (functional - returns new array)
+// ============================================================================
+
+it("should push element to array") {
+    let arr = [1, 2, 3];
+    let new_arr = arr.push(4);
+    assert(new_arr.len() == 4);
+    assert(new_arr[3] == 4);
+    assert(arr.len() == 3);  // Original unchanged
+}
+
+it("should push multiple elements") {
+    let arr = [1];
+    let arr2 = arr.push(2);
+    let arr3 = arr2.push(3);
+    let arr4 = arr3.push(4);
+    assert(arr4.len() == 4);
+    assert(arr4.last() == 4);
+}
+
+it("should push to empty array") {
+    let arr: [i32] = [];
+    let new_arr = arr.push(100);
+    assert(new_arr.len() == 1);
+    assert(new_arr[0] == 100);
+}
+
+it("should push string to array") {
+    let names = ["Alice"];
+    let new_names = names.push("Bob");
+    assert(new_names.len() == 2);
+    assert(new_names[1] == "Bob");
+}
+
+// ============================================================================
+// POP METHOD (functional - returns new array without last element)
+// ============================================================================
+
+it("should pop element from array") {
+    let arr = [1, 2, 3];
+    let last = arr.last();
+    let popped = arr.pop();
+    assert(last == 3);
+    assert(popped.len() == 2);
+    assert(popped[0] == 1);
+    assert(popped[1] == 2);
+}
+
+it("should pop from different arrays") {
+    let arr1 = [1, 2, 3, 4, 5];
+    let arr2 = [10, 20];
+    assert(arr1.pop().len() == 4);
+    assert(arr2.pop().len() == 1);
+}
+
+it("should pop single element") {
+    let arr = [42];
+    let popped = arr.pop();
+    assert(popped.len() == 0);
+}
+
+// ============================================================================
+// CONCAT METHOD
+// ============================================================================
+
+it("should concat two arrays") {
+    let a = [1, 2, 3];
+    let b = [4, 5, 6];
+    let combined = a.concat(b);
+    assert(combined.len() == 6);
+    assert(combined[0] == 1);
+    assert(combined[3] == 4);
+    assert(combined[5] == 6);
+}
+
+it("should concat with empty array") {
+    let a = [1, 2, 3];
+    let b: [i32] = [];
+    let combined = a.concat(b);
+    assert(combined.len() == 3);
+}
+
+it("should concat empty with array") {
+    let a: [i32] = [];
+    let b = [1, 2, 3];
+    let combined = a.concat(b);
+    assert(combined.len() == 3);
+    assert(combined[0] == 1);
+}
+
+it("should concat string arrays") {
+    let a = ["hello"];
+    let b = ["world"];
+    let combined = a.concat(b);
+    assert(combined.len() == 2);
+    assert(combined[0] == "hello");
+    assert(combined[1] == "world");
+}
+
+// ============================================================================
+// REVERSE METHOD
+// ============================================================================
+
+it("should reverse array") {
+    let arr = [1, 2, 3, 4, 5];
+    let reversed = arr.reverse();
+    assert(reversed[0] == 5);
+    assert(reversed[1] == 4);
+    assert(reversed[2] == 3);
+    assert(reversed[3] == 2);
+    assert(reversed[4] == 1);
+}
+
+it("should reverse single element array") {
+    let arr = [42];
+    let reversed = arr.reverse();
+    assert(reversed[0] == 42);
+}
+
+it("should reverse two element array") {
+    let arr = [1, 2];
+    let reversed = arr.reverse();
+    assert(reversed[0] == 2);
+    assert(reversed[1] == 1);
+}
+
+it("should reverse string array") {
+    let arr = ["a", "b", "c"];
+    let reversed = arr.reverse();
+    assert(reversed[0] == "c");
+    assert(reversed[1] == "b");
+    assert(reversed[2] == "a");
+}
+
+// ============================================================================
+// EDGE CASES - LENGTH VARIATIONS
+// ============================================================================
+
+it("should handle large array length") {
+    let mut arr: [i32] = [];
+    let mut i = 0;
+    while (i < 100) {
+        arr = arr.push(i);
+        i = i + 1;
+    }
+    assert(arr.len() == 100);
+}
+
+it("should get length of boolean array") {
+    let flags = [true, false, true, false];
+    assert(flags.len() == 4);
+}
+
+it("should use length in arithmetic") {
+    let a = [1, 2, 3];
+    let b = [4, 5];
+    let total = a.len() + b.len();
+    assert(total == 5);
+}
+
+// ============================================================================
+// EDGE CASES - METHOD CHAINING
+// ============================================================================
+
+it("should chain concat and len") {
+    let a = [1, 2];
+    let b = [3, 4];
+    let len = a.concat(b).len();
+    assert(len == 4);
+}
+
+it("should chain reverse and first") {
+    let arr = [1, 2, 3];
+    let first_reversed = arr.reverse().first();
+    assert(first_reversed == 3);
+}
+
+it("should chain reverse and last") {
+    let arr = [1, 2, 3];
+    let last_reversed = arr.reverse().last();
+    assert(last_reversed == 1);
+}
+
+// ============================================================================
+// EDGE CASES - PUSH AND POP TOGETHER (functional style)
+// ============================================================================
+
+it("should push then get last element") {
+    let arr = [1, 2];
+    let arr_with_3 = arr.push(3);
+    assert(arr_with_3.last() == 3);
+    assert(arr_with_3.pop().len() == 2);
+}
+
+it("should use array as stack with functional push") {
+    let mut stack: [i32] = [];
+    stack = stack.push(10);
+    stack = stack.push(20);
+    stack = stack.push(30);
+    assert(stack.len() == 3);
+    assert(stack.last() == 30);
+    stack = stack.pop();
+    assert(stack.last() == 20);
+}
+
+// ============================================================================
+// EDGE CASES - METHODS IN LOOPS
+// ============================================================================
+
+it("should use first in loop") {
+    let arrays = [[1, 2], [3, 4], [5, 6]];
+    let mut sum = 0;
+    for (arr in arrays) {
+        sum = sum + arr.first();
+    }
+    assert(sum == 9);  // 1 + 3 + 5
+}
+
+it("should use last in loop") {
+    let arrays = [[1, 2], [3, 4], [5, 6]];
+    let mut sum = 0;
+    for (arr in arrays) {
+        sum = sum + arr.last();
+    }
+    assert(sum == 12);  // 2 + 4 + 6
+}
+
+// ============================================================================
+// EDGE CASES - METHODS WITH EXPRESSIONS
+// ============================================================================
+
+it("should use length in condition") {
+    let arr = [1, 2, 3, 4, 5];
+    let is_long = arr.len() > 3;
+    assert(is_long == true);
+}
+
+it("should use first in comparison") {
+    let arr = [10, 20, 30];
+    assert(arr.first() < arr.last());
+}
+
+it("should use methods with ternary") {
+    let arr = [1, 2, 3];
+    let result = if (arr.len() > 0) { arr.first() } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - METHODS WITH FUNCTIONS
+// ============================================================================
+
+it("should pass method result to function") {
+    fn double(x: i32): i32 { return x * 2; }
+    let arr = [5, 10, 15];
+    assert(double(arr.first()) == 10);
+    assert(double(arr.last()) == 30);
+}
+
+it("should return array method from function") {
+    fn get_length(arr: [i32]): i32 {
+        return arr.len();
+    }
+    assert(get_length([1, 2, 3]) == 3);
+}
+
+it("should use concat in function") {
+    fn combine(a: [i32], b: [i32]): [i32] {
+        return a.concat(b);
+    }
+    let result = combine([1, 2], [3, 4]);
+    assert(result.len() == 4);
+}
+

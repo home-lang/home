@@ -134,3 +134,507 @@ it("should handle single iteration with false condition") {
     assert(x == 101);
 }
 
+// ============================================================================
+// EDGE CASES - SINGLE ITERATION
+// ============================================================================
+
+it("should execute exactly once when condition is false") {
+    let mut count = 0;
+    do {
+        count = count + 1;
+    } while (false);
+    assert(count == 1);
+}
+
+it("should execute once with always-false condition") {
+    let mut executed = false;
+    do {
+        executed = true;
+    } while (1 == 0);
+    assert(executed == true);
+}
+
+it("should run body before checking condition") {
+    let mut value = 10;
+    do {
+        value = value * 2;
+    } while (value < 5);  // Condition false from start
+    assert(value == 20);  // Still executed once
+}
+
+// ============================================================================
+// EDGE CASES - ZERO AND BOUNDARY CONDITIONS
+// ============================================================================
+
+it("should handle zero iterations needed") {
+    let mut n = 0;
+    do {
+        n = n + 1;
+    } while (n < 0);
+    assert(n == 1);
+}
+
+it("should handle boundary at exact condition") {
+    let mut x = 4;
+    do {
+        x = x + 1;
+    } while (x < 5);
+    assert(x == 5);
+}
+
+it("should handle multiple boundary passes") {
+    let mut x = 1;
+    do {
+        x = x + 1;
+    } while (x <= 5);
+    assert(x == 6);
+}
+
+// ============================================================================
+// EDGE CASES - NEGATIVE NUMBERS
+// ============================================================================
+
+it("should count up from negative") {
+    let mut n = -5;
+    do {
+        n = n + 1;
+    } while (n < 0);
+    assert(n == 0);
+}
+
+it("should count down to negative") {
+    let mut n = 2;
+    do {
+        n = n - 1;
+    } while (n > -3);
+    assert(n == -3);
+}
+
+it("should handle negative multiplication") {
+    let mut n = -1;
+    do {
+        n = n * 2;
+    } while (n > -20);
+    assert(n == -32);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE VARIABLES
+// ============================================================================
+
+it("should update multiple variables") {
+    let mut a = 0;
+    let mut b = 100;
+    do {
+        a = a + 2;
+        b = b - 5;
+    } while (a < b);
+    assert(a == 30);
+    assert(b == 25);
+}
+
+it("should swap values repeatedly") {
+    let mut a = 1;
+    let mut b = 10;
+    let mut count = 0;
+    do {
+        let temp = a;
+        a = b;
+        b = temp + 1;
+        count = count + 1;
+    } while (count < 3);
+    assert(count == 3);
+}
+
+it("should track min and max") {
+    let mut i = 0;
+    let mut min = 100;
+    let mut max = 0;
+    do {
+        let val = (i * 7) % 11;
+        if (val < min) { min = val; }
+        if (val > max) { max = val; }
+        i = i + 1;
+    } while (i < 11);
+    assert(min == 0);
+    assert(max == 10);
+}
+
+// ============================================================================
+// EDGE CASES - COMPOUND CONDITIONS
+// ============================================================================
+
+it("should handle AND condition") {
+    let mut x = 0;
+    let mut y = 0;
+    do {
+        x = x + 1;
+        y = y + 2;
+    } while (x < 5 and y < 8);
+    assert(x == 4);
+    assert(y == 8);
+}
+
+it("should handle OR condition") {
+    let mut x = 0;
+    let mut y = 10;
+    do {
+        x = x + 1;
+        y = y - 1;
+    } while (x < 3 or y > 8);
+    assert(x == 3);
+    assert(y == 7);
+}
+
+it("should handle complex boolean condition") {
+    let mut n = 0;
+    do {
+        n = n + 1;
+    } while (n < 10 and n % 3 != 0);
+    assert(n == 3);
+}
+
+// ============================================================================
+// EDGE CASES - BREAK SCENARIOS
+// ============================================================================
+
+it("should break immediately") {
+    let mut count = 0;
+    do {
+        count = count + 1;
+        break;
+    } while (true);
+    assert(count == 1);
+}
+
+it("should break on specific value") {
+    let mut sum = 0;
+    let mut i = 0;
+    do {
+        i = i + 1;
+        if (i == 7) { break; }
+        sum = sum + i;
+    } while (i < 100);
+    assert(i == 7);
+    assert(sum == 21);  // 1+2+3+4+5+6
+}
+
+it("should break from nested inner loop") {
+    let mut result = 0;
+    let mut outer = 0;
+    do {
+        let mut inner = 0;
+        do {
+            inner = inner + 1;
+            if (inner == 2) { break; }
+            result = result + 1;
+        } while (inner < 10);
+        outer = outer + 1;
+    } while (outer < 3);
+    assert(result == 3);  // 1 per outer iteration
+}
+
+// ============================================================================
+// EDGE CASES - CONTINUE SCENARIOS
+// ============================================================================
+
+it("should continue skipping even numbers") {
+    let mut i = 0;
+    let mut sum = 0;
+    do {
+        i = i + 1;
+        if (i % 2 == 0) { continue; }
+        sum = sum + i;
+    } while (i < 6);
+    assert(sum == 9);  // 1 + 3 + 5
+}
+
+it("should continue with multiple conditions") {
+    let mut i = 0;
+    let mut count = 0;
+    do {
+        i = i + 1;
+        if (i % 2 == 0) { continue; }
+        if (i % 3 == 0) { continue; }
+        count = count + 1;
+    } while (i < 12);
+    assert(count == 4);  // 1, 5, 7, 11
+}
+
+it("should continue at specific values") {
+    let mut i = 0;
+    let mut product = 1;
+    do {
+        i = i + 1;
+        if (i == 3 or i == 5) { continue; }
+        product = product * i;
+    } while (i < 6);
+    assert(product == 48);  // 1 * 2 * 4 * 6
+}
+
+// ============================================================================
+// EDGE CASES - ARITHMETIC SEQUENCES
+// ============================================================================
+
+it("should compute factorial") {
+    let mut n = 1;
+    let mut fact = 1;
+    do {
+        fact = fact * n;
+        n = n + 1;
+    } while (n <= 5);
+    assert(fact == 120);  // 5!
+}
+
+it("should compute fibonacci") {
+    let mut a = 0;
+    let mut b = 1;
+    let mut count = 0;
+    do {
+        let temp = a + b;
+        a = b;
+        b = temp;
+        count = count + 1;
+    } while (count < 10);
+    assert(a == 55);  // F(10)
+}
+
+it("should compute power of 2") {
+    let mut power = 1;
+    let mut exp = 0;
+    do {
+        power = power * 2;
+        exp = exp + 1;
+    } while (exp < 10);
+    assert(power == 1024);  // 2^10
+}
+
+it("should compute triangular number") {
+    let mut n = 0;
+    let mut tri = 0;
+    do {
+        n = n + 1;
+        tri = tri + n;
+    } while (n < 10);
+    assert(tri == 55);  // T(10)
+}
+
+// ============================================================================
+// EDGE CASES - STRING OPERATIONS
+// ============================================================================
+
+it("should build string in loop") {
+    let mut s = "";
+    let mut i = 0;
+    do {
+        s = s + "x";
+        i = i + 1;
+    } while (i < 5);
+    assert(s == "xxxxx");
+}
+
+it("should concatenate numbers as string") {
+    let mut result = "";
+    let mut n = 1;
+    do {
+        result = result + "a";
+        n = n + 1;
+    } while (n <= 3);
+    assert(result == "aaa");
+}
+
+// ============================================================================
+// EDGE CASES - WITH ARRAYS
+// ============================================================================
+
+it("should iterate array indices") {
+    let arr = [10, 20, 30, 40];
+    let mut sum = 0;
+    let mut i = 0;
+    do {
+        sum = sum + arr[i];
+        i = i + 1;
+    } while (i < 4);
+    assert(sum == 100);
+}
+
+it("should find element in array") {
+    let arr = [5, 3, 8, 1, 9];
+    let mut i = 0;
+    let mut found_index = -1;
+    do {
+        if (arr[i] == 8) {
+            found_index = i;
+            break;
+        }
+        i = i + 1;
+    } while (i < 5);
+    assert(found_index == 2);
+}
+
+it("should count elements matching condition") {
+    let arr = [1, 4, 2, 5, 3, 6];
+    let mut i = 0;
+    let mut count = 0;
+    do {
+        if (arr[i] > 3) { count = count + 1; }
+        i = i + 1;
+    } while (i < 6);
+    assert(count == 3);  // 4, 5, 6
+}
+
+// ============================================================================
+// EDGE CASES - NESTED DO-WHILE
+// ============================================================================
+
+it("should handle deeply nested do-while") {
+    let mut a = 0;
+    let mut total = 0;
+    do {
+        let mut b = 0;
+        do {
+            let mut c = 0;
+            do {
+                total = total + 1;
+                c = c + 1;
+            } while (c < 2);
+            b = b + 1;
+        } while (b < 2);
+        a = a + 1;
+    } while (a < 2);
+    assert(total == 8);  // 2 * 2 * 2
+}
+
+it("should handle nested with different bounds") {
+    let mut outer = 0;
+    let mut sum = 0;
+    do {
+        let mut inner = 0;
+        do {
+            sum = sum + (outer + 1) * (inner + 1);
+            inner = inner + 1;
+        } while (inner < outer + 1);
+        outer = outer + 1;
+    } while (outer < 4);
+    // outer=0: 1, outer=1: 2+4=6, outer=2: 3+6+9=18, outer=3: 4+8+12+16=40
+    assert(sum == 65);
+}
+
+// ============================================================================
+// EDGE CASES - WITH FUNCTIONS
+// ============================================================================
+
+it("should call function in loop body") {
+    fn increment(x: i32): i32 { return x + 1; }
+    let mut n = 0;
+    do {
+        n = increment(n);
+    } while (n < 5);
+    assert(n == 5);
+}
+
+it("should call function in condition") {
+    fn shouldContinue(x: i32): bool { return x < 5; }
+    let mut n = 0;
+    do {
+        n = n + 1;
+    } while (shouldContinue(n));
+    assert(n == 5);
+}
+
+it("should use function result for computation") {
+    fn square(x: i32): i32 { return x * x; }
+    let mut sum = 0;
+    let mut i = 1;
+    do {
+        sum = sum + square(i);
+        i = i + 1;
+    } while (i <= 4);
+    assert(sum == 30);  // 1 + 4 + 9 + 16
+}
+
+// ============================================================================
+// EDGE CASES - WITH MATCH EXPRESSIONS
+// ============================================================================
+
+it("should use match in loop body") {
+    let mut n = 0;
+    let mut sum = 0;
+    do {
+        let value = match (n % 3) {
+            0 => 1,
+            1 => 2,
+            _ => 3,
+        };
+        sum = sum + value;
+        n = n + 1;
+    } while (n < 6);
+    assert(sum == 12);  // 1+2+3+1+2+3
+}
+
+// ============================================================================
+// EDGE CASES - PERFORMANCE PATTERNS
+// ============================================================================
+
+it("should handle many iterations") {
+    let mut count = 0;
+    do {
+        count = count + 1;
+    } while (count < 1000);
+    assert(count == 1000);
+}
+
+it("should double until threshold") {
+    let mut n = 1;
+    do {
+        n = n * 2;
+    } while (n < 1000);
+    assert(n == 1024);
+}
+
+it("should halve until threshold") {
+    let mut n = 1024;
+    let mut steps = 0;
+    do {
+        n = n / 2;
+        steps = steps + 1;
+    } while (n > 1);
+    assert(steps == 10);
+}
+
+// ============================================================================
+// EDGE CASES - SPECIAL PATTERNS
+// ============================================================================
+
+it("should implement countdown") {
+    let mut n = 5;
+    let mut result = "";
+    do {
+        result = result + "x";
+        n = n - 1;
+    } while (n > 0);
+    assert(result == "xxxxx");
+}
+
+it("should alternate values") {
+    let mut flag = true;
+    let mut count = 0;
+    do {
+        flag = !flag;
+        count = count + 1;
+    } while (count < 4);
+    assert(flag == true);  // Started true, flipped 4 times
+}
+
+it("should accumulate with condition") {
+    let mut sum = 0;
+    let mut i = 1;
+    do {
+        if (i % 2 == 1) {
+            sum = sum + i;
+        }
+        i = i + 1;
+    } while (i <= 10);
+    assert(sum == 25);  // 1+3+5+7+9
+}
+

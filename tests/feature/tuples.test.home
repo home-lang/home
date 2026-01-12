@@ -6,66 +6,83 @@ fn getValue(n: i32): i32 {
 
 it("should create empty tuple") {
     let empty = ();
-    assert(true);
+    assert(empty.len() == 0);
 }
 
 it("should create single element tuple") {
     let single = (42,);
-    assert(true);
+    assert(single[0] == 42);
+    assert(single.len() == 1);
 }
 
 it("should create pair tuple") {
     let pair = (1, 2);
-    assert(true);
+    assert(pair[0] == 1);
+    assert(pair[1] == 2);
 }
 
 it("should create triple tuple") {
     let triple = (1, 2, 3);
-    assert(true);
+    assert(triple[0] == 1);
+    assert(triple[1] == 2);
+    assert(triple[2] == 3);
 }
 
 it("should create nested tuples") {
     let nested = ((1, 2), (3, 4));
-    assert(true);
+    assert(nested[0][0] == 1);
+    assert(nested[0][1] == 2);
+    assert(nested[1][0] == 3);
+    assert(nested[1][1] == 4);
 }
 
 it("should support tuple with computed values") {
     let computed = (1 + 1, 2 * 2, 3 + 3);
-    assert(true);
+    assert(computed[0] == 2);
+    assert(computed[1] == 4);
+    assert(computed[2] == 6);
 }
 
 it("should support tuple with function calls") {
     let funcTuple = (getValue(1), getValue(2), getValue(3));
-    assert(true);
+    assert(funcTuple[0] == 10);
+    assert(funcTuple[1] == 20);
+    assert(funcTuple[2] == 30);
 }
 
 it("should support tuple assignment") {
     let t1 = (10, 20);
     let t2 = t1;
-    assert(true);
+    assert(t2[0] == 10);
+    assert(t2[1] == 20);
 }
 
 it("should support ternary with tuples") {
-    let selectTuple = true ? (1, 2) : (3, 4);
-    assert(true);
+    let selectTuple = if (true) { (1, 2) } else { (3, 4) };
+    assert(selectTuple[0] == 1);
+    assert(selectTuple[1] == 2);
 }
 
 it("should support tuple with negative numbers") {
     let negTuple = (-1, -2, -3);
-    assert(true);
+    assert(negTuple[0] == -1);
+    assert(negTuple[1] == -2);
+    assert(negTuple[2] == -3);
 }
 
 it("should support tuple with mixed types") {
     let mixed = (42, true, "hello");
-    assert(true);
+    assert(mixed[0] == 42);
+    assert(mixed[1] == true);
+    assert(mixed[2] == "hello");
 }
 
 it("should support tuple in function parameter") {
     fn process_pair(p: (i32, i32)): i32 {
-        return 0;
+        return p[0] + p[1];
     }
     let result = process_pair((1, 2));
-    assert(result == 0);
+    assert(result == 3);
 }
 
 it("should support tuple return from function") {
@@ -73,33 +90,201 @@ it("should support tuple return from function") {
         return (10, 20);
     }
     let p = make_pair();
-    assert(true);
+    assert(p[0] == 10);
+    assert(p[1] == 20);
 }
 
 it("should support deeply nested tuples") {
     let deep = (((1, 2), (3, 4)), ((5, 6), (7, 8)));
-    assert(true);
+    assert(deep[0][0][0] == 1);
+    assert(deep[1][1][1] == 8);
 }
 
 it("should support tuple with boolean values") {
     let flags = (true, false, true);
-    assert(true);
+    assert(flags[0] == true);
+    assert(flags[1] == false);
+    assert(flags[2] == true);
 }
 
 it("should support tuple with large values") {
     let large = (1000000, 2000000, 3000000);
-    assert(true);
+    assert(large[0] == 1000000);
+    assert(large[1] == 2000000);
+    assert(large[2] == 3000000);
 }
 
 it("should support tuple with zero values") {
     let zeros = (0, 0, 0);
-    assert(true);
+    assert(zeros[0] == 0);
+    assert(zeros[1] == 0);
+    assert(zeros[2] == 0);
 }
 
 it("should support tuple with expressions") {
     let a = 5;
     let b = 10;
     let expr = (a + b, a - b, a * b);
-    assert(true);
+    assert(expr[0] == 15);
+    assert(expr[1] == -5);
+    assert(expr[2] == 50);
+}
+
+// ============================================================================
+// EDGE CASES - TUPLE LENGTH
+// ============================================================================
+
+it("should get length of tuple") {
+    let t0 = ();
+    let t1 = (1,);
+    let t2 = (1, 2);
+    let t5 = (1, 2, 3, 4, 5);
+    assert(t0.len() == 0);
+    assert(t1.len() == 1);
+    assert(t2.len() == 2);
+    assert(t5.len() == 5);
+}
+
+// ============================================================================
+// EDGE CASES - TUPLE INDEXING
+// ============================================================================
+
+it("should access first element") {
+    let t = (100, 200, 300);
+    assert(t[0] == 100);
+}
+
+it("should access last element") {
+    let t = (100, 200, 300);
+    assert(t[2] == 300);
+}
+
+it("should access middle element") {
+    let t = (1, 2, 3, 4, 5);
+    assert(t[2] == 3);
+}
+
+it("should index with variable") {
+    let t = (10, 20, 30);
+    let i = 1;
+    assert(t[i] == 20);
+}
+
+it("should index with expression") {
+    let t = (10, 20, 30);
+    assert(t[1 + 1] == 30);
+}
+
+// ============================================================================
+// EDGE CASES - TUPLE IN LOOPS
+// ============================================================================
+
+it("should iterate tuple with index") {
+    let t = (10, 20, 30);
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < t.len()) {
+        sum = sum + t[i];
+        i = i + 1;
+    }
+    assert(sum == 60);
+}
+
+it("should iterate tuple with for") {
+    let t = (1, 2, 3, 4);
+    let mut sum = 0;
+    for (v in t) {
+        sum = sum + v;
+    }
+    assert(sum == 10);
+}
+
+// ============================================================================
+// EDGE CASES - TUPLE OPERATIONS
+// ============================================================================
+
+it("should use tuple element in arithmetic") {
+    let t = (10, 20);
+    let sum = t[0] + t[1];
+    assert(sum == 30);
+}
+
+it("should use tuple element in comparison") {
+    let t = (5, 10);
+    assert(t[0] < t[1]);
+    assert(t[1] > t[0]);
+}
+
+it("should use tuple elements in conditional") {
+    let t = (5, 10);
+    let max = if (t[0] > t[1]) { t[0] } else { t[1] };
+    assert(max == 10);
+}
+
+// ============================================================================
+// EDGE CASES - TUPLE WITH FUNCTIONS
+// ============================================================================
+
+it("should pass tuple element to function") {
+    fn double(x: i32): i32 { return x * 2; }
+    let t = (5, 10);
+    assert(double(t[0]) == 10);
+    assert(double(t[1]) == 20);
+}
+
+it("should create tuple from function results") {
+    fn add(a: i32, b: i32): i32 { return a + b; }
+    fn mult(a: i32, b: i32): i32 { return a * b; }
+    let t = (add(1, 2), mult(3, 4));
+    assert(t[0] == 3);
+    assert(t[1] == 12);
+}
+
+it("should return tuple from function with computed values") {
+    fn compute(x: i32): (i32, i32, i32) {
+        return (x, x * 2, x * 3);
+    }
+    let result = compute(5);
+    assert(result[0] == 5);
+    assert(result[1] == 10);
+    assert(result[2] == 15);
+}
+
+// ============================================================================
+// EDGE CASES - STRING TUPLES
+// ============================================================================
+
+it("should create string tuple") {
+    let t = ("hello", "world");
+    assert(t[0] == "hello");
+    assert(t[1] == "world");
+}
+
+it("should concatenate tuple strings") {
+    let t = ("hello", " ", "world");
+    let result = t[0] + t[1] + t[2];
+    assert(result == "hello world");
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN TUPLES
+// ============================================================================
+
+it("should use boolean tuple in logic") {
+    let t = (true, false);
+    assert(t[0] and !t[1]);
+    assert(t[0] or t[1]);
+}
+
+it("should check all true") {
+    let t = (true, true, true);
+    let all = t[0] and t[1] and t[2];
+    assert(all == true);
+}
+
+it("should check any true") {
+    let t = (false, true, false);
+    let any = t[0] or t[1] or t[2];
+    assert(any == true);
 }
 

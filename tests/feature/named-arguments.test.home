@@ -89,3 +89,208 @@ it("should pass functions as named arguments") {
     assert(result == 42);
 }
 
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH ZEROS
+// ============================================================================
+
+it("should pass zero as named argument") {
+    fn add(a: i32, b: i32): i32 {
+        return a + b;
+    }
+    assert(add(a: 0, b: 5) == 5);
+    assert(add(a: 5, b: 0) == 5);
+    assert(add(b: 0, a: 0) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH NEGATIVES
+// ============================================================================
+
+it("should pass negative values as named") {
+    fn subtract(from: i32, value: i32): i32 {
+        return from - value;
+    }
+    assert(subtract(from: 10, value: -5) == 15);
+    assert(subtract(value: 3, from: -10) == -13);
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH STRINGS
+// ============================================================================
+
+it("should pass empty string as named") {
+    fn concat(prefix: string, suffix: string): string {
+        return prefix + suffix;
+    }
+    assert(concat(prefix: "", suffix: "end") == "end");
+    assert(concat(suffix: "", prefix: "start") == "start");
+}
+
+it("should pass strings with spaces") {
+    fn wrap(text: string, before: string, after: string): string {
+        return before + text + after;
+    }
+    let result = wrap(text: "hello", before: "<<", after: ">>");
+    assert(result == "<<hello>>");
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH BOOLEANS
+// ============================================================================
+
+it("should pass boolean named arguments") {
+    fn check(flag_a: bool, flag_b: bool): i32 {
+        if (flag_a and flag_b) { return 3; }
+        if (flag_a) { return 1; }
+        if (flag_b) { return 2; }
+        return 0;
+    }
+    assert(check(flag_a: true, flag_b: true) == 3);
+    assert(check(flag_b: false, flag_a: true) == 1);
+    assert(check(flag_a: false, flag_b: true) == 2);
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS ORDERING VARIATIONS
+// ============================================================================
+
+it("should handle all orderings of three args") {
+    fn combine(a: i32, b: i32, c: i32): i32 {
+        return a * 100 + b * 10 + c;
+    }
+    assert(combine(a: 1, b: 2, c: 3) == 123);
+    assert(combine(a: 1, c: 3, b: 2) == 123);
+    assert(combine(b: 2, a: 1, c: 3) == 123);
+    assert(combine(b: 2, c: 3, a: 1) == 123);
+    assert(combine(c: 3, a: 1, b: 2) == 123);
+    assert(combine(c: 3, b: 2, a: 1) == 123);
+}
+
+// ============================================================================
+// EDGE CASES - MIXED POSITIONAL AND NAMED
+// ============================================================================
+
+it("should mix one positional with named") {
+    fn format(value: i32, prefix: string, suffix: string): string {
+        return prefix + "{value}" + suffix;
+    }
+    let result = format(42, suffix: "!", prefix: ">>");
+    assert(result == ">>{value}!");
+}
+
+it("should mix two positional with named") {
+    fn compute(a: i32, b: i32, c: i32): i32 {
+        return a + b * c;
+    }
+    assert(compute(1, 2, c: 3) == 7);  // 1 + 2*3
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS IN EXPRESSIONS
+// ============================================================================
+
+it("should use named args result in expression") {
+    fn mult(x: i32, y: i32): i32 {
+        return x * y;
+    }
+    let result = mult(y: 5, x: 3) + mult(x: 2, y: 4);
+    assert(result == 23);  // 15 + 8
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS IN CONDITIONALS
+// ============================================================================
+
+it("should use named args in condition") {
+    fn compare(left: i32, right: i32): bool {
+        return left > right;
+    }
+    let result = if (compare(left: 10, right: 5)) { "greater" } else { "not greater" };
+    assert(result == "greater");
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH LARGE VALUES
+// ============================================================================
+
+it("should handle large values as named args") {
+    fn add(x: i32, y: i32): i32 {
+        return x + y;
+    }
+    assert(add(x: 1000000, y: 2000000) == 3000000);
+    assert(add(y: 999999, x: 1) == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS IN LOOPS
+// ============================================================================
+
+it("should use named args in loop") {
+    fn scale(value: i32, factor: i32): i32 {
+        return value * factor;
+    }
+    let mut sum = 0;
+    for (i in 1..4) {
+        sum = sum + scale(value: i, factor: 2);
+    }
+    assert(sum == 12);  // 2 + 4 + 6
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH STRUCTS
+// ============================================================================
+
+it("should use named args returning struct") {
+    struct Rectangle {
+        width: i32,
+        height: i32
+    }
+    fn make_rect(w: i32, h: i32): Rectangle {
+        return Rectangle { width: w, height: h };
+    }
+    let r = make_rect(h: 10, w: 20);
+    assert(r.width == 20);
+    assert(r.height == 10);
+}
+
+it("should pass struct as named argument") {
+    struct Point { x: i32, y: i32 }
+    fn distance_sq(p1: Point, p2: Point): i32 {
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
+        return dx * dx + dy * dy;
+    }
+    let a = Point { x: 0, y: 0 };
+    let b = Point { x: 3, y: 4 };
+    assert(distance_sq(p2: b, p1: a) == 25);
+}
+
+// ============================================================================
+// EDGE CASES - NAMED ARGS WITH DEFAULTS
+// ============================================================================
+
+it("should combine named args with defaults") {
+    fn config(host: string = "localhost", port: i32 = 8080, secure: bool = false): string {
+        if (secure) {
+            return "https://" + host;
+        }
+        return "http://" + host;
+    }
+    assert(config(secure: true) == "https://localhost");
+    assert(config(host: "example.com") == "http://example.com");
+}
+
+// ============================================================================
+// EDGE CASES - NESTED FUNCTION CALLS WITH NAMED ARGS
+// ============================================================================
+
+it("should nest function calls with named args") {
+    fn inner(x: i32, y: i32): i32 {
+        return x + y;
+    }
+    fn outer(a: i32, b: i32): i32 {
+        return inner(x: a, y: b) * 2;
+    }
+    assert(outer(b: 3, a: 2) == 10);  // (2+3)*2
+}
+

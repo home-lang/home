@@ -110,3 +110,228 @@ it("should convert int to char") {
     assert(c == 'B');
 }
 
+// ============================================================================
+// EDGE CASES - MORE CHARACTERS
+// ============================================================================
+
+it("should handle uppercase letters") {
+    let c = 'M';
+    assert(c == 'M');
+    assert(c >= 'A');
+    assert(c <= 'Z');
+}
+
+it("should handle lowercase letters") {
+    let c = 'm';
+    assert(c == 'm');
+    assert(c >= 'a');
+    assert(c <= 'z');
+}
+
+it("should handle digits as chars") {
+    let c = '7';
+    assert(c >= '0');
+    assert(c <= '9');
+}
+
+it("should handle space character") {
+    let space = ' ';
+    assert(space == ' ');
+}
+
+// ============================================================================
+// EDGE CASES - SPECIAL SYMBOLS
+// ============================================================================
+
+it("should handle exclamation mark") {
+    let c = '!';
+    assert(c == '!');
+}
+
+it("should handle at symbol") {
+    let c = '@';
+    assert(c == '@');
+}
+
+it("should handle hash symbol") {
+    let c = '#';
+    assert(c == '#');
+}
+
+it("should handle dollar sign") {
+    let c = '$';
+    assert(c == '$');
+}
+
+it("should handle percent symbol") {
+    let c = '%';
+    assert(c == '%');
+}
+
+it("should handle ampersand") {
+    let c = '&';
+    assert(c == '&');
+}
+
+it("should handle asterisk") {
+    let c = '*';
+    assert(c == '*');
+}
+
+// ============================================================================
+// EDGE CASES - BRACKETS AND PARENTHESES
+// ============================================================================
+
+it("should handle parentheses") {
+    let open = '(';
+    let close = ')';
+    assert(open == '(');
+    assert(close == ')');
+}
+
+it("should handle square brackets") {
+    let open = '[';
+    let close = ']';
+    assert(open == '[');
+    assert(close == ']');
+}
+
+it("should handle curly braces") {
+    let open = '{';
+    let close = '}';
+    assert(open == '{');
+    assert(close == '}');
+}
+
+// ============================================================================
+// EDGE CASES - CHAR IN CONDITIONS
+// ============================================================================
+
+it("should use char in if condition") {
+    let c = 'y';
+    let result = if (c == 'y') { "yes" } else { "no" };
+    assert(result == "yes");
+}
+
+it("should use char in match") {
+    let grade = 'A';
+    let msg = match grade {
+        'A' => "excellent",
+        'B' => "good",
+        'C' => "average",
+        _ => "other"
+    };
+    assert(msg == "excellent");
+}
+
+it("should check vowel with or") {
+    let c = 'e';
+    let is_vowel = c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u';
+    assert(is_vowel == true);
+}
+
+it("should check consonant") {
+    let c = 'k';
+    let is_consonant = c >= 'a' and c <= 'z' and c != 'a' and c != 'e' and c != 'i' and c != 'o' and c != 'u';
+    assert(is_consonant == true);
+}
+
+// ============================================================================
+// EDGE CASES - CHAR ARRAYS
+// ============================================================================
+
+it("should create char array") {
+    let chars = ['a', 'b', 'c'];
+    assert(chars.len() == 3);
+    assert(chars[0] == 'a');
+    assert(chars[2] == 'c');
+}
+
+it("should iterate char array") {
+    let vowels = ['a', 'e', 'i', 'o', 'u'];
+    let mut count = 0;
+    for (v in vowels) {
+        count = count + 1;
+    }
+    assert(count == 5);
+}
+
+it("should find char in array") {
+    let chars = ['x', 'y', 'z'];
+    let found = chars.find(|c| c == 'y');
+    assert(found == 'y');
+}
+
+// ============================================================================
+// EDGE CASES - ASCII VALUES
+// ============================================================================
+
+it("should convert lowercase a to ascii") {
+    let c = 'a';
+    let code = c as i32;
+    assert(code == 97);
+}
+
+it("should convert zero digit to ascii") {
+    let c = '0';
+    let code = c as i32;
+    assert(code == 48);
+}
+
+it("should convert space to ascii") {
+    let c = ' ';
+    let code = c as i32;
+    assert(code == 32);
+}
+
+it("should convert ascii to digit char") {
+    let code = 57;
+    let c = code as char;
+    assert(c == '9');
+}
+
+// ============================================================================
+// EDGE CASES - CHAR IN FUNCTIONS
+// ============================================================================
+
+it("should pass char to function") {
+    fn is_upper(c: char): bool {
+        return c >= 'A' and c <= 'Z';
+    }
+    assert(is_upper('M') == true);
+    assert(is_upper('m') == false);
+}
+
+it("should return char from function") {
+    fn next_char(c: char): char {
+        let code = c as i32;
+        return (code + 1) as char;
+    }
+    assert(next_char('a') == 'b');
+    assert(next_char('A') == 'B');
+}
+
+// ============================================================================
+// EDGE CASES - CHAR EDGE VALUES
+// ============================================================================
+
+it("should compare first and last ascii letters") {
+    let first = 'A';
+    let last = 'Z';
+    assert(first < last);
+    let diff = (last as i32) - (first as i32);
+    assert(diff == 25);
+}
+
+it("should handle underscore") {
+    let c = '_';
+    assert(c == '_');
+}
+
+it("should handle plus and minus") {
+    let plus = '+';
+    let minus = '-';
+    assert(plus == '+');
+    assert(minus == '-');
+}
+

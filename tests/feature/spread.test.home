@@ -7,44 +7,68 @@ fn sum(a: i32, b: i32, c: i32): i32 {
 it("should spread at end of tuple") {
     let arr1 = (1, 2, 3);
     let spread1 = (...arr1, 4, 5);
-    assert(true);
+    assert(spread1.len() == 5);
+    assert(spread1[0] == 1);
+    assert(spread1[3] == 4);
+    assert(spread1[4] == 5);
 }
 
 it("should spread at beginning of tuple") {
     let arr2 = (4, 5, 6);
     let spread2 = (0, ...arr2);
-    assert(true);
+    assert(spread2.len() == 4);
+    assert(spread2[0] == 0);
+    assert(spread2[1] == 4);
+    assert(spread2[2] == 5);
+    assert(spread2[3] == 6);
 }
 
 it("should spread in middle of tuple") {
     let arr3 = (2, 3);
     let spread3 = (1, ...arr3, 4);
-    assert(true);
+    assert(spread3.len() == 4);
+    assert(spread3[0] == 1);
+    assert(spread3[1] == 2);
+    assert(spread3[2] == 3);
+    assert(spread3[3] == 4);
 }
 
 it("should combine multiple spreads") {
     let a1 = (1, 2);
     let a2 = (3, 4);
     let combined = (...a1, ...a2);
-    assert(true);
+    assert(combined.len() == 4);
+    assert(combined[0] == 1);
+    assert(combined[1] == 2);
+    assert(combined[2] == 3);
+    assert(combined[3] == 4);
 }
 
 it("should spread single element") {
     let single = (42,);
     let expanded = (...single, 43);
-    assert(true);
+    assert(expanded.len() == 2);
+    assert(expanded[0] == 42);
+    assert(expanded[1] == 43);
 }
 
 it("should spread nested tuple") {
     let inner = (5, 6);
     let outer = (1, 2, ...inner, 7);
-    assert(true);
+    assert(outer.len() == 5);
+    assert(outer[0] == 1);
+    assert(outer[1] == 2);
+    assert(outer[2] == 5);
+    assert(outer[3] == 6);
+    assert(outer[4] == 7);
 }
 
 it("should spread empty tuple") {
     let empty = ();
     let withEmpty = (1, ...empty, 2);
-    assert(true);
+    assert(withEmpty.len() == 2);
+    assert(withEmpty[0] == 1);
+    assert(withEmpty[1] == 2);
 }
 
 it("should handle three-way spread") {
@@ -52,50 +76,233 @@ it("should handle three-way spread") {
     let part2 = (2,);
     let part3 = (3,);
     let threeway = (...part1, ...part2, ...part3);
-    assert(true);
+    assert(threeway.len() == 3);
+    assert(threeway[0] == 1);
+    assert(threeway[1] == 2);
+    assert(threeway[2] == 3);
 }
 
 it("should spread with mixed values") {
     let base = (10, 20);
     let extended = (...base, 30, 40, 50);
-    assert(true);
+    assert(extended.len() == 5);
+    assert(extended[0] == 10);
+    assert(extended[2] == 30);
+    assert(extended[4] == 50);
 }
 
 it("should spread pair tuples") {
     let a = (1, 2);
     let b = (3, 4);
     let combined = (...a, ...b);
-    assert(true);
+    assert(combined.len() == 4);
+    let sum = combined[0] + combined[1] + combined[2] + combined[3];
+    assert(sum == 10);
 }
 
 it("should spread in complex expression") {
     let inner = (5, 6, 7);
     let outer = (1, 2, ...inner, 8, 9);
-    assert(true);
+    assert(outer.len() == 7);
+    assert(outer[0] == 1);
+    assert(outer[2] == 5);
+    assert(outer[5] == 8);
+    assert(outer[6] == 9);
 }
 
 it("should spread computed tuples") {
     let x = 10;
     let computed = (x, x + 1);
     let spread = (...computed, x + 2);
-    assert(true);
+    assert(spread.len() == 3);
+    assert(spread[0] == 10);
+    assert(spread[1] == 11);
+    assert(spread[2] == 12);
 }
 
 it("should handle spread only") {
     let source = (1, 2, 3);
     let copy = (...source,);
-    assert(true);
+    assert(copy.len() == 3);
+    assert(copy[0] == 1);
+    assert(copy[1] == 2);
+    assert(copy[2] == 3);
 }
 
 it("should spread with negative values") {
     let neg = (-1, -2);
     let spread = (...neg, -3);
-    assert(true);
+    assert(spread.len() == 3);
+    assert(spread[0] == -1);
+    assert(spread[1] == -2);
+    assert(spread[2] == -3);
 }
 
 it("should spread large tuple") {
     let large = (1, 2, 3, 4, 5);
     let expanded = (0, ...large, 6);
-    assert(true);
+    assert(expanded.len() == 7);
+    assert(expanded[0] == 0);
+    assert(expanded[1] == 1);
+    assert(expanded[5] == 5);
+    assert(expanded[6] == 6);
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD SUM VERIFICATION
+// ============================================================================
+
+it("should preserve sum after spread") {
+    let original = (10, 20, 30);
+    let spread_result = (...original,);
+    let orig_sum = original[0] + original[1] + original[2];
+    let spread_sum = spread_result[0] + spread_result[1] + spread_result[2];
+    assert(orig_sum == spread_sum);
+}
+
+it("should calculate sum of combined spread") {
+    let a = (1, 2, 3);
+    let b = (4, 5, 6);
+    let combined = (...a, ...b);
+    let mut sum = 0;
+    for (v in combined) {
+        sum = sum + v;
+    }
+    assert(sum == 21);
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD WITH ZERO
+// ============================================================================
+
+it("should spread with zeros") {
+    let zeros = (0, 0, 0);
+    let result = (...zeros, 1);
+    assert(result.len() == 4);
+    assert(result[0] == 0);
+    assert(result[3] == 1);
+}
+
+it("should spread between zeros") {
+    let values = (1, 2, 3);
+    let result = (0, ...values, 0);
+    assert(result.len() == 5);
+    assert(result[0] == 0);
+    assert(result[4] == 0);
+    assert(result[2] == 2);
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD IN LOOPS
+// ============================================================================
+
+it("should iterate spread result") {
+    let a = (1, 2);
+    let b = (3, 4);
+    let spread = (...a, ...b);
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < spread.len()) {
+        sum = sum + spread[i];
+        i = i + 1;
+    }
+    assert(sum == 10);
+}
+
+it("should use spread result in for loop") {
+    let base = (10, 20, 30);
+    let extended = (...base, 40);
+    let mut product = 1;
+    for (v in extended) {
+        product = product * v;
+    }
+    assert(product == 240000);  // 10 * 20 * 30 * 40
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD WITH STRINGS
+// ============================================================================
+
+it("should spread string tuples") {
+    let words = ("hello", "world");
+    let result = (...words, "!");
+    assert(result.len() == 3);
+    assert(result[0] == "hello");
+    assert(result[1] == "world");
+    assert(result[2] == "!");
+}
+
+it("should combine string tuples with spread") {
+    let greet = ("hello",);
+    let name = ("world",);
+    let combined = (...greet, " ", ...name);
+    assert(combined.len() == 3);
+    let sentence = combined[0] + combined[1] + combined[2];
+    assert(sentence == "hello world");
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD WITH BOOLEANS
+// ============================================================================
+
+it("should spread boolean tuples") {
+    let flags = (true, false);
+    let result = (...flags, true);
+    assert(result.len() == 3);
+    assert(result[0] == true);
+    assert(result[1] == false);
+    assert(result[2] == true);
+}
+
+it("should combine boolean tuples") {
+    let a = (true, true);
+    let b = (false, false);
+    let combined = (...a, ...b);
+    assert(combined.len() == 4);
+    assert(combined[0] == true);
+    assert(combined[2] == false);
+}
+
+// ============================================================================
+// EDGE CASES - SPREAD IN EXPRESSIONS
+// ============================================================================
+
+it("should use spread in conditional") {
+    let base = (1, 2, 3);
+    let extra = if (true) { (...base, 4) } else { (...base, 5) };
+    assert(extra.len() == 4);
+    assert(extra[3] == 4);
+}
+
+it("should calculate with spread elements") {
+    let values = (5, 10, 15);
+    let spread = (...values,);
+    let avg = (spread[0] + spread[1] + spread[2]) / 3;
+    assert(avg == 10);
+}
+
+// ============================================================================
+// EDGE CASES - MANY SPREADS
+// ============================================================================
+
+it("should handle four-way spread") {
+    let a = (1,);
+    let b = (2,);
+    let c = (3,);
+    let d = (4,);
+    let result = (...a, ...b, ...c, ...d);
+    assert(result.len() == 4);
+    let sum = result[0] + result[1] + result[2] + result[3];
+    assert(sum == 10);
+}
+
+it("should handle mixed spread and literals") {
+    let mid = (2, 3);
+    let result = (1, ...mid, 4, ...mid, 5);
+    assert(result.len() == 7);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[3] == 4);
+    assert(result[6] == 5);
 }
 

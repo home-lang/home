@@ -126,3 +126,442 @@ it("should compute distance squared") {
     let b = Point { x: 3, y: 4 };
     assert(dist_sq(a, b) == 25);
 }
+
+// ============================================================================
+// EDGE CASES - POINT STRUCT
+// ============================================================================
+
+it("should create point at origin") {
+    let origin = Point { x: 0, y: 0 };
+    assert(origin.x == 0);
+    assert(origin.y == 0);
+}
+
+it("should create point with large values") {
+    let p = Point { x: 1000000, y: 999999 };
+    assert(p.x == 1000000);
+    assert(p.y == 999999);
+}
+
+it("should create point with mixed signs") {
+    let p1 = Point { x: -10, y: 20 };
+    let p2 = Point { x: 10, y: -20 };
+    assert(p1.x == -10);
+    assert(p1.y == 20);
+    assert(p2.x == 10);
+    assert(p2.y == -20);
+}
+
+it("should compute manhattan distance") {
+    fn manhattan(p1: Point, p2: Point): i32 {
+        fn abs(x: i32): i32 { if (x < 0) { return 0 - x; } return x; }
+        return abs(p2.x - p1.x) + abs(p2.y - p1.y);
+    }
+    let a = Point { x: 0, y: 0 };
+    let b = Point { x: 3, y: 4 };
+    assert(manhattan(a, b) == 7);
+}
+
+// ============================================================================
+// EDGE CASES - RECTANGLE STRUCT
+// ============================================================================
+
+it("should create unit rectangle") {
+    let unit = Rectangle { width: 1, height: 1 };
+    assert(unit.width == 1);
+    assert(unit.height == 1);
+}
+
+it("should create square rectangle") {
+    let square = Rectangle { width: 10, height: 10 };
+    assert(square.width == square.height);
+}
+
+it("should check if square") {
+    fn is_square(r: Rectangle): bool {
+        return r.width == r.height;
+    }
+    assert(is_square(Rectangle { width: 5, height: 5 }) == true);
+    assert(is_square(Rectangle { width: 5, height: 10 }) == false);
+}
+
+it("should compute area with large values") {
+    fn area(r: Rectangle): i32 {
+        return r.width * r.height;
+    }
+    let rect = Rectangle { width: 1000, height: 1000 };
+    assert(area(rect) == 1000000);
+}
+
+it("should compare rectangle areas") {
+    fn area(r: Rectangle): i32 {
+        return r.width * r.height;
+    }
+    let r1 = Rectangle { width: 10, height: 5 };
+    let r2 = Rectangle { width: 8, height: 6 };
+    assert(area(r1) == 50);
+    assert(area(r2) == 48);
+    assert(area(r1) > area(r2));
+}
+
+// ============================================================================
+// EDGE CASES - PERSON STRUCT
+// ============================================================================
+
+it("should create inactive person") {
+    let inactive = Person { age: 30, active: false };
+    assert(inactive.age == 30);
+    assert(inactive.active == false);
+}
+
+it("should create person with zero age") {
+    let newborn = Person { age: 0, active: true };
+    assert(newborn.age == 0);
+    assert(newborn.active == true);
+}
+
+it("should toggle active status via new struct") {
+    let person = Person { age: 25, active: true };
+    let inactive_person = Person { age: person.age, active: false };
+    assert(inactive_person.age == 25);
+    assert(inactive_person.active == false);
+}
+
+// ============================================================================
+// EDGE CASES - VECTOR3 STRUCT
+// ============================================================================
+
+it("should create zero vector") {
+    let zero = Vector3 { x: 0, y: 0, z: 0 };
+    assert(zero.x == 0);
+    assert(zero.y == 0);
+    assert(zero.z == 0);
+}
+
+it("should create unit vectors") {
+    let i = Vector3 { x: 1, y: 0, z: 0 };
+    let j = Vector3 { x: 0, y: 1, z: 0 };
+    let k = Vector3 { x: 0, y: 0, z: 1 };
+    assert(i.x == 1);
+    assert(j.y == 1);
+    assert(k.z == 1);
+}
+
+it("should compute dot product") {
+    fn dot(a: Vector3, b: Vector3): i32 {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    }
+    let v1 = Vector3 { x: 1, y: 2, z: 3 };
+    let v2 = Vector3 { x: 4, y: 5, z: 6 };
+    assert(dot(v1, v2) == 32);  // 1*4 + 2*5 + 3*6 = 4 + 10 + 18
+}
+
+it("should add vectors") {
+    fn add_vec(a: Vector3, b: Vector3): Vector3 {
+        return Vector3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+    }
+    let v1 = Vector3 { x: 1, y: 2, z: 3 };
+    let v2 = Vector3 { x: 4, y: 5, z: 6 };
+    let sum = add_vec(v1, v2);
+    assert(sum.x == 5);
+    assert(sum.y == 7);
+    assert(sum.z == 9);
+}
+
+it("should scale vector") {
+    fn scale(v: Vector3, s: i32): Vector3 {
+        return Vector3 { x: v.x * s, y: v.y * s, z: v.z * s };
+    }
+    let v = Vector3 { x: 1, y: 2, z: 3 };
+    let scaled = scale(v, 3);
+    assert(scaled.x == 3);
+    assert(scaled.y == 6);
+    assert(scaled.z == 9);
+}
+
+// ============================================================================
+// EDGE CASES - CIRCLE STRUCT
+// ============================================================================
+
+it("should create circle with zero radius") {
+    let point = Circle { radius: 0 };
+    assert(point.radius == 0);
+}
+
+it("should compute circle area approximation") {
+    fn area_approx(c: Circle): i32 {
+        // Approximate pi * r^2 as 3 * r^2
+        return 3 * c.radius * c.radius;
+    }
+    let c = Circle { radius: 10 };
+    assert(area_approx(c) == 300);
+}
+
+it("should compute circumference approximation") {
+    fn circumference_approx(c: Circle): i32 {
+        // Approximate 2 * pi * r as 6 * r
+        return 6 * c.radius;
+    }
+    let c = Circle { radius: 5 };
+    assert(circumference_approx(c) == 30);
+}
+
+// ============================================================================
+// EDGE CASES - USER STRUCT
+// ============================================================================
+
+it("should create user with zero id") {
+    let u = User { id: 0, active: true };
+    assert(u.id == 0);
+}
+
+it("should create user with negative id") {
+    let u = User { id: -1, active: false };
+    assert(u.id == -1);
+}
+
+it("should compare users by id") {
+    let u1 = User { id: 1, active: true };
+    let u2 = User { id: 2, active: true };
+    assert(u1.id < u2.id);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT IN ARRAY
+// ============================================================================
+
+it("should iterate over array of points") {
+    let points = [
+        Point { x: 1, y: 1 },
+        Point { x: 2, y: 2 },
+        Point { x: 3, y: 3 }
+    ];
+    let mut sum_x = 0;
+    let mut sum_y = 0;
+    for (p in points) {
+        sum_x = sum_x + p.x;
+        sum_y = sum_y + p.y;
+    }
+    assert(sum_x == 6);
+    assert(sum_y == 6);
+}
+
+it("should find point with max x") {
+    let points = [
+        Point { x: 5, y: 1 },
+        Point { x: 10, y: 2 },
+        Point { x: 3, y: 3 }
+    ];
+    let mut max_x = points[0].x;
+    for (p in points) {
+        if (p.x > max_x) {
+            max_x = p.x;
+        }
+    }
+    assert(max_x == 10);
+}
+
+it("should count active users") {
+    let users = [
+        User { id: 1, active: true },
+        User { id: 2, active: false },
+        User { id: 3, active: true },
+        User { id: 4, active: false }
+    ];
+    let mut active_count = 0;
+    for (u in users) {
+        if (u.active) {
+            active_count = active_count + 1;
+        }
+    }
+    assert(active_count == 2);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED STRUCT OPERATIONS
+// ============================================================================
+
+struct Bounds { min_p: Point, max_p: Point }
+
+it("should create bounds struct") {
+    let bounds = Bounds {
+        min_p: Point { x: 0, y: 0 },
+        max_p: Point { x: 100, y: 100 }
+    };
+    assert(bounds.min_p.x == 0);
+    assert(bounds.min_p.y == 0);
+    assert(bounds.max_p.x == 100);
+    assert(bounds.max_p.y == 100);
+}
+
+it("should compute bounds width and height") {
+    fn bounds_width(b: Bounds): i32 {
+        return b.max_p.x - b.min_p.x;
+    }
+    fn bounds_height(b: Bounds): i32 {
+        return b.max_p.y - b.min_p.y;
+    }
+    let bounds = Bounds {
+        min_p: Point { x: 10, y: 20 },
+        max_p: Point { x: 50, y: 80 }
+    };
+    assert(bounds_width(bounds) == 40);
+    assert(bounds_height(bounds) == 60);
+}
+
+it("should check if point in bounds") {
+    fn contains(b: Bounds, p: Point): bool {
+        return p.x >= b.min_p.x and p.x <= b.max_p.x and
+               p.y >= b.min_p.y and p.y <= b.max_p.y;
+    }
+    let bounds = Bounds {
+        min_p: Point { x: 0, y: 0 },
+        max_p: Point { x: 10, y: 10 }
+    };
+    assert(contains(bounds, Point { x: 5, y: 5 }) == true);
+    assert(contains(bounds, Point { x: 0, y: 0 }) == true);
+    assert(contains(bounds, Point { x: 10, y: 10 }) == true);
+    assert(contains(bounds, Point { x: 15, y: 5 }) == false);
+    assert(contains(bounds, Point { x: 5, y: 15 }) == false);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT FIELD ARITHMETIC
+// ============================================================================
+
+it("should use fields in complex expression") {
+    let p = Point { x: 3, y: 4 };
+    let result = p.x * p.x + p.y * p.y + 2 * p.x * p.y;
+    // 9 + 16 + 24 = 49 = (3+4)^2
+    assert(result == 49);
+}
+
+it("should compare field expressions") {
+    let r1 = Rectangle { width: 4, height: 5 };
+    let r2 = Rectangle { width: 2, height: 10 };
+    assert(r1.width * r1.height == r2.width * r2.height);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT TRANSFORMATION
+// ============================================================================
+
+it("should translate point") {
+    fn translate(p: Point, dx: i32, dy: i32): Point {
+        return Point { x: p.x + dx, y: p.y + dy };
+    }
+    let p = Point { x: 5, y: 10 };
+    let moved = translate(p, 3, -2);
+    assert(moved.x == 8);
+    assert(moved.y == 8);
+}
+
+it("should scale rectangle") {
+    fn scale_rect(r: Rectangle, factor: i32): Rectangle {
+        return Rectangle { width: r.width * factor, height: r.height * factor };
+    }
+    let r = Rectangle { width: 5, height: 3 };
+    let scaled = scale_rect(r, 2);
+    assert(scaled.width == 10);
+    assert(scaled.height == 6);
+}
+
+it("should reflect point") {
+    fn reflect_x(p: Point): Point {
+        return Point { x: 0 - p.x, y: p.y };
+    }
+    fn reflect_y(p: Point): Point {
+        return Point { x: p.x, y: 0 - p.y };
+    }
+    let p = Point { x: 3, y: 4 };
+    let rx = reflect_x(p);
+    let ry = reflect_y(p);
+    assert(rx.x == -3);
+    assert(rx.y == 4);
+    assert(ry.x == 3);
+    assert(ry.y == -4);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT WITH COMPUTATIONS
+// ============================================================================
+
+struct Stats { min: i32, max: i32, sum: i32, count: i32 }
+
+it("should create stats struct") {
+    let s = Stats { min: 1, max: 10, sum: 55, count: 10 };
+    assert(s.min == 1);
+    assert(s.max == 10);
+    assert(s.sum == 55);
+    assert(s.count == 10);
+}
+
+it("should compute average from stats") {
+    fn average(s: Stats): i32 {
+        return s.sum / s.count;
+    }
+    let s = Stats { min: 0, max: 100, sum: 500, count: 10 };
+    assert(average(s) == 50);
+}
+
+it("should compute range from stats") {
+    fn range(s: Stats): i32 {
+        return s.max - s.min;
+    }
+    let s = Stats { min: 10, max: 90, sum: 0, count: 0 };
+    assert(range(s) == 80);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT COPY BEHAVIOR
+// ============================================================================
+
+it("should create independent copies") {
+    let p1 = Point { x: 5, y: 10 };
+    let p2 = Point { x: p1.x, y: p1.y };
+    // Modifying p2 shouldn't affect p1 (if we had mutation)
+    assert(p1.x == p2.x);
+    assert(p1.y == p2.y);
+}
+
+it("should use struct in conditional") {
+    fn is_at_origin(p: Point): bool {
+        return p.x == 0 and p.y == 0;
+    }
+    assert(is_at_origin(Point { x: 0, y: 0 }) == true);
+    assert(is_at_origin(Point { x: 1, y: 0 }) == false);
+    assert(is_at_origin(Point { x: 0, y: 1 }) == false);
+}
+
+// ============================================================================
+// EDGE CASES - STRUCT WITH MULTIPLE INSTANCES
+// ============================================================================
+
+it("should handle many struct instances") {
+    let p1 = Point { x: 1, y: 1 };
+    let p2 = Point { x: 2, y: 2 };
+    let p3 = Point { x: 3, y: 3 };
+    let p4 = Point { x: 4, y: 4 };
+    let p5 = Point { x: 5, y: 5 };
+    let total = p1.x + p2.x + p3.x + p4.x + p5.x;
+    assert(total == 15);
+}
+
+it("should use structs in nested function calls") {
+    fn dist_sq(p1: Point, p2: Point): i32 {
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
+        return dx * dx + dy * dy;
+    }
+    fn closest(origin: Point, a: Point, b: Point): i32 {
+        let da = dist_sq(origin, a);
+        let db = dist_sq(origin, b);
+        if (da < db) { return 1; }
+        return 2;
+    }
+    let o = Point { x: 0, y: 0 };
+    let near = Point { x: 1, y: 1 };
+    let far = Point { x: 10, y: 10 };
+    assert(closest(o, near, far) == 1);
+    assert(closest(o, far, near) == 2);
+}

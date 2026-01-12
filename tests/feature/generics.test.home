@@ -94,3 +94,256 @@ it("should swap pair values") {
     assert(swapped.second == 10);
 }
 
+// ============================================================================
+// EDGE CASES - IDENTITY WITH DIFFERENT VALUES
+// ============================================================================
+
+it("should identity return zero") {
+    assert(identity(0) == 0);
+}
+
+it("should identity return negative") {
+    assert(identity(-42) == -42);
+    assert(identity(-999) == -999);
+}
+
+it("should identity return large number") {
+    assert(identity(1000000) == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - FIRST AND SECOND
+// ============================================================================
+
+it("should first/second with same values") {
+    assert(first(5, 5) == 5);
+    assert(second(5, 5) == 5);
+}
+
+it("should first/second with zero") {
+    assert(first(0, 100) == 0);
+    assert(second(0, 100) == 100);
+}
+
+it("should first/second with negatives") {
+    assert(first(-10, 10) == -10);
+    assert(second(-10, 10) == 10);
+}
+
+// ============================================================================
+// EDGE CASES - PAIR SUM
+// ============================================================================
+
+it("should pair_sum with zeros") {
+    assert(pair_sum(0, 0) == 0);
+}
+
+it("should pair_sum with negatives") {
+    assert(pair_sum(-5, -5) == -10);
+    assert(pair_sum(-10, 5) == -5);
+}
+
+it("should pair_sum with large numbers") {
+    assert(pair_sum(1000, 2000) == 3000);
+}
+
+// ============================================================================
+// EDGE CASES - BOX STRUCT
+// ============================================================================
+
+it("should box hold zero") {
+    let b = Box { value: 0 };
+    assert(b.value == 0);
+}
+
+it("should box hold negative") {
+    let b = Box { value: -100 };
+    assert(b.value == -100);
+}
+
+it("should box hold large value") {
+    let b = Box { value: 999999 };
+    assert(b.value == 999999);
+}
+
+it("should get_box_value with zero") {
+    let b = Box { value: 0 };
+    assert(get_box_value(b) == 0);
+}
+
+it("should make_box with zero") {
+    let b = make_box(0);
+    assert(b.value == 0);
+}
+
+it("should make_box with negative") {
+    let b = make_box(-50);
+    assert(b.value == -50);
+}
+
+// ============================================================================
+// EDGE CASES - PAIR STRUCT
+// ============================================================================
+
+it("should create pair with same values") {
+    let p = Pair { first: 42, second: 42 };
+    assert(p.first == p.second);
+}
+
+it("should create pair with zeros") {
+    let p = Pair { first: 0, second: 0 };
+    assert(p.first == 0);
+    assert(p.second == 0);
+}
+
+it("should create pair with negatives") {
+    let p = Pair { first: -10, second: -20 };
+    assert(p.first == -10);
+    assert(p.second == -20);
+}
+
+it("should swap pair with same values") {
+    let p = Pair { first: 5, second: 5 };
+    let swapped = swap_pair(p);
+    assert(swapped.first == 5);
+    assert(swapped.second == 5);
+}
+
+it("should swap pair with zeros") {
+    let p = Pair { first: 0, second: 100 };
+    let swapped = swap_pair(p);
+    assert(swapped.first == 100);
+    assert(swapped.second == 0);
+}
+
+// ============================================================================
+// EDGE CASES - TRIPLE STRUCT
+// ============================================================================
+
+it("should create triple with zeros") {
+    let t = Triple { a: 0, b: 0, c: 0 };
+    assert(t.a + t.b + t.c == 0);
+}
+
+it("should create triple with negatives") {
+    let t = Triple { a: -1, b: -2, c: -3 };
+    assert(t.a + t.b + t.c == -6);
+}
+
+it("should access all triple fields") {
+    let t = Triple { a: 10, b: 20, c: 30 };
+    assert(t.a == 10);
+    assert(t.b == 20);
+    assert(t.c == 30);
+}
+
+// ============================================================================
+// EDGE CASES - GENERIC FUNCTIONS WITH STRUCTS
+// ============================================================================
+
+fn box_value_doubled<T>(b: Box<T>): T {
+    return b.value + b.value;
+}
+
+it("should double box value") {
+    let b = Box { value: 25 };
+    assert(box_value_doubled(b) == 50);
+}
+
+fn pair_product<T>(p: Pair<T>): T {
+    return p.first * p.second;
+}
+
+it("should compute pair product") {
+    let p = Pair { first: 3, second: 4 };
+    assert(pair_product(p) == 12);
+}
+
+it("should compute pair product with zero") {
+    let p = Pair { first: 0, second: 100 };
+    assert(pair_product(p) == 0);
+}
+
+it("should compute pair product with negatives") {
+    let p = Pair { first: -3, second: 4 };
+    assert(pair_product(p) == -12);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED GENERIC OPERATIONS
+// ============================================================================
+
+it("should chain generic operations") {
+    let b1 = make_box(5);
+    let b2 = make_box(get_box_value(b1) * 2);
+    assert(b2.value == 10);
+}
+
+it("should swap twice to get original") {
+    let original = Pair { first: 1, second: 2 };
+    let once = swap_pair(original);
+    let twice = swap_pair(once);
+    assert(twice.first == 1);
+    assert(twice.second == 2);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE GENERIC PARAMETERS
+// ============================================================================
+
+fn select_first<T>(a: T, b: T, c: T): T {
+    return a;
+}
+
+fn select_last<T>(a: T, b: T, c: T): T {
+    return c;
+}
+
+it("should select first of three") {
+    assert(select_first(1, 2, 3) == 1);
+    assert(select_first(100, 200, 300) == 100);
+}
+
+it("should select last of three") {
+    assert(select_last(1, 2, 3) == 3);
+    assert(select_last(100, 200, 300) == 300);
+}
+
+// ============================================================================
+// EDGE CASES - GENERIC WITH CONDITIONALS
+// ============================================================================
+
+fn max_of_pair<T>(p: Pair<T>): T {
+    if (p.first > p.second) {
+        return p.first;
+    }
+    return p.second;
+}
+
+fn min_of_pair<T>(p: Pair<T>): T {
+    if (p.first < p.second) {
+        return p.first;
+    }
+    return p.second;
+}
+
+it("should find max of pair") {
+    let p = Pair { first: 10, second: 20 };
+    assert(max_of_pair(p) == 20);
+}
+
+it("should find min of pair") {
+    let p = Pair { first: 10, second: 20 };
+    assert(min_of_pair(p) == 10);
+}
+
+it("should find max with negatives") {
+    let p = Pair { first: -10, second: -20 };
+    assert(max_of_pair(p) == -10);
+}
+
+it("should find min with negatives") {
+    let p = Pair { first: -10, second: -20 };
+    assert(min_of_pair(p) == -20);
+}
+

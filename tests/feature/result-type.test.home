@@ -138,3 +138,285 @@ it("should handle error variant with long message") {
     assert(is_err == true);
 }
 
+// ============================================================================
+// EDGE CASES - OK VALUE VARIATIONS
+// ============================================================================
+
+it("should handle Ok with large positive") {
+    let r: Result = ok(1000000);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 1000000);
+}
+
+it("should handle Ok with large negative") {
+    let r: Result = ok(-1000000);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == -1000000);
+}
+
+it("should handle Ok with one") {
+    let r: Result = ok(1);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(value == 1);
+}
+
+// ============================================================================
+// EDGE CASES - ERROR MESSAGE VARIATIONS
+// ============================================================================
+
+it("should handle empty error message") {
+    let r: Result = err("");
+    let is_err = match (r) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+it("should handle error with special characters") {
+    let r: Result = err("Error: invalid input!");
+    let is_err = match (r) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+// ============================================================================
+// EDGE CASES - DIVISION OPERATIONS
+// ============================================================================
+
+it("should divide large by small") {
+    let r: Result = divide(1000, 10);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 100);
+}
+
+it("should divide equal numbers") {
+    let r: Result = divide(50, 50);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 1);
+}
+
+it("should divide with truncation") {
+    let r: Result = divide(10, 3);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 3);
+}
+
+it("should divide zero by non-zero") {
+    let r: Result = divide(0, 5);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(value == 0);
+}
+
+// ============================================================================
+// EDGE CASES - RESULT TRANSFORMATION
+// ============================================================================
+
+it("should map Ok value") {
+    let r: Result = ok(10);
+    let mapped = match (r) {
+        Result.Ok(v) => ok(v * 2),
+        Result.Err(msg) => r,
+    };
+    let value = match (mapped) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 20);
+}
+
+it("should preserve Err through mapping") {
+    let r: Result = err("original error");
+    let mapped = match (r) {
+        Result.Ok(v) => ok(v * 2),
+        Result.Err(msg) => r,
+    };
+    let is_err = match (mapped) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+// ============================================================================
+// EDGE CASES - CHAINED OPERATIONS
+// ============================================================================
+
+it("should chain two successful divisions") {
+    let r1: Result = divide(100, 2);
+    let v1 = match (r1) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    let r2: Result = divide(v1, 5);
+    let v2 = match (r2) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(v2 == 10);
+}
+
+it("should stop chain on error") {
+    let r1: Result = divide(100, 0);
+    let v1 = match (r1) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(v1 == -1);
+}
+
+// ============================================================================
+// EDGE CASES - RESULT IN CONDITIONALS
+// ============================================================================
+
+it("should use Result in conditional") {
+    let r: Result = divide(10, 2);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    let status = if (value > 0) { "positive" } else { "zero or error" };
+    assert(status == "positive");
+}
+
+it("should branch on Result type") {
+    fn process(n: i32): string {
+        let r: Result = divide(100, n);
+        return match (r) {
+            Result.Ok(v) => "success",
+            Result.Err(msg) => "error",
+        };
+    }
+    assert(process(5) == "success");
+    assert(process(0) == "error");
+}
+
+// ============================================================================
+// EDGE CASES - RESULT IN LOOPS
+// ============================================================================
+
+it("should collect successful results") {
+    let mut sum = 0;
+    for (i in 1..5) {
+        let r: Result = divide(100, i);
+        let value = match (r) {
+            Result.Ok(v) => v,
+            Result.Err(msg) => 0,
+        };
+        sum = sum + value;
+    }
+    // 100/1 + 100/2 + 100/3 + 100/4 = 100 + 50 + 33 + 25 = 208
+    assert(sum == 208);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE RESULTS
+// ============================================================================
+
+it("should combine three Ok values") {
+    let r1: Result = ok(10);
+    let r2: Result = ok(20);
+    let r3: Result = ok(30);
+
+    let v1 = match (r1) { Result.Ok(v) => v, Result.Err(msg) => 0 };
+    let v2 = match (r2) { Result.Ok(v) => v, Result.Err(msg) => 0 };
+    let v3 = match (r3) { Result.Ok(v) => v, Result.Err(msg) => 0 };
+
+    assert(v1 + v2 + v3 == 60);
+}
+
+it("should detect any error in multiple results") {
+    let r1: Result = ok(10);
+    let r2: Result = err("error!");
+    let r3: Result = ok(30);
+
+    let has_err = match (r1) {
+        Result.Ok(v) => match (r2) {
+            Result.Ok(v2) => match (r3) {
+                Result.Ok(v3) => false,
+                Result.Err(msg) => true,
+            },
+            Result.Err(msg) => true,
+        },
+        Result.Err(msg) => true,
+    };
+    assert(has_err == true);
+}
+
+// ============================================================================
+// EDGE CASES - CUSTOM RESULT FUNCTIONS
+// ============================================================================
+
+fn safe_subtract(a: i32, b: i32): Result {
+    if (b > a) {
+        return err("Would result in negative");
+    }
+    return ok(a - b);
+}
+
+it("should handle safe_subtract success") {
+    let r: Result = safe_subtract(10, 3);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(value == 7);
+}
+
+it("should handle safe_subtract error") {
+    let r: Result = safe_subtract(3, 10);
+    let is_err = match (r) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+fn safe_modulo(a: i32, b: i32): Result {
+    if (b == 0) {
+        return err("Modulo by zero");
+    }
+    return ok(a % b);
+}
+
+it("should handle modulo success") {
+    let r: Result = safe_modulo(17, 5);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(value == 2);
+}
+
+it("should handle modulo by zero error") {
+    let r: Result = safe_modulo(10, 0);
+    let is_err = match (r) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+

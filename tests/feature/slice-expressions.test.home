@@ -82,3 +82,284 @@ it("should handle slice at boundaries") {
     assert(slice[2] == 3);
 }
 
+// ============================================================================
+// EDGE CASES - SINGLE ELEMENT SLICES
+// ============================================================================
+
+it("should slice single element") {
+    let arr = [10, 20, 30, 40, 50];
+    let slice = arr[2..3];
+    assert(slice.len() == 1);
+    assert(slice[0] == 30);
+}
+
+it("should slice first element") {
+    let arr = [1, 2, 3];
+    let slice = arr[0..1];
+    assert(slice.len() == 1);
+    assert(slice[0] == 1);
+}
+
+it("should slice last element") {
+    let arr = [1, 2, 3];
+    let slice = arr[2..3];
+    assert(slice.len() == 1);
+    assert(slice[0] == 3);
+}
+
+// ============================================================================
+// EDGE CASES - EMPTY SLICES
+// ============================================================================
+
+it("should create empty slice at start") {
+    let arr = [1, 2, 3];
+    let slice = arr[0..0];
+    assert(slice.len() == 0);
+}
+
+it("should create empty slice at end") {
+    let arr = [1, 2, 3];
+    let slice = arr[3..3];
+    assert(slice.len() == 0);
+}
+
+it("should create empty slice in middle") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[2..2];
+    assert(slice.len() == 0);
+}
+
+// ============================================================================
+// EDGE CASES - HALF-OPEN SLICES
+// ============================================================================
+
+it("should slice from start with different lengths") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr[..1].len() == 1);
+    assert(arr[..3].len() == 3);
+    assert(arr[..5].len() == 5);
+}
+
+it("should slice to end with different starts") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr[0..].len() == 5);
+    assert(arr[2..].len() == 3);
+    assert(arr[4..].len() == 1);
+}
+
+// ============================================================================
+// EDGE CASES - FULL ARRAY SLICES
+// ============================================================================
+
+it("should slice entire array with bounds") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[0..5];
+    assert(slice.len() == 5);
+    assert(slice[0] == 1);
+    assert(slice[4] == 5);
+}
+
+it("should slice entire array with open syntax") {
+    let arr = [10, 20, 30];
+    let slice = arr[..];
+    assert(slice.len() == 3);
+    assert(slice[1] == 20);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE WITH COMPUTED INDICES
+// ============================================================================
+
+it("should slice with variable indices") {
+    let arr = [1, 2, 3, 4, 5];
+    let start = 1;
+    let end = 4;
+    let slice = arr[start..end];
+    assert(slice.len() == 3);
+    assert(slice[0] == 2);
+}
+
+it("should slice with computed end") {
+    let arr = [1, 2, 3, 4, 5];
+    let len = arr.len();
+    let slice = arr[2..len];
+    assert(slice.len() == 3);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE ELEMENT ACCESS
+// ============================================================================
+
+it("should access all elements of slice") {
+    let arr = [10, 20, 30, 40, 50];
+    let slice = arr[1..4];
+    assert(slice[0] == 20);
+    assert(slice[1] == 30);
+    assert(slice[2] == 40);
+}
+
+it("should access first and last of slice") {
+    let arr = [100, 200, 300, 400, 500];
+    let slice = arr[1..4];
+    let first = slice[0];
+    let last = slice[slice.len() - 1];
+    assert(first == 200);
+    assert(last == 400);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE ITERATION
+// ============================================================================
+
+it("should iterate empty slice") {
+    let arr = [1, 2, 3];
+    let slice = arr[1..1];
+    let mut count = 0;
+    for (x in slice) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate single element slice") {
+    let arr = [10, 20, 30];
+    let slice = arr[1..2];
+    let mut sum = 0;
+    for (x in slice) {
+        sum = sum + x;
+    }
+    assert(sum == 20);
+}
+
+it("should sum slice elements") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let slice = arr[0..5];
+    let mut sum = 0;
+    for (x in slice) {
+        sum = sum + x;
+    }
+    assert(sum == 15);
+}
+
+// ============================================================================
+// EDGE CASES - CHAINED SLICING
+// ============================================================================
+
+it("should double slice") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let slice1 = arr[2..8];  // [3, 4, 5, 6, 7, 8]
+    let slice2 = slice1[1..4];  // [4, 5, 6]
+    assert(slice2.len() == 3);
+    assert(slice2[0] == 4);
+    assert(slice2[2] == 6);
+}
+
+it("should triple slice") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let s1 = arr[1..9];  // [2,3,4,5,6,7,8,9]
+    let s2 = s1[1..7];   // [3,4,5,6,7,8]
+    let s3 = s2[1..5];   // [4,5,6,7]
+    assert(s3.len() == 4);
+    assert(s3[0] == 4);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE OF DIFFERENT TYPES
+// ============================================================================
+
+it("should slice string array") {
+    let arr = ["a", "b", "c", "d", "e"];
+    let slice = arr[1..4];
+    assert(slice.len() == 3);
+    assert(slice[0] == "b");
+    assert(slice[2] == "d");
+}
+
+it("should slice boolean array") {
+    let arr = [true, false, true, false, true];
+    let slice = arr[1..4];
+    assert(slice.len() == 3);
+    assert(slice[0] == false);
+    assert(slice[1] == true);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE IN EXPRESSIONS
+// ============================================================================
+
+it("should use slice length in expression") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..4];
+    let result = slice.len() * 10;
+    assert(result == 30);
+}
+
+it("should use slice element in expression") {
+    let arr = [10, 20, 30, 40, 50];
+    let slice = arr[1..4];
+    let result = slice[0] + slice[1] + slice[2];
+    assert(result == 90);
+}
+
+// ============================================================================
+// EDGE CASES - SLICE IN FUNCTION
+// ============================================================================
+
+it("should pass slice to function") {
+    fn sum_arr(arr: [i32]): i32 {
+        let mut total = 0;
+        for (x in arr) {
+            total = total + x;
+        }
+        return total;
+    }
+    let arr = [1, 2, 3, 4, 5];
+    assert(sum_arr(arr[0..3]) == 6);
+    assert(sum_arr(arr[2..5]) == 12);
+}
+
+it("should return slice from function") {
+    fn first_half(arr: [i32]): [i32] {
+        let mid = arr.len() / 2;
+        return arr[..mid];
+    }
+    let arr = [1, 2, 3, 4, 5, 6];
+    let half = first_half(arr);
+    assert(half.len() == 3);
+    assert(half[0] == 1);
+}
+
+// ============================================================================
+// EDGE CASES - STRING SLICING
+// ============================================================================
+
+it("should slice string") {
+    let s = "hello world";
+    let slice = s[0..5];
+    assert(slice == "hello");
+}
+
+it("should slice string from middle") {
+    let s = "hello world";
+    let slice = s[6..11];
+    assert(slice == "world");
+}
+
+it("should slice single char from string") {
+    let s = "abcde";
+    let slice = s[2..3];
+    assert(slice == "c");
+}
+
+it("should slice empty from string") {
+    let s = "hello";
+    let slice = s[2..2];
+    assert(slice == "");
+}
+
+it("should slice entire string") {
+    let s = "test";
+    let slice = s[..];
+    assert(slice == "test");
+}
+

@@ -90,3 +90,465 @@ it("should handle function with loop") {
     assert(sum_to(10) == 55);
 }
 
+// ============================================================================
+// EDGE CASES - ARITHMETIC OPERATIONS
+// ============================================================================
+
+it("should add with zero") {
+    assert(add(0, 0) == 0);
+    assert(add(0, 5) == 5);
+    assert(add(5, 0) == 5);
+}
+
+it("should add negative numbers") {
+    assert(add(-5, -3) == -8);
+    assert(add(-5, 3) == -2);
+    assert(add(5, -3) == 2);
+}
+
+it("should multiply with zero") {
+    assert(multiply(0, 0) == 0);
+    assert(multiply(0, 100) == 0);
+    assert(multiply(100, 0) == 0);
+}
+
+it("should multiply with one") {
+    assert(multiply(1, 1) == 1);
+    assert(multiply(1, 42) == 42);
+    assert(multiply(42, 1) == 42);
+}
+
+it("should multiply negative numbers") {
+    assert(multiply(-3, -4) == 12);
+    assert(multiply(-3, 4) == -12);
+    assert(multiply(3, -4) == -12);
+}
+
+it("should subtract resulting in zero") {
+    assert(subtract(5, 5) == 0);
+    assert(subtract(0, 0) == 0);
+}
+
+it("should subtract resulting in negative") {
+    assert(subtract(3, 10) == -7);
+    assert(subtract(-5, 5) == -10);
+}
+
+// ============================================================================
+// EDGE CASES - IDENTITY AND NEGATE
+// ============================================================================
+
+it("should identity return zero") {
+    assert(identity(0) == 0);
+}
+
+it("should identity return negative") {
+    assert(identity(-100) == -100);
+}
+
+it("should identity return large number") {
+    assert(identity(1000000) == 1000000);
+}
+
+it("should negate zero") {
+    assert(negate(0) == 0);
+}
+
+it("should negate large numbers") {
+    assert(negate(1000000) == -1000000);
+    assert(negate(-1000000) == 1000000);
+}
+
+// ============================================================================
+// EDGE CASES - MAX AND MIN
+// ============================================================================
+
+it("should max with equal values") {
+    assert(max(5, 5) == 5);
+    assert(max(0, 0) == 0);
+    assert(max(-10, -10) == -10);
+}
+
+it("should max with negative values") {
+    assert(max(-5, -10) == -5);
+    assert(max(-100, 0) == 0);
+    assert(max(-1, 1) == 1);
+}
+
+it("should min with equal values") {
+    assert(min(5, 5) == 5);
+    assert(min(0, 0) == 0);
+    assert(min(-10, -10) == -10);
+}
+
+it("should min with negative values") {
+    assert(min(-5, -10) == -10);
+    assert(min(-100, 0) == -100);
+    assert(min(-1, 1) == -1);
+}
+
+// ============================================================================
+// EDGE CASES - ABSOLUTE VALUE
+// ============================================================================
+
+it("should abs with large values") {
+    assert(abs(1000000) == 1000000);
+    assert(abs(-1000000) == 1000000);
+}
+
+it("should abs with small negative") {
+    assert(abs(-1) == 1);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION COMPOSITION
+// ============================================================================
+
+it("should deeply compose functions") {
+    let result = add(add(add(1, 2), 3), 4);
+    assert(result == 10);
+}
+
+it("should compose with nested conditionals") {
+    assert(max(max(1, 2), max(3, 4)) == 4);
+    assert(min(min(1, 2), min(3, 4)) == 1);
+}
+
+it("should compose arithmetic operations") {
+    // (3 + 4) * (5 - 2) = 7 * 3 = 21
+    assert(multiply(add(3, 4), subtract(5, 2)) == 21);
+}
+
+// ============================================================================
+// EDGE CASES - ZERO ARGUMENT FUNCTIONS
+// ============================================================================
+
+it("should call multiple zero-arg functions") {
+    fn get_zero(): i32 { return 0; }
+    fn get_one(): i32 { return 1; }
+    fn get_negative(): i32 { return -42; }
+    assert(get_zero() == 0);
+    assert(get_one() == 1);
+    assert(get_negative() == -42);
+}
+
+it("should use zero-arg function in expression") {
+    fn get_ten(): i32 { return 10; }
+    assert(get_ten() + 5 == 15);
+    assert(get_ten() * 2 == 20);
+}
+
+// ============================================================================
+// EDGE CASES - MANY ARGUMENTS
+// ============================================================================
+
+it("should handle sum of 6 arguments") {
+    fn sum6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32): i32 {
+        return a + b + c + d + e + f;
+    }
+    assert(sum6(1, 2, 3, 4, 5, 6) == 21);
+}
+
+it("should handle sum with zeros") {
+    fn sum5(a: i32, b: i32, c: i32, d: i32, e: i32): i32 {
+        return a + b + c + d + e;
+    }
+    assert(sum5(0, 0, 0, 0, 0) == 0);
+    assert(sum5(1, 0, 0, 0, 0) == 1);
+}
+
+it("should handle sum with negatives") {
+    fn sum5(a: i32, b: i32, c: i32, d: i32, e: i32): i32 {
+        return a + b + c + d + e;
+    }
+    assert(sum5(-1, -2, -3, -4, -5) == -15);
+    assert(sum5(1, -1, 2, -2, 0) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED FUNCTION DEFINITIONS
+// ============================================================================
+
+it("should handle deeply nested functions") {
+    fn outer(x: i32): i32 {
+        fn middle(y: i32): i32 {
+            fn inner(z: i32): i32 {
+                return z * 3;
+            }
+            return inner(y) + 1;
+        }
+        return middle(x) + 10;
+    }
+    assert(outer(2) == 17);  // inner(2)=6, middle(2)=7, outer(2)=17
+}
+
+it("should handle nested function with same name inner vars") {
+    fn outer(x: i32): i32 {
+        fn inner(x: i32): i32 {
+            return x * 2;
+        }
+        return inner(x) + x;
+    }
+    assert(outer(5) == 15);  // inner(5)=10, 10+5=15
+}
+
+// ============================================================================
+// EDGE CASES - EARLY RETURN
+// ============================================================================
+
+it("should early return on first condition") {
+    fn classify(x: i32): i32 {
+        if (x < 0) { return -1; }
+        if (x == 0) { return 0; }
+        return 1;
+    }
+    assert(classify(-100) == -1);
+    assert(classify(0) == 0);
+    assert(classify(100) == 1);
+}
+
+it("should early return from middle of function") {
+    fn check_range(x: i32): bool {
+        if (x < 0) { return false; }
+        if (x > 100) { return false; }
+        return true;
+    }
+    assert(check_range(-1) == false);
+    assert(check_range(0) == true);
+    assert(check_range(50) == true);
+    assert(check_range(100) == true);
+    assert(check_range(101) == false);
+}
+
+it("should handle find first matching") {
+    fn find_divisible_by_3(a: i32, b: i32, c: i32, d: i32): i32 {
+        if (a % 3 == 0) { return a; }
+        if (b % 3 == 0) { return b; }
+        if (c % 3 == 0) { return c; }
+        if (d % 3 == 0) { return d; }
+        return -1;
+    }
+    assert(find_divisible_by_3(1, 2, 3, 4) == 3);
+    assert(find_divisible_by_3(9, 2, 6, 4) == 9);
+    assert(find_divisible_by_3(1, 2, 4, 5) == -1);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTIONS WITH LOOPS
+// ============================================================================
+
+it("should count elements matching condition") {
+    fn count_positives(arr: [i32]): i32 {
+        let mut count = 0;
+        for (x in arr) {
+            if (x > 0) {
+                count = count + 1;
+            }
+        }
+        return count;
+    }
+    assert(count_positives([1, -2, 3, -4, 5]) == 3);
+    assert(count_positives([-1, -2, -3]) == 0);
+    assert(count_positives([1, 2, 3]) == 3);
+}
+
+it("should find max in array") {
+    fn find_max(arr: [i32]): i32 {
+        let mut max_val = arr[0];
+        for (x in arr) {
+            if (x > max_val) {
+                max_val = x;
+            }
+        }
+        return max_val;
+    }
+    assert(find_max([1, 5, 3, 9, 2]) == 9);
+    assert(find_max([-5, -1, -10]) == -1);
+    assert(find_max([42]) == 42);
+}
+
+it("should compute factorial iteratively") {
+    fn factorial(n: i32): i32 {
+        let mut result = 1;
+        let mut i = 2;
+        while (i <= n) {
+            result = result * i;
+            i = i + 1;
+        }
+        return result;
+    }
+    assert(factorial(0) == 1);
+    assert(factorial(1) == 1);
+    assert(factorial(5) == 120);
+    assert(factorial(6) == 720);
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN FUNCTIONS
+// ============================================================================
+
+fn is_even(x: i32): bool { return x % 2 == 0; }
+fn is_positive(x: i32): bool { return x > 0; }
+fn is_zero(x: i32): bool { return x == 0; }
+
+it("should check even numbers") {
+    assert(is_even(0) == true);
+    assert(is_even(2) == true);
+    assert(is_even(4) == true);
+    assert(is_even(1) == false);
+    assert(is_even(3) == false);
+    assert(is_even(-2) == true);
+    assert(is_even(-3) == false);
+}
+
+it("should check positive numbers") {
+    assert(is_positive(1) == true);
+    assert(is_positive(100) == true);
+    assert(is_positive(0) == false);
+    assert(is_positive(-1) == false);
+}
+
+it("should check zero") {
+    assert(is_zero(0) == true);
+    assert(is_zero(1) == false);
+    assert(is_zero(-1) == false);
+}
+
+// ============================================================================
+// EDGE CASES - COMBINING BOOLEAN FUNCTIONS
+// ============================================================================
+
+it("should combine boolean checks") {
+    fn is_positive_even(x: i32): bool {
+        return is_positive(x) and is_even(x);
+    }
+    assert(is_positive_even(2) == true);
+    assert(is_positive_even(4) == true);
+    assert(is_positive_even(1) == false);
+    assert(is_positive_even(-2) == false);
+    assert(is_positive_even(0) == false);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION WITH MULTIPLE PATHS
+// ============================================================================
+
+it("should handle multiple code paths") {
+    fn grade(score: i32): i32 {
+        if (score >= 90) { return 4; }
+        if (score >= 80) { return 3; }
+        if (score >= 70) { return 2; }
+        if (score >= 60) { return 1; }
+        return 0;
+    }
+    assert(grade(95) == 4);
+    assert(grade(90) == 4);
+    assert(grade(85) == 3);
+    assert(grade(80) == 3);
+    assert(grade(75) == 2);
+    assert(grade(65) == 1);
+    assert(grade(50) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION RETURNING COMPUTED VALUES
+// ============================================================================
+
+fn square(x: i32): i32 { return x * x; }
+fn cube(x: i32): i32 { return x * x * x; }
+
+it("should compute powers") {
+    assert(square(0) == 0);
+    assert(square(1) == 1);
+    assert(square(5) == 25);
+    assert(square(-4) == 16);
+    assert(cube(2) == 8);
+    assert(cube(3) == 27);
+    assert(cube(-2) == -8);
+}
+
+// ============================================================================
+// EDGE CASES - CHAINED FUNCTION CALLS
+// ============================================================================
+
+it("should chain many function calls") {
+    let x = add(1, 1);  // 2
+    let y = multiply(x, 3);  // 6
+    let z = subtract(y, 1);  // 5
+    let w = negate(z);  // -5
+    let v = abs(w);  // 5
+    assert(v == 5);
+}
+
+it("should use chained results in conditionals") {
+    let a = max(add(1, 2), multiply(1, 2));  // max(3, 2) = 3
+    let b = min(subtract(10, 5), add(2, 2));  // min(5, 4) = 4
+    assert(a == 3);
+    assert(b == 4);
+}
+
+// ============================================================================
+// EDGE CASES - DIVISION AND MODULO
+// ============================================================================
+
+fn divide(a: i32, b: i32): i32 { return a / b; }
+fn modulo(a: i32, b: i32): i32 { return a % b; }
+
+it("should divide evenly") {
+    assert(divide(10, 2) == 5);
+    assert(divide(100, 10) == 10);
+    assert(divide(9, 3) == 3);
+}
+
+it("should divide with truncation") {
+    assert(divide(7, 2) == 3);
+    assert(divide(10, 3) == 3);
+    assert(divide(1, 2) == 0);
+}
+
+it("should compute modulo") {
+    assert(modulo(10, 3) == 1);
+    assert(modulo(10, 2) == 0);
+    assert(modulo(7, 4) == 3);
+    assert(modulo(5, 5) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION CALL AS CONDITION
+// ============================================================================
+
+it("should use function call in if condition") {
+    fn get_threshold(): i32 { return 10; }
+    let x = 15;
+    let mut result = 0;
+    if (x > get_threshold()) {
+        result = 1;
+    }
+    assert(result == 1);
+}
+
+it("should use function call in while condition") {
+    fn get_limit(): i32 { return 5; }
+    let mut sum = 0;
+    let mut i = 1;
+    while (i <= get_limit()) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == 15);
+}
+
+// ============================================================================
+// EDGE CASES - EXPRESSIONS IN FUNCTION CALLS
+// ============================================================================
+
+it("should evaluate expressions as arguments") {
+    assert(add(2 * 3, 4 + 5) == 15);
+    assert(multiply(1 + 1, 2 + 3) == 10);
+}
+
+it("should evaluate nested expressions as arguments") {
+    assert(add(max(1, 2), min(3, 4)) == 5);
+    assert(multiply(abs(-5), abs(-3)) == 15);
+}
+

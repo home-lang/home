@@ -108,3 +108,325 @@ it("should use methods in conditionals") {
     }
 }
 
+// ============================================================================
+// EDGE CASES - LENGTH
+// ============================================================================
+
+it("should get length of numbers as string") {
+    assert("12345".len() == 5);
+    assert("0".len() == 1);
+}
+
+it("should get length of special characters") {
+    assert("!@#$%".len() == 5);
+    assert("hello\nworld".len() == 11);
+}
+
+it("should use length in expression") {
+    let s = "test";
+    let double_len = s.len() * 2;
+    assert(double_len == 8);
+}
+
+// ============================================================================
+// EDGE CASES - UPPER AND LOWER
+// ============================================================================
+
+it("should handle empty string for upper") {
+    assert("".upper() == "");
+}
+
+it("should handle empty string for lower") {
+    assert("".lower() == "");
+}
+
+it("should handle numbers in upper") {
+    assert("abc123def".upper() == "ABC123DEF");
+}
+
+it("should handle numbers in lower") {
+    assert("ABC123DEF".lower() == "abc123def");
+}
+
+it("should handle single character") {
+    assert("a".upper() == "A");
+    assert("Z".lower() == "z");
+}
+
+it("should handle special chars unchanged") {
+    assert("!@#".upper() == "!@#");
+    assert("!@#".lower() == "!@#");
+}
+
+// ============================================================================
+// EDGE CASES - TRIM
+// ============================================================================
+
+it("should trim only left spaces") {
+    let s = "   hello";
+    assert(s.trim() == "hello");
+}
+
+it("should trim only right spaces") {
+    let s = "hello   ";
+    assert(s.trim() == "hello");
+}
+
+it("should handle all spaces") {
+    assert("          ".trim() == "");
+}
+
+it("should preserve inner spaces") {
+    assert("  hello world  ".trim() == "hello world");
+}
+
+it("should trim tabs") {
+    assert("\thello\t".trim() == "hello");
+}
+
+// ============================================================================
+// EDGE CASES - CONTAINS
+// ============================================================================
+
+it("should find substring at start") {
+    assert("hello world".contains("hello") == true);
+}
+
+it("should find substring at end") {
+    assert("hello world".contains("world") == true);
+}
+
+it("should find substring in middle") {
+    assert("hello world".contains("lo wo") == true);
+}
+
+it("should not find non-existent substring") {
+    assert("hello".contains("xyz") == false);
+}
+
+it("should find single character") {
+    assert("hello".contains("e") == true);
+    assert("hello".contains("x") == false);
+}
+
+it("should handle case sensitivity") {
+    assert("Hello".contains("hello") == false);
+    assert("Hello".contains("Hello") == true);
+}
+
+// ============================================================================
+// EDGE CASES - STARTS_WITH AND ENDS_WITH
+// ============================================================================
+
+it("should match exact string for starts_with") {
+    assert("hello".starts_with("hello") == true);
+}
+
+it("should match exact string for ends_with") {
+    assert("hello".ends_with("hello") == true);
+}
+
+it("should handle single char starts_with") {
+    assert("hello".starts_with("h") == true);
+    assert("hello".starts_with("H") == false);
+}
+
+it("should handle single char ends_with") {
+    assert("hello".ends_with("o") == true);
+    assert("hello".ends_with("O") == false);
+}
+
+it("should handle longer pattern than string") {
+    assert("hi".starts_with("hello") == false);
+    assert("hi".ends_with("hello") == false);
+}
+
+// ============================================================================
+// EDGE CASES - REVERSE
+// ============================================================================
+
+it("should reverse empty string") {
+    assert("".reverse() == "");
+}
+
+it("should reverse single char") {
+    assert("x".reverse() == "x");
+}
+
+it("should reverse palindrome") {
+    assert("radar".reverse() == "radar");
+}
+
+it("should reverse with spaces") {
+    assert("a b c".reverse() == "c b a");
+}
+
+it("should reverse numbers") {
+    assert("12345".reverse() == "54321");
+}
+
+// ============================================================================
+// EDGE CASES - REPLACE
+// ============================================================================
+
+it("should replace nothing when not found") {
+    assert("hello".replace("x", "y") == "hello");
+}
+
+it("should replace all occurrences") {
+    assert("banana".replace("a", "o") == "bonono");
+}
+
+it("should replace with empty string") {
+    assert("hello".replace("l", "") == "heo");
+}
+
+it("should replace with longer string") {
+    assert("hi".replace("i", "ello") == "hello");
+}
+
+it("should replace with shorter string") {
+    assert("hello".replace("ell", "i") == "hio");
+}
+
+// ============================================================================
+// EDGE CASES - SPLIT
+// ============================================================================
+
+it("should split with no delimiter found") {
+    let parts = "hello".split(",");
+    assert(parts.len() == 1);
+    assert(parts[0] == "hello");
+}
+
+it("should split empty string") {
+    let parts = "".split(",");
+    assert(parts.len() == 1);
+}
+
+it("should split by multi-char delimiter") {
+    let parts = "a::b::c".split("::");
+    assert(parts.len() == 3);
+    assert(parts[0] == "a");
+    assert(parts[1] == "b");
+    assert(parts[2] == "c");
+}
+
+it("should split with consecutive delimiters") {
+    let parts = "a,,b".split(",");
+    assert(parts.len() == 3);
+    assert(parts[0] == "a");
+    assert(parts[1] == "");
+    assert(parts[2] == "b");
+}
+
+// ============================================================================
+// EDGE CASES - METHOD CHAINING
+// ============================================================================
+
+it("should chain trim and upper") {
+    assert("  hello  ".trim().upper() == "HELLO");
+}
+
+it("should chain trim and lower") {
+    assert("  HELLO  ".trim().lower() == "hello");
+}
+
+it("should chain multiple methods") {
+    let s = "  Hello World  ";
+    let result = s.trim().lower().reverse();
+    assert(result == "dlrow olleh");
+}
+
+it("should chain with replace") {
+    assert("hello world".replace("world", "there").upper() == "HELLO THERE");
+}
+
+// ============================================================================
+// EDGE CASES - METHODS IN FUNCTIONS
+// ============================================================================
+
+it("should use string methods in function") {
+    fn normalize(s: string): string {
+        return s.trim().lower();
+    }
+    assert(normalize("  HELLO  ") == "hello");
+    assert(normalize("World") == "world");
+}
+
+it("should use contains in function") {
+    fn has_vowel(s: string): bool {
+        return s.contains("a") or s.contains("e") or s.contains("i") or s.contains("o") or s.contains("u");
+    }
+    assert(has_vowel("hello") == true);
+    assert(has_vowel("xyz") == false);
+}
+
+// ============================================================================
+// EDGE CASES - METHODS IN LOOPS
+// ============================================================================
+
+it("should use string methods in loop") {
+    let words = ["Hello", "WORLD", "Test"];
+    let mut count = 0;
+    for (w in words) {
+        if (w.lower().starts_with("h") or w.lower().starts_with("w")) {
+            count = count + 1;
+        }
+    }
+    assert(count == 2);
+}
+
+it("should accumulate split results") {
+    let csv = "1,2,3,4,5";
+    let parts = csv.split(",");
+    let mut sum = 0;
+    for (p in parts) {
+        sum = sum + 1;  // Count parts
+    }
+    assert(sum == 5);
+}
+
+// ============================================================================
+// EDGE CASES - METHODS WITH VARIABLES
+// ============================================================================
+
+it("should use method result as variable") {
+    let original = "Hello World";
+    let upper_version = original.upper();
+    let lower_version = original.lower();
+    assert(upper_version == "HELLO WORLD");
+    assert(lower_version == "hello world");
+    assert(original == "Hello World");  // Original unchanged
+}
+
+it("should use method in comparison") {
+    let a = "HELLO";
+    let b = "hello";
+    assert(a.lower() == b);
+    assert(b.upper() == a);
+}
+
+// ============================================================================
+// EDGE CASES - METHODS WITH CONDITIONALS
+// ============================================================================
+
+it("should use length in ternary") {
+    let s = "test";
+    let result = if (s.len() > 3) { "long" } else { "short" };
+    assert(result == "long");
+}
+
+it("should use contains in conditional") {
+    let email = "user@example.com";
+    let is_valid = email.contains("@") and email.contains(".");
+    assert(is_valid == true);
+}
+
+it("should combine multiple conditions") {
+    let input = "  hello  ";
+    let trimmed = input.trim();
+    let is_valid = trimmed.len() > 0 and trimmed.starts_with("h") and trimmed.ends_with("o");
+    assert(is_valid == true);
+}
+

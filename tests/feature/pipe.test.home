@@ -81,3 +81,213 @@ it("should pipe variable values") {
     assert((x |> double) == 14);
     assert((x |> square) == 49);
 }
+
+// ============================================================================
+// EDGE CASES - PIPE WITH ZERO
+// ============================================================================
+
+fn triple(x: i32): i32 { return x * 3; }
+
+it("should pipe zero through all operations") {
+    assert((0 |> double |> triple |> square) == 0);
+}
+
+it("should pipe zero through increment chain") {
+    assert((0 |> increment |> increment |> increment) == 3);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH NEGATIVE NUMBERS
+// ============================================================================
+
+it("should pipe negative through double") {
+    assert((-5 |> double) == -10);
+}
+
+it("should pipe negative through triple") {
+    assert((-3 |> triple) == -9);
+}
+
+it("should pipe negative through square") {
+    assert((-4 |> square) == 16);
+}
+
+it("should chain operations on negative") {
+    assert((-2 |> double |> square) == 16);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH LARGE NUMBERS
+// ============================================================================
+
+it("should pipe large number") {
+    assert((1000 |> double) == 2000);
+}
+
+it("should pipe large number through chain") {
+    assert((100 |> increment |> double) == 202);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH EXPRESSIONS
+// ============================================================================
+
+it("should pipe result of expression") {
+    assert(((2 + 3) |> double) == 10);
+}
+
+it("should pipe result of multiplication") {
+    assert(((2 * 3) |> square) == 36);
+}
+
+it("should use pipe result in expression") {
+    let result = (5 |> double) * 2;
+    assert(result == 20);
+}
+
+it("should add two pipe results") {
+    let a = 3 |> double;
+    let b = 4 |> double;
+    assert(a + b == 14);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE IN FUNCTION BODY
+// ============================================================================
+
+it("should use pipe in function") {
+    fn process(x: i32): i32 {
+        return x |> double |> increment;
+    }
+    assert(process(5) == 11);
+    assert(process(0) == 1);
+    assert(process(-3) == -5);
+}
+
+it("should return pipe result from function") {
+    fn double_and_square(x: i32): i32 {
+        return x |> double |> square;
+    }
+    assert(double_and_square(2) == 16);
+    assert(double_and_square(3) == 36);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH BOOLEAN FUNCTIONS
+// ============================================================================
+
+it("should pipe to boolean function") {
+    assert((5 |> is_positive) == true);
+    assert((0 |> is_positive) == false);
+    assert((-5 |> is_positive) == false);
+}
+
+it("should pipe through abs then check") {
+    assert((-5 |> abs |> is_positive) == true);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH CLAMP
+// ============================================================================
+
+it("should clamp values at boundaries") {
+    assert((0 |> clamp) == 0);
+    assert((100 |> clamp) == 100);
+}
+
+it("should clamp negative to zero") {
+    assert((-100 |> clamp) == 0);
+}
+
+it("should clamp large to max") {
+    assert((500 |> clamp) == 100);
+}
+
+it("should chain with clamp") {
+    assert((60 |> double |> clamp) == 100);
+}
+
+// ============================================================================
+// EDGE CASES - LONG PIPE CHAINS
+// ============================================================================
+
+it("should handle very long pipe chain") {
+    assert((1 |> increment |> increment |> increment |> increment |> increment) == 6);
+}
+
+it("should handle alternating operations") {
+    assert((2 |> double |> increment |> double |> increment) == 11);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE IN LOOPS
+// ============================================================================
+
+it("should use pipe in loop body") {
+    let mut sum = 0;
+    for (i in 1..5) {
+        sum = sum + (i |> double);
+    }
+    assert(sum == 20);  // 2+4+6+8
+}
+
+it("should use pipe result as loop bound") {
+    let limit = 2 |> double |> increment;  // 5
+    let mut count = 0;
+    for (i in 0..limit) {
+        count = count + 1;
+    }
+    assert(count == 5);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE IN CONDITIONALS
+// ============================================================================
+
+it("should use pipe in if condition") {
+    let x = 3;
+    let result = if ((x |> double) > 5) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should use pipe in both branches") {
+    let flag = true;
+    let result = if (flag) { 3 |> double } else { 3 |> triple };
+    assert(result == 6);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE WITH CUSTOM FUNCTIONS
+// ============================================================================
+
+fn times_four(x: i32): i32 { return x * 4; }
+fn minus_one(x: i32): i32 { return x - 1; }
+fn cube(x: i32): i32 { return x * x * x; }
+
+it("should pipe with custom functions") {
+    assert((2 |> times_four) == 8);
+    assert((10 |> minus_one) == 9);
+    assert((3 |> cube) == 27);
+}
+
+it("should chain custom functions") {
+    assert((2 |> times_four |> minus_one) == 7);
+    assert((1 |> increment |> cube) == 8);
+}
+
+// ============================================================================
+// EDGE CASES - PIPE ASSOCIATIVITY
+// ============================================================================
+
+it("should be left associative") {
+    // (5 |> double) |> increment = increment(double(5)) = increment(10) = 11
+    assert((5 |> double |> increment) == 11);
+}
+
+it("should process left to right") {
+    // 2 |> square |> double = double(square(2)) = double(4) = 8
+    assert((2 |> square |> double) == 8);
+    // vs
+    // 2 |> double |> square = square(double(2)) = square(4) = 16
+    assert((2 |> double |> square) == 16);
+}

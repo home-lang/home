@@ -80,3 +80,196 @@ it("should combine safe index with coalesce") {
     assert(result == 0);
 }
 
+// ============================================================================
+// EDGE CASES - SAFE FIELD ACCESS
+// ============================================================================
+
+it("should safely access nested null") {
+    struct Inner { value: i32 }
+    struct Outer { inner: Inner }
+    let o = null;
+    let result = o?.inner?.value;
+    assert(result == null);
+}
+
+it("should safely access with middle null") {
+    struct Inner { value: i32 }
+    struct Outer { inner: Inner }
+    let o = Outer { inner: null };
+    let result = o?.inner?.value;
+    assert(result == null);
+}
+
+it("should safely access multiple fields") {
+    struct Point { x: i32, y: i32 }
+    struct Box { origin: Point, size: Point }
+    let b = Box {
+        origin: Point { x: 10, y: 20 },
+        size: Point { x: 100, y: 200 }
+    };
+    assert(b?.origin?.x == 10);
+    assert(b?.size?.y == 200);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE INDEX ACCESS
+// ============================================================================
+
+it("should safely access first element") {
+    let arr = [10, 20, 30];
+    assert(arr?[0] == 10);
+}
+
+it("should safely access last element") {
+    let arr = [10, 20, 30];
+    assert(arr?[2] == 30);
+}
+
+it("should return null for negative index") {
+    let arr = [10, 20, 30];
+    let result = arr?[-1];
+    assert(result == null);
+}
+
+it("should return null for empty array access") {
+    let arr: [i32] = [];
+    let result = arr?[0];
+    assert(result == null);
+}
+
+// ============================================================================
+// EDGE CASES - CHAINED SAFE NAVIGATION
+// ============================================================================
+
+it("should chain safe nav on arrays of structs") {
+    struct Item { value: i32 }
+    let items = [Item { value: 100 }, Item { value: 200 }];
+    assert(items?[0]?.value == 100);
+    assert(items?[1]?.value == 200);
+    assert(items?[5]?.value == null);
+}
+
+it("should chain multiple safe index") {
+    let matrix = [[1, 2], [3, 4], [5, 6]];
+    assert(matrix?[0]?[0] == 1);
+    assert(matrix?[1]?[1] == 4);
+    assert(matrix?[5]?[0] == null);
+    assert(matrix?[0]?[5] == null);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV WITH COALESCE
+// ============================================================================
+
+it("should provide default for null field") {
+    struct Config { timeout: i32 }
+    let c = null;
+    let timeout = c?.timeout ?? 30;
+    assert(timeout == 30);
+}
+
+it("should use value when not null") {
+    struct Config { timeout: i32 }
+    let c = Config { timeout: 60 };
+    let timeout = c?.timeout ?? 30;
+    assert(timeout == 60);
+}
+
+it("should chain coalesce with safe index") {
+    let arr = [10, 20, 30];
+    assert(arr?[0] ?? -1 == 10);
+    assert(arr?[99] ?? -1 == -1);
+}
+
+it("should use coalesce with nested access") {
+    struct Inner { val: i32 }
+    struct Outer { inner: Inner }
+    let o = Outer { inner: null };
+    let result = o?.inner?.val ?? 999;
+    assert(result == 999);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV IN EXPRESSIONS
+// ============================================================================
+
+it("should use safe nav result in arithmetic") {
+    struct Box { value: i32 }
+    let b = Box { value: 10 };
+    let result = (b?.value ?? 0) * 2;
+    assert(result == 20);
+}
+
+it("should use safe nav in comparison") {
+    struct Score { points: i32 }
+    let s = Score { points: 85 };
+    let passed = (s?.points ?? 0) >= 70;
+    assert(passed == true);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV IN CONDITIONALS
+// ============================================================================
+
+it("should use safe nav in if condition") {
+    struct User { active: bool }
+    let u = User { active: true };
+    let status = if (u?.active ?? false) { "active" } else { "inactive" };
+    assert(status == "active");
+}
+
+it("should handle null in if condition") {
+    struct User { active: bool }
+    let u = null;
+    let status = if (u?.active ?? false) { "active" } else { "inactive" };
+    assert(status == "inactive");
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV IN LOOPS
+// ============================================================================
+
+it("should use safe nav in loop body") {
+    struct Item { value: i32 }
+    let items = [Item { value: 1 }, null, Item { value: 3 }];
+    let mut sum = 0;
+    for (item in items) {
+        sum = sum + (item?.value ?? 0);
+    }
+    assert(sum == 4);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV WITH STRING FIELDS
+// ============================================================================
+
+it("should safely access string field") {
+    struct Person { name: string }
+    let p = Person { name: "Alice" };
+    assert(p?.name == "Alice");
+}
+
+it("should return null for null object string field") {
+    struct Person { name: string }
+    let p = null;
+    let name = p?.name ?? "unknown";
+    assert(name == "unknown");
+}
+
+// ============================================================================
+// EDGE CASES - SAFE NAV WITH BOOLEAN FIELDS
+// ============================================================================
+
+it("should safely access boolean field") {
+    struct Flag { enabled: bool }
+    let f = Flag { enabled: true };
+    assert(f?.enabled == true);
+}
+
+it("should provide default for null boolean") {
+    struct Flag { enabled: bool }
+    let f = null;
+    let enabled = f?.enabled ?? false;
+    assert(enabled == false);
+}
+

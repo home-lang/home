@@ -128,3 +128,331 @@ it("should match with multiple Some values") {
     assert(sum == 30);
 }
 
+// ============================================================================
+// EDGE CASES - INTEGER PATTERNS
+// ============================================================================
+
+it("should match zero") {
+    let x = 0;
+    let result = match (x) {
+        0 => 100,
+        _ => 0,
+    };
+    assert(result == 100);
+}
+
+it("should match large positive") {
+    let x = 999999;
+    let result = match (x) {
+        999999 => 1,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should match large negative") {
+    let x = -999999;
+    let result = match (x) {
+        -999999 => 1,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should match multiple negative values") {
+    let x = -3;
+    let result = match (x) {
+        -1 => 10,
+        -2 => 20,
+        -3 => 30,
+        _ => 0,
+    };
+    assert(result == 30);
+}
+
+// ============================================================================
+// EDGE CASES - WILDCARD EXHAUSTIVENESS
+// ============================================================================
+
+it("should always match wildcard last") {
+    let x = 12345;
+    let result = match (x) {
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        _ => 999,
+    };
+    assert(result == 999);
+}
+
+it("should match first pattern when multiple could match") {
+    let x = 1;
+    let result = match (x) {
+        1 => 100,
+        _ => 0,
+    };
+    assert(result == 100);
+}
+
+// ============================================================================
+// EDGE CASES - BOOLEAN PATTERNS
+// ============================================================================
+
+it("should match false") {
+    let b = false;
+    let result = match (b) {
+        true => 1,
+        false => 0,
+    };
+    assert(result == 0);
+}
+
+it("should match boolean in conditional context") {
+    let flag = true;
+    let value = 10;
+    let result = match (flag) {
+        true => value * 2,
+        false => value,
+    };
+    assert(result == 20);
+}
+
+// ============================================================================
+// EDGE CASES - ENUM WITH PAYLOADS
+// ============================================================================
+
+enum Result {
+    Ok(i32),
+    Err(i32)
+}
+
+it("should match Ok with zero payload") {
+    let r: Result = Result.Ok(0);
+    let value = match (r) {
+        Result.Ok(x) => x,
+        Result.Err(e) => e,
+    };
+    assert(value == 0);
+}
+
+it("should match Ok with negative payload") {
+    let r: Result = Result.Ok(-42);
+    let value = match (r) {
+        Result.Ok(x) => x,
+        Result.Err(e) => 0,
+    };
+    assert(value == -42);
+}
+
+it("should match Err variant") {
+    let r: Result = Result.Err(404);
+    let is_error = match (r) {
+        Result.Ok(x) => false,
+        Result.Err(e) => true,
+    };
+    assert(is_error == true);
+}
+
+it("should extract Err payload") {
+    let r: Result = Result.Err(500);
+    let code = match (r) {
+        Result.Ok(x) => 0,
+        Result.Err(e) => e,
+    };
+    assert(code == 500);
+}
+
+// ============================================================================
+// EDGE CASES - MATCH IN EXPRESSIONS
+// ============================================================================
+
+it("should use match in arithmetic") {
+    let x = 2;
+    let doubled = match (x) {
+        1 => 2,
+        2 => 4,
+        3 => 6,
+        _ => 0,
+    } * 10;
+    assert(doubled == 40);
+}
+
+it("should use match in comparison") {
+    let x = 5;
+    let result = match (x) {
+        5 => 100,
+        _ => 0,
+    } > 50;
+    assert(result == true);
+}
+
+it("should chain match results") {
+    let a = 1;
+    let b = 2;
+    let sum = match (a) { 1 => 10, _ => 0 } + match (b) { 2 => 20, _ => 0 };
+    assert(sum == 30);
+}
+
+// ============================================================================
+// EDGE CASES - MATCH IN LOOPS
+// ============================================================================
+
+it("should use match in loop") {
+    let mut sum = 0;
+    for (i in 0..5) {
+        sum = sum + match (i) {
+            0 => 10,
+            1 => 20,
+            2 => 30,
+            _ => 0,
+        };
+    }
+    assert(sum == 60);  // 10 + 20 + 30 + 0 + 0
+}
+
+it("should use match to control loop") {
+    let mut i = 0;
+    let mut result = 0;
+    while (i < 10) {
+        let action = match (i) {
+            5 => 1,  // stop
+            _ => 0,  // continue
+        };
+        if (action == 1) {
+            break;
+        }
+        result = result + i;
+        i = i + 1;
+    }
+    assert(result == 10);  // 0+1+2+3+4
+}
+
+// ============================================================================
+// EDGE CASES - NESTED MATCH
+// ============================================================================
+
+it("should handle deeply nested match") {
+    let x = 1;
+    let y = 2;
+    let z = 3;
+    let result = match (x) {
+        1 => match (y) {
+            2 => match (z) {
+                3 => 123,
+                _ => 0,
+            },
+            _ => 0,
+        },
+        _ => 0,
+    };
+    assert(result == 123);
+}
+
+it("should handle nested match with different paths") {
+    let outer = 2;
+    let inner = 1;
+    let result = match (outer) {
+        1 => match (inner) { 1 => 11, _ => 10 },
+        2 => match (inner) { 1 => 21, _ => 20 },
+        _ => 0,
+    };
+    assert(result == 21);
+}
+
+// ============================================================================
+// EDGE CASES - OPTION PATTERNS
+// ============================================================================
+
+it("should match Some with computed value") {
+    let x = 5;
+    let opt: Option = Option.Some(x * 2);
+    let value = match (opt) {
+        Option.Some(v) => v,
+        Option.None => 0,
+    };
+    assert(value == 10);
+}
+
+it("should match None and provide default") {
+    let opt: Option = Option.None;
+    let value = match (opt) {
+        Option.Some(v) => v,
+        Option.None => -1,
+    };
+    assert(value == -1);
+}
+
+// ============================================================================
+// EDGE CASES - MATCH WITH FUNCTIONS
+// ============================================================================
+
+fn classify_number(n: i32): i32 {
+    return match (n) {
+        0 => 0,
+        1 => 1,
+        _ => if (n < 0) { -1 } else { 2 },
+    };
+}
+
+it("should classify numbers with match") {
+    assert(classify_number(0) == 0);
+    assert(classify_number(1) == 1);
+    assert(classify_number(-5) == -1);
+    assert(classify_number(10) == 2);
+}
+
+fn get_sign(n: i32): i32 {
+    return match (n > 0) {
+        true => 1,
+        false => match (n < 0) {
+            true => -1,
+            false => 0,
+        },
+    };
+}
+
+it("should get sign with nested match") {
+    assert(get_sign(10) == 1);
+    assert(get_sign(-10) == -1);
+    assert(get_sign(0) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - CONSECUTIVE MATCHES
+// ============================================================================
+
+it("should handle multiple consecutive matches") {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let r1 = match (a) { 1 => 10, _ => 0 };
+    let r2 = match (b) { 2 => 20, _ => 0 };
+    let r3 = match (c) { 3 => 30, _ => 0 };
+    assert(r1 + r2 + r3 == 60);
+}
+
+// ============================================================================
+// EDGE CASES - MATCH ARM ORDER
+// ============================================================================
+
+it("should match first matching arm") {
+    let x = 5;
+    // The wildcard would match, but specific pattern comes first
+    let result = match (x) {
+        5 => 100,
+        _ => 0,
+    };
+    assert(result == 100);
+}
+
+it("should match wildcard when no specific match") {
+    let x = 42;
+    let result = match (x) {
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        _ => 999,
+    };
+    assert(result == 999);
+}
+
