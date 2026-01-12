@@ -849,8 +849,9 @@ pub const Interpreter = struct {
                 return Value{ .Float = lit.value };
             },
             .StringLiteral => |lit| {
-                // Don't copy string literals - they live in the source
-                return Value{ .String = lit.value };
+                // Process escape sequences in string literals
+                const processed = try self.processStringEscapes(lit.value);
+                return Value{ .String = processed };
             },
             .InterpolatedString => |interp| {
                 // Evaluate all expressions and concatenate with string parts
@@ -977,8 +978,51 @@ pub const Interpreter = struct {
             .SliceExpr => |slice| {
                 const array_value = try self.evaluateExpression(slice.array, env);
 
+                // Handle string slicing
+                if (array_value == .String) {
+                    const str = array_value.String;
+                    const str_len = @as(i64, @intCast(str.len));
+
+                    // Determine start index (default to 0 if null)
+                    const start_idx: i64 = if (slice.start) |start_expr| blk: {
+                        const start_value = try self.evaluateExpression(start_expr, env);
+                        if (start_value != .Int) {
+                            std.debug.print("Slice start index must be an integer\n", .{});
+                            return error.TypeMismatch;
+                        }
+                        break :blk start_value.Int;
+                    } else 0;
+
+                    // Determine end index (default to string length if null)
+                    const end_idx: i64 = if (slice.end) |end_expr| blk: {
+                        const end_value = try self.evaluateExpression(end_expr, env);
+                        if (end_value != .Int) {
+                            std.debug.print("Slice end index must be an integer\n", .{});
+                            return error.TypeMismatch;
+                        }
+                        const idx = end_value.Int;
+                        break :blk if (slice.inclusive) idx + 1 else idx;
+                    } else str_len;
+
+                    // Bounds checking
+                    if (start_idx < 0 or start_idx > str_len) {
+                        std.debug.print("String slice start index out of bounds: {d}\n", .{start_idx});
+                        return error.RuntimeError;
+                    }
+                    if (end_idx < start_idx or end_idx > str_len) {
+                        std.debug.print("String slice end index out of bounds: {d}\n", .{end_idx});
+                        return error.RuntimeError;
+                    }
+
+                    // Create sliced string
+                    const start_usize = @as(usize, @intCast(start_idx));
+                    const end_usize = @as(usize, @intCast(end_idx));
+                    const sliced_str = try self.arena.allocator().dupe(u8, str[start_usize..end_usize]);
+                    return Value{ .String = sliced_str };
+                }
+
                 if (array_value != .Array) {
-                    std.debug.print("Cannot slice non-array value\n", .{});
+                    std.debug.print("Cannot slice non-array/non-string value\n", .{});
                     return error.TypeMismatch;
                 }
 
@@ -2307,8 +2351,8 @@ pub const Interpreter = struct {
             return Value{ .Int = @as(i64, @intCast(str.len)) };
         }
 
-        // upper() - convert to uppercase
-        if (std.mem.eql(u8, method, "upper")) {
+        // upper() / to_upper() - convert to uppercase
+        if (std.mem.eql(u8, method, "upper") or std.mem.eql(u8, method, "to_upper")) {
             const result = try allocator.alloc(u8, str.len);
             for (str, 0..) |c, i| {
                 result[i] = if (c >= 'a' and c <= 'z') c - 32 else c;
@@ -2316,8 +2360,8 @@ pub const Interpreter = struct {
             return Value{ .String = result };
         }
 
-        // lower() - convert to lowercase
-        if (std.mem.eql(u8, method, "lower")) {
+        // lower() / to_lower() - convert to lowercase
+        if (std.mem.eql(u8, method, "lower") or std.mem.eql(u8, method, "to_lower")) {
             const result = try allocator.alloc(u8, str.len);
             for (str, 0..) |c, i| {
                 result[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
@@ -3900,6 +3944,87 @@ pub const Interpreter = struct {
                 break :blk try self.arena.allocator().dupe(u8, buf.items);
             },
         };
+    }
+
+    /// Process escape sequences in a string literal
+    /// Converts \n, \t, \r, \\, \", \', \0, \xNN to their actual character values
+    fn processStringEscapes(self: *Interpreter, input: []const u8) InterpreterError![]const u8 {
+        // Quick check: if no backslashes, return as-is
+        var has_escape = false;
+        for (input) |c| {
+            if (c == '\\') {
+                has_escape = true;
+                break;
+            }
+        }
+        if (!has_escape) {
+            return input;
+        }
+
+        var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+        var i: usize = 0;
+        while (i < input.len) {
+            if (input[i] == '\\' and i + 1 < input.len) {
+                const escape_char = input[i + 1];
+                switch (escape_char) {
+                    'n' => {
+                        try result.append(self.arena.allocator(), '\n');
+                        i += 2;
+                    },
+                    't' => {
+                        try result.append(self.arena.allocator(), '\t');
+                        i += 2;
+                    },
+                    'r' => {
+                        try result.append(self.arena.allocator(), '\r');
+                        i += 2;
+                    },
+                    '\\' => {
+                        try result.append(self.arena.allocator(), '\\');
+                        i += 2;
+                    },
+                    '"' => {
+                        try result.append(self.arena.allocator(), '"');
+                        i += 2;
+                    },
+                    '\'' => {
+                        try result.append(self.arena.allocator(), '\'');
+                        i += 2;
+                    },
+                    '0' => {
+                        try result.append(self.arena.allocator(), 0);
+                        i += 2;
+                    },
+                    'x' => {
+                        // Hex escape \xNN
+                        if (i + 3 < input.len) {
+                            const hex_str = input[i + 2 .. i + 4];
+                            const hex_val = std.fmt.parseInt(u8, hex_str, 16) catch {
+                                // Invalid hex, just copy literal
+                                try result.append(self.arena.allocator(), '\\');
+                                i += 1;
+                                continue;
+                            };
+                            try result.append(self.arena.allocator(), hex_val);
+                            i += 4;
+                        } else {
+                            try result.append(self.arena.allocator(), '\\');
+                            i += 1;
+                        }
+                    },
+                    else => {
+                        // Unknown escape, keep the backslash and character
+                        try result.append(self.arena.allocator(), '\\');
+                        try result.append(self.arena.allocator(), escape_char);
+                        i += 2;
+                    },
+                }
+            } else {
+                try result.append(self.arena.allocator(), input[i]);
+                i += 1;
+            }
+        }
+        return try self.arena.allocator().dupe(u8, result.items);
     }
 
     /// Check if break should target this loop

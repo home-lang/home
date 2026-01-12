@@ -103,3 +103,294 @@ it("should use strings in conditionals") {
     }
     assert(code == 1);
 }
+
+// ============================================================================
+// EDGE CASES - EMPTY STRINGS
+// ============================================================================
+
+it("should create empty string") {
+    let s = "";
+    assert(s == "");
+}
+
+it("should concatenate with empty string") {
+    let a = "hello";
+    let b = "";
+    assert(a + b == "hello");
+    assert(b + a == "hello");
+}
+
+it("should compare empty strings") {
+    let a = "";
+    let b = "";
+    assert(a == b);
+}
+
+it("should detect empty vs non-empty") {
+    let empty = "";
+    let nonempty = "x";
+    assert(empty != nonempty);
+}
+
+it("should get length of empty string") {
+    let s = "";
+    assert(s.len() == 0);
+}
+
+// ============================================================================
+// EDGE CASES - SINGLE CHARACTER
+// ============================================================================
+
+it("should handle single char string length") {
+    let s = "a";
+    assert(s.len() == 1);
+}
+
+it("should compare single char strings") {
+    let a = "a";
+    let b = "a";
+    let c = "b";
+    assert(a == b);
+    assert(a != c);
+}
+
+it("should concatenate single char strings") {
+    let a = "a";
+    let b = "b";
+    let c = "c";
+    assert(a + b + c == "abc");
+}
+
+// ============================================================================
+// EDGE CASES - SPECIAL CHARACTERS
+// ============================================================================
+
+it("should handle string with newline") {
+    let s = "line1\nline2";
+    assert(s.len() == 11);
+}
+
+it("should handle string with tab") {
+    let s = "col1\tcol2";
+    assert(s.len() == 9);
+}
+
+it("should handle string with backslash") {
+    let s = "path\\to\\file";
+    assert(s.len() == 12);
+}
+
+it("should handle string with quotes") {
+    let s = "he said \"hello\"";
+    assert(s.len() == 15);
+}
+
+// ============================================================================
+// EDGE CASES - LONG STRINGS
+// ============================================================================
+
+it("should handle long string") {
+    let s = "This is a very long string that contains many characters and words to test handling of longer text content.";
+    assert(s.len() > 100);
+}
+
+it("should concatenate to form long string") {
+    let mut s = "";
+    s = s + "aaaaaaaaaa";
+    s = s + "bbbbbbbbbb";
+    s = s + "cccccccccc";
+    assert(s.len() == 30);
+}
+
+// ============================================================================
+// EDGE CASES - STRING METHODS
+// ============================================================================
+
+it("should get string length") {
+    assert("".len() == 0);
+    assert("a".len() == 1);
+    assert("hello".len() == 5);
+    assert("hello world".len() == 11);
+}
+
+it("should check starts_with") {
+    let s = "hello world";
+    assert(s.starts_with("hello") == true);
+    assert(s.starts_with("world") == false);
+    assert(s.starts_with("") == true);
+    assert(s.starts_with("hello world") == true);
+}
+
+it("should check ends_with") {
+    let s = "hello world";
+    assert(s.ends_with("world") == true);
+    assert(s.ends_with("hello") == false);
+    assert(s.ends_with("") == true);
+    assert(s.ends_with("hello world") == true);
+}
+
+it("should check contains") {
+    let s = "hello world";
+    assert(s.contains("lo wo") == true);
+    assert(s.contains("xyz") == false);
+    assert(s.contains("") == true);
+    assert(s.contains("hello world") == true);
+}
+
+it("should convert to uppercase") {
+    assert("hello".to_upper() == "HELLO");
+    assert("".to_upper() == "");
+    assert("ALREADY".to_upper() == "ALREADY");
+    assert("MiXeD".to_upper() == "MIXED");
+}
+
+it("should convert to lowercase") {
+    assert("HELLO".to_lower() == "hello");
+    assert("".to_lower() == "");
+    assert("already".to_lower() == "already");
+    assert("MiXeD".to_lower() == "mixed");
+}
+
+it("should trim whitespace") {
+    assert("  hello  ".trim() == "hello");
+    assert("hello".trim() == "hello");
+    assert("   ".trim() == "");
+    assert("".trim() == "");
+}
+
+// ============================================================================
+// EDGE CASES - STRING INDEXING
+// ============================================================================
+
+it("should get character at index") {
+    let s = "hello";
+    assert(s[0] == 'h');
+    assert(s[4] == 'o');
+}
+
+it("should get first character") {
+    let s = "abc";
+    assert(s[0] == 'a');
+}
+
+it("should get last character by length") {
+    let s = "xyz";
+    let last = s.len() - 1;
+    assert(s[last] == 'z');
+}
+
+// ============================================================================
+// EDGE CASES - STRING IN COLLECTIONS
+// ============================================================================
+
+it("should use string as map key") {
+    let map = { "key1": 1, "key2": 2 };
+    assert(map["key1"] == 1);
+}
+
+it("should use string as map value") {
+    let map = { "name": "Alice", "city": "NYC" };
+    assert(map["name"] == "Alice");
+}
+
+it("should iterate over string array") {
+    let words = ["one", "two", "three"];
+    let mut count = 0;
+    for (w in words) {
+        count = count + 1;
+    }
+    assert(count == 3);
+}
+
+// ============================================================================
+// EDGE CASES - STRING COMPARISON EDGE CASES
+// ============================================================================
+
+it("should compare case-sensitive") {
+    assert("Hello" != "hello");
+    assert("ABC" != "abc");
+}
+
+it("should compare strings with numbers") {
+    assert("a1" != "a2");
+    assert("1a" != "2a");
+    assert("123" == "123");
+}
+
+it("should compare strings with spaces") {
+    assert("hello world" != "helloworld");
+    assert("hello " != "hello");
+    assert(" hello" != "hello");
+}
+
+// ============================================================================
+// EDGE CASES - STRING IN FUNCTIONS
+// ============================================================================
+
+it("should pass empty string to function") {
+    fn process(s: string): i32 {
+        return s.len();
+    }
+    assert(process("") == 0);
+    assert(process("abc") == 3);
+}
+
+it("should return empty string from function") {
+    fn get_empty(): string {
+        return "";
+    }
+    assert(get_empty() == "");
+}
+
+it("should modify string in function") {
+    fn shout(s: string): string {
+        return s.to_upper() + "!";
+    }
+    assert(shout("hello") == "HELLO!");
+}
+
+// ============================================================================
+// EDGE CASES - STRING SLICING
+// ============================================================================
+
+it("should slice string") {
+    let s = "hello world";
+    let slice = s[0..5];
+    assert(slice == "hello");
+}
+
+it("should slice from middle") {
+    let s = "hello world";
+    let slice = s[6..11];
+    assert(slice == "world");
+}
+
+it("should handle empty slice") {
+    let s = "hello";
+    let slice = s[0..0];
+    assert(slice == "");
+}
+
+// ============================================================================
+// EDGE CASES - COMPLEX STRING OPERATIONS
+// ============================================================================
+
+it("should chain string operations") {
+    let s = "  HELLO WORLD  ";
+    let result = s.trim().to_lower();
+    assert(result == "hello world");
+}
+
+it("should use string in ternary") {
+    let flag = true;
+    let s = if (flag) { "yes" } else { "no" };
+    assert(s == "yes");
+}
+
+it("should build string in loop") {
+    let mut s = "";
+    for (i in 0..5) {
+        s = s + "x";
+    }
+    assert(s == "xxxxx");
+}

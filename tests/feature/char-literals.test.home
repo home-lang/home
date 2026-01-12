@@ -68,9 +68,9 @@ it("should get char from string") {
 
 it("should iterate chars in string") {
     let s = "abc";
-    let mut chars = [];
+    let mut chars: [char] = [];
     for (c in s) {
-        chars.push(c);
+        chars = chars.push(c);
     }
     assert(chars[0] == 'a');
     assert(chars[1] == 'b');

@@ -96,3 +96,311 @@ it("should handle large array") {
     assert(sum == 55);
 }
 
+// ============================================================================
+// EDGE CASES - EMPTY ARRAYS
+// ============================================================================
+
+it("should create empty array") {
+    let arr: [i32] = [];
+    assert(arr.len() == 0);
+}
+
+it("should iterate over empty array") {
+    let arr: [i32] = [];
+    let mut count = 0;
+    for (x in arr) { count = count + 1; }
+    assert(count == 0);
+}
+
+it("should get length of empty array") {
+    let arr: [i32] = [];
+    assert(arr.len() == 0);
+    assert(arr.is_empty() == true);
+}
+
+// ============================================================================
+// EDGE CASES - SINGLE ELEMENT
+// ============================================================================
+
+it("should iterate over single element") {
+    let arr = [42];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == 42);
+}
+
+it("should slice single element array") {
+    let arr = [99];
+    let slice = arr[0..1];
+    assert(slice.len() == 1);
+    assert(slice[0] == 99);
+}
+
+it("should get first and last of single element") {
+    let arr = [77];
+    assert(arr.first() == 77);
+    assert(arr.last() == 77);
+}
+
+// ============================================================================
+// EDGE CASES - NEGATIVE VALUES
+// ============================================================================
+
+it("should handle array of negative numbers") {
+    let arr = [-1, -2, -3, -4, -5];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == -15);
+}
+
+it("should handle mixed positive and negative") {
+    let arr = [-10, 5, -3, 8, -2];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == -2);
+}
+
+it("should access negative values by index") {
+    let arr = [-100, -200, -300];
+    assert(arr[0] == -100);
+    assert(arr[1] == -200);
+    assert(arr[2] == -300);
+}
+
+// ============================================================================
+// EDGE CASES - ZERO VALUES
+// ============================================================================
+
+it("should handle array of zeros") {
+    let arr = [0, 0, 0, 0];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == 0);
+}
+
+it("should find zero in array") {
+    let arr = [1, 2, 0, 4, 5];
+    assert(arr.contains(0) == true);
+    assert(arr.index_of(0) == 2);
+}
+
+// ============================================================================
+// EDGE CASES - BOUNDARY INDICES
+// ============================================================================
+
+it("should access first element") {
+    let arr = [10, 20, 30];
+    assert(arr[0] == 10);
+}
+
+it("should access last element by length") {
+    let arr = [10, 20, 30];
+    let last_idx = arr.len() - 1;
+    assert(arr[last_idx] == 30);
+}
+
+it("should slice from beginning to middle") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[0..2];
+    assert(slice.len() == 2);
+    assert(slice[0] == 1);
+    assert(slice[1] == 2);
+}
+
+it("should slice from middle to end") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[3..5];
+    assert(slice.len() == 2);
+    assert(slice[0] == 4);
+    assert(slice[1] == 5);
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY MUTATION
+// ============================================================================
+
+it("should modify array element") {
+    let mut arr = [1, 2, 3];
+    arr[1] = 99;
+    assert(arr[1] == 99);
+    assert(arr[0] == 1);
+    assert(arr[2] == 3);
+}
+
+it("should modify first element") {
+    let mut arr = [10, 20, 30];
+    arr[0] = 100;
+    assert(arr[0] == 100);
+}
+
+it("should modify last element") {
+    let mut arr = [10, 20, 30];
+    arr[2] = 300;
+    assert(arr[2] == 300);
+}
+
+it("should modify all elements in loop") {
+    let mut arr = [1, 2, 3, 4, 5];
+    let mut i = 0;
+    while (i < arr.len()) {
+        arr[i] = arr[i] * 2;
+        i = i + 1;
+    }
+    assert(arr[0] == 2);
+    assert(arr[4] == 10);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED ARRAY OPERATIONS
+// ============================================================================
+
+it("should access deeply nested arrays") {
+    let matrix = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+    assert(matrix[0][0][0] == 1);
+    assert(matrix[0][1][1] == 4);
+    assert(matrix[1][1][1] == 8);
+}
+
+it("should iterate over nested arrays") {
+    let matrix = [[1, 2], [3, 4]];
+    let mut sum = 0;
+    for (row in matrix) {
+        for (val in row) {
+            sum = sum + val;
+        }
+    }
+    assert(sum == 10);
+}
+
+it("should get length of nested arrays") {
+    let matrix = [[1, 2, 3], [4, 5, 6]];
+    assert(matrix.len() == 2);
+    assert(matrix[0].len() == 3);
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY COMPARISON
+// ============================================================================
+
+it("should compare equal arrays") {
+    let a = [1, 2, 3];
+    let b = [1, 2, 3];
+    assert(a == b);
+}
+
+it("should detect different arrays") {
+    let a = [1, 2, 3];
+    let b = [1, 2, 4];
+    assert(a != b);
+}
+
+it("should detect different length arrays") {
+    let a = [1, 2, 3];
+    let b = [1, 2];
+    assert(a != b);
+}
+
+it("should compare empty arrays") {
+    let a: [i32] = [];
+    let b: [i32] = [];
+    assert(a == b);
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY IN FUNCTIONS
+// ============================================================================
+
+it("should return array from function") {
+    fn make_array(): [i32] {
+        return [10, 20, 30];
+    }
+    let arr = make_array();
+    assert(arr.len() == 3);
+    assert(arr[1] == 20);
+}
+
+it("should modify array passed to function") {
+    fn double_first(arr: [i32]): [i32] {
+        let mut result = arr;
+        result[0] = result[0] * 2;
+        return result;
+    }
+    let arr = [5, 10, 15];
+    let doubled = double_first(arr);
+    assert(doubled[0] == 10);
+}
+
+it("should sum array in function") {
+    fn sum(arr: [i32]): i32 {
+        let mut total = 0;
+        for (x in arr) { total = total + x; }
+        return total;
+    }
+    assert(sum([1, 2, 3, 4, 5]) == 15);
+    assert(sum([]) == 0);
+    assert(sum([100]) == 100);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE ACCESS
+// ============================================================================
+
+it("should use safe access on valid index") {
+    let arr = [10, 20, 30];
+    let result = arr?[1] ?? 0;
+    assert(result == 20);
+}
+
+it("should use safe access on out of bounds") {
+    let arr = [10, 20, 30];
+    let result = arr?[100] ?? -1;
+    assert(result == -1);
+}
+
+it("should use safe access on negative conceptual index") {
+    let arr = [10, 20, 30];
+    // Negative index treated as out of bounds
+    let result = arr?[-1] ?? 999;
+    assert(result == 999);
+}
+
+it("should use safe access on empty array") {
+    let arr: [i32] = [];
+    let result = arr?[0] ?? 42;
+    assert(result == 42);
+}
+
+// ============================================================================
+// EDGE CASES - COMPLEX OPERATIONS
+// ============================================================================
+
+it("should chain multiple array operations") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..4];
+    let reversed = slice.reverse();
+    assert(reversed[0] == 4);
+    assert(reversed[2] == 2);
+}
+
+it("should use array in conditional") {
+    let arr = [1, 2, 3];
+    let result = if (arr.len() > 2) { arr[2] } else { 0 };
+    assert(result == 3);
+}
+
+it("should use array contains in conditional") {
+    let arr = [10, 20, 30];
+    let result = if (arr.contains(20)) { "found" } else { "not found" };
+    assert(result == "found");
+}
+
+it("should build array dynamically") {
+    let mut arr: [i32] = [];
+    arr = arr.push(1);
+    arr = arr.push(2);
+    arr = arr.push(3);
+    assert(arr.len() == 3);
+    assert(arr[0] == 1);
+    assert(arr[2] == 3);
+}
+

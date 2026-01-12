@@ -125,3 +125,264 @@ it("should propagate Ok value through try") {
     let result = compute();
     assert(result == Ok(10));
 }
+
+// ============================================================================
+// EDGE CASES - OK VALUES
+// ============================================================================
+
+it("should handle Ok with zero") {
+    let result = Ok(0);
+    assert(result == Ok(0));
+}
+
+it("should handle Ok with negative number") {
+    let result = Ok(-42);
+    assert(result == Ok(-42));
+}
+
+it("should handle Ok with large number") {
+    let result = Ok(999999);
+    assert(result == Ok(999999));
+}
+
+it("should handle Ok with string") {
+    let result = Ok("success");
+    assert(result == Ok("success"));
+}
+
+it("should handle Ok with empty string") {
+    let result = Ok("");
+    assert(result == Ok(""));
+}
+
+it("should handle Ok with boolean true") {
+    let result = Ok(true);
+    assert(result == Ok(true));
+}
+
+it("should handle Ok with boolean false") {
+    let result = Ok(false);
+    assert(result == Ok(false));
+}
+
+// ============================================================================
+// EDGE CASES - ERR VALUES
+// ============================================================================
+
+it("should handle Err with empty string") {
+    let result = Err("");
+    assert(result == Err(""));
+}
+
+it("should handle Err with long message") {
+    let msg = "This is a very long error message that describes what went wrong";
+    let result = Err(msg);
+    assert(result == Err(msg));
+}
+
+it("should handle Err with number") {
+    let result = Err(404);
+    assert(result == Err(404));
+}
+
+it("should handle Err with zero") {
+    let result = Err(0);
+    assert(result == Err(0));
+}
+
+// ============================================================================
+// EDGE CASES - ELSE WITH DIFFERENT TYPES
+// ============================================================================
+
+it("should use negative default on error") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    let result = may_fail(-1) else -999;
+    assert(result == -999);
+}
+
+it("should use zero default on error") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    let result = may_fail(-1) else 0;
+    assert(result == 0);
+}
+
+it("should use computed default on error") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    let fallback = 10 + 20;
+    let result = may_fail(-1) else fallback;
+    assert(result == 30);
+}
+
+it("should call function in else branch") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    fn get_default(): i32 { return 42; }
+    let result = may_fail(-1) else get_default();
+    assert(result == 42);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE RESULTS
+// ============================================================================
+
+it("should handle multiple Ok results in sequence") {
+    fn make_ok(x: i32): Result<i32, string> { return Ok(x); }
+    let a = make_ok(1) else 0;
+    let b = make_ok(2) else 0;
+    let c = make_ok(3) else 0;
+    assert(a + b + c == 6);
+}
+
+it("should handle multiple Err results in sequence") {
+    fn make_err(msg: string): Result<i32, string> { return Err(msg); }
+    let a = make_err("a") else 10;
+    let b = make_err("b") else 20;
+    let c = make_err("c") else 30;
+    assert(a + b + c == 60);
+}
+
+it("should handle mixed Ok and Err results") {
+    fn maybe(x: i32): Result<i32, string> {
+        if (x % 2 == 0) { return Ok(x); }
+        return Err("odd");
+    }
+    let a = maybe(2) else 0;  // Ok(2)
+    let b = maybe(3) else 0;  // Err, use 0
+    let c = maybe(4) else 0;  // Ok(4)
+    assert(a == 2);
+    assert(b == 0);
+    assert(c == 4);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED RESULTS
+// ============================================================================
+
+it("should handle result in conditional") {
+    fn get_result(success: bool): Result<i32, string> {
+        if (success) { return Ok(42); }
+        return Err("failed");
+    }
+    let r = get_result(true);
+    let value = if (r == Ok(42)) { 1 } else { 0 };
+    assert(value == 1);
+}
+
+it("should use result in loop") {
+    fn get_value(i: i32): Result<i32, string> {
+        if (i < 0) { return Err("negative"); }
+        return Ok(i * 2);
+    }
+    let mut sum = 0;
+    for (i in 0..5) {
+        let v = get_value(i) else 0;
+        sum = sum + v;
+    }
+    assert(sum == 0 + 2 + 4 + 6 + 8);
+}
+
+// ============================================================================
+// EDGE CASES - ELSE BLOCK EXPRESSIONS
+// ============================================================================
+
+it("should compute complex expression in else block") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    let result = may_fail(-1) else {
+        let a = 10;
+        let b = 20;
+        a + b + 5
+    };
+    assert(result == 35);
+}
+
+it("should use conditional in else block") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) { return Err("neg"); }
+        return Ok(x);
+    }
+    let flag = true;
+    let fallback = if (flag) { 100 } else { 200 };
+    let result = may_fail(-1) else fallback;
+    assert(result == 100);
+}
+
+// ============================================================================
+// EDGE CASES - OPTION TYPE (Some/None)
+// ============================================================================
+
+it("should create Some value") {
+    let opt = Some(42);
+    assert(opt == Some(42));
+}
+
+it("should handle None value") {
+    let opt = None;
+    // None compared with itself
+    assert(opt == None);
+}
+
+it("should compare Some values") {
+    let a = Some(10);
+    let b = Some(10);
+    let c = Some(20);
+    assert(a == b);
+    assert(a != c);
+}
+
+it("should compare Some with None") {
+    let some = Some(42);
+    let none = None;
+    assert(some != none);
+}
+
+it("should handle Some with zero") {
+    let opt = Some(0);
+    assert(opt == Some(0));
+}
+
+it("should handle Some with negative") {
+    let opt = Some(-100);
+    assert(opt == Some(-100));
+}
+
+it("should handle Some with string") {
+    let opt = Some("hello");
+    assert(opt == Some("hello"));
+}
+
+it("should handle Some with empty string") {
+    let opt = Some("");
+    assert(opt == Some(""));
+}
+
+// ============================================================================
+// EDGE CASES - ARITHMETIC WITH RESULTS
+// ============================================================================
+
+it("should use result value in arithmetic") {
+    fn get_num(): Result<i32, string> { return Ok(10); }
+    let a = get_num() else 0;
+    let b = get_num() else 0;
+    assert(a + b == 20);
+    assert(a * b == 100);
+}
+
+it("should chain arithmetic with multiple results") {
+    fn double(x: i32): Result<i32, string> { return Ok(x * 2); }
+    let result = (double(5) else 0) + (double(10) else 0);
+    assert(result == 30);
+}

@@ -105,3 +105,480 @@ it("should classify quadrants") {
     assert(classify(1, -1) == 4);
 }
 
+// ============================================================================
+// EDGE CASES - BASIC BOOLEAN CONDITIONS
+// ============================================================================
+
+it("should handle true literal condition") {
+    let result = if (true) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle false literal condition") {
+    let result = if (false) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle boolean variable condition") {
+    let flag = true;
+    let result = if (flag) { "yes" } else { "no" };
+    assert(result == "yes");
+}
+
+it("should handle negated condition") {
+    let flag = false;
+    let result = if (!flag) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle double negation") {
+    let flag = true;
+    let result = if (!!flag) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - COMPARISON OPERATORS
+// ============================================================================
+
+it("should handle equal comparison") {
+    let x = 5;
+    let result = if (x == 5) { "equal" } else { "not equal" };
+    assert(result == "equal");
+}
+
+it("should handle not equal comparison") {
+    let x = 5;
+    let result = if (x != 10) { "different" } else { "same" };
+    assert(result == "different");
+}
+
+it("should handle less than") {
+    let x = 3;
+    let result = if (x < 5) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle less than or equal") {
+    let x = 5;
+    let result = if (x <= 5) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle greater than") {
+    let x = 10;
+    let result = if (x > 5) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle greater than or equal") {
+    let x = 5;
+    let result = if (x >= 5) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - BOUNDARY VALUES
+// ============================================================================
+
+it("should handle zero comparison") {
+    let x = 0;
+    assert(if (x == 0) { true } else { false } == true);
+    assert(if (x < 0) { true } else { false } == false);
+    assert(if (x > 0) { true } else { false } == false);
+}
+
+it("should handle negative number comparison") {
+    let x = -5;
+    assert(if (x < 0) { 1 } else { 0 } == 1);
+    assert(if (x == -5) { 1 } else { 0 } == 1);
+}
+
+it("should handle large number comparison") {
+    let big = 2147483647;
+    let result = if (big > 0) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - LOGICAL OPERATORS
+// ============================================================================
+
+it("should handle && with true && true") {
+    let result = if (true && true) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle && with true && false") {
+    let result = if (true && false) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle && with false && true") {
+    let result = if (false && true) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle && with false && false") {
+    let result = if (false && false) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle || with true || true") {
+    let result = if (true || true) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle || with true || false") {
+    let result = if (true || false) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle || with false || true") {
+    let result = if (false || true) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle || with false || false") {
+    let result = if (false || false) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+// ============================================================================
+// EDGE CASES - COMPLEX LOGICAL EXPRESSIONS
+// ============================================================================
+
+it("should handle combined && and ||") {
+    let a = true;
+    let b = false;
+    let c = true;
+    // (true && false) || true = false || true = true
+    let result = if (a && b || c) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should handle parenthesized logical expressions") {
+    let a = true;
+    let b = false;
+    let c = false;
+    // true && (false || false) = true && false = false
+    let result = if (a && (b || c)) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle negation with &&") {
+    let a = true;
+    let b = true;
+    let result = if (!a && b) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should handle negation with ||") {
+    let a = false;
+    let b = false;
+    let result = if (!a || !b) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - ELSE IF CHAINS
+// ============================================================================
+
+it("should match first condition in else if") {
+    let x = 1;
+    let mut result = 0;
+    if (x == 1) { result = 1; }
+    else if (x == 2) { result = 2; }
+    else { result = 0; }
+    assert(result == 1);
+}
+
+it("should match middle condition in else if") {
+    let x = 2;
+    let mut result = 0;
+    if (x == 1) { result = 1; }
+    else if (x == 2) { result = 2; }
+    else { result = 0; }
+    assert(result == 2);
+}
+
+it("should match else in else if chain") {
+    let x = 99;
+    let mut result = 0;
+    if (x == 1) { result = 1; }
+    else if (x == 2) { result = 2; }
+    else { result = 99; }
+    assert(result == 99);
+}
+
+it("should handle long else if chain") {
+    let x = 4;
+    let mut result = 0;
+    if (x == 1) { result = 1; }
+    else if (x == 2) { result = 2; }
+    else if (x == 3) { result = 3; }
+    else if (x == 4) { result = 4; }
+    else if (x == 5) { result = 5; }
+    else { result = 0; }
+    assert(result == 4);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED IF DEPTH
+// ============================================================================
+
+it("should handle deeply nested if") {
+    let a = true;
+    let b = true;
+    let c = true;
+    let mut result = 0;
+    if (a) {
+        if (b) {
+            if (c) {
+                result = 1;
+            }
+        }
+    }
+    assert(result == 1);
+}
+
+it("should handle mixed nesting") {
+    let x = 5;
+    let mut result = "";
+    if (x > 0) {
+        if (x < 10) {
+            result = "single digit positive";
+        } else {
+            result = "multi digit positive";
+        }
+    } else {
+        result = "non-positive";
+    }
+    assert(result == "single digit positive");
+}
+
+// ============================================================================
+// EDGE CASES - IF AS EXPRESSION
+// ============================================================================
+
+it("should return value from if expression") {
+    let x = 10;
+    let result = if (x > 5) { "big" } else { "small" };
+    assert(result == "big");
+}
+
+it("should return integer from if expression") {
+    let flag = true;
+    let value = if (flag) { 100 } else { 0 };
+    assert(value == 100);
+}
+
+it("should use if expression in calculation") {
+    let x = 3;
+    let bonus = if (x > 2) { 10 } else { 0 };
+    let total = x + bonus;
+    assert(total == 13);
+}
+
+it("should chain if expressions") {
+    let a = 5;
+    let b = 10;
+    let max = if (a > b) { a } else { b };
+    let min = if (a < b) { a } else { b };
+    assert(max == 10);
+    assert(min == 5);
+}
+
+// ============================================================================
+// EDGE CASES - STRING COMPARISON IN CONDITIONALS
+// ============================================================================
+
+it("should compare strings in condition") {
+    let name = "Alice";
+    let result = if (name == "Alice") { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should compare strings not equal") {
+    let name = "Bob";
+    let result = if (name != "Alice") { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should compare empty string") {
+    let s = "";
+    let result = if (s == "") { "empty" } else { "not empty" };
+    assert(result == "empty");
+}
+
+// ============================================================================
+// EDGE CASES - FUNCTION CALL IN CONDITION
+// ============================================================================
+
+it("should use function result in condition") {
+    fn is_even(n: i32): bool {
+        return n % 2 == 0;
+    }
+    let result = if (is_even(4)) { "even" } else { "odd" };
+    assert(result == "even");
+}
+
+it("should use multiple function calls in condition") {
+    fn positive(n: i32): bool { return n > 0; }
+    fn small(n: i32): bool { return n < 10; }
+    let x = 5;
+    let result = if (positive(x) && small(x)) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - ARRAY/STRING METHODS IN CONDITION
+// ============================================================================
+
+it("should use array length in condition") {
+    let arr = [1, 2, 3];
+    let result = if (arr.len() > 0) { "not empty" } else { "empty" };
+    assert(result == "not empty");
+}
+
+it("should use array contains in condition") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = if (arr.contains(3)) { "found" } else { "not found" };
+    assert(result == "found");
+}
+
+it("should use string method in condition") {
+    let s = "hello world";
+    let result = if (s.starts_with("hello")) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - TERNARY-STYLE IF EXPRESSIONS
+// ============================================================================
+
+it("should handle simple ternary pattern") {
+    let x = 10;
+    let sign = if (x >= 0) { "positive" } else { "negative" };
+    assert(sign == "positive");
+}
+
+it("should handle nested ternary pattern") {
+    let x = 0;
+    let category = if (x > 0) { "positive" } else { if (x < 0) { "negative" } else { "zero" } };
+    assert(category == "zero");
+}
+
+it("should use ternary in array") {
+    let flag = true;
+    let arr = [if (flag) { 1 } else { 0 }, if (!flag) { 1 } else { 0 }];
+    assert(arr[0] == 1);
+    assert(arr[1] == 0);
+}
+
+// ============================================================================
+// EDGE CASES - SIDE EFFECTS IN CONDITIONALS
+// ============================================================================
+
+it("should only execute matching branch") {
+    let mut a = 0;
+    let mut b = 0;
+    if (true) {
+        a = 1;
+    } else {
+        b = 1;
+    }
+    assert(a == 1);
+    assert(b == 0);
+}
+
+it("should not execute false branch") {
+    let mut executed = false;
+    if (false) {
+        executed = true;
+    }
+    assert(executed == false);
+}
+
+// ============================================================================
+// EDGE CASES - CONDITIONALS WITH DIFFERENT TYPES
+// ============================================================================
+
+it("should handle bool result type") {
+    let x = 5;
+    let result: bool = if (x > 0) { true } else { false };
+    assert(result == true);
+}
+
+it("should handle string result type") {
+    let n = 42;
+    let result: string = if (n == 42) { "answer" } else { "unknown" };
+    assert(result == "answer");
+}
+
+// ============================================================================
+// EDGE CASES - SHORT CIRCUIT EVALUATION
+// ============================================================================
+
+it("should short circuit && on false") {
+    let mut called = false;
+    fn side_effect(): bool {
+        // This would set called = true if called
+        return true;
+    }
+    // false && side_effect() should not call side_effect
+    let result = if (false && true) { 1 } else { 0 };
+    assert(result == 0);
+}
+
+it("should short circuit || on true") {
+    // true || anything should not evaluate anything
+    let result = if (true || false) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+// ============================================================================
+// EDGE CASES - CONDITIONALS WITH ARITHMETIC
+// ============================================================================
+
+it("should use arithmetic in condition") {
+    let x = 5;
+    let y = 3;
+    let result = if (x + y == 8) { 1 } else { 0 };
+    assert(result == 1);
+}
+
+it("should use multiplication in condition") {
+    let x = 4;
+    let result = if (x * x == 16) { "perfect square" } else { "not" };
+    assert(result == "perfect square");
+}
+
+it("should use modulo in condition") {
+    let n = 15;
+    let result = if (n % 5 == 0) { "divisible" } else { "not divisible" };
+    assert(result == "divisible");
+}
+
+// ============================================================================
+// EDGE CASES - EMPTY BLOCKS
+// ============================================================================
+
+it("should handle empty if block") {
+    let mut x = 5;
+    if (false) {
+        // empty
+    }
+    assert(x == 5);
+}
+
+it("should handle if with empty else") {
+    let mut x = 0;
+    if (true) {
+        x = 1;
+    } else {
+        // empty
+    }
+    assert(x == 1);
+}
+

@@ -125,3 +125,288 @@ it("should return value for existing key with safe access") {
     let result = map?["a"] ?? 0;
     assert(result == 42);
 }
+
+// ============================================================================
+// EDGE CASES - EMPTY AND SINGLE ELEMENT
+// ============================================================================
+
+it("should handle is_empty on empty map") {
+    let map = {};
+    assert(map.is_empty() == true);
+}
+
+it("should handle is_empty on non-empty map") {
+    let map = { "x": 1 };
+    assert(map.is_empty() == false);
+}
+
+it("should handle single entry map") {
+    let map = { "only": 42 };
+    assert(map.len() == 1);
+    assert(map["only"] == 42);
+    assert(map.contains_key("only") == true);
+}
+
+it("should remove only entry from map") {
+    let mut map = { "only": 1 };
+    map.remove("only");
+    assert(map.len() == 0);
+    assert(map.is_empty() == true);
+}
+
+it("should clear already empty map") {
+    let mut map = {};
+    map.clear();
+    assert(map.len() == 0);
+}
+
+// ============================================================================
+// EDGE CASES - KEY OPERATIONS
+// ============================================================================
+
+it("should handle contains_key on empty map") {
+    let map = {};
+    assert(map.contains_key("anything") == false);
+}
+
+it("should handle remove on non-existent key") {
+    let mut map = { "a": 1 };
+    map.remove("nonexistent");
+    assert(map.len() == 1);
+    assert(map["a"] == 1);
+}
+
+it("should update existing key value") {
+    let mut map = { "key": 100 };
+    map["key"] = 200;
+    assert(map["key"] == 200);
+    assert(map.len() == 1);
+}
+
+it("should handle multiple updates to same key") {
+    let mut map = { "x": 1 };
+    map["x"] = 2;
+    map["x"] = 3;
+    map["x"] = 4;
+    assert(map["x"] == 4);
+    assert(map.len() == 1);
+}
+
+// ============================================================================
+// EDGE CASES - VALUE TYPES
+// ============================================================================
+
+it("should store zero as value") {
+    let map = { "zero": 0 };
+    assert(map["zero"] == 0);
+}
+
+it("should store negative values") {
+    let map = { "neg": -42, "neg2": -100 };
+    assert(map["neg"] == -42);
+    assert(map["neg2"] == -100);
+}
+
+it("should store boolean values") {
+    let map = { "yes": true, "no": false };
+    assert(map["yes"] == true);
+    assert(map["no"] == false);
+}
+
+it("should store empty string as value") {
+    let map = { "empty": "" };
+    assert(map["empty"] == "");
+}
+
+it("should store array as value") {
+    let map = { "arr": [1, 2, 3] };
+    assert(map["arr"][0] == 1);
+    assert(map["arr"][2] == 3);
+}
+
+// ============================================================================
+// EDGE CASES - INTEGER KEYS
+// ============================================================================
+
+it("should handle zero as integer key") {
+    let map = { 0: "zero" };
+    assert(map[0] == "zero");
+}
+
+it("should handle negative integer keys") {
+    let map = { -1: "minus one", -100: "minus hundred" };
+    assert(map[-1] == "minus one");
+    assert(map[-100] == "minus hundred");
+}
+
+it("should handle large integer keys") {
+    let map = { 999999: "big" };
+    assert(map[999999] == "big");
+}
+
+it("should distinguish integer and string keys") {
+    let mut map = { 1: "int one" };
+    map["1"] = "string one";
+    // Both keys exist (converted to string internally)
+    assert(map[1] == "string one");
+    assert(map["1"] == "string one");
+}
+
+// ============================================================================
+// EDGE CASES - ITERATION
+// ============================================================================
+
+it("should iterate over empty map keys") {
+    let map = {};
+    let mut count = 0;
+    for (k in map.keys()) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate over empty map values") {
+    let map = {};
+    let mut count = 0;
+    for (v in map.values()) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate over single entry") {
+    let map = { "only": 42 };
+    let mut sum = 0;
+    for (v in map.values()) {
+        sum = sum + v;
+    }
+    assert(sum == 42);
+}
+
+it("should sum all values via iteration") {
+    let map = { "a": 1, "b": 2, "c": 3, "d": 4, "e": 5 };
+    let mut sum = 0;
+    for (v in map.values()) {
+        sum = sum + v;
+    }
+    assert(sum == 15);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED MAPS
+// ============================================================================
+
+it("should handle deeply nested maps") {
+    let map = {
+        "level1": {
+            "level2": {
+                "level3": 42
+            }
+        }
+    };
+    assert(map["level1"]["level2"]["level3"] == 42);
+}
+
+it("should modify nested map value") {
+    let mut map = {
+        "outer": {
+            "inner": 10
+        }
+    };
+    // Note: This creates a new nested map
+    map["outer"] = { "inner": 20 };
+    assert(map["outer"]["inner"] == 20);
+}
+
+it("should handle map of maps") {
+    let users = {
+        "alice": { "age": 30, "score": 100 },
+        "bob": { "age": 25, "score": 85 }
+    };
+    assert(users["alice"]["age"] == 30);
+    assert(users["bob"]["score"] == 85);
+}
+
+// ============================================================================
+// EDGE CASES - SAFE ACCESS
+// ============================================================================
+
+it("should chain safe access on nested maps") {
+    let map = { "a": { "b": 42 } };
+    let result = map?["a"]?["b"] ?? 0;
+    assert(result == 42);
+}
+
+it("should handle safe access on missing nested key") {
+    let map = { "a": { "b": 42 } };
+    let result = map?["a"]?["missing"] ?? -1;
+    assert(result == -1);
+}
+
+it("should handle safe access on missing outer key") {
+    let map = { "a": 1 };
+    let result = map?["missing"] ?? 999;
+    assert(result == 999);
+}
+
+// ============================================================================
+// EDGE CASES - OPERATIONS AFTER MODIFICATION
+// ============================================================================
+
+it("should get correct length after multiple adds") {
+    let mut map = {};
+    map["a"] = 1;
+    assert(map.len() == 1);
+    map["b"] = 2;
+    assert(map.len() == 2);
+    map["c"] = 3;
+    assert(map.len() == 3);
+}
+
+it("should get correct length after add and remove") {
+    let mut map = { "a": 1, "b": 2, "c": 3 };
+    assert(map.len() == 3);
+    map.remove("b");
+    assert(map.len() == 2);
+    map["d"] = 4;
+    assert(map.len() == 3);
+}
+
+it("should still work after clear and re-add") {
+    let mut map = { "old": 1 };
+    map.clear();
+    map["new"] = 42;
+    assert(map.len() == 1);
+    assert(map["new"] == 42);
+    assert(map.contains_key("old") == false);
+}
+
+// ============================================================================
+// EDGE CASES - MAP IN FUNCTIONS
+// ============================================================================
+
+it("should pass map to function") {
+    fn get_sum(m: Map): i32 {
+        let mut sum = 0;
+        for (v in m.values()) {
+            sum = sum + v;
+        }
+        return sum;
+    }
+    let map = { "a": 10, "b": 20 };
+    assert(get_sum(map) == 30);
+}
+
+it("should return map from function") {
+    fn create_map(): Map {
+        return { "created": true, "value": 42 };
+    }
+    let map = create_map();
+    assert(map["value"] == 42);
+}
+
+it("should use map in conditional") {
+    let map = { "enabled": true };
+    let result = if (map["enabled"]) { 1 } else { 0 };
+    assert(result == 1);
+}

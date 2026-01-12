@@ -92,3 +92,371 @@ it("should capture struct values") {
     assert(apply_config(3) == 15);
 }
 
+// ============================================================================
+// EDGE CASES - SINGLE VARIABLE CAPTURE
+// ============================================================================
+
+it("should capture zero value") {
+    let zero = 0;
+    fn add_zero(x: i32): i32 {
+        return x + zero;
+    }
+    assert(add_zero(5) == 5);
+}
+
+it("should capture negative value") {
+    let neg = -10;
+    fn adjust(x: i32): i32 {
+        return x + neg;
+    }
+    assert(adjust(15) == 5);
+}
+
+it("should capture boolean false") {
+    let flag = false;
+    fn check(x: i32): i32 {
+        if (flag) { return x * 2; }
+        return x;
+    }
+    assert(check(10) == 10);
+}
+
+it("should capture empty string") {
+    let prefix = "";
+    fn prepend(s: string): string {
+        return prefix + s;
+    }
+    assert(prepend("hello") == "hello");
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE CAPTURE
+// ============================================================================
+
+it("should capture three variables") {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    fn sum_all(x: i32): i32 {
+        return x + a + b + c;
+    }
+    assert(sum_all(4) == 10);
+}
+
+it("should capture mixed types") {
+    let num = 42;
+    let name = "answer";
+    let flag = true;
+    fn describe(): string {
+        if (flag) {
+            return name;
+        }
+        return "";
+    }
+    assert(describe() == "answer");
+}
+
+it("should capture from same scope") {
+    let x = 10;
+    let y = 20;
+    fn add(): i32 { return x + y; }
+    fn mul(): i32 { return x * y; }
+    assert(add() == 30);
+    assert(mul() == 200);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED FUNCTION CAPTURE
+// ============================================================================
+
+it("should capture in three levels deep") {
+    let outer = 1;
+    fn level1(): i32 {
+        let mid = 10;
+        fn level2(): i32 {
+            let inner = 100;
+            fn level3(): i32 {
+                return outer + mid + inner;
+            }
+            return level3();
+        }
+        return level2();
+    }
+    assert(level1() == 111);
+}
+
+it("should capture across nested scopes selectively") {
+    let a = 5;
+    fn outer(): i32 {
+        let b = 10;
+        fn inner(): i32 {
+            // Only uses a from outer scope
+            return a * 2;
+        }
+        return inner() + b;
+    }
+    assert(outer() == 20);  // (5*2) + 10
+}
+
+it("should shadow outer variable in nested function") {
+    let x = 100;
+    fn outer(): i32 {
+        let x = 10;  // shadows outer x
+        fn inner(): i32 {
+            return x;  // should get 10, not 100
+        }
+        return inner();
+    }
+    assert(outer() == 10);
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE WITH LOOPS
+// ============================================================================
+
+it("should use captured variable in loop") {
+    let multiplier = 2;
+    fn sum_doubled(arr: [i32]): i32 {
+        let mut total = 0;
+        for (x in arr) {
+            total = total + (x * multiplier);
+        }
+        return total;
+    }
+    assert(sum_doubled([1, 2, 3]) == 12);
+}
+
+it("should capture and use in while loop") {
+    let limit = 5;
+    fn count_up(): i32 {
+        let mut i = 0;
+        while (i < limit) {
+            i = i + 1;
+        }
+        return i;
+    }
+    assert(count_up() == 5);
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE WITH CONDITIONALS
+// ============================================================================
+
+it("should capture and use in if-else") {
+    let threshold = 50;
+    fn classify(x: i32): string {
+        if (x >= threshold) {
+            return "high";
+        } else {
+            return "low";
+        }
+    }
+    assert(classify(60) == "high");
+    assert(classify(40) == "low");
+}
+
+it("should capture multiple for complex conditional") {
+    let min = 10;
+    let max = 20;
+    fn in_range(x: i32): bool {
+        return x >= min && x <= max;
+    }
+    assert(in_range(15) == true);
+    assert(in_range(5) == false);
+    assert(in_range(25) == false);
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE RETURNING VALUES
+// ============================================================================
+
+it("should return captured string") {
+    let message = "Hello";
+    fn get_message(): string {
+        return message;
+    }
+    assert(get_message() == "Hello");
+}
+
+it("should return computed value using captured") {
+    let base = 100;
+    let bonus = 50;
+    fn calculate(): i32 {
+        return base + bonus;
+    }
+    assert(calculate() == 150);
+}
+
+it("should return boolean from captured comparison") {
+    let target = 42;
+    fn is_target(x: i32): bool {
+        return x == target;
+    }
+    assert(is_target(42) == true);
+    assert(is_target(0) == false);
+}
+
+// ============================================================================
+// EDGE CASES - HIGHER ORDER FUNCTIONS
+// ============================================================================
+
+it("should pass closure to higher-order function") {
+    let factor = 3;
+    fn triple(x: i32): i32 {
+        return x * factor;
+    }
+    fn apply_twice(f: fn(i32): i32, x: i32): i32 {
+        return f(f(x));
+    }
+    assert(apply_twice(triple, 2) == 18);  // triple(triple(2)) = triple(6) = 18
+}
+
+it("should use closure in map-like operation") {
+    let offset = 10;
+    fn add_offset(x: i32): i32 {
+        return x + offset;
+    }
+    let arr = [1, 2, 3];
+    let mut results: [i32] = [];
+    for (x in arr) {
+        results = results.push(add_offset(x));
+    }
+    assert(results[0] == 11);
+    assert(results[1] == 12);
+    assert(results[2] == 13);
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE WITH ARRAYS
+// ============================================================================
+
+it("should capture array and index it") {
+    let lookup = [10, 20, 30, 40, 50];
+    fn get_at(idx: i32): i32 {
+        return lookup[idx];
+    }
+    assert(get_at(0) == 10);
+    assert(get_at(2) == 30);
+    assert(get_at(4) == 50);
+}
+
+it("should capture array and check length") {
+    let items = [1, 2, 3, 4, 5];
+    fn count(): i32 {
+        return items.len();
+    }
+    assert(count() == 5);
+}
+
+it("should capture empty array") {
+    let empty: [i32] = [];
+    fn is_empty(): bool {
+        return empty.len() == 0;
+    }
+    assert(is_empty() == true);
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE WITH ARITHMETIC
+// ============================================================================
+
+it("should capture for complex arithmetic") {
+    let a = 2;
+    let b = 3;
+    let c = 4;
+    fn compute(x: i32): i32 {
+        return a * x * x + b * x + c;  // 2x^2 + 3x + 4
+    }
+    assert(compute(1) == 9);   // 2 + 3 + 4
+    assert(compute(2) == 18);  // 8 + 6 + 4
+}
+
+it("should capture for division") {
+    let divisor = 5;
+    fn divide(x: i32): i32 {
+        return x / divisor;
+    }
+    assert(divide(10) == 2);
+    assert(divide(25) == 5);
+}
+
+it("should capture for modulo") {
+    let mod_val = 3;
+    fn remainder(x: i32): i32 {
+        return x % mod_val;
+    }
+    assert(remainder(7) == 1);
+    assert(remainder(9) == 0);
+}
+
+// ============================================================================
+// EDGE CASES - RECURSIVE WITH CAPTURE
+// ============================================================================
+
+it("should use captured value in recursive function") {
+    let step = 1;
+    fn countdown(n: i32): i32 {
+        if (n <= 0) { return 0; }
+        return n + countdown(n - step);
+    }
+    assert(countdown(5) == 15);  // 5+4+3+2+1
+}
+
+// ============================================================================
+// EDGE CASES - CLOSURE EDGE VALUES
+// ============================================================================
+
+it("should capture max int value") {
+    let big = 2147483647;
+    fn get_big(): i32 {
+        return big;
+    }
+    assert(get_big() == 2147483647);
+}
+
+it("should capture min int value") {
+    let small = -2147483648;
+    fn get_small(): i32 {
+        return small;
+    }
+    assert(get_small() == -2147483648);
+}
+
+it("should capture long string") {
+    let long_str = "This is a very long string that tests capturing longer text values in closures";
+    fn get_length(): i32 {
+        return long_str.len();
+    }
+    assert(get_length() > 50);
+}
+
+// ============================================================================
+// EDGE CASES - MULTIPLE CLOSURES SAME SCOPE
+// ============================================================================
+
+it("should define multiple closures capturing same variable") {
+    let shared = 10;
+    fn add_shared(x: i32): i32 { return x + shared; }
+    fn mul_shared(x: i32): i32 { return x * shared; }
+    fn sub_shared(x: i32): i32 { return x - shared; }
+
+    assert(add_shared(5) == 15);
+    assert(mul_shared(5) == 50);
+    assert(sub_shared(15) == 5);
+}
+
+it("should have closures capture different subsets") {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    fn use_a(): i32 { return a; }
+    fn use_ab(): i32 { return a + b; }
+    fn use_bc(): i32 { return b + c; }
+    fn use_abc(): i32 { return a + b + c; }
+
+    assert(use_a() == 1);
+    assert(use_ab() == 3);
+    assert(use_bc() == 5);
+    assert(use_abc() == 6);
+}
+

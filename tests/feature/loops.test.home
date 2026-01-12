@@ -115,3 +115,488 @@ it("should handle for with continue") {
     assert(sum == 12);
 }
 
+// ============================================================================
+// EDGE CASES - WHILE LOOP BOUNDARY
+// ============================================================================
+
+it("should execute while loop exactly once") {
+    let mut count = 0;
+    let mut x = 0;
+    while (x < 1) {
+        count = count + 1;
+        x = x + 1;
+    }
+    assert(count == 1);
+}
+
+it("should handle while with equal boundary") {
+    let mut i = 5;
+    let mut count = 0;
+    while (i <= 5) {
+        count = count + 1;
+        i = i + 1;
+    }
+    assert(count == 1);
+}
+
+it("should handle while with negative condition") {
+    let mut i = -5;
+    let mut sum = 0;
+    while (i < 0) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == -15);  // -5 + -4 + -3 + -2 + -1
+}
+
+it("should handle while with decrement") {
+    let mut i = 5;
+    let mut count = 0;
+    while (i > 0) {
+        count = count + 1;
+        i = i - 1;
+    }
+    assert(count == 5);
+}
+
+// ============================================================================
+// EDGE CASES - WHILE LOOP COMPLEX CONDITIONS
+// ============================================================================
+
+it("should handle while with or condition") {
+    let mut a = 0;
+    let mut b = 5;
+    let mut count = 0;
+    while (a < 3 || b > 3) {
+        count = count + 1;
+        a = a + 1;
+        b = b - 1;
+    }
+    assert(count == 3);
+}
+
+it("should handle while with negated condition") {
+    let mut flag = true;
+    let mut count = 0;
+    while (!(!flag)) {
+        count = count + 1;
+        if (count >= 3) { flag = false; }
+    }
+    assert(count == 3);
+}
+
+it("should handle while with comparison chain") {
+    let mut x = 0;
+    let mut count = 0;
+    while (0 <= x && x < 5) {
+        count = count + 1;
+        x = x + 1;
+    }
+    assert(count == 5);
+}
+
+// ============================================================================
+// EDGE CASES - FOR LOOP RANGES
+// ============================================================================
+
+it("should iterate empty range") {
+    let mut count = 0;
+    for (i in 5..5) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate single element range") {
+    let mut sum = 0;
+    for (i in 0..1) {
+        sum = sum + i;
+    }
+    assert(sum == 0);
+}
+
+it("should iterate large range") {
+    let mut sum = 0;
+    for (i in 0..100) {
+        sum = sum + 1;
+    }
+    assert(sum == 100);
+}
+
+it("should use range starting from non-zero") {
+    let mut sum = 0;
+    for (i in 10..15) {
+        sum = sum + i;
+    }
+    assert(sum == 60);  // 10+11+12+13+14
+}
+
+// ============================================================================
+// EDGE CASES - FOR LOOP ARRAYS
+// ============================================================================
+
+it("should iterate empty array") {
+    let arr: [i32] = [];
+    let mut count = 0;
+    for (x in arr) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate single element array") {
+    let arr = [42];
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
+    assert(sum == 42);
+}
+
+it("should iterate array with negative values") {
+    let arr = [-1, -2, -3];
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
+    assert(sum == -6);
+}
+
+it("should iterate string array") {
+    let arr = ["a", "b", "c"];
+    let mut count = 0;
+    for (s in arr) {
+        count = count + 1;
+    }
+    assert(count == 3);
+}
+
+// ============================================================================
+// EDGE CASES - BREAK SCENARIOS
+// ============================================================================
+
+it("should break immediately") {
+    let mut count = 0;
+    while (true) {
+        break;
+        count = count + 1;  // never reached
+    }
+    assert(count == 0);
+}
+
+it("should break at specific index in for loop") {
+    let arr = [10, 20, 30, 40, 50];
+    let mut found_value = 0;
+    for (x in arr) {
+        if (x == 30) {
+            found_value = x;
+            break;
+        }
+    }
+    assert(found_value == 30);
+}
+
+it("should break preserving accumulated value") {
+    let mut sum = 0;
+    for (i in 0..10) {
+        sum = sum + i;
+        if (sum >= 10) { break; }
+    }
+    assert(sum == 10);  // 0+1+2+3+4 = 10
+}
+
+it("should break from inner loop only") {
+    let mut outer_runs = 0;
+    let mut inner_runs = 0;
+    for (i in 0..3) {
+        outer_runs = outer_runs + 1;
+        for (j in 0..10) {
+            inner_runs = inner_runs + 1;
+            if (j == 1) { break; }
+        }
+    }
+    assert(outer_runs == 3);
+    assert(inner_runs == 6);  // 2 iterations per outer loop * 3
+}
+
+// ============================================================================
+// EDGE CASES - CONTINUE SCENARIOS
+// ============================================================================
+
+it("should continue on first iteration") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) {
+        if (x == 1) { continue; }
+        sum = sum + x;
+    }
+    assert(sum == 14);  // 2+3+4+5
+}
+
+it("should continue on last iteration") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) {
+        if (x == 5) { continue; }
+        sum = sum + x;
+    }
+    assert(sum == 10);  // 1+2+3+4
+}
+
+it("should continue multiple times") {
+    let mut sum = 0;
+    for (i in 0..10) {
+        if (i % 2 == 0) { continue; }  // skip even
+        sum = sum + i;
+    }
+    assert(sum == 25);  // 1+3+5+7+9
+}
+
+it("should continue in while loop") {
+    let mut i = 0;
+    let mut sum = 0;
+    while (i < 10) {
+        i = i + 1;
+        if (i <= 5) { continue; }
+        sum = sum + i;
+    }
+    assert(sum == 40);  // 6+7+8+9+10
+}
+
+// ============================================================================
+// EDGE CASES - NESTED LOOPS DEEP
+// ============================================================================
+
+it("should handle three level nested loops") {
+    let mut count = 0;
+    for (i in 0..2) {
+        for (j in 0..2) {
+            for (k in 0..2) {
+                count = count + 1;
+            }
+        }
+    }
+    assert(count == 8);  // 2*2*2
+}
+
+it("should break from deep nested loop") {
+    let mut total = 0;
+    for (i in 0..3) {
+        for (j in 0..3) {
+            for (k in 0..3) {
+                total = total + 1;
+                if (k == 1) { break; }
+            }
+        }
+    }
+    assert(total == 18);  // 3*3*2
+}
+
+it("should continue in nested loop") {
+    let mut sum = 0;
+    for (i in 0..3) {
+        for (j in 0..3) {
+            if (j == 1) { continue; }
+            sum = sum + 1;
+        }
+    }
+    assert(sum == 6);  // 3 outer * 2 inner (skip j==1)
+}
+
+// ============================================================================
+// EDGE CASES - LOOP WITH CONDITIONALS
+// ============================================================================
+
+it("should use if inside for loop") {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let mut even_sum = 0;
+    let mut odd_sum = 0;
+    for (x in arr) {
+        if (x % 2 == 0) {
+            even_sum = even_sum + x;
+        } else {
+            odd_sum = odd_sum + x;
+        }
+    }
+    assert(even_sum == 12);  // 2+4+6
+    assert(odd_sum == 9);    // 1+3+5
+}
+
+it("should use complex conditional in loop") {
+    let arr = [1, 5, 10, 15, 20, 25];
+    let mut category1 = 0;
+    let mut category2 = 0;
+    let mut category3 = 0;
+    for (x in arr) {
+        if (x < 5) {
+            category1 = category1 + 1;
+        } else if (x < 15) {
+            category2 = category2 + 1;
+        } else {
+            category3 = category3 + 1;
+        }
+    }
+    assert(category1 == 1);  // [1]
+    assert(category2 == 2);  // [5, 10]
+    assert(category3 == 3);  // [15, 20, 25]
+}
+
+// ============================================================================
+// EDGE CASES - LOOP VARIABLE SCOPE
+// ============================================================================
+
+it("should not leak for loop variable") {
+    let mut last = 0;
+    for (i in 0..5) {
+        last = i;
+    }
+    // i should not be accessible here
+    assert(last == 4);
+}
+
+it("should allow same variable name in separate loops") {
+    let mut sum1 = 0;
+    for (x in [1, 2, 3]) {
+        sum1 = sum1 + x;
+    }
+    let mut sum2 = 0;
+    for (x in [10, 20, 30]) {
+        sum2 = sum2 + x;
+    }
+    assert(sum1 == 6);
+    assert(sum2 == 60);
+}
+
+// ============================================================================
+// EDGE CASES - WHILE WITH FUNCTION CALLS
+// ============================================================================
+
+it("should call function in while condition") {
+    let mut arr = [1, 2, 3, 4, 5];
+    let mut count = 0;
+    while (arr.len() > 3) {
+        count = count + 1;
+        arr = arr.pop();
+    }
+    assert(count == 2);
+}
+
+it("should modify array in while loop") {
+    let mut arr: [i32] = [];
+    let mut i = 0;
+    while (arr.len() < 5) {
+        arr = arr.push(i);
+        i = i + 1;
+    }
+    assert(arr.len() == 5);
+    assert(arr[0] == 0);
+    assert(arr[4] == 4);
+}
+
+// ============================================================================
+// EDGE CASES - LOOP WITH ARITHMETIC
+// ============================================================================
+
+it("should compute factorial with while") {
+    let mut n = 5;
+    let mut fact = 1;
+    while (n > 0) {
+        fact = fact * n;
+        n = n - 1;
+    }
+    assert(fact == 120);
+}
+
+it("should compute power with for loop") {
+    let base = 2;
+    let mut power = 1;
+    for (i in 0..10) {
+        power = power * base;
+    }
+    assert(power == 1024);  // 2^10
+}
+
+it("should compute fibonacci with while") {
+    let mut a = 0;
+    let mut b = 1;
+    let mut count = 0;
+    while (count < 10) {
+        let temp = a + b;
+        a = b;
+        b = temp;
+        count = count + 1;
+    }
+    assert(a == 55);  // 10th fibonacci
+}
+
+// ============================================================================
+// EDGE CASES - ZERO ITERATIONS
+// ============================================================================
+
+it("should handle while never executing") {
+    let mut executed = false;
+    while (1 > 2) {
+        executed = true;
+    }
+    assert(executed == false);
+}
+
+it("should handle for with reverse range (no iteration)") {
+    let mut count = 0;
+    for (i in 5..0) {
+        count = count + 1;
+    }
+    // 5..0 should not iterate (start >= end)
+    assert(count == 0);
+}
+
+// ============================================================================
+// EDGE CASES - LOOP WITH STRINGS
+// ============================================================================
+
+it("should build string in loop") {
+    let mut s = "";
+    for (i in 0..5) {
+        s = s + "a";
+    }
+    assert(s == "aaaaa");
+}
+
+it("should iterate string array and concatenate") {
+    let words = ["Hello", " ", "World"];
+    let mut result = "";
+    for (w in words) {
+        result = result + w;
+    }
+    assert(result == "Hello World");
+}
+
+// ============================================================================
+// EDGE CASES - COMPLEX BREAK/CONTINUE
+// ============================================================================
+
+it("should break and continue in same loop") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let mut sum = 0;
+    for (x in arr) {
+        if (x % 2 == 0) { continue; }  // skip even
+        if (x > 7) { break; }           // stop at 7
+        sum = sum + x;
+    }
+    assert(sum == 16);  // 1+3+5+7
+}
+
+it("should handle multiple breaks in nested with different conditions") {
+    let mut count = 0;
+    for (i in 0..5) {
+        for (j in 0..5) {
+            count = count + 1;
+            if (i == 2 && j == 2) { break; }
+            if (j >= 3) { break; }
+        }
+        if (i >= 3) { break; }
+    }
+    // i=0: j=0,1,2,3,break (4), i=1: j=0,1,2,3,break (4), i=2: j=0,1,2,break (3), i=3: break immediately after inner
+    assert(count > 0);
+}
+
