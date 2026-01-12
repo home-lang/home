@@ -1,0 +1,86 @@
+// Async/Await Test Suite
+// Tests async functions and await expressions
+
+// Basic async function
+async fn get_value(): i32 {
+    return 42;
+}
+
+it("should call async function and await result") {
+    let result = await get_value();
+    assert(result == 42);
+}
+
+// Async function with parameter
+async fn double(x: i32): i32 {
+    return x * 2;
+}
+
+it("should await async function with argument") {
+    let result = await double(21);
+    assert(result == 42);
+}
+
+// Multiple awaits
+async fn add(a: i32, b: i32): i32 {
+    return a + b;
+}
+
+it("should handle multiple awaits") {
+    let x = await get_value();
+    let y = await double(10);
+    let z = await add(x, y);
+    assert(z == 62);
+}
+
+// Await non-async function (synchronous)
+fn sync_function(): i32 {
+    return 100;
+}
+
+it("should await sync function") {
+    let result = await sync_function();
+    assert(result == 100);
+}
+
+// Await expression
+it("should await inline expression") {
+    let result = await (10 + 32);
+    assert(result == 42);
+}
+
+// Async function returning string
+async fn get_greeting(): string {
+    return "hello";
+}
+
+it("should await string result") {
+    let msg = await get_greeting();
+    assert(msg == "hello");
+}
+
+// Async function with conditional
+async fn max_value(a: i32, b: i32): i32 {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+it("should await conditional async function") {
+    let result = await max_value(10, 20);
+    assert(result == 20);
+}
+
+// Chained async calls
+async fn increment(x: i32): i32 {
+    return x + 1;
+}
+
+it("should chain async calls") {
+    let x = await increment(0);
+    let y = await increment(x);
+    let z = await increment(y);
+    assert(z == 3);
+}
+

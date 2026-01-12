@@ -31,8 +31,19 @@ it("should use aliases in function signatures") {
     assert(result == 30);
 }
 
-// Note: Tuple type aliases like `type Point2D = (i32, i32)` not yet supported
-// Note: Array type aliases like `type IntArray = [i32]` not yet supported
+type Point2D = (i32, i32);
+
+it("should alias tuple types") {
+    let p: Point2D = (10, 20);
+    assert(true);
+}
+
+type IntArray = [i32];
+
+it("should alias array types") {
+    let arr: IntArray = [1, 2, 3];
+    assert(arr[0] == 1);
+}
 
 type Coordinate = i32;
 

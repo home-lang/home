@@ -4,6 +4,7 @@ const value_mod = @import("value.zig");
 pub const Value = value_mod.Value;
 const FunctionValue = value_mod.FunctionValue;
 const ClosureValue = value_mod.ClosureValue;
+const ReferenceValue = value_mod.ReferenceValue;
 const EnumVariantInfo = value_mod.EnumVariantInfo;
 const EnumTypeValue = value_mod.EnumTypeValue;
 const Environment = @import("environment.zig").Environment;
@@ -64,6 +65,8 @@ pub const Interpreter = struct {
     break_target: ?LoopTarget,
     /// Current continue target (label or null for any loop)
     continue_target: ?LoopTarget,
+    /// Registry for impl methods: type_name -> (method_name -> FnDecl)
+    impl_methods: std.StringHashMap(std.StringHashMap(*ast.FnDecl)),
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) !*Interpreter {
         const interpreter = try allocator.create(Interpreter);
@@ -86,6 +89,7 @@ pub const Interpreter = struct {
         interpreter.loop_labels = .{ .items = &.{}, .capacity = 0 };
         interpreter.break_target = null;
         interpreter.continue_target = null;
+        interpreter.impl_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
 
         return interpreter;
     }
@@ -402,9 +406,30 @@ pub const Interpreter = struct {
                 // Trait declarations are type-level constructs
                 // No runtime action needed
             },
-            .ImplDecl => |_| {
-                // Impl declarations are type-level constructs
-                // No runtime action needed
+            .ImplDecl => |impl_decl| {
+                // Register impl methods in the method registry
+                // Get the type name from the for_type (TypeExpr union)
+                const type_name: []const u8 = switch (impl_decl.for_type.*) {
+                    .Named => |name| name,
+                    .Generic => |gen| gen.base,
+                    else => "unknown",
+                };
+
+                // Get or create the method map for this type
+                const result = self.impl_methods.getOrPut(type_name) catch {
+                    return error.RuntimeError;
+                };
+                if (!result.found_existing) {
+                    result.value_ptr.* = std.StringHashMap(*ast.FnDecl).init(self.arena.allocator());
+                }
+                var method_map = result.value_ptr;
+
+                // Register each method
+                for (impl_decl.methods) |method| {
+                    method_map.put(method.name, method) catch {
+                        return error.RuntimeError;
+                    };
+                }
             },
             .MatchStmt => |match_stmt| {
                 // Evaluate the value being matched
@@ -1102,6 +1127,26 @@ pub const Interpreter = struct {
                 // The "compile-time" aspect is handled during compilation/type-checking
                 return try self.evaluateExpression(comptime_expr.expression, env);
             },
+            .AwaitExpr => |await_expr| {
+                // Evaluate the awaited expression
+                const awaited_value = try self.evaluateExpression(await_expr.expression, env);
+
+                // If it's a Future, resolve it
+                if (awaited_value == .Future) {
+                    const future = awaited_value.Future;
+                    if (future.is_resolved) {
+                        if (future.resolved) |resolved_ptr| {
+                            return resolved_ptr.*;
+                        }
+                        return Value.Void;
+                    }
+                    // Pending future - in synchronous interpreter, just return void
+                    return Value.Void;
+                }
+
+                // Not a future - just return the value (synchronous await)
+                return awaited_value;
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -1156,25 +1201,50 @@ pub const Interpreter = struct {
             },
             .Deref => {
                 // Dereference operation: *ptr
-                // For interpreter, we treat references as direct values
-                // So dereferencing just returns the value
+                // If it's a reference, get the actual value
+                if (operand == .Reference) {
+                    const ref = operand.Reference;
+                    if (env.get(ref.var_name)) |val| {
+                        return val;
+                    }
+                    std.debug.print("Dereferenced variable '{s}' not found\n", .{ref.var_name});
+                    return error.UndefinedVariable;
+                }
+                // Otherwise just return the value
                 return operand;
             },
             .AddressOf => {
                 // Address-of operation: &value
-                // For interpreter, we can't create true pointers
-                // Just return the value (immutable reference)
+                // Get the variable name if it's an identifier
+                if (unary.operand.* == .Identifier) {
+                    const name = unary.operand.Identifier.name;
+                    return Value{ .Reference = ReferenceValue{
+                        .var_name = name,
+                        .is_mutable = false,
+                    } };
+                }
                 return operand;
             },
             .Borrow => {
                 // Immutable borrow: &value
-                // Similar to AddressOf in interpreted context
+                if (unary.operand.* == .Identifier) {
+                    const name = unary.operand.Identifier.name;
+                    return Value{ .Reference = ReferenceValue{
+                        .var_name = name,
+                        .is_mutable = false,
+                    } };
+                }
                 return operand;
             },
             .BorrowMut => {
                 // Mutable borrow: &mut value
-                // In interpreter, just return the value
-                // Mutability is enforced at compile time
+                if (unary.operand.* == .Identifier) {
+                    const name = unary.operand.Identifier.name;
+                    return Value{ .Reference = ReferenceValue{
+                        .var_name = name,
+                        .is_mutable = true,
+                    } };
+                }
                 return operand;
             },
         };
@@ -1202,6 +1272,26 @@ pub const Interpreter = struct {
                 // The current interpreter design returns values by copy,
                 // so mutating fields of structs requires reference semantics
                 std.debug.print("Assignment to struct fields requires mutable reference support\n", .{});
+                return error.RuntimeError;
+            },
+            .UnaryExpr => |unary| {
+                // Handle dereference assignment: *r = value
+                if (unary.op == .Deref) {
+                    // Evaluate the operand to get the reference
+                    const ref_value = try self.evaluateExpression(unary.operand, env);
+                    if (ref_value == .Reference) {
+                        const ref = ref_value.Reference;
+                        if (!ref.is_mutable) {
+                            std.debug.print("Cannot assign through immutable reference\n", .{});
+                            return error.RuntimeError;
+                        }
+                        try env.set(ref.var_name, value);
+                        return value;
+                    }
+                    std.debug.print("Cannot dereference non-reference value\n", .{});
+                    return error.RuntimeError;
+                }
+                std.debug.print("Cannot assign to unary expression\n", .{});
                 return error.RuntimeError;
             },
             else => |target_tag| {
@@ -1268,7 +1358,20 @@ pub const Interpreter = struct {
                 return try self.evaluateRangeMethod(obj_value.Range, member.member, call.args, env);
             }
 
-            std.debug.print("Method calls only supported on strings, arrays, ranges, and enums\n", .{});
+            // Handle struct methods (from impl blocks)
+            if (obj_value == .Struct) {
+                const struct_val = obj_value.Struct;
+                // Look up method in impl_methods registry
+                if (self.impl_methods.get(struct_val.type_name)) |method_map| {
+                    if (method_map.get(member.member)) |method| {
+                        return try self.callImplMethod(method, obj_value, call.args, env);
+                    }
+                }
+                std.debug.print("No method '{s}' found for type '{s}'\n", .{ member.member, struct_val.type_name });
+                return error.UndefinedFunction;
+            }
+
+            std.debug.print("Method calls only supported on strings, arrays, ranges, enums, and structs\n", .{});
             return error.RuntimeError;
         }
 
@@ -1922,6 +2025,69 @@ pub const Interpreter = struct {
         return Value.Void;
     }
 
+    /// Call an impl method with self binding
+    fn callImplMethod(self: *Interpreter, method: *ast.FnDecl, self_value: Value, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
+        // Check if method has 'self' parameter (first param named "self")
+        const has_self_param = method.params.len > 0 and std.mem.eql(u8, method.params[0].name, "self");
+
+        // Calculate actual parameters (excluding self)
+        const actual_params = if (has_self_param) method.params[1..] else method.params;
+
+        // Count required parameters (those without default values)
+        var required_params: usize = 0;
+        for (actual_params) |param| {
+            if (param.default_value == null) {
+                required_params += 1;
+            }
+        }
+
+        // Check argument count
+        if (args.len < required_params or args.len > actual_params.len) {
+            if (required_params == actual_params.len) {
+                std.debug.print("Method {s} expects {d} arguments, got {d}\n", .{ method.name, actual_params.len, args.len });
+            } else {
+                std.debug.print("Method {s} expects {d}-{d} arguments, got {d}\n", .{ method.name, required_params, actual_params.len, args.len });
+            }
+            return error.InvalidArguments;
+        }
+
+        // Create new environment for method scope
+        var method_env = Environment.init(self.arena.allocator(), parent_env);
+        defer method_env.deinit();
+
+        // Bind self to the struct value
+        if (has_self_param) {
+            try method_env.define("self", self_value);
+        }
+
+        // Bind parameters to arguments (with default value support)
+        for (actual_params, 0..) |param, i| {
+            const arg_value = if (i < args.len)
+                try self.evaluateExpression(args[i], parent_env)
+            else if (param.default_value) |default|
+                try self.evaluateExpression(default, parent_env)
+            else
+                return error.InvalidArguments;
+            try method_env.define(param.name, arg_value);
+        }
+
+        // Execute method body
+        for (method.body.statements) |stmt| {
+            self.executeStatement(stmt, &method_env) catch |err| {
+                if (err == error.Return) {
+                    // Return statement was executed
+                    const ret_value = self.return_value.?;
+                    self.return_value = null;
+                    return ret_value;
+                }
+                return err;
+            };
+        }
+
+        // No explicit return, return void
+        return Value.Void;
+    }
+
     fn evaluateMacroExpression(self: *Interpreter, macro: *ast.MacroExpr, env: *Environment) InterpreterError!Value {
         // Handle built-in macros at runtime
         const name = macro.name;
@@ -2086,6 +2252,14 @@ pub const Interpreter = struct {
             },
             .EnumType => |e| std.debug.print("<enum {s}>", .{e.name}),
             .Void => std.debug.print("void", .{}),
+            .Reference => |r| std.debug.print("&{s}", .{r.var_name}),
+            .Future => |f| {
+                if (f.is_resolved) {
+                    std.debug.print("<resolved future>", .{});
+                } else {
+                    std.debug.print("<pending future>", .{});
+                }
+            },
         }
     }
 
@@ -2110,6 +2284,14 @@ pub const Interpreter = struct {
             .Closure => std.debug.print("Closure(...)", .{}),
             .EnumType => |e| std.debug.print("EnumType({s})", .{e.name}),
             .Void => std.debug.print("Void", .{}),
+            .Reference => |r| std.debug.print("Reference(&{s})", .{r.var_name}),
+            .Future => |f| {
+                if (f.is_resolved) {
+                    std.debug.print("Future(resolved)", .{});
+                } else {
+                    std.debug.print("Future(pending)", .{});
+                }
+            },
         }
     }
 
@@ -2144,6 +2326,14 @@ pub const Interpreter = struct {
                 },
                 .EnumType => |e| std.debug.print("<enum {s}>", .{e.name}),
                 .Void => std.debug.print("void", .{}),
+                .Reference => |r| std.debug.print("&{s}", .{r.var_name}),
+                .Future => |f| {
+                    if (f.is_resolved) {
+                        std.debug.print("<resolved future>", .{});
+                    } else {
+                        std.debug.print("<pending future>", .{});
+                    }
+                },
             }
         }
         std.debug.print("\n", .{});
@@ -2371,6 +2561,8 @@ pub const Interpreter = struct {
                 .EnumType => |r| return std.mem.eql(u8, l.name, r.name),
                 else => return false,
             },
+            .Reference => return false, // References are not directly comparable
+            .Future => return false, // Futures are not directly comparable
         }
     }
 
@@ -2479,6 +2671,17 @@ pub const Interpreter = struct {
                 break :blk str;
             },
             .Void => "void",
+            .Reference => |r| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "&{s}", .{r.var_name});
+                break :blk str;
+            },
+            .Future => |f| blk: {
+                const str = if (f.is_resolved)
+                    try std.fmt.allocPrint(self.arena.allocator(), "<resolved future>", .{})
+                else
+                    try std.fmt.allocPrint(self.arena.allocator(), "<pending future>", .{});
+                break :blk str;
+            },
         };
     }
 

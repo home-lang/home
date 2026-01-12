@@ -1,0 +1,51 @@
+// Dereference Assignment Test Suite
+// Tests *r = value syntax for mutable references
+
+it("should dereference mutable reference") {
+    let mut x = 10;
+    let r = &mut x;
+    *r = 20;
+    assert(x == 20);
+}
+
+it("should modify original through reference") {
+    let mut value = 5;
+    let ref = &mut value;
+    *ref = 15;
+    assert(value == 15);
+}
+
+it("should work with arithmetic") {
+    let mut n = 100;
+    let r = &mut n;
+    *r = *r + 50;
+    assert(n == 150);
+}
+
+it("should chain dereference operations") {
+    let mut a = 1;
+    let r = &mut a;
+    *r = 2;
+    *r = 3;
+    *r = 4;
+    assert(a == 4);
+}
+
+it("should work in loop") {
+    let mut sum = 0;
+    let r = &mut sum;
+    let mut i = 0;
+    while (i < 5) {
+        *r = *r + i;
+        i = i + 1;
+    }
+    assert(sum == 10);
+}
+
+it("should support reading through dereference") {
+    let mut x = 42;
+    let r = &mut x;
+    let y = *r;
+    assert(y == 42);
+}
+

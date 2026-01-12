@@ -16,6 +16,22 @@ pub const FunctionValue = struct {
     body: *ast.BlockStmt,
 };
 
+/// Reference value (for mutable borrows)
+pub const ReferenceValue = struct {
+    /// The name of the variable being referenced
+    var_name: []const u8,
+    /// Whether this is a mutable reference
+    is_mutable: bool,
+};
+
+/// Future value for async/await
+pub const FutureValue = struct {
+    /// The resolved value (null if pending) - uses pointer to avoid self-reference
+    resolved: ?*const Value,
+    /// Whether the future has been resolved
+    is_resolved: bool,
+};
+
 /// Closure value representation with captured environment.
 ///
 /// Stores an anonymous function along with the values it captured
@@ -115,6 +131,10 @@ pub const Value = union(enum) {
     EnumType: EnumTypeValue,
     /// Unit/void value (no value)
     Void,
+    /// Reference to a variable (for mutable borrows)
+    Reference: ReferenceValue,
+    /// Future value for async operations
+    Future: FutureValue,
 
     /// Format this value for display (implements std.fmt formatting).
     ///
@@ -153,6 +173,14 @@ pub const Value = union(enum) {
                 }
             },
             .Void => try writer.writeAll("void"),
+            .Reference => |r| try writer.print("&{s}", .{r.var_name}),
+            .Future => |f| {
+                if (f.is_resolved) {
+                    try writer.writeAll("<resolved future>");
+                } else {
+                    try writer.writeAll("<pending future>");
+                }
+            },
         }
     }
 
@@ -186,6 +214,8 @@ pub const Value = union(enum) {
             .Closure => true,
             .Range => true,
             .EnumType => true,
+            .Reference => true,
+            .Future => |f| f.is_resolved,
         };
     }
 

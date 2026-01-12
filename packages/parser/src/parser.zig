@@ -640,6 +640,17 @@ pub const Parser = struct {
         if (self.match(&.{.Impl})) return self.implDeclaration();
         if (self.match(&.{.Extend})) return self.extendDeclaration();
 
+        // Handle async fn (async must come before fn)
+        if (self.match(&.{.Async})) {
+            _ = try self.expect(.Fn, "Expected 'fn' after 'async'");
+            var stmt = try self.functionDeclarationWithAsync(is_test, is_extern, true);
+            if (is_pub or is_export) stmt.FnDecl.is_public = true;
+            if (is_export) stmt.FnDecl.is_exported = true;
+            if (doc_comment) |doc| stmt.FnDecl.doc_comment = doc;
+            stmt.FnDecl.attributes = attributes;
+            return stmt;
+        }
+
         if (self.match(&.{.Fn})) {
             var stmt = try self.functionDeclaration(is_test, is_extern);
             if (is_pub or is_export) stmt.FnDecl.is_public = true;
@@ -730,8 +741,13 @@ pub const Parser = struct {
     ///
     /// Returns: Function declaration statement node
     pub fn functionDeclaration(self: *Parser, is_test: bool, is_extern: bool) !ast.Stmt {
-        // Check for async keyword before function name
-        const is_async = self.match(&.{.Async});
+        return self.functionDeclarationWithAsync(is_test, is_extern, false);
+    }
+
+    /// Function declaration with explicit async flag
+    pub fn functionDeclarationWithAsync(self: *Parser, is_test: bool, is_extern: bool, already_async: bool) !ast.Stmt {
+        // Check for async keyword before function name (or use already_async if async was parsed at top level)
+        const is_async = already_async or self.match(&.{.Async});
 
         // Accept both Identifier and certain keywords as function names (e.g., 'default', 'type', 'match')
         const name_token = if (self.check(.Identifier))
@@ -2441,10 +2457,10 @@ pub const Parser = struct {
 
                 // Create IntLiteral expressions for start and end
                 const start_expr = try self.allocator.create(ast.Expr);
-                start_expr.* = ast.Expr{ .Integer = ast.Integer.init(start_value, ast.SourceLocation.fromToken(token)) };
+                start_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(start_value, ast.SourceLocation.fromToken(token)) };
 
                 const end_expr = try self.allocator.create(ast.Expr);
-                end_expr.* = ast.Expr{ .Integer = ast.Integer.init(end_value, ast.SourceLocation.fromToken(end_token)) };
+                end_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(end_value, ast.SourceLocation.fromToken(end_token)) };
 
                 pattern.* = ast.Pattern{ .Range = .{ .start = start_expr, .end = end_expr, .inclusive = inclusive } };
                 return pattern;
@@ -3784,7 +3800,7 @@ pub const Parser = struct {
             const token = self.previous();
             const value = std.fmt.parseInt(i64, token.lexeme, 10) catch 0;
             const expr = try self.allocator.create(ast.Expr);
-            expr.* = ast.Expr{ .Integer = ast.Integer.init(value, ast.SourceLocation.fromToken(token)) };
+            expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(value, ast.SourceLocation.fromToken(token)) };
             return expr;
         }
 
@@ -4210,7 +4226,7 @@ pub const Parser = struct {
 
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .Integer = ast.Integer.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
+                .IntegerLiteral = ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
             };
             return expr;
         }
