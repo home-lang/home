@@ -1,6 +1,10 @@
 // Array Mutation Methods Test Suite
 // Tests array methods that return new arrays (functional style)
 
+// ============================================================================
+// PUSH TESTS
+// ============================================================================
+
 it("should push element to array") {
     let arr = [1, 2, 3];
     let result = arr.push(4);
@@ -26,6 +30,48 @@ it("should chain push calls") {
     assert(result[2] == 3);
 }
 
+it("should push negative numbers") {
+    let arr = [1, 2];
+    let result = arr.push(-5);
+    assert(result[2] == -5);
+}
+
+it("should push zero") {
+    let arr = [1, 2];
+    let result = arr.push(0);
+    assert(result[2] == 0);
+    assert(result.len() == 3);
+}
+
+it("should push large numbers") {
+    let arr = [1];
+    let result = arr.push(999999);
+    assert(result[1] == 999999);
+}
+
+it("should push multiple times preserving order") {
+    let arr: [i32] = [];
+    let r1 = arr.push(10);
+    let r2 = r1.push(20);
+    let r3 = r2.push(30);
+    let r4 = r3.push(40);
+    let r5 = r4.push(50);
+    assert(r5.len() == 5);
+    assert(r5[0] == 10);
+    assert(r5[4] == 50);
+}
+
+it("should push string to string array") {
+    let arr = ["a", "b"];
+    let result = arr.push("c");
+    assert(result.len() == 3);
+    assert(result[2] == "c");
+}
+
+// ============================================================================
+// POP TESTS
+// ============================================================================
+
 it("should pop element from array") {
     let arr = [1, 2, 3];
     let result = arr.pop();
@@ -45,6 +91,35 @@ it("should handle pop on empty array") {
     let result = empty.pop();
     assert(result.len() == 0);
 }
+
+it("should chain pop calls") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.pop().pop().pop();
+    assert(result.len() == 2);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+}
+
+it("should pop all elements one by one") {
+    let arr = [10, 20, 30];
+    let r1 = arr.pop();
+    assert(r1.len() == 2);
+    let r2 = r1.pop();
+    assert(r2.len() == 1);
+    let r3 = r2.pop();
+    assert(r3.len() == 0);
+}
+
+it("should preserve original after pop") {
+    let arr = [1, 2, 3];
+    let popped = arr.pop();
+    assert(arr.len() == 3);
+    assert(arr[2] == 3);
+}
+
+// ============================================================================
+// SHIFT TESTS
+// ============================================================================
 
 it("should shift element from array") {
     let arr = [1, 2, 3];
@@ -66,6 +141,35 @@ it("should handle shift on empty array") {
     assert(result.len() == 0);
 }
 
+it("should chain shift calls") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.shift().shift().shift();
+    assert(result.len() == 2);
+    assert(result[0] == 4);
+    assert(result[1] == 5);
+}
+
+it("should shift all elements one by one") {
+    let arr = [10, 20, 30];
+    let r1 = arr.shift();
+    assert(r1[0] == 20);
+    let r2 = r1.shift();
+    assert(r2[0] == 30);
+    let r3 = r2.shift();
+    assert(r3.len() == 0);
+}
+
+it("should preserve original after shift") {
+    let arr = [1, 2, 3];
+    let shifted = arr.shift();
+    assert(arr.len() == 3);
+    assert(arr[0] == 1);
+}
+
+// ============================================================================
+// UNSHIFT TESTS
+// ============================================================================
+
 it("should unshift element to array") {
     let arr = [2, 3];
     let result = arr.unshift(1);
@@ -81,6 +185,32 @@ it("should unshift to empty array") {
     assert(result.len() == 1);
     assert(result[0] == 42);
 }
+
+it("should chain unshift calls") {
+    let arr = [3];
+    let result = arr.unshift(2).unshift(1);
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+}
+
+it("should unshift negative numbers") {
+    let arr = [1];
+    let result = arr.unshift(-10);
+    assert(result[0] == -10);
+}
+
+it("should preserve original after unshift") {
+    let arr = [2, 3];
+    let result = arr.unshift(1);
+    assert(arr.len() == 2);
+    assert(arr[0] == 2);
+}
+
+// ============================================================================
+// CONCAT TESTS
+// ============================================================================
 
 it("should concat two arrays") {
     let a = [1, 2];
@@ -105,6 +235,54 @@ it("should concat empty arrays") {
     assert(result2.len() == 2);
 }
 
+it("should concat two empty arrays") {
+    let a: [i32] = [];
+    let b: [i32] = [];
+    let result = a.concat(b);
+    assert(result.len() == 0);
+}
+
+it("should chain concat calls") {
+    let a = [1];
+    let b = [2];
+    let c = [3];
+    let result = a.concat(b).concat(c);
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+}
+
+it("should concat large arrays") {
+    let a = [1, 2, 3, 4, 5];
+    let b = [6, 7, 8, 9, 10];
+    let result = a.concat(b);
+    assert(result.len() == 10);
+    assert(result[0] == 1);
+    assert(result[9] == 10);
+}
+
+it("should concat string arrays") {
+    let a = ["hello"];
+    let b = ["world"];
+    let result = a.concat(b);
+    assert(result.len() == 2);
+    assert(result[0] == "hello");
+    assert(result[1] == "world");
+}
+
+it("should preserve originals after concat") {
+    let a = [1, 2];
+    let b = [3, 4];
+    let result = a.concat(b);
+    assert(a.len() == 2);
+    assert(b.len() == 2);
+}
+
+// ============================================================================
+// REVERSE TESTS
+// ============================================================================
+
 it("should reverse array") {
     let arr = [1, 2, 3, 4, 5];
     let result = arr.reverse();
@@ -127,6 +305,47 @@ it("should reverse empty array") {
     assert(result.len() == 0);
 }
 
+it("should reverse two elements") {
+    let arr = [1, 2];
+    let result = arr.reverse();
+    assert(result[0] == 2);
+    assert(result[1] == 1);
+}
+
+it("should reverse three elements") {
+    let arr = [1, 2, 3];
+    let result = arr.reverse();
+    assert(result[0] == 3);
+    assert(result[1] == 2);
+    assert(result[2] == 1);
+}
+
+it("should double reverse to get original") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.reverse().reverse();
+    assert(result[0] == 1);
+    assert(result[4] == 5);
+}
+
+it("should reverse string array") {
+    let arr = ["a", "b", "c"];
+    let result = arr.reverse();
+    assert(result[0] == "c");
+    assert(result[1] == "b");
+    assert(result[2] == "a");
+}
+
+it("should preserve original after reverse") {
+    let arr = [1, 2, 3];
+    let reversed = arr.reverse();
+    assert(arr[0] == 1);
+    assert(arr[2] == 3);
+}
+
+// ============================================================================
+// CONTAINS TESTS
+// ============================================================================
+
 it("should check contains") {
     let arr = [1, 2, 3, 4, 5];
     assert(arr.contains(3) == true);
@@ -138,6 +357,55 @@ it("should check contains on empty array") {
     assert(empty.contains(1) == false);
 }
 
+it("should find first element") {
+    let arr = [10, 20, 30];
+    assert(arr.contains(10) == true);
+}
+
+it("should find last element") {
+    let arr = [10, 20, 30];
+    assert(arr.contains(30) == true);
+}
+
+it("should find middle element") {
+    let arr = [10, 20, 30];
+    assert(arr.contains(20) == true);
+}
+
+it("should not find element not present") {
+    let arr = [1, 2, 3];
+    assert(arr.contains(0) == false);
+    assert(arr.contains(4) == false);
+    assert(arr.contains(-1) == false);
+}
+
+it("should find negative numbers") {
+    let arr = [-3, -2, -1, 0, 1];
+    assert(arr.contains(-2) == true);
+    assert(arr.contains(-5) == false);
+}
+
+it("should find zero") {
+    let arr = [1, 0, 2];
+    assert(arr.contains(0) == true);
+}
+
+it("should find in single element array") {
+    let arr = [42];
+    assert(arr.contains(42) == true);
+    assert(arr.contains(0) == false);
+}
+
+it("should check contains in string array") {
+    let arr = ["apple", "banana", "cherry"];
+    assert(arr.contains("banana") == true);
+    assert(arr.contains("grape") == false);
+}
+
+// ============================================================================
+// INDEX_OF TESTS
+// ============================================================================
+
 it("should find index_of element") {
     let arr = [10, 20, 30, 40];
     assert(arr.index_of(10) == 0);
@@ -145,6 +413,46 @@ it("should find index_of element") {
     assert(arr.index_of(40) == 3);
     assert(arr.index_of(50) == -1);
 }
+
+it("should return -1 for not found") {
+    let arr = [1, 2, 3];
+    assert(arr.index_of(0) == -1);
+    assert(arr.index_of(100) == -1);
+}
+
+it("should return -1 for empty array") {
+    let empty: [i32] = [];
+    assert(empty.index_of(1) == -1);
+}
+
+it("should find first occurrence") {
+    let arr = [1, 2, 1, 2, 1];
+    assert(arr.index_of(1) == 0);
+    assert(arr.index_of(2) == 1);
+}
+
+it("should find negative number index") {
+    let arr = [-5, -3, 0, 3, 5];
+    assert(arr.index_of(-3) == 1);
+    assert(arr.index_of(0) == 2);
+}
+
+it("should find in single element array") {
+    let arr = [100];
+    assert(arr.index_of(100) == 0);
+    assert(arr.index_of(0) == -1);
+}
+
+it("should find string index") {
+    let arr = ["a", "b", "c", "d"];
+    assert(arr.index_of("a") == 0);
+    assert(arr.index_of("c") == 2);
+    assert(arr.index_of("z") == -1);
+}
+
+// ============================================================================
+// JOIN TESTS
+// ============================================================================
 
 it("should join array elements") {
     let arr = [1, 2, 3];
@@ -168,5 +476,134 @@ it("should join string array") {
     let arr = ["a", "b", "c"];
     let result = arr.join("");
     assert(result == "abc");
+}
+
+it("should join with empty separator") {
+    let arr = [1, 2, 3];
+    let result = arr.join("");
+    assert(result == "123");
+}
+
+it("should join two elements") {
+    let arr = [1, 2];
+    let result = arr.join(" and ");
+    assert(result == "1 and 2");
+}
+
+it("should join with space separator") {
+    let arr = ["hello", "world"];
+    let result = arr.join(" ");
+    assert(result == "hello world");
+}
+
+it("should join with newline separator") {
+    let arr = [1, 2];
+    let result = arr.join("|");
+    assert(result == "1|2");
+}
+
+it("should join negative numbers") {
+    let arr = [-1, -2, -3];
+    let result = arr.join(",");
+    assert(result == "-1,-2,-3");
+}
+
+it("should join mixed positive and negative") {
+    let arr = [-1, 0, 1];
+    let result = arr.join(",");
+    assert(result == "-1,0,1");
+}
+
+// ============================================================================
+// COMBINED OPERATIONS TESTS
+// ============================================================================
+
+it("should push then pop to get same length") {
+    let arr = [1, 2, 3];
+    let result = arr.push(4).pop();
+    assert(result.len() == 3);
+}
+
+it("should unshift then shift to get same array") {
+    let arr = [1, 2, 3];
+    let result = arr.unshift(0).shift();
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+}
+
+it("should combine push and concat") {
+    let a = [1];
+    let b = [3];
+    let result = a.push(2).concat(b);
+    assert(result.len() == 3);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+}
+
+it("should reverse then check contains") {
+    let arr = [1, 2, 3];
+    let reversed = arr.reverse();
+    assert(reversed.contains(1) == true);
+    assert(reversed.contains(3) == true);
+}
+
+it("should build array from empty using push") {
+    let arr: [i32] = [];
+    let result = arr.push(1).push(2).push(3).push(4).push(5);
+    assert(result.len() == 5);
+    assert(result[0] == 1);
+    assert(result[4] == 5);
+}
+
+it("should use index_of on reversed array") {
+    let arr = [10, 20, 30];
+    let reversed = arr.reverse();
+    assert(reversed.index_of(30) == 0);
+    assert(reversed.index_of(10) == 2);
+}
+
+it("should concat then reverse") {
+    let a = [1, 2];
+    let b = [3, 4];
+    let result = a.concat(b).reverse();
+    assert(result[0] == 4);
+    assert(result[3] == 1);
+}
+
+it("should shift and unshift alternately") {
+    let arr = [2];
+    let r1 = arr.unshift(1);
+    let r2 = r1.push(3);
+    let r3 = r2.shift();
+    assert(r3.len() == 2);
+    assert(r3[0] == 2);
+    assert(r3[1] == 3);
+}
+
+// ============================================================================
+// LEN TESTS
+// ============================================================================
+
+it("should get length of array") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.len() == 5);
+}
+
+it("should get length of empty array") {
+    let empty: [i32] = [];
+    assert(empty.len() == 0);
+}
+
+it("should get length of single element") {
+    let arr = [42];
+    assert(arr.len() == 1);
+}
+
+it("should get length after operations") {
+    let arr = [1, 2, 3];
+    assert(arr.push(4).len() == 4);
+    assert(arr.pop().len() == 2);
+    assert(arr.concat([4, 5]).len() == 5);
 }
 

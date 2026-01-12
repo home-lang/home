@@ -1,6 +1,10 @@
 // Lambda/Closure Test Suite
 // Tests anonymous functions with |param| syntax
 
+// ============================================================================
+// BASIC LAMBDA TESTS
+// ============================================================================
+
 it("should create and call simple lambda") {
     let double = |x| x * 2;
     assert(double(5) == 10);
@@ -16,6 +20,72 @@ it("should work with no parameters") {
     assert(get_five() == 5);
 }
 
+it("should work with three parameters") {
+    let sum3 = |a, b, c| a + b + c;
+    assert(sum3(1, 2, 3) == 6);
+}
+
+it("should work with four parameters") {
+    let sum4 = |a, b, c, d| a + b + c + d;
+    assert(sum4(1, 2, 3, 4) == 10);
+}
+
+// ============================================================================
+// ARITHMETIC OPERATIONS
+// ============================================================================
+
+it("should work with arithmetic") {
+    let square = |n| n * n;
+    assert(square(5) == 25);
+    assert(square(10) == 100);
+}
+
+it("should add numbers") {
+    let add = |x, y| x + y;
+    assert(add(10, 20) == 30);
+    assert(add(-5, 5) == 0);
+}
+
+it("should subtract numbers") {
+    let sub = |x, y| x - y;
+    assert(sub(10, 3) == 7);
+    assert(sub(3, 10) == -7);
+}
+
+it("should multiply numbers") {
+    let mul = |x, y| x * y;
+    assert(mul(6, 7) == 42);
+    assert(mul(-3, 4) == -12);
+}
+
+it("should divide numbers") {
+    let div = |x, y| x / y;
+    assert(div(20, 4) == 5);
+    assert(div(15, 3) == 5);
+}
+
+it("should calculate modulo") {
+    let mod_fn = |x, y| x % y;
+    assert(mod_fn(10, 3) == 1);
+    assert(mod_fn(15, 5) == 0);
+}
+
+it("should calculate power") {
+    let pow = |base, exp| base ** exp;
+    assert(pow(2, 3) == 8);
+    assert(pow(5, 2) == 25);
+}
+
+it("should handle complex arithmetic") {
+    let calc = |x| x * 2 + 10 - 5;
+    assert(calc(5) == 15);
+    assert(calc(10) == 25);
+}
+
+// ============================================================================
+// CAPTURE/CLOSURE TESTS
+// ============================================================================
+
 it("should capture outer variable") {
     let multiplier = 3;
     let mult = |x| x * multiplier;
@@ -29,23 +99,38 @@ it("should capture multiple variables") {
     assert(sum_with(5) == 35);
 }
 
-it("should chain lambda calls") {
-    let inc = |x| x + 1;
-    let dbl = |x| x * 2;
-    assert(dbl(inc(5)) == 12);
+it("should capture variable in nested scope") {
+    let outer = 100;
+    let inner_fn = || {
+        let add_outer = |x| x + outer;
+        return add_outer(50);
+    };
+    assert(inner_fn() == 150);
 }
 
-it("should work with arithmetic") {
-    let square = |n| n * n;
-    assert(square(5) == 25);
-    assert(square(10) == 100);
+it("should capture and use string") {
+    let prefix = "Hello, ";
+    let greet = |name| prefix + name;
+    assert(greet("World") == "Hello, World");
 }
 
-it("should work with conditionals in body") {
-    let abs = |x| if (x < 0) { -x } else { x };
-    assert(abs(-5) == 5);
-    assert(abs(5) == 5);
+it("should capture constant") {
+    let PI = 3;
+    let circumference = |r| 2 * PI * r;
+    assert(circumference(10) == 60);
 }
+
+it("should capture multiple types") {
+    let num = 10;
+    let str = "test";
+    let flag = true;
+    let check = || if (flag) { num } else { 0 };
+    assert(check() == 10);
+}
+
+// ============================================================================
+// COMPARISON OPERATIONS
+// ============================================================================
 
 it("should work with comparison") {
     let is_positive = |x| x > 0;
@@ -53,10 +138,384 @@ it("should work with comparison") {
     assert(is_positive(-5) == false);
 }
 
+it("should check equality") {
+    let equals = |a, b| a == b;
+    assert(equals(5, 5) == true);
+    assert(equals(5, 6) == false);
+}
+
+it("should check inequality") {
+    let not_equals = |a, b| a != b;
+    assert(not_equals(5, 6) == true);
+    assert(not_equals(5, 5) == false);
+}
+
+it("should check less than") {
+    let less = |a, b| a < b;
+    assert(less(3, 5) == true);
+    assert(less(5, 3) == false);
+    assert(less(5, 5) == false);
+}
+
+it("should check greater than") {
+    let greater = |a, b| a > b;
+    assert(greater(5, 3) == true);
+    assert(greater(3, 5) == false);
+}
+
+it("should check less than or equal") {
+    let lte = |a, b| a <= b;
+    assert(lte(3, 5) == true);
+    assert(lte(5, 5) == true);
+    assert(lte(6, 5) == false);
+}
+
+it("should check greater than or equal") {
+    let gte = |a, b| a >= b;
+    assert(gte(5, 3) == true);
+    assert(gte(5, 5) == true);
+    assert(gte(4, 5) == false);
+}
+
+// ============================================================================
+// CONDITIONAL OPERATIONS
+// ============================================================================
+
+it("should work with conditionals in body") {
+    let abs = |x| if (x < 0) { -x } else { x };
+    assert(abs(-5) == 5);
+    assert(abs(5) == 5);
+    assert(abs(0) == 0);
+}
+
+it("should return max of two numbers") {
+    let max = |a, b| if (a > b) { a } else { b };
+    assert(max(5, 3) == 5);
+    assert(max(3, 5) == 5);
+    assert(max(5, 5) == 5);
+}
+
+it("should return min of two numbers") {
+    let min = |a, b| if (a < b) { a } else { b };
+    assert(min(5, 3) == 3);
+    assert(min(3, 5) == 3);
+    assert(min(5, 5) == 5);
+}
+
+it("should clamp value in range") {
+    let clamp = |x, low, high| {
+        if (x < low) {
+            return low;
+        }
+        if (x > high) {
+            return high;
+        }
+        return x;
+    };
+    assert(clamp(5, 0, 10) == 5);
+    assert(clamp(-5, 0, 10) == 0);
+    assert(clamp(15, 0, 10) == 10);
+}
+
+it("should check if number is even") {
+    let is_even = |n| n % 2 == 0;
+    assert(is_even(4) == true);
+    assert(is_even(5) == false);
+    assert(is_even(0) == true);
+}
+
+it("should check if number is odd") {
+    let is_odd = |n| n % 2 != 0;
+    assert(is_odd(3) == true);
+    assert(is_odd(4) == false);
+}
+
+it("should sign function") {
+    let sign = |x| if (x > 0) { 1 } else { if (x < 0) { -1 } else { 0 } };
+    assert(sign(10) == 1);
+    assert(sign(-10) == -1);
+    assert(sign(0) == 0);
+}
+
+// ============================================================================
+// CHAINING AND COMPOSITION
+// ============================================================================
+
+it("should chain lambda calls") {
+    let inc = |x| x + 1;
+    let dbl = |x| x * 2;
+    assert(dbl(inc(5)) == 12);
+}
+
+it("should compose operations") {
+    let add1 = |x| x + 1;
+    let mul2 = |x| x * 2;
+    let sub3 = |x| x - 3;
+    assert(sub3(mul2(add1(5))) == 9);
+}
+
+it("should apply multiple times") {
+    let inc = |x| x + 1;
+    let result = inc(inc(inc(inc(inc(0)))));
+    assert(result == 5);
+}
+
+it("should pass lambda result to another lambda") {
+    let square = |x| x * x;
+    let double = |x| x * 2;
+    let result = double(square(3));
+    assert(result == 18);
+}
+
+// ============================================================================
+// STORING AND REUSING LAMBDAS
+// ============================================================================
+
 it("should store in variable and call later") {
     let op = |x| x + 100;
     let a = 5;
     let result = op(a);
     assert(result == 105);
+}
+
+it("should store multiple lambdas") {
+    let add = |a, b| a + b;
+    let sub = |a, b| a - b;
+    let mul = |a, b| a * b;
+
+    assert(add(10, 5) == 15);
+    assert(sub(10, 5) == 5);
+    assert(mul(10, 5) == 50);
+}
+
+it("should reuse same lambda multiple times") {
+    let triple = |x| x * 3;
+    assert(triple(1) == 3);
+    assert(triple(2) == 6);
+    assert(triple(3) == 9);
+    assert(triple(10) == 30);
+}
+
+it("should use lambda in loop") {
+    let double = |x| x * 2;
+    let mut sum = 0;
+    let mut i = 1;
+    while (i <= 5) {
+        sum = sum + double(i);
+        i = i + 1;
+    }
+    assert(sum == 30);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle zero parameter") {
+    let const_fn = || 42;
+    assert(const_fn() == 42);
+}
+
+it("should return zero") {
+    let zero = |x| 0;
+    assert(zero(100) == 0);
+}
+
+it("should return negative") {
+    let negate = |x| -x;
+    assert(negate(5) == -5);
+    assert(negate(-5) == 5);
+}
+
+it("should handle large numbers") {
+    let big = |x| x * 1000000;
+    assert(big(1000) == 1000000000);
+}
+
+it("should handle identity function") {
+    let id = |x| x;
+    assert(id(42) == 42);
+    assert(id(0) == 0);
+    assert(id(-100) == -100);
+}
+
+it("should handle constant function") {
+    let always42 = |x| 42;
+    assert(always42(0) == 42);
+    assert(always42(100) == 42);
+    assert(always42(-50) == 42);
+}
+
+it("should work with boolean return") {
+    let is_zero = |x| x == 0;
+    assert(is_zero(0) == true);
+    assert(is_zero(1) == false);
+}
+
+// ============================================================================
+// STRING LAMBDAS
+// ============================================================================
+
+it("should concatenate strings") {
+    let concat = |a, b| a + b;
+    assert(concat("hello", "world") == "helloworld");
+}
+
+it("should add prefix") {
+    let prefix = |str| "prefix_" + str;
+    assert(prefix("test") == "prefix_test");
+}
+
+it("should add suffix") {
+    let suffix = |str| str + "_suffix";
+    assert(suffix("test") == "test_suffix");
+}
+
+it("should wrap string") {
+    let wrap = |str| "[" + str + "]";
+    assert(wrap("test") == "[test]");
+}
+
+// ============================================================================
+// MATHEMATICAL FUNCTIONS
+// ============================================================================
+
+it("should calculate factorial iteratively using lambda") {
+    let factorial = |n| {
+        let mut result = 1;
+        let mut i = 1;
+        while (i <= n) {
+            result = result * i;
+            i = i + 1;
+        }
+        return result;
+    };
+    assert(factorial(0) == 1);
+    assert(factorial(1) == 1);
+    assert(factorial(5) == 120);
+}
+
+it("should calculate sum of range") {
+    let sum_to = |n| {
+        let mut sum = 0;
+        let mut i = 1;
+        while (i <= n) {
+            sum = sum + i;
+            i = i + 1;
+        }
+        return sum;
+    };
+    assert(sum_to(5) == 15);
+    assert(sum_to(10) == 55);
+}
+
+it("should calculate fibonacci") {
+    let fib = |n| {
+        if (n <= 1) {
+            return n;
+        }
+        let mut a = 0;
+        let mut b = 1;
+        let mut i = 2;
+        while (i <= n) {
+            let temp = a + b;
+            a = b;
+            b = temp;
+            i = i + 1;
+        }
+        return b;
+    };
+    assert(fib(0) == 0);
+    assert(fib(1) == 1);
+    assert(fib(5) == 5);
+    assert(fib(10) == 55);
+}
+
+it("should check if power of two") {
+    let is_power_of_two = |n| {
+        if (n <= 0) {
+            return false;
+        }
+        let mut x = n;
+        while (x > 1) {
+            if (x % 2 != 0) {
+                return false;
+            }
+            x = x / 2;
+        }
+        return true;
+    };
+    assert(is_power_of_two(1) == true);
+    assert(is_power_of_two(2) == true);
+    assert(is_power_of_two(4) == true);
+    assert(is_power_of_two(8) == true);
+    assert(is_power_of_two(3) == false);
+    assert(is_power_of_two(6) == false);
+}
+
+// ============================================================================
+// LAMBDA WITH ARRAYS
+// ============================================================================
+
+it("should calculate array sum using lambda") {
+    let arr = [1, 2, 3, 4, 5];
+    let sum_arr = |a| {
+        let mut sum = 0;
+        let mut i = 0;
+        while (i < a.len()) {
+            sum = sum + a[i];
+            i = i + 1;
+        }
+        return sum;
+    };
+    assert(sum_arr(arr) == 15);
+}
+
+it("should find max in array using lambda") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let max_arr = |a| {
+        let mut max = a[0];
+        let mut i = 1;
+        while (i < a.len()) {
+            if (a[i] > max) {
+                max = a[i];
+            }
+            i = i + 1;
+        }
+        return max;
+    };
+    assert(max_arr(arr) == 9);
+}
+
+it("should find min in array using lambda") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let min_arr = |a| {
+        let mut min = a[0];
+        let mut i = 1;
+        while (i < a.len()) {
+            if (a[i] < min) {
+                min = a[i];
+            }
+            i = i + 1;
+        }
+        return min;
+    };
+    assert(min_arr(arr) == 1);
+}
+
+it("should count elements matching condition") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let count_even = |a| {
+        let mut count = 0;
+        let mut i = 0;
+        while (i < a.len()) {
+            if (a[i] % 2 == 0) {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    };
+    assert(count_even(arr) == 5);
 }
 

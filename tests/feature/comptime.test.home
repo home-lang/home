@@ -1,6 +1,10 @@
 // Comptime Test Suite
 // Tests compile-time evaluation
 
+// ============================================================================
+// BASIC COMPTIME EXPRESSIONS
+// ============================================================================
+
 it("should evaluate simple comptime") {
     let x = comptime 5 * 10;
     assert(x == 50);
@@ -30,5 +34,227 @@ it("should work in expressions") {
 it("should work with parentheses") {
     let x = comptime (3 + 4) * 2;
     assert(x == 14);
+}
+
+// ============================================================================
+// COMPTIME ARITHMETIC
+// ============================================================================
+
+it("should compute addition at comptime") {
+    let sum = comptime 10 + 20 + 30;
+    assert(sum == 60);
+}
+
+it("should compute subtraction at comptime") {
+    let diff = comptime 100 - 30;
+    assert(diff == 70);
+}
+
+it("should compute multiplication at comptime") {
+    let product = comptime 7 * 8;
+    assert(product == 56);
+}
+
+it("should compute division at comptime") {
+    let quotient = comptime 100 / 4;
+    assert(quotient == 25);
+}
+
+it("should compute modulo at comptime") {
+    let remainder = comptime 17 % 5;
+    assert(remainder == 2);
+}
+
+it("should compute power at comptime") {
+    let power = comptime 3 ** 4;
+    assert(power == 81);
+}
+
+it("should handle comptime with zero") {
+    let zero = comptime 0 * 100;
+    assert(zero == 0);
+}
+
+it("should handle negative comptime") {
+    let neg = comptime -5 * 3;
+    assert(neg == -15);
+}
+
+// ============================================================================
+// COMPTIME WITH COMPLEX EXPRESSIONS
+// ============================================================================
+
+it("should compute complex expression at comptime") {
+    let result = comptime (10 + 5) * 2 - 8;
+    assert(result == 22);
+}
+
+it("should compute nested arithmetic at comptime") {
+    let result = comptime ((2 + 3) * (4 + 1));
+    assert(result == 25);
+}
+
+it("should compute chained operations at comptime") {
+    let result = comptime 2 * 3 * 4 * 5;
+    assert(result == 120);
+}
+
+it("should compute expression with precedence") {
+    let result = comptime 2 + 3 * 4;
+    assert(result == 14);
+}
+
+it("should compute expression with parentheses override") {
+    let result = comptime (2 + 3) * 4;
+    assert(result == 20);
+}
+
+// ============================================================================
+// COMPTIME IN VARIABLE DECLARATIONS
+// ============================================================================
+
+it("should use comptime value in let") {
+    let val = comptime 42;
+    assert(val == 42);
+}
+
+it("should use comptime in multiple variables") {
+    let a = comptime 10;
+    let b = comptime 20;
+    let c = comptime 30;
+    assert(a + b + c == 60);
+}
+
+it("should combine comptime and runtime values") {
+    let comptime_val = comptime 100;
+    let runtime_val = 50;
+    let result = comptime_val + runtime_val;
+    assert(result == 150);
+}
+
+// ============================================================================
+// COMPTIME AS PART OF LARGER EXPRESSIONS
+// ============================================================================
+
+it("should use comptime in arithmetic expression") {
+    let base = 10;
+    let result = base * comptime 5;
+    assert(result == 50);
+}
+
+it("should use comptime in comparison") {
+    let x = 50;
+    let threshold = comptime 25 * 2;
+    assert(x == threshold);
+}
+
+it("should use multiple comptime in expression") {
+    let result = comptime 10 + comptime 20;
+    assert(result == 30);
+}
+
+it("should use comptime in function call") {
+    fn double(x: i32): i32 {
+        return x * 2;
+    }
+    let result = double(comptime 21);
+    assert(result == 42);
+}
+
+// ============================================================================
+// COMPTIME EDGE CASES
+// ============================================================================
+
+it("should handle comptime one") {
+    let one = comptime 1;
+    assert(one == 1);
+}
+
+it("should handle comptime large number") {
+    let big = comptime 1000000;
+    assert(big == 1000000);
+}
+
+it("should handle comptime power of two") {
+    let pow2 = comptime 2 ** 10;
+    assert(pow2 == 1024);
+}
+
+it("should handle comptime factorial-like") {
+    let fact5 = comptime 1 * 2 * 3 * 4 * 5;
+    assert(fact5 == 120);
+}
+
+it("should handle comptime with subtraction to zero") {
+    let zero = comptime 50 - 50;
+    assert(zero == 0);
+}
+
+it("should handle comptime with division by itself") {
+    let one = comptime 42 / 42;
+    assert(one == 1);
+}
+
+// ============================================================================
+// COMPTIME IN ARRAY CONTEXT
+// ============================================================================
+
+it("should use comptime as array index") {
+    let arr = [10, 20, 30, 40, 50];
+    let idx = comptime 2;
+    assert(arr[idx] == 30);
+}
+
+it("should use comptime in array size calculation") {
+    let size = comptime 3 + 2;
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.len() == size);
+}
+
+// ============================================================================
+// COMPTIME IN LOOPS
+// ============================================================================
+
+it("should use comptime as loop bound") {
+    let limit = comptime 5;
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < limit) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == 10);
+}
+
+it("should use comptime as increment") {
+    let step = comptime 2;
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 10) {
+        sum = sum + 1;
+        i = i + step;
+    }
+    assert(sum == 5);
+}
+
+// ============================================================================
+// COMPTIME IN CONDITIONALS
+// ============================================================================
+
+it("should use comptime in condition") {
+    let threshold = comptime 50;
+    let value = 75;
+    if (value > threshold) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+
+it("should use comptime in both branches") {
+    let a = comptime 10;
+    let b = comptime 20;
+    let result = if (a < b) { a } else { b };
+    assert(result == 10);
 }
 

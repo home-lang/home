@@ -1,6 +1,10 @@
 // Impl Blocks Test Suite
 // Tests struct method implementations using impl blocks
 
+// ============================================================================
+// BASIC COUNTER STRUCT
+// ============================================================================
+
 struct Counter {
     value: i32
 }
@@ -8,6 +12,10 @@ struct Counter {
 impl Counter {
     fn new(): Counter {
         return Counter { value: 0 };
+    }
+
+    fn from(val: i32): Counter {
+        return Counter { value: val };
     }
 
     fn get(self): i32 {
@@ -18,8 +26,36 @@ impl Counter {
         return Counter { value: self.value + 1 };
     }
 
+    fn decrement(self): Counter {
+        return Counter { value: self.value - 1 };
+    }
+
     fn add(self, amount: i32): Counter {
         return Counter { value: self.value + amount };
+    }
+
+    fn subtract(self, amount: i32): Counter {
+        return Counter { value: self.value - amount };
+    }
+
+    fn multiply(self, factor: i32): Counter {
+        return Counter { value: self.value * factor };
+    }
+
+    fn is_zero(self): bool {
+        return self.value == 0;
+    }
+
+    fn is_positive(self): bool {
+        return self.value > 0;
+    }
+
+    fn is_negative(self): bool {
+        return self.value < 0;
+    }
+
+    fn reset(self): Counter {
+        return Counter { value: 0 };
     }
 }
 
@@ -47,12 +83,83 @@ it("should chain method calls") {
     assert(result.value == 3);
 }
 
+it("should decrement counter") {
+    let c = Counter { value: 10 };
+    let c2 = c.decrement();
+    assert(c2.value == 9);
+}
+
+it("should subtract from counter") {
+    let c = Counter { value: 20 };
+    let c2 = c.subtract(7);
+    assert(c2.value == 13);
+}
+
+it("should multiply counter") {
+    let c = Counter { value: 5 };
+    let c2 = c.multiply(3);
+    assert(c2.value == 15);
+}
+
+it("should check if zero") {
+    let zero = Counter { value: 0 };
+    let nonzero = Counter { value: 5 };
+    assert(zero.is_zero() == true);
+    assert(nonzero.is_zero() == false);
+}
+
+it("should check if positive") {
+    let pos = Counter { value: 5 };
+    let neg = Counter { value: -5 };
+    let zero = Counter { value: 0 };
+    assert(pos.is_positive() == true);
+    assert(neg.is_positive() == false);
+    assert(zero.is_positive() == false);
+}
+
+it("should check if negative") {
+    let pos = Counter { value: 5 };
+    let neg = Counter { value: -5 };
+    assert(neg.is_negative() == true);
+    assert(pos.is_negative() == false);
+}
+
+it("should reset counter") {
+    let c = Counter { value: 100 };
+    let c2 = c.reset();
+    assert(c2.value == 0);
+}
+
+it("should chain increment and decrement") {
+    let c = Counter { value: 5 };
+    let result = c.increment().increment().decrement();
+    assert(result.value == 6);
+}
+
+it("should chain add and multiply") {
+    let c = Counter { value: 2 };
+    let result = c.add(3).multiply(2);
+    assert(result.value == 10);
+}
+
+// ============================================================================
+// RECTANGLE STRUCT
+// ============================================================================
+
 struct Rectangle {
     width: i32,
     height: i32
 }
 
 impl Rectangle {
+    fn new(w: i32, h: i32): Rectangle {
+        return Rectangle { width: w, height: h };
+    }
+
+    fn square(size: i32): Rectangle {
+        return Rectangle { width: size, height: size };
+    }
+
     fn area(self): i32 {
         return self.width * self.height;
     }
@@ -67,6 +174,40 @@ impl Rectangle {
 
     fn scale(self, factor: i32): Rectangle {
         return Rectangle { width: self.width * factor, height: self.height * factor };
+    }
+
+    fn grow(self, amount: i32): Rectangle {
+        return Rectangle { width: self.width + amount, height: self.height + amount };
+    }
+
+    fn shrink(self, amount: i32): Rectangle {
+        return Rectangle { width: self.width - amount, height: self.height - amount };
+    }
+
+    fn flip(self): Rectangle {
+        return Rectangle { width: self.height, height: self.width };
+    }
+
+    fn is_wider(self): bool {
+        return self.width > self.height;
+    }
+
+    fn is_taller(self): bool {
+        return self.height > self.width;
+    }
+
+    fn max_side(self): i32 {
+        if (self.width > self.height) {
+            return self.width;
+        }
+        return self.height;
+    }
+
+    fn min_side(self): i32 {
+        if (self.width < self.height) {
+            return self.width;
+        }
+        return self.height;
     }
 }
 
@@ -94,6 +235,70 @@ it("should scale rectangle") {
     assert(scaled.height == 8);
 }
 
+it("should grow rectangle") {
+    let rect = Rectangle { width: 10, height: 5 };
+    let grown = rect.grow(3);
+    assert(grown.width == 13);
+    assert(grown.height == 8);
+}
+
+it("should shrink rectangle") {
+    let rect = Rectangle { width: 10, height: 8 };
+    let shrunk = rect.shrink(2);
+    assert(shrunk.width == 8);
+    assert(shrunk.height == 6);
+}
+
+it("should flip rectangle") {
+    let rect = Rectangle { width: 10, height: 5 };
+    let flipped = rect.flip();
+    assert(flipped.width == 5);
+    assert(flipped.height == 10);
+}
+
+it("should check if wider") {
+    let wide = Rectangle { width: 10, height: 5 };
+    let tall = Rectangle { width: 5, height: 10 };
+    let square = Rectangle { width: 5, height: 5 };
+    assert(wide.is_wider() == true);
+    assert(tall.is_wider() == false);
+    assert(square.is_wider() == false);
+}
+
+it("should check if taller") {
+    let wide = Rectangle { width: 10, height: 5 };
+    let tall = Rectangle { width: 5, height: 10 };
+    assert(tall.is_taller() == true);
+    assert(wide.is_taller() == false);
+}
+
+it("should get max side") {
+    let rect = Rectangle { width: 10, height: 15 };
+    assert(rect.max_side() == 15);
+}
+
+it("should get min side") {
+    let rect = Rectangle { width: 10, height: 15 };
+    assert(rect.min_side() == 10);
+}
+
+it("should chain scale and grow") {
+    let rect = Rectangle { width: 2, height: 3 };
+    let result = rect.scale(2).grow(1);
+    assert(result.width == 5);
+    assert(result.height == 7);
+}
+
+it("should compute area after transformations") {
+    let rect = Rectangle { width: 5, height: 5 };
+    let result = rect.scale(2);
+    assert(result.area() == 100);
+}
+
+// ============================================================================
+// POINT STRUCT
+// ============================================================================
+
 struct Point {
     x: i32,
     y: i32
@@ -104,6 +309,10 @@ impl Point {
         return Point { x: 0, y: 0 };
     }
 
+    fn new(x: i32, y: i32): Point {
+        return Point { x: x, y: y };
+    }
+
     fn move_to(self, new_x: i32, new_y: i32): Point {
         return Point { x: new_x, y: new_y };
     }
@@ -112,8 +321,50 @@ impl Point {
         return Point { x: self.x + dx, y: self.y + dy };
     }
 
-    fn distance_from_origin(self): i32 {
+    fn distance_squared(self): i32 {
         return self.x * self.x + self.y * self.y;
+    }
+
+    fn manhattan_distance(self): i32 {
+        let ax = if (self.x < 0) { -self.x } else { self.x };
+        let ay = if (self.y < 0) { -self.y } else { self.y };
+        return ax + ay;
+    }
+
+    fn negate(self): Point {
+        return Point { x: -self.x, y: -self.y };
+    }
+
+    fn scale(self, factor: i32): Point {
+        return Point { x: self.x * factor, y: self.y * factor };
+    }
+
+    fn is_origin(self): bool {
+        return self.x == 0 and self.y == 0;
+    }
+
+    fn quadrant(self): i32 {
+        if (self.x > 0 and self.y > 0) {
+            return 1;
+        }
+        if (self.x < 0 and self.y > 0) {
+            return 2;
+        }
+        if (self.x < 0 and self.y < 0) {
+            return 3;
+        }
+        if (self.x > 0 and self.y < 0) {
+            return 4;
+        }
+        return 0;
+    }
+
+    fn mirror_x(self): Point {
+        return Point { x: -self.x, y: self.y };
+    }
+
+    fn mirror_y(self): Point {
+        return Point { x: self.x, y: -self.y };
     }
 }
 
@@ -133,7 +384,315 @@ it("should translate point") {
 
 it("should compute distance squared from origin") {
     let p = Point { x: 3, y: 4 };
-    let dist_sq = p.distance_from_origin();
+    let dist_sq = p.distance_squared();
     assert(dist_sq == 25);
+}
+
+it("should compute manhattan distance") {
+    let p = Point { x: 3, y: 4 };
+    assert(p.manhattan_distance() == 7);
+
+    let p2 = Point { x: -3, y: -4 };
+    assert(p2.manhattan_distance() == 7);
+}
+
+it("should negate point") {
+    let p = Point { x: 5, y: -3 };
+    let neg = p.negate();
+    assert(neg.x == -5);
+    assert(neg.y == 3);
+}
+
+it("should scale point") {
+    let p = Point { x: 2, y: 3 };
+    let scaled = p.scale(4);
+    assert(scaled.x == 8);
+    assert(scaled.y == 12);
+}
+
+it("should check if origin") {
+    let origin = Point { x: 0, y: 0 };
+    let other = Point { x: 1, y: 0 };
+    assert(origin.is_origin() == true);
+    assert(other.is_origin() == false);
+}
+
+it("should determine quadrant") {
+    let q1 = Point { x: 1, y: 1 };
+    let q2 = Point { x: -1, y: 1 };
+    let q3 = Point { x: -1, y: -1 };
+    let q4 = Point { x: 1, y: -1 };
+    let origin = Point { x: 0, y: 0 };
+
+    assert(q1.quadrant() == 1);
+    assert(q2.quadrant() == 2);
+    assert(q3.quadrant() == 3);
+    assert(q4.quadrant() == 4);
+    assert(origin.quadrant() == 0);
+}
+
+it("should mirror point across x-axis") {
+    let p = Point { x: 3, y: 4 };
+    let mirrored = p.mirror_x();
+    assert(mirrored.x == -3);
+    assert(mirrored.y == 4);
+}
+
+it("should mirror point across y-axis") {
+    let p = Point { x: 3, y: 4 };
+    let mirrored = p.mirror_y();
+    assert(mirrored.x == 3);
+    assert(mirrored.y == -4);
+}
+
+it("should chain translations") {
+    let p = Point { x: 0, y: 0 };
+    let result = p.translate(1, 1).translate(2, 2).translate(3, 3);
+    assert(result.x == 6);
+    assert(result.y == 6);
+}
+
+// ============================================================================
+// VECTOR2D STRUCT
+// ============================================================================
+
+struct Vector2D {
+    x: i32,
+    y: i32
+}
+
+impl Vector2D {
+    fn zero(): Vector2D {
+        return Vector2D { x: 0, y: 0 };
+    }
+
+    fn unit_x(): Vector2D {
+        return Vector2D { x: 1, y: 0 };
+    }
+
+    fn unit_y(): Vector2D {
+        return Vector2D { x: 0, y: 1 };
+    }
+
+    fn add(self, other_x: i32, other_y: i32): Vector2D {
+        return Vector2D { x: self.x + other_x, y: self.y + other_y };
+    }
+
+    fn sub(self, other_x: i32, other_y: i32): Vector2D {
+        return Vector2D { x: self.x - other_x, y: self.y - other_y };
+    }
+
+    fn dot(self, other_x: i32, other_y: i32): i32 {
+        return self.x * other_x + self.y * other_y;
+    }
+
+    fn length_squared(self): i32 {
+        return self.x * self.x + self.y * self.y;
+    }
+
+    fn scale(self, factor: i32): Vector2D {
+        return Vector2D { x: self.x * factor, y: self.y * factor };
+    }
+}
+
+it("should create zero vector") {
+    let v = Vector2D { x: 0, y: 0 };
+    assert(v.length_squared() == 0);
+}
+
+it("should add vectors") {
+    let v = Vector2D { x: 1, y: 2 };
+    let result = v.add(3, 4);
+    assert(result.x == 4);
+    assert(result.y == 6);
+}
+
+it("should subtract vectors") {
+    let v = Vector2D { x: 5, y: 7 };
+    let result = v.sub(2, 3);
+    assert(result.x == 3);
+    assert(result.y == 4);
+}
+
+it("should compute dot product") {
+    let v = Vector2D { x: 2, y: 3 };
+    let dot = v.dot(4, 5);
+    assert(dot == 23);
+}
+
+it("should compute length squared") {
+    let v = Vector2D { x: 3, y: 4 };
+    assert(v.length_squared() == 25);
+}
+
+it("should scale vector") {
+    let v = Vector2D { x: 2, y: 3 };
+    let scaled = v.scale(3);
+    assert(scaled.x == 6);
+    assert(scaled.y == 9);
+}
+
+// ============================================================================
+// RANGE STRUCT
+// ============================================================================
+
+struct Range {
+    start: i32,
+    end: i32
+}
+
+impl Range {
+    fn new(s: i32, e: i32): Range {
+        return Range { start: s, end: e };
+    }
+
+    fn length(self): i32 {
+        return self.end - self.start;
+    }
+
+    fn contains(self, value: i32): bool {
+        return value >= self.start and value < self.end;
+    }
+
+    fn is_empty(self): bool {
+        return self.start >= self.end;
+    }
+
+    fn shift(self, amount: i32): Range {
+        return Range { start: self.start + amount, end: self.end + amount };
+    }
+
+    fn expand(self, amount: i32): Range {
+        return Range { start: self.start - amount, end: self.end + amount };
+    }
+
+    fn midpoint(self): i32 {
+        return (self.start + self.end) / 2;
+    }
+}
+
+it("should compute range length") {
+    let r = Range { start: 5, end: 15 };
+    assert(r.length() == 10);
+}
+
+it("should check if range contains value") {
+    let r = Range { start: 0, end: 10 };
+    assert(r.contains(5) == true);
+    assert(r.contains(0) == true);
+    assert(r.contains(10) == false);
+    assert(r.contains(-1) == false);
+}
+
+it("should check if range is empty") {
+    let empty = Range { start: 5, end: 5 };
+    let nonempty = Range { start: 0, end: 10 };
+    assert(empty.is_empty() == true);
+    assert(nonempty.is_empty() == false);
+}
+
+it("should shift range") {
+    let r = Range { start: 0, end: 10 };
+    let shifted = r.shift(5);
+    assert(shifted.start == 5);
+    assert(shifted.end == 15);
+}
+
+it("should expand range") {
+    let r = Range { start: 5, end: 10 };
+    let expanded = r.expand(2);
+    assert(expanded.start == 3);
+    assert(expanded.end == 12);
+}
+
+it("should compute midpoint") {
+    let r = Range { start: 0, end: 10 };
+    assert(r.midpoint() == 5);
+
+    let r2 = Range { start: 4, end: 8 };
+    assert(r2.midpoint() == 6);
+}
+
+// ============================================================================
+// COMPLEX NUMBER SIMULATION
+// ============================================================================
+
+struct Complex {
+    real: i32,
+    imag: i32
+}
+
+impl Complex {
+    fn new(r: i32, i: i32): Complex {
+        return Complex { real: r, imag: i };
+    }
+
+    fn zero(): Complex {
+        return Complex { real: 0, imag: 0 };
+    }
+
+    fn add(self, other_r: i32, other_i: i32): Complex {
+        return Complex { real: self.real + other_r, imag: self.imag + other_i };
+    }
+
+    fn conjugate(self): Complex {
+        return Complex { real: self.real, imag: -self.imag };
+    }
+
+    fn magnitude_squared(self): i32 {
+        return self.real * self.real + self.imag * self.imag;
+    }
+
+    fn scale(self, factor: i32): Complex {
+        return Complex { real: self.real * factor, imag: self.imag * factor };
+    }
+
+    fn is_real(self): bool {
+        return self.imag == 0;
+    }
+
+    fn is_imaginary(self): bool {
+        return self.real == 0;
+    }
+}
+
+it("should add complex numbers") {
+    let c = Complex { real: 3, imag: 4 };
+    let result = c.add(1, 2);
+    assert(result.real == 4);
+    assert(result.imag == 6);
+}
+
+it("should compute conjugate") {
+    let c = Complex { real: 3, imag: 4 };
+    let conj = c.conjugate();
+    assert(conj.real == 3);
+    assert(conj.imag == -4);
+}
+
+it("should compute magnitude squared") {
+    let c = Complex { real: 3, imag: 4 };
+    assert(c.magnitude_squared() == 25);
+}
+
+it("should scale complex number") {
+    let c = Complex { real: 2, imag: 3 };
+    let scaled = c.scale(2);
+    assert(scaled.real == 4);
+    assert(scaled.imag == 6);
+}
+
+it("should check if purely real") {
+    let real = Complex { real: 5, imag: 0 };
+    let complex = Complex { real: 3, imag: 4 };
+    assert(real.is_real() == true);
+    assert(complex.is_real() == false);
+}
+
+it("should check if purely imaginary") {
+    let imag = Complex { real: 0, imag: 5 };
+    let complex = Complex { real: 3, imag: 4 };
+    assert(imag.is_imaginary() == true);
+    assert(complex.is_imaginary() == false);
 }
 

@@ -1,7 +1,10 @@
 // Async/Await Test Suite
 // Tests async functions and await expressions
 
-// Basic async function
+// ============================================================================
+// BASIC ASYNC FUNCTIONS
+// ============================================================================
+
 async fn get_value(): i32 {
     return 42;
 }
@@ -11,7 +14,6 @@ it("should call async function and await result") {
     assert(result == 42);
 }
 
-// Async function with parameter
 async fn double(x: i32): i32 {
     return x * 2;
 }
@@ -21,7 +23,6 @@ it("should await async function with argument") {
     assert(result == 42);
 }
 
-// Multiple awaits
 async fn add(a: i32, b: i32): i32 {
     return a + b;
 }
@@ -33,7 +34,10 @@ it("should handle multiple awaits") {
     assert(z == 62);
 }
 
-// Await non-async function (synchronous)
+// ============================================================================
+// ASYNC WITH SYNC FUNCTIONS
+// ============================================================================
+
 fn sync_function(): i32 {
     return 100;
 }
@@ -43,13 +47,15 @@ it("should await sync function") {
     assert(result == 100);
 }
 
-// Await expression
 it("should await inline expression") {
     let result = await (10 + 32);
     assert(result == 42);
 }
 
-// Async function returning string
+// ============================================================================
+// ASYNC WITH DIFFERENT RETURN TYPES
+// ============================================================================
+
 async fn get_greeting(): string {
     return "hello";
 }
@@ -59,7 +65,39 @@ it("should await string result") {
     assert(msg == "hello");
 }
 
-// Async function with conditional
+async fn is_positive(x: i32): bool {
+    return x > 0;
+}
+
+it("should await boolean result") {
+    let result1 = await is_positive(10);
+    let result2 = await is_positive(-5);
+    assert(result1 == true);
+    assert(result2 == false);
+}
+
+async fn get_zero(): i32 {
+    return 0;
+}
+
+it("should await zero value") {
+    let result = await get_zero();
+    assert(result == 0);
+}
+
+async fn get_negative(): i32 {
+    return -42;
+}
+
+it("should await negative value") {
+    let result = await get_negative();
+    assert(result == -42);
+}
+
+// ============================================================================
+// ASYNC WITH CONDITIONALS
+// ============================================================================
+
 async fn max_value(a: i32, b: i32): i32 {
     if (a > b) {
         return a;
@@ -72,7 +110,55 @@ it("should await conditional async function") {
     assert(result == 20);
 }
 
-// Chained async calls
+async fn min_value(a: i32, b: i32): i32 {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+it("should await min function") {
+    let result = await min_value(10, 20);
+    assert(result == 10);
+}
+
+async fn abs_value(x: i32): i32 {
+    if (x < 0) {
+        return -x;
+    }
+    return x;
+}
+
+it("should await abs function") {
+    let result1 = await abs_value(5);
+    let result2 = await abs_value(-5);
+    assert(result1 == 5);
+    assert(result2 == 5);
+}
+
+async fn clamp(x: i32, low: i32, high: i32): i32 {
+    if (x < low) {
+        return low;
+    }
+    if (x > high) {
+        return high;
+    }
+    return x;
+}
+
+it("should await clamp function") {
+    let r1 = await clamp(5, 0, 10);
+    let r2 = await clamp(-5, 0, 10);
+    let r3 = await clamp(15, 0, 10);
+    assert(r1 == 5);
+    assert(r2 == 0);
+    assert(r3 == 10);
+}
+
+// ============================================================================
+// CHAINED ASYNC CALLS
+// ============================================================================
+
 async fn increment(x: i32): i32 {
     return x + 1;
 }
@@ -82,5 +168,309 @@ it("should chain async calls") {
     let y = await increment(x);
     let z = await increment(y);
     assert(z == 3);
+}
+
+async fn square(x: i32): i32 {
+    return x * x;
+}
+
+it("should chain different async functions") {
+    let x = await double(5);
+    let y = await square(x);
+    assert(y == 100);
+}
+
+it("should chain many async calls") {
+    let a = await increment(0);
+    let b = await increment(a);
+    let c = await increment(b);
+    let d = await increment(c);
+    let e = await increment(d);
+    assert(e == 5);
+}
+
+// ============================================================================
+// ASYNC WITH ARITHMETIC
+// ============================================================================
+
+async fn subtract(a: i32, b: i32): i32 {
+    return a - b;
+}
+
+it("should await subtraction") {
+    let result = await subtract(10, 3);
+    assert(result == 7);
+}
+
+async fn multiply(a: i32, b: i32): i32 {
+    return a * b;
+}
+
+it("should await multiplication") {
+    let result = await multiply(6, 7);
+    assert(result == 42);
+}
+
+async fn divide(a: i32, b: i32): i32 {
+    return a / b;
+}
+
+it("should await division") {
+    let result = await divide(20, 4);
+    assert(result == 5);
+}
+
+async fn modulo(a: i32, b: i32): i32 {
+    return a % b;
+}
+
+it("should await modulo") {
+    let result = await modulo(17, 5);
+    assert(result == 2);
+}
+
+async fn power(base: i32, exp: i32): i32 {
+    return base ** exp;
+}
+
+it("should await power") {
+    let result = await power(2, 10);
+    assert(result == 1024);
+}
+
+// ============================================================================
+// ASYNC EXPRESSION COMBINATIONS
+// ============================================================================
+
+it("should combine awaited values") {
+    let a = await get_value();
+    let b = await double(10);
+    let sum = a + b;
+    assert(sum == 62);
+}
+
+it("should use awaited value in expression") {
+    let x = await get_value();
+    let result = x * 2 + 10;
+    assert(result == 94);
+}
+
+it("should pass awaited value to another function") {
+    let x = await get_value();
+    let result = await double(x);
+    assert(result == 84);
+}
+
+// ============================================================================
+// ASYNC WITH LOOPS
+// ============================================================================
+
+async fn compute_sum_async(n: i32): i32 {
+    let mut sum = 0;
+    let mut i = 1;
+    while (i <= n) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+
+it("should await function with loop") {
+    let result = await compute_sum_async(5);
+    assert(result == 15);
+}
+
+async fn factorial_async(n: i32): i32 {
+    let mut result = 1;
+    let mut i = 1;
+    while (i <= n) {
+        result = result * i;
+        i = i + 1;
+    }
+    return result;
+}
+
+it("should await factorial") {
+    let r1 = await factorial_async(0);
+    let r2 = await factorial_async(1);
+    let r3 = await factorial_async(5);
+    assert(r1 == 1);
+    assert(r2 == 1);
+    assert(r3 == 120);
+}
+
+async fn count_up_to(n: i32): i32 {
+    let mut count = 0;
+    let mut i = 0;
+    while (i < n) {
+        count = count + 1;
+        i = i + 1;
+    }
+    return count;
+}
+
+it("should await count function") {
+    let result = await count_up_to(10);
+    assert(result == 10);
+}
+
+// ============================================================================
+// ASYNC STRING FUNCTIONS
+// ============================================================================
+
+async fn concat_strings(a: string, b: string): string {
+    return a + b;
+}
+
+it("should await string concatenation") {
+    let result = await concat_strings("hello", " world");
+    assert(result == "hello world");
+}
+
+async fn make_greeting(name: string): string {
+    return "Hello, " + name + "!";
+}
+
+it("should await greeting function") {
+    let result = await make_greeting("World");
+    assert(result == "Hello, World!");
+}
+
+async fn prefix_string(prefix: string, s: string): string {
+    return prefix + s;
+}
+
+it("should await prefix function") {
+    let result = await prefix_string("pre_", "test");
+    assert(result == "pre_test");
+}
+
+// ============================================================================
+// ASYNC WITH COMPARISON
+// ============================================================================
+
+async fn is_equal(a: i32, b: i32): bool {
+    return a == b;
+}
+
+it("should await equality check") {
+    let r1 = await is_equal(5, 5);
+    let r2 = await is_equal(5, 6);
+    assert(r1 == true);
+    assert(r2 == false);
+}
+
+async fn is_greater(a: i32, b: i32): bool {
+    return a > b;
+}
+
+it("should await comparison") {
+    let r1 = await is_greater(10, 5);
+    let r2 = await is_greater(5, 10);
+    assert(r1 == true);
+    assert(r2 == false);
+}
+
+async fn is_even(n: i32): bool {
+    return n % 2 == 0;
+}
+
+it("should await even check") {
+    let r1 = await is_even(4);
+    let r2 = await is_even(5);
+    assert(r1 == true);
+    assert(r2 == false);
+}
+
+async fn is_odd(n: i32): bool {
+    return n % 2 != 0;
+}
+
+it("should await odd check") {
+    let r1 = await is_odd(3);
+    let r2 = await is_odd(4);
+    assert(r1 == true);
+    assert(r2 == false);
+}
+
+// ============================================================================
+// ASYNC WITH ARRAYS
+// ============================================================================
+
+async fn get_first_element(): i32 {
+    let arr = [10, 20, 30];
+    return arr[0];
+}
+
+it("should await array access") {
+    let result = await get_first_element();
+    assert(result == 10);
+}
+
+async fn sum_array(): i32 {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 5) {
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+it("should await array sum") {
+    let result = await sum_array();
+    assert(result == 15);
+}
+
+async fn array_length(): i32 {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    return arr.len();
+}
+
+it("should await array length") {
+    let result = await array_length();
+    assert(result == 10);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+async fn identity(x: i32): i32 {
+    return x;
+}
+
+it("should await identity function") {
+    let result = await identity(42);
+    assert(result == 42);
+}
+
+async fn constant(): i32 {
+    return 100;
+}
+
+it("should await constant function") {
+    let r1 = await constant();
+    let r2 = await constant();
+    assert(r1 == 100);
+    assert(r2 == 100);
+}
+
+it("should await multiple times in sequence") {
+    let a = await get_value();
+    let b = await get_value();
+    let c = await get_value();
+    assert(a == 42);
+    assert(b == 42);
+    assert(c == 42);
+}
+
+it("should use multiple different async functions") {
+    let v = await get_value();
+    let d = await double(v);
+    let s = await square(d);
+    let a = await add(s, 100);
+    assert(a == 7156);
 }
 

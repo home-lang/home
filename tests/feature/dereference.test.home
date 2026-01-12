@@ -1,6 +1,10 @@
 // Dereference Assignment Test Suite
 // Tests *r = value syntax for mutable references
 
+// ============================================================================
+// BASIC DEREFERENCE TESTS
+// ============================================================================
+
 it("should dereference mutable reference") {
     let mut x = 10;
     let r = &mut x;
@@ -47,5 +51,283 @@ it("should support reading through dereference") {
     let r = &mut x;
     let y = *r;
     assert(y == 42);
+}
+
+// ============================================================================
+// ARITHMETIC WITH DEREFERENCE
+// ============================================================================
+
+it("should add to dereferenced value") {
+    let mut x = 10;
+    let r = &mut x;
+    *r = *r + 5;
+    assert(x == 15);
+}
+
+it("should subtract from dereferenced value") {
+    let mut x = 20;
+    let r = &mut x;
+    *r = *r - 8;
+    assert(x == 12);
+}
+
+it("should multiply dereferenced value") {
+    let mut x = 5;
+    let r = &mut x;
+    *r = *r * 3;
+    assert(x == 15);
+}
+
+it("should divide dereferenced value") {
+    let mut x = 100;
+    let r = &mut x;
+    *r = *r / 4;
+    assert(x == 25);
+}
+
+it("should modulo dereferenced value") {
+    let mut x = 17;
+    let r = &mut x;
+    *r = *r % 5;
+    assert(x == 2);
+}
+
+it("should use power on dereferenced value") {
+    let mut x = 2;
+    let r = &mut x;
+    *r = *r ** 3;
+    assert(x == 8);
+}
+
+// ============================================================================
+// MULTIPLE MODIFICATIONS
+// ============================================================================
+
+it("should modify multiple times") {
+    let mut x = 0;
+    let r = &mut x;
+    *r = 1;
+    *r = *r + 1;
+    *r = *r * 2;
+    *r = *r + 3;
+    assert(x == 7);
+}
+
+it("should increment in loop") {
+    let mut count = 0;
+    let r = &mut count;
+    let mut i = 0;
+    while (i < 10) {
+        *r = *r + 1;
+        i = i + 1;
+    }
+    assert(count == 10);
+}
+
+it("should double in loop") {
+    let mut value = 1;
+    let r = &mut value;
+    let mut i = 0;
+    while (i < 5) {
+        *r = *r * 2;
+        i = i + 1;
+    }
+    assert(value == 32);
+}
+
+it("should accumulate sum") {
+    let mut total = 0;
+    let r = &mut total;
+    *r = *r + 10;
+    *r = *r + 20;
+    *r = *r + 30;
+    assert(total == 60);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle zero assignment") {
+    let mut x = 100;
+    let r = &mut x;
+    *r = 0;
+    assert(x == 0);
+}
+
+it("should handle negative assignment") {
+    let mut x = 10;
+    let r = &mut x;
+    *r = -5;
+    assert(x == -5);
+}
+
+it("should handle large number assignment") {
+    let mut x = 0;
+    let r = &mut x;
+    *r = 1000000;
+    assert(x == 1000000);
+}
+
+it("should handle assignment from expression") {
+    let mut x = 0;
+    let r = &mut x;
+    *r = 5 * 10 + 3;
+    assert(x == 53);
+}
+
+it("should preserve reference after assignment") {
+    let mut x = 10;
+    let r = &mut x;
+    *r = 20;
+    *r = *r + 5;
+    assert(x == 25);
+}
+
+// ============================================================================
+// READ AND WRITE PATTERNS
+// ============================================================================
+
+it("should read then write") {
+    let mut x = 42;
+    let r = &mut x;
+    let old = *r;
+    *r = old + 8;
+    assert(x == 50);
+}
+
+it("should swap-like operation") {
+    let mut a = 10;
+    let mut b = 20;
+    let ra = &mut a;
+    let rb = &mut b;
+    let temp = *ra;
+    *ra = *rb;
+    *rb = temp;
+    assert(a == 20);
+    assert(b == 10);
+}
+
+it("should accumulate from multiple sources") {
+    let mut total = 0;
+    let r = &mut total;
+    let a = 10;
+    let b = 20;
+    let c = 30;
+    *r = *r + a;
+    *r = *r + b;
+    *r = *r + c;
+    assert(total == 60);
+}
+
+// ============================================================================
+// CONDITIONAL MODIFICATION
+// ============================================================================
+
+it("should conditionally modify") {
+    let mut x = 10;
+    let r = &mut x;
+    if (*r < 20) {
+        *r = *r * 2;
+    }
+    assert(x == 20);
+}
+
+it("should not modify if condition fails") {
+    let mut x = 30;
+    let r = &mut x;
+    if (*r < 20) {
+        *r = *r * 2;
+    }
+    assert(x == 30);
+}
+
+it("should use dereference in condition") {
+    let mut x = 5;
+    let r = &mut x;
+    while (*r <= 20) {
+        *r = *r + 3;
+    }
+    assert(x == 23);
+}
+
+// ============================================================================
+// FIBONACCI-LIKE WITH REFERENCES
+// ============================================================================
+
+it("should compute fibonacci-like sequence") {
+    let mut a = 0;
+    let mut b = 1;
+    let ra = &mut a;
+    let rb = &mut b;
+
+    let mut i = 0;
+    while (i < 5) {
+        let temp = *ra + *rb;
+        *ra = *rb;
+        *rb = temp;
+        i = i + 1;
+    }
+    assert(b == 8);
+}
+
+// ============================================================================
+// MULTIPLE VARIABLES WITH REFERENCES
+// ============================================================================
+
+it("should handle two references to different vars") {
+    let mut x = 10;
+    let mut y = 20;
+    let rx = &mut x;
+    let ry = &mut y;
+    *rx = *rx + *ry;
+    assert(x == 30);
+    assert(y == 20);
+}
+
+it("should sum array-like using ref") {
+    let mut sum = 0;
+    let r = &mut sum;
+    let arr = [1, 2, 3, 4, 5];
+    let mut i = 0;
+    while (i < 5) {
+        *r = *r + arr[i];
+        i = i + 1;
+    }
+    assert(sum == 15);
+}
+
+it("should count using reference") {
+    let mut count = 0;
+    let r = &mut count;
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let mut i = 0;
+    while (i < 10) {
+        if (arr[i] % 2 == 0) {
+            *r = *r + 1;
+        }
+        i = i + 1;
+    }
+    assert(count == 5);
+}
+
+// ============================================================================
+// NESTED OPERATIONS
+// ============================================================================
+
+it("should handle deeply nested arithmetic") {
+    let mut x = 2;
+    let r = &mut x;
+    *r = (*r + 3) * (*r + 1);
+    assert(x == 15);
+}
+
+it("should handle sequential complex operations") {
+    let mut x = 10;
+    let r = &mut x;
+    *r = *r * 2;
+    *r = *r + 5;
+    *r = *r / 5;
+    assert(x == 5);
 }
 

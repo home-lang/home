@@ -1,6 +1,10 @@
 // Type Aliases Test Suite
 // Tests the type keyword for creating type aliases
 
+// ============================================================================
+// BASIC TYPE ALIASES
+// ============================================================================
+
 type Integer = i32;
 type Text = string;
 type Flag = bool;
@@ -20,6 +24,15 @@ it("should use bool type alias") {
     assert(f == true);
 }
 
+it("should use false with bool alias") {
+    let f: Flag = false;
+    assert(f == false);
+}
+
+// ============================================================================
+// TYPE ALIASES IN FUNCTIONS
+// ============================================================================
+
 type Number = i32;
 
 fn add_numbers(a: Number, b: Number): Number {
@@ -31,6 +44,47 @@ it("should use aliases in function signatures") {
     assert(result == 30);
 }
 
+type Amount = i32;
+
+fn multiply_amounts(a: Amount, b: Amount): Amount {
+    return a * b;
+}
+
+it("should use alias in multiplication") {
+    let result = multiply_amounts(6, 7);
+    assert(result == 42);
+}
+
+type Value = i32;
+
+fn max_value(a: Value, b: Value): Value {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+it("should use alias in comparison function") {
+    let result = max_value(10, 20);
+    assert(result == 20);
+}
+
+fn min_value(a: Value, b: Value): Value {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+it("should use alias in min function") {
+    let result = min_value(10, 20);
+    assert(result == 10);
+}
+
+// ============================================================================
+// TUPLE TYPE ALIASES
+// ============================================================================
+
 type Point2D = (i32, i32);
 
 it("should alias tuple types") {
@@ -38,12 +92,55 @@ it("should alias tuple types") {
     assert(true);
 }
 
+type Pair = (i32, i32);
+
+it("should create pair tuple") {
+    let p: Pair = (5, 10);
+    assert(true);
+}
+
+type Triple = (i32, i32, i32);
+
+it("should alias triple tuple") {
+    let t: Triple = (1, 2, 3);
+    assert(true);
+}
+
+// ============================================================================
+// ARRAY TYPE ALIASES
+// ============================================================================
+
 type IntArray = [i32];
 
 it("should alias array types") {
     let arr: IntArray = [1, 2, 3];
     assert(arr[0] == 1);
 }
+
+type NumberList = [i32];
+
+it("should use array alias") {
+    let nums: NumberList = [10, 20, 30, 40, 50];
+    assert(nums.len() == 5);
+}
+
+type StringArray = [string];
+
+it("should alias string array") {
+    let strs: StringArray = ["a", "b", "c"];
+    assert(strs[0] == "a");
+}
+
+type BoolArray = [bool];
+
+it("should alias bool array") {
+    let flags: BoolArray = [true, false, true];
+    assert(flags[0] == true);
+}
+
+// ============================================================================
+// TYPE ALIASES IN STRUCTS
+// ============================================================================
 
 type Coordinate = i32;
 
@@ -58,6 +155,35 @@ it("should use aliases in structs") {
     assert(pos.y == 10);
 }
 
+type Distance = i32;
+
+struct Line {
+    length: Distance
+}
+
+it("should use alias in struct field") {
+    let line = Line { length: 100 };
+    assert(line.length == 100);
+}
+
+type Age = i32;
+type Name = string;
+
+struct Person {
+    name: Name,
+    age: Age
+}
+
+it("should use multiple aliases in struct") {
+    let p = Person { name: "Alice", age: 30 };
+    assert(p.name == "Alice");
+    assert(p.age == 30);
+}
+
+// ============================================================================
+// TYPE ALIASES WITH MUTABLE VARIABLES
+// ============================================================================
+
 type Counter = i32;
 
 it("should use aliases with mut") {
@@ -66,6 +192,26 @@ it("should use aliases with mut") {
     assert(count == 1);
 }
 
+it("should use alias with increment loop") {
+    let mut c: Counter = 0;
+    let mut i = 0;
+    while (i < 5) {
+        c = c + 1;
+        i = i + 1;
+    }
+    assert(c == 5);
+}
+
+it("should use alias with decrement") {
+    let mut c: Counter = 10;
+    c = c - 1;
+    assert(c == 9);
+}
+
+// ============================================================================
+// TYPE ALIASES IN EXPRESSIONS
+// ============================================================================
+
 type Score = i32;
 
 it("should use aliases in expressions") {
@@ -73,5 +219,189 @@ it("should use aliases in expressions") {
     let b: Score = 30;
     let total: Score = a + b;
     assert(total == 80);
+}
+
+it("should use alias in subtraction") {
+    let a: Score = 100;
+    let b: Score = 40;
+    let diff: Score = a - b;
+    assert(diff == 60);
+}
+
+it("should use alias in multiplication") {
+    let a: Score = 5;
+    let b: Score = 10;
+    let product: Score = a * b;
+    assert(product == 50);
+}
+
+it("should use alias in division") {
+    let a: Score = 100;
+    let b: Score = 4;
+    let quotient: Score = a / b;
+    assert(quotient == 25);
+}
+
+// ============================================================================
+// MULTIPLE TYPE ALIASES
+// ============================================================================
+
+type Width = i32;
+type Height = i32;
+type Area = i32;
+
+fn calculate_area(w: Width, h: Height): Area {
+    return w * h;
+}
+
+it("should use multiple distinct aliases") {
+    let width: Width = 10;
+    let height: Height = 5;
+    let area: Area = calculate_area(width, height);
+    assert(area == 50);
+}
+
+type Radius = i32;
+type Diameter = i32;
+
+fn get_diameter(r: Radius): Diameter {
+    return r * 2;
+}
+
+it("should convert between aliased types") {
+    let r: Radius = 5;
+    let d: Diameter = get_diameter(r);
+    assert(d == 10);
+}
+
+// ============================================================================
+// TYPE ALIASES IN CONDITIONALS
+// ============================================================================
+
+type Temperature = i32;
+
+fn is_freezing(t: Temperature): bool {
+    return t <= 0;
+}
+
+it("should use alias in conditional function") {
+    let cold: Temperature = -5;
+    let warm: Temperature = 25;
+    assert(is_freezing(cold) == true);
+    assert(is_freezing(warm) == false);
+}
+
+type Percentage = i32;
+
+fn is_passing(p: Percentage): bool {
+    return p >= 60;
+}
+
+it("should use alias for percentage check") {
+    let grade1: Percentage = 75;
+    let grade2: Percentage = 45;
+    assert(is_passing(grade1) == true);
+    assert(is_passing(grade2) == false);
+}
+
+// ============================================================================
+// TYPE ALIASES WITH ARRAYS AND LOOPS
+// ============================================================================
+
+type Index = i32;
+
+it("should use alias as array index") {
+    let arr = [10, 20, 30, 40, 50];
+    let idx: Index = 2;
+    assert(arr[idx] == 30);
+}
+
+it("should use alias in loop counter") {
+    let mut i: Index = 0;
+    let mut sum = 0;
+    while (i < 5) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == 10);
+}
+
+type Count = i32;
+
+it("should use alias for counting") {
+    let mut count: Count = 0;
+    let arr = [1, 2, 3, 4, 5];
+    let mut i = 0;
+    while (i < 5) {
+        count = count + arr[i];
+        i = i + 1;
+    }
+    assert(count == 15);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+type Zero = i32;
+
+it("should handle zero with alias") {
+    let z: Zero = 0;
+    assert(z == 0);
+}
+
+type Negative = i32;
+
+it("should handle negative with alias") {
+    let n: Negative = -100;
+    assert(n == -100);
+}
+
+type Large = i32;
+
+it("should handle large numbers with alias") {
+    let l: Large = 1000000;
+    assert(l == 1000000);
+}
+
+type Empty = string;
+
+it("should handle empty string with alias") {
+    let e: Empty = "";
+    assert(e == "");
+}
+
+// ============================================================================
+// CHAINED OPERATIONS WITH ALIASES
+// ============================================================================
+
+type Money = i32;
+
+it("should chain operations with alias") {
+    let initial: Money = 100;
+    let spent: Money = 30;
+    let earned: Money = 50;
+    let final: Money = initial - spent + earned;
+    assert(final == 120);
+}
+
+type Level = i32;
+
+it("should use alias in game-like scenario") {
+    let mut level: Level = 1;
+    level = level + 1;
+    level = level + 1;
+    level = level + 1;
+    assert(level == 4);
+}
+
+type HP = i32;
+
+it("should use alias for health points") {
+    let mut hp: HP = 100;
+    hp = hp - 20;
+    hp = hp - 15;
+    hp = hp + 10;
+    assert(hp == 75);
 }
 
