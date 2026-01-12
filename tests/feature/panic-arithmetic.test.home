@@ -1,0 +1,327 @@
+// Panic Arithmetic Test Suite
+// Tests panic-on-overflow arithmetic operators (+!, -!, *!, /!)
+// These operators panic instead of wrapping or returning optional
+
+// ============================================================================
+// PANIC ADDITION (+!)
+// ============================================================================
+
+it("should perform panic addition with safe values") {
+    let a = 100;
+    let b = 50;
+    let result = a +! b;
+    assert(result == 150);
+}
+
+it("should perform panic addition with negative") {
+    let a = 100;
+    let b = -30;
+    let result = a +! b;
+    assert(result == 70);
+}
+
+it("should perform panic addition with zero") {
+    let a = 42;
+    let result = a +! 0;
+    assert(result == 42);
+}
+
+it("should perform panic addition both zeros") {
+    let result = 0 +! 0;
+    assert(result == 0);
+}
+
+it("should perform panic addition small values") {
+    let result = 1 +! 1;
+    assert(result == 2);
+}
+
+// ============================================================================
+// PANIC SUBTRACTION (-!)
+// ============================================================================
+
+it("should perform panic subtraction with safe values") {
+    let a = 100;
+    let b = 30;
+    let result = a -! b;
+    assert(result == 70);
+}
+
+it("should perform panic subtraction with negative result") {
+    let a = 30;
+    let b = 100;
+    let result = a -! b;
+    assert(result == -70);
+}
+
+it("should perform panic subtraction with zero") {
+    let a = 42;
+    let result = a -! 0;
+    assert(result == 42);
+}
+
+it("should perform panic subtraction from zero") {
+    let result = 0 -! 50;
+    assert(result == -50);
+}
+
+it("should perform panic subtraction same values") {
+    let a = 100;
+    let result = a -! a;
+    assert(result == 0);
+}
+
+// ============================================================================
+// PANIC MULTIPLICATION (*!)
+// ============================================================================
+
+it("should perform panic multiplication with safe values") {
+    let a = 10;
+    let b = 20;
+    let result = a *! b;
+    assert(result == 200);
+}
+
+it("should perform panic multiplication with negative") {
+    let a = -10;
+    let b = 5;
+    let result = a *! b;
+    assert(result == -50);
+}
+
+it("should perform panic multiplication both negative") {
+    let a = -6;
+    let b = -7;
+    let result = a *! b;
+    assert(result == 42);
+}
+
+it("should perform panic multiplication with zero") {
+    let a = 1000;
+    let result = a *! 0;
+    assert(result == 0);
+}
+
+it("should perform panic multiplication with one") {
+    let a = 42;
+    let result = a *! 1;
+    assert(result == 42);
+}
+
+it("should perform panic multiplication with negative one") {
+    let a = 42;
+    let result = a *! -1;
+    assert(result == -42);
+}
+
+// ============================================================================
+// PANIC DIVISION (/!)
+// ============================================================================
+
+it("should perform panic division with safe values") {
+    let a = 100;
+    let b = 5;
+    let result = a /! b;
+    assert(result == 20);
+}
+
+it("should perform panic division with remainder") {
+    let a = 10;
+    let b = 3;
+    let result = a /! b;
+    assert(result == 3);
+}
+
+it("should perform panic division with negative") {
+    let a = -100;
+    let b = 5;
+    let result = a /! b;
+    assert(result == -20);
+}
+
+it("should perform panic division both negative") {
+    let a = -100;
+    let b = -5;
+    let result = a /! b;
+    assert(result == 20);
+}
+
+it("should perform panic division by one") {
+    let a = 42;
+    let result = a /! 1;
+    assert(result == 42);
+}
+
+it("should perform panic division zero by nonzero") {
+    let result = 0 /! 5;
+    assert(result == 0);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC WITH VARIABLES
+// ============================================================================
+
+it("should use panic addition with variables") {
+    let x = 25;
+    let y = 17;
+    let result = x +! y;
+    assert(result == 42);
+}
+
+it("should use panic subtraction with variables") {
+    let x = 100;
+    let y = 58;
+    let result = x -! y;
+    assert(result == 42);
+}
+
+it("should use panic multiplication with variables") {
+    let x = 6;
+    let y = 7;
+    let result = x *! y;
+    assert(result == 42);
+}
+
+it("should use panic division with variables") {
+    let x = 84;
+    let y = 2;
+    let result = x /! y;
+    assert(result == 42);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC IN EXPRESSIONS
+// ============================================================================
+
+it("should use panic add in complex expression") {
+    let base = 10;
+    let factor = 4;
+    let result = base +! (factor *! 2);
+    assert(result == 18);
+}
+
+it("should chain panic operations") {
+    let a = 10 +! 20;
+    let b = a -! 5;
+    assert(b == 25);
+}
+
+it("should mix panic with regular arithmetic") {
+    let a = 10 +! 20;
+    let b = a + 12;
+    assert(b == 42);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC IN CONDITIONS
+// ============================================================================
+
+it("should use panic addition in condition") {
+    let a = 20;
+    let b = 22;
+    let result = a +! b;
+    if (result == 42) {
+        assert(true);
+    } else {
+        assert(false);
+    }
+}
+
+it("should compare panic results") {
+    let a = 100 +! 50;
+    let b = 200 -! 50;
+    assert(a == 150);
+    assert(b == 150);
+    assert(a == b);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC IN LOOPS
+// ============================================================================
+
+it("should use panic addition in loop") {
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 5) {
+        sum = sum +! 10;
+        i = i + 1;
+    }
+    assert(sum == 50);
+}
+
+it("should use panic multiplication in loop") {
+    let mut product = 1;
+    let mut i = 0;
+    while (i < 3) {
+        product = product *! 2;
+        i = i + 1;
+    }
+    assert(product == 8);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC IN FUNCTIONS
+// ============================================================================
+
+it("should use panic addition in function") {
+    fn safe_add(a: i32, b: i32): i32 {
+        return a +! b;
+    }
+    assert(safe_add(20, 22) == 42);
+}
+
+it("should use panic multiplication in function") {
+    fn safe_mult(a: i32, b: i32): i32 {
+        return a *! b;
+    }
+    assert(safe_mult(6, 7) == 42);
+}
+
+it("should use panic division in function") {
+    fn safe_div(a: i32, b: i32): i32 {
+        return a /! b;
+    }
+    assert(safe_div(84, 2) == 42);
+}
+
+// ============================================================================
+// PANIC ARITHMETIC WITH ARRAYS
+// ============================================================================
+
+it("should use panic arithmetic with array elements") {
+    let arr = [10, 20, 30];
+    let result = arr[0] +! arr[1];
+    assert(result == 30);
+}
+
+it("should use panic multiplication with array length") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.len() *! 2;
+    assert(result == 10);
+}
+
+// ============================================================================
+// LARGE VALUES (WITHIN SAFE RANGE)
+// ============================================================================
+
+it("should handle large safe addition") {
+    let a = 1000000;
+    let b = 2000000;
+    let result = a +! b;
+    assert(result == 3000000);
+}
+
+it("should handle large safe multiplication") {
+    let a = 1000;
+    let b = 1000;
+    let result = a *! b;
+    assert(result == 1000000);
+}
+
+it("should handle large safe division") {
+    let a = 1000000;
+    let b = 1000;
+    let result = a /! b;
+    assert(result == 1000);
+}
+

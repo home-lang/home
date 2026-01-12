@@ -456,3 +456,564 @@ it("should match wildcard when no specific match") {
     assert(result == 999);
 }
 
+// ============================================================================
+// PATTERN GUARDS (if conditions)
+// ============================================================================
+
+it("should match with simple guard") {
+    let x = 10;
+    let result = match (x) {
+        n if n > 5 => 1,
+        n if n <= 5 => 0,
+        _ => -1,
+    };
+    assert(result == 1);
+}
+
+it("should match guard with equality check") {
+    let x = 42;
+    let result = match (x) {
+        n if n == 42 => 100,
+        n if n == 0 => 0,
+        _ => -1,
+    };
+    assert(result == 100);
+}
+
+it("should match guard with range check") {
+    let x = 25;
+    let result = match (x) {
+        n if n >= 1 and n <= 10 => 1,
+        n if n >= 11 and n <= 30 => 2,
+        n if n >= 31 and n <= 50 => 3,
+        _ => 0,
+    };
+    assert(result == 2);
+}
+
+it("should match guard with modulo check") {
+    let x = 15;
+    let result = match (x) {
+        n if n % 3 == 0 and n % 5 == 0 => 3,
+        n if n % 3 == 0 => 1,
+        n if n % 5 == 0 => 2,
+        _ => 0,
+    };
+    assert(result == 3);
+}
+
+it("should match guard with negative number") {
+    let x = -5;
+    let result = match (x) {
+        n if n < 0 => -1,
+        n if n > 0 => 1,
+        _ => 0,
+    };
+    assert(result == -1);
+}
+
+it("should match guard with zero check") {
+    let x = 0;
+    let result = match (x) {
+        n if n < 0 => -1,
+        n if n > 0 => 1,
+        0 => 0,
+        _ => -999,
+    };
+    assert(result == 0);
+}
+
+it("should match first satisfied guard") {
+    let x = 10;
+    let result = match (x) {
+        n if n > 5 => 1,
+        n if n > 0 => 2,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should use captured variable in guard") {
+    let x = 20;
+    let threshold = 15;
+    let result = match (x) {
+        n if n > threshold => 1,
+        n if n == threshold => 0,
+        _ => -1,
+    };
+    assert(result == 1);
+}
+
+// ============================================================================
+// STRUCT DESTRUCTURING IN MATCH
+// ============================================================================
+
+struct Point { x: i32, y: i32 }
+
+it("should destructure struct in match") {
+    let p = Point { x: 10, y: 20 };
+    let result = match (p) {
+        Point { x: 0, y: 0 } => 0,
+        Point { x: 10, y: 20 } => 1,
+        _ => -1,
+    };
+    assert(result == 1);
+}
+
+it("should capture struct fields in match") {
+    let p = Point { x: 5, y: 7 };
+    let result = match (p) {
+        Point { x, y } => x + y,
+    };
+    assert(result == 12);
+}
+
+it("should destructure with partial match") {
+    let p = Point { x: 10, y: 99 };
+    let result = match (p) {
+        Point { x: 10, y } => y,
+        Point { x, y: 0 } => x,
+        _ => 0,
+    };
+    assert(result == 99);
+}
+
+it("should match struct with guard") {
+    let p = Point { x: 5, y: 10 };
+    let result = match (p) {
+        Point { x, y } if x == y => 0,
+        Point { x, y } if x < y => 1,
+        Point { x, y } if x > y => 2,
+        _ => -1,
+    };
+    assert(result == 1);
+}
+
+it("should match origin point") {
+    let p = Point { x: 0, y: 0 };
+    let result = match (p) {
+        Point { x: 0, y: 0 } => 1,
+        Point { x: 0, y } => 2,
+        Point { x, y: 0 } => 3,
+        _ => 4,
+    };
+    assert(result == 1);
+}
+
+it("should match on x-axis") {
+    let p = Point { x: 5, y: 0 };
+    let result = match (p) {
+        Point { x: 0, y: 0 } => 1,
+        Point { x: 0, y } => 2,
+        Point { x, y: 0 } => 3,
+        _ => 4,
+    };
+    assert(result == 3);
+}
+
+it("should match on y-axis") {
+    let p = Point { x: 0, y: 7 };
+    let result = match (p) {
+        Point { x: 0, y: 0 } => 1,
+        Point { x: 0, y } => 2,
+        Point { x, y: 0 } => 3,
+        _ => 4,
+    };
+    assert(result == 2);
+}
+
+// ============================================================================
+// TUPLE DESTRUCTURING IN MATCH
+// ============================================================================
+
+it("should destructure tuple in match") {
+    let t = (1, 2);
+    let result = match (t) {
+        (0, 0) => 0,
+        (1, 2) => 1,
+        _ => -1,
+    };
+    assert(result == 1);
+}
+
+it("should capture tuple elements") {
+    let t = (10, 20);
+    let result = match (t) {
+        (a, b) => a + b,
+    };
+    assert(result == 30);
+}
+
+it("should match tuple with partial pattern") {
+    let t = (5, 100);
+    let result = match (t) {
+        (5, x) => x,
+        (x, 5) => x,
+        _ => 0,
+    };
+    assert(result == 100);
+}
+
+it("should match tuple with guard") {
+    let t = (3, 7);
+    let result = match (t) {
+        (a, b) if a + b > 10 => 2,
+        (a, b) if a + b == 10 => 1,
+        (a, b) if a + b < 10 => 0,
+        _ => -1,
+    };
+    assert(result == 0);
+}
+
+it("should match nested tuple") {
+    let t = ((1, 2), 3);
+    let result = match (t) {
+        ((1, 2), 3) => 1,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should capture from nested tuple") {
+    let t = ((10, 20), 30);
+    let result = match (t) {
+        ((a, b), c) => a + b + c,
+    };
+    assert(result == 60);
+}
+
+// ============================================================================
+// ARRAY PATTERN MATCHING
+// ============================================================================
+
+it("should match empty array") {
+    let arr: [i32] = [];
+    let result = match (arr) {
+        [] => 0,
+        _ => 1,
+    };
+    assert(result == 0);
+}
+
+it("should match single element array") {
+    let arr = [42];
+    let result = match (arr) {
+        [] => 0,
+        [x] => x,
+        _ => -1,
+    };
+    assert(result == 42);
+}
+
+it("should match array with two elements") {
+    let arr = [1, 2];
+    let result = match (arr) {
+        [] => 0,
+        [x] => x,
+        [x, y] => x + y,
+        _ => -1,
+    };
+    assert(result == 3);
+}
+
+it("should match array head and rest") {
+    let arr = [1, 2, 3, 4];
+    let result = match (arr) {
+        [] => 0,
+        [head, ..rest] => head,
+    };
+    assert(result == 1);
+}
+
+it("should match array with specific values") {
+    let arr = [1, 2, 3];
+    let result = match (arr) {
+        [1, 2, 3] => 1,
+        [1, 2, x] => 2,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+// ============================================================================
+// OR PATTERNS
+// ============================================================================
+
+it("should match with or pattern") {
+    let x = 2;
+    let result = match (x) {
+        1 | 2 | 3 => 1,
+        4 | 5 | 6 => 2,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should match last or alternative") {
+    let x = 6;
+    let result = match (x) {
+        1 | 2 | 3 => 1,
+        4 | 5 | 6 => 2,
+        _ => 0,
+    };
+    assert(result == 2);
+}
+
+it("should not match or pattern") {
+    let x = 10;
+    let result = match (x) {
+        1 | 2 | 3 => 1,
+        4 | 5 | 6 => 2,
+        _ => 0,
+    };
+    assert(result == 0);
+}
+
+it("should match negative or pattern") {
+    let x = -2;
+    let result = match (x) {
+        -3 | -2 | -1 => 1,
+        0 => 2,
+        1 | 2 | 3 => 3,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+// ============================================================================
+// RANGE PATTERNS
+// ============================================================================
+
+it("should match inclusive range pattern") {
+    let x = 5;
+    let result = match (x) {
+        1..=3 => 1,
+        4..=6 => 2,
+        7..=9 => 3,
+        _ => 0,
+    };
+    assert(result == 2);
+}
+
+it("should match range start") {
+    let x = 1;
+    let result = match (x) {
+        1..=5 => 1,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should match range end") {
+    let x = 5;
+    let result = match (x) {
+        1..=5 => 1,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should not match outside range") {
+    let x = 10;
+    let result = match (x) {
+        1..=5 => 1,
+        _ => 0,
+    };
+    assert(result == 0);
+}
+
+it("should match negative range") {
+    let x = -3;
+    let result = match (x) {
+        -5..=-1 => 1,
+        0..=5 => 2,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+// ============================================================================
+// ENUM VARIANT DESTRUCTURING
+// ============================================================================
+
+enum Message {
+    Quit,
+    Move { x: i32, y: i32 },
+    Write(string),
+    ChangeColor(i32, i32, i32)
+}
+
+it("should match unit enum variant") {
+    let msg: Message = Message.Quit;
+    let result = match (msg) {
+        Message.Quit => 0,
+        Message.Move { x, y } => 1,
+        Message.Write(s) => 2,
+        Message.ChangeColor(r, g, b) => 3,
+    };
+    assert(result == 0);
+}
+
+it("should match struct-like enum variant") {
+    let msg: Message = Message.Move { x: 10, y: 20 };
+    let result = match (msg) {
+        Message.Quit => 0,
+        Message.Move { x, y } => x + y,
+        Message.Write(s) => 0,
+        Message.ChangeColor(r, g, b) => 0,
+    };
+    assert(result == 30);
+}
+
+it("should match tuple enum variant single value") {
+    let msg: Message = Message.Write("hello");
+    let result = match (msg) {
+        Message.Quit => 0,
+        Message.Move { x, y } => 0,
+        Message.Write(s) => s.len(),
+        Message.ChangeColor(r, g, b) => 0,
+    };
+    assert(result == 5);
+}
+
+it("should match tuple enum variant multiple values") {
+    let msg: Message = Message.ChangeColor(255, 128, 0);
+    let result = match (msg) {
+        Message.Quit => 0,
+        Message.Move { x, y } => 0,
+        Message.Write(s) => 0,
+        Message.ChangeColor(r, g, b) => r + g + b,
+    };
+    assert(result == 383);
+}
+
+// ============================================================================
+// DEEPLY NESTED PATTERN MATCHING
+// ============================================================================
+
+enum NestedOpt {
+    Some(Option),
+    None
+}
+
+it("should match deeply nested enum") {
+    let nested: NestedOpt = NestedOpt.Some(Option.Some(42));
+    let result = match (nested) {
+        NestedOpt.Some(Option.Some(x)) => x,
+        NestedOpt.Some(Option.None) => -1,
+        NestedOpt.None => -2,
+    };
+    assert(result == 42);
+}
+
+it("should match inner None") {
+    let nested: NestedOpt = NestedOpt.Some(Option.None);
+    let result = match (nested) {
+        NestedOpt.Some(Option.Some(x)) => x,
+        NestedOpt.Some(Option.None) => -1,
+        NestedOpt.None => -2,
+    };
+    assert(result == -1);
+}
+
+it("should match outer None") {
+    let nested: NestedOpt = NestedOpt.None;
+    let result = match (nested) {
+        NestedOpt.Some(Option.Some(x)) => x,
+        NestedOpt.Some(Option.None) => -1,
+        NestedOpt.None => -2,
+    };
+    assert(result == -2);
+}
+
+// ============================================================================
+// MATCH IN COMPLEX EXPRESSIONS
+// ============================================================================
+
+fn categorize(value: i32): string {
+    return match (value) {
+        n if n < 0 => "negative",
+        0 => "zero",
+        n if n > 0 and n <= 10 => "small",
+        n if n > 10 and n <= 100 => "medium",
+        _ => "large",
+    };
+}
+
+it("should categorize negative") {
+    assert(categorize(-5) == "negative");
+}
+
+it("should categorize zero") {
+    assert(categorize(0) == "zero");
+}
+
+it("should categorize small") {
+    assert(categorize(5) == "small");
+}
+
+it("should categorize medium") {
+    assert(categorize(50) == "medium");
+}
+
+it("should categorize large") {
+    assert(categorize(1000) == "large");
+}
+
+// ============================================================================
+// BINDING WITH @
+// ============================================================================
+
+it("should bind entire pattern with @") {
+    let p = Point { x: 5, y: 10 };
+    let result = match (p) {
+        whole @ Point { x, y } if x + y > 10 => whole.x * whole.y,
+        _ => 0,
+    };
+    assert(result == 50);
+}
+
+it("should use @ binding in simple pattern") {
+    let x = 42;
+    let result = match (x) {
+        n @ 1..=50 => n * 2,
+        n @ 51..=100 => n,
+        _ => 0,
+    };
+    assert(result == 84);
+}
+
+// ============================================================================
+// STRING PATTERN MATCHING
+// ============================================================================
+
+it("should match string literals") {
+    let s = "hello";
+    let result = match (s) {
+        "hello" => 1,
+        "world" => 2,
+        _ => 0,
+    };
+    assert(result == 1);
+}
+
+it("should match empty string") {
+    let s = "";
+    let result = match (s) {
+        "" => 0,
+        "a" => 1,
+        _ => 2,
+    };
+    assert(result == 0);
+}
+
+it("should match with string guard") {
+    let s = "test";
+    let result = match (s) {
+        x if x.len() > 5 => 1,
+        x if x.len() > 0 => 2,
+        _ => 0,
+    };
+    assert(result == 2);
+}
+

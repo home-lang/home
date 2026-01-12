@@ -690,3 +690,321 @@ it("should not modify original array with sort") {
     assert(sorted[0] == 1);
 }
 
+// ============================================================================
+// INDEX_OF METHOD
+// ============================================================================
+
+it("should find index of element") {
+    let arr = [10, 20, 30, 40, 50];
+    assert(arr.index_of(30) == 2);
+}
+
+it("should return -1 when element not found") {
+    let arr = [10, 20, 30];
+    assert(arr.index_of(99) == -1);
+}
+
+it("should find index of first occurrence") {
+    let arr = [1, 2, 3, 2, 1];
+    assert(arr.index_of(2) == 1);
+}
+
+it("should find index in single element array") {
+    let arr = [42];
+    assert(arr.index_of(42) == 0);
+    assert(arr.index_of(99) == -1);
+}
+
+it("should return -1 for empty array") {
+    let arr: [i32] = [];
+    assert(arr.index_of(1) == -1);
+}
+
+// ============================================================================
+// LAST_INDEX_OF METHOD
+// ============================================================================
+
+it("should find last index of element") {
+    let arr = [1, 2, 3, 2, 1];
+    assert(arr.last_index_of(2) == 3);
+}
+
+it("should return -1 when not found for last_index_of") {
+    let arr = [1, 2, 3];
+    assert(arr.last_index_of(99) == -1);
+}
+
+// ============================================================================
+// ENUMERATE METHOD
+// ============================================================================
+
+it("should enumerate array with index") {
+    let arr = ["a", "b", "c"];
+    let enumerated = arr.enumerate();
+    assert(enumerated[0][0] == 0);
+    assert(enumerated[0][1] == "a");
+    assert(enumerated[1][0] == 1);
+    assert(enumerated[1][1] == "b");
+    assert(enumerated[2][0] == 2);
+    assert(enumerated[2][1] == "c");
+}
+
+it("should enumerate empty array") {
+    let arr: [i32] = [];
+    let enumerated = arr.enumerate();
+    assert(enumerated.len() == 0);
+}
+
+// ============================================================================
+// ZIP METHOD
+// ============================================================================
+
+it("should zip two arrays") {
+    let a = [1, 2, 3];
+    let b = ["a", "b", "c"];
+    let zipped = a.zip(b);
+    assert(zipped.len() == 3);
+    assert(zipped[0][0] == 1);
+    assert(zipped[0][1] == "a");
+}
+
+it("should zip arrays of different lengths") {
+    let a = [1, 2, 3, 4, 5];
+    let b = ["a", "b"];
+    let zipped = a.zip(b);
+    assert(zipped.len() == 2);
+}
+
+// ============================================================================
+// PARTITION METHOD
+// ============================================================================
+
+it("should partition array by predicate") {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let parts = arr.partition(|x| x % 2 == 0);
+    let evens = parts[0];
+    let odds = parts[1];
+    assert(evens.len() == 3);
+    assert(odds.len() == 3);
+}
+
+// ============================================================================
+// CHUNK METHOD
+// ============================================================================
+
+it("should chunk array into groups") {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let chunks = arr.chunk(2);
+    assert(chunks.len() == 3);
+    assert(chunks[0].len() == 2);
+    assert(chunks[0][0] == 1);
+    assert(chunks[0][1] == 2);
+}
+
+it("should chunk with remainder") {
+    let arr = [1, 2, 3, 4, 5];
+    let chunks = arr.chunk(2);
+    assert(chunks.len() == 3);
+    assert(chunks[2].len() == 1);
+}
+
+// ============================================================================
+// GROUP_BY METHOD
+// ============================================================================
+
+it("should group array by key") {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let groups = arr.group_by(|x| x % 2);
+    assert(groups.len() == 2);
+}
+
+// ============================================================================
+// FIND_INDEX METHOD
+// ============================================================================
+
+it("should find index with predicate") {
+    let arr = [1, 2, 3, 4, 5];
+    let idx = arr.find_index(|x| x > 3);
+    assert(idx == 3);
+}
+
+it("should return -1 when predicate never matches") {
+    let arr = [1, 2, 3];
+    let idx = arr.find_index(|x| x > 10);
+    assert(idx == -1);
+}
+
+// ============================================================================
+// FOLD_RIGHT METHOD
+// ============================================================================
+
+it("should fold from right") {
+    let arr = ["a", "b", "c"];
+    let result = arr.fold_right(|acc, x| acc + x, "");
+    assert(result == "cba");
+}
+
+// ============================================================================
+// FLAT_MAP METHOD
+// ============================================================================
+
+it("should flat map array") {
+    let arr = [1, 2, 3];
+    let result = arr.flat_map(|x| [x, x * 2]);
+    assert(result.len() == 6);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 2);
+    assert(result[3] == 4);
+}
+
+// ============================================================================
+// COMPACT METHOD
+// ============================================================================
+
+it("should remove null values") {
+    let arr = [1, null, 2, null, 3];
+    let compacted = arr.compact();
+    assert(compacted.len() == 3);
+}
+
+// ============================================================================
+// FREQUENCIES METHOD
+// ============================================================================
+
+it("should count element frequencies") {
+    let arr = [1, 2, 2, 3, 3, 3];
+    let freq = arr.frequencies();
+    assert(freq[1] == 1);
+    assert(freq[2] == 2);
+    assert(freq[3] == 3);
+}
+
+// ============================================================================
+// SCAN METHOD
+// ============================================================================
+
+it("should produce running totals") {
+    let arr = [1, 2, 3, 4];
+    let running = arr.scan(|acc, x| acc + x, 0);
+    assert(running[0] == 1);
+    assert(running[1] == 3);
+    assert(running[2] == 6);
+    assert(running[3] == 10);
+}
+
+// ============================================================================
+// WINDOWS METHOD
+// ============================================================================
+
+it("should create sliding windows") {
+    let arr = [1, 2, 3, 4, 5];
+    let windows = arr.windows(3);
+    assert(windows.len() == 3);
+    assert(windows[0][0] == 1);
+    assert(windows[0][2] == 3);
+    assert(windows[1][0] == 2);
+}
+
+// ============================================================================
+// INTERSPERSE METHOD
+// ============================================================================
+
+it("should intersperse separator") {
+    let arr = [1, 2, 3];
+    let result = arr.intersperse(0);
+    assert(result.len() == 5);
+    assert(result[0] == 1);
+    assert(result[1] == 0);
+    assert(result[2] == 2);
+}
+
+// ============================================================================
+// DEDUPLICATE METHOD
+// ============================================================================
+
+it("should remove consecutive duplicates") {
+    let arr = [1, 1, 2, 2, 2, 3, 3, 1];
+    let result = arr.dedup();
+    assert(result.len() == 4);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 3);
+    assert(result[3] == 1);
+}
+
+// ============================================================================
+// SAMPLE METHOD
+// ============================================================================
+
+it("should sample random elements") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let sample = arr.sample(3);
+    assert(sample.len() == 3);
+}
+
+// ============================================================================
+// SHUFFLE METHOD
+// ============================================================================
+
+it("should shuffle array") {
+    let arr = [1, 2, 3, 4, 5];
+    let shuffled = arr.shuffle();
+    assert(shuffled.len() == 5);
+    // Contains same elements
+    assert(shuffled.sum() == 15);
+}
+
+// ============================================================================
+// COMBINATIONS METHOD
+// ============================================================================
+
+it("should generate combinations") {
+    let arr = [1, 2, 3];
+    let combos = arr.combinations(2);
+    assert(combos.len() == 3);
+}
+
+// ============================================================================
+// PERMUTATIONS METHOD
+// ============================================================================
+
+it("should generate permutations") {
+    let arr = [1, 2];
+    let perms = arr.permutations();
+    assert(perms.len() == 2);
+}
+
+// ============================================================================
+// COMPLEX CHAINING SCENARIOS
+// ============================================================================
+
+it("should chain multiple transformations") {
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let result = numbers
+        .filter(|x| x % 2 == 0)
+        .map(|x| x * x)
+        .take(3)
+        .sum();
+    assert(result == 4 + 16 + 36);
+}
+
+it("should chain filter map reduce") {
+    let words = ["hello", "world", "hi", "there"];
+    let total_len = words
+        .filter(|s| s.len() > 2)
+        .map(|s| s.len())
+        .reduce(|acc, x| acc + x, 0);
+    assert(total_len == 5 + 5 + 5);
+}
+
+it("should handle deeply nested chains") {
+    let arr = [[1, 2], [3, 4], [5, 6]];
+    let result = arr
+        .flatten()
+        .filter(|x| x > 2)
+        .map(|x| x * 2)
+        .sum();
+    assert(result == 6 + 8 + 10 + 12);
+}
+

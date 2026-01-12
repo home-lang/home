@@ -1,0 +1,491 @@
+// Destructuring Test Suite
+// Tests destructuring patterns in let bindings, function parameters, and more
+
+// ============================================================================
+// TUPLE DESTRUCTURING
+// ============================================================================
+
+it("should destructure simple tuple") {
+    let (a, b) = (1, 2);
+    assert(a == 1);
+    assert(b == 2);
+}
+
+it("should destructure three element tuple") {
+    let (x, y, z) = (10, 20, 30);
+    assert(x == 10);
+    assert(y == 20);
+    assert(z == 30);
+}
+
+it("should destructure with type annotation") {
+    let (a, b): (i32, i32) = (5, 10);
+    assert(a == 5);
+    assert(b == 10);
+}
+
+it("should destructure mixed types") {
+    let (name, age) = ("Alice", 30);
+    assert(name == "Alice");
+    assert(age == 30);
+}
+
+it("should destructure nested tuple") {
+    let ((a, b), c) = ((1, 2), 3);
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+}
+
+it("should destructure deeply nested tuple") {
+    let (((a, b), c), d) = (((1, 2), 3), 4);
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+    assert(d == 4);
+}
+
+// ============================================================================
+// ARRAY DESTRUCTURING
+// ============================================================================
+
+it("should destructure array") {
+    let [a, b, c] = [1, 2, 3];
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+}
+
+it("should destructure with rest pattern") {
+    let [first, ..rest] = [1, 2, 3, 4, 5];
+    assert(first == 1);
+    assert(rest.len() == 4);
+    assert(rest[0] == 2);
+}
+
+it("should destructure with middle rest") {
+    let [first, ..middle, last] = [1, 2, 3, 4, 5];
+    assert(first == 1);
+    assert(middle.len() == 3);
+    assert(last == 5);
+}
+
+it("should destructure with leading rest") {
+    let [..init, last] = [1, 2, 3, 4, 5];
+    assert(init.len() == 4);
+    assert(last == 5);
+}
+
+it("should destructure empty array rest") {
+    let [a, b, ..rest] = [1, 2];
+    assert(a == 1);
+    assert(b == 2);
+    assert(rest.len() == 0);
+}
+
+// ============================================================================
+// STRUCT DESTRUCTURING
+// ============================================================================
+
+struct Point { x: i32, y: i32 }
+
+it("should destructure struct") {
+    let Point { x, y } = Point { x: 10, y: 20 };
+    assert(x == 10);
+    assert(y == 20);
+}
+
+it("should destructure struct with renaming") {
+    let Point { x: a, y: b } = Point { x: 5, y: 15 };
+    assert(a == 5);
+    assert(b == 15);
+}
+
+it("should destructure struct partial") {
+    let Point { x, .. } = Point { x: 100, y: 200 };
+    assert(x == 100);
+}
+
+struct Person {
+    name: string,
+    age: i32,
+    city: string
+}
+
+it("should destructure struct with multiple fields") {
+    let Person { name, age, city } = Person { name: "Bob", age: 25, city: "NYC" };
+    assert(name == "Bob");
+    assert(age == 25);
+    assert(city == "NYC");
+}
+
+it("should destructure struct with partial extraction") {
+    let Person { name, .. } = Person { name: "Charlie", age: 30, city: "LA" };
+    assert(name == "Charlie");
+}
+
+it("should destructure struct with renamed partial") {
+    let Person { name: n, age: a, .. } = Person { name: "Dave", age: 35, city: "SF" };
+    assert(n == "Dave");
+    assert(a == 35);
+}
+
+// ============================================================================
+// NESTED STRUCT DESTRUCTURING
+// ============================================================================
+
+struct Rectangle {
+    top_left: Point,
+    bottom_right: Point
+}
+
+it("should destructure nested struct") {
+    let rect = Rectangle {
+        top_left: Point { x: 0, y: 0 },
+        bottom_right: Point { x: 10, y: 10 }
+    };
+    let Rectangle { top_left: Point { x: x1, y: y1 }, bottom_right: Point { x: x2, y: y2 } } = rect;
+    assert(x1 == 0);
+    assert(y1 == 0);
+    assert(x2 == 10);
+    assert(y2 == 10);
+}
+
+it("should destructure nested struct partial") {
+    let rect = Rectangle {
+        top_left: Point { x: 5, y: 5 },
+        bottom_right: Point { x: 15, y: 15 }
+    };
+    let Rectangle { top_left: Point { x, .. }, .. } = rect;
+    assert(x == 5);
+}
+
+// ============================================================================
+// ENUM DESTRUCTURING
+// ============================================================================
+
+enum Option {
+    Some(i32),
+    None
+}
+
+it("should destructure Some variant") {
+    let Option.Some(value) = Option.Some(42);
+    assert(value == 42);
+}
+
+enum Result {
+    Ok(i32),
+    Err(string)
+}
+
+it("should destructure Ok variant") {
+    let Result.Ok(v) = Result.Ok(100);
+    assert(v == 100);
+}
+
+it("should destructure Err variant") {
+    let Result.Err(msg) = Result.Err("error");
+    assert(msg == "error");
+}
+
+enum Message {
+    Move { x: i32, y: i32 },
+    Write(string),
+    Quit
+}
+
+it("should destructure struct-like enum variant") {
+    let Message.Move { x, y } = Message.Move { x: 10, y: 20 };
+    assert(x == 10);
+    assert(y == 20);
+}
+
+it("should destructure tuple enum variant") {
+    let Message.Write(text) = Message.Write("hello");
+    assert(text == "hello");
+}
+
+// ============================================================================
+// FUNCTION PARAMETER DESTRUCTURING
+// ============================================================================
+
+fn point_to_tuple(Point { x, y }: Point): (i32, i32) {
+    return (x, y);
+}
+
+it("should destructure in function parameter") {
+    let result = point_to_tuple(Point { x: 5, y: 10 });
+    assert(result == (5, 10));
+}
+
+fn add_pair((a, b): (i32, i32)): i32 {
+    return a + b;
+}
+
+it("should destructure tuple in function parameter") {
+    assert(add_pair((3, 7)) == 10);
+}
+
+fn process_array([first, second, ..rest]: [i32]): i32 {
+    return first + second + rest.len();
+}
+
+it("should destructure array in function parameter") {
+    assert(process_array([1, 2, 3, 4, 5]) == 6);  // 1 + 2 + 3 (rest length)
+}
+
+fn unwrap_option(Option.Some(value): Option): i32 {
+    return value;
+}
+
+it("should destructure enum in function parameter") {
+    assert(unwrap_option(Option.Some(42)) == 42);
+}
+
+// ============================================================================
+// DESTRUCTURING IN FOR LOOPS
+// ============================================================================
+
+it("should destructure in for loop") {
+    let pairs = [(1, 2), (3, 4), (5, 6)];
+    let mut sum = 0;
+    for ((a, b) in pairs) {
+        sum = sum + a + b;
+    }
+    assert(sum == 21);
+}
+
+it("should destructure struct in for loop") {
+    let points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let mut sum_x = 0;
+    for (Point { x, .. } in points) {
+        sum_x = sum_x + x;
+    }
+    assert(sum_x == 4);
+}
+
+it("should destructure with enumerate") {
+    let arr = ["a", "b", "c"];
+    let mut result = "";
+    for ((i, val) in arr.enumerate()) {
+        result = result + to_string(i) + val;
+    }
+    assert(result == "0a1b2c");
+}
+
+// ============================================================================
+// DESTRUCTURING WITH DEFAULT VALUES
+// ============================================================================
+
+it("should use default value on missing field") {
+    let Point { x, y = 0 } = Point { x: 5, y: 0 };
+    assert(x == 5);
+    assert(y == 0);
+}
+
+it("should override default when value present") {
+    let (a, b = 10) = (1, 2);
+    assert(a == 1);
+    assert(b == 2);
+}
+
+// ============================================================================
+// DESTRUCTURING IN CLOSURE
+// ============================================================================
+
+it("should destructure in closure parameter") {
+    let pairs = [(1, 2), (3, 4), (5, 6)];
+    let sums = pairs.map(|(a, b)| a + b);
+    assert(sums[0] == 3);
+    assert(sums[1] == 7);
+    assert(sums[2] == 11);
+}
+
+it("should destructure struct in closure") {
+    let points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let xs = points.map(|Point { x, .. }| x);
+    assert(xs[0] == 1);
+    assert(xs[1] == 3);
+}
+
+// ============================================================================
+// DESTRUCTURING WITH GUARDS (let-if)
+// ============================================================================
+
+it("should destructure with guard") {
+    let opt = Option.Some(42);
+    if let Option.Some(x) = opt {
+        assert(x == 42);
+    } else {
+        assert(false);
+    }
+}
+
+it("should handle guard failure") {
+    let opt: Option = Option.None;
+    let mut matched = false;
+    if let Option.Some(x) = opt {
+        assert(false);
+    } else {
+        matched = true;
+    }
+    assert(matched);
+}
+
+// ============================================================================
+// COMPLEX DESTRUCTURING PATTERNS
+// ============================================================================
+
+struct Order {
+    id: i32,
+    items: [string],
+    customer: Person
+}
+
+it("should destructure complex nested structure") {
+    let order = Order {
+        id: 123,
+        items: ["item1", "item2"],
+        customer: Person { name: "Eve", age: 28, city: "Boston" }
+    };
+    let Order { id, items: [first, ..], customer: Person { name, .. } } = order;
+    assert(id == 123);
+    assert(first == "item1");
+    assert(name == "Eve");
+}
+
+// ============================================================================
+// DESTRUCTURING WITH MUTABLE BINDING
+// ============================================================================
+
+it("should destructure into mutable bindings") {
+    let (mut a, mut b) = (1, 2);
+    a = a + 10;
+    b = b + 20;
+    assert(a == 11);
+    assert(b == 22);
+}
+
+it("should destructure struct into mutable bindings") {
+    let Point { x: mut px, y: mut py } = Point { x: 5, y: 10 };
+    px = px * 2;
+    py = py * 2;
+    assert(px == 10);
+    assert(py == 20);
+}
+
+// ============================================================================
+// REFUTABLE VS IRREFUTABLE PATTERNS
+// ============================================================================
+
+it("should handle irrefutable tuple destructuring") {
+    let pair = (1, 2);
+    let (a, b) = pair;  // Irrefutable - always succeeds
+    assert(a == 1);
+    assert(b == 2);
+}
+
+it("should handle refutable enum destructuring with if-let") {
+    let value = Result.Ok(42);
+    if let Result.Ok(n) = value {
+        assert(n == 42);
+    }
+}
+
+it("should handle refutable with else") {
+    let value = Result.Err("error");
+    let num = if let Result.Ok(n) = value { n } else { -1 };
+    assert(num == -1);
+}
+
+// ============================================================================
+// IGNORE PATTERNS
+// ============================================================================
+
+it("should use underscore to ignore") {
+    let (_, b, _) = (1, 2, 3);
+    assert(b == 2);
+}
+
+it("should use underscore prefix for unused") {
+    let (_unused, used) = (100, 200);
+    assert(used == 200);
+}
+
+it("should ignore multiple elements with ..") {
+    let [first, .., last] = [1, 2, 3, 4, 5];
+    assert(first == 1);
+    assert(last == 5);
+}
+
+// ============================================================================
+// DESTRUCTURING EDGE CASES
+// ============================================================================
+
+it("should destructure single element tuple") {
+    let (a,) = (42,);
+    assert(a == 42);
+}
+
+it("should destructure single element array") {
+    let [x] = [100];
+    assert(x == 100);
+}
+
+it("should destructure with nested ignore") {
+    let ((_, b), _) = ((1, 2), 3);
+    assert(b == 2);
+}
+
+it("should destructure zero values") {
+    let (a, b) = (0, 0);
+    assert(a == 0);
+    assert(b == 0);
+}
+
+it("should destructure negative values") {
+    let (a, b) = (-10, -20);
+    assert(a == -10);
+    assert(b == -20);
+}
+
+// ============================================================================
+// DESTRUCTURING IN ASSIGNMENT
+// ============================================================================
+
+it("should destructure in assignment") {
+    let mut a = 0;
+    let mut b = 0;
+    (a, b) = (10, 20);
+    assert(a == 10);
+    assert(b == 20);
+}
+
+it("should swap with destructuring") {
+    let mut x = 1;
+    let mut y = 2;
+    (x, y) = (y, x);
+    assert(x == 2);
+    assert(y == 1);
+}
+
+// ============================================================================
+// DESTRUCTURING WITH TYPE INFERENCE
+// ============================================================================
+
+it("should infer types in destructuring") {
+    let arr = [1, 2, 3];
+    let [a, b, c] = arr;
+    assert(a + b + c == 6);
+}
+
+it("should infer complex types") {
+    let data = [("a", 1), ("b", 2)];
+    let [(k1, v1), (k2, v2)] = data;
+    assert(k1 == "a");
+    assert(v1 == 1);
+    assert(k2 == "b");
+    assert(v2 == 2);
+}
+

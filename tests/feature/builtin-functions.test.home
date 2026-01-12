@@ -1,0 +1,379 @@
+// Builtin Functions Test Suite
+// Tests for global builtin functions
+
+// ============================================================================
+// PRINT FUNCTION
+// ============================================================================
+
+it("should print string") {
+    print("hello");
+    assert(true);
+}
+
+it("should print integer") {
+    print(42);
+    assert(true);
+}
+
+it("should print float") {
+    print(3.14);
+    assert(true);
+}
+
+it("should print boolean") {
+    print(true);
+    print(false);
+    assert(true);
+}
+
+it("should print array") {
+    print([1, 2, 3]);
+    assert(true);
+}
+
+it("should print multiple values") {
+    print("Value:", 42);
+    assert(true);
+}
+
+it("should print empty string") {
+    print("");
+    assert(true);
+}
+
+it("should print nested array") {
+    print([[1, 2], [3, 4]]);
+    assert(true);
+}
+
+it("should print struct") {
+    struct Point { x: i32, y: i32 }
+    let p = Point { x: 10, y: 20 };
+    print(p);
+    assert(true);
+}
+
+// ============================================================================
+// TYPEOF FUNCTION
+// ============================================================================
+
+it("should get type of integer") {
+    let x = 42;
+    let t = typeof(x);
+    assert(t == "i64" or t == "int" or t == "Int");
+}
+
+it("should get type of string") {
+    let s = "hello";
+    let t = typeof(s);
+    assert(t == "string" or t == "String");
+}
+
+it("should get type of boolean") {
+    let b = true;
+    let t = typeof(b);
+    assert(t == "bool" or t == "Bool");
+}
+
+it("should get type of array") {
+    let arr = [1, 2, 3];
+    let t = typeof(arr);
+    assert(t == "array" or t == "Array" or t == "[i64]");
+}
+
+it("should get type of float") {
+    let f = 3.14;
+    let t = typeof(f);
+    assert(t == "f64" or t == "float" or t == "Float");
+}
+
+// ============================================================================
+// LEN FUNCTION (GLOBAL)
+// ============================================================================
+
+it("should get length of string") {
+    let s = "hello";
+    assert(len(s) == 5);
+}
+
+it("should get length of array") {
+    let arr = [1, 2, 3, 4];
+    assert(len(arr) == 4);
+}
+
+it("should get length of empty string") {
+    let s = "";
+    assert(len(s) == 0);
+}
+
+it("should get length of empty array") {
+    let arr: [i32] = [];
+    assert(len(arr) == 0);
+}
+
+// ============================================================================
+// RANGE FUNCTION
+// ============================================================================
+
+it("should create range with end only") {
+    let r = range(5);
+    let arr = r.to_array();
+    assert(arr.len() == 5);
+    assert(arr[0] == 0);
+    assert(arr[4] == 4);
+}
+
+it("should create range with start and end") {
+    let r = range(2, 5);
+    let arr = r.to_array();
+    assert(arr.len() == 3);
+    assert(arr[0] == 2);
+    assert(arr[2] == 4);
+}
+
+it("should create range with step") {
+    let r = range(0, 10, 2);
+    let arr = r.to_array();
+    assert(arr[0] == 0);
+    assert(arr[1] == 2);
+    assert(arr[2] == 4);
+}
+
+// ============================================================================
+// MIN/MAX GLOBAL FUNCTIONS
+// ============================================================================
+
+it("should find min of two integers") {
+    assert(min(5, 3) == 3);
+    assert(min(10, 20) == 10);
+    assert(min(-5, 5) == -5);
+}
+
+it("should find max of two integers") {
+    assert(max(5, 3) == 5);
+    assert(max(10, 20) == 20);
+    assert(max(-5, 5) == 5);
+}
+
+it("should find min of equal values") {
+    assert(min(7, 7) == 7);
+}
+
+it("should find max of equal values") {
+    assert(max(7, 7) == 7);
+}
+
+it("should find min with negative numbers") {
+    assert(min(-10, -20) == -20);
+}
+
+it("should find max with negative numbers") {
+    assert(max(-10, -20) == -10);
+}
+
+// ============================================================================
+// ABS FUNCTION
+// ============================================================================
+
+it("should get absolute value of positive") {
+    assert(abs(42) == 42);
+}
+
+it("should get absolute value of negative") {
+    assert(abs(-42) == 42);
+}
+
+it("should get absolute value of zero") {
+    assert(abs(0) == 0);
+}
+
+it("should get absolute value of float") {
+    assert(abs(-3.14) == 3.14);
+    assert(abs(3.14) == 3.14);
+}
+
+// ============================================================================
+// CLONE FUNCTION
+// ============================================================================
+
+it("should clone array") {
+    let original = [1, 2, 3];
+    let cloned = clone(original);
+    assert(cloned[0] == 1);
+    assert(cloned[1] == 2);
+    assert(cloned[2] == 3);
+}
+
+it("should clone string") {
+    let original = "hello";
+    let cloned = clone(original);
+    assert(cloned == "hello");
+}
+
+// ============================================================================
+// DEFAULT FUNCTION
+// ============================================================================
+
+it("should get default integer") {
+    let d = default(i32);
+    assert(d == 0);
+}
+
+it("should get default boolean") {
+    let d = default(bool);
+    assert(d == false);
+}
+
+it("should get default string") {
+    let d = default(string);
+    assert(d == "");
+}
+
+// ============================================================================
+// SIZE_OF FUNCTION
+// ============================================================================
+
+it("should get size of i32") {
+    let s = size_of(i32);
+    assert(s == 4);
+}
+
+it("should get size of i64") {
+    let s = size_of(i64);
+    assert(s == 8);
+}
+
+it("should get size of bool") {
+    let s = size_of(bool);
+    assert(s == 1);
+}
+
+// ============================================================================
+// ASSERT FUNCTION VARIATIONS
+// ============================================================================
+
+it("should assert true condition") {
+    assert(true);
+    assert(1 == 1);
+    assert(5 > 3);
+}
+
+it("should assert with message on failure") {
+    // This test just verifies assert with message compiles
+    let x = 42;
+    assert(x == 42, "x should be 42");
+}
+
+it("should assert complex expressions") {
+    let arr = [1, 2, 3];
+    assert(arr.len() == 3);
+    assert(arr[0] + arr[1] == 3);
+}
+
+// ============================================================================
+// TO_STRING CONVERSION
+// ============================================================================
+
+it("should convert int to string") {
+    let s = to_string(42);
+    assert(s == "42");
+}
+
+it("should convert negative int to string") {
+    let s = to_string(-100);
+    assert(s == "-100");
+}
+
+it("should convert bool to string") {
+    assert(to_string(true) == "true");
+    assert(to_string(false) == "false");
+}
+
+it("should convert float to string") {
+    let s = to_string(3.14);
+    assert(s.contains("3.14") or s.contains("3.1"));
+}
+
+// ============================================================================
+// PARSE FUNCTIONS
+// ============================================================================
+
+it("should parse string to int") {
+    let n = parse_int("42");
+    assert(n == 42);
+}
+
+it("should parse negative string to int") {
+    let n = parse_int("-100");
+    assert(n == -100);
+}
+
+it("should parse string to float") {
+    let f = parse_float("3.14");
+    assert(f > 3.13 and f < 3.15);
+}
+
+// ============================================================================
+// TYPE CHECKING FUNCTIONS
+// ============================================================================
+
+it("should check if value is integer") {
+    assert(is_int(42) == true);
+    assert(is_int("hello") == false);
+    assert(is_int(3.14) == false);
+}
+
+it("should check if value is string") {
+    assert(is_string("hello") == true);
+    assert(is_string(42) == false);
+}
+
+it("should check if value is array") {
+    assert(is_array([1, 2, 3]) == true);
+    assert(is_array("hello") == false);
+}
+
+it("should check if value is bool") {
+    assert(is_bool(true) == true);
+    assert(is_bool(false) == true);
+    assert(is_bool(1) == false);
+}
+
+// ============================================================================
+// FLOOR/CEIL/ROUND FUNCTIONS
+// ============================================================================
+
+it("should floor float values") {
+    assert(floor(3.7) == 3);
+    assert(floor(3.2) == 3);
+    assert(floor(-3.2) == -4);
+}
+
+it("should ceil float values") {
+    assert(ceil(3.2) == 4);
+    assert(ceil(3.7) == 4);
+    assert(ceil(-3.7) == -3);
+}
+
+it("should round float values") {
+    assert(round(3.4) == 3);
+    assert(round(3.5) == 4);
+    assert(round(3.6) == 4);
+}
+
+// ============================================================================
+// RANDOM FUNCTIONS
+// ============================================================================
+
+it("should generate random number in range") {
+    let r = random(1, 10);
+    assert(r >= 1);
+    assert(r <= 10);
+}
+
+it("should generate random float between 0 and 1") {
+    let r = random_float();
+    assert(r >= 0.0);
+    assert(r <= 1.0);
+}
+

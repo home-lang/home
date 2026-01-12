@@ -347,3 +347,436 @@ it("should find min with negatives") {
     assert(min_of_pair(p) == -20);
 }
 
+// ============================================================================
+// MULTIPLE TYPE PARAMETERS
+// ============================================================================
+
+struct KeyValue<K, V> {
+    key: K,
+    value: V
+}
+
+it("should create KeyValue with different types") {
+    let kv = KeyValue { key: "name", value: 42 };
+    assert(kv.key == "name");
+    assert(kv.value == 42);
+}
+
+it("should create KeyValue with same types") {
+    let kv = KeyValue { key: 1, value: 2 };
+    assert(kv.key == 1);
+    assert(kv.value == 2);
+}
+
+fn make_kv<K, V>(k: K, v: V): KeyValue<K, V> {
+    return KeyValue { key: k, value: v };
+}
+
+it("should use function with multiple type params") {
+    let kv = make_kv("age", 25);
+    assert(kv.key == "age");
+    assert(kv.value == 25);
+}
+
+it("should use function with multiple type params reversed") {
+    let kv = make_kv(100, "hundred");
+    assert(kv.key == 100);
+    assert(kv.value == "hundred");
+}
+
+fn get_key<K, V>(kv: KeyValue<K, V>): K {
+    return kv.key;
+}
+
+fn get_value<K, V>(kv: KeyValue<K, V>): V {
+    return kv.value;
+}
+
+it("should extract key from KeyValue") {
+    let kv = KeyValue { key: "x", value: 10 };
+    assert(get_key(kv) == "x");
+}
+
+it("should extract value from KeyValue") {
+    let kv = KeyValue { key: "y", value: 20 };
+    assert(get_value(kv) == 20);
+}
+
+// ============================================================================
+// THREE TYPE PARAMETERS
+// ============================================================================
+
+struct Triple3<A, B, C> {
+    first: A,
+    second: B,
+    third: C
+}
+
+it("should create Triple3 with three different types") {
+    let t = Triple3 { first: "hello", second: 42, third: true };
+    assert(t.first == "hello");
+    assert(t.second == 42);
+    assert(t.third == true);
+}
+
+fn make_triple3<A, B, C>(a: A, b: B, c: C): Triple3<A, B, C> {
+    return Triple3 { first: a, second: b, third: c };
+}
+
+it("should use function with three type params") {
+    let t = make_triple3(1.5, "test", 100);
+    assert(t.first == 1.5);
+    assert(t.second == "test");
+    assert(t.third == 100);
+}
+
+// ============================================================================
+// NESTED GENERICS
+// ============================================================================
+
+it("should nest Box in Box") {
+    let inner = Box { value: 42 };
+    let outer = Box { value: inner };
+    assert(outer.value.value == 42);
+}
+
+it("should nest Pair in Box") {
+    let pair = Pair { first: 10, second: 20 };
+    let boxed = Box { value: pair };
+    assert(boxed.value.first == 10);
+    assert(boxed.value.second == 20);
+}
+
+it("should nest Box in Pair") {
+    let box1 = Box { value: 5 };
+    let box2 = Box { value: 10 };
+    let pair = Pair { first: box1, second: box2 };
+    assert(pair.first.value == 5);
+    assert(pair.second.value == 10);
+}
+
+it("should deeply nest generics") {
+    let inner = Box { value: 1 };
+    let middle = Box { value: inner };
+    let outer = Box { value: middle };
+    assert(outer.value.value.value == 1);
+}
+
+// ============================================================================
+// GENERIC CONSTRAINTS
+// ============================================================================
+
+trait Addable {
+    fn add(self, other: Self): Self;
+}
+
+struct Number {
+    value: i32
+}
+
+impl Addable for Number {
+    fn add(self, other: Number): Number {
+        return Number { value: self.value + other.value };
+    }
+}
+
+fn sum_two<T: Addable>(a: T, b: T): T {
+    return a.add(b);
+}
+
+it("should use generic with Addable constraint") {
+    let n1 = Number { value: 10 };
+    let n2 = Number { value: 20 };
+    let result = sum_two(n1, n2);
+    assert(result.value == 30);
+}
+
+trait Printable {
+    fn to_string(self): string;
+}
+
+impl Printable for Number {
+    fn to_string(self): string {
+        return to_string(self.value);
+    }
+}
+
+fn format_value<T: Printable>(val: T): string {
+    return "Value: " + val.to_string();
+}
+
+it("should use generic with Printable constraint") {
+    let n = Number { value: 42 };
+    let s = format_value(n);
+    assert(s.contains("42"));
+}
+
+// ============================================================================
+// MULTIPLE CONSTRAINTS
+// ============================================================================
+
+trait Comparable {
+    fn compare(self, other: Self): i32;
+}
+
+impl Comparable for Number {
+    fn compare(self, other: Number): i32 {
+        if (self.value < other.value) { return -1; }
+        if (self.value > other.value) { return 1; }
+        return 0;
+    }
+}
+
+fn max_value<T: Comparable>(a: T, b: T): T {
+    if (a.compare(b) > 0) {
+        return a;
+    }
+    return b;
+}
+
+it("should use generic with Comparable constraint") {
+    let n1 = Number { value: 15 };
+    let n2 = Number { value: 25 };
+    let result = max_value(n1, n2);
+    assert(result.value == 25);
+}
+
+fn format_max<T: Printable + Comparable>(a: T, b: T): string {
+    let bigger = max_value(a, b);
+    return "Max: " + bigger.to_string();
+}
+
+it("should use generic with multiple constraints") {
+    let n1 = Number { value: 100 };
+    let n2 = Number { value: 50 };
+    let s = format_max(n1, n2);
+    assert(s.contains("100"));
+}
+
+// ============================================================================
+// GENERIC METHODS
+// ============================================================================
+
+struct Container<T> {
+    items: [T],
+    count: i32
+}
+
+impl<T> Container<T> {
+    fn new(): Container<T> {
+        return Container { items: [], count: 0 };
+    }
+
+    fn add(mut self, item: T) {
+        self.items.push(item);
+        self.count = self.count + 1;
+    }
+
+    fn get(self, index: i32): T {
+        return self.items[index];
+    }
+
+    fn size(self): i32 {
+        return self.count;
+    }
+}
+
+it("should use generic impl methods") {
+    let mut c = Container.new();
+    c.add(10);
+    c.add(20);
+    c.add(30);
+    assert(c.size() == 3);
+    assert(c.get(0) == 10);
+    assert(c.get(1) == 20);
+    assert(c.get(2) == 30);
+}
+
+it("should use generic impl with strings") {
+    let mut c = Container.new();
+    c.add("hello");
+    c.add("world");
+    assert(c.size() == 2);
+    assert(c.get(0) == "hello");
+}
+
+// ============================================================================
+// GENERIC TYPE ALIASES
+// ============================================================================
+
+type IntBox = Box<i32>;
+type StringBox = Box<string>;
+type IntPair = Pair<i32>;
+
+it("should use type alias for generic") {
+    let ib: IntBox = Box { value: 42 };
+    assert(ib.value == 42);
+}
+
+it("should use type alias for string generic") {
+    let sb: StringBox = Box { value: "hello" };
+    assert(sb.value == "hello");
+}
+
+it("should use type alias for pair") {
+    let ip: IntPair = Pair { first: 1, second: 2 };
+    assert(ip.first + ip.second == 3);
+}
+
+// ============================================================================
+// GENERIC WITH DEFAULT TYPE
+// ============================================================================
+
+struct Optional<T = i32> {
+    value: T,
+    has_value: bool
+}
+
+it("should use generic with default type") {
+    let opt: Optional = Optional { value: 42, has_value: true };
+    assert(opt.value == 42);
+}
+
+it("should override default type") {
+    let opt: Optional<string> = Optional { value: "hello", has_value: true };
+    assert(opt.value == "hello");
+}
+
+// ============================================================================
+// WHERE CLAUSE CONSTRAINTS
+// ============================================================================
+
+fn process_items<T>(items: [T]): i32
+where T: Comparable {
+    let mut count = 0;
+    for (item in items) {
+        count = count + 1;
+    }
+    return count;
+}
+
+it("should use where clause constraint") {
+    let nums = [Number { value: 1 }, Number { value: 2 }, Number { value: 3 }];
+    assert(process_items(nums) == 3);
+}
+
+fn format_all<T>(items: [T]): string
+where T: Printable {
+    let mut result = "";
+    for (item in items) {
+        result = result + item.to_string() + ",";
+    }
+    return result;
+}
+
+it("should use where clause with Printable") {
+    let nums = [Number { value: 1 }, Number { value: 2 }];
+    let s = format_all(nums);
+    assert(s.contains("1"));
+    assert(s.contains("2"));
+}
+
+// ============================================================================
+// GENERIC ENUMS
+// ============================================================================
+
+enum GenericOption<T> {
+    Some(T),
+    None
+}
+
+it("should create generic enum Some") {
+    let opt: GenericOption<i32> = GenericOption.Some(42);
+    let value = match (opt) {
+        GenericOption.Some(x) => x,
+        GenericOption.None => 0,
+    };
+    assert(value == 42);
+}
+
+it("should create generic enum None") {
+    let opt: GenericOption<i32> = GenericOption.None;
+    let value = match (opt) {
+        GenericOption.Some(x) => x,
+        GenericOption.None => -1,
+    };
+    assert(value == -1);
+}
+
+it("should use generic enum with string") {
+    let opt: GenericOption<string> = GenericOption.Some("hello");
+    let value = match (opt) {
+        GenericOption.Some(s) => s,
+        GenericOption.None => "",
+    };
+    assert(value == "hello");
+}
+
+enum GenericResult<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+it("should create generic result Ok") {
+    let res: GenericResult<i32, string> = GenericResult.Ok(100);
+    let value = match (res) {
+        GenericResult.Ok(x) => x,
+        GenericResult.Err(e) => 0,
+    };
+    assert(value == 100);
+}
+
+it("should create generic result Err") {
+    let res: GenericResult<i32, string> = GenericResult.Err("failed");
+    let is_err = match (res) {
+        GenericResult.Ok(x) => false,
+        GenericResult.Err(e) => true,
+    };
+    assert(is_err == true);
+}
+
+// ============================================================================
+// GENERIC RECURSIVE TYPES
+// ============================================================================
+
+enum List<T> {
+    Cons(T, List<T>),
+    Nil
+}
+
+it("should create recursive generic list") {
+    let list: List<i32> = List.Cons(1, List.Cons(2, List.Cons(3, List.Nil)));
+    let head = match (list) {
+        List.Cons(x, rest) => x,
+        List.Nil => 0,
+    };
+    assert(head == 1);
+}
+
+// ============================================================================
+// GENERIC EDGE CASES
+// ============================================================================
+
+it("should handle empty generic container") {
+    let b = Box { value: 0 };
+    assert(b.value == 0);
+}
+
+it("should handle generic with unit type") {
+    let b = Box { value: () };
+    // Just verify it compiles and works
+    assert(true);
+}
+
+it("should chain generic function calls") {
+    let result = identity(identity(identity(42)));
+    assert(result == 42);
+}
+
+it("should use generics in nested function calls") {
+    let b1 = make_box(10);
+    let b2 = make_box(get_box_value(b1));
+    let b3 = make_box(get_box_value(b2) * 2);
+    assert(b3.value == 20);
+}
+

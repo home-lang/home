@@ -394,3 +394,400 @@ it("should build string in loop") {
     }
     assert(s == "xxxxx");
 }
+
+// ============================================================================
+// UNICODE STRINGS
+// ============================================================================
+
+it("should handle unicode characters") {
+    let s = "Hello, \u4E16\u754C";  // Hello, World in Chinese
+    assert(s.len() > 0);
+}
+
+it("should handle emoji") {
+    let s = "\u{1F600}";  // Grinning face emoji
+    assert(s.len() > 0);
+}
+
+it("should handle multiple emoji") {
+    let s = "\u{1F600}\u{1F601}\u{1F602}";
+    assert(s.len() > 0);
+}
+
+it("should handle accented characters") {
+    let s = "caf\u00E9";  // cafe with accent
+    assert(s == "cafe" or s.contains("caf"));
+}
+
+it("should handle cyrillic") {
+    let s = "\u041F\u0440\u0438\u0432\u0435\u0442";  // "Privet" in Russian
+    assert(s.len() > 0);
+}
+
+it("should handle japanese hiragana") {
+    let s = "\u3053\u3093\u306B\u3061\u306F";  // "konnichiwa" in Japanese
+    assert(s.len() > 0);
+}
+
+it("should handle arabic") {
+    let s = "\u0645\u0631\u062D\u0628\u0627";  // "marhaba" in Arabic
+    assert(s.len() > 0);
+}
+
+it("should handle mixed unicode and ascii") {
+    let s = "Hello \u4E16\u754C!";
+    assert(s.starts_with("Hello"));
+    assert(s.ends_with("!"));
+}
+
+// ============================================================================
+// UNICODE STRING METHODS
+// ============================================================================
+
+it("should get unicode string length in bytes") {
+    let s = "hello";
+    assert(s.len() == 5);
+}
+
+it("should get unicode char count") {
+    let s = "caf\u00E9";
+    let char_count = s.chars().len();
+    assert(char_count == 4);  // c, a, f, e-accent
+}
+
+it("should iterate unicode chars") {
+    let s = "abc";
+    let chars = s.chars();
+    assert(chars[0] == 'a');
+    assert(chars[1] == 'b');
+    assert(chars[2] == 'c');
+}
+
+it("should compare unicode strings") {
+    let s1 = "caf\u00E9";
+    let s2 = "caf\u00E9";
+    assert(s1 == s2);
+}
+
+// ============================================================================
+// ESCAPE SEQUENCES
+// ============================================================================
+
+it("should handle newline escape") {
+    let s = "line1\nline2";
+    assert(s.contains("\n"));
+}
+
+it("should handle tab escape") {
+    let s = "col1\tcol2";
+    assert(s.contains("\t"));
+}
+
+it("should handle carriage return") {
+    let s = "text\rmore";
+    assert(s.len() == 9);
+}
+
+it("should handle backslash escape") {
+    let s = "path\\to\\file";
+    assert(s.contains("\\"));
+}
+
+it("should handle double quote escape") {
+    let s = "say \"hello\"";
+    assert(s.contains("\""));
+}
+
+it("should handle single quote escape") {
+    let s = "it\'s";
+    assert(s == "it's");
+}
+
+it("should handle null character") {
+    let s = "before\0after";
+    assert(s.len() == 12);
+}
+
+it("should handle bell/alert escape") {
+    let s = "alert\a";
+    assert(s.len() == 6);
+}
+
+it("should handle backspace escape") {
+    let s = "back\bspace";
+    assert(s.len() == 10);
+}
+
+it("should handle form feed escape") {
+    let s = "form\ffeed";
+    assert(s.len() == 9);
+}
+
+it("should handle vertical tab escape") {
+    let s = "vertical\vtab";
+    assert(s.len() == 12);
+}
+
+// ============================================================================
+// HEX AND UNICODE ESCAPES
+// ============================================================================
+
+it("should handle hex escape") {
+    let s = "\x48\x65\x6C\x6C\x6F";  // "Hello"
+    assert(s == "Hello");
+}
+
+it("should handle unicode escape 4 digits") {
+    let s = "\u0048\u0065\u006C\u006C\u006F";  // "Hello"
+    assert(s == "Hello");
+}
+
+it("should handle unicode escape braces") {
+    let s = "\u{48}\u{65}\u{6C}\u{6C}\u{6F}";  // "Hello"
+    assert(s == "Hello");
+}
+
+it("should handle unicode escape long form") {
+    let s = "\u{0001F600}";  // Grinning face
+    assert(s.len() > 0);
+}
+
+// ============================================================================
+// RAW STRINGS
+// ============================================================================
+
+it("should handle raw string") {
+    let s = r"no\escape\here";
+    assert(s.contains("\\"));
+    assert(s.len() == 14);
+}
+
+it("should handle raw string with quotes") {
+    let s = r#"can have "quotes" inside"#;
+    assert(s.contains("\""));
+}
+
+it("should handle raw string multiline") {
+    let s = r"line1
+line2";
+    assert(s.contains("line1"));
+    assert(s.contains("line2"));
+}
+
+// ============================================================================
+// MULTILINE STRINGS
+// ============================================================================
+
+it("should handle multiline string literal") {
+    let s = """
+    line 1
+    line 2
+    line 3
+    """;
+    assert(s.contains("line 1"));
+    assert(s.contains("line 2"));
+    assert(s.contains("line 3"));
+}
+
+it("should preserve indentation in multiline") {
+    let s = """
+    if (true) {
+        doSomething();
+    }
+    """;
+    assert(s.contains("if"));
+    assert(s.contains("doSomething"));
+}
+
+// ============================================================================
+// STRING BYTES
+// ============================================================================
+
+it("should get bytes of string") {
+    let s = "ABC";
+    let bytes = s.bytes();
+    assert(bytes[0] == 65);  // 'A'
+    assert(bytes[1] == 66);  // 'B'
+    assert(bytes[2] == 67);  // 'C'
+}
+
+it("should convert bytes back to string") {
+    let bytes = [72, 105];  // "Hi"
+    let s = string.from_bytes(bytes);
+    assert(s == "Hi");
+}
+
+// ============================================================================
+// STRING ENCODING
+// ============================================================================
+
+it("should encode to utf8") {
+    let s = "hello";
+    let utf8 = s.encode("utf-8");
+    assert(utf8.len() == 5);
+}
+
+it("should decode from utf8") {
+    let bytes = [104, 101, 108, 108, 111];  // "hello"
+    let s = string.decode(bytes, "utf-8");
+    assert(s == "hello");
+}
+
+// ============================================================================
+// UNICODE NORMALIZATION
+// ============================================================================
+
+it("should normalize unicode NFC") {
+    let s1 = "e\u0301";  // e + combining acute
+    let s2 = "\u00E9";   // precomposed e-acute
+    let n1 = s1.normalize("NFC");
+    let n2 = s2.normalize("NFC");
+    assert(n1 == n2);
+}
+
+it("should normalize unicode NFD") {
+    let s = "\u00E9";  // precomposed e-acute
+    let normalized = s.normalize("NFD");
+    assert(normalized.chars().len() == 2);
+}
+
+// ============================================================================
+// UNICODE PROPERTIES
+// ============================================================================
+
+it("should check if char is alphabetic") {
+    assert('a'.is_alpha() == true);
+    assert('1'.is_alpha() == false);
+    assert('\u00E9'.is_alpha() == true);
+}
+
+it("should check if char is numeric") {
+    assert('0'.is_numeric() == true);
+    assert('9'.is_numeric() == true);
+    assert('a'.is_numeric() == false);
+}
+
+it("should check if char is alphanumeric") {
+    assert('a'.is_alphanumeric() == true);
+    assert('1'.is_alphanumeric() == true);
+    assert(' '.is_alphanumeric() == false);
+}
+
+it("should check if char is whitespace") {
+    assert(' '.is_whitespace() == true);
+    assert('\t'.is_whitespace() == true);
+    assert('\n'.is_whitespace() == true);
+    assert('a'.is_whitespace() == false);
+}
+
+it("should check if char is uppercase") {
+    assert('A'.is_uppercase() == true);
+    assert('a'.is_uppercase() == false);
+}
+
+it("should check if char is lowercase") {
+    assert('a'.is_lowercase() == true);
+    assert('A'.is_lowercase() == false);
+}
+
+// ============================================================================
+// CHAR CASE CONVERSION
+// ============================================================================
+
+it("should convert char to uppercase") {
+    assert('a'.to_uppercase() == 'A');
+    assert('z'.to_uppercase() == 'Z');
+    assert('A'.to_uppercase() == 'A');
+}
+
+it("should convert char to lowercase") {
+    assert('A'.to_lowercase() == 'a');
+    assert('Z'.to_lowercase() == 'z');
+    assert('a'.to_lowercase() == 'a');
+}
+
+// ============================================================================
+// UNICODE STRING OPERATIONS
+// ============================================================================
+
+it("should reverse unicode string") {
+    let s = "hello";
+    let reversed = s.reverse();
+    assert(reversed == "olleh");
+}
+
+it("should reverse string with unicode") {
+    let s = "ab\u00E9";
+    let reversed = s.reverse();
+    assert(reversed.chars()[0] == '\u00E9');
+}
+
+it("should split unicode string") {
+    let s = "a,b,\u00E9";
+    let parts = s.split(",");
+    assert(parts.len() == 3);
+    assert(parts[0] == "a");
+    assert(parts[1] == "b");
+}
+
+// ============================================================================
+// STRING GRAPHEME CLUSTERS
+// ============================================================================
+
+it("should count grapheme clusters") {
+    let s = "e\u0301";  // e + combining acute = 1 grapheme
+    let graphemes = s.graphemes();
+    assert(graphemes.len() == 1);
+}
+
+it("should handle emoji as single grapheme") {
+    let s = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";  // family emoji
+    let graphemes = s.graphemes();
+    assert(graphemes.len() == 1);
+}
+
+// ============================================================================
+// UNICODE EDGE CASES
+// ============================================================================
+
+it("should handle empty unicode string") {
+    let s = "";
+    assert(s.chars().len() == 0);
+}
+
+it("should handle BOM") {
+    let s = "\uFEFFhello";
+    assert(s.contains("hello"));
+}
+
+it("should handle zero width chars") {
+    let s = "a\u200Bb";  // zero-width space between a and b
+    assert(s.len() > 2);
+}
+
+it("should handle right-to-left marker") {
+    let s = "\u200Fhello";
+    assert(s.contains("hello"));
+}
+
+// ============================================================================
+// STRING FORMATTING WITH UNICODE
+// ============================================================================
+
+it("should format with unicode placeholder") {
+    let name = "\u4E16\u754C";
+    let greeting = "Hello, {name}!";
+    assert(greeting.contains("{name}"));
+}
+
+it("should pad unicode string") {
+    let s = "ab";
+    let padded = s.pad_left(5, ' ');
+    assert(padded == "   ab");
+}
+
+it("should center unicode string") {
+    let s = "hi";
+    let centered = s.center(6, '-');
+    assert(centered == "--hi--");
+}

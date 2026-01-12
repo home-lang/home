@@ -1,0 +1,579 @@
+// Empty Collections Edge Cases Test Suite
+// Tests behavior of all collection operations with empty inputs
+
+// ============================================================================
+// EMPTY ARRAY CREATION
+// ============================================================================
+
+it("should create empty array with type annotation") {
+    let arr: [i32] = [];
+    assert(arr.len() == 0);
+}
+
+it("should create empty string array") {
+    let arr: [string] = [];
+    assert(arr.len() == 0);
+}
+
+it("should create empty nested array") {
+    let arr: [[i32]] = [];
+    assert(arr.len() == 0);
+}
+
+// ============================================================================
+// EMPTY ARRAY PROPERTIES
+// ============================================================================
+
+it("should have zero length") {
+    let arr: [i32] = [];
+    assert(arr.len() == 0);
+}
+
+it("should be empty") {
+    let arr: [i32] = [];
+    assert(arr.is_empty() == true);
+}
+
+it("should not be empty after push") {
+    let mut arr: [i32] = [];
+    arr.push(1);
+    assert(arr.is_empty() == false);
+}
+
+// ============================================================================
+// EMPTY ARRAY ITERATION
+// ============================================================================
+
+it("should iterate empty array zero times") {
+    let arr: [i32] = [];
+    let mut count = 0;
+    for (x in arr) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate with enumerate on empty") {
+    let arr: [i32] = [];
+    let mut count = 0;
+    for ((i, x) in arr.enumerate()) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+// ============================================================================
+// EMPTY ARRAY METHODS
+// ============================================================================
+
+it("should map empty array to empty") {
+    let arr: [i32] = [];
+    let result = arr.map(|x| x * 2);
+    assert(result.len() == 0);
+}
+
+it("should filter empty array to empty") {
+    let arr: [i32] = [];
+    let result = arr.filter(|x| x > 0);
+    assert(result.len() == 0);
+}
+
+it("should reduce empty array to initial") {
+    let arr: [i32] = [];
+    let result = arr.reduce(42, |acc, x| acc + x);
+    assert(result == 42);
+}
+
+it("should fold empty array to initial") {
+    let arr: [i32] = [];
+    let result = arr.fold(100, |acc, x| acc + x);
+    assert(result == 100);
+}
+
+it("should find nothing in empty array") {
+    let arr: [i32] = [];
+    let result = arr.find(|x| x == 1);
+    assert(result == None);
+}
+
+it("should find_index nothing in empty") {
+    let arr: [i32] = [];
+    let result = arr.find_index(|x| x == 1);
+    assert(result == None);
+}
+
+it("should every be true for empty") {
+    let arr: [i32] = [];
+    assert(arr.every(|x| x > 0) == true);
+}
+
+it("should some be false for empty") {
+    let arr: [i32] = [];
+    assert(arr.some(|x| x > 0) == false);
+}
+
+it("should contains be false for empty") {
+    let arr: [i32] = [];
+    assert(arr.contains(1) == false);
+}
+
+it("should reverse empty to empty") {
+    let arr: [i32] = [];
+    let result = arr.reverse();
+    assert(result.len() == 0);
+}
+
+it("should sort empty to empty") {
+    let arr: [i32] = [];
+    let result = arr.sort();
+    assert(result.len() == 0);
+}
+
+it("should first on empty return None") {
+    let arr: [i32] = [];
+    assert(arr.first() == None);
+}
+
+it("should last on empty return None") {
+    let arr: [i32] = [];
+    assert(arr.last() == None);
+}
+
+it("should join empty array") {
+    let arr: [string] = [];
+    assert(arr.join(",") == "");
+}
+
+it("should concat two empty arrays") {
+    let a: [i32] = [];
+    let b: [i32] = [];
+    let result = a.concat(b);
+    assert(result.len() == 0);
+}
+
+it("should concat empty with non-empty") {
+    let a: [i32] = [];
+    let b = [1, 2, 3];
+    let result = a.concat(b);
+    assert(result.len() == 3);
+}
+
+it("should concat non-empty with empty") {
+    let a = [1, 2, 3];
+    let b: [i32] = [];
+    let result = a.concat(b);
+    assert(result.len() == 3);
+}
+
+it("should flat_map empty to empty") {
+    let arr: [i32] = [];
+    let result = arr.flat_map(|x| [x, x]);
+    assert(result.len() == 0);
+}
+
+it("should flatten empty to empty") {
+    let arr: [[i32]] = [];
+    let result = arr.flatten();
+    assert(result.len() == 0);
+}
+
+it("should zip empty arrays") {
+    let a: [i32] = [];
+    let b: [i32] = [];
+    let result = a.zip(b);
+    assert(result.len() == 0);
+}
+
+it("should zip empty with non-empty") {
+    let a: [i32] = [];
+    let b = [1, 2, 3];
+    let result = a.zip(b);
+    assert(result.len() == 0);
+}
+
+it("should take from empty") {
+    let arr: [i32] = [];
+    let result = arr.take(5);
+    assert(result.len() == 0);
+}
+
+it("should skip from empty") {
+    let arr: [i32] = [];
+    let result = arr.skip(5);
+    assert(result.len() == 0);
+}
+
+it("should slice empty array") {
+    let arr: [i32] = [];
+    let result = arr[0..0];
+    assert(result.len() == 0);
+}
+
+it("should chunk empty array") {
+    let arr: [i32] = [];
+    let result = arr.chunk(3);
+    assert(result.len() == 0);
+}
+
+it("should partition empty array") {
+    let arr: [i32] = [];
+    let (evens, odds) = arr.partition(|x| x % 2 == 0);
+    assert(evens.len() == 0);
+    assert(odds.len() == 0);
+}
+
+it("should group_by empty array") {
+    let arr: [i32] = [];
+    let result = arr.group_by(|x| x % 2);
+    assert(result.len() == 0);
+}
+
+it("should dedup empty array") {
+    let arr: [i32] = [];
+    let result = arr.dedup();
+    assert(result.len() == 0);
+}
+
+it("should unique empty array") {
+    let arr: [i32] = [];
+    let result = arr.unique();
+    assert(result.len() == 0);
+}
+
+// ============================================================================
+// EMPTY STRING
+// ============================================================================
+
+it("should have zero length empty string") {
+    let s = "";
+    assert(s.len() == 0);
+}
+
+it("should be empty string") {
+    let s = "";
+    assert(s.is_empty() == true);
+}
+
+it("should split empty string") {
+    let s = "";
+    let parts = s.split(",");
+    assert(parts.len() == 1);
+    assert(parts[0] == "");
+}
+
+it("should trim empty string") {
+    let s = "";
+    assert(s.trim() == "");
+}
+
+it("should uppercase empty string") {
+    let s = "";
+    assert(s.to_upper() == "");
+}
+
+it("should lowercase empty string") {
+    let s = "";
+    assert(s.to_lower() == "");
+}
+
+it("should reverse empty string") {
+    let s = "";
+    assert(s.reverse() == "");
+}
+
+it("should starts_with on empty") {
+    let s = "";
+    assert(s.starts_with("") == true);
+    assert(s.starts_with("a") == false);
+}
+
+it("should ends_with on empty") {
+    let s = "";
+    assert(s.ends_with("") == true);
+    assert(s.ends_with("a") == false);
+}
+
+it("should contains on empty") {
+    let s = "";
+    assert(s.contains("") == true);
+    assert(s.contains("a") == false);
+}
+
+it("should replace in empty string") {
+    let s = "";
+    let result = s.replace("a", "b");
+    assert(result == "");
+}
+
+it("should chars of empty string") {
+    let s = "";
+    let chars = s.chars();
+    assert(chars.len() == 0);
+}
+
+it("should bytes of empty string") {
+    let s = "";
+    let bytes = s.bytes();
+    assert(bytes.len() == 0);
+}
+
+// ============================================================================
+// EMPTY MAP
+// ============================================================================
+
+it("should create empty map") {
+    let map: {string: i32} = {};
+    assert(map.len() == 0);
+}
+
+it("should be empty map") {
+    let map: {string: i32} = {};
+    assert(map.is_empty() == true);
+}
+
+it("should not contain key in empty map") {
+    let map: {string: i32} = {};
+    assert(map.contains_key("test") == false);
+}
+
+it("should get None from empty map") {
+    let map: {string: i32} = {};
+    assert(map.get("test") == None);
+}
+
+it("should keys of empty map") {
+    let map: {string: i32} = {};
+    let keys = map.keys();
+    assert(keys.len() == 0);
+}
+
+it("should values of empty map") {
+    let map: {string: i32} = {};
+    let values = map.values();
+    assert(values.len() == 0);
+}
+
+it("should entries of empty map") {
+    let map: {string: i32} = {};
+    let entries = map.entries();
+    assert(entries.len() == 0);
+}
+
+it("should iterate empty map zero times") {
+    let map: {string: i32} = {};
+    let mut count = 0;
+    for ((k, v) in map) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+// ============================================================================
+// EMPTY SET
+// ============================================================================
+
+it("should create empty set") {
+    let set: {i32} = {};
+    assert(set.len() == 0);
+}
+
+it("should be empty set") {
+    let set: {i32} = {};
+    assert(set.is_empty() == true);
+}
+
+it("should not contain in empty set") {
+    let set: {i32} = {};
+    assert(set.contains(1) == false);
+}
+
+it("should union empty sets") {
+    let a: {i32} = {};
+    let b: {i32} = {};
+    let result = a.union(b);
+    assert(result.len() == 0);
+}
+
+it("should union empty with non-empty") {
+    let a: {i32} = {};
+    let b = {1, 2, 3};
+    let result = a.union(b);
+    assert(result.len() == 3);
+}
+
+it("should intersect empty sets") {
+    let a: {i32} = {};
+    let b: {i32} = {};
+    let result = a.intersection(b);
+    assert(result.len() == 0);
+}
+
+it("should intersect empty with non-empty") {
+    let a: {i32} = {};
+    let b = {1, 2, 3};
+    let result = a.intersection(b);
+    assert(result.len() == 0);
+}
+
+it("should difference empty sets") {
+    let a: {i32} = {};
+    let b: {i32} = {};
+    let result = a.difference(b);
+    assert(result.len() == 0);
+}
+
+it("should is_subset for empty sets") {
+    let a: {i32} = {};
+    let b: {i32} = {};
+    assert(a.is_subset(b) == true);
+}
+
+it("should empty set is subset of any") {
+    let a: {i32} = {};
+    let b = {1, 2, 3};
+    assert(a.is_subset(b) == true);
+}
+
+// ============================================================================
+// EMPTY RANGE
+// ============================================================================
+
+it("should iterate empty range zero times") {
+    let mut count = 0;
+    for (i in 0..0) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should iterate reverse empty range zero times") {
+    let mut count = 0;
+    for (i in 5..5) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should collect empty range to empty array") {
+    let arr = (0..0).collect();
+    assert(arr.len() == 0);
+}
+
+// ============================================================================
+// EMPTY OPTIONAL
+// ============================================================================
+
+it("should None be empty") {
+    let opt: Option<i32> = None;
+    assert(opt.is_none() == true);
+    assert(opt.is_some() == false);
+}
+
+it("should unwrap_or on None") {
+    let opt: Option<i32> = None;
+    assert(opt.unwrap_or(42) == 42);
+}
+
+it("should map None to None") {
+    let opt: Option<i32> = None;
+    let result = opt.map(|x| x * 2);
+    assert(result == None);
+}
+
+// ============================================================================
+// EMPTY RESULT ERR
+// ============================================================================
+
+it("should Err be error") {
+    let result: Result<i32, string> = Err("");
+    assert(result.is_err() == true);
+    assert(result.is_ok() == false);
+}
+
+// ============================================================================
+// EDGE CASES - CONVERTING EMPTY COLLECTIONS
+// ============================================================================
+
+it("should array to set empty") {
+    let arr: [i32] = [];
+    let set = arr.to_set();
+    assert(set.len() == 0);
+}
+
+it("should set to array empty") {
+    let set: {i32} = {};
+    let arr = set.to_array();
+    assert(arr.len() == 0);
+}
+
+it("should array to string empty") {
+    let arr: [string] = [];
+    let s = arr.join("");
+    assert(s == "");
+}
+
+// ============================================================================
+// EDGE CASES - MUTATIONS ON EMPTY
+// ============================================================================
+
+it("should push to empty array") {
+    let mut arr: [i32] = [];
+    arr.push(1);
+    assert(arr.len() == 1);
+    assert(arr[0] == 1);
+}
+
+it("should pop from newly pushed") {
+    let mut arr: [i32] = [];
+    arr.push(42);
+    let val = arr.pop();
+    assert(val == Some(42));
+    assert(arr.len() == 0);
+}
+
+it("should pop from empty return None") {
+    let mut arr: [i32] = [];
+    let val = arr.pop();
+    assert(val == None);
+}
+
+it("should insert into empty map") {
+    let mut map: {string: i32} = {};
+    map.insert("key", 42);
+    assert(map.len() == 1);
+    assert(map["key"] == 42);
+}
+
+it("should add to empty set") {
+    let mut set: {i32} = {};
+    set.add(1);
+    assert(set.len() == 1);
+    assert(set.contains(1) == true);
+}
+
+// ============================================================================
+// EDGE CASES - NESTED EMPTY
+// ============================================================================
+
+it("should create array of empty arrays") {
+    let arr: [[i32]] = [[], [], []];
+    assert(arr.len() == 3);
+    for (inner in arr) {
+        assert(inner.len() == 0);
+    }
+}
+
+it("should flatten array of empty arrays") {
+    let arr = [[], [], []];
+    let result = arr.flatten();
+    assert(result.len() == 0);
+}
+
+it("should map array of empty arrays") {
+    let arr: [[i32]] = [[], [], []];
+    let lengths = arr.map(|inner| inner.len());
+    assert(lengths[0] == 0);
+    assert(lengths[1] == 0);
+    assert(lengths[2] == 0);
+}
+

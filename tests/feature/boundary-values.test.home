@@ -1,0 +1,603 @@
+// Boundary Values Edge Cases Test Suite
+// Tests behavior with min/max values, large numbers, edge cases
+
+// ============================================================================
+// INTEGER BOUNDARIES
+// ============================================================================
+
+it("should handle i32 max value") {
+    let max: i32 = 2147483647;
+    assert(max == 2147483647);
+}
+
+it("should handle i32 min value") {
+    let min: i32 = -2147483648;
+    assert(min == -2147483648);
+}
+
+it("should handle i64 max value") {
+    let max: i64 = 9223372036854775807;
+    assert(max == 9223372036854775807);
+}
+
+it("should handle i64 min value") {
+    let min: i64 = -9223372036854775808;
+    assert(min == -9223372036854775808);
+}
+
+it("should handle u32 max value") {
+    let max: u32 = 4294967295;
+    assert(max == 4294967295);
+}
+
+it("should handle u64 max value") {
+    let max: u64 = 18446744073709551615;
+    assert(max == 18446744073709551615);
+}
+
+it("should handle i8 boundaries") {
+    let max: i8 = 127;
+    let min: i8 = -128;
+    assert(max == 127);
+    assert(min == -128);
+}
+
+it("should handle u8 boundaries") {
+    let max: u8 = 255;
+    let min: u8 = 0;
+    assert(max == 255);
+    assert(min == 0);
+}
+
+it("should handle i16 boundaries") {
+    let max: i16 = 32767;
+    let min: i16 = -32768;
+    assert(max == 32767);
+    assert(min == -32768);
+}
+
+it("should handle u16 boundaries") {
+    let max: u16 = 65535;
+    let min: u16 = 0;
+    assert(max == 65535);
+    assert(min == 0);
+}
+
+// ============================================================================
+// ARITHMETIC AT BOUNDARIES
+// ============================================================================
+
+it("should add small values") {
+    let a: i32 = 1;
+    let b: i32 = 1;
+    assert(a + b == 2);
+}
+
+it("should subtract to zero") {
+    let a: i32 = 100;
+    let b: i32 = 100;
+    assert(a - b == 0);
+}
+
+it("should multiply by zero") {
+    let max: i32 = 2147483647;
+    assert(max * 0 == 0);
+}
+
+it("should divide max by 1") {
+    let max: i32 = 2147483647;
+    assert(max / 1 == 2147483647);
+}
+
+it("should divide max by itself") {
+    let max: i32 = 2147483647;
+    assert(max / max == 1);
+}
+
+it("should modulo at boundary") {
+    let max: i32 = 2147483647;
+    assert(max % 1 == 0);
+    assert(max % max == 0);
+    assert(max % 2 == 1);
+}
+
+it("should negate boundary values") {
+    let x: i32 = 2147483647;
+    assert(-x == -2147483647);
+}
+
+// ============================================================================
+// FLOATING POINT BOUNDARIES
+// ============================================================================
+
+it("should handle f64 positive") {
+    let large: f64 = 1.7976931348623157e308;
+    assert(large > 0.0);
+}
+
+it("should handle f64 small positive") {
+    let small: f64 = 2.2250738585072014e-308;
+    assert(small > 0.0);
+}
+
+it("should handle f64 zero") {
+    let zero: f64 = 0.0;
+    assert(zero == 0.0);
+}
+
+it("should handle f64 negative zero") {
+    let nzero: f64 = -0.0;
+    assert(nzero == 0.0);  // -0.0 == 0.0
+}
+
+it("should handle infinity") {
+    let inf = 1.0 / 0.0;
+    assert(inf > 1e308);
+}
+
+it("should handle negative infinity") {
+    let ninf = -1.0 / 0.0;
+    assert(ninf < -1e308);
+}
+
+it("should detect NaN") {
+    let nan = 0.0 / 0.0;
+    assert(nan != nan);  // NaN != NaN
+}
+
+it("should handle f32 max") {
+    let max: f32 = 3.4028235e38;
+    assert(max > 0.0);
+}
+
+// ============================================================================
+// FLOATING POINT PRECISION
+// ============================================================================
+
+it("should handle precision near zero") {
+    let a = 0.1 + 0.2;
+    assert(a > 0.29);
+    assert(a < 0.31);
+}
+
+it("should handle subtraction precision") {
+    let a = 1.0;
+    let b = 0.9;
+    let diff = a - b;
+    assert(diff > 0.09);
+    assert(diff < 0.11);
+}
+
+it("should handle very small differences") {
+    let a = 1.0000001;
+    let b = 1.0000002;
+    assert(b > a);
+}
+
+// ============================================================================
+// STRING BOUNDARIES
+// ============================================================================
+
+it("should handle very long string") {
+    let mut s = "";
+    for (i in 0..1000) {
+        s = s + "x";
+    }
+    assert(s.len() == 1000);
+}
+
+it("should handle string with max char") {
+    let s = "\u{10FFFF}";
+    assert(s.len() > 0);
+}
+
+it("should handle single char string") {
+    let s = "x";
+    assert(s.len() == 1);
+}
+
+it("should handle string concatenation boundary") {
+    let a = "a".repeat(500);
+    let b = "b".repeat(500);
+    let c = a + b;
+    assert(c.len() == 1000);
+}
+
+// ============================================================================
+// ARRAY BOUNDARIES
+// ============================================================================
+
+it("should handle large array") {
+    let arr = [0; 10000];
+    assert(arr.len() == 10000);
+}
+
+it("should access first element") {
+    let arr = [1, 2, 3];
+    assert(arr[0] == 1);
+}
+
+it("should access last element") {
+    let arr = [1, 2, 3];
+    assert(arr[2] == 3);
+}
+
+it("should handle single element array") {
+    let arr = [42];
+    assert(arr.len() == 1);
+    assert(arr[0] == 42);
+}
+
+it("should handle deeply nested array") {
+    let arr = [[[[1]]]];
+    assert(arr[0][0][0][0] == 1);
+}
+
+// ============================================================================
+// COMPARISON AT BOUNDARIES
+// ============================================================================
+
+it("should compare max values") {
+    let max: i32 = 2147483647;
+    assert(max == max);
+    assert(!(max < max));
+    assert(!(max > max));
+    assert(max <= max);
+    assert(max >= max);
+}
+
+it("should compare min values") {
+    let min: i32 = -2147483648;
+    assert(min == min);
+    assert(!(min < min));
+    assert(!(min > min));
+}
+
+it("should compare max with max-1") {
+    let max: i32 = 2147483647;
+    let prev: i32 = 2147483646;
+    assert(max > prev);
+    assert(prev < max);
+    assert(max != prev);
+}
+
+it("should compare min with min+1") {
+    let min: i32 = -2147483648;
+    let next: i32 = -2147483647;
+    assert(min < next);
+    assert(next > min);
+    assert(min != next);
+}
+
+// ============================================================================
+// LOOP BOUNDARIES
+// ============================================================================
+
+it("should loop zero times") {
+    let mut count = 0;
+    for (i in 0..0) {
+        count = count + 1;
+    }
+    assert(count == 0);
+}
+
+it("should loop once") {
+    let mut count = 0;
+    for (i in 0..1) {
+        count = count + 1;
+    }
+    assert(count == 1);
+}
+
+it("should loop many times") {
+    let mut count = 0;
+    for (i in 0..1000) {
+        count = count + 1;
+    }
+    assert(count == 1000);
+}
+
+it("should while loop boundary") {
+    let mut x = 10;
+    while (x > 0) {
+        x = x - 1;
+    }
+    assert(x == 0);
+}
+
+// ============================================================================
+// RECURSION BOUNDARIES
+// ============================================================================
+
+fn countdown(n: i32): i32 {
+    if (n <= 0) { return 0; }
+    return countdown(n - 1);
+}
+
+it("should handle zero recursion") {
+    assert(countdown(0) == 0);
+}
+
+it("should handle single recursion") {
+    assert(countdown(1) == 0);
+}
+
+it("should handle moderate recursion") {
+    assert(countdown(100) == 0);
+}
+
+// ============================================================================
+// BOOLEAN EDGE CASES
+// ============================================================================
+
+it("should handle true literal") {
+    let b = true;
+    assert(b == true);
+    assert(b != false);
+}
+
+it("should handle false literal") {
+    let b = false;
+    assert(b == false);
+    assert(b != true);
+}
+
+it("should handle boolean negation") {
+    assert(!true == false);
+    assert(!false == true);
+    assert(!!true == true);
+    assert(!!false == false);
+}
+
+it("should handle boolean and") {
+    assert((true and true) == true);
+    assert((true and false) == false);
+    assert((false and true) == false);
+    assert((false and false) == false);
+}
+
+it("should handle boolean or") {
+    assert((true or true) == true);
+    assert((true or false) == true);
+    assert((false or true) == true);
+    assert((false or false) == false);
+}
+
+// ============================================================================
+// BITWISE BOUNDARIES
+// ============================================================================
+
+it("should shift left boundary") {
+    let x: i32 = 1;
+    let shifted = x << 30;
+    assert(shifted == 1073741824);
+}
+
+it("should shift right boundary") {
+    let x: i32 = 2147483647;
+    let shifted = x >> 30;
+    assert(shifted == 1);
+}
+
+it("should bitwise and all ones") {
+    let x: i32 = 2147483647;
+    assert((x & x) == x);
+}
+
+it("should bitwise or with zero") {
+    let x: i32 = 12345;
+    assert((x | 0) == x);
+}
+
+it("should bitwise xor with self") {
+    let x: i32 = 12345;
+    assert((x ^ x) == 0);
+}
+
+// ============================================================================
+// DIVISION EDGE CASES
+// ============================================================================
+
+it("should divide positive by positive") {
+    assert(10 / 3 == 3);
+}
+
+it("should divide negative by positive") {
+    assert(-10 / 3 == -3);
+}
+
+it("should divide positive by negative") {
+    assert(10 / -3 == -3);
+}
+
+it("should divide negative by negative") {
+    assert(-10 / -3 == 3);
+}
+
+it("should modulo positive by positive") {
+    assert(10 % 3 == 1);
+}
+
+it("should modulo negative by positive") {
+    assert(-10 % 3 == -1);
+}
+
+it("should handle 1 / large number") {
+    let large = 1000000;
+    assert(1 / large == 0);
+}
+
+// ============================================================================
+// TYPE CONVERSION BOUNDARIES
+// ============================================================================
+
+it("should convert i32 to i64") {
+    let x: i32 = 2147483647;
+    let y: i64 = x as i64;
+    assert(y == 2147483647);
+}
+
+it("should convert negative i32 to i64") {
+    let x: i32 = -2147483648;
+    let y: i64 = x as i64;
+    assert(y == -2147483648);
+}
+
+it("should convert f64 to i32 truncation") {
+    let x: f64 = 3.9;
+    let y: i32 = x as i32;
+    assert(y == 3);
+}
+
+it("should convert negative f64 to i32") {
+    let x: f64 = -3.9;
+    let y: i32 = x as i32;
+    assert(y == -3);
+}
+
+// ============================================================================
+// OPTION BOUNDARIES
+// ============================================================================
+
+it("should unwrap Some with max value") {
+    let opt = Some(2147483647);
+    assert(opt.unwrap_or(0) == 2147483647);
+}
+
+it("should unwrap Some with min value") {
+    let opt = Some(-2147483648);
+    assert(opt.unwrap_or(0) == -2147483648);
+}
+
+it("should unwrap None with max default") {
+    let opt: Option<i32> = None;
+    assert(opt.unwrap_or(2147483647) == 2147483647);
+}
+
+// ============================================================================
+// RESULT BOUNDARIES
+// ============================================================================
+
+it("should Ok with max value") {
+    let res = Ok(2147483647);
+    assert(res == Ok(2147483647));
+}
+
+it("should Ok with min value") {
+    let res = Ok(-2147483648);
+    assert(res == Ok(-2147483648));
+}
+
+it("should handle error with long message") {
+    let msg = "a".repeat(1000);
+    let res = Err(msg);
+    assert(res.is_err() == true);
+}
+
+// ============================================================================
+// TUPLE BOUNDARIES
+// ============================================================================
+
+it("should create large tuple") {
+    let t = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+    assert(t.0 == 1);
+    assert(t.9 == 10);
+}
+
+it("should create tuple with max values") {
+    let t = (2147483647, -2147483648);
+    assert(t.0 == 2147483647);
+    assert(t.1 == -2147483648);
+}
+
+// ============================================================================
+// MAP/SET BOUNDARIES
+// ============================================================================
+
+it("should create map with many entries") {
+    let mut map: {i32: i32} = {};
+    for (i in 0..100) {
+        map.insert(i, i * 2);
+    }
+    assert(map.len() == 100);
+    assert(map[50] == 100);
+}
+
+it("should create set with many elements") {
+    let mut set: {i32} = {};
+    for (i in 0..100) {
+        set.add(i);
+    }
+    assert(set.len() == 100);
+    assert(set.contains(50) == true);
+}
+
+it("should handle map key with max value") {
+    let mut map: {i32: string} = {};
+    map.insert(2147483647, "max");
+    assert(map[2147483647] == "max");
+}
+
+// ============================================================================
+// STRUCT BOUNDARIES
+// ============================================================================
+
+struct Point { x: i32, y: i32 }
+
+it("should create struct with max values") {
+    let p = Point { x: 2147483647, y: -2147483648 };
+    assert(p.x == 2147483647);
+    assert(p.y == -2147483648);
+}
+
+it("should create struct with zero values") {
+    let p = Point { x: 0, y: 0 };
+    assert(p.x == 0);
+    assert(p.y == 0);
+}
+
+// ============================================================================
+// ENUM BOUNDARIES
+// ============================================================================
+
+enum Value {
+    Int(i32),
+    Float(f64)
+}
+
+it("should create enum with max int") {
+    let v = Value.Int(2147483647);
+    let n = match (v) {
+        Value.Int(x) => x,
+        Value.Float(f) => 0,
+    };
+    assert(n == 2147483647);
+}
+
+it("should create enum with large float") {
+    let v = Value.Float(1e308);
+    let f = match (v) {
+        Value.Int(x) => 0.0,
+        Value.Float(f) => f,
+    };
+    assert(f > 1e307);
+}
+
+// ============================================================================
+// FUNCTION BOUNDARY VALUES
+// ============================================================================
+
+fn identity(x: i32): i32 { return x; }
+
+it("should pass max through function") {
+    assert(identity(2147483647) == 2147483647);
+}
+
+it("should pass min through function") {
+    assert(identity(-2147483648) == -2147483648);
+}
+
+it("should pass zero through function") {
+    assert(identity(0) == 0);
+}
+

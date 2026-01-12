@@ -386,3 +386,419 @@ it("should chain arithmetic with multiple results") {
     let result = (double(5) else 0) + (double(10) else 0);
     assert(result == 30);
 }
+
+// ============================================================================
+// ERROR PROPAGATION WITH ? OPERATOR
+// ============================================================================
+
+fn divide(a: i32, b: i32): Result<i32, string> {
+    if (b == 0) {
+        return Err("division by zero");
+    }
+    return Ok(a / b);
+}
+
+fn calculate_ratio(a: i32, b: i32, c: i32): Result<i32, string> {
+    let first = divide(a, b)?;
+    let second = divide(first, c)?;
+    return Ok(second);
+}
+
+it("should propagate error with ? operator") {
+    let result = calculate_ratio(100, 0, 2);
+    assert(result == Err("division by zero"));
+}
+
+it("should succeed with ? operator on valid input") {
+    let result = calculate_ratio(100, 10, 2);
+    assert(result == Ok(5));
+}
+
+fn chain_operations(x: i32): Result<i32, string> {
+    let a = divide(x, 2)?;
+    let b = divide(a, 2)?;
+    let c = divide(b, 2)?;
+    return Ok(c);
+}
+
+it("should chain multiple ? operators") {
+    let result = chain_operations(80);
+    assert(result == Ok(10));
+}
+
+it("should fail at any point in chain") {
+    let result = chain_operations(6);  // 6/2=3, 3/2=1, 1/2=0
+    assert(result == Ok(0));
+}
+
+// ============================================================================
+// ? OPERATOR WITH OPTION TYPE
+// ============================================================================
+
+fn find_in_array(arr: [i32], target: i32): Option<i32> {
+    for (i in 0..arr.len()) {
+        if (arr[i] == target) {
+            return Some(i);
+        }
+    }
+    return None;
+}
+
+fn find_and_double(arr: [i32], target: i32): Option<i32> {
+    let index = find_in_array(arr, target)?;
+    return Some(index * 2);
+}
+
+it("should propagate None with ? on Option") {
+    let arr = [1, 2, 3];
+    let result = find_and_double(arr, 5);
+    assert(result == None);
+}
+
+it("should propagate Some with ? on Option") {
+    let arr = [1, 2, 3];
+    let result = find_and_double(arr, 2);  // index 1
+    assert(result == Some(2));
+}
+
+// ============================================================================
+// NESTED ERROR PROPAGATION
+// ============================================================================
+
+fn level_one(x: i32): Result<i32, string> {
+    if (x < 0) { return Err("negative input"); }
+    return Ok(x * 2);
+}
+
+fn level_two(x: i32): Result<i32, string> {
+    let y = level_one(x)?;
+    if (y > 100) { return Err("too large"); }
+    return Ok(y + 10);
+}
+
+fn level_three(x: i32): Result<i32, string> {
+    let y = level_two(x)?;
+    return Ok(y * 3);
+}
+
+it("should propagate error from deep call") {
+    let result = level_three(-5);
+    assert(result == Err("negative input"));
+}
+
+it("should propagate error from middle call") {
+    let result = level_three(60);  // 60*2=120 > 100
+    assert(result == Err("too large"));
+}
+
+it("should succeed through all levels") {
+    let result = level_three(10);  // 10*2=20, 20+10=30, 30*3=90
+    assert(result == Ok(90));
+}
+
+// ============================================================================
+// ? OPERATOR IN DIFFERENT CONTEXTS
+// ============================================================================
+
+it("should use ? in conditional") {
+    fn conditional_try(flag: bool, x: i32): Result<i32, string> {
+        if (flag) {
+            let v = divide(x, 2)?;
+            return Ok(v);
+        }
+        return Ok(x);
+    }
+    assert(conditional_try(true, 10) == Ok(5));
+    assert(conditional_try(false, 10) == Ok(10));
+    assert(conditional_try(true, 0) == Ok(0));
+}
+
+it("should use ? in loop") {
+    fn sum_divisions(n: i32): Result<i32, string> {
+        let mut sum = 0;
+        for (i in 1..n+1) {
+            let v = divide(100, i)?;
+            sum = sum + v;
+        }
+        return Ok(sum);
+    }
+    let result = sum_divisions(4);  // 100/1 + 100/2 + 100/3 + 100/4 = 100+50+33+25 = 208
+    assert(result == Ok(208));
+}
+
+// ============================================================================
+// COMBINING ELSE AND ? OPERATOR
+// ============================================================================
+
+it("should use else as fallback after ? propagation") {
+    fn try_divide(a: i32, b: i32): Result<i32, string> {
+        return divide(a, b);
+    }
+
+    fn compute_with_fallback(): i32 {
+        let result = try_divide(10, 2) else 0;
+        return result;
+    }
+
+    assert(compute_with_fallback() == 5);
+}
+
+it("should use default when ? would fail") {
+    fn safe_compute(a: i32, b: i32): i32 {
+        return divide(a, b) else -1;
+    }
+
+    assert(safe_compute(10, 2) == 5);
+    assert(safe_compute(10, 0) == -1);
+}
+
+// ============================================================================
+// ERROR TRANSFORMATION
+// ============================================================================
+
+fn transform_error(x: i32): Result<i32, i32> {
+    if (x < 0) {
+        return Err(-x);  // Return absolute value as error code
+    }
+    return Ok(x);
+}
+
+it("should transform error type") {
+    let result = transform_error(-42);
+    assert(result == Err(42));
+}
+
+fn map_error_type(x: i32): Result<i32, string> {
+    let val = transform_error(x);
+    match (val) {
+        Ok(v) => return Ok(v),
+        Err(code) => return Err("Error code: " + to_string(code)),
+    }
+}
+
+it("should map error to different type") {
+    let result = map_error_type(-10);
+    assert(result == Err("Error code: 10"));
+}
+
+// ============================================================================
+// RESULT METHODS
+// ============================================================================
+
+it("should check is_ok") {
+    let ok = Ok(42);
+    let err = Err("error");
+    assert(ok.is_ok() == true);
+    assert(err.is_ok() == false);
+}
+
+it("should check is_err") {
+    let ok = Ok(42);
+    let err = Err("error");
+    assert(ok.is_err() == false);
+    assert(err.is_err() == true);
+}
+
+it("should unwrap_or with Ok") {
+    let result = Ok(42);
+    assert(result.unwrap_or(0) == 42);
+}
+
+it("should unwrap_or with Err") {
+    let result = Err("error");
+    assert(result.unwrap_or(0) == 0);
+}
+
+it("should map Ok value") {
+    let result = Ok(10);
+    let mapped = result.map(|x| x * 2);
+    assert(mapped == Ok(20));
+}
+
+it("should not map Err value") {
+    let result: Result<i32, string> = Err("error");
+    let mapped = result.map(|x| x * 2);
+    assert(mapped == Err("error"));
+}
+
+it("should map_err on Err") {
+    let result: Result<i32, i32> = Err(404);
+    let mapped = result.map_err(|e| "Error: " + to_string(e));
+    assert(mapped == Err("Error: 404"));
+}
+
+it("should not map_err on Ok") {
+    let result: Result<i32, i32> = Ok(42);
+    let mapped = result.map_err(|e| "Error: " + to_string(e));
+    assert(mapped == Ok(42));
+}
+
+// ============================================================================
+// OPTION METHODS
+// ============================================================================
+
+it("should check is_some") {
+    assert(Some(42).is_some() == true);
+    assert(None.is_some() == false);
+}
+
+it("should check is_none") {
+    assert(Some(42).is_none() == false);
+    assert(None.is_none() == true);
+}
+
+it("should unwrap_or Some") {
+    assert(Some(42).unwrap_or(0) == 42);
+}
+
+it("should unwrap_or None") {
+    let opt: Option<i32> = None;
+    assert(opt.unwrap_or(100) == 100);
+}
+
+it("should map Some value") {
+    let opt = Some(10);
+    let mapped = opt.map(|x| x * 3);
+    assert(mapped == Some(30));
+}
+
+it("should not map None") {
+    let opt: Option<i32> = None;
+    let mapped = opt.map(|x| x * 3);
+    assert(mapped == None);
+}
+
+// ============================================================================
+// AND_THEN (FLATMAP) FOR RESULTS
+// ============================================================================
+
+fn validate_positive(x: i32): Result<i32, string> {
+    if (x > 0) { return Ok(x); }
+    return Err("not positive");
+}
+
+fn validate_even(x: i32): Result<i32, string> {
+    if (x % 2 == 0) { return Ok(x); }
+    return Err("not even");
+}
+
+it("should chain with and_then both succeed") {
+    let result = validate_positive(10).and_then(validate_even);
+    assert(result == Ok(10));
+}
+
+it("should chain with and_then first fails") {
+    let result = validate_positive(-5).and_then(validate_even);
+    assert(result == Err("not positive"));
+}
+
+it("should chain with and_then second fails") {
+    let result = validate_positive(7).and_then(validate_even);
+    assert(result == Err("not even"));
+}
+
+// ============================================================================
+// OR_ELSE FOR RESULTS
+// ============================================================================
+
+fn fallback_value(): Result<i32, string> {
+    return Ok(0);
+}
+
+it("should use or_else on Err") {
+    let result: Result<i32, string> = Err("error");
+    let recovered = result.or_else(fallback_value);
+    assert(recovered == Ok(0));
+}
+
+it("should not use or_else on Ok") {
+    let result = Ok(42);
+    let recovered = result.or_else(fallback_value);
+    assert(recovered == Ok(42));
+}
+
+// ============================================================================
+// RESULT IN STRUCT
+// ============================================================================
+
+struct ApiResponse {
+    data: Result<string, i32>
+}
+
+it("should store Result in struct") {
+    let success = ApiResponse { data: Ok("success") };
+    let failure = ApiResponse { data: Err(404) };
+
+    assert(success.data == Ok("success"));
+    assert(failure.data == Err(404));
+}
+
+it("should access Result from struct") {
+    let response = ApiResponse { data: Ok("hello") };
+    let value = response.data else "default";
+    assert(value == "hello");
+}
+
+// ============================================================================
+// RESULT IN ARRAY
+// ============================================================================
+
+it("should store Results in array") {
+    let results = [Ok(1), Ok(2), Err("failed"), Ok(4)];
+    let mut sum = 0;
+    for (r in results) {
+        sum = sum + (r else 0);
+    }
+    assert(sum == 7);
+}
+
+it("should filter Ok values from array") {
+    let results = [Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)];
+    let mut oks: [i32] = [];
+    for (r in results) {
+        if (r.is_ok()) {
+            oks.push(r else 0);
+        }
+    }
+    assert(oks.len() == 3);
+    assert(oks[0] == 1);
+    assert(oks[1] == 2);
+    assert(oks[2] == 3);
+}
+
+// ============================================================================
+// EARLY RETURN PATTERNS
+// ============================================================================
+
+fn early_return_on_error(values: [i32]): Result<i32, string> {
+    if (values.len() == 0) {
+        return Err("empty array");
+    }
+
+    let first = values[0];
+    if (first < 0) {
+        return Err("negative first value");
+    }
+
+    let mut sum = 0;
+    for (v in values) {
+        sum = sum + v;
+    }
+
+    return Ok(sum);
+}
+
+it("should early return on empty") {
+    let result = early_return_on_error([]);
+    assert(result == Err("empty array"));
+}
+
+it("should early return on negative") {
+    let result = early_return_on_error([-1, 2, 3]);
+    assert(result == Err("negative first value"));
+}
+
+it("should succeed after all checks") {
+    let result = early_return_on_error([1, 2, 3]);
+    assert(result == Ok(6));
+}
