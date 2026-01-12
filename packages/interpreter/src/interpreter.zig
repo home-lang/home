@@ -187,10 +187,10 @@ pub const Interpreter = struct {
                         if (msg == .String) {
                             std.debug.print("Assertion failed: {s}\n", .{msg.String});
                         } else {
-                            std.debug.print("Assertion failed!\n", .{});
+                            self.printAssertionDetails(assert_stmt.condition, env);
                         }
                     } else {
-                        std.debug.print("Assertion failed!\n", .{});
+                        self.printAssertionDetails(assert_stmt.condition, env);
                     }
                     return error.RuntimeError;
                 }
@@ -3900,14 +3900,89 @@ pub const Interpreter = struct {
         }
 
         const value = try self.evaluateExpression(args[0], env);
-        // Arena allocator will clean up
 
         if (!value.isTrue()) {
-            std.debug.print("Assertion failed!\n", .{});
+            self.printAssertionDetails(args[0], env);
             return error.RuntimeError;
         }
 
         return Value.Void;
+    }
+
+    fn printAssertionDetails(self: *Interpreter, expr: *const ast.Expr, env: *Environment) void {
+        switch (expr.*) {
+            .BinaryExpr => |bin| {
+                // Show comparison details for failed assertions
+                const left_val = self.evaluateExpression(bin.left, env) catch null;
+                const right_val = self.evaluateExpression(bin.right, env) catch null;
+
+                std.debug.print("Assertion failed: ", .{});
+                if (left_val) |lv| {
+                    self.printValueForAssert(lv);
+                } else {
+                    std.debug.print("<error>", .{});
+                }
+                std.debug.print(" {s} ", .{@tagName(bin.op)});
+                if (right_val) |rv| {
+                    self.printValueForAssert(rv);
+                } else {
+                    std.debug.print("<error>", .{});
+                }
+                std.debug.print("\n", .{});
+
+                // Show actual values for equality comparisons
+                if (bin.op == .Equal or bin.op == .NotEqual) {
+                    std.debug.print("  Left:  ", .{});
+                    if (left_val) |lv| self.printValueForAssert(lv) else std.debug.print("<error>", .{});
+                    std.debug.print("\n  Right: ", .{});
+                    if (right_val) |rv| self.printValueForAssert(rv) else std.debug.print("<error>", .{});
+                    std.debug.print("\n", .{});
+                }
+            },
+            else => {
+                std.debug.print("Assertion failed!\n", .{});
+            },
+        }
+    }
+
+    fn printValueForAssert(self: *Interpreter, value: Value) void {
+        _ = self;
+        switch (value) {
+            .Int => |v| std.debug.print("{d}", .{v}),
+            .Float => |v| std.debug.print("{d}", .{v}),
+            .Bool => |v| std.debug.print("{}", .{v}),
+            .String => |v| std.debug.print("\"{s}\"", .{v}),
+            .Void => std.debug.print("void", .{}),
+            .Array => |arr| {
+                std.debug.print("[", .{});
+                for (arr, 0..) |elem, idx| {
+                    if (idx > 0) std.debug.print(", ", .{});
+                    if (idx >= 5) {
+                        std.debug.print("... ({d} more)", .{arr.len - 5});
+                        break;
+                    }
+                    switch (elem) {
+                        .Int => |v| std.debug.print("{d}", .{v}),
+                        .String => |v| std.debug.print("\"{s}\"", .{v}),
+                        .Bool => |v| std.debug.print("{}", .{v}),
+                        else => std.debug.print("...", .{}),
+                    }
+                }
+                std.debug.print("]", .{});
+            },
+            .Struct => |s| {
+                std.debug.print("{s} {{ ", .{s.type_name});
+                var iter = s.fields.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) std.debug.print(", ", .{});
+                    first = false;
+                    std.debug.print("{s}: ...", .{entry.key_ptr.*});
+                }
+                std.debug.print(" }}", .{});
+            },
+            else => std.debug.print("<value>", .{}),
+        }
     }
 
     fn applyAddition(self: *Interpreter, left: Value, right: Value) InterpreterError!Value {

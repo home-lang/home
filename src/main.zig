@@ -966,6 +966,8 @@ fn printTestUsage() void {
         \\{s}Options:{s}
         \\  -d, --discover [path]   Discover test files (*.test.home, *.test.hm)
         \\  -v, --verbose           Show detailed test output
+        \\  -b, --bail              Stop on first test failure
+        \\  --timeout <ms>          Set test timeout in milliseconds (default: 5000)
         \\  -h, --help              Show this help message
         \\
         \\{s}Examples:{s}
@@ -974,6 +976,8 @@ fn printTestUsage() void {
         \\  home t --discover               Discover all test files
         \\  home t -d tests/                Discover tests in tests/ directory
         \\  home test src/ -v               Run tests with verbose output
+        \\  home test --bail                Stop on first failure
+        \\  home test --timeout 10000       Set 10 second timeout
         \\
         \\{s}Test File Patterns:{s}
         \\  *.test.home                     Full extension test files
@@ -1195,7 +1199,7 @@ fn shouldSkipDirectory(dirname: []const u8) bool {
     return false;
 }
 
-fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, verbose: bool) !void {
+fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: TestOptions) !void {
     const start_time = std.time.Instant.now() catch null;
 
     std.debug.print("\n{s}Home Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
@@ -1244,16 +1248,27 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, verbose: boo
     var total_tests: usize = 0;
     var failed_file_list = std.ArrayList([]const u8){};
     defer failed_file_list.deinit(allocator);
+    var bailed = false;
 
     for (test_files.items) |file_path| {
         // Run each test file
-        const result = runTestFile(allocator, file_path, verbose);
+        const result = runTestFile(allocator, file_path, options.verbose);
         if (result) |test_count| {
             passed_files += 1;
             total_tests += test_count;
         } else |_| {
             failed_files += 1;
             try failed_file_list.append(allocator, file_path);
+
+            // If bail mode is enabled, stop on first failure
+            if (options.bail) {
+                std.debug.print("\n{s}Bailed!{s} Stopping after first failure (--bail)\n", .{
+                    Color.Yellow.code(),
+                    Color.Reset.code(),
+                });
+                bailed = true;
+                break;
+            }
         }
     }
 
@@ -1270,6 +1285,10 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, verbose: boo
     std.debug.print("\n  Files:  {s}{d} passed{s}", .{ Color.Green.code(), passed_files, Color.Reset.code() });
     if (failed_files > 0) {
         std.debug.print(", {s}{d} failed{s}", .{ Color.Red.code(), failed_files, Color.Reset.code() });
+    }
+    if (bailed) {
+        const skipped = test_files.items.len - passed_files - failed_files;
+        std.debug.print(", {s}{d} skipped{s}", .{ Color.Yellow.code(), skipped, Color.Reset.code() });
     }
     std.debug.print(" ({d} total)\n", .{test_files.items.len});
     std.debug.print("  Tests:  {d} total\n", .{total_tests});
@@ -1383,14 +1402,30 @@ fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8, verbose: boo
     return test_count;
 }
 
-fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
-    // Parse arguments for verbose flag
-    var verbose = false;
-    var path_arg: ?[]const u8 = null;
+/// Test options struct
+const TestOptions = struct {
+    verbose: bool = false,
+    bail: bool = false,
+    timeout_ms: u32 = 5000,
+};
 
-    for (args) |arg| {
+fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    // Parse arguments
+    var options = TestOptions{};
+    var path_arg: ?[]const u8 = null;
+    var i: usize = 0;
+
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
-            verbose = true;
+            options.verbose = true;
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--bail")) {
+            options.bail = true;
+        } else if (std.mem.eql(u8, arg, "--timeout")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                options.timeout_ms = std.fmt.parseInt(u32, args[i], 10) catch 5000;
+            }
         } else if (arg[0] != '-') {
             path_arg = arg;
         }
@@ -1398,7 +1433,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     // If no args, auto-discover and run tests in "tests/" directory
     if (path_arg == null) {
-        try runTestSuite(allocator, "tests", verbose);
+        try runTestSuite(allocator, "tests", options);
         return;
     }
 
@@ -1419,7 +1454,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
     // If it's a directory, run all test files in it
     if (stat.kind == .directory) {
-        try runTestSuite(allocator, file_path, verbose);
+        try runTestSuite(allocator, file_path, options);
         return;
     }
     // Read the file
