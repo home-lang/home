@@ -42,6 +42,22 @@ pub const RangeValue = struct {
     step: i64,
 };
 
+/// Enum variant info for runtime.
+pub const EnumVariantInfo = struct {
+    name: []const u8,
+    has_data: bool,
+};
+
+/// Enum type value at runtime.
+///
+/// Represents an enum type definition that can be used to access variants.
+pub const EnumTypeValue = struct {
+    /// Name of the enum type
+    name: []const u8,
+    /// Variant names and info
+    variants: []const EnumVariantInfo,
+};
+
 /// Runtime value types for the Home interpreter
 ///
 /// MEMORY OWNERSHIP MODEL:
@@ -78,6 +94,8 @@ pub const Value = union(enum) {
     Function: FunctionValue,
     /// Range for iteration
     Range: RangeValue,
+    /// Enum type (for accessing enum variants like Color.Red)
+    EnumType: EnumTypeValue,
     /// Unit/void value (no value)
     Void,
 
@@ -148,6 +166,7 @@ pub const Value = union(enum) {
             .Void => false,
             .Function => true,
             .Range => true,
+            .EnumType => true,
         };
     }
 

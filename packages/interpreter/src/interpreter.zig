@@ -1,7 +1,10 @@
 const std = @import("std");
 const ast = @import("ast");
-pub const Value = @import("value.zig").Value;
-const FunctionValue = @import("value.zig").FunctionValue;
+const value_mod = @import("value.zig");
+pub const Value = value_mod.Value;
+const FunctionValue = value_mod.FunctionValue;
+const EnumVariantInfo = value_mod.EnumVariantInfo;
+const EnumTypeValue = value_mod.EnumTypeValue;
 const Environment = @import("environment.zig").Environment;
 pub const Debugger = @import("debugger.zig").Debugger;
 
@@ -162,6 +165,22 @@ pub const Interpreter = struct {
                 self.return_value = value;
                 return error.Return;
             },
+            .AssertStmt => |assert_stmt| {
+                const condition = try self.evaluateExpression(assert_stmt.condition, env);
+                if (!condition.isTrue()) {
+                    if (assert_stmt.message) |msg_expr| {
+                        const msg = try self.evaluateExpression(msg_expr, env);
+                        if (msg == .String) {
+                            std.debug.print("Assertion failed: {s}\n", .{msg.String});
+                        } else {
+                            std.debug.print("Assertion failed!\n", .{});
+                        }
+                    } else {
+                        std.debug.print("Assertion failed!\n", .{});
+                    }
+                    return error.RuntimeError;
+                }
+            },
             .IfStmt => |if_stmt| {
                 const condition = try self.evaluateExpression(if_stmt.condition, env);
 
@@ -275,6 +294,63 @@ pub const Interpreter = struct {
                 // Struct declarations are type-level constructs
                 // They don't execute any runtime code, just register the type
                 // Type checking already handles this, so we do nothing here
+            },
+            .ConstDecl => {
+                // Constants are handled at compile time - type checking
+                // ensures they are initialized. No runtime action needed
+                // since ConstDecl is void in the Stmt union.
+            },
+            .EnumDecl => |enum_decl| {
+                // Register the enum type in the environment so it can be accessed
+                // like Color.Red
+                const variants = try self.arena.allocator().alloc(value_mod.EnumVariantInfo, enum_decl.variants.len);
+                for (enum_decl.variants, 0..) |variant, i| {
+                    variants[i] = .{
+                        .name = variant.name,
+                        .has_data = variant.data_type != null,
+                    };
+                }
+                const enum_value = Value{
+                    .EnumType = .{
+                        .name = enum_decl.name,
+                        .variants = variants,
+                    },
+                };
+                try env.define(enum_decl.name, enum_value);
+            },
+            .TypeAliasDecl => |_| {
+                // Type aliases are type-level constructs
+                // No runtime action needed
+            },
+            .TraitDecl => |_| {
+                // Trait declarations are type-level constructs
+                // No runtime action needed
+            },
+            .ImplDecl => |_| {
+                // Impl declarations are type-level constructs
+                // No runtime action needed
+            },
+            .MatchStmt => |match_stmt| {
+                // Evaluate the value being matched
+                const match_value = try self.evaluateExpression(match_stmt.value, env);
+
+                // Try each arm in order
+                for (match_stmt.arms) |arm| {
+                    // Check if pattern matches
+                    if (try self.matchPatternNode(arm.pattern, match_value, env)) {
+                        // Check guard if present
+                        if (arm.guard) |guard| {
+                            const guard_result = try self.evaluateExpression(guard, env);
+                            if (!guard_result.isTrue()) {
+                                continue;
+                            }
+                        }
+
+                        // Pattern matched and guard passed (if any), evaluate body
+                        _ = try self.evaluateExpression(arm.body, env);
+                        return;
+                    }
+                }
             },
             .BlockStmt => |block| {
                 var block_env = Environment.init(self.arena.allocator(), env);
@@ -515,6 +591,9 @@ pub const Interpreter = struct {
             .BooleanLiteral => |lit| {
                 return Value{ .Bool = lit.value };
             },
+            .NullLiteral => {
+                return Value.Void;
+            },
             .ArrayLiteral => |array| {
                 var elements = try self.arena.allocator().alloc(Value, array.elements.len);
                 for (array.elements, 0..) |elem, i| {
@@ -618,17 +697,50 @@ pub const Interpreter = struct {
             .MemberExpr => |member| {
                 const object_value = try self.evaluateExpression(member.object, env);
 
-                if (object_value != .Struct) {
-                    std.debug.print("Cannot access member of non-struct value\n", .{});
-                    return error.TypeMismatch;
+                // Handle enum variant access (e.g., Color.Red)
+                if (object_value == .EnumType) {
+                    const enum_type = object_value.EnumType;
+                    // Check if the member is a valid variant
+                    var found_variant: ?EnumVariantInfo = null;
+                    for (enum_type.variants) |variant| {
+                        if (std.mem.eql(u8, variant.name, member.member)) {
+                            found_variant = variant;
+                            break;
+                        }
+                    }
+                    if (found_variant) |variant| {
+                        if (variant.has_data) {
+                            // Variant with data - return a function that creates the variant
+                            // For now, just return a struct representing the variant type
+                            const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                            return Value{ .Struct = .{
+                                .type_name = member.member,
+                                .fields = fields,
+                            } };
+                        } else {
+                            // Simple variant without data - return a struct representing the variant
+                            const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                            return Value{ .Struct = .{
+                                .type_name = member.member,
+                                .fields = fields,
+                            } };
+                        }
+                    }
+                    std.debug.print("Enum '{s}' has no variant '{s}'\n", .{ enum_type.name, member.member });
+                    return error.RuntimeError;
                 }
 
-                if (object_value.Struct.fields.get(member.member)) |field_value| {
-                    return field_value;
+                // Handle struct field access
+                if (object_value == .Struct) {
+                    if (object_value.Struct.fields.get(member.member)) |field_value| {
+                        return field_value;
+                    }
+                    std.debug.print("Struct has no field '{s}'\n", .{member.member});
+                    return error.RuntimeError;
                 }
 
-                std.debug.print("Struct has no field '{s}'\n", .{member.member});
-                return error.RuntimeError;
+                std.debug.print("Cannot access member of non-struct/non-enum value\n", .{});
+                return error.TypeMismatch;
             },
             .TernaryExpr => |ternary| {
                 const condition = try self.evaluateExpression(ternary.condition, env);
@@ -752,6 +864,93 @@ pub const Interpreter = struct {
                     .step = 1,
                 } };
             },
+            .StructLiteral => |struct_lit| {
+                // Create a new struct value with evaluated fields
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+
+                for (struct_lit.fields) |field| {
+                    const field_value = try self.evaluateExpression(field.value, env);
+                    try fields.put(field.name, field_value);
+                }
+
+                return Value{ .Struct = .{
+                    .type_name = struct_lit.type_name,
+                    .fields = fields,
+                } };
+            },
+            .IfExpr => |if_expr| {
+                // Evaluate condition
+                const condition = try self.evaluateExpression(if_expr.condition, env);
+
+                // Return the appropriate branch based on condition
+                if (condition.isTrue()) {
+                    return try self.evaluateExpression(if_expr.then_branch, env);
+                } else {
+                    return try self.evaluateExpression(if_expr.else_branch, env);
+                }
+            },
+            .MatchExpr => |match_expr| {
+                // Evaluate the value being matched
+                const match_value = try self.evaluateExpression(match_expr.value, env);
+
+                // Try each arm in order
+                for (match_expr.arms) |arm| {
+                    // Check if pattern matches
+                    if (try self.matchPattern(arm.pattern, match_value, env)) {
+                        // Check guard if present
+                        if (arm.guard) |guard| {
+                            const guard_result = try self.evaluateExpression(guard, env);
+                            if (!guard_result.isTrue()) {
+                                continue;
+                            }
+                        }
+
+                        // Pattern matched and guard passed (if any), evaluate body
+                        return try self.evaluateExpression(arm.body, env);
+                    }
+                }
+
+                // No pattern matched - return void
+                return Value.Void;
+            },
+            .BlockExpr => |block_expr| {
+                // Create new scope for block
+                var block_env = Environment.init(self.arena.allocator(), env);
+                defer block_env.deinit();
+
+                // Execute all statements except the last
+                if (block_expr.statements.len > 0) {
+                    for (block_expr.statements[0 .. block_expr.statements.len - 1]) |stmt| {
+                        self.executeStatement(stmt, &block_env) catch |err| {
+                            if (err == error.Return) {
+                                if (self.return_value) |rv| {
+                                    return rv;
+                                }
+                                return Value.Void;
+                            }
+                            return err;
+                        };
+                    }
+
+                    // The last "statement" is the block's value - evaluate it as expression if possible
+                    const last_stmt = block_expr.statements[block_expr.statements.len - 1];
+                    if (last_stmt == .ExprStmt) {
+                        return try self.evaluateExpression(last_stmt.ExprStmt, &block_env);
+                    } else {
+                        try self.executeStatement(last_stmt, &block_env);
+                    }
+                }
+
+                return Value.Void;
+            },
+            .ClosureExpr => |_| {
+                // Closures have a different structure (ClosureParam vs Parameter)
+                // and a different body type (ClosureBody vs BlockStmt).
+                // For now, closures are not fully supported at runtime.
+                // Return Void as a placeholder.
+                std.debug.print("Closures are not yet fully implemented in the interpreter\n", .{});
+                return Value.Void;
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -862,10 +1061,46 @@ pub const Interpreter = struct {
     }
 
     fn evaluateCallExpression(self: *Interpreter, call: *ast.CallExpr, env: *Environment) InterpreterError!Value {
-        // Handle method calls (obj.method())
+        // Handle method calls (obj.method()) and enum variant construction
         if (call.callee.* == .MemberExpr) {
             const member = call.callee.MemberExpr;
             const obj_value = try self.evaluateExpression(member.object, env);
+
+            // Handle enum variant construction (e.g., Option.Some(42))
+            if (obj_value == .EnumType) {
+                const enum_type = obj_value.EnumType;
+                // Check if the member is a valid variant
+                var found_variant: ?EnumVariantInfo = null;
+                for (enum_type.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, member.member)) {
+                        found_variant = variant;
+                        break;
+                    }
+                }
+                if (found_variant) |variant| {
+                    if (variant.has_data and call.args.len > 0) {
+                        // Create a struct representing the enum variant with data
+                        var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                        // Store the first argument as the payload
+                        const arg_value = try self.evaluateExpression(call.args[0], env);
+                        try fields.put("value", arg_value);
+                        try fields.put("0", arg_value); // Also store with index for pattern matching
+                        return Value{ .Struct = .{
+                            .type_name = member.member,
+                            .fields = fields,
+                        } };
+                    } else {
+                        // Variant without data - just return the variant struct
+                        const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                        return Value{ .Struct = .{
+                            .type_name = member.member,
+                            .fields = fields,
+                        } };
+                    }
+                }
+                std.debug.print("Enum '{s}' has no variant '{s}'\n", .{ enum_type.name, member.member });
+                return error.RuntimeError;
+            }
 
             // Handle string methods
             if (obj_value == .String) {
@@ -882,7 +1117,7 @@ pub const Interpreter = struct {
                 return try self.evaluateRangeMethod(obj_value.Range, member.member, call.args, env);
             }
 
-            std.debug.print("Method calls only supported on strings, arrays, and ranges\n", .{});
+            std.debug.print("Method calls only supported on strings, arrays, ranges, and enums\n", .{});
             return error.RuntimeError;
         }
 
@@ -1454,6 +1689,7 @@ pub const Interpreter = struct {
                     std.debug.print("{d}..{d}", .{ r.start, r.end });
                 }
             },
+            .EnumType => |e| std.debug.print("<enum {s}>", .{e.name}),
             .Void => std.debug.print("void", .{}),
         }
     }
@@ -1476,6 +1712,7 @@ pub const Interpreter = struct {
             },
             .Struct => |s| std.debug.print("Struct({s})", .{s.type_name}),
             .Function => |f| std.debug.print("Function({s})", .{f.name}),
+            .EnumType => |e| std.debug.print("EnumType({s})", .{e.name}),
             .Void => std.debug.print("Void", .{}),
         }
     }
@@ -1508,6 +1745,7 @@ pub const Interpreter = struct {
                         std.debug.print("{d}..{d}", .{ r.start, r.end });
                     }
                 },
+                .EnumType => |e| std.debug.print("<enum {s}>", .{e.name}),
                 .Void => std.debug.print("void", .{}),
             }
         }
@@ -1731,6 +1969,10 @@ pub const Interpreter = struct {
                 .Range => |r| return l.start == r.start and l.end == r.end and l.inclusive == r.inclusive and l.step == r.step,
                 else => return false,
             },
+            .EnumType => |l| switch (right) {
+                .EnumType => |r| return std.mem.eql(u8, l.name, r.name),
+                else => return false,
+            },
         }
     }
 
@@ -1833,6 +2075,10 @@ pub const Interpreter = struct {
                     try std.fmt.allocPrint(self.arena.allocator(), "{d}..{d}", .{ r.start, r.end });
                 break :blk str;
             },
+            .EnumType => |e| blk: {
+                const str = try std.fmt.allocPrint(self.arena.allocator(), "<enum {s}>", .{e.name});
+                break :blk str;
+            },
             .Void => "void",
         };
     }
@@ -1877,5 +2123,152 @@ pub const Interpreter = struct {
         // Unlabeled continue or no target - continue innermost loop
         self.continue_target = null;
         return true;
+    }
+
+    /// Match a pattern expression against a value (for MatchExpr)
+    fn matchPattern(self: *Interpreter, pattern: *const ast.Expr, value: Value, env: *Environment) InterpreterError!bool {
+        switch (pattern.*) {
+            .Identifier => |id| {
+                // Wildcard pattern (_) matches anything
+                if (std.mem.eql(u8, id.name, "_")) {
+                    return true;
+                }
+                // Variable binding - bind value to the identifier
+                try env.define(id.name, value);
+                return true;
+            },
+            .IntegerLiteral => |lit| {
+                // Match integer literal
+                if (value == .Int) {
+                    return value.Int == lit.value;
+                }
+                return false;
+            },
+            .BooleanLiteral => |lit| {
+                // Match boolean literal
+                if (value == .Bool) {
+                    return value.Bool == lit.value;
+                }
+                return false;
+            },
+            .StringLiteral => |lit| {
+                // Match string literal
+                if (value == .String) {
+                    return std.mem.eql(u8, value.String, lit.value);
+                }
+                return false;
+            },
+            .MemberExpr => |member| {
+                // Enum variant pattern like Color.Red or Option.Some(x)
+                // For now, match against the member name
+                if (value == .Struct) {
+                    // Check if the struct type matches the pattern
+                    // This is a simplified implementation
+                    return std.mem.eql(u8, value.Struct.type_name, member.member);
+                }
+                // For simple enum variants without data
+                if (value == .String) {
+                    return std.mem.eql(u8, value.String, member.member);
+                }
+                return false;
+            },
+            .CallExpr => |call| {
+                // Enum variant with data like Option.Some(value)
+                // The call.callee should be a MemberExpr
+                if (call.callee.* == .MemberExpr) {
+                    const member = call.callee.MemberExpr;
+                    if (value == .Struct) {
+                        // Check if variant name matches
+                        if (!std.mem.eql(u8, value.Struct.type_name, member.member)) {
+                            return false;
+                        }
+                        // Bind the inner value to the pattern argument
+                        if (call.args.len > 0) {
+                            // Get the inner value from the struct
+                            if (value.Struct.fields.get("0")) |inner_value| {
+                                return try self.matchPattern(call.args[0], inner_value, env);
+                            } else if (value.Struct.fields.get("value")) |inner_value| {
+                                return try self.matchPattern(call.args[0], inner_value, env);
+                            }
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            },
+            else => {
+                // Unknown pattern type - try to evaluate and compare
+                const pattern_value = self.evaluateExpression(pattern, env) catch {
+                    return false;
+                };
+                return try self.areEqual(value, pattern_value);
+            },
+        }
+    }
+
+    /// Match a Pattern node against a value (for MatchStmt)
+    fn matchPatternNode(self: *Interpreter, pattern: *const ast.Pattern, value: Value, env: *Environment) InterpreterError!bool {
+        switch (pattern.*) {
+            .Wildcard => {
+                // Wildcard pattern matches anything
+                return true;
+            },
+            .Identifier => |name| {
+                // Variable binding - bind the matched value to the identifier
+                try env.define(name, value);
+                return true;
+            },
+            .IntLiteral => |lit_value| {
+                // Integer literal pattern
+                if (value == .Int) {
+                    return value.Int == lit_value;
+                }
+                return false;
+            },
+            .FloatLiteral => |lit_value| {
+                // Float literal pattern
+                if (value == .Float) {
+                    return value.Float == lit_value;
+                }
+                return false;
+            },
+            .StringLiteral => |lit_value| {
+                // String literal pattern
+                if (value == .String) {
+                    return std.mem.eql(u8, value.String, lit_value);
+                }
+                return false;
+            },
+            .BoolLiteral => |lit_value| {
+                // Boolean literal pattern
+                if (value == .Bool) {
+                    return value.Bool == lit_value;
+                }
+                return false;
+            },
+            .EnumVariant => |var_pattern| {
+                // Enum variant pattern
+                if (value == .Struct) {
+                    // Check variant name
+                    if (!std.mem.eql(u8, value.Struct.type_name, var_pattern.variant)) {
+                        return false;
+                    }
+                    // Bind payload if present
+                    if (var_pattern.payload) |payload_pattern| {
+                        if (value.Struct.fields.get("0")) |inner_value| {
+                            return try self.matchPatternNode(payload_pattern, inner_value, env);
+                        } else if (value.Struct.fields.get("value")) |inner_value| {
+                            return try self.matchPatternNode(payload_pattern, inner_value, env);
+                        }
+                    }
+                    return true;
+                }
+                return false;
+            },
+            else => {
+                // Other pattern types not yet implemented
+                return false;
+            },
+        }
     }
 };

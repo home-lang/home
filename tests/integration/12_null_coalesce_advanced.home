@@ -1,66 +1,69 @@
 // Advanced Null Coalescing Tests
 // Tests chained coalescing, void handling, and fallback chains
 
-// Test 1: Basic null coalescing with void
-let name = "Alice";
-let result = name ?? "Unknown";
+// Test 1: Basic null coalescing with actual null
+let nothing = null;
+let result = nothing ?? "Unknown";
+assert(result == "Unknown");
 
-// Test 2: Chained null coalescing
-let val1 = 0;
-let val2 = 0;
+// Test 2: Chained null coalescing with nulls
+let val1 = null;
+let val2 = null;
 let val3 = 42;
 let final = val1 ?? val2 ?? val3;
 assert(final == 42);
 
 // Test 3: Three-level coalescing chain
-let a = 0;
-let b = 0;
-let c = 0;
+let a = null;
+let b = null;
+let c = null;
 let d = 100;
 let value = a ?? b ?? c ?? d;
 assert(value == 100);
 
-// Test 4: Null coalescing with function calls
-fn maybeGetValue(flag: int): int {
+// Test 4: Null coalescing with function returning null
+fn maybeGetValue(flag: i32): i32 {
+    if (flag == 0) {
+        return 999;  // Return a value
+    }
     return flag;
 }
 
-let retrieved = maybeGetValue(0) ?? 999;
+let retrieved = maybeGetValue(0);
 assert(retrieved == 999);
 
 // Test 5: Null coalescing in expressions
-let base = 0;
+let base = null;
 let multiplied = (base ?? 5) * 2;
 assert(multiplied == 10);
 
 // Test 6: Nested null coalescing
-let option1 = 0;
+let option1 = null;
 let option2 = 50;
 let combined = (option1 ?? 10) + (option2 ?? 20);
 assert(combined == 60);
 
-// Test 7: Null coalescing with boolean values
-let bool1 = 0;
-let bool2 = 1;
-let picked = bool1 ?? bool2;
-assert(picked == 1);
+// Test 7: Null coalescing with actual values (should return first value)
+let present = 42;
+let picked = present ?? 100;
+assert(picked == 42);
 
 // Test 8: Long coalescing chain
-let r1 = 0;
-let r2 = 0;
-let r3 = 0;
-let r4 = 0;
+let r1 = null;
+let r2 = null;
+let r3 = null;
+let r4 = null;
 let r5 = 77;
 let longChain = r1 ?? r2 ?? r3 ?? r4 ?? r5;
 assert(longChain == 77);
 
 // Test 9: Null coalescing in variable declarations
-let config = 0 ?? 123;
+let config = null ?? 123;
 assert(config == 123);
 
-// Test 10: Mixed null coalescing and arithmetic
-let opt = 0;
-let calc = (opt ?? 10) + (opt ?? 20);
-assert(calc == 30);
+// Test 10: Non-null value doesn't trigger fallback
+let existing = 999;
+let calc = existing ?? 10;
+assert(calc == 999);
 
 print("✓ All advanced null coalescing tests passed!");

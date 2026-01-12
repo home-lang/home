@@ -298,6 +298,26 @@ pub const Parser = struct {
         return self.tokens[self.current + 1];
     }
 
+    /// Check if a token type can start an expression.
+    /// Used to disambiguate ternary (cond ? expr : expr) from try operator (expr?).
+    fn canStartExpression(_: *Parser, token_type: TokenType) bool {
+        return switch (token_type) {
+            // Literals
+            .Integer, .Float, .String, .Char,
+            .True, .False, .Null,
+            // Identifiers
+            .Identifier,
+            // Grouping and collection
+            .LeftParen, .LeftBracket, .LeftBrace,
+            // Prefix operators
+            .Minus, .Bang, .Tilde, .Ampersand, .Star, .DotDot, .DotDotEqual,
+            // Keywords that can start expressions
+            .If, .Match, .Fn, .SelfValue, .Try,
+            => true,
+            else => false,
+        };
+    }
+
     /// Get the most recently consumed token.
     ///
     /// Returns: The token just before the current position
@@ -2817,7 +2837,8 @@ pub const Parser = struct {
                 expr = try self.elvisExpr(expr);
             } else if (self.match(&.{.QuestionBracket})) {
                 expr = try self.safeIndexExpr(expr);
-            } else if (self.check(.Question) and self.peekNext().type == .Colon) {
+            } else if (self.check(.Question) and self.canStartExpression(self.peekNext().type)) {
+                // Ternary: cond ? true_val : false_val
                 _ = self.advance(); // consume '?'
                 expr = try self.ternaryExpr(expr);
             } else if (self.match(&.{.Equal})) {
@@ -3170,6 +3191,26 @@ pub const Parser = struct {
 
         // Parse first expression
         const first_expr = try self.expression();
+
+        // Check if first_expr is already a RangeExpr (e.g., arr[1..3] parsed as arr[(1..3)])
+        // In this case, convert it to a SliceExpr
+        if (first_expr.* == .RangeExpr) {
+            const range = first_expr.RangeExpr;
+            _ = try self.expect(.RightBracket, "Expected ']' after slice");
+
+            const slice_expr = try ast.SliceExpr.init(
+                self.allocator,
+                array,
+                range.start,
+                range.end,
+                range.inclusive,
+                ast.SourceLocation.fromToken(bracket_token),
+            );
+
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .SliceExpr = slice_expr };
+            return result;
+        }
 
         // Check if this is a slice: arr[start..end] or arr[start..=end] or arr[start..]
         if (self.check(.DotDot) or self.check(.DotDotEqual)) {

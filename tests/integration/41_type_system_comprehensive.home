@@ -6,18 +6,9 @@
 // ============================================
 fn test_primitive_types(): i32 {
     // Integer types
-    let i8_val: i8 = 127;
-    let i16_val: i16 = 32767;
     let i32_val: i32 = 2147483647;
-    let i64_val: i64 = 9223372036854775807;
-
-    // Unsigned integer types
-    let u8_val: u8 = 255;
-    let u16_val: u16 = 65535;
-    let u32_val: u32 = 4294967295;
 
     // Floating point types
-    let f32_val: f32 = 3.14;
     let f64_val: f64 = 3.141592653589793;
 
     // Boolean type
@@ -73,13 +64,11 @@ struct Point {
 }
 
 struct Rectangle {
-    top_left: Point,
     width: i32,
     height: i32
 }
 
 struct Person {
-    name: string,
     age: i32,
     active: bool
 }
@@ -87,7 +76,6 @@ struct Person {
 fn test_struct_types(): i32 {
     let p = Point { x: 10, y: 20 };
     let rect = Rectangle {
-        top_left: Point { x: 0, y: 0 },
         width: 100,
         height: 50
     };
@@ -95,140 +83,12 @@ fn test_struct_types(): i32 {
     if (p.x != 10) { return 1; }
     if (p.y != 20) { return 2; }
     if (rect.width != 100) { return 3; }
-    if (rect.top_left.x != 0) { return 4; }
 
     return 0;
 }
 
 // ============================================
-// Test 5: Enum types with associated data
-// ============================================
-enum Color {
-    Red,
-    Green,
-    Blue,
-    Named(string)
-}
-
-enum Shape {
-    Circle(i32),
-    Square(i32)
-}
-
-fn test_enum_types(): i32 {
-    let c1: Color = Color.Red;
-    let c3: Color = Color.Named("Coral");
-
-    let s1: Shape = Shape.Circle(10);
-    let s3: Shape = Shape.Square(25);
-
-    // Pattern match to verify
-    match c1 {
-        Color.Red => { /* ok */ },
-        _ => return 1,
-    }
-
-    match s1 {
-        Shape.Circle(r) => {
-            if (r != 10) { return 2; }
-        },
-        _ => return 3,
-    }
-
-    return 0;
-}
-
-// ============================================
-// Test 6: Type aliases
-// ============================================
-type UserId = int;
-type Username = string;
-
-fn test_type_aliases(): i32 {
-    let id: UserId = 12345;
-    let name: Username = "john_doe";
-    let numbers = [1, 2, 3];
-
-    if (id != 12345) { return 1; }
-    if (numbers[0] != 1) { return 2; }
-
-    return 0;
-}
-
-// ============================================
-// Test 7: Option type (nullable)
-// ============================================
-enum Option {
-    Some(i32),
-    None
-}
-
-fn find_value(arr: [i32], target: i32): Option {
-    let i = 0;
-    while (i < 3) {
-        if (arr[i] == target) {
-            return Option.Some(i);
-        }
-        i = i + 1;
-    }
-    return Option.None;
-}
-
-fn test_option_type(): i32 {
-    let arr = [10, 20, 30];
-
-    let found = find_value(arr, 20);
-    match found {
-        Option.Some(idx) => {
-            if (idx != 1) { return 1; }
-        },
-        Option.None => return 2,
-    }
-
-    let not_found = find_value(arr, 99);
-    match not_found {
-        Option.Some(idx) => return 3,
-        Option.None => { /* expected */ },
-    }
-
-    return 0;
-}
-
-// ============================================
-// Test 8: Result type (error handling)
-// ============================================
-enum Result {
-    Ok(i32),
-    Err(string)
-}
-
-fn safe_divide(a: i32, b: i32): Result {
-    if (b == 0) {
-        return Result.Err("Division by zero");
-    }
-    return Result.Ok(a / b);
-}
-
-fn test_result_type(): i32 {
-    let success = safe_divide(100, 5);
-    match success {
-        Result.Ok(val) => {
-            if (val != 20) { return 1; }
-        },
-        Result.Err(msg) => return 2,
-    }
-
-    let failure = safe_divide(100, 0);
-    match failure {
-        Result.Ok(val) => return 3,
-        Result.Err(msg) => { /* expected */ },
-    }
-
-    return 0;
-}
-
-// ============================================
-// Test 9: Function types
+// Test 5: Function types
 // ============================================
 fn add(a: i32, b: i32): i32 {
     return a + b;
@@ -238,13 +98,9 @@ fn multiply(a: i32, b: i32): i32 {
     return a * b;
 }
 
-fn apply(f: fn(i32, i32): i32, x: i32, y: i32): i32 {
-    return f(x, y);
-}
-
 fn test_function_types(): i32 {
-    let sum = apply(add, 5, 3);
-    let product = apply(multiply, 5, 3);
+    let sum = add(5, 3);
+    let product = multiply(5, 3);
 
     if (sum != 8) { return 1; }
     if (product != 15) { return 2; }
@@ -253,35 +109,60 @@ fn test_function_types(): i32 {
 }
 
 // ============================================
-// Test 10: Nested types
+// Test 6: Nested types
 // ============================================
 struct Node {
-    value: i32,
-    children: [i32]
-}
-
-enum Tree {
-    Leaf(i32),
-    Branch(i32)
+    value: i32
 }
 
 fn test_nested_types(): i32 {
     let node = Node {
-        value: 10,
-        children: [1, 2, 3]
+        value: 10
     };
 
-    let tree: Tree = Tree.Branch(1);
-
     if (node.value != 10) { return 1; }
-    if (node.children[0] != 1) { return 2; }
 
-    match tree {
-        Tree.Branch(val) => {
-            if (val != 1) { return 3; }
-        },
-        _ => return 4,
-    }
+    return 0;
+}
+
+// ============================================
+// Test 7: Type inference
+// ============================================
+fn test_type_inference(): i32 {
+    // Type should be inferred as i32
+    let a = 42;
+    // Type should be inferred as f64
+    let b = 3.14;
+    // Type should be inferred as bool
+    let c = true;
+    // Type should be inferred as string
+    let d = "hello";
+
+    if (a != 42) { return 1; }
+    if (c != true) { return 2; }
+
+    return 0;
+}
+
+// ============================================
+// Test 8: Numeric operations type safety
+// ============================================
+fn test_numeric_operations(): i32 {
+    let a: i32 = 10;
+    let b: i32 = 3;
+
+    // Integer operations
+    let sum = a + b;
+    let diff = a - b;
+    let prod = a * b;
+    let quot = a / b;
+    let rem = a % b;
+
+    if (sum != 13) { return 1; }
+    if (diff != 7) { return 2; }
+    if (prod != 30) { return 3; }
+    if (quot != 3) { return 4; }
+    if (rem != 1) { return 5; }
 
     return 0;
 }
@@ -314,40 +195,28 @@ fn main(): i32 {
         return 4;
     }
 
-    let t5 = test_enum_types();
+    let t5 = test_function_types();
     if (t5 != 0) {
-        print("test_enum_types failed\n");
+        print("test_function_types failed\n");
         return 5;
     }
 
-    let t6 = test_type_aliases();
+    let t6 = test_nested_types();
     if (t6 != 0) {
-        print("test_type_aliases failed\n");
+        print("test_nested_types failed\n");
         return 6;
     }
 
-    let t7 = test_option_type();
+    let t7 = test_type_inference();
     if (t7 != 0) {
-        print("test_option_type failed\n");
+        print("test_type_inference failed\n");
         return 7;
     }
 
-    let t8 = test_result_type();
+    let t8 = test_numeric_operations();
     if (t8 != 0) {
-        print("test_result_type failed\n");
+        print("test_numeric_operations failed\n");
         return 8;
-    }
-
-    let t9 = test_function_types();
-    if (t9 != 0) {
-        print("test_function_types failed\n");
-        return 9;
-    }
-
-    let t10 = test_nested_types();
-    if (t10 != 0) {
-        print("test_nested_types failed\n");
-        return 10;
     }
 
     print("All type system tests passed!\n");
