@@ -1,0 +1,107 @@
+// Type Inference Test Suite (WIP)
+// Tests Hindley-Milner type inference
+
+it("should infer integer type") {
+    let x = 42;
+    assert(x == 42);
+}
+
+it("should infer from arithmetic") {
+    let a = 10;
+    let b = 20;
+    let result = a + b;
+    assert(result == 30);
+}
+
+it("should infer array element type") {
+    let arr = [1, 2, 3];
+    let first = arr[0];
+    assert(first == 1);
+}
+
+it("should infer from function return") {
+    fn add(a: i32, b: i32): i32 {
+        let result = a + b;
+        return result;
+    }
+    let sum = add(10, 20);
+    assert(sum == 30);
+}
+
+it("should infer from conditional") {
+    let cond = true;
+    let value = if (cond) { 10 } else { 20 };
+    assert(value == 10);
+}
+
+it("should infer boolean type") {
+    let flag = true;
+    let negated = !flag;
+    assert(negated == false);
+}
+
+it("should infer string type") {
+    let greeting = "Hello";
+    let full = greeting + " World";
+    assert(full == "Hello World");
+}
+
+it("should infer from comparison") {
+    let a = 10;
+    let b = 20;
+    let is_less = a < b;
+    assert(is_less == true);
+}
+
+it("should infer in nested expressions") {
+    let x = 5;
+    let y = x * 2;
+    let z = y + x;
+    assert(z == 15);
+}
+
+it("should infer from logical operations") {
+    let a = true;
+    let b = false;
+    let result = a && !b;
+    assert(result == true);
+}
+
+it("should infer in loop") {
+    let mut sum = 0;
+    let mut i = 1;
+    while (i <= 5) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == 15);
+}
+
+it("should infer from struct field") {
+    struct Data { value: i32 }
+    let d = Data { value: 42 };
+    let v = d.value;
+    assert(v == 42);
+}
+
+it("should infer negative numbers") {
+    let neg = -10;
+    let pos = 0 - neg;
+    assert(pos == 10);
+}
+
+it("should infer from chained calls") {
+    fn double(x: i32): i32 { return x * 2; }
+    let result = double(double(5));
+    assert(result == 20);
+}
+
+it("should infer in match expression") {
+    let x = 5;
+    let category = match (x) {
+        0 => 0,
+        _ => 1,
+    };
+    assert(category == 1);
+}
+

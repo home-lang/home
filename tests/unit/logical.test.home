@@ -1,0 +1,62 @@
+// Logical Operators Unit Test Suite
+
+it("should perform logical AND") {
+    assert((true && true) == true);
+    assert((true && false) == false);
+    assert((false && true) == false);
+    assert((false && false) == false);
+}
+
+it("should perform logical OR") {
+    assert((true || true) == true);
+    assert((true || false) == true);
+    assert((false || true) == true);
+    assert((false || false) == false);
+}
+
+it("should perform logical NOT") {
+    assert((!true) == false);
+    assert((!false) == true);
+    assert((!!true) == true);
+    assert((!!false) == false);
+}
+
+it("should short-circuit AND") {
+    // false && anything should return false without evaluating the right side
+    assert((false && true) == false);
+    assert((false && false) == false);
+}
+
+it("should short-circuit OR") {
+    // true || anything should return true without evaluating the right side
+    assert((true || false) == true);
+    assert((true || true) == true);
+}
+
+it("should combine logical operators") {
+    assert(((true && true) || false) == true);
+    assert(((false || false) && true) == false);
+    assert((!(true && false)) == true);
+    assert(((true || false) && (false || true)) == true);
+}
+
+it("should handle complex boolean expressions") {
+    let a = true;
+    let b = false;
+    let c = true;
+    assert((a && !b) == true);
+    assert((!a || b) == false);
+    assert((a && c && !b) == true);
+}
+
+it("should work with comparison results") {
+    assert(((5 > 3) && (10 > 5)) == true);
+    assert(((5 < 3) || (10 > 5)) == true);
+    assert((!(5 == 5)) == false);
+}
+
+it("should handle triple negation") {
+    assert((!!!true) == false);
+    assert((!!!false) == true);
+}
+

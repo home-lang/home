@@ -1,0 +1,140 @@
+// Result Type Test Suite (WIP)
+// Tests Result<T, E> error handling pattern
+
+enum Result {
+    Ok(i32),
+    Err(string),
+}
+
+fn ok(value: i32): Result {
+    return Result.Ok(value);
+}
+
+fn err(message: string): Result {
+    return Result.Err(message);
+}
+
+fn divide(a: i32, b: i32): Result {
+    if (b == 0) {
+        return err("Division by zero");
+    }
+    return ok(a / b);
+}
+
+it("should create Ok result") {
+    let success: Result = ok(42);
+    let value = match (success) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 42);
+}
+
+it("should create Err result") {
+    let failure: Result = err("Error");
+    let is_error = match (failure) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_error == true);
+}
+
+it("should handle successful division") {
+    let result: Result = divide(10, 2);
+    let value = match (result) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 5);
+}
+
+it("should handle division by zero") {
+    let result: Result = divide(10, 0);
+    let is_error = match (result) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_error == true);
+}
+
+fn safe_sqrt(n: i32): Result {
+    if (n < 0) {
+        return err("Cannot compute sqrt of negative number");
+    }
+    // Simplified integer sqrt approximation
+    let mut guess = n / 2;
+    if (guess == 0) { guess = 1; }
+    return ok(guess);
+}
+
+it("should chain Result operations") {
+    let a: Result = divide(100, 10);
+    let value = match (a) {
+        Result.Ok(v) => v * 2,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 20);
+}
+
+it("should handle multiple Ok values") {
+    let r1: Result = ok(10);
+    let r2: Result = ok(20);
+    let sum = match (r1) {
+        Result.Ok(v1) => match (r2) {
+            Result.Ok(v2) => v1 + v2,
+            Result.Err(msg) => 0,
+        },
+        Result.Err(msg) => 0,
+    };
+    assert(sum == 30);
+}
+
+it("should handle negative numbers in Ok") {
+    let r: Result = ok(-42);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == -42);
+}
+
+it("should handle zero in Ok") {
+    let r: Result = ok(0);
+    let value = match (r) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => -1,
+    };
+    assert(value == 0);
+}
+
+it("should propagate error") {
+    fn process(n: i32): Result {
+        if (n < 0) { return err("negative"); }
+        return divide(100, n);
+    }
+    let r1: Result = process(-5);
+    let is_err = match (r1) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+it("should handle division result in expression") {
+    let r: Result = divide(20, 4);
+    let doubled = match (r) {
+        Result.Ok(v) => v * 2,
+        Result.Err(msg) => 0,
+    };
+    assert(doubled == 10);
+}
+
+it("should handle error variant with long message") {
+    let r: Result = err("This is a longer error message describing what went wrong");
+    let is_err = match (r) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+

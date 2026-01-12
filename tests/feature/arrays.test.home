@@ -1,0 +1,98 @@
+// Arrays Feature Test Suite
+
+it("should create arrays") {
+    let numbers = [1, 2, 3, 4, 5];
+    assert(numbers[0] == 1);
+    assert(numbers[4] == 5);
+}
+
+it("should create single element array") {
+    let single = [42];
+    assert(single[0] == 42);
+}
+
+it("should access elements by index") {
+    let arr = [10, 20, 30, 40, 50];
+    assert(arr[0] == 10);
+    assert(arr[2] == 30);
+    assert(arr[4] == 50);
+}
+
+it("should slice arrays with range") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[1..3];
+    assert(slice[0] == 2);
+    assert(slice[1] == 3);
+}
+
+it("should slice from start") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[..2];
+    assert(slice[0] == 1);
+    assert(slice[1] == 2);
+}
+
+it("should slice to end") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = arr[3..];
+    assert(slice[0] == 4);
+    assert(slice[1] == 5);
+}
+
+it("should handle nested arrays") {
+    let matrix = [[1, 2], [3, 4], [5, 6]];
+    assert(matrix[0][0] == 1);
+    assert(matrix[1][1] == 4);
+    assert(matrix[2][0] == 5);
+}
+
+it("should iterate over arrays") {
+    let arr = [1, 2, 3];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == 6);
+}
+
+it("should iterate with manual index") {
+    let arr = [10, 20, 30];
+    let mut sum = 0;
+    let mut idx = 0;
+    for (x in arr) {
+        sum = sum + x;
+        idx = idx + 1;
+    }
+    assert(sum == 60);
+    assert(idx == 3);
+}
+
+it("should handle array of strings") {
+    let names = ["Alice", "Bob", "Charlie"];
+    assert(names[0] == "Alice");
+    assert(names[2] == "Charlie");
+}
+
+it("should handle array in function") {
+    fn sum_array(arr: [i32]): i32 {
+        let mut total = 0;
+        for (x in arr) { total = total + x; }
+        return total;
+    }
+    assert(sum_array([1, 2, 3, 4, 5]) == 15);
+}
+
+it("should use array with computed values") {
+    let a = 10;
+    let b = 20;
+    let arr = [a, b, a + b];
+    assert(arr[0] == 10);
+    assert(arr[1] == 20);
+    assert(arr[2] == 30);
+}
+
+it("should handle large array") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == 55);
+}
+

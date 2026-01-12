@@ -1,7 +1,0 @@
-// Test string operations
-let greeting = "Hello";
-let name = "World";
-let message = greeting + ", " + name + "!";
-
-let escaped = "Line 1\nLine 2\tTabbed";
-let unicode = "Hello \u{1F44B}";

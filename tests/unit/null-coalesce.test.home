@@ -1,0 +1,28 @@
+// Null Coalescing Test Suite
+
+it("should use null coalescing with null") {
+    let nothing = null;
+    assert((nothing ?? "default") == "default");
+}
+
+it("should return left value when not null") {
+    let value = 42;
+    assert((value ?? 0) == 42);
+}
+
+it("should chain null coalescing") {
+    let a = null;
+    let b = null;
+    let c = 100;
+    assert((a ?? b ?? c) == 100);
+}
+
+it("should use with expressions") {
+    let x = null;
+    assert(((x ?? 5) * 2) == 10);
+}
+
+it("should short-circuit on first non-null") {
+    let a = 999;
+    assert((a ?? 10) == 999);
+}

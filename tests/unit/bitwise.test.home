@@ -1,0 +1,58 @@
+// Bitwise Operators Unit Test Suite
+
+it("should perform bitwise AND") {
+    assert((0b1100 & 0b1010) == 0b1000);
+    assert((0xFF & 0x0F) == 0x0F);
+    assert((0 & 255) == 0);
+    assert((255 & 255) == 255);
+}
+
+it("should perform bitwise OR") {
+    assert((0b1100 | 0b0011) == 0b1111);
+    assert((0xF0 | 0x0F) == 0xFF);
+    assert((0 | 255) == 255);
+    assert((128 | 64) == 192);
+}
+
+it("should perform bitwise XOR") {
+    assert((0b1100 ^ 0b1010) == 0b0110);
+    assert((0xFF ^ 0xFF) == 0);
+    assert((0 ^ 255) == 255);
+    assert((170 ^ 85) == 255);
+}
+
+it("should perform left shift") {
+    assert((1 << 4) == 16);
+    assert((2 << 3) == 16);
+    assert((0xFF << 8) == 0xFF00);
+    assert((1 << 0) == 1);
+}
+
+it("should perform right shift") {
+    assert((16 >> 2) == 4);
+    assert((256 >> 4) == 16);
+    assert((0xFF00 >> 8) == 0xFF);
+    assert((1 >> 0) == 1);
+}
+
+it("should combine bitwise operations") {
+    assert(((0xF0 | 0x0F) & 0xFF) == 0xFF);
+    assert(((1 << 4) | (1 << 2)) == 20);
+    assert(((0xFF ^ 0xF0) & 0x0F) == 0x0F);
+}
+
+it("should handle power of 2 checks") {
+    assert((16 & 15) == 0);
+    assert((32 & 31) == 0);
+    assert((17 & 16) == 16);
+}
+
+it("should handle flag operations") {
+    let flags = 0b0000;
+    let flag1 = 0b0001;
+    let flag2 = 0b0010;
+    let combined = flags | flag1 | flag2;
+    assert(combined == 0b0011);
+    assert((combined & flag1) == flag1);
+}
+

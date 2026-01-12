@@ -1,0 +1,62 @@
+// Arithmetic Operators Unit Test Suite
+
+it("should perform addition") {
+    assert((2 + 3) == 5);
+    assert((0 + 0) == 0);
+    assert((-5 + 5) == 0);
+    assert((100 + 200) == 300);
+}
+
+it("should perform subtraction") {
+    assert((10 - 3) == 7);
+    assert((0 - 0) == 0);
+    assert((5 - 10) == -5);
+    assert((100 - 100) == 0);
+}
+
+it("should perform multiplication") {
+    assert((4 * 5) == 20);
+    assert((0 * 100) == 0);
+    assert((-3 * 4) == -12);
+    assert((-3 * -4) == 12);
+}
+
+it("should perform division") {
+    assert((10 / 2) == 5);
+    assert((15 / 3) == 5);
+    assert((100 / 10) == 10);
+    assert((-10 / 2) == -5);
+}
+
+it("should perform modulo") {
+    assert((10 % 3) == 1);
+    assert((15 % 5) == 0);
+    assert((7 % 2) == 1);
+    assert((100 % 7) == 2);
+}
+
+it("should respect operator precedence") {
+    assert((2 + 3 * 4) == 14);
+    assert(((2 + 3) * 4) == 20);
+    assert((10 - 2 * 3) == 4);
+    assert((20 / 4 + 3) == 8);
+}
+
+it("should handle negative numbers") {
+    assert((-5 + -3) == -8);
+    assert((-10 - -5) == -5);
+    assert((-4 * -4) == 16);
+    assert((-20 / 4) == -5);
+}
+
+it("should handle large numbers") {
+    assert((1000000 + 2000000) == 3000000);
+    assert((1000000 * 1000) == 1000000000);
+}
+
+it("should handle chained operations") {
+    assert((1 + 2 + 3 + 4 + 5) == 15);
+    assert((100 - 20 - 30 - 10) == 40);
+    assert((2 * 3 * 4) == 24);
+}
+

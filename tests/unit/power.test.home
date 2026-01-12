@@ -1,0 +1,29 @@
+// Power Operator Unit Test Suite
+
+it("should compute basic powers") {
+    assert((2 ** 3) == 8);
+    assert((5 ** 2) == 25);
+    assert((3 ** 3) == 27);
+}
+
+it("should handle power of zero") {
+    assert((10 ** 0) == 1);
+    assert((999 ** 0) == 1);
+    assert((1 ** 0) == 1);
+}
+
+it("should handle power of one") {
+    assert((42 ** 1) == 42);
+    assert((100 ** 1) == 100);
+}
+
+it("should compute large exponents") {
+    assert((2 ** 10) == 1024);
+    assert((2 ** 8) == 256);
+}
+
+it("should handle base of one") {
+    assert((1 ** 10) == 1);
+    assert((1 ** 100) == 1);
+}
+

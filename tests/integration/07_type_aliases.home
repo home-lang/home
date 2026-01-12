@@ -1,6 +1,0 @@
-// Test type aliases
-type UserId = int;
-type UserName = string;
-
-let id: UserId = 42;
-let name: UserName = "Alice";

@@ -1,0 +1,92 @@
+// Functions Feature Test Suite
+
+fn add(a: i32, b: i32): i32 { return a + b; }
+fn multiply(a: i32, b: i32): i32 { return a * b; }
+fn subtract(a: i32, b: i32): i32 { return a - b; }
+fn identity(x: i32): i32 { return x; }
+fn negate(x: i32): i32 { return 0 - x; }
+fn max(a: i32, b: i32): i32 { if (a > b) { return a; } return b; }
+fn min(a: i32, b: i32): i32 { if (a < b) { return a; } return b; }
+fn abs(x: i32): i32 { if (x < 0) { return 0 - x; } return x; }
+
+it("should call simple functions") {
+    assert(add(2, 3) == 5);
+    assert(multiply(4, 5) == 20);
+    assert(subtract(10, 3) == 7);
+}
+
+it("should return values correctly") {
+    assert(identity(42) == 42);
+    assert(negate(5) == -5);
+    assert(negate(-3) == 3);
+}
+
+it("should handle conditional returns") {
+    assert(max(5, 10) == 10);
+    assert(max(10, 5) == 10);
+    assert(min(5, 10) == 5);
+    assert(min(10, 5) == 5);
+}
+
+it("should compute absolute value") {
+    assert(abs(5) == 5);
+    assert(abs(-5) == 5);
+    assert(abs(0) == 0);
+}
+
+it("should compose function calls") {
+    assert(add(multiply(2, 3), multiply(4, 5)) == 26);
+    assert(max(min(10, 20), min(5, 15)) == 10);
+}
+
+it("should chain function calls") {
+    let a = add(1, 2);
+    let b = multiply(a, 3);
+    let c = subtract(b, 1);
+    assert(c == 8);
+}
+
+it("should handle zero arguments") {
+    fn get_answer(): i32 { return 42; }
+    assert(get_answer() == 42);
+}
+
+it("should handle many arguments") {
+    fn sum5(a: i32, b: i32, c: i32, d: i32, e: i32): i32 {
+        return a + b + c + d + e;
+    }
+    assert(sum5(1, 2, 3, 4, 5) == 15);
+}
+
+it("should handle nested function definitions") {
+    fn outer(x: i32): i32 {
+        fn inner(y: i32): i32 { return y * 2; }
+        return inner(x) + 1;
+    }
+    assert(outer(5) == 11);
+}
+
+it("should handle early return") {
+    fn find_first_even(a: i32, b: i32, c: i32): i32 {
+        if (a % 2 == 0) { return a; }
+        if (b % 2 == 0) { return b; }
+        if (c % 2 == 0) { return c; }
+        return -1;
+    }
+    assert(find_first_even(1, 2, 3) == 2);
+    assert(find_first_even(1, 3, 5) == -1);
+}
+
+it("should handle function with loop") {
+    fn sum_to(n: i32): i32 {
+        let mut total = 0;
+        let mut i = 1;
+        while (i <= n) {
+            total = total + i;
+            i = i + 1;
+        }
+        return total;
+    }
+    assert(sum_to(10) == 55);
+}
+

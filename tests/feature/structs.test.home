@@ -1,0 +1,128 @@
+// Structs Feature Test Suite
+
+struct Point { x: i32, y: i32 }
+struct Rectangle { width: i32, height: i32 }
+struct Person { age: i32, active: bool }
+
+it("should create struct instances") {
+    let p = Point { x: 10, y: 20 };
+    assert(p.x == 10);
+    assert(p.y == 20);
+}
+
+it("should access struct fields") {
+    let rect = Rectangle { width: 100, height: 50 };
+    assert(rect.width == 100);
+    assert(rect.height == 50);
+}
+
+it("should handle mixed field types") {
+    let person = Person { age: 25, active: true };
+    assert(person.age == 25);
+    assert(person.active == true);
+}
+
+it("should use fields in expressions") {
+    let p = Point { x: 3, y: 4 };
+    let dist_sq = p.x * p.x + p.y * p.y;
+    assert(dist_sq == 25);
+}
+
+it("should work with multiple instances") {
+    let p1 = Point { x: 0, y: 0 };
+    let p2 = Point { x: 5, y: 5 };
+    assert((p2.x - p1.x) == 5);
+}
+
+it("should compute with struct fields") {
+    let rect = Rectangle { width: 10, height: 5 };
+    assert((rect.width * rect.height) == 50);
+}
+
+struct Vector3 { x: i32, y: i32, z: i32 }
+struct Circle { radius: i32 }
+struct User { id: i32, active: bool }
+
+it("should handle 3D vector") {
+    let v = Vector3 { x: 1, y: 2, z: 3 };
+    assert(v.x == 1);
+    assert(v.y == 2);
+    assert(v.z == 3);
+    let mag_sq = v.x * v.x + v.y * v.y + v.z * v.z;
+    assert(mag_sq == 14);
+}
+
+it("should handle zero values") {
+    let origin = Point { x: 0, y: 0 };
+    assert(origin.x == 0);
+    assert(origin.y == 0);
+}
+
+it("should handle negative values") {
+    let p = Point { x: -5, y: -10 };
+    assert(p.x == -5);
+    assert(p.y == -10);
+}
+
+it("should use struct in function") {
+    fn area(r: Rectangle): i32 {
+        return r.width * r.height;
+    }
+    let rect = Rectangle { width: 8, height: 6 };
+    assert(area(rect) == 48);
+}
+
+it("should return struct from function") {
+    fn make_point(x: i32, y: i32): Point {
+        return Point { x: x, y: y };
+    }
+    let p = make_point(3, 4);
+    assert(p.x == 3);
+    assert(p.y == 4);
+}
+
+it("should compare struct fields") {
+    let p1 = Point { x: 5, y: 10 };
+    let p2 = Point { x: 5, y: 20 };
+    assert(p1.x == p2.x);
+    assert(p1.y != p2.y);
+}
+
+it("should use struct fields in conditionals") {
+    let user = User { id: 1, active: true };
+    let mut status = 0;
+    if (user.active) {
+        status = 1;
+    }
+    assert(status == 1);
+}
+
+it("should use struct in array") {
+    let points = [
+        Point { x: 0, y: 0 },
+        Point { x: 1, y: 1 },
+        Point { x: 2, y: 2 }
+    ];
+    assert(points[0].x == 0);
+    assert(points[1].x == 1);
+    assert(points[2].x == 2);
+}
+
+it("should compute perimeter") {
+    fn perimeter(r: Rectangle): i32 {
+        return 2 * (r.width + r.height);
+    }
+    let rect = Rectangle { width: 5, height: 3 };
+    assert(perimeter(rect) == 16);
+}
+
+it("should compute distance squared") {
+    fn dist_sq(p1: Point, p2: Point): i32 {
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
+        return dx * dx + dy * dy;
+    }
+    let a = Point { x: 0, y: 0 };
+    let b = Point { x: 3, y: 4 };
+    assert(dist_sq(a, b) == 25);
+}

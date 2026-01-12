@@ -1,0 +1,31 @@
+// Ternary Operator Test Suite
+
+it("should evaluate basic ternary") {
+    assert((true ? 1 : 0) == 1);
+    assert((false ? 1 : 0) == 0);
+}
+
+it("should use ternary with comparisons") {
+    let x = 5;
+    let y = 10;
+    assert((x > y ? x : y) == 10);
+    assert((x < y ? x : y) == 5);
+}
+
+it("should use ternary with arithmetic") {
+    let n = 7;
+    assert((n > 5 ? n * 2 : n * 3) == 14);
+}
+
+it("should nest ternary expressions") {
+    let score = 85;
+    let grade = score >= 90 ? "A" : score >= 80 ? "B" : "C";
+    assert(grade == "B");
+}
+
+it("should handle parenthesized ternary") {
+    let a = 10;
+    let b = 20;
+    let c = 5;
+    assert((a < b ? (a < c ? a : c) : b) == 5);
+}

@@ -1195,17 +1195,208 @@ fn shouldSkipDirectory(dirname: []const u8) bool {
     return false;
 }
 
-fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
-    if (args.len == 0) {
-        std.debug.print("{s}Error:{s} 'test' command requires a file path\n\n", .{
-            Color.Red.code(),
-            Color.Reset.code()
+fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8) !void {
+    std.debug.print("\n{s}Home Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+    // Discover test files
+    var test_files = std.ArrayList([]const u8){};
+    defer {
+        for (test_files.items) |file| {
+            allocator.free(file);
+        }
+        test_files.deinit(allocator);
+    }
+
+    discoverTestFiles(allocator, dir_path, &test_files) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("{s}Error:{s} Tests directory not found: {s}\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                dir_path,
+            });
+            std.debug.print("Create a 'tests/' directory with .test.home files to run tests.\n", .{});
+            return;
+        }
+        return err;
+    };
+
+    if (test_files.items.len == 0) {
+        std.debug.print("{s}No test files found{s} in {s}\n", .{
+            Color.Yellow.code(),
+            Color.Reset.code(),
+            dir_path,
         });
-        printTestUsage();
+        std.debug.print("Test files should match: *.test.home or *.test.hm\n", .{});
+        return;
+    }
+
+    std.debug.print("Found {s}{d}{s} test file(s)\n\n", .{
+        Color.Cyan.code(),
+        test_files.items.len,
+        Color.Reset.code(),
+    });
+
+    var passed_files: usize = 0;
+    var failed_files: usize = 0;
+    var total_tests: usize = 0;
+    var failed_tests: usize = 0;
+    var failed_file_list = std.ArrayList([]const u8){};
+    defer failed_file_list.deinit(allocator);
+
+    for (test_files.items) |file_path| {
+        // Run each test file
+        const result = runTestFile(allocator, file_path);
+        if (result) |test_count| {
+            passed_files += 1;
+            total_tests += test_count;
+        } else |_| {
+            failed_files += 1;
+            failed_tests += 1;
+            try failed_file_list.append(allocator, file_path);
+        }
+    }
+
+    // Print summary
+    std.debug.print("\n{s}━━━━━━━━━━━━━━━━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("{s}Test Summary{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    if (failed_files == 0) {
+        std.debug.print("{s}✓ All tests passed!{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    } else {
+        std.debug.print("{s}✗ Some tests failed{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+    }
+
+    std.debug.print("\n  Files:  {s}{d} passed{s}", .{ Color.Green.code(), passed_files, Color.Reset.code() });
+    if (failed_files > 0) {
+        std.debug.print(", {s}{d} failed{s}", .{ Color.Red.code(), failed_files, Color.Reset.code() });
+    }
+    std.debug.print(" ({d} total)\n", .{test_files.items.len});
+    std.debug.print("  Tests:  {d} total\n\n", .{total_tests});
+
+    if (failed_file_list.items.len > 0) {
+        std.debug.print("{s}Failed files:{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+        for (failed_file_list.items) |file| {
+            std.debug.print("  - {s}\n", .{file});
+        }
+        std.debug.print("\n", .{});
         std.process.exit(1);
+    }
+}
+
+fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8) !usize {
+    // Read the file
+    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.debug.print("  Error: Failed to read file: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(source);
+
+    // Use arena allocator for AST
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Tokenize
+    var lexer = Lexer.init(arena_allocator, source);
+    const tokens = lexer.tokenize() catch |err| {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.debug.print("  Error: Lexer error: {}\n", .{err});
+        return err;
+    };
+
+    // Parse
+    var parser = Parser.init(arena_allocator, tokens.items) catch |err| {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.debug.print("  Error: Parser init error: {}\n", .{err});
+        return err;
+    };
+
+    // Set source root for module resolution
+    try parser.module_resolver.setSourceRoot(file_path);
+
+    const program = parser.parse() catch |err| {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.debug.print("  Error: Parse error: {}\n", .{err});
+        return err;
+    };
+
+    // Check for parse errors
+    if (parser.errors.items.len > 0) {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        for (parser.errors.items) |err_item| {
+            std.debug.print("  {s}:{d}:{d}: {s}\n", .{
+                file_path,
+                err_item.line,
+                err_item.column,
+                err_item.message,
+            });
+        }
+        return error.ParseError;
+    }
+
+    // Count test statements (it blocks)
+    var test_count: usize = 0;
+    for (program.statements) |stmt| {
+        switch (stmt) {
+            .ItTestDecl => test_count += 1,
+            else => {},
+        }
+    }
+
+    // Interpret
+    const interpreter = Interpreter.init(allocator, program) catch |err| {
+        std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.debug.print("  Error: Interpreter init error: {}\n", .{err});
+        return err;
+    };
+    defer interpreter.deinit();
+
+    interpreter.interpret() catch |err| {
+        if (err != error.Return) {
+            std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+            return err;
+        }
+    };
+
+    std.debug.print("{s}PASS{s} {s} ({d} tests)\n", .{
+        Color.Green.code(),
+        Color.Reset.code(),
+        file_path,
+        test_count,
+    });
+
+    return test_count;
+}
+
+fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    // If no args, auto-discover and run tests in "tests/" directory
+    if (args.len == 0) {
+        try runTestSuite(allocator, "tests");
+        return;
     }
 
     const file_path = args[0];
+
+    // Check if the path is a directory
+    const stat = std.fs.cwd().statFile(file_path) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("{s}Error:{s} Path not found: {s}\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                file_path,
+            });
+            std.process.exit(1);
+        }
+        return err;
+    };
+
+    // If it's a directory, run all test files in it
+    if (stat.kind == .directory) {
+        try runTestSuite(allocator, file_path);
+        return;
+    }
     // Read the file
     const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| {
         std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
@@ -1539,8 +1730,8 @@ pub fn main() !void {
     if (std.mem.eql(u8, command, "test") or std.mem.eql(u8, command, "t")) {
         // Handle test subcommands
         if (args.len < 3) {
-            // No arguments - show test help
-            printTestUsage();
+            // No arguments - auto-run test suite in tests/ directory
+            try testCommand(allocator, &.{});
             return;
         }
 
@@ -1558,7 +1749,7 @@ pub fn main() !void {
             return;
         }
 
-        // Otherwise treat as file path
+        // Otherwise treat as file path or directory
         try testCommand(allocator, args[2..]);
         return;
     }

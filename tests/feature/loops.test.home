@@ -1,0 +1,117 @@
+// Loops Feature Test Suite
+
+it("should execute while loop") {
+    let mut i = 0;
+    let mut sum = 0;
+    while (i < 5) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert(sum == 10);
+}
+
+it("should skip while loop when condition is false") {
+    let mut x = 0;
+    while (false) {
+        x = 100;
+    }
+    assert(x == 0);
+}
+
+it("should break from while loop") {
+    let mut i = 0;
+    while (true) {
+        i = i + 1;
+        if (i == 5) { break; }
+    }
+    assert(i == 5);
+}
+
+it("should continue in while loop") {
+    let mut i = 0;
+    let mut sum = 0;
+    while (i < 10) {
+        i = i + 1;
+        if (i % 2 == 0) { continue; }
+        sum = sum + i;
+    }
+    assert(sum == 25);
+}
+
+it("should iterate over array") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) { sum = sum + x; }
+    assert(sum == 15);
+}
+
+it("should iterate over range") {
+    let mut sum = 0;
+    for (i in 0..5) { sum = sum + i; }
+    assert(sum == 10);
+}
+
+it("should handle nested loops") {
+    let mut total = 0;
+    let mut i = 0;
+    while (i < 3) {
+        let mut j = 0;
+        while (j < 3) {
+            total = total + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    assert(total == 9);
+}
+
+it("should break from nested loop") {
+    let mut outer_count = 0;
+    let mut inner_count = 0;
+    let mut i = 0;
+    while (i < 10) {
+        outer_count = outer_count + 1;
+        let mut j = 0;
+        while (j < 10) {
+            inner_count = inner_count + 1;
+            if (j == 2) { break; }
+            j = j + 1;
+        }
+        if (i == 2) { break; }
+        i = i + 1;
+    }
+    assert(outer_count == 3);
+    assert(inner_count == 9);
+}
+
+it("should handle loop with complex condition") {
+    let mut x = 0;
+    let mut y = 10;
+    while (x < 5 && y > 5) {
+        x = x + 1;
+        y = y - 1;
+    }
+    assert(x == 5);
+    assert(y == 5);
+}
+
+it("should handle for with break") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) {
+        if (x > 3) { break; }
+        sum = sum + x;
+    }
+    assert(sum == 6);
+}
+
+it("should handle for with continue") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) {
+        if (x == 3) { continue; }
+        sum = sum + x;
+    }
+    assert(sum == 12);
+}
+

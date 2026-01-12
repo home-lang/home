@@ -1,0 +1,83 @@
+// Pipe Operator Feature Test Suite
+
+fn double(x: i32): i32 { return x * 2; }
+fn increment(x: i32): i32 { return x + 1; }
+fn square(x: i32): i32 { return x * x; }
+fn negate(x: i32): i32 { return 0 - x; }
+fn add_ten(x: i32): i32 { return x + 10; }
+
+it("should pipe to single function") {
+    assert((5 |> double) == 10);
+}
+
+it("should chain multiple pipes") {
+    assert((3 |> double |> increment) == 7);
+}
+
+it("should pipe through many functions") {
+    assert((2 |> double |> double |> double) == 16);
+}
+
+it("should work with complex chains") {
+    assert((5 |> increment |> double |> increment) == 13);
+}
+
+it("should handle negative results") {
+    assert((5 |> negate) == -5);
+}
+
+it("should compose transformations") {
+    assert((3 |> square |> add_ten) == 19);
+}
+
+fn half(x: i32): i32 { return x / 2; }
+fn is_positive(x: i32): bool { return x > 0; }
+fn abs(x: i32): i32 { if (x < 0) { return 0 - x; } return x; }
+fn clamp(x: i32): i32 { if (x < 0) { return 0; } if (x > 100) { return 100; } return x; }
+
+it("should pipe with identity transformation") {
+    fn identity(x: i32): i32 { return x; }
+    assert((42 |> identity) == 42);
+}
+
+it("should handle zero in pipe") {
+    assert((0 |> double) == 0);
+    assert((0 |> increment) == 1);
+    assert((0 |> square) == 0);
+}
+
+it("should handle negative results through chain") {
+    assert((5 |> negate |> negate) == 5);
+    assert((3 |> negate |> double) == -6);
+}
+
+it("should pipe to division") {
+    assert((20 |> half) == 10);
+    assert((100 |> half |> half) == 25);
+}
+
+it("should pipe through abs") {
+    assert((-5 |> abs) == 5);
+    assert((5 |> negate |> abs) == 5);
+}
+
+it("should chain many operations") {
+    assert((1 |> increment |> double |> increment |> double |> increment) == 11);
+}
+
+it("should use pipe in expression") {
+    let result = (5 |> double) + (3 |> double);
+    assert(result == 16);
+}
+
+it("should work with conditional logic") {
+    assert((50 |> clamp) == 50);
+    assert((-10 |> clamp) == 0);
+    assert((200 |> clamp) == 100);
+}
+
+it("should pipe variable values") {
+    let x = 7;
+    assert((x |> double) == 14);
+    assert((x |> square) == 49);
+}

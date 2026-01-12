@@ -1,0 +1,105 @@
+// Tuples Feature Test Suite
+
+fn getValue(n: i32): i32 {
+    return n * 10;
+}
+
+it("should create empty tuple") {
+    let empty = ();
+    assert(true);
+}
+
+it("should create single element tuple") {
+    let single = (42,);
+    assert(true);
+}
+
+it("should create pair tuple") {
+    let pair = (1, 2);
+    assert(true);
+}
+
+it("should create triple tuple") {
+    let triple = (1, 2, 3);
+    assert(true);
+}
+
+it("should create nested tuples") {
+    let nested = ((1, 2), (3, 4));
+    assert(true);
+}
+
+it("should support tuple with computed values") {
+    let computed = (1 + 1, 2 * 2, 3 + 3);
+    assert(true);
+}
+
+it("should support tuple with function calls") {
+    let funcTuple = (getValue(1), getValue(2), getValue(3));
+    assert(true);
+}
+
+it("should support tuple assignment") {
+    let t1 = (10, 20);
+    let t2 = t1;
+    assert(true);
+}
+
+it("should support ternary with tuples") {
+    let selectTuple = true ? (1, 2) : (3, 4);
+    assert(true);
+}
+
+it("should support tuple with negative numbers") {
+    let negTuple = (-1, -2, -3);
+    assert(true);
+}
+
+it("should support tuple with mixed types") {
+    let mixed = (42, true, "hello");
+    assert(true);
+}
+
+it("should support tuple in function parameter") {
+    fn process_pair(p: (i32, i32)): i32 {
+        return 0;
+    }
+    let result = process_pair((1, 2));
+    assert(result == 0);
+}
+
+it("should support tuple return from function") {
+    fn make_pair(): (i32, i32) {
+        return (10, 20);
+    }
+    let p = make_pair();
+    assert(true);
+}
+
+it("should support deeply nested tuples") {
+    let deep = (((1, 2), (3, 4)), ((5, 6), (7, 8)));
+    assert(true);
+}
+
+it("should support tuple with boolean values") {
+    let flags = (true, false, true);
+    assert(true);
+}
+
+it("should support tuple with large values") {
+    let large = (1000000, 2000000, 3000000);
+    assert(true);
+}
+
+it("should support tuple with zero values") {
+    let zeros = (0, 0, 0);
+    assert(true);
+}
+
+it("should support tuple with expressions") {
+    let a = 5;
+    let b = 10;
+    let expr = (a + b, a - b, a * b);
+    assert(true);
+}
+

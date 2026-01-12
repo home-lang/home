@@ -1,0 +1,105 @@
+// Strings Feature Test Suite
+
+it("should create strings") {
+    let s = "Hello, World!";
+    assert(s == "Hello, World!");
+}
+
+it("should concatenate strings") {
+    let a = "Hello";
+    let b = "World";
+    let c = a + ", " + b + "!";
+    assert(c == "Hello, World!");
+}
+
+it("should compare strings") {
+    let s1 = "abc";
+    let s2 = "abc";
+    let s3 = "xyz";
+    assert(s1 == s2);
+    assert(s1 != s3);
+}
+
+it("should handle empty strings") {
+    let empty = "";
+    let hello = "hello";
+    assert(empty != hello);
+}
+
+it("should use strings in expressions") {
+    let name = "Alice";
+    let greeting = "Hello, " + name;
+    assert(greeting == "Hello, Alice");
+}
+
+it("should concatenate multiple strings") {
+    let a = "one";
+    let b = "two";
+    let c = "three";
+    let result = a + " " + b + " " + c;
+    assert(result == "one two three");
+}
+
+it("should handle string in array") {
+    let names = ["Alice", "Bob", "Charlie"];
+    assert(names[0] == "Alice");
+    assert(names[1] == "Bob");
+    assert(names[2] == "Charlie");
+}
+
+it("should compare same strings") {
+    let a = "test";
+    let b = "test";
+    assert(a == b);
+    assert(!(a != b));
+}
+
+it("should detect different strings") {
+    let a = "hello";
+    let b = "world";
+    assert(a != b);
+    assert(!(a == b));
+}
+
+it("should handle single character strings") {
+    let c = "x";
+    assert(c == "x");
+    assert(c != "y");
+}
+
+it("should handle strings with spaces") {
+    let s = "hello world";
+    assert(s == "hello world");
+}
+
+it("should handle strings with numbers") {
+    let s = "value: 42";
+    assert(s == "value: 42");
+}
+
+it("should pass strings to functions") {
+    fn greet(name: string): string {
+        return "Hello, " + name + "!";
+    }
+    assert(greet("World") == "Hello, World!");
+    assert(greet("Alice") == "Hello, Alice!");
+}
+
+it("should return strings from functions") {
+    fn get_name(): string {
+        return "Claude";
+    }
+    let name = get_name();
+    assert(name == "Claude");
+}
+
+it("should use strings in conditionals") {
+    let status = "active";
+    let mut code = 0;
+    if (status == "active") {
+        code = 1;
+    } else if (status == "inactive") {
+        code = 0;
+    }
+    assert(code == 1);
+}

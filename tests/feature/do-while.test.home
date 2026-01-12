@@ -1,0 +1,136 @@
+// Do-While Loop Test Suite
+
+it("should execute at least once") {
+    let mut count = 10;
+    do {
+        count = count + 1;
+    } while (count < 5);
+    assert(count == 11);
+}
+
+it("should execute basic do-while") {
+    let mut count = 0;
+    do {
+        count = count + 1;
+    } while (count < 5);
+    assert(count == 5);
+}
+
+it("should compute sum in do-while") {
+    let mut count = 0;
+    let mut sum = 0;
+    do {
+        count = count + 1;
+        sum = sum + count;
+    } while (count < 10);
+    assert(sum == 55);
+}
+
+it("should handle nested do-while") {
+    let mut outer = 0;
+    let mut inner = 0;
+    let mut total = 0;
+    do {
+        inner = 0;
+        do {
+            total = total + 1;
+            inner = inner + 1;
+        } while (inner < 3);
+        outer = outer + 1;
+    } while (outer < 3);
+    assert(total == 9);
+}
+
+it("should work in function") {
+    fn countUntil(limit: i32): i32 {
+        let mut count = 0;
+        do {
+            count = count + 1;
+        } while (count < limit);
+        return count;
+    }
+    assert(countUntil(7) == 7);
+}
+
+it("should handle decreasing counter") {
+    let mut dec = 10;
+    do {
+        dec = dec - 1;
+    } while (dec > 0);
+    assert(dec == 0);
+}
+
+it("should handle power of 2") {
+    let mut val = 1;
+    do {
+        val = val * 2;
+    } while (val < 64);
+    assert(val == 64);
+}
+
+it("should work with break") {
+    let mut count = 0;
+    do {
+        count = count + 1;
+        if (count == 3) { break; }
+    } while (count < 10);
+    assert(count == 3);
+}
+
+it("should work with continue") {
+    let mut i = 0;
+    let mut sum = 0;
+    do {
+        i = i + 1;
+        if (i % 2 == 0) { continue; }
+        sum = sum + i;
+    } while (i < 10);
+    assert(sum == 25);
+}
+
+it("should handle complex condition") {
+    let mut a = 0;
+    let mut b = 10;
+    do {
+        a = a + 1;
+        b = b - 1;
+    } while (a < 5 && b > 5);
+    assert(a == 5);
+    assert(b == 5);
+}
+
+it("should work inside while loop") {
+    let mut outer = 0;
+    let mut total = 0;
+    while (outer < 3) {
+        let mut inner = 0;
+        do {
+            total = total + 1;
+            inner = inner + 1;
+        } while (inner < 2);
+        outer = outer + 1;
+    }
+    assert(total == 6);
+}
+
+it("should work inside for loop") {
+    let arr = [1, 2, 3];
+    let mut total = 0;
+    for (x in arr) {
+        let mut count = 0;
+        do {
+            total = total + x;
+            count = count + 1;
+        } while (count < 2);
+    }
+    assert(total == 12);
+}
+
+it("should handle single iteration with false condition") {
+    let mut x = 100;
+    do {
+        x = x + 1;
+    } while (x < 0);
+    assert(x == 101);
+}
+

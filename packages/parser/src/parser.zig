@@ -2132,6 +2132,9 @@ pub const Parser = struct {
             ast.SourceLocation.fromToken(do_token),
         );
 
+        // Consume optional semicolon after do-while
+        try self.optionalSemicolon();
+
         return ast.Stmt{ .DoWhileStmt = stmt };
     }
 

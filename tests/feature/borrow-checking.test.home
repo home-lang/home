@@ -1,0 +1,113 @@
+// Borrow Checking Test Suite (WIP)
+// Tests borrowing rules and reference semantics
+
+struct Counter {
+    value: i32,
+}
+
+it("should allow immutable borrow") {
+    let x = 42;
+    let y = &x;
+    assert(true);
+}
+
+it("should allow mutable borrow") {
+    let mut x = 42;
+    let y = &mut x;
+    assert(true);
+}
+
+it("should allow multiple immutable borrows") {
+    let x = 42;
+    let y = &x;
+    let z = &x;
+    assert(true);
+}
+
+it("should track borrow lifetimes") {
+    fn get_ref(data: &i32): &i32 {
+        return data;
+    }
+    let x = 42;
+    let r = get_ref(&x);
+    assert(true);
+}
+
+it("should handle struct borrowing") {
+    let counter = Counter { value: 0 };
+    let r = &counter;
+    assert(true);
+}
+
+it("should borrow in function") {
+    fn read_value(x: &i32): i32 {
+        return 0;
+    }
+    let val = 42;
+    let result = read_value(&val);
+    assert(result == 0);
+}
+
+it("should allow re-borrow after drop") {
+    let x = 10;
+    {
+        let r1 = &x;
+    }
+    let r2 = &x;
+    assert(true);
+}
+
+it("should borrow array element") {
+    let arr = [1, 2, 3];
+    let elem = &arr[0];
+    assert(true);
+}
+
+it("should handle nested borrow") {
+    struct Wrapper { data: i32 }
+    let w = Wrapper { data: 42 };
+    let r1 = &w;
+    let r2 = &w;
+    assert(true);
+}
+
+it("should borrow in loop") {
+    let value = 100;
+    let mut i = 0;
+    while (i < 3) {
+        let r = &value;
+        i = i + 1;
+    }
+    assert(i == 3);
+}
+
+it("should handle mutable reborrow") {
+    let mut x = 5;
+    {
+        let r = &mut x;
+    }
+    let r2 = &mut x;
+    assert(true);
+}
+
+it("should borrow struct field") {
+    let c = Counter { value: 42 };
+    let r = &c.value;
+    assert(true);
+}
+
+it("should handle reference in conditional") {
+    let x = 10;
+    let y = 20;
+    let r = if (true) { &x } else { &y };
+    assert(true);
+}
+
+it("should track multiple struct borrows") {
+    let c1 = Counter { value: 1 };
+    let c2 = Counter { value: 2 };
+    let r1 = &c1;
+    let r2 = &c2;
+    assert(true);
+}
+

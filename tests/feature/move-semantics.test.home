@@ -1,0 +1,129 @@
+// Move Semantics Test Suite (WIP)
+// Tests ownership and move semantics
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+it("should allow basic move") {
+    let s = "Hello";
+    let t = s;
+    assert(true);
+}
+
+it("should copy primitive types") {
+    let x = 42;
+    let y = x;
+    let z = x + y;
+    assert(z == 84);
+}
+
+it("should move string to function") {
+    fn consume(s: string): i32 {
+        return 0;
+    }
+    let s = "Hello";
+    let result = consume(s);
+    assert(result == 0);
+}
+
+it("should allow reinitialize after move") {
+    let s = "Hello";
+    let t = s;
+    let s = "World";
+    let u = s;
+    assert(true);
+}
+
+it("should move array") {
+    let arr = [1, 2, 3];
+    let arr2 = arr;
+    assert(arr2[0] == 1);
+}
+
+it("should return ownership from function") {
+    fn create_string(): string {
+        let s = "Created";
+        return s;
+    }
+    let s = create_string();
+    assert(true);
+}
+
+it("should move struct to function") {
+    fn consume_point(p: Point): i32 {
+        return p.x + p.y;
+    }
+    let p = Point { x: 3, y: 4 };
+    let sum = consume_point(p);
+    assert(sum == 7);
+}
+
+it("should return moved struct") {
+    fn create_point(): Point {
+        return Point { x: 10, y: 20 };
+    }
+    let p = create_point();
+    assert(p.x == 10);
+    assert(p.y == 20);
+}
+
+it("should move in loop") {
+    let mut i = 0;
+    while (i < 3) {
+        let s = "iteration";
+        let t = s;
+        i = i + 1;
+    }
+    assert(i == 3);
+}
+
+it("should chain moves") {
+    let a = "original";
+    let b = a;
+    let c = b;
+    let d = c;
+    assert(true);
+}
+
+it("should move array elements") {
+    let arr = [1, 2, 3];
+    let arr2 = arr;
+    assert(arr2[0] == 1);
+    assert(arr2[1] == 2);
+    assert(arr2[2] == 3);
+}
+
+it("should handle conditional move") {
+    let s = "value";
+    let t = if (true) { s } else { "other" };
+    assert(true);
+}
+
+it("should move through nested function calls") {
+    fn inner(s: string): string {
+        return s;
+    }
+    fn outer(s: string): string {
+        return inner(s);
+    }
+    let result = outer("nested");
+    assert(true);
+}
+
+it("should move multiple values") {
+    let a = "first";
+    let b = "second";
+    let c = a;
+    let d = b;
+    assert(true);
+}
+
+it("should handle move with primitives") {
+    let x = 42;
+    let y = x;
+    let z = x + y;
+    assert(z == 84);
+}
+

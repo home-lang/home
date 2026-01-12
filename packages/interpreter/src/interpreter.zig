@@ -207,7 +207,7 @@ pub const Interpreter = struct {
                 try self.loop_labels.append(self.allocator, null);
                 defer _ = self.loop_labels.pop();
 
-                while (true) {
+                outer: while (true) {
                     const condition = try self.evaluateExpression(while_stmt.condition, env);
                     const should_continue = condition.isTrue();
                     // Arena allocator will clean up
@@ -220,7 +220,7 @@ pub const Interpreter = struct {
                             if (err == error.Break) {
                                 // Check if break targets this loop
                                 if (try self.shouldBreakHere(null)) {
-                                    break;
+                                    break :outer; // Break the outer while loop
                                 } else {
                                     // Propagate to outer loop
                                     return err;
@@ -283,6 +283,81 @@ pub const Interpreter = struct {
                                     break;
                                 }
                                 if (err == error.Continue) break; // Continue to next iteration
+                                return err;
+                            };
+                        }
+                        if (broke) break;
+                    }
+                } else if (iterable_value == .Array) {
+                    // Iterate over array elements
+                    const arr = iterable_value.Array;
+                    for (arr, 0..) |elem, idx| {
+                        const i: i64 = @intCast(idx);
+                        // If there's an index variable (enumerate syntax), define it
+                        if (for_stmt.index) |index_var| {
+                            if (idx == 0) {
+                                try loop_env.define(index_var, Value{ .Int = i });
+                            } else {
+                                try loop_env.set(index_var, Value{ .Int = i });
+                            }
+                        }
+
+                        // Define the iterator variable with the current element
+                        if (idx == 0) {
+                            try loop_env.define(for_stmt.iterator, elem);
+                        } else {
+                            try loop_env.set(for_stmt.iterator, elem);
+                        }
+
+                        var broke = false;
+                        for (for_stmt.body.statements) |body_stmt| {
+                            self.executeStatement(body_stmt, &loop_env) catch |err| {
+                                if (err == error.Return) return err;
+                                if (err == error.Break) {
+                                    broke = true;
+                                    break;
+                                }
+                                if (err == error.Continue) break;
+                                return err;
+                            };
+                        }
+                        if (broke) break;
+                    }
+                } else if (iterable_value == .Range) {
+                    // Iterate over range
+                    const range = iterable_value.Range;
+                    var current = range.start;
+                    var idx: i64 = 0;
+                    const end_condition = if (range.inclusive) range.end + 1 else range.end;
+                    while (current < end_condition) : ({
+                        current += range.step;
+                        idx += 1;
+                    }) {
+                        // If there's an index variable (enumerate syntax), define it
+                        if (for_stmt.index) |index_var| {
+                            if (idx == 0) {
+                                try loop_env.define(index_var, Value{ .Int = idx });
+                            } else {
+                                try loop_env.set(index_var, Value{ .Int = idx });
+                            }
+                        }
+
+                        // Define the iterator variable with the current range value
+                        if (idx == 0) {
+                            try loop_env.define(for_stmt.iterator, Value{ .Int = current });
+                        } else {
+                            try loop_env.set(for_stmt.iterator, Value{ .Int = current });
+                        }
+
+                        var broke = false;
+                        for (for_stmt.body.statements) |body_stmt| {
+                            self.executeStatement(body_stmt, &loop_env) catch |err| {
+                                if (err == error.Return) return err;
+                                if (err == error.Break) {
+                                    broke = true;
+                                    break;
+                                }
+                                if (err == error.Continue) break;
                                 return err;
                             };
                         }
@@ -369,22 +444,35 @@ pub const Interpreter = struct {
                 _ = value;
             },
             .DoWhileStmt => |do_while| {
+                // Push loop onto stack for break/continue tracking
+                try self.loop_labels.append(self.allocator, null);
+                defer _ = self.loop_labels.pop();
+
                 // Execute body first
-                while (true) {
+                outer: while (true) {
                     // Execute body
-                    var broke = false;
                     for (do_while.body.statements) |body_stmt| {
                         self.executeStatement(body_stmt, env) catch |err| {
                             if (err == error.Return) return err;
                             if (err == error.Break) {
-                                broke = true;
-                                break;
+                                // Check if break targets this loop
+                                if (try self.shouldBreakHere(null)) {
+                                    break :outer;
+                                } else {
+                                    return err;
+                                }
                             }
-                            if (err == error.Continue) break; // Continue to next iteration
+                            if (err == error.Continue) {
+                                // Check if continue targets this loop
+                                if (try self.shouldContinueHere(null)) {
+                                    break; // Continue to next iteration
+                                } else {
+                                    return err;
+                                }
+                            }
                             return err;
                         };
                     }
-                    if (broke) break;
 
                     // Then check condition
                     const condition = try self.evaluateExpression(do_while.condition, env);
@@ -507,6 +595,32 @@ pub const Interpreter = struct {
                     self.continue_target = null;
                 }
                 return error.Continue;
+            },
+            .ItTestDecl => |it_test| {
+                // Execute test and report result
+                std.debug.print("  it {s} ... ", .{it_test.description});
+
+                var test_env = Environment.init(self.arena.allocator(), env);
+                defer test_env.deinit();
+
+                var test_passed = true;
+                for (it_test.body.statements) |test_stmt| {
+                    self.executeStatement(test_stmt, &test_env) catch |err| {
+                        if (err == error.Return) {
+                            // Test completed with return
+                            break;
+                        }
+                        test_passed = false;
+                        break;
+                    };
+                }
+
+                if (test_passed) {
+                    std.debug.print("PASS\n", .{});
+                } else {
+                    std.debug.print("FAIL\n", .{});
+                    return error.RuntimeError;
+                }
             },
             else => {
                 std.debug.print("Unimplemented statement type\n", .{});

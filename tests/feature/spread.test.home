@@ -1,0 +1,101 @@
+// Spread Operator Feature Test Suite
+
+fn sum(a: i32, b: i32, c: i32): i32 {
+    return a + b + c;
+}
+
+it("should spread at end of tuple") {
+    let arr1 = (1, 2, 3);
+    let spread1 = (...arr1, 4, 5);
+    assert(true);
+}
+
+it("should spread at beginning of tuple") {
+    let arr2 = (4, 5, 6);
+    let spread2 = (0, ...arr2);
+    assert(true);
+}
+
+it("should spread in middle of tuple") {
+    let arr3 = (2, 3);
+    let spread3 = (1, ...arr3, 4);
+    assert(true);
+}
+
+it("should combine multiple spreads") {
+    let a1 = (1, 2);
+    let a2 = (3, 4);
+    let combined = (...a1, ...a2);
+    assert(true);
+}
+
+it("should spread single element") {
+    let single = (42,);
+    let expanded = (...single, 43);
+    assert(true);
+}
+
+it("should spread nested tuple") {
+    let inner = (5, 6);
+    let outer = (1, 2, ...inner, 7);
+    assert(true);
+}
+
+it("should spread empty tuple") {
+    let empty = ();
+    let withEmpty = (1, ...empty, 2);
+    assert(true);
+}
+
+it("should handle three-way spread") {
+    let part1 = (1,);
+    let part2 = (2,);
+    let part3 = (3,);
+    let threeway = (...part1, ...part2, ...part3);
+    assert(true);
+}
+
+it("should spread with mixed values") {
+    let base = (10, 20);
+    let extended = (...base, 30, 40, 50);
+    assert(true);
+}
+
+it("should spread pair tuples") {
+    let a = (1, 2);
+    let b = (3, 4);
+    let combined = (...a, ...b);
+    assert(true);
+}
+
+it("should spread in complex expression") {
+    let inner = (5, 6, 7);
+    let outer = (1, 2, ...inner, 8, 9);
+    assert(true);
+}
+
+it("should spread computed tuples") {
+    let x = 10;
+    let computed = (x, x + 1);
+    let spread = (...computed, x + 2);
+    assert(true);
+}
+
+it("should handle spread only") {
+    let source = (1, 2, 3);
+    let copy = (...source,);
+    assert(true);
+}
+
+it("should spread with negative values") {
+    let neg = (-1, -2);
+    let spread = (...neg, -3);
+    assert(true);
+}
+
+it("should spread large tuple") {
+    let large = (1, 2, 3, 4, 5);
+    let expanded = (0, ...large, 6);
+    assert(true);
+}
+

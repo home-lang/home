@@ -1,0 +1,130 @@
+// Pattern Matching Test Suite (WIP)
+// Tests match expressions with various pattern types
+
+enum Option {
+    Some(i32),
+    None
+}
+
+it("should match integer literals") {
+    let x = 10;
+    let result = match (x) {
+        10 => 42,
+        20 => 99,
+        _ => 0,
+    };
+    assert(result == 42);
+}
+
+it("should match boolean values") {
+    let b = true;
+    let result = match (b) {
+        true => 42,
+        false => 0,
+    };
+    assert(result == 42);
+}
+
+it("should match enum variants") {
+    let opt: Option = Option.Some(42);
+    let result = match (opt) {
+        Option.Some(x) => x,
+        Option.None => 0,
+    };
+    assert(result == 42);
+}
+
+it("should match None variant") {
+    let opt: Option = Option.None;
+    let result = match (opt) {
+        Option.None => 99,
+        Option.Some(x) => x,
+    };
+    assert(result == 99);
+}
+
+it("should support wildcard pattern") {
+    let x = 999;
+    let result = match (x) {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    };
+    assert(result == 0);
+}
+
+it("should match negative numbers") {
+    let x = -5;
+    let result = match (x) {
+        -5 => 100,
+        0 => 0,
+        5 => 50,
+        _ => -1,
+    };
+    assert(result == 100);
+}
+
+it("should match zero") {
+    let x = 0;
+    let result = match (x) {
+        -1 => -10,
+        0 => 0,
+        1 => 10,
+        _ => 99,
+    };
+    assert(result == 0);
+}
+
+it("should match in function") {
+    fn classify(n: i32): i32 {
+        return match (n) {
+            0 => 0,
+            1 => 1,
+            _ => 2,
+        };
+    }
+    assert(classify(0) == 0);
+    assert(classify(1) == 1);
+    assert(classify(100) == 2);
+}
+
+it("should match nested in if") {
+    let x = 5;
+    let mut result = 0;
+    if (x > 0) {
+        result = match (x) {
+            5 => 50,
+            _ => 0,
+        };
+    }
+    assert(result == 50);
+}
+
+it("should use match result in expression") {
+    let x = 2;
+    let doubled = match (x) {
+        1 => 2,
+        2 => 4,
+        3 => 6,
+        _ => 0,
+    } + 10;
+    assert(doubled == 14);
+}
+
+it("should match with multiple Some values") {
+    enum Maybe {
+        Just(i32),
+        Nothing
+    }
+    let a: Maybe = Maybe.Just(10);
+    let b: Maybe = Maybe.Just(20);
+    let sum = match (a) {
+        Maybe.Just(x) => match (b) {
+            Maybe.Just(y) => x + y,
+            Maybe.Nothing => x,
+        },
+        Maybe.Nothing => 0,
+    };
+    assert(sum == 30);
+}
+

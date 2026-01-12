@@ -1,0 +1,130 @@
+// Recursion Feature Test Suite
+
+fn factorial(n: i32): i32 {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn fibonacci(n: i32): i32 {
+    if (n <= 0) { return 0; }
+    if (n == 1) { return 1; }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+fn sum_to(n: i32): i32 {
+    if (n <= 0) { return 0; }
+    return n + sum_to(n - 1);
+}
+
+fn power(base: i32, exp: i32): i32 {
+    if (exp == 0) { return 1; }
+    return base * power(base, exp - 1);
+}
+
+fn gcd(a: i32, b: i32): i32 {
+    if (b == 0) { return a; }
+    return gcd(b, a % b);
+}
+
+it("should compute factorial") {
+    assert(factorial(0) == 1);
+    assert(factorial(1) == 1);
+    assert(factorial(5) == 120);
+    assert(factorial(6) == 720);
+}
+
+it("should compute fibonacci") {
+    assert(fibonacci(0) == 0);
+    assert(fibonacci(1) == 1);
+    assert(fibonacci(6) == 8);
+    assert(fibonacci(10) == 55);
+}
+
+it("should compute sum to n") {
+    assert(sum_to(0) == 0);
+    assert(sum_to(5) == 15);
+    assert(sum_to(10) == 55);
+}
+
+it("should compute power") {
+    assert(power(2, 0) == 1);
+    assert(power(2, 3) == 8);
+    assert(power(3, 4) == 81);
+}
+
+it("should compute GCD") {
+    assert(gcd(48, 18) == 6);
+    assert(gcd(54, 24) == 6);
+    assert(gcd(17, 5) == 1);
+}
+
+fn lcm(a: i32, b: i32): i32 {
+    return (a * b) / gcd(a, b);
+}
+
+fn count_digits(n: i32): i32 {
+    if (n < 10) { return 1; }
+    return 1 + count_digits(n / 10);
+}
+
+fn is_even(n: i32): bool {
+    if (n == 0) { return true; }
+    return is_odd(n - 1);
+}
+
+fn is_odd(n: i32): bool {
+    if (n == 0) { return false; }
+    return is_even(n - 1);
+}
+
+it("should compute LCM using GCD") {
+    assert(lcm(4, 6) == 12);
+    assert(lcm(3, 5) == 15);
+    assert(lcm(12, 18) == 36);
+}
+
+it("should count digits recursively") {
+    assert(count_digits(1) == 1);
+    assert(count_digits(12) == 2);
+    assert(count_digits(123) == 3);
+    assert(count_digits(9999) == 4);
+}
+
+it("should handle mutual recursion") {
+    assert(is_even(0) == true);
+    assert(is_even(4) == true);
+    assert(is_odd(5) == true);
+    assert(is_even(7) == false);
+}
+
+it("should handle deep recursion for sum") {
+    assert(sum_to(100) == 5050);
+}
+
+it("should handle factorial edge cases") {
+    assert(factorial(2) == 2);
+    assert(factorial(3) == 6);
+    assert(factorial(4) == 24);
+    assert(factorial(7) == 5040);
+}
+
+it("should compute fibonacci sequence") {
+    assert(fibonacci(2) == 1);
+    assert(fibonacci(3) == 2);
+    assert(fibonacci(4) == 3);
+    assert(fibonacci(5) == 5);
+    assert(fibonacci(7) == 13);
+    assert(fibonacci(8) == 21);
+}
+
+it("should handle power with base 1") {
+    assert(power(1, 0) == 1);
+    assert(power(1, 10) == 1);
+    assert(power(1, 100) == 1);
+}
+
+it("should handle GCD edge cases") {
+    assert(gcd(0, 5) == 5);
+    assert(gcd(7, 7) == 7);
+    assert(gcd(100, 1) == 1);
+}

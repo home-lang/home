@@ -1,0 +1,114 @@
+// Enums Feature Test Suite
+
+enum Color { Red, Green, Blue }
+enum Status { Active, Inactive, Pending }
+enum Direction { North, South, East, West }
+
+it("should define and register enums") {
+    let c = Color;
+    let s = Status;
+    let d = Direction;
+}
+
+it("should access Color variants") {
+    let red = Color.Red;
+    let green = Color.Green;
+    let blue = Color.Blue;
+}
+
+it("should access Status variants") {
+    let active = Status.Active;
+    let inactive = Status.Inactive;
+    let pending = Status.Pending;
+}
+
+it("should access Direction variants") {
+    let n = Direction.North;
+    let s = Direction.South;
+    let e = Direction.East;
+    let w = Direction.West;
+}
+
+enum Priority { Low, Medium, High, Critical }
+enum Result { Ok(i32), Err(string) }
+
+it("should access Priority variants") {
+    let low = Priority.Low;
+    let medium = Priority.Medium;
+    let high = Priority.High;
+    let critical = Priority.Critical;
+}
+
+it("should match on enum variants") {
+    let c = Color.Red;
+    let result = match (c) {
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
+    };
+    assert(result == 1);
+}
+
+it("should match all color variants") {
+    let r = match (Color.Red) { Color.Red => 1, Color.Green => 2, Color.Blue => 3 };
+    let g = match (Color.Green) { Color.Red => 1, Color.Green => 2, Color.Blue => 3 };
+    let b = match (Color.Blue) { Color.Red => 1, Color.Green => 2, Color.Blue => 3 };
+    assert(r == 1);
+    assert(g == 2);
+    assert(b == 3);
+}
+
+it("should use enum in function") {
+    fn is_active(s: Status): bool {
+        return match (s) {
+            Status.Active => true,
+            Status.Inactive => false,
+            Status.Pending => false,
+        };
+    }
+    assert(is_active(Status.Active) == true);
+    assert(is_active(Status.Inactive) == false);
+}
+
+it("should use enum with payload") {
+    let ok: Result = Result.Ok(42);
+    let value = match (ok) {
+        Result.Ok(v) => v,
+        Result.Err(msg) => 0,
+    };
+    assert(value == 42);
+}
+
+it("should handle error enum variant") {
+    let err: Result = Result.Err("not found");
+    let is_err = match (err) {
+        Result.Ok(v) => false,
+        Result.Err(msg) => true,
+    };
+    assert(is_err == true);
+}
+
+it("should use enum in array") {
+    let colors = [Color.Red, Color.Green, Color.Blue];
+    let first = match (colors[0]) {
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
+    };
+    assert(first == 1);
+}
+
+it("should return enum from function") {
+    fn get_status(code: i32): Status {
+        if (code == 1) { return Status.Active; }
+        if (code == 0) { return Status.Inactive; }
+        return Status.Pending;
+    }
+    let s = get_status(1);
+    let is_active = match (s) {
+        Status.Active => true,
+        Status.Inactive => false,
+        Status.Pending => false,
+    };
+    assert(is_active == true);
+}

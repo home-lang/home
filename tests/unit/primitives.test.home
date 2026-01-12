@@ -1,0 +1,48 @@
+// Primitives Test Suite
+
+it("should handle integer literals") {
+    let x = 42;
+    let y = -17;
+    let z = 0;
+    assert(x == 42);
+    assert(y == -17);
+    assert(z == 0);
+}
+
+it("should handle float literals") {
+    let pi = 3.14159;
+    let neg = -2.5;
+    assert(pi > 3.0);
+    assert(neg < 0.0);
+}
+
+it("should handle boolean literals") {
+    let t = true;
+    let f = false;
+    assert(t == true);
+    assert(f == false);
+    assert(t != f);
+}
+
+it("should handle string literals") {
+    let hello = "Hello";
+    let world = "World";
+    assert(hello == "Hello");
+    assert(world == "World");
+    assert(hello != world);
+}
+
+it("should handle null values") {
+    let nothing = null;
+    let fallback = nothing ?? "default";
+    assert(fallback == "default");
+}
+
+it("should support type annotations") {
+    let a: i32 = 100;
+    let b: f64 = 3.14;
+    let c: bool = true;
+    let d: string = "test";
+    assert(a == 100);
+    assert(c == true);
+}
