@@ -1,0 +1,421 @@
+// WebSocket Test Suite
+
+// ============================================================================
+// WEBSOCKET MESSAGE TYPES
+// ============================================================================
+
+it("should identify text message") {
+    let msg = ws::Message::text("hello");
+    assert(msg.is_text() == true);
+    assert(msg.is_binary() == false);
+    assert(msg.as_text() == "hello");
+}
+
+it("should identify binary message") {
+    let data = [0x01, 0x02, 0x03];
+    let msg = ws::Message::binary(data);
+    assert(msg.is_binary() == true);
+    assert(msg.is_text() == false);
+}
+
+it("should identify ping message") {
+    let msg = ws::Message::ping([]);
+    assert(msg.is_ping() == true);
+}
+
+it("should identify pong message") {
+    let msg = ws::Message::pong([]);
+    assert(msg.is_pong() == true);
+}
+
+it("should identify close message") {
+    let msg = ws::Message::close(1000, "normal closure");
+    assert(msg.is_close() == true);
+}
+
+// ============================================================================
+// FRAME ENCODING
+// ============================================================================
+
+it("should create text frame") {
+    let frame = ws::Frame::text("hello", true);
+    assert(frame.opcode() == ws::Opcode::Text);
+    assert(frame.is_final() == true);
+    assert(frame.payload() == "hello".as_bytes());
+}
+
+it("should create binary frame") {
+    let data = [0x01, 0x02, 0x03];
+    let frame = ws::Frame::binary(data, true);
+    assert(frame.opcode() == ws::Opcode::Binary);
+}
+
+it("should create continuation frame") {
+    let frame = ws::Frame::continuation([0x01], false);
+    assert(frame.opcode() == ws::Opcode::Continuation);
+    assert(frame.is_final() == false);
+}
+
+it("should create control frames") {
+    let ping = ws::Frame::ping([]);
+    let pong = ws::Frame::pong([]);
+    let close = ws::Frame::close(1000);
+
+    assert(ping.opcode() == ws::Opcode::Ping);
+    assert(pong.opcode() == ws::Opcode::Pong);
+    assert(close.opcode() == ws::Opcode::Close);
+}
+
+// ============================================================================
+// FRAME MASKING
+// ============================================================================
+
+it("should mask client frames") {
+    let frame = ws::Frame::text("hello", true);
+    frame.set_mask(true);
+    let encoded = frame.encode();
+    // Client frames must be masked
+    assert((encoded[1] & 0x80) != 0);
+}
+
+it("should not mask server frames") {
+    let frame = ws::Frame::text("hello", true);
+    frame.set_mask(false);
+    let encoded = frame.encode();
+    // Server frames must not be masked
+    assert((encoded[1] & 0x80) == 0);
+}
+
+// ============================================================================
+// PAYLOAD LENGTH ENCODING
+// ============================================================================
+
+it("should encode small payload") {
+    let small = "hi";  // 2 bytes
+    let frame = ws::Frame::text(small, true);
+    let encoded = frame.encode();
+    assert((encoded[1] & 0x7F) == 2);
+}
+
+it("should encode medium payload with 16-bit length") {
+    let medium = "x".repeat(200);  // 200 bytes
+    let frame = ws::Frame::text(medium, true);
+    let encoded = frame.encode();
+    assert((encoded[1] & 0x7F) == 126);
+}
+
+it("should encode large payload with 64-bit length") {
+    let large = "x".repeat(70000);  // > 65535 bytes
+    let frame = ws::Frame::text(large, true);
+    let encoded = frame.encode();
+    assert((encoded[1] & 0x7F) == 127);
+}
+
+// ============================================================================
+// CLOSE CODES
+// ============================================================================
+
+it("should use normal closure code") {
+    let frame = ws::Frame::close(1000);
+    assert(frame.close_code() == 1000);
+}
+
+it("should use going away code") {
+    let frame = ws::Frame::close(1001);
+    assert(frame.close_code() == 1001);
+}
+
+it("should use protocol error code") {
+    let frame = ws::Frame::close(1002);
+    assert(frame.close_code() == 1002);
+}
+
+it("should include close reason") {
+    let frame = ws::Frame::close_with_reason(1000, "goodbye");
+    assert(frame.close_reason() == "goodbye");
+}
+
+// ============================================================================
+// MESSAGE FRAGMENTATION
+// ============================================================================
+
+it("should fragment large message") {
+    let large = "x".repeat(100000);
+    let frames = ws::fragment_message(large, 16384);
+    assert(frames.len() > 1);
+    assert(frames[0].opcode() == ws::Opcode::Text);
+    assert(frames[0].is_final() == false);
+    for (i in 1..frames.len() - 1) {
+        assert(frames[i].opcode() == ws::Opcode::Continuation);
+        assert(frames[i].is_final() == false);
+    }
+    assert(frames[frames.len() - 1].is_final() == true);
+}
+
+it("should reassemble fragmented message") {
+    let fragments = [
+        ws::Frame::text("hel", false),
+        ws::Frame::continuation("lo".as_bytes(), false),
+        ws::Frame::continuation(" world".as_bytes(), true),
+    ];
+    let assembled = ws::reassemble(fragments);
+    assert(assembled.as_text() == "hello world");
+}
+
+// ============================================================================
+// CLIENT CONNECTION
+// ============================================================================
+
+it("should create client config") {
+    let config = ws::ClientConfig {
+        url: "ws://localhost:8080",
+        protocols: ["chat", "json"],
+        headers: { "Authorization": "Bearer token" },
+    };
+    assert(config.url == "ws://localhost:8080");
+    assert(config.protocols.len() == 2);
+}
+
+it("should parse WebSocket URL") {
+    let url = ws::parse_url("wss://example.com:443/chat?token=abc");
+    assert(url.scheme == "wss");
+    assert(url.host == "example.com");
+    assert(url.port == 443);
+    assert(url.path == "/chat");
+    assert(url.query == "token=abc");
+}
+
+it("should use default ports") {
+    let ws_url = ws::parse_url("ws://example.com/path");
+    let wss_url = ws::parse_url("wss://example.com/path");
+    assert(ws_url.port == 80);
+    assert(wss_url.port == 443);
+}
+
+// ============================================================================
+// HANDSHAKE
+// ============================================================================
+
+it("should generate handshake key") {
+    let key = ws::generate_key();
+    assert(key.len() == 24);  // Base64 encoded 16 bytes
+}
+
+it("should compute accept key") {
+    let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let accept_key = ws::compute_accept_key(client_key);
+    assert(accept_key == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+}
+
+it("should build handshake request") {
+    let request = ws::build_handshake_request("example.com", "/chat", "key123");
+    assert(request.contains("GET /chat HTTP/1.1"));
+    assert(request.contains("Upgrade: websocket"));
+    assert(request.contains("Connection: Upgrade"));
+    assert(request.contains("Sec-WebSocket-Key: key123"));
+    assert(request.contains("Sec-WebSocket-Version: 13"));
+}
+
+it("should validate handshake response") {
+    let response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                   "Upgrade: websocket\r\n" +
+                   "Connection: Upgrade\r\n" +
+                   "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
+    let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
+    assert(ws::validate_handshake(response, client_key) == true);
+}
+
+// ============================================================================
+// SERVER CONFIGURATION
+// ============================================================================
+
+it("should create server config") {
+    let config = ws::ServerConfig {
+        host: "0.0.0.0",
+        port: 8080,
+        max_connections: 1000,
+        max_message_size: 1024 * 1024,
+        ping_interval: 30.seconds,
+    };
+    assert(config.port == 8080);
+    assert(config.max_connections == 1000);
+}
+
+// ============================================================================
+// CONNECTION STATE
+// ============================================================================
+
+it("should track connection state") {
+    let conn = ws::Connection::new();
+    assert(conn.state() == ws::State::Connecting);
+}
+
+it("should transition to open state") {
+    let mut conn = ws::Connection::new();
+    conn.set_state(ws::State::Open);
+    assert(conn.state() == ws::State::Open);
+    assert(conn.is_open() == true);
+}
+
+it("should transition to closing state") {
+    let mut conn = ws::Connection::new();
+    conn.set_state(ws::State::Closing);
+    assert(conn.state() == ws::State::Closing);
+    assert(conn.is_closing() == true);
+}
+
+it("should transition to closed state") {
+    let mut conn = ws::Connection::new();
+    conn.set_state(ws::State::Closed);
+    assert(conn.state() == ws::State::Closed);
+    assert(conn.is_closed() == true);
+}
+
+// ============================================================================
+// CHANNEL/ROOM MANAGEMENT
+// ============================================================================
+
+it("should create channel") {
+    let channel = ws::Channel::new("chat-room-1");
+    assert(channel.name() == "chat-room-1");
+    assert(channel.member_count() == 0);
+}
+
+it("should add member to channel") {
+    let mut channel = ws::Channel::new("room");
+    let client_id = "client-123";
+    channel.join(client_id);
+    assert(channel.member_count() == 1);
+    assert(channel.has_member(client_id) == true);
+}
+
+it("should remove member from channel") {
+    let mut channel = ws::Channel::new("room");
+    let client_id = "client-123";
+    channel.join(client_id);
+    channel.leave(client_id);
+    assert(channel.member_count() == 0);
+    assert(channel.has_member(client_id) == false);
+}
+
+it("should broadcast to channel") {
+    let mut channel = ws::Channel::new("room");
+    channel.join("client-1");
+    channel.join("client-2");
+    channel.join("client-3");
+
+    let message = ws::Message::text("Hello everyone!");
+    let recipients = channel.broadcast(message);
+    assert(recipients.len() == 3);
+}
+
+it("should broadcast excluding sender") {
+    let mut channel = ws::Channel::new("room");
+    channel.join("client-1");
+    channel.join("client-2");
+    channel.join("client-3");
+
+    let message = ws::Message::text("Hello!");
+    let recipients = channel.broadcast_except(message, "client-1");
+    assert(recipients.len() == 2);
+}
+
+// ============================================================================
+// PING/PONG KEEPALIVE
+// ============================================================================
+
+it("should track last ping time") {
+    let mut conn = ws::Connection::new();
+    conn.send_ping([]);
+    assert(conn.last_ping_time() != null);
+}
+
+it("should respond to ping with pong") {
+    let mut handler = ws::PingPongHandler::new();
+    let ping = ws::Frame::ping([1, 2, 3]);
+    let response = handler.handle_ping(ping);
+    assert(response.opcode() == ws::Opcode::Pong);
+    assert(response.payload() == [1, 2, 3]);
+}
+
+it("should detect stale connections") {
+    let mut conn = ws::Connection::new();
+    conn.last_pong_time = now() - 60.seconds;
+    assert(conn.is_stale(30.seconds) == true);
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle invalid frame") {
+    let invalid = [0xFF, 0xFF];
+    let result = ws::Frame::decode(invalid);
+    assert(result.is_err() == true);
+}
+
+it("should reject oversized message") {
+    let config = ws::ServerConfig { max_message_size: 100 };
+    let large_message = "x".repeat(200);
+    let result = ws::validate_message_size(large_message, config);
+    assert(result.is_err() == true);
+}
+
+it("should reject invalid close code") {
+    // Reserved close codes should be rejected
+    let result = ws::validate_close_code(1004);  // Reserved
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// SUBPROTOCOL NEGOTIATION
+// ============================================================================
+
+it("should negotiate subprotocol") {
+    let client_protocols = ["graphql-ws", "chat"];
+    let server_protocols = ["chat", "echo"];
+    let selected = ws::negotiate_protocol(client_protocols, server_protocols);
+    assert(selected == Some("chat"));
+}
+
+it("should return None when no match") {
+    let client_protocols = ["protocol-a"];
+    let server_protocols = ["protocol-b"];
+    let selected = ws::negotiate_protocol(client_protocols, server_protocols);
+    assert(selected == None);
+}
+
+// ============================================================================
+// EXTENSION NEGOTIATION
+// ============================================================================
+
+it("should negotiate compression extension") {
+    let client_extensions = ["permessage-deflate"];
+    let server_extensions = ["permessage-deflate"];
+    let selected = ws::negotiate_extensions(client_extensions, server_extensions);
+    assert(selected.contains("permessage-deflate"));
+}
+
+// ============================================================================
+// MESSAGE QUEUE
+// ============================================================================
+
+it("should queue outgoing messages") {
+    let mut queue = ws::MessageQueue::new();
+    queue.enqueue(ws::Message::text("first"));
+    queue.enqueue(ws::Message::text("second"));
+    assert(queue.len() == 2);
+}
+
+it("should dequeue in order") {
+    let mut queue = ws::MessageQueue::new();
+    queue.enqueue(ws::Message::text("first"));
+    queue.enqueue(ws::Message::text("second"));
+    assert(queue.dequeue().as_text() == "first");
+    assert(queue.dequeue().as_text() == "second");
+}
+
+it("should check if queue is empty") {
+    let queue = ws::MessageQueue::new();
+    assert(queue.is_empty() == true);
+}

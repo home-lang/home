@@ -1,0 +1,353 @@
+// Validation Test Suite
+
+// ============================================================================
+// STRING VALIDATION
+// ============================================================================
+
+it("should validate non-empty string") {
+    assert(validate::non_empty("hello") == true);
+    assert(validate::non_empty("") == false);
+    assert(validate::non_empty("   ") == false);
+}
+
+it("should validate min length") {
+    assert(validate::min_length("hello", 3) == true);
+    assert(validate::min_length("hi", 3) == false);
+    assert(validate::min_length("hello", 5) == true);
+}
+
+it("should validate max length") {
+    assert(validate::max_length("hi", 5) == true);
+    assert(validate::max_length("hello world", 5) == false);
+}
+
+it("should validate length range") {
+    assert(validate::length_between("hello", 3, 10) == true);
+    assert(validate::length_between("hi", 3, 10) == false);
+    assert(validate::length_between("hello world!", 3, 10) == false);
+}
+
+it("should validate exact length") {
+    assert(validate::length("hello", 5) == true);
+    assert(validate::length("hello", 4) == false);
+}
+
+// ============================================================================
+// EMAIL VALIDATION
+// ============================================================================
+
+it("should validate email format") {
+    assert(validate::email("user@example.com") == true);
+    assert(validate::email("user.name@example.co.uk") == true);
+    assert(validate::email("user+tag@example.com") == true);
+}
+
+it("should reject invalid emails") {
+    assert(validate::email("invalid") == false);
+    assert(validate::email("@example.com") == false);
+    assert(validate::email("user@") == false);
+    assert(validate::email("user@.com") == false);
+    assert(validate::email("user name@example.com") == false);
+}
+
+// ============================================================================
+// URL VALIDATION
+// ============================================================================
+
+it("should validate URL format") {
+    assert(validate::url("https://example.com") == true);
+    assert(validate::url("http://example.com/path") == true);
+    assert(validate::url("https://example.com:8080/path?query=1") == true);
+}
+
+it("should reject invalid URLs") {
+    assert(validate::url("not a url") == false);
+    assert(validate::url("example.com") == false);  // Missing scheme
+    assert(validate::url("://example.com") == false);
+}
+
+it("should validate URL with specific schemes") {
+    assert(validate::url_with_schemes("https://example.com", ["https"]) == true);
+    assert(validate::url_with_schemes("http://example.com", ["https"]) == false);
+    assert(validate::url_with_schemes("ftp://example.com", ["http", "https"]) == false);
+}
+
+// ============================================================================
+// NUMERIC VALIDATION
+// ============================================================================
+
+it("should validate numeric string") {
+    assert(validate::numeric("12345") == true);
+    assert(validate::numeric("12.34") == false);  // Integers only
+    assert(validate::numeric("12a34") == false);
+}
+
+it("should validate decimal string") {
+    assert(validate::decimal("12.34") == true);
+    assert(validate::decimal("12") == true);
+    assert(validate::decimal("12.") == false);
+    assert(validate::decimal(".34") == false);
+}
+
+it("should validate integer range") {
+    assert(validate::int_range(5, 1, 10) == true);
+    assert(validate::int_range(0, 1, 10) == false);
+    assert(validate::int_range(11, 1, 10) == false);
+}
+
+it("should validate positive number") {
+    assert(validate::positive(5) == true);
+    assert(validate::positive(0) == false);
+    assert(validate::positive(-5) == false);
+}
+
+it("should validate non-negative number") {
+    assert(validate::non_negative(5) == true);
+    assert(validate::non_negative(0) == true);
+    assert(validate::non_negative(-5) == false);
+}
+
+// ============================================================================
+// DATE/TIME VALIDATION
+// ============================================================================
+
+it("should validate date format") {
+    assert(validate::date("2023-12-25") == true);
+    assert(validate::date("2023-13-01") == false);  // Invalid month
+    assert(validate::date("2023-02-30") == false);  // Invalid day
+}
+
+it("should validate custom date format") {
+    assert(validate::date_format("25/12/2023", "DD/MM/YYYY") == true);
+    assert(validate::date_format("12-25-2023", "MM-DD-YYYY") == true);
+}
+
+it("should validate time format") {
+    assert(validate::time("14:30:00") == true);
+    assert(validate::time("25:00:00") == false);  // Invalid hour
+    assert(validate::time("14:60:00") == false);  // Invalid minute
+}
+
+it("should validate datetime") {
+    assert(validate::datetime("2023-12-25T14:30:00Z") == true);
+    assert(validate::datetime("2023-12-25T14:30:00+05:30") == true);
+}
+
+it("should validate date is in past") {
+    assert(validate::in_past("2020-01-01") == true);
+    assert(validate::in_past("2099-01-01") == false);
+}
+
+it("should validate date is in future") {
+    assert(validate::in_future("2099-01-01") == true);
+    assert(validate::in_future("2020-01-01") == false);
+}
+
+// ============================================================================
+// PATTERN VALIDATION
+// ============================================================================
+
+it("should validate against regex") {
+    assert(validate::matches("abc123", "^[a-z]+[0-9]+$") == true);
+    assert(validate::matches("123abc", "^[a-z]+[0-9]+$") == false);
+}
+
+it("should validate alphanumeric") {
+    assert(validate::alphanumeric("abc123") == true);
+    assert(validate::alphanumeric("abc-123") == false);
+}
+
+it("should validate alpha only") {
+    assert(validate::alpha("abcABC") == true);
+    assert(validate::alpha("abc123") == false);
+}
+
+it("should validate slug format") {
+    assert(validate::slug("hello-world") == true);
+    assert(validate::slug("hello_world") == true);
+    assert(validate::slug("Hello World") == false);
+}
+
+// ============================================================================
+// PHONE NUMBER VALIDATION
+// ============================================================================
+
+it("should validate phone number") {
+    assert(validate::phone("+1-555-555-5555") == true);
+    assert(validate::phone("555-555-5555") == true);
+    assert(validate::phone("5555555555") == true);
+}
+
+it("should validate phone with country code") {
+    assert(validate::phone_e164("+14155552671") == true);
+    assert(validate::phone_e164("14155552671") == false);  // Missing +
+}
+
+// ============================================================================
+// CREDIT CARD VALIDATION
+// ============================================================================
+
+it("should validate credit card number with Luhn") {
+    assert(validate::credit_card("4532015112830366") == true);  // Valid Luhn
+    assert(validate::credit_card("1234567890123456") == false);  // Invalid
+}
+
+it("should detect card type") {
+    assert(validate::card_type("4532015112830366") == "visa");
+    assert(validate::card_type("5425233430109903") == "mastercard");
+    assert(validate::card_type("378282246310005") == "amex");
+}
+
+// ============================================================================
+// IP ADDRESS VALIDATION
+// ============================================================================
+
+it("should validate IPv4 address") {
+    assert(validate::ipv4("192.168.1.1") == true);
+    assert(validate::ipv4("255.255.255.255") == true);
+    assert(validate::ipv4("256.1.1.1") == false);
+    assert(validate::ipv4("192.168.1") == false);
+}
+
+it("should validate IPv6 address") {
+    assert(validate::ipv6("::1") == true);
+    assert(validate::ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334") == true);
+    assert(validate::ipv6("not an ip") == false);
+}
+
+it("should validate any IP address") {
+    assert(validate::ip("192.168.1.1") == true);
+    assert(validate::ip("::1") == true);
+    assert(validate::ip("not an ip") == false);
+}
+
+// ============================================================================
+// UUID VALIDATION
+// ============================================================================
+
+it("should validate UUID format") {
+    assert(validate::uuid("550e8400-e29b-41d4-a716-446655440000") == true);
+    assert(validate::uuid("not-a-uuid") == false);
+    assert(validate::uuid("550e8400-e29b-41d4-a716") == false);  // Too short
+}
+
+it("should validate UUID version") {
+    assert(validate::uuid_v4("550e8400-e29b-41d4-a716-446655440000") == true);
+    assert(validate::uuid_v4("550e8400-e29b-11d4-a716-446655440000") == false);  // v1
+}
+
+// ============================================================================
+// FILE PATH VALIDATION
+// ============================================================================
+
+it("should validate absolute path") {
+    assert(validate::absolute_path("/usr/local/bin") == true);
+    assert(validate::absolute_path("relative/path") == false);
+}
+
+it("should validate file extension") {
+    assert(validate::file_extension("image.png", ["png", "jpg", "gif"]) == true);
+    assert(validate::file_extension("document.pdf", ["png", "jpg"]) == false);
+}
+
+// ============================================================================
+// JSON VALIDATION
+// ============================================================================
+
+it("should validate JSON string") {
+    assert(validate::json("{\"key\": \"value\"}") == true);
+    assert(validate::json("[1, 2, 3]") == true);
+    assert(validate::json("not json") == false);
+}
+
+// ============================================================================
+// OBJECT VALIDATION
+// ============================================================================
+
+it("should validate required fields") {
+    let obj = { name: "John", age: 30 };
+    assert(validate::has_fields(obj, ["name", "age"]) == true);
+    assert(validate::has_fields(obj, ["name", "email"]) == false);
+}
+
+it("should validate field types") {
+    let obj = { name: "John", age: 30 };
+    let schema = {
+        name: validate::Type::String,
+        age: validate::Type::Int,
+    };
+    assert(validate::schema(obj, schema) == true);
+}
+
+// ============================================================================
+// ARRAY VALIDATION
+// ============================================================================
+
+it("should validate array length") {
+    assert(validate::array_length([1, 2, 3], min: 1, max: 5) == true);
+    assert(validate::array_length([1, 2, 3], min: 5) == false);
+}
+
+it("should validate array items") {
+    assert(validate::array_of_type([1, 2, 3], validate::Type::Int) == true);
+    assert(validate::array_of_type([1, "2", 3], validate::Type::Int) == false);
+}
+
+it("should validate unique items") {
+    assert(validate::unique([1, 2, 3]) == true);
+    assert(validate::unique([1, 2, 2]) == false);
+}
+
+// ============================================================================
+// CHAINED VALIDATION
+// ============================================================================
+
+it("should chain validators") {
+    let validator = validate::string()
+        .min_length(3)
+        .max_length(20)
+        .matches("^[a-zA-Z]+$");
+
+    assert(validator.validate("hello") == true);
+    assert(validator.validate("hi") == false);
+    assert(validator.validate("hello123") == false);
+}
+
+it("should return all errors") {
+    let validator = validate::string()
+        .min_length(5)
+        .max_length(10);
+
+    let result = validator.validate_with_errors("hi");
+    assert(result.is_valid == false);
+    assert(result.errors.len() > 0);
+}
+
+// ============================================================================
+// CUSTOM VALIDATORS
+// ============================================================================
+
+it("should use custom validator") {
+    let is_even = |n| n % 2 == 0;
+    assert(validate::custom(4, is_even) == true);
+    assert(validate::custom(5, is_even) == false);
+}
+
+it("should combine validators with AND") {
+    let validator = validate::all([
+        validate::min_length(3),
+        validate::max_length(10),
+    ]);
+    assert(validator.validate("hello") == true);
+}
+
+it("should combine validators with OR") {
+    let validator = validate::any([
+        validate::email(),
+        validate::url(),
+    ]);
+    assert(validator.validate("user@example.com") == true);
+    assert(validator.validate("https://example.com") == true);
+    assert(validator.validate("not valid") == false);
+}
+

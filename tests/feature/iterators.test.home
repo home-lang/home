@@ -1,0 +1,503 @@
+// Iterator Test Suite
+
+// ============================================================================
+// BASIC ITERATION
+// ============================================================================
+
+it("should iterate over array") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
+    assert(sum == 15);
+}
+
+it("should iterate over string characters") {
+    let s = "hello";
+    let mut count = 0;
+    for (c in s) {
+        count = count + 1;
+    }
+    assert(count == 5);
+}
+
+it("should iterate with index") {
+    let arr = ["a", "b", "c"];
+    let mut result = "";
+    for (i, v in arr.enumerate()) {
+        result = result + i.to_string() + v;
+    }
+    assert(result == "0a1b2c");
+}
+
+// ============================================================================
+// MAP OPERATIONS
+// ============================================================================
+
+it("should map values") {
+    let arr = [1, 2, 3];
+    let doubled = arr.map(|x| x * 2);
+    assert(doubled[0] == 2);
+    assert(doubled[1] == 4);
+    assert(doubled[2] == 6);
+}
+
+it("should chain map operations") {
+    let arr = [1, 2, 3];
+    let result = arr.map(|x| x * 2).map(|x| x + 1);
+    assert(result[0] == 3);
+    assert(result[1] == 5);
+    assert(result[2] == 7);
+}
+
+it("should map to different type") {
+    let numbers = [1, 2, 3];
+    let strings = numbers.map(|x| x.to_string());
+    assert(strings[0] == "1");
+    assert(strings[1] == "2");
+}
+
+// ============================================================================
+// FILTER OPERATIONS
+// ============================================================================
+
+it("should filter values") {
+    let arr = [1, 2, 3, 4, 5];
+    let evens = arr.filter(|x| x % 2 == 0);
+    assert(evens.len() == 2);
+    assert(evens[0] == 2);
+    assert(evens[1] == 4);
+}
+
+it("should filter with complex predicate") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let result = arr.filter(|x| x > 3 and x < 8);
+    assert(result.len() == 4);
+    assert(result[0] == 4);
+    assert(result[3] == 7);
+}
+
+it("should filter to empty") {
+    let arr = [1, 2, 3];
+    let result = arr.filter(|x| x > 10);
+    assert(result.len() == 0);
+}
+
+// ============================================================================
+// MAP AND FILTER COMBINED
+// ============================================================================
+
+it("should chain map and filter") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr
+        .filter(|x| x % 2 == 1)  // [1, 3, 5]
+        .map(|x| x * 2);         // [2, 6, 10]
+    assert(result.len() == 3);
+    assert(result[0] == 2);
+    assert(result[1] == 6);
+    assert(result[2] == 10);
+}
+
+it("should filter then map") {
+    let words = ["hello", "hi", "world", "w"];
+    let result = words
+        .filter(|s| s.len() > 1)
+        .map(|s| s.upper());
+    assert(result[0] == "HELLO");
+    assert(result[1] == "HI");
+    assert(result[2] == "WORLD");
+}
+
+// ============================================================================
+// REDUCE/FOLD OPERATIONS
+// ============================================================================
+
+it("should reduce to sum") {
+    let arr = [1, 2, 3, 4, 5];
+    let sum = arr.reduce(0, |acc, x| acc + x);
+    assert(sum == 15);
+}
+
+it("should reduce to product") {
+    let arr = [1, 2, 3, 4];
+    let product = arr.reduce(1, |acc, x| acc * x);
+    assert(product == 24);
+}
+
+it("should reduce to max") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let max = arr.reduce(arr[0], |acc, x| if (x > acc) { x } else { acc });
+    assert(max == 9);
+}
+
+it("should reduce to min") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let min = arr.reduce(arr[0], |acc, x| if (x < acc) { x } else { acc });
+    assert(min == 1);
+}
+
+it("should reduce strings") {
+    let words = ["hello", " ", "world"];
+    let result = words.reduce("", |acc, s| acc + s);
+    assert(result == "hello world");
+}
+
+// ============================================================================
+// FOLD OPERATIONS
+// ============================================================================
+
+it("should fold from left") {
+    let arr = [1, 2, 3];
+    let result = arr.fold_left("", |acc, x| acc + x.to_string());
+    assert(result == "123");
+}
+
+it("should fold from right") {
+    let arr = [1, 2, 3];
+    let result = arr.fold_right("", |x, acc| acc + x.to_string());
+    assert(result == "321");
+}
+
+// ============================================================================
+// FIND OPERATIONS
+// ============================================================================
+
+it("should find first matching element") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.find(|x| x > 3);
+    assert(result.is_some() == true);
+    assert(result.unwrap() == 4);
+}
+
+it("should return None when not found") {
+    let arr = [1, 2, 3];
+    let result = arr.find(|x| x > 10);
+    assert(result.is_none() == true);
+}
+
+it("should find index") {
+    let arr = ["a", "b", "c", "d"];
+    let idx = arr.find_index(|x| x == "c");
+    assert(idx.unwrap() == 2);
+}
+
+// ============================================================================
+// ANY AND ALL
+// ============================================================================
+
+it("should check if any match") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.any(|x| x > 4) == true);
+    assert(arr.any(|x| x > 10) == false);
+}
+
+it("should check if all match") {
+    let arr = [2, 4, 6, 8];
+    assert(arr.all(|x| x % 2 == 0) == true);
+    assert(arr.all(|x| x > 5) == false);
+}
+
+it("should handle empty array for any") {
+    let arr: [i32] = [];
+    assert(arr.any(|x| x > 0) == false);
+}
+
+it("should handle empty array for all") {
+    let arr: [i32] = [];
+    assert(arr.all(|x| x > 0) == true);  // Vacuously true
+}
+
+// ============================================================================
+// COUNT AND SUM
+// ============================================================================
+
+it("should count elements") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.count() == 5);
+}
+
+it("should count matching elements") {
+    let arr = [1, 2, 3, 4, 5];
+    let even_count = arr.count_where(|x| x % 2 == 0);
+    assert(even_count == 2);
+}
+
+it("should sum elements") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.sum() == 15);
+}
+
+// ============================================================================
+// TAKE AND SKIP
+// ============================================================================
+
+it("should take first n elements") {
+    let arr = [1, 2, 3, 4, 5];
+    let first_three = arr.take(3);
+    assert(first_three.len() == 3);
+    assert(first_three[0] == 1);
+    assert(first_three[2] == 3);
+}
+
+it("should skip first n elements") {
+    let arr = [1, 2, 3, 4, 5];
+    let after_two = arr.skip(2);
+    assert(after_two.len() == 3);
+    assert(after_two[0] == 3);
+    assert(after_two[2] == 5);
+}
+
+it("should take while condition is true") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.take_while(|x| x < 4);
+    assert(result.len() == 3);
+    assert(result[2] == 3);
+}
+
+it("should skip while condition is true") {
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr.skip_while(|x| x < 3);
+    assert(result.len() == 3);
+    assert(result[0] == 3);
+}
+
+// ============================================================================
+// FLATTEN AND FLAT_MAP
+// ============================================================================
+
+it("should flatten nested array") {
+    let nested = [[1, 2], [3, 4], [5]];
+    let flat = nested.flatten();
+    assert(flat.len() == 5);
+    assert(flat[0] == 1);
+    assert(flat[4] == 5);
+}
+
+it("should flat_map") {
+    let arr = [1, 2, 3];
+    let result = arr.flat_map(|x| [x, x * 2]);
+    assert(result.len() == 6);
+    assert(result[0] == 1);
+    assert(result[1] == 2);
+    assert(result[2] == 2);
+    assert(result[3] == 4);
+}
+
+// ============================================================================
+// ZIP OPERATIONS
+// ============================================================================
+
+it("should zip two arrays") {
+    let a = [1, 2, 3];
+    let b = ["a", "b", "c"];
+    let zipped = a.zip(b);
+    assert(zipped.len() == 3);
+    assert(zipped[0] == (1, "a"));
+    assert(zipped[1] == (2, "b"));
+    assert(zipped[2] == (3, "c"));
+}
+
+it("should zip with shorter array") {
+    let a = [1, 2, 3, 4];
+    let b = ["a", "b"];
+    let zipped = a.zip(b);
+    assert(zipped.len() == 2);
+}
+
+it("should zip with function") {
+    let a = [1, 2, 3];
+    let b = [10, 20, 30];
+    let result = a.zip_with(b, |x, y| x + y);
+    assert(result[0] == 11);
+    assert(result[1] == 22);
+    assert(result[2] == 33);
+}
+
+// ============================================================================
+// UNIQUE AND DEDUP
+// ============================================================================
+
+it("should get unique elements") {
+    let arr = [1, 2, 2, 3, 3, 3, 4];
+    let unique = arr.unique();
+    assert(unique.len() == 4);
+    assert(unique[0] == 1);
+    assert(unique[3] == 4);
+}
+
+it("should dedup consecutive") {
+    let arr = [1, 1, 2, 2, 2, 3, 1, 1];
+    let deduped = arr.dedup();
+    assert(deduped.len() == 4);
+    assert(deduped[0] == 1);
+    assert(deduped[1] == 2);
+    assert(deduped[2] == 3);
+    assert(deduped[3] == 1);
+}
+
+// ============================================================================
+// PARTITION
+// ============================================================================
+
+it("should partition by predicate") {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let (evens, odds) = arr.partition(|x| x % 2 == 0);
+    assert(evens.len() == 3);
+    assert(odds.len() == 3);
+    assert(evens[0] == 2);
+    assert(odds[0] == 1);
+}
+
+// ============================================================================
+// GROUPING
+// ============================================================================
+
+it("should group by key") {
+    let words = ["apple", "banana", "apricot", "blueberry"];
+    let grouped = words.group_by(|s| s[0]);
+    assert(grouped["a"].len() == 2);
+    assert(grouped["b"].len() == 2);
+}
+
+// ============================================================================
+// SORTING
+// ============================================================================
+
+it("should sort ascending") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let sorted = arr.sorted();
+    assert(sorted[0] == 1);
+    assert(sorted[7] == 9);
+}
+
+it("should sort descending") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let sorted = arr.sorted_desc();
+    assert(sorted[0] == 9);
+    assert(sorted[7] == 1);
+}
+
+it("should sort by key") {
+    let words = ["hi", "hello", "a", "world"];
+    let sorted = words.sorted_by(|s| s.len());
+    assert(sorted[0] == "a");
+    assert(sorted[3] == "world");
+}
+
+// ============================================================================
+// REVERSING
+// ============================================================================
+
+it("should reverse array") {
+    let arr = [1, 2, 3, 4, 5];
+    let reversed = arr.reversed();
+    assert(reversed[0] == 5);
+    assert(reversed[4] == 1);
+}
+
+// ============================================================================
+// CHUNKING
+// ============================================================================
+
+it("should chunk into groups") {
+    let arr = [1, 2, 3, 4, 5, 6, 7];
+    let chunks = arr.chunks(3);
+    assert(chunks.len() == 3);
+    assert(chunks[0].len() == 3);
+    assert(chunks[2].len() == 1);
+}
+
+it("should window over array") {
+    let arr = [1, 2, 3, 4, 5];
+    let windows = arr.windows(3);
+    assert(windows.len() == 3);
+    assert(windows[0][0] == 1);
+    assert(windows[0][2] == 3);
+    assert(windows[2][0] == 3);
+    assert(windows[2][2] == 5);
+}
+
+// ============================================================================
+// FIRST AND LAST
+// ============================================================================
+
+it("should get first element") {
+    let arr = [1, 2, 3];
+    assert(arr.first().unwrap() == 1);
+}
+
+it("should get last element") {
+    let arr = [1, 2, 3];
+    assert(arr.last().unwrap() == 3);
+}
+
+it("should return None for empty first") {
+    let arr: [i32] = [];
+    assert(arr.first().is_none() == true);
+}
+
+it("should return None for empty last") {
+    let arr: [i32] = [];
+    assert(arr.last().is_none() == true);
+}
+
+// ============================================================================
+// NTH ELEMENT
+// ============================================================================
+
+it("should get nth element") {
+    let arr = [10, 20, 30, 40, 50];
+    assert(arr.nth(2).unwrap() == 30);
+}
+
+it("should return None for out of bounds") {
+    let arr = [1, 2, 3];
+    assert(arr.nth(10).is_none() == true);
+}
+
+// ============================================================================
+// POSITION
+// ============================================================================
+
+it("should find position of element") {
+    let arr = [10, 20, 30, 40];
+    assert(arr.position(|x| x == 30).unwrap() == 2);
+}
+
+it("should find last position") {
+    let arr = [1, 2, 3, 2, 1];
+    assert(arr.rposition(|x| x == 2).unwrap() == 3);
+}
+
+// ============================================================================
+// LAZY EVALUATION
+// ============================================================================
+
+it("should lazily evaluate chain") {
+    let mut count = 0;
+    let arr = [1, 2, 3, 4, 5];
+    let result = arr
+        .iter()
+        .map(|x| { count = count + 1; x * 2 })
+        .take(2)
+        .collect();
+    assert(result.len() == 2);
+    assert(count == 2);  // Only 2 elements were mapped
+}
+
+// ============================================================================
+// COLLECT INTO DIFFERENT TYPES
+// ============================================================================
+
+it("should collect into set") {
+    let arr = [1, 2, 2, 3, 3, 3];
+    let set = arr.iter().collect::<Set<i32>>();
+    assert(set.len() == 3);
+}
+
+it("should collect into map") {
+    let pairs = [(1, "one"), (2, "two"), (3, "three")];
+    let map = pairs.iter().collect::<Map<i32, string>>();
+    assert(map[1] == "one");
+}

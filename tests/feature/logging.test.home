@@ -1,0 +1,335 @@
+// Logging Test Suite
+
+// ============================================================================
+// BASIC LOGGING
+// ============================================================================
+
+it("should log debug message") {
+    log::debug("Debug message");
+    // Should not throw
+}
+
+it("should log info message") {
+    log::info("Info message");
+    // Should not throw
+}
+
+it("should log warning message") {
+    log::warn("Warning message");
+    // Should not throw
+}
+
+it("should log error message") {
+    log::error("Error message");
+    // Should not throw
+}
+
+// ============================================================================
+// LOG LEVELS
+// ============================================================================
+
+it("should have trace level") {
+    assert(log::Level::Trace < log::Level::Debug);
+}
+
+it("should have debug level") {
+    assert(log::Level::Debug < log::Level::Info);
+}
+
+it("should have info level") {
+    assert(log::Level::Info < log::Level::Warn);
+}
+
+it("should have warn level") {
+    assert(log::Level::Warn < log::Level::Error);
+}
+
+it("should have error level") {
+    assert(log::Level::Error > log::Level::Warn);
+}
+
+// ============================================================================
+// LOGGER CONFIGURATION
+// ============================================================================
+
+it("should set log level") {
+    log::set_level(log::Level::Warn);
+    assert(log::level() == log::Level::Warn);
+    log::set_level(log::Level::Info);  // Reset
+}
+
+it("should filter by level") {
+    let logger = log::Logger::new()
+        .level(log::Level::Warn);
+
+    // Below threshold - should be filtered
+    assert(logger.would_log(log::Level::Debug) == false);
+    assert(logger.would_log(log::Level::Info) == false);
+
+    // At or above threshold - should be logged
+    assert(logger.would_log(log::Level::Warn) == true);
+    assert(logger.would_log(log::Level::Error) == true);
+}
+
+// ============================================================================
+// STRUCTURED LOGGING
+// ============================================================================
+
+it("should log with fields") {
+    log::info("User action", {
+        user_id: 123,
+        action: "login",
+        ip: "192.168.1.1",
+    });
+}
+
+it("should log with nested fields") {
+    log::info("Request completed", {
+        request: {
+            method: "GET",
+            path: "/api/users",
+        },
+        response: {
+            status: 200,
+            duration_ms: 45,
+        },
+    });
+}
+
+// ============================================================================
+// FORMATTING
+// ============================================================================
+
+it("should format with interpolation") {
+    let name = "Alice";
+    let count = 5;
+    log::info("User {name} has {count} items");
+}
+
+it("should format numbers") {
+    log::info("Value: {}", 42);
+    log::info("Float: {:.2}", 3.14159);
+}
+
+// ============================================================================
+// TARGETS AND OUTPUTS
+// ============================================================================
+
+it("should log to stdout") {
+    let logger = log::Logger::new()
+        .target(log::Target::Stdout);
+    logger.info("To stdout");
+}
+
+it("should log to stderr") {
+    let logger = log::Logger::new()
+        .target(log::Target::Stderr);
+    logger.error("To stderr");
+}
+
+it("should log to file") {
+    let logger = log::Logger::new()
+        .target(log::Target::File("/tmp/test.log"));
+    logger.info("To file");
+}
+
+it("should log to multiple targets") {
+    let logger = log::Logger::new()
+        .target(log::Target::Stdout)
+        .target(log::Target::File("/tmp/test.log"));
+    logger.info("To multiple targets");
+}
+
+// ============================================================================
+// LOG FORMAT
+// ============================================================================
+
+it("should use JSON format") {
+    let logger = log::Logger::new()
+        .format(log::Format::Json);
+    logger.info("JSON formatted");
+}
+
+it("should use text format") {
+    let logger = log::Logger::new()
+        .format(log::Format::Text);
+    logger.info("Text formatted");
+}
+
+it("should use custom format") {
+    let logger = log::Logger::new()
+        .format("{timestamp} [{level}] {message}");
+    logger.info("Custom formatted");
+}
+
+it("should include timestamp") {
+    let logger = log::Logger::new()
+        .format("{timestamp} {message}");
+    logger.info("With timestamp");
+}
+
+// ============================================================================
+// CONTEXT AND SPANS
+// ============================================================================
+
+it("should create log context") {
+    log::with_context({ request_id: "abc123" }) {
+        log::info("First log");
+        log::info("Second log");
+        // Both logs should include request_id
+    }
+}
+
+it("should create nested context") {
+    log::with_context({ request_id: "abc" }) {
+        log::info("Outer");
+        log::with_context({ user_id: 123 }) {
+            log::info("Inner with both contexts");
+        }
+    }
+}
+
+it("should create span") {
+    let span = log::span("process_request");
+    log::info("Inside span");
+    span.end();
+}
+
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+
+it("should rate limit logs") {
+    let logger = log::Logger::new()
+        .rate_limit(key: "test", max: 5, per: 1.second);
+
+    for i in 0..10 {
+        logger.info("Rate limited message {i}");
+    }
+    // Only first 5 should be logged
+}
+
+// ============================================================================
+// SAMPLING
+// ============================================================================
+
+it("should sample logs") {
+    let logger = log::Logger::new()
+        .sample(rate: 0.1);  // Log 10% of messages
+
+    let logged = 0;
+    for _ in 0..1000 {
+        if logger.would_sample() {
+            logged += 1;
+        }
+    }
+    // Should be roughly 10% (with some variance)
+    assert(logged > 50);
+    assert(logged < 200);
+}
+
+// ============================================================================
+// FILTERING
+// ============================================================================
+
+it("should filter by module") {
+    let logger = log::Logger::new()
+        .filter_module("my_app::db", log::Level::Debug)
+        .filter_module("my_app::http", log::Level::Info);
+}
+
+it("should filter by regex") {
+    let logger = log::Logger::new()
+        .filter_regex("password|secret", log::Action::Redact);
+}
+
+// ============================================================================
+// ASYNC LOGGING
+// ============================================================================
+
+it("should log asynchronously") {
+    let logger = log::AsyncLogger::new()
+        .buffer_size(1000);
+    logger.info("Async log");
+    logger.flush();
+}
+
+// ============================================================================
+// CHILD LOGGERS
+// ============================================================================
+
+it("should create child logger") {
+    let parent = log::Logger::new()
+        .with_field("service", "api");
+
+    let child = parent.child()
+        .with_field("component", "auth");
+
+    child.info("From child logger");
+    // Should have both service and component fields
+}
+
+// ============================================================================
+// ERROR LOGGING
+// ============================================================================
+
+it("should log error with backtrace") {
+    let err = Error::new("Something went wrong");
+    log::error_with_backtrace(err);
+}
+
+it("should log error chain") {
+    let inner = Error::new("Inner error");
+    let outer = Error::new("Outer error").cause(inner);
+    log::error_chain(outer);
+}
+
+// ============================================================================
+// METRICS IN LOGS
+// ============================================================================
+
+it("should log timing") {
+    let timer = log::timer("operation");
+    // Simulate work
+    sleep(10.milliseconds);
+    timer.stop();
+    // Logs duration automatically
+}
+
+it("should log counter") {
+    log::counter("requests_total", 1);
+    log::counter("requests_total", 1, { method: "GET" });
+}
+
+// ============================================================================
+// LOG ROTATION
+// ============================================================================
+
+it("should configure rotation") {
+    let logger = log::Logger::new()
+        .target(log::Target::File("/tmp/app.log"))
+        .rotate(max_size: 10 * 1024 * 1024)  // 10MB
+        .retain(count: 5);
+}
+
+it("should rotate by time") {
+    let logger = log::Logger::new()
+        .target(log::Target::File("/tmp/app.log"))
+        .rotate_daily();
+}
+
+// ============================================================================
+// GLOBAL LOGGER
+// ============================================================================
+
+it("should set global logger") {
+    let logger = log::Logger::new()
+        .level(log::Level::Info);
+    log::set_global(logger);
+}
+
+it("should get global logger") {
+    let logger = log::global();
+    logger.info("Using global logger");
+}
+

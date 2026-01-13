@@ -1,0 +1,447 @@
+// File I/O Test Suite
+
+// ============================================================================
+// PATH OPERATIONS
+// ============================================================================
+
+it("should join paths") {
+    let path = fs::join("home", "user", "documents");
+    assert(path.contains("home"));
+    assert(path.contains("user"));
+    assert(path.contains("documents"));
+}
+
+it("should get file name from path") {
+    let path = "/home/user/document.txt";
+    assert(fs::file_name(path) == "document.txt");
+}
+
+it("should get directory from path") {
+    let path = "/home/user/document.txt";
+    assert(fs::parent(path) == "/home/user");
+}
+
+it("should get file extension") {
+    assert(fs::extension("file.txt") == "txt");
+    assert(fs::extension("archive.tar.gz") == "gz");
+    assert(fs::extension("noextension") == "");
+}
+
+it("should get file stem") {
+    assert(fs::stem("file.txt") == "file");
+    assert(fs::stem("archive.tar.gz") == "archive.tar");
+}
+
+it("should check if path is absolute") {
+    assert(fs::is_absolute("/home/user") == true);
+    assert(fs::is_absolute("relative/path") == false);
+}
+
+it("should normalize path") {
+    let path = fs::normalize("/home/user/../user/./documents");
+    assert(path == "/home/user/documents");
+}
+
+// ============================================================================
+// FILE READING
+// ============================================================================
+
+it("should read file as string") {
+    // Create temp file first
+    let path = fs::temp_file();
+    fs::write(path, "Hello, World!");
+
+    let content = fs::read_string(path);
+    assert(content == "Hello, World!");
+
+    fs::remove(path);
+}
+
+it("should read file as bytes") {
+    let path = fs::temp_file();
+    fs::write_bytes(path, [72, 101, 108, 108, 111]);  // "Hello"
+
+    let bytes = fs::read_bytes(path);
+    assert(bytes.len() == 5);
+    assert(bytes[0] == 72);  // 'H'
+
+    fs::remove(path);
+}
+
+it("should read file lines") {
+    let path = fs::temp_file();
+    fs::write(path, "line1\nline2\nline3");
+
+    let lines = fs::read_lines(path);
+    assert(lines.len() == 3);
+    assert(lines[0] == "line1");
+    assert(lines[1] == "line2");
+    assert(lines[2] == "line3");
+
+    fs::remove(path);
+}
+
+it("should handle empty file") {
+    let path = fs::temp_file();
+    fs::write(path, "");
+
+    let content = fs::read_string(path);
+    assert(content == "");
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// FILE WRITING
+// ============================================================================
+
+it("should write string to file") {
+    let path = fs::temp_file();
+    fs::write(path, "Test content");
+
+    let content = fs::read_string(path);
+    assert(content == "Test content");
+
+    fs::remove(path);
+}
+
+it("should append to file") {
+    let path = fs::temp_file();
+    fs::write(path, "First ");
+    fs::append(path, "Second");
+
+    let content = fs::read_string(path);
+    assert(content == "First Second");
+
+    fs::remove(path);
+}
+
+it("should write bytes to file") {
+    let path = fs::temp_file();
+    fs::write_bytes(path, [65, 66, 67]);  // "ABC"
+
+    let content = fs::read_string(path);
+    assert(content == "ABC");
+
+    fs::remove(path);
+}
+
+it("should write lines to file") {
+    let path = fs::temp_file();
+    let lines = ["line1", "line2", "line3"];
+    fs::write_lines(path, lines);
+
+    let read_lines = fs::read_lines(path);
+    assert(read_lines.len() == 3);
+    assert(read_lines[0] == "line1");
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// FILE OPERATIONS
+// ============================================================================
+
+it("should check if file exists") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    assert(fs::exists(path) == true);
+
+    fs::remove(path);
+    assert(fs::exists(path) == false);
+}
+
+it("should check if path is file") {
+    let file_path = fs::temp_file();
+    fs::write(file_path, "test");
+
+    assert(fs::is_file(file_path) == true);
+    assert(fs::is_dir(file_path) == false);
+
+    fs::remove(file_path);
+}
+
+it("should check if path is directory") {
+    let dir_path = fs::temp_dir();
+
+    assert(fs::is_dir(dir_path) == true);
+    assert(fs::is_file(dir_path) == false);
+
+    fs::remove_dir(dir_path);
+}
+
+it("should get file size") {
+    let path = fs::temp_file();
+    fs::write(path, "12345");  // 5 bytes
+
+    let size = fs::size(path);
+    assert(size == 5);
+
+    fs::remove(path);
+}
+
+it("should copy file") {
+    let src = fs::temp_file();
+    let dst = fs::temp_file();
+    fs::write(src, "Original content");
+
+    fs::copy(src, dst);
+
+    let content = fs::read_string(dst);
+    assert(content == "Original content");
+
+    fs::remove(src);
+    fs::remove(dst);
+}
+
+it("should move/rename file") {
+    let src = fs::temp_file();
+    let dst = fs::temp_path() + "/renamed.txt";
+    fs::write(src, "Move me");
+
+    fs::rename(src, dst);
+
+    assert(fs::exists(src) == false);
+    assert(fs::exists(dst) == true);
+    let content = fs::read_string(dst);
+    assert(content == "Move me");
+
+    fs::remove(dst);
+}
+
+// ============================================================================
+// DIRECTORY OPERATIONS
+// ============================================================================
+
+it("should create directory") {
+    let path = fs::temp_path() + "/test_dir";
+    fs::create_dir(path);
+
+    assert(fs::exists(path) == true);
+    assert(fs::is_dir(path) == true);
+
+    fs::remove_dir(path);
+}
+
+it("should create nested directories") {
+    let path = fs::temp_path() + "/a/b/c";
+    fs::create_dir_all(path);
+
+    assert(fs::exists(path) == true);
+
+    fs::remove_dir_all(fs::temp_path() + "/a");
+}
+
+it("should list directory contents") {
+    let dir = fs::temp_dir();
+    fs::write(fs::join(dir, "file1.txt"), "1");
+    fs::write(fs::join(dir, "file2.txt"), "2");
+    fs::create_dir(fs::join(dir, "subdir"));
+
+    let entries = fs::list_dir(dir);
+    assert(entries.len() == 3);
+
+    fs::remove_dir_all(dir);
+}
+
+it("should list only files") {
+    let dir = fs::temp_dir();
+    fs::write(fs::join(dir, "file1.txt"), "1");
+    fs::write(fs::join(dir, "file2.txt"), "2");
+    fs::create_dir(fs::join(dir, "subdir"));
+
+    let files = fs::list_files(dir);
+    assert(files.len() == 2);
+
+    fs::remove_dir_all(dir);
+}
+
+it("should list only directories") {
+    let dir = fs::temp_dir();
+    fs::write(fs::join(dir, "file.txt"), "1");
+    fs::create_dir(fs::join(dir, "dir1"));
+    fs::create_dir(fs::join(dir, "dir2"));
+
+    let dirs = fs::list_dirs(dir);
+    assert(dirs.len() == 2);
+
+    fs::remove_dir_all(dir);
+}
+
+// ============================================================================
+// GLOB PATTERNS
+// ============================================================================
+
+it("should glob files by extension") {
+    let dir = fs::temp_dir();
+    fs::write(fs::join(dir, "a.txt"), "1");
+    fs::write(fs::join(dir, "b.txt"), "2");
+    fs::write(fs::join(dir, "c.md"), "3");
+
+    let txt_files = fs::glob(dir, "*.txt");
+    assert(txt_files.len() == 2);
+
+    fs::remove_dir_all(dir);
+}
+
+it("should glob recursively") {
+    let dir = fs::temp_dir();
+    fs::write(fs::join(dir, "a.txt"), "1");
+    fs::create_dir(fs::join(dir, "sub"));
+    fs::write(fs::join(dir, "sub", "b.txt"), "2");
+
+    let txt_files = fs::glob(dir, "**/*.txt");
+    assert(txt_files.len() == 2);
+
+    fs::remove_dir_all(dir);
+}
+
+// ============================================================================
+// FILE METADATA
+// ============================================================================
+
+it("should get file modification time") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    let mtime = fs::modified_time(path);
+    assert(mtime > 0);
+
+    fs::remove(path);
+}
+
+it("should get file creation time") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    let ctime = fs::created_time(path);
+    assert(ctime > 0);
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// PERMISSIONS
+// ============================================================================
+
+it("should check if file is readable") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    assert(fs::is_readable(path) == true);
+
+    fs::remove(path);
+}
+
+it("should check if file is writable") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    assert(fs::is_writable(path) == true);
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should return error for non-existent file") {
+    let result = fs::read_string_safe("/nonexistent/path/file.txt");
+    assert(result.is_err() == true);
+}
+
+it("should return error for invalid path") {
+    let result = fs::read_string_safe("");
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// TEMP FILES AND DIRECTORIES
+// ============================================================================
+
+it("should create temp file with content") {
+    let path = fs::temp_file_with("Initial content");
+
+    let content = fs::read_string(path);
+    assert(content == "Initial content");
+
+    fs::remove(path);
+}
+
+it("should create unique temp files") {
+    let path1 = fs::temp_file();
+    let path2 = fs::temp_file();
+
+    assert(path1 != path2);
+
+    fs::remove(path1);
+    fs::remove(path2);
+}
+
+// ============================================================================
+// STREAMING
+// ============================================================================
+
+it("should read file in chunks") {
+    let path = fs::temp_file();
+    fs::write(path, "Hello World from a longer string");
+
+    let reader = fs::open(path, "r");
+    let chunk1 = reader.read(5);  // "Hello"
+    let chunk2 = reader.read(6);  // " World"
+    reader.close();
+
+    assert(chunk1 == "Hello");
+    assert(chunk2 == " World");
+
+    fs::remove(path);
+}
+
+it("should write file incrementally") {
+    let path = fs::temp_file();
+    let writer = fs::open(path, "w");
+    writer.write("Hello ");
+    writer.write("World");
+    writer.close();
+
+    let content = fs::read_string(path);
+    assert(content == "Hello World");
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// FILE LOCKING
+// ============================================================================
+
+it("should lock file for exclusive access") {
+    let path = fs::temp_file();
+    fs::write(path, "test");
+
+    let handle = fs::open_locked(path, "rw");
+    assert(handle.is_locked() == true);
+    handle.close();
+
+    fs::remove(path);
+}
+
+// ============================================================================
+// WATCH FOR CHANGES
+// ============================================================================
+
+it("should detect file modification") {
+    let path = fs::temp_file();
+    fs::write(path, "initial");
+
+    let initial_mtime = fs::modified_time(path);
+
+    // Wait a bit and modify
+    fs::write(path, "modified");
+
+    let new_mtime = fs::modified_time(path);
+    assert(new_mtime >= initial_mtime);
+
+    fs::remove(path);
+}

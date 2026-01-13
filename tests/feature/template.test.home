@@ -1,0 +1,413 @@
+// Template Engine Test Suite
+
+// ============================================================================
+// BASIC INTERPOLATION
+// ============================================================================
+
+it("should interpolate variable") {
+    let tpl = template::compile("Hello, {{ name }}!");
+    let result = tpl.render({ name: "World" });
+    assert(result == "Hello, World!");
+}
+
+it("should interpolate multiple variables") {
+    let tpl = template::compile("{{ greeting }}, {{ name }}!");
+    let result = tpl.render({ greeting: "Hello", name: "World" });
+    assert(result == "Hello, World!");
+}
+
+it("should handle missing variable") {
+    let tpl = template::compile("Hello, {{ name }}!");
+    let result = tpl.render({});
+    assert(result == "Hello, !");
+}
+
+it("should use default value") {
+    let tpl = template::compile("Hello, {{ name | default: 'Guest' }}!");
+    let result = tpl.render({});
+    assert(result == "Hello, Guest!");
+}
+
+// ============================================================================
+// PROPERTY ACCESS
+// ============================================================================
+
+it("should access nested property") {
+    let tpl = template::compile("{{ user.name }}");
+    let result = tpl.render({ user: { name: "Alice" } });
+    assert(result == "Alice");
+}
+
+it("should access deeply nested property") {
+    let tpl = template::compile("{{ user.address.city }}");
+    let result = tpl.render({
+        user: { address: { city: "Paris" } }
+    });
+    assert(result == "Paris");
+}
+
+it("should access array element") {
+    let tpl = template::compile("{{ items[0] }}");
+    let result = tpl.render({ items: ["first", "second"] });
+    assert(result == "first");
+}
+
+// ============================================================================
+// FILTERS
+// ============================================================================
+
+it("should apply uppercase filter") {
+    let tpl = template::compile("{{ name | upper }}");
+    let result = tpl.render({ name: "alice" });
+    assert(result == "ALICE");
+}
+
+it("should apply lowercase filter") {
+    let tpl = template::compile("{{ name | lower }}");
+    let result = tpl.render({ name: "ALICE" });
+    assert(result == "alice");
+}
+
+it("should apply capitalize filter") {
+    let tpl = template::compile("{{ name | capitalize }}");
+    let result = tpl.render({ name: "alice smith" });
+    assert(result == "Alice Smith");
+}
+
+it("should apply trim filter") {
+    let tpl = template::compile("{{ text | trim }}");
+    let result = tpl.render({ text: "  hello  " });
+    assert(result == "hello");
+}
+
+it("should apply truncate filter") {
+    let tpl = template::compile("{{ text | truncate: 10 }}");
+    let result = tpl.render({ text: "Hello, this is a long text" });
+    assert(result == "Hello, thi...");
+}
+
+it("should chain filters") {
+    let tpl = template::compile("{{ name | trim | upper }}");
+    let result = tpl.render({ name: "  alice  " });
+    assert(result == "ALICE");
+}
+
+it("should apply date filter") {
+    let tpl = template::compile("{{ date | date: 'YYYY-MM-DD' }}");
+    let result = tpl.render({ date: datetime::new(2023, 12, 25, 0, 0, 0) });
+    assert(result == "2023-12-25");
+}
+
+it("should apply number format filter") {
+    let tpl = template::compile("{{ price | number: 2 }}");
+    let result = tpl.render({ price: 1234.5 });
+    assert(result == "1,234.50");
+}
+
+it("should apply json filter") {
+    let tpl = template::compile("{{ data | json }}");
+    let result = tpl.render({ data: { a: 1 } });
+    assert(result.contains("\"a\":1") or result.contains("\"a\": 1"));
+}
+
+// ============================================================================
+// CONDITIONALS
+// ============================================================================
+
+it("should render if block when true") {
+    let tpl = template::compile("{% if show %}visible{% endif %}");
+    let result = tpl.render({ show: true });
+    assert(result == "visible");
+}
+
+it("should not render if block when false") {
+    let tpl = template::compile("{% if show %}visible{% endif %}");
+    let result = tpl.render({ show: false });
+    assert(result == "");
+}
+
+it("should render else block") {
+    let tpl = template::compile("{% if show %}yes{% else %}no{% endif %}");
+    let result = tpl.render({ show: false });
+    assert(result == "no");
+}
+
+it("should handle elsif") {
+    let tpl = template::compile("{% if x == 1 %}one{% elsif x == 2 %}two{% else %}other{% endif %}");
+    assert(tpl.render({ x: 1 }) == "one");
+    assert(tpl.render({ x: 2 }) == "two");
+    assert(tpl.render({ x: 3 }) == "other");
+}
+
+it("should evaluate comparison operators") {
+    let tpl = template::compile("{% if count > 5 %}many{% endif %}");
+    assert(tpl.render({ count: 10 }) == "many");
+    assert(tpl.render({ count: 3 }) == "");
+}
+
+it("should evaluate logical operators") {
+    let tpl = template::compile("{% if a and b %}both{% endif %}");
+    assert(tpl.render({ a: true, b: true }) == "both");
+    assert(tpl.render({ a: true, b: false }) == "");
+}
+
+it("should check if value exists") {
+    let tpl = template::compile("{% if user %}exists{% endif %}");
+    assert(tpl.render({ user: "Alice" }) == "exists");
+    assert(tpl.render({}) == "");
+}
+
+// ============================================================================
+// LOOPS
+// ============================================================================
+
+it("should loop over array") {
+    let tpl = template::compile("{% for item in items %}{{ item }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c"] });
+    assert(result == "abc");
+}
+
+it("should provide loop index") {
+    let tpl = template::compile("{% for item in items %}{{ loop.index }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c"] });
+    assert(result == "123");
+}
+
+it("should provide loop index0") {
+    let tpl = template::compile("{% for item in items %}{{ loop.index0 }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c"] });
+    assert(result == "012");
+}
+
+it("should detect first iteration") {
+    let tpl = template::compile("{% for item in items %}{% if loop.first %}F{% endif %}{{ item }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b"] });
+    assert(result == "Fab");
+}
+
+it("should detect last iteration") {
+    let tpl = template::compile("{% for item in items %}{{ item }}{% if not loop.last %},{% endif %}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c"] });
+    assert(result == "a,b,c");
+}
+
+it("should loop over object") {
+    let tpl = template::compile("{% for key, value in obj %}{{ key }}={{ value }} {% endfor %}");
+    let result = tpl.render({ obj: { a: 1, b: 2 } });
+    assert(result.contains("a=1"));
+    assert(result.contains("b=2"));
+}
+
+it("should handle empty loop") {
+    let tpl = template::compile("{% for item in items %}{{ item }}{% else %}empty{% endfor %}");
+    let result = tpl.render({ items: [] });
+    assert(result == "empty");
+}
+
+it("should limit loop iterations") {
+    let tpl = template::compile("{% for item in items limit: 2 %}{{ item }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c", "d"] });
+    assert(result == "ab");
+}
+
+it("should offset loop") {
+    let tpl = template::compile("{% for item in items offset: 2 %}{{ item }}{% endfor %}");
+    let result = tpl.render({ items: ["a", "b", "c", "d"] });
+    assert(result == "cd");
+}
+
+// ============================================================================
+// INCLUDES AND PARTIALS
+// ============================================================================
+
+it("should include partial") {
+    template::register_partial("header", "<h1>{{ title }}</h1>");
+    let tpl = template::compile("{% include 'header' %}content");
+    let result = tpl.render({ title: "Hello" });
+    assert(result == "<h1>Hello</h1>content");
+}
+
+it("should pass variables to partial") {
+    template::register_partial("item", "<li>{{ name }}</li>");
+    let tpl = template::compile("{% include 'item' with name: item_name %}");
+    let result = tpl.render({ item_name: "Test" });
+    assert(result == "<li>Test</li>");
+}
+
+// ============================================================================
+// EXTENDS AND BLOCKS
+// ============================================================================
+
+it("should extend base template") {
+    template::register("base", "<html>{% block content %}{% endblock %}</html>");
+    let tpl = template::compile("{% extends 'base' %}{% block content %}Hello{% endblock %}");
+    let result = tpl.render({});
+    assert(result == "<html>Hello</html>");
+}
+
+it("should use default block content") {
+    template::register("base", "{% block content %}default{% endblock %}");
+    let tpl = template::compile("{% extends 'base' %}");
+    let result = tpl.render({});
+    assert(result == "default");
+}
+
+// ============================================================================
+// RAW AND ESCAPING
+// ============================================================================
+
+it("should escape HTML by default") {
+    let tpl = template::compile("{{ content }}");
+    let result = tpl.render({ content: "<script>alert(1)</script>" });
+    assert(!result.contains("<script>"));
+    assert(result.contains("&lt;script&gt;"));
+}
+
+it("should render raw HTML") {
+    let tpl = template::compile("{{ content | raw }}");
+    let result = tpl.render({ content: "<b>bold</b>" });
+    assert(result == "<b>bold</b>");
+}
+
+it("should preserve raw template syntax") {
+    let tpl = template::compile("{% raw %}{{ not_interpolated }}{% endraw %}");
+    let result = tpl.render({});
+    assert(result == "{{ not_interpolated }}");
+}
+
+// ============================================================================
+// MACROS
+// ============================================================================
+
+it("should define and call macro") {
+    let tpl = template::compile("{% macro greet(name) %}Hello, {{ name }}!{% endmacro %}{{ greet('World') }}");
+    let result = tpl.render({});
+    assert(result == "Hello, World!");
+}
+
+it("should support macro with default args") {
+    let tpl = template::compile("{% macro greet(name='Guest') %}Hello, {{ name }}!{% endmacro %}{{ greet() }}");
+    let result = tpl.render({});
+    assert(result == "Hello, Guest!");
+}
+
+// ============================================================================
+// SET AND ASSIGN
+// ============================================================================
+
+it("should set variable") {
+    let tpl = template::compile("{% set name = 'Alice' %}{{ name }}");
+    let result = tpl.render({});
+    assert(result == "Alice");
+}
+
+it("should set computed variable") {
+    let tpl = template::compile("{% set total = price * quantity %}{{ total }}");
+    let result = tpl.render({ price: 10, quantity: 5 });
+    assert(result == "50");
+}
+
+// ============================================================================
+// WHITESPACE CONTROL
+// ============================================================================
+
+it("should trim whitespace") {
+    let tpl = template::compile("  {%- if true -%}  content  {%- endif -%}  ");
+    let result = tpl.render({});
+    assert(result == "content");
+}
+
+it("should preserve whitespace by default") {
+    let tpl = template::compile("  {% if true %}content{% endif %}  ");
+    let result = tpl.render({});
+    assert(result == "  content  ");
+}
+
+// ============================================================================
+// COMMENTS
+// ============================================================================
+
+it("should ignore comments") {
+    let tpl = template::compile("Hello{# this is a comment #} World");
+    let result = tpl.render({});
+    assert(result == "Hello World");
+}
+
+// ============================================================================
+// CUSTOM FILTERS
+// ============================================================================
+
+it("should use custom filter") {
+    template::add_filter("reverse", |s| s.chars().reverse().collect());
+    let tpl = template::compile("{{ name | reverse }}");
+    let result = tpl.render({ name: "hello" });
+    assert(result == "olleh");
+}
+
+it("should use custom filter with args") {
+    template::add_filter("repeat", |s, n| s.repeat(n));
+    let tpl = template::compile("{{ text | repeat: 3 }}");
+    let result = tpl.render({ text: "ab" });
+    assert(result == "ababab");
+}
+
+// ============================================================================
+// CUSTOM TAGS
+// ============================================================================
+
+it("should use custom tag") {
+    template::add_tag("highlight", |content, args| "<mark>{content}</mark>");
+    let tpl = template::compile("{% highlight %}important{% endhighlight %}");
+    let result = tpl.render({});
+    assert(result == "<mark>important</mark>");
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle syntax error") {
+    let result = template::compile_safe("{% if %}");
+    assert(result.is_err() == true);
+}
+
+it("should handle undefined filter") {
+    let tpl = template::compile("{{ name | undefined_filter }}");
+    let result = tpl.render_safe({ name: "test" });
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// CACHING
+// ============================================================================
+
+it("should cache compiled templates") {
+    let tpl1 = template::compile("Hello, {{ name }}!", cache: true);
+    let tpl2 = template::compile("Hello, {{ name }}!", cache: true);
+    // Second compile should use cached version
+}
+
+it("should clear template cache") {
+    template::compile("test template", cache: true);
+    template::clear_cache();
+}
+
+// ============================================================================
+// STRING TEMPLATES
+// ============================================================================
+
+it("should render string template") {
+    let result = template::render("Hello, {{ name }}!", { name: "World" });
+    assert(result == "Hello, World!");
+}
+
+// ============================================================================
+// AUTO-RELOAD
+// ============================================================================
+
+it("should configure auto-reload") {
+    let engine = template::Engine::new()
+        .auto_reload(true)
+        .template_dir("/templates");
+}
+

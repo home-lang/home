@@ -1,0 +1,436 @@
+// HTTP Client and Server Test Suite
+
+// ============================================================================
+// HTTP REQUEST BUILDING
+// ============================================================================
+
+it("should create GET request") {
+    let req = http::Request::get("https://example.com");
+    assert(req.method() == "GET");
+    assert(req.url() == "https://example.com");
+}
+
+it("should create POST request") {
+    let req = http::Request::post("https://example.com/api");
+    assert(req.method() == "POST");
+}
+
+it("should create PUT request") {
+    let req = http::Request::put("https://example.com/api/1");
+    assert(req.method() == "PUT");
+}
+
+it("should create DELETE request") {
+    let req = http::Request::delete("https://example.com/api/1");
+    assert(req.method() == "DELETE");
+}
+
+it("should create PATCH request") {
+    let req = http::Request::patch("https://example.com/api/1");
+    assert(req.method() == "PATCH");
+}
+
+// ============================================================================
+// REQUEST HEADERS
+// ============================================================================
+
+it("should set single header") {
+    let req = http::Request::get("https://example.com")
+        .header("Content-Type", "application/json");
+    assert(req.get_header("Content-Type") == "application/json");
+}
+
+it("should set multiple headers") {
+    let req = http::Request::get("https://example.com")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("Authorization", "Bearer token");
+    assert(req.get_header("Content-Type") == "application/json");
+    assert(req.get_header("Accept") == "application/json");
+    assert(req.get_header("Authorization") == "Bearer token");
+}
+
+it("should set headers from map") {
+    let headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    };
+    let req = http::Request::get("https://example.com")
+        .headers(headers);
+    assert(req.get_header("Content-Type") == "application/json");
+}
+
+// ============================================================================
+// REQUEST BODY
+// ============================================================================
+
+it("should set text body") {
+    let req = http::Request::post("https://example.com")
+        .body("Hello, World!");
+    assert(req.get_body() == "Hello, World!");
+}
+
+it("should set JSON body") {
+    let data = { "name": "test", "value": 42 };
+    let req = http::Request::post("https://example.com")
+        .json(data);
+    assert(req.get_header("Content-Type") == "application/json");
+}
+
+it("should set form body") {
+    let form = {
+        "username": "admin",
+        "password": "secret"
+    };
+    let req = http::Request::post("https://example.com/login")
+        .form(form);
+    assert(req.get_header("Content-Type") == "application/x-www-form-urlencoded");
+}
+
+// ============================================================================
+// URL PARAMETERS
+// ============================================================================
+
+it("should add query parameter") {
+    let req = http::Request::get("https://example.com/search")
+        .query("q", "hello");
+    assert(req.url().contains("q=hello"));
+}
+
+it("should add multiple query parameters") {
+    let req = http::Request::get("https://example.com/search")
+        .query("q", "hello")
+        .query("page", "1")
+        .query("limit", "10");
+    assert(req.url().contains("q=hello"));
+    assert(req.url().contains("page=1"));
+    assert(req.url().contains("limit=10"));
+}
+
+it("should encode query parameters") {
+    let req = http::Request::get("https://example.com/search")
+        .query("q", "hello world");
+    assert(req.url().contains("hello%20world") or req.url().contains("hello+world"));
+}
+
+// ============================================================================
+// HTTP RESPONSE PARSING
+// ============================================================================
+
+it("should get response status code") {
+    let response = http::Response::new(200, "OK");
+    assert(response.status() == 200);
+    assert(response.status_text() == "OK");
+}
+
+it("should check if response is success") {
+    let success = http::Response::new(200, "OK");
+    let error = http::Response::new(404, "Not Found");
+    assert(success.is_success() == true);
+    assert(error.is_success() == false);
+}
+
+it("should get response headers") {
+    let response = http::Response::new(200, "OK")
+        .with_header("Content-Type", "application/json")
+        .with_header("Content-Length", "123");
+    assert(response.get_header("Content-Type") == "application/json");
+    assert(response.get_header("Content-Length") == "123");
+}
+
+it("should get response body as text") {
+    let response = http::Response::new(200, "OK")
+        .with_body("Hello, World!");
+    assert(response.text() == "Hello, World!");
+}
+
+it("should parse response body as JSON") {
+    let response = http::Response::new(200, "OK")
+        .with_body("{\"name\":\"test\",\"value\":42}");
+    let data = response.json();
+    assert(data["name"].as_string() == "test");
+    assert(data["value"].as_int() == 42);
+}
+
+// ============================================================================
+// STATUS CODE CATEGORIES
+// ============================================================================
+
+it("should identify informational status") {
+    let response = http::Response::new(100, "Continue");
+    assert(response.is_informational() == true);
+}
+
+it("should identify success status") {
+    let r200 = http::Response::new(200, "OK");
+    let r201 = http::Response::new(201, "Created");
+    let r204 = http::Response::new(204, "No Content");
+    assert(r200.is_success() == true);
+    assert(r201.is_success() == true);
+    assert(r204.is_success() == true);
+}
+
+it("should identify redirect status") {
+    let r301 = http::Response::new(301, "Moved Permanently");
+    let r302 = http::Response::new(302, "Found");
+    let r307 = http::Response::new(307, "Temporary Redirect");
+    assert(r301.is_redirect() == true);
+    assert(r302.is_redirect() == true);
+    assert(r307.is_redirect() == true);
+}
+
+it("should identify client error status") {
+    let r400 = http::Response::new(400, "Bad Request");
+    let r401 = http::Response::new(401, "Unauthorized");
+    let r404 = http::Response::new(404, "Not Found");
+    assert(r400.is_client_error() == true);
+    assert(r401.is_client_error() == true);
+    assert(r404.is_client_error() == true);
+}
+
+it("should identify server error status") {
+    let r500 = http::Response::new(500, "Internal Server Error");
+    let r502 = http::Response::new(502, "Bad Gateway");
+    let r503 = http::Response::new(503, "Service Unavailable");
+    assert(r500.is_server_error() == true);
+    assert(r502.is_server_error() == true);
+    assert(r503.is_server_error() == true);
+}
+
+// ============================================================================
+// URL PARSING
+// ============================================================================
+
+it("should parse URL components") {
+    let url = http::Url::parse("https://user:pass@example.com:8080/path?query=value#fragment");
+    assert(url.scheme() == "https");
+    assert(url.host() == "example.com");
+    assert(url.port() == 8080);
+    assert(url.path() == "/path");
+    assert(url.query() == "query=value");
+    assert(url.fragment() == "fragment");
+}
+
+it("should parse simple URL") {
+    let url = http::Url::parse("https://example.com");
+    assert(url.scheme() == "https");
+    assert(url.host() == "example.com");
+    assert(url.port() == 443);  // Default for https
+}
+
+it("should parse URL with path") {
+    let url = http::Url::parse("https://example.com/api/v1/users");
+    assert(url.path() == "/api/v1/users");
+}
+
+it("should parse URL query parameters") {
+    let url = http::Url::parse("https://example.com?foo=bar&baz=qux");
+    let params = url.query_params();
+    assert(params["foo"] == "bar");
+    assert(params["baz"] == "qux");
+}
+
+// ============================================================================
+// HTTP CLIENT
+// ============================================================================
+
+it("should create client with default config") {
+    let client = http::Client::new();
+    assert(client.timeout() == 30000);  // Default 30 seconds
+}
+
+it("should create client with custom timeout") {
+    let client = http::Client::new()
+        .timeout(5000);  // 5 seconds
+    assert(client.timeout() == 5000);
+}
+
+it("should create client with base URL") {
+    let client = http::Client::new()
+        .base_url("https://api.example.com");
+    let req = client.get("/users");
+    assert(req.url() == "https://api.example.com/users");
+}
+
+it("should create client with default headers") {
+    let client = http::Client::new()
+        .default_header("Authorization", "Bearer token");
+    let req = client.get("https://example.com");
+    assert(req.get_header("Authorization") == "Bearer token");
+}
+
+// ============================================================================
+// HTTP SERVER ROUTING
+// ============================================================================
+
+it("should create route for GET") {
+    let router = http::Router::new();
+    router.get("/", |req, res| {
+        res.text("Hello");
+    });
+    assert(router.has_route("GET", "/") == true);
+}
+
+it("should create route for POST") {
+    let router = http::Router::new();
+    router.post("/users", |req, res| {
+        res.json({ "id": 1 });
+    });
+    assert(router.has_route("POST", "/users") == true);
+}
+
+it("should create route with path parameters") {
+    let router = http::Router::new();
+    router.get("/users/:id", |req, res| {
+        let id = req.param("id");
+        res.text(id);
+    });
+    assert(router.has_route("GET", "/users/:id") == true);
+}
+
+it("should create route with multiple parameters") {
+    let router = http::Router::new();
+    router.get("/users/:userId/posts/:postId", |req, res| {
+        let userId = req.param("userId");
+        let postId = req.param("postId");
+        res.text(userId + "/" + postId);
+    });
+    assert(router.has_route("GET", "/users/:userId/posts/:postId") == true);
+}
+
+// ============================================================================
+// REQUEST CONTEXT
+// ============================================================================
+
+it("should access path parameters") {
+    let req = http::Request::mock("GET", "/users/123");
+    req.set_params({ "id": "123" });
+    assert(req.param("id") == "123");
+}
+
+it("should access query parameters") {
+    let req = http::Request::mock("GET", "/search?q=hello&page=1");
+    assert(req.query("q") == "hello");
+    assert(req.query("page") == "1");
+}
+
+it("should access request body") {
+    let req = http::Request::mock("POST", "/users")
+        .with_body("{\"name\":\"test\"}");
+    let body = req.json();
+    assert(body["name"].as_string() == "test");
+}
+
+// ============================================================================
+// RESPONSE BUILDER
+// ============================================================================
+
+it("should send text response") {
+    let res = http::Response::new(200, "OK")
+        .text("Hello, World!");
+    assert(res.get_header("Content-Type") == "text/plain");
+    assert(res.body() == "Hello, World!");
+}
+
+it("should send JSON response") {
+    let res = http::Response::new(200, "OK")
+        .json({ "message": "success" });
+    assert(res.get_header("Content-Type") == "application/json");
+}
+
+it("should send HTML response") {
+    let res = http::Response::new(200, "OK")
+        .html("<h1>Hello</h1>");
+    assert(res.get_header("Content-Type") == "text/html");
+}
+
+it("should set custom status code") {
+    let res = http::Response::new(201, "Created");
+    assert(res.status() == 201);
+}
+
+it("should set cookies") {
+    let res = http::Response::new(200, "OK")
+        .cookie("session", "abc123");
+    assert(res.get_header("Set-Cookie").contains("session=abc123"));
+}
+
+it("should redirect") {
+    let res = http::Response::redirect("https://example.com/new-location");
+    assert(res.status() == 302);
+    assert(res.get_header("Location") == "https://example.com/new-location");
+}
+
+it("should redirect permanently") {
+    let res = http::Response::redirect_permanent("https://example.com/new-location");
+    assert(res.status() == 301);
+}
+
+// ============================================================================
+// MIDDLEWARE
+// ============================================================================
+
+it("should apply middleware") {
+    let router = http::Router::new();
+    router.use(|req, res, next| {
+        req.set_header("X-Request-Id", "12345");
+        next();
+    });
+    router.get("/", |req, res| {
+        assert(req.get_header("X-Request-Id") == "12345");
+    });
+}
+
+it("should apply multiple middleware in order") {
+    let mut order: [i32] = [];
+    let router = http::Router::new();
+    router.use(|req, res, next| {
+        order.push(1);
+        next();
+    });
+    router.use(|req, res, next| {
+        order.push(2);
+        next();
+    });
+    // Middleware should run in order
+    assert(order[0] == 1);
+    assert(order[1] == 2);
+}
+
+// ============================================================================
+// CORS
+// ============================================================================
+
+it("should set CORS headers") {
+    let res = http::Response::new(200, "OK")
+        .cors("https://example.com");
+    assert(res.get_header("Access-Control-Allow-Origin") == "https://example.com");
+}
+
+it("should set CORS with all origins") {
+    let res = http::Response::new(200, "OK")
+        .cors("*");
+    assert(res.get_header("Access-Control-Allow-Origin") == "*");
+}
+
+// ============================================================================
+// CONTENT TYPE HELPERS
+// ============================================================================
+
+it("should detect JSON content type") {
+    let req = http::Request::mock("POST", "/")
+        .header("Content-Type", "application/json");
+    assert(req.is_json() == true);
+}
+
+it("should detect form content type") {
+    let req = http::Request::mock("POST", "/")
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    assert(req.is_form() == true);
+}
+
+it("should detect multipart content type") {
+    let req = http::Request::mock("POST", "/")
+        .header("Content-Type", "multipart/form-data");
+    assert(req.is_multipart() == true);
+}

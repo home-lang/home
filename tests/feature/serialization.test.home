@@ -1,0 +1,395 @@
+// Serialization Test Suite
+
+// ============================================================================
+// JSON SERIALIZATION
+// ============================================================================
+
+it("should serialize to JSON string") {
+    let obj = { name: "Alice", age: 30 };
+    let json = serialize::to_json(obj);
+    assert(json.contains("\"name\":\"Alice\"") or json.contains("\"name\": \"Alice\""));
+}
+
+it("should serialize with pretty printing") {
+    let obj = { name: "Alice" };
+    let json = serialize::to_json(obj, pretty: true);
+    assert(json.contains("\n"));
+}
+
+it("should deserialize from JSON") {
+    let json = "{\"name\":\"Alice\",\"age\":30}";
+    let obj = serialize::from_json(json);
+    assert(obj["name"] == "Alice");
+    assert(obj["age"] == 30);
+}
+
+it("should handle JSON null") {
+    let json = "{\"value\":null}";
+    let obj = serialize::from_json(json);
+    assert(obj["value"] == null);
+}
+
+// ============================================================================
+// YAML SERIALIZATION
+// ============================================================================
+
+it("should serialize to YAML") {
+    let obj = { name: "Alice", age: 30 };
+    let yaml = serialize::to_yaml(obj);
+    assert(yaml.contains("name: Alice"));
+}
+
+it("should deserialize from YAML") {
+    let yaml = "name: Alice\nage: 30";
+    let obj = serialize::from_yaml(yaml);
+    assert(obj["name"] == "Alice");
+    assert(obj["age"] == 30);
+}
+
+it("should handle YAML lists") {
+    let yaml = "items:\n  - a\n  - b\n  - c";
+    let obj = serialize::from_yaml(yaml);
+    assert(obj["items"].len() == 3);
+}
+
+it("should handle multi-document YAML") {
+    let yaml = "---\nname: first\n---\nname: second";
+    let docs = serialize::from_yaml_all(yaml);
+    assert(docs.len() == 2);
+}
+
+// ============================================================================
+// TOML SERIALIZATION
+// ============================================================================
+
+it("should serialize to TOML") {
+    let obj = { name: "Alice", age: 30 };
+    let toml = serialize::to_toml(obj);
+    assert(toml.contains("name = \"Alice\""));
+}
+
+it("should deserialize from TOML") {
+    let toml = "name = \"Alice\"\nage = 30";
+    let obj = serialize::from_toml(toml);
+    assert(obj["name"] == "Alice");
+}
+
+it("should handle TOML tables") {
+    let toml = "[server]\nhost = \"localhost\"\nport = 8080";
+    let obj = serialize::from_toml(toml);
+    assert(obj["server"]["host"] == "localhost");
+}
+
+// ============================================================================
+// XML SERIALIZATION
+// ============================================================================
+
+it("should serialize to XML") {
+    let obj = { root: { name: "Alice" } };
+    let xml = serialize::to_xml(obj);
+    assert(xml.contains("<name>Alice</name>"));
+}
+
+it("should deserialize from XML") {
+    let xml = "<root><name>Alice</name><age>30</age></root>";
+    let obj = serialize::from_xml(xml);
+    assert(obj["root"]["name"] == "Alice");
+}
+
+it("should handle XML attributes") {
+    let xml = "<user id=\"123\">Alice</user>";
+    let obj = serialize::from_xml(xml, preserve_attrs: true);
+    assert(obj["user"]["@id"] == "123");
+}
+
+// ============================================================================
+// MSGPACK SERIALIZATION
+// ============================================================================
+
+it("should serialize to MessagePack") {
+    let obj = { name: "Alice", age: 30 };
+    let packed = serialize::to_msgpack(obj);
+    assert(packed.len() > 0);
+}
+
+it("should deserialize from MessagePack") {
+    let obj = { name: "Alice", age: 30 };
+    let packed = serialize::to_msgpack(obj);
+    let unpacked = serialize::from_msgpack(packed);
+    assert(unpacked["name"] == "Alice");
+}
+
+// ============================================================================
+// CBOR SERIALIZATION
+// ============================================================================
+
+it("should serialize to CBOR") {
+    let obj = { name: "Alice", values: [1, 2, 3] };
+    let cbor = serialize::to_cbor(obj);
+    assert(cbor.len() > 0);
+}
+
+it("should deserialize from CBOR") {
+    let obj = { name: "Alice" };
+    let cbor = serialize::to_cbor(obj);
+    let decoded = serialize::from_cbor(cbor);
+    assert(decoded["name"] == "Alice");
+}
+
+// ============================================================================
+// BSON SERIALIZATION
+// ============================================================================
+
+it("should serialize to BSON") {
+    let obj = { name: "Alice", active: true };
+    let bson = serialize::to_bson(obj);
+    assert(bson.len() > 0);
+}
+
+it("should deserialize from BSON") {
+    let obj = { name: "Alice" };
+    let bson = serialize::to_bson(obj);
+    let decoded = serialize::from_bson(bson);
+    assert(decoded["name"] == "Alice");
+}
+
+// ============================================================================
+// CSV SERIALIZATION
+// ============================================================================
+
+it("should serialize to CSV") {
+    let data = [
+        { name: "Alice", age: 30 },
+        { name: "Bob", age: 25 },
+    ];
+    let csv = serialize::to_csv(data);
+    assert(csv.contains("name,age"));
+    assert(csv.contains("Alice,30"));
+}
+
+it("should deserialize from CSV") {
+    let csv = "name,age\nAlice,30\nBob,25";
+    let data = serialize::from_csv(csv);
+    assert(data.len() == 2);
+    assert(data[0]["name"] == "Alice");
+}
+
+it("should handle CSV with headers") {
+    let csv = "name,age\nAlice,30";
+    let data = serialize::from_csv(csv, headers: true);
+    assert(data[0]["name"] == "Alice");
+}
+
+it("should handle CSV without headers") {
+    let csv = "Alice,30\nBob,25";
+    let data = serialize::from_csv(csv, headers: false);
+    assert(data[0][0] == "Alice");
+}
+
+it("should use custom delimiter") {
+    let data = [{ a: 1, b: 2 }];
+    let tsv = serialize::to_csv(data, delimiter: "\t");
+    assert(tsv.contains("a\tb"));
+}
+
+// ============================================================================
+// INI SERIALIZATION
+// ============================================================================
+
+it("should serialize to INI") {
+    let obj = {
+        section1: { key1: "value1" },
+        section2: { key2: "value2" },
+    };
+    let ini = serialize::to_ini(obj);
+    assert(ini.contains("[section1]"));
+    assert(ini.contains("key1 = value1") or ini.contains("key1=value1"));
+}
+
+it("should deserialize from INI") {
+    let ini = "[section]\nkey = value";
+    let obj = serialize::from_ini(ini);
+    assert(obj["section"]["key"] == "value");
+}
+
+// ============================================================================
+// BINARY SERIALIZATION
+// ============================================================================
+
+it("should serialize to binary format") {
+    let obj = { x: 100, y: 200 };
+    let binary = serialize::to_binary(obj);
+    let decoded = serialize::from_binary(binary);
+    assert(decoded["x"] == 100);
+}
+
+// ============================================================================
+// STRUCT SERIALIZATION
+// ============================================================================
+
+struct User {
+    name: string,
+    age: int,
+    active: bool,
+}
+
+it("should serialize struct") {
+    let user = User { name: "Alice", age: 30, active: true };
+    let json = serialize::to_json(user);
+    assert(json.contains("Alice"));
+}
+
+it("should deserialize to struct") {
+    let json = "{\"name\":\"Alice\",\"age\":30,\"active\":true}";
+    let user = serialize::from_json[User](json);
+    assert(user.name == "Alice");
+    assert(user.age == 30);
+}
+
+// ============================================================================
+// OPTIONAL FIELDS
+// ============================================================================
+
+it("should skip null fields") {
+    let obj = { name: "Alice", email: null };
+    let json = serialize::to_json(obj, skip_null: true);
+    assert(!json.contains("email"));
+}
+
+it("should include null fields") {
+    let obj = { name: "Alice", email: null };
+    let json = serialize::to_json(obj, skip_null: false);
+    assert(json.contains("email"));
+}
+
+// ============================================================================
+// FIELD RENAMING
+// ============================================================================
+
+it("should use camelCase naming") {
+    let obj = { user_name: "Alice", is_active: true };
+    let json = serialize::to_json(obj, naming: serialize::Naming::CamelCase);
+    assert(json.contains("userName"));
+    assert(json.contains("isActive"));
+}
+
+it("should use snake_case naming") {
+    let obj = { userName: "Alice" };
+    let json = serialize::to_json(obj, naming: serialize::Naming::SnakeCase);
+    assert(json.contains("user_name"));
+}
+
+// ============================================================================
+// DATE SERIALIZATION
+// ============================================================================
+
+it("should serialize datetime") {
+    let dt = datetime::new(2023, 12, 25, 14, 30, 0);
+    let json = serialize::to_json({ date: dt });
+    assert(json.contains("2023"));
+}
+
+it("should use custom date format") {
+    let dt = datetime::new(2023, 12, 25, 14, 30, 0);
+    let json = serialize::to_json({ date: dt }, date_format: "YYYY-MM-DD");
+    assert(json.contains("2023-12-25"));
+}
+
+// ============================================================================
+// CUSTOM SERIALIZERS
+// ============================================================================
+
+it("should use custom serializer") {
+    struct Point { x: int, y: int }
+
+    serialize::register[Point](
+        serialize: |p| "{p.x},{p.y}",
+        deserialize: |s| {
+            let parts = s.split(",");
+            Point { x: parts[0].parse_int(), y: parts[1].parse_int() }
+        }
+    );
+
+    let p = Point { x: 10, y: 20 };
+    let json = serialize::to_json({ point: p });
+    assert(json.contains("10,20"));
+}
+
+// ============================================================================
+// SCHEMA VALIDATION
+// ============================================================================
+
+it("should validate against schema") {
+    let schema = serialize::Schema {
+        type: "object",
+        properties: {
+            name: { type: "string" },
+            age: { type: "integer", minimum: 0 },
+        },
+        required: ["name"],
+    };
+
+    let valid = { name: "Alice", age: 30 };
+    let invalid = { age: -5 };
+
+    assert(serialize::validate(valid, schema) == true);
+    assert(serialize::validate(invalid, schema) == false);
+}
+
+// ============================================================================
+// STREAMING SERIALIZATION
+// ============================================================================
+
+it("should stream JSON array") {
+    let stream = serialize::JsonStream::new();
+    stream.start_array();
+    stream.write_value(1);
+    stream.write_value(2);
+    stream.write_value(3);
+    stream.end_array();
+    let json = stream.to_string();
+    assert(json == "[1,2,3]");
+}
+
+it("should stream JSON object") {
+    let stream = serialize::JsonStream::new();
+    stream.start_object();
+    stream.write_key("name");
+    stream.write_value("Alice");
+    stream.end_object();
+    let json = stream.to_string();
+    assert(json.contains("\"name\":\"Alice\"") or json.contains("\"name\": \"Alice\""));
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle invalid JSON") {
+    let result = serialize::from_json_safe("invalid json");
+    assert(result.is_err() == true);
+}
+
+it("should handle invalid YAML") {
+    let result = serialize::from_yaml_safe(":\ninvalid: yaml: structure");
+    assert(result.is_err() == true);
+}
+
+it("should provide error details") {
+    let result = serialize::from_json_safe("{missing: quotes}");
+    assert(result.is_err() == true);
+    let err = result.err();
+    assert(err.line != null or err.message.len() > 0);
+}
+
+// ============================================================================
+// CLONE AND DEEP COPY
+// ============================================================================
+
+it("should deep clone via serialization") {
+    let original = { nested: { value: 42 } };
+    let cloned = serialize::deep_clone(original);
+    cloned["nested"]["value"] = 100;
+    assert(original["nested"]["value"] == 42);
+}
+

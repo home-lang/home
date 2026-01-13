@@ -1,0 +1,276 @@
+// Process and Subprocess Test Suite
+
+// ============================================================================
+// CURRENT PROCESS INFO
+// ============================================================================
+
+it("should get current process ID") {
+    let pid = process::id();
+    assert(pid > 0);
+}
+
+it("should get parent process ID") {
+    let ppid = process::parent_id();
+    assert(ppid > 0);
+}
+
+// ============================================================================
+// SPAWN SUBPROCESS
+// ============================================================================
+
+it("should spawn simple command") {
+    let result = process::run("echo", ["hello"]);
+    assert(result.status == 0);
+    assert(result.stdout.trim() == "hello");
+}
+
+it("should capture stdout") {
+    let result = process::run("echo", ["test output"]);
+    assert(result.stdout.contains("test output"));
+}
+
+it("should capture stderr") {
+    let result = process::run("sh", ["-c", "echo error >&2"]);
+    assert(result.stderr.contains("error"));
+}
+
+it("should get exit code") {
+    let success = process::run("true", []);
+    let failure = process::run("false", []);
+    assert(success.status == 0);
+    assert(failure.status != 0);
+}
+
+// ============================================================================
+// COMMAND BUILDER
+// ============================================================================
+
+it("should build command with args") {
+    let cmd = process::Command::new("echo")
+        .arg("hello")
+        .arg("world");
+    let result = cmd.run();
+    assert(result.stdout.trim() == "hello world");
+}
+
+it("should set working directory") {
+    let cmd = process::Command::new("pwd")
+        .current_dir("/tmp");
+    let result = cmd.run();
+    assert(result.stdout.trim() == "/tmp");
+}
+
+it("should set environment variables") {
+    let cmd = process::Command::new("sh")
+        .args(["-c", "echo $MY_VAR"])
+        .env("MY_VAR", "custom_value");
+    let result = cmd.run();
+    assert(result.stdout.trim() == "custom_value");
+}
+
+it("should clear environment") {
+    let cmd = process::Command::new("env")
+        .env_clear()
+        .env("ONLY_VAR", "value");
+    let result = cmd.run();
+    assert(result.stdout.lines().len() == 1);
+}
+
+// ============================================================================
+// INPUT/OUTPUT HANDLING
+// ============================================================================
+
+it("should pass stdin") {
+    let cmd = process::Command::new("cat")
+        .stdin("hello from stdin");
+    let result = cmd.run();
+    assert(result.stdout == "hello from stdin");
+}
+
+it("should pipe commands") {
+    let result = process::pipe([
+        process::Command::new("echo").arg("hello world"),
+        process::Command::new("tr").args(["a-z", "A-Z"]),
+    ]);
+    assert(result.stdout.trim() == "HELLO WORLD");
+}
+
+// ============================================================================
+// ASYNC SUBPROCESS
+// ============================================================================
+
+it("should spawn async process") {
+    let child = process::spawn("sleep", ["0.1"]);
+    assert(child.id() > 0);
+    let status = child.wait();
+    assert(status == 0);
+}
+
+it("should check if process is running") {
+    let child = process::spawn("sleep", ["1"]);
+    assert(child.is_running() == true);
+    child.kill();
+    child.wait();
+    assert(child.is_running() == false);
+}
+
+it("should kill process") {
+    let child = process::spawn("sleep", ["10"]);
+    child.kill();
+    let status = child.wait();
+    assert(status != 0);
+}
+
+it("should send signal to process") {
+    let child = process::spawn("sleep", ["10"]);
+    child.signal(Signal::TERM);
+    let status = child.wait();
+    assert(status != 0);
+}
+
+// ============================================================================
+// TIMEOUT
+// ============================================================================
+
+it("should timeout long-running process") {
+    let result = process::run_with_timeout("sleep", ["10"], timeout: 100.milliseconds);
+    assert(result.is_err() == true);
+    assert(result.err() == ProcessError::Timeout);
+}
+
+it("should complete before timeout") {
+    let result = process::run_with_timeout("echo", ["fast"], timeout: 5.seconds);
+    assert(result.is_ok() == true);
+}
+
+// ============================================================================
+// OUTPUT STREAMING
+// ============================================================================
+
+it("should stream stdout") {
+    let child = process::spawn("sh", ["-c", "for i in 1 2 3; do echo $i; sleep 0.1; done"]);
+    let lines = [];
+    for line in child.stdout_lines() {
+        lines.push(line);
+    }
+    child.wait();
+    assert(lines.len() == 3);
+}
+
+it("should read output incrementally") {
+    let child = process::spawn("echo", ["hello"]);
+    let output = child.read_stdout();
+    child.wait();
+    assert(output.contains("hello"));
+}
+
+// ============================================================================
+// SHELL EXECUTION
+// ============================================================================
+
+it("should execute shell command") {
+    let result = process::shell("echo hello && echo world");
+    assert(result.stdout.contains("hello"));
+    assert(result.stdout.contains("world"));
+}
+
+it("should use specified shell") {
+    let result = process::shell_with("/bin/bash", "echo $BASH_VERSION");
+    assert(result.status == 0);
+}
+
+// ============================================================================
+// PROCESS GROUPS
+// ============================================================================
+
+it("should create process in new group") {
+    let child = process::Command::new("sleep")
+        .arg("0.1")
+        .new_process_group()
+        .spawn();
+    assert(child.group_id() != process::id());
+    child.wait();
+}
+
+// ============================================================================
+// EXIT HANDLING
+// ============================================================================
+
+it("should register exit handler") {
+    // This test just verifies the API exists
+    process::on_exit(|| {
+        // Cleanup code
+    });
+}
+
+it("should exit with code") {
+    let result = process::run("sh", ["-c", "exit 42"]);
+    assert(result.status == 42);
+}
+
+// ============================================================================
+// RESOURCE LIMITS
+// ============================================================================
+
+it("should set memory limit") {
+    let cmd = process::Command::new("true")
+        .memory_limit(100 * 1024 * 1024);  // 100MB
+    let result = cmd.run();
+    assert(result.status == 0);
+}
+
+it("should set CPU time limit") {
+    let cmd = process::Command::new("true")
+        .cpu_limit(10.seconds);
+    let result = cmd.run();
+    assert(result.status == 0);
+}
+
+// ============================================================================
+// WHICH / PATH LOOKUP
+// ============================================================================
+
+it("should find executable in PATH") {
+    let path = process::which("ls");
+    assert(path != null);
+    assert(path.ends_with("ls"));
+}
+
+it("should return null for missing executable") {
+    let path = process::which("nonexistent_command_12345");
+    assert(path == null);
+}
+
+// ============================================================================
+// PROCESS LISTING
+// ============================================================================
+
+it("should list running processes") {
+    let procs = process::list();
+    assert(procs.len() > 0);
+}
+
+it("should find process by name") {
+    let procs = process::find_by_name("init");
+    // May or may not find init depending on system
+}
+
+it("should get process info") {
+    let info = process::info(process::id());
+    assert(info.pid == process::id());
+    assert(info.name.len() > 0);
+}
+
+// ============================================================================
+// DAEMON / BACKGROUND
+// ============================================================================
+
+it("should detach process") {
+    let child = process::Command::new("sleep")
+        .arg("0.1")
+        .detach()
+        .spawn();
+    // Process runs independently
+    assert(child.id() > 0);
+}
+

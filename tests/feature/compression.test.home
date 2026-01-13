@@ -1,0 +1,329 @@
+// Compression Test Suite
+
+// ============================================================================
+// GZIP COMPRESSION
+// ============================================================================
+
+it("should compress with gzip") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::gzip(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress gzip") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::gzip(original);
+    let decompressed = compress::gunzip(compressed);
+    assert(decompressed == original);
+}
+
+it("should handle empty data") {
+    let compressed = compress::gzip("");
+    let decompressed = compress::gunzip(compressed);
+    assert(decompressed == "");
+}
+
+it("should set gzip compression level") {
+    let data = "test data ".repeat(100);
+    let fast = compress::gzip(data, level: 1);
+    let best = compress::gzip(data, level: 9);
+    // Best compression should be smaller or equal
+    assert(best.len() <= fast.len());
+}
+
+// ============================================================================
+// DEFLATE COMPRESSION
+// ============================================================================
+
+it("should compress with deflate") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::deflate(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress deflate") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::deflate(original);
+    let decompressed = compress::inflate(compressed);
+    assert(decompressed == original);
+}
+
+// ============================================================================
+// ZLIB COMPRESSION
+// ============================================================================
+
+it("should compress with zlib") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::zlib_compress(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress zlib") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::zlib_compress(original);
+    let decompressed = compress::zlib_decompress(compressed);
+    assert(decompressed == original);
+}
+
+// ============================================================================
+// BROTLI COMPRESSION
+// ============================================================================
+
+it("should compress with brotli") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::brotli_compress(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress brotli") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::brotli_compress(original);
+    let decompressed = compress::brotli_decompress(compressed);
+    assert(decompressed == original);
+}
+
+it("should set brotli quality") {
+    let data = "test data ".repeat(100);
+    let quality_1 = compress::brotli_compress(data, quality: 1);
+    let quality_11 = compress::brotli_compress(data, quality: 11);
+    assert(quality_11.len() <= quality_1.len());
+}
+
+// ============================================================================
+// LZ4 COMPRESSION
+// ============================================================================
+
+it("should compress with lz4") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::lz4_compress(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress lz4") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::lz4_compress(original);
+    let decompressed = compress::lz4_decompress(compressed);
+    assert(decompressed == original);
+}
+
+it("should use lz4 high compression") {
+    let data = "test data ".repeat(100);
+    let normal = compress::lz4_compress(data);
+    let hc = compress::lz4_compress(data, high_compression: true);
+    assert(hc.len() <= normal.len());
+}
+
+// ============================================================================
+// ZSTD COMPRESSION
+// ============================================================================
+
+it("should compress with zstd") {
+    let data = "Hello, World! ".repeat(100);
+    let compressed = compress::zstd_compress(data);
+    assert(compressed.len() < data.len());
+}
+
+it("should decompress zstd") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::zstd_compress(original);
+    let decompressed = compress::zstd_decompress(compressed);
+    assert(decompressed == original);
+}
+
+it("should set zstd compression level") {
+    let data = "test data ".repeat(100);
+    let level_1 = compress::zstd_compress(data, level: 1);
+    let level_19 = compress::zstd_compress(data, level: 19);
+    assert(level_19.len() <= level_1.len());
+}
+
+// ============================================================================
+// STREAMING COMPRESSION
+// ============================================================================
+
+it("should create gzip encoder stream") {
+    let encoder = compress::GzipEncoder::new();
+    encoder.write("Hello, ");
+    encoder.write("World!");
+    let compressed = encoder.finish();
+
+    let decompressed = compress::gunzip(compressed);
+    assert(decompressed == "Hello, World!");
+}
+
+it("should create gzip decoder stream") {
+    let data = "Hello, World!";
+    let compressed = compress::gzip(data);
+
+    let decoder = compress::GzipDecoder::new();
+    decoder.write(compressed);
+    let decompressed = decoder.finish();
+    assert(decompressed == data);
+}
+
+// ============================================================================
+// TAR ARCHIVE
+// ============================================================================
+
+it("should create tar archive") {
+    let tar = compress::TarBuilder::new();
+    tar.add_file("hello.txt", "Hello, World!");
+    tar.add_file("test/nested.txt", "Nested content");
+    let archive = tar.build();
+    assert(archive.len() > 0);
+}
+
+it("should read tar archive") {
+    let tar = compress::TarBuilder::new();
+    tar.add_file("hello.txt", "Hello, World!");
+    let archive = tar.build();
+
+    let reader = compress::TarReader::new(archive);
+    let entries = reader.entries();
+    assert(entries.len() == 1);
+    assert(entries[0].name == "hello.txt");
+    assert(entries[0].content == "Hello, World!");
+}
+
+it("should create tar.gz archive") {
+    let tar = compress::TarBuilder::new();
+    tar.add_file("hello.txt", "Hello, World! ".repeat(100));
+    let archive = tar.build();
+    let compressed = compress::gzip(archive);
+    assert(compressed.len() < archive.len());
+}
+
+// ============================================================================
+// ZIP ARCHIVE
+// ============================================================================
+
+it("should create zip archive") {
+    let zip = compress::ZipBuilder::new();
+    zip.add_file("hello.txt", "Hello, World!");
+    let archive = zip.build();
+    assert(archive.len() > 0);
+}
+
+it("should read zip archive") {
+    let zip = compress::ZipBuilder::new();
+    zip.add_file("hello.txt", "Hello, World!");
+    let archive = zip.build();
+
+    let reader = compress::ZipReader::new(archive);
+    let entries = reader.entries();
+    assert(entries.len() == 1);
+    assert(entries[0].name == "hello.txt");
+}
+
+it("should extract from zip") {
+    let zip = compress::ZipBuilder::new();
+    zip.add_file("hello.txt", "Hello!");
+    zip.add_file("world.txt", "World!");
+    let archive = zip.build();
+
+    let reader = compress::ZipReader::new(archive);
+    let content = reader.extract("hello.txt");
+    assert(content == "Hello!");
+}
+
+it("should set zip compression method") {
+    let zip = compress::ZipBuilder::new();
+    zip.set_compression(compress::ZipMethod::Deflate);
+    zip.add_file("hello.txt", "Hello, World! ".repeat(100));
+    let archive = zip.build();
+    assert(archive.len() > 0);
+}
+
+it("should list zip entries") {
+    let zip = compress::ZipBuilder::new();
+    zip.add_file("a.txt", "A");
+    zip.add_file("b.txt", "B");
+    zip.add_file("c.txt", "C");
+    let archive = zip.build();
+
+    let reader = compress::ZipReader::new(archive);
+    let names = reader.file_names();
+    assert(names.len() == 3);
+    assert(names.contains("a.txt"));
+}
+
+// ============================================================================
+// COMPRESSION DETECTION
+// ============================================================================
+
+it("should detect gzip format") {
+    let data = compress::gzip("test");
+    assert(compress::detect_format(data) == "gzip");
+}
+
+it("should detect zstd format") {
+    let data = compress::zstd_compress("test");
+    assert(compress::detect_format(data) == "zstd");
+}
+
+it("should detect zip format") {
+    let zip = compress::ZipBuilder::new();
+    zip.add_file("test.txt", "test");
+    let data = zip.build();
+    assert(compress::detect_format(data) == "zip");
+}
+
+// ============================================================================
+// COMPRESSION RATIO
+// ============================================================================
+
+it("should report compression ratio") {
+    let original = "Hello, World! ".repeat(100);
+    let compressed = compress::gzip(original);
+    let ratio = compress::ratio(original.len(), compressed.len());
+    assert(ratio > 1);  // Should compress
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should fail on invalid gzip data") {
+    let invalid = [0x00, 0x01, 0x02];
+    let result = compress::gunzip_safe(invalid);
+    assert(result.is_err() == true);
+}
+
+it("should fail on truncated data") {
+    let data = compress::gzip("Hello, World!");
+    let truncated = data[0..data.len() / 2];
+    let result = compress::gunzip_safe(truncated);
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// DICTIONARY COMPRESSION
+// ============================================================================
+
+it("should use zstd dictionary") {
+    let dictionary = "common words that appear frequently in the data";
+    let data = "The data contains common words that appear frequently";
+
+    let dict = compress::zstd_train_dictionary([data], 1024);
+    let compressed = compress::zstd_compress(data, dictionary: dict);
+    let decompressed = compress::zstd_decompress(compressed, dictionary: dict);
+    assert(decompressed == data);
+}
+
+// ============================================================================
+// CHECKSUM VERIFICATION
+// ============================================================================
+
+it("should verify gzip checksum") {
+    let data = "Hello, World!";
+    let compressed = compress::gzip(data);
+    assert(compress::gzip_verify(compressed) == true);
+}
+
+it("should detect corrupted gzip") {
+    let data = "Hello, World!";
+    let mut compressed = compress::gzip(data);
+    compressed[compressed.len() - 1] ^= 0xFF;  // Corrupt checksum
+    assert(compress::gzip_verify(compressed) == false);
+}
+

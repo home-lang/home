@@ -1,0 +1,357 @@
+// CLI Argument Parsing Test Suite
+
+// ============================================================================
+// BASIC ARGUMENT PARSING
+// ============================================================================
+
+it("should parse positional argument") {
+    let args = cli::parse(["myapp", "input.txt"]);
+    assert(args.positional(0) == "input.txt");
+}
+
+it("should parse multiple positional arguments") {
+    let args = cli::parse(["myapp", "input.txt", "output.txt"]);
+    assert(args.positional(0) == "input.txt");
+    assert(args.positional(1) == "output.txt");
+}
+
+it("should return positional count") {
+    let args = cli::parse(["myapp", "a", "b", "c"]);
+    assert(args.positional_count() == 3);
+}
+
+// ============================================================================
+// FLAGS
+// ============================================================================
+
+it("should parse short flag") {
+    let args = cli::parse(["myapp", "-v"]);
+    assert(args.has("-v") == true);
+    assert(args.has("-q") == false);
+}
+
+it("should parse long flag") {
+    let args = cli::parse(["myapp", "--verbose"]);
+    assert(args.has("--verbose") == true);
+}
+
+it("should parse combined short flags") {
+    let args = cli::parse(["myapp", "-abc"]);
+    assert(args.has("-a") == true);
+    assert(args.has("-b") == true);
+    assert(args.has("-c") == true);
+}
+
+// ============================================================================
+// OPTIONS WITH VALUES
+// ============================================================================
+
+it("should parse short option with space") {
+    let args = cli::parse(["myapp", "-o", "output.txt"]);
+    assert(args.get("-o") == "output.txt");
+}
+
+it("should parse short option with equals") {
+    let args = cli::parse(["myapp", "-o=output.txt"]);
+    assert(args.get("-o") == "output.txt");
+}
+
+it("should parse long option with space") {
+    let args = cli::parse(["myapp", "--output", "output.txt"]);
+    assert(args.get("--output") == "output.txt");
+}
+
+it("should parse long option with equals") {
+    let args = cli::parse(["myapp", "--output=output.txt"]);
+    assert(args.get("--output") == "output.txt");
+}
+
+it("should get option with default") {
+    let args = cli::parse(["myapp"]);
+    assert(args.get_or("--missing", "default") == "default");
+}
+
+// ============================================================================
+// TYPED VALUES
+// ============================================================================
+
+it("should parse integer option") {
+    let args = cli::parse(["myapp", "--count", "42"]);
+    assert(args.get_int("--count") == 42);
+}
+
+it("should parse float option") {
+    let args = cli::parse(["myapp", "--ratio", "3.14"]);
+    assert(args.get_float("--ratio") > 3.13);
+    assert(args.get_float("--ratio") < 3.15);
+}
+
+it("should parse boolean option") {
+    let args = cli::parse(["myapp", "--enabled", "true"]);
+    assert(args.get_bool("--enabled") == true);
+}
+
+// ============================================================================
+// MULTIPLE VALUES
+// ============================================================================
+
+it("should parse repeated option") {
+    let args = cli::parse(["myapp", "-I", "/usr", "-I", "/opt"]);
+    let values = args.get_all("-I");
+    assert(values.len() == 2);
+    assert(values[0] == "/usr");
+    assert(values[1] == "/opt");
+}
+
+it("should parse comma-separated values") {
+    let args = cli::parse(["myapp", "--tags", "a,b,c"]);
+    let values = args.get_list("--tags", separator: ",");
+    assert(values.len() == 3);
+}
+
+// ============================================================================
+// SUBCOMMANDS
+// ============================================================================
+
+it("should parse subcommand") {
+    let args = cli::parse(["myapp", "build"]);
+    assert(args.subcommand() == "build");
+}
+
+it("should parse subcommand with args") {
+    let args = cli::parse(["myapp", "build", "--release"]);
+    assert(args.subcommand() == "build");
+    assert(args.has("--release") == true);
+}
+
+it("should parse nested subcommands") {
+    let args = cli::parse(["myapp", "config", "set", "key", "value"]);
+    assert(args.subcommand() == "config");
+    assert(args.sub().subcommand() == "set");
+}
+
+// ============================================================================
+// DOUBLE DASH SEPARATOR
+// ============================================================================
+
+it("should stop parsing after --") {
+    let args = cli::parse(["myapp", "--", "-v", "--help"]);
+    assert(args.has("-v") == false);
+    assert(args.rest() == ["-v", "--help"]);
+}
+
+// ============================================================================
+// CLI BUILDER
+// ============================================================================
+
+it("should define CLI with builder") {
+    let app = cli::App::new("myapp")
+        .version("1.0.0")
+        .description("My application");
+    assert(app.name == "myapp");
+}
+
+it("should define argument") {
+    let app = cli::App::new("myapp")
+        .arg(cli::Arg::new("input")
+            .help("Input file")
+            .required());
+}
+
+it("should define option") {
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--output")
+            .short("-o")
+            .help("Output file")
+            .default("out.txt"));
+}
+
+it("should define flag") {
+    let app = cli::App::new("myapp")
+        .flag(cli::Flag::new("--verbose")
+            .short("-v")
+            .help("Enable verbose mode"));
+}
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+it("should validate required argument") {
+    let app = cli::App::new("myapp")
+        .arg(cli::Arg::new("input").required());
+
+    let result = app.parse_safe(["myapp"]);
+    assert(result.is_err() == true);
+}
+
+it("should validate option values") {
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--count")
+            .value_type(cli::Type::Int)
+            .validator(|v| v > 0));
+
+    let result = app.parse_safe(["myapp", "--count", "-1"]);
+    assert(result.is_err() == true);
+}
+
+it("should validate with choices") {
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--level")
+            .choices(["debug", "info", "warn", "error"]));
+
+    let result = app.parse_safe(["myapp", "--level", "invalid"]);
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// HELP GENERATION
+// ============================================================================
+
+it("should generate help text") {
+    let app = cli::App::new("myapp")
+        .version("1.0.0")
+        .description("My application")
+        .arg(cli::Arg::new("input").help("Input file"));
+
+    let help = app.help_text();
+    assert(help.contains("myapp"));
+    assert(help.contains("1.0.0"));
+    assert(help.contains("Input file"));
+}
+
+it("should show usage") {
+    let app = cli::App::new("myapp")
+        .arg(cli::Arg::new("input").required())
+        .option(cli::Option::new("--output").short("-o"));
+
+    let usage = app.usage();
+    assert(usage.contains("myapp"));
+    assert(usage.contains("<input>"));
+    assert(usage.contains("[-o]"));
+}
+
+// ============================================================================
+// ENVIRONMENT VARIABLES
+// ============================================================================
+
+it("should read from env var") {
+    env::set("MY_APP_OUTPUT", "/tmp/out.txt");
+
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--output")
+            .env("MY_APP_OUTPUT"));
+
+    let args = app.parse(["myapp"]);
+    assert(args.get("--output") == "/tmp/out.txt");
+}
+
+it("should prefer CLI over env") {
+    env::set("MY_APP_OUTPUT", "/tmp/env.txt");
+
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--output")
+            .env("MY_APP_OUTPUT"));
+
+    let args = app.parse(["myapp", "--output", "/tmp/cli.txt"]);
+    assert(args.get("--output") == "/tmp/cli.txt");
+}
+
+// ============================================================================
+// CONFIG FILE
+// ============================================================================
+
+it("should read from config file") {
+    let app = cli::App::new("myapp")
+        .config_file("~/.myapprc")
+        .option(cli::Option::new("--output"));
+}
+
+// ============================================================================
+// COMPLETION SCRIPTS
+// ============================================================================
+
+it("should generate bash completion") {
+    let app = cli::App::new("myapp")
+        .subcommand(cli::Command::new("build"))
+        .subcommand(cli::Command::new("test"));
+
+    let bash = app.completion(cli::Shell::Bash);
+    assert(bash.contains("_myapp"));
+}
+
+it("should generate zsh completion") {
+    let app = cli::App::new("myapp");
+    let zsh = app.completion(cli::Shell::Zsh);
+    assert(zsh.contains("#compdef"));
+}
+
+it("should generate fish completion") {
+    let app = cli::App::new("myapp");
+    let fish = app.completion(cli::Shell::Fish);
+    assert(fish.contains("complete"));
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle unknown option") {
+    let app = cli::App::new("myapp")
+        .strict();
+
+    let result = app.parse_safe(["myapp", "--unknown"]);
+    assert(result.is_err() == true);
+    assert(result.err().contains("unknown"));
+}
+
+it("should suggest similar option") {
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--verbose"));
+
+    let result = app.parse_safe(["myapp", "--verbos"]);
+    assert(result.err().contains("--verbose"));
+}
+
+// ============================================================================
+// ALIASES
+// ============================================================================
+
+it("should support option aliases") {
+    let app = cli::App::new("myapp")
+        .option(cli::Option::new("--verbose")
+            .alias("--debug")
+            .alias("-V"));
+
+    let args1 = app.parse(["myapp", "--verbose"]);
+    let args2 = app.parse(["myapp", "--debug"]);
+    let args3 = app.parse(["myapp", "-V"]);
+
+    assert(args1.has("--verbose") == true);
+    assert(args2.has("--verbose") == true);
+    assert(args3.has("--verbose") == true);
+}
+
+it("should support subcommand aliases") {
+    let app = cli::App::new("myapp")
+        .subcommand(cli::Command::new("build")
+            .alias("b"));
+
+    let args = app.parse(["myapp", "b"]);
+    assert(args.subcommand() == "build");
+}
+
+// ============================================================================
+// GLOBAL OPTIONS
+// ============================================================================
+
+it("should support global options") {
+    let app = cli::App::new("myapp")
+        .global_option(cli::Option::new("--verbose").short("-v"))
+        .subcommand(cli::Command::new("build"))
+        .subcommand(cli::Command::new("test"));
+
+    let args = app.parse(["myapp", "build", "-v"]);
+    assert(args.has("-v") == true);
+}
+

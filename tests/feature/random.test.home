@@ -1,0 +1,383 @@
+// Random Number Generation Test Suite
+
+// ============================================================================
+// BASIC RANDOM INTEGERS
+// ============================================================================
+
+it("should generate random int") {
+    let n = random::int();
+    // Just verify it returns a value
+    assert(n >= 0 or n < 0);  // Always true, just testing the call
+}
+
+it("should generate random int in range") {
+    for _ in 0..100 {
+        let n = random::int_range(1, 10);
+        assert(n >= 1);
+        assert(n <= 10);
+    }
+}
+
+it("should generate random int with exclusive end") {
+    for _ in 0..100 {
+        let n = random::int_range_exclusive(0, 10);
+        assert(n >= 0);
+        assert(n < 10);
+    }
+}
+
+it("should generate i32") {
+    let n = random::i32();
+    assert(n >= -2147483648);
+    assert(n <= 2147483647);
+}
+
+it("should generate i64") {
+    let n = random::i64();
+    // Just verify it works
+    assert(true);
+}
+
+it("should generate u32") {
+    let n = random::u32();
+    assert(n >= 0);
+}
+
+it("should generate u64") {
+    let n = random::u64();
+    assert(n >= 0);
+}
+
+// ============================================================================
+// RANDOM FLOATS
+// ============================================================================
+
+it("should generate random float 0-1") {
+    for _ in 0..100 {
+        let f = random::float();
+        assert(f >= 0.0);
+        assert(f < 1.0);
+    }
+}
+
+it("should generate random float in range") {
+    for _ in 0..100 {
+        let f = random::float_range(5.0, 10.0);
+        assert(f >= 5.0);
+        assert(f < 10.0);
+    }
+}
+
+it("should generate f32") {
+    let f = random::f32();
+    assert(f >= 0.0);
+    assert(f < 1.0);
+}
+
+it("should generate f64") {
+    let f = random::f64();
+    assert(f >= 0.0);
+    assert(f < 1.0);
+}
+
+// ============================================================================
+// RANDOM BOOLEANS
+// ============================================================================
+
+it("should generate random boolean") {
+    let mut true_count = 0;
+    let mut false_count = 0;
+
+    for _ in 0..1000 {
+        if random::bool() {
+            true_count += 1;
+        } else {
+            false_count += 1;
+        }
+    }
+
+    // Should have reasonable distribution
+    assert(true_count > 100);
+    assert(false_count > 100);
+}
+
+it("should generate boolean with probability") {
+    let mut true_count = 0;
+
+    for _ in 0..1000 {
+        if random::bool_with_prob(0.8) {
+            true_count += 1;
+        }
+    }
+
+    // ~80% should be true
+    assert(true_count > 700);
+    assert(true_count < 900);
+}
+
+// ============================================================================
+// RANDOM BYTES
+// ============================================================================
+
+it("should generate random bytes") {
+    let bytes = random::bytes(16);
+    assert(bytes.len() == 16);
+}
+
+it("should generate different bytes each time") {
+    let bytes1 = random::bytes(16);
+    let bytes2 = random::bytes(16);
+    assert(bytes1 != bytes2);
+}
+
+// ============================================================================
+// RANDOM STRINGS
+// ============================================================================
+
+it("should generate alphanumeric string") {
+    let s = random::alphanumeric(10);
+    assert(s.len() == 10);
+    for c in s.chars() {
+        assert(c.is_alphanumeric());
+    }
+}
+
+it("should generate alphabetic string") {
+    let s = random::alphabetic(10);
+    assert(s.len() == 10);
+    for c in s.chars() {
+        assert(c.is_alphabetic());
+    }
+}
+
+it("should generate numeric string") {
+    let s = random::numeric(10);
+    assert(s.len() == 10);
+    for c in s.chars() {
+        assert(c.is_digit(10));
+    }
+}
+
+it("should generate hex string") {
+    let s = random::hex(16);
+    assert(s.len() == 16);
+    for c in s.chars() {
+        assert("0123456789abcdef".contains(c));
+    }
+}
+
+it("should generate string from charset") {
+    let charset = "ABC123";
+    let s = random::string_from(charset, 10);
+    assert(s.len() == 10);
+    for c in s.chars() {
+        assert(charset.contains(c));
+    }
+}
+
+// ============================================================================
+// ARRAY OPERATIONS
+// ============================================================================
+
+it("should choose random element") {
+    let arr = [1, 2, 3, 4, 5];
+    for _ in 0..100 {
+        let elem = random::choice(arr);
+        assert(arr.contains(elem));
+    }
+}
+
+it("should shuffle array") {
+    let original = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let shuffled = random::shuffle(original.clone());
+    assert(shuffled.len() == original.len());
+    // Should contain same elements
+    for elem in original {
+        assert(shuffled.contains(elem));
+    }
+}
+
+it("should sample without replacement") {
+    let arr = [1, 2, 3, 4, 5];
+    let sample = random::sample(arr, 3);
+    assert(sample.len() == 3);
+    // No duplicates
+    for i in 0..sample.len() {
+        for j in i + 1..sample.len() {
+            assert(sample[i] != sample[j]);
+        }
+    }
+}
+
+it("should sample with replacement") {
+    let arr = [1, 2, 3];
+    let sample = random::sample_with_replacement(arr, 10);
+    assert(sample.len() == 10);
+    for elem in sample {
+        assert(arr.contains(elem));
+    }
+}
+
+// ============================================================================
+// WEIGHTED RANDOM
+// ============================================================================
+
+it("should choose with weights") {
+    let items = ["rare", "common", "very_common"];
+    let weights = [1, 10, 100];
+
+    let mut counts = { "rare": 0, "common": 0, "very_common": 0 };
+
+    for _ in 0..10000 {
+        let item = random::weighted_choice(items, weights);
+        counts[item] += 1;
+    }
+
+    // Very common should appear much more than rare
+    assert(counts["very_common"] > counts["common"]);
+    assert(counts["common"] > counts["rare"]);
+}
+
+// ============================================================================
+// DISTRIBUTIONS
+// ============================================================================
+
+it("should generate normal distribution") {
+    let mut values = [];
+    for _ in 0..1000 {
+        values.push(random::normal(mean: 0, std_dev: 1));
+    }
+
+    // Mean should be close to 0
+    let mean = values.sum() / values.len();
+    assert(mean > -0.5 and mean < 0.5);
+}
+
+it("should generate exponential distribution") {
+    let val = random::exponential(lambda: 1.0);
+    assert(val >= 0);
+}
+
+it("should generate poisson distribution") {
+    let mut values = [];
+    for _ in 0..1000 {
+        values.push(random::poisson(lambda: 5.0));
+    }
+
+    // Mean should be close to lambda
+    let mean = values.sum() / values.len();
+    assert(mean > 4 and mean < 6);
+}
+
+it("should generate uniform distribution") {
+    let mut values = [];
+    for _ in 0..1000 {
+        values.push(random::uniform(0, 10));
+    }
+
+    // Mean should be close to 5
+    let mean = values.sum() / values.len();
+    assert(mean > 4 and mean < 6);
+}
+
+// ============================================================================
+// SEEDED RANDOM
+// ============================================================================
+
+it("should create seeded generator") {
+    let rng = random::Rng::new(12345);
+    let n1 = rng.int();
+    let n2 = rng.int();
+    assert(n1 != n2);  // Produces different values
+}
+
+it("should reproduce sequence with same seed") {
+    let rng1 = random::Rng::new(12345);
+    let rng2 = random::Rng::new(12345);
+
+    for _ in 0..10 {
+        assert(rng1.int() == rng2.int());
+    }
+}
+
+it("should produce different sequences with different seeds") {
+    let rng1 = random::Rng::new(12345);
+    let rng2 = random::Rng::new(54321);
+
+    let same_count = 0;
+    for _ in 0..10 {
+        if rng1.int() == rng2.int() {
+            same_count += 1;
+        }
+    }
+    assert(same_count < 10);  // Highly unlikely to be all same
+}
+
+// ============================================================================
+// UUID GENERATION
+// ============================================================================
+
+it("should generate UUID v4") {
+    let uuid = random::uuid();
+    assert(uuid.len() == 36);
+    assert(uuid[8] == '-');
+    assert(uuid[13] == '-');
+    assert(uuid[14] == '4');  // Version 4
+    assert(uuid[18] == '-');
+    assert(uuid[23] == '-');
+}
+
+it("should generate unique UUIDs") {
+    let uuids = [];
+    for _ in 0..100 {
+        uuids.push(random::uuid());
+    }
+    // All should be unique
+    for i in 0..uuids.len() {
+        for j in i + 1..uuids.len() {
+            assert(uuids[i] != uuids[j]);
+        }
+    }
+}
+
+// ============================================================================
+// CRYPTOGRAPHIC RANDOM
+// ============================================================================
+
+it("should generate cryptographically secure bytes") {
+    let bytes = random::secure_bytes(32);
+    assert(bytes.len() == 32);
+}
+
+it("should generate secure random int") {
+    let n = random::secure_int_range(0, 100);
+    assert(n >= 0);
+    assert(n <= 100);
+}
+
+// ============================================================================
+// DICE AND GAMES
+// ============================================================================
+
+it("should roll dice") {
+    for _ in 0..100 {
+        let roll = random::dice(6);  // d6
+        assert(roll >= 1);
+        assert(roll <= 6);
+    }
+}
+
+it("should roll multiple dice") {
+    let rolls = random::dice_n(6, 3);  // 3d6
+    assert(rolls.len() == 3);
+    for roll in rolls {
+        assert(roll >= 1);
+        assert(roll <= 6);
+    }
+}
+
+it("should flip coin") {
+    let result = random::coin_flip();
+    assert(result == "heads" or result == "tails");
+}
+

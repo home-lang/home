@@ -1,0 +1,377 @@
+// Regular Expression Test Suite
+
+// ============================================================================
+// BASIC MATCHING
+// ============================================================================
+
+it("should match literal string") {
+    let pattern = regex::compile("hello");
+    assert(pattern.is_match("hello") == true);
+    assert(pattern.is_match("world") == false);
+}
+
+it("should match at any position") {
+    let pattern = regex::compile("world");
+    assert(pattern.is_match("hello world") == true);
+    assert(pattern.is_match("worldly") == true);
+}
+
+it("should be case sensitive by default") {
+    let pattern = regex::compile("Hello");
+    assert(pattern.is_match("Hello") == true);
+    assert(pattern.is_match("hello") == false);
+    assert(pattern.is_match("HELLO") == false);
+}
+
+// ============================================================================
+// CHARACTER CLASSES
+// ============================================================================
+
+it("should match digit class") {
+    let pattern = regex::compile("\\d+");
+    assert(pattern.is_match("123") == true);
+    assert(pattern.is_match("abc") == false);
+    assert(pattern.is_match("a1b") == true);
+}
+
+it("should match word class") {
+    let pattern = regex::compile("\\w+");
+    assert(pattern.is_match("hello123") == true);
+    assert(pattern.is_match("!@#") == false);
+}
+
+it("should match whitespace class") {
+    let pattern = regex::compile("\\s+");
+    assert(pattern.is_match("   ") == true);
+    assert(pattern.is_match("\t\n") == true);
+    assert(pattern.is_match("abc") == false);
+}
+
+it("should match custom character class") {
+    let pattern = regex::compile("[aeiou]+");
+    assert(pattern.is_match("aei") == true);
+    assert(pattern.is_match("xyz") == false);
+}
+
+it("should match negated character class") {
+    let pattern = regex::compile("[^0-9]+");
+    assert(pattern.is_match("abc") == true);
+    assert(pattern.is_match("123") == false);
+}
+
+it("should match character range") {
+    let pattern = regex::compile("[a-z]+");
+    assert(pattern.is_match("hello") == true);
+    assert(pattern.is_match("HELLO") == false);
+}
+
+it("should match multiple ranges") {
+    let pattern = regex::compile("[a-zA-Z]+");
+    assert(pattern.is_match("Hello") == true);
+    assert(pattern.is_match("WORLD") == true);
+}
+
+// ============================================================================
+// QUANTIFIERS
+// ============================================================================
+
+it("should match zero or more with *") {
+    let pattern = regex::compile("ab*c");
+    assert(pattern.is_match("ac") == true);
+    assert(pattern.is_match("abc") == true);
+    assert(pattern.is_match("abbbbc") == true);
+}
+
+it("should match one or more with +") {
+    let pattern = regex::compile("ab+c");
+    assert(pattern.is_match("ac") == false);
+    assert(pattern.is_match("abc") == true);
+    assert(pattern.is_match("abbbbc") == true);
+}
+
+it("should match zero or one with ?") {
+    let pattern = regex::compile("colou?r");
+    assert(pattern.is_match("color") == true);
+    assert(pattern.is_match("colour") == true);
+    assert(pattern.is_match("colouur") == false);
+}
+
+it("should match exact count with {n}") {
+    let pattern = regex::compile("a{3}");
+    assert(pattern.is_match("aaa") == true);
+    assert(pattern.is_match("aa") == false);
+    assert(pattern.is_match("aaaa") == true);  // contains aaa
+}
+
+it("should match range count with {n,m}") {
+    let pattern = regex::compile("a{2,4}");
+    assert(pattern.is_match("a") == false);
+    assert(pattern.is_match("aa") == true);
+    assert(pattern.is_match("aaa") == true);
+    assert(pattern.is_match("aaaa") == true);
+}
+
+it("should match minimum count with {n,}") {
+    let pattern = regex::compile("a{2,}");
+    assert(pattern.is_match("a") == false);
+    assert(pattern.is_match("aa") == true);
+    assert(pattern.is_match("aaaaa") == true);
+}
+
+// ============================================================================
+// ANCHORS
+// ============================================================================
+
+it("should match start of string with ^") {
+    let pattern = regex::compile("^hello");
+    assert(pattern.is_match("hello world") == true);
+    assert(pattern.is_match("say hello") == false);
+}
+
+it("should match end of string with $") {
+    let pattern = regex::compile("world$");
+    assert(pattern.is_match("hello world") == true);
+    assert(pattern.is_match("world hello") == false);
+}
+
+it("should match whole string with ^ and $") {
+    let pattern = regex::compile("^hello$");
+    assert(pattern.is_match("hello") == true);
+    assert(pattern.is_match("hello world") == false);
+    assert(pattern.is_match("say hello") == false);
+}
+
+it("should match word boundary with \\b") {
+    let pattern = regex::compile("\\bword\\b");
+    assert(pattern.is_match("a word here") == true);
+    assert(pattern.is_match("keyword") == false);
+    assert(pattern.is_match("words") == false);
+}
+
+// ============================================================================
+// ALTERNATION
+// ============================================================================
+
+it("should match either pattern with |") {
+    let pattern = regex::compile("cat|dog");
+    assert(pattern.is_match("cat") == true);
+    assert(pattern.is_match("dog") == true);
+    assert(pattern.is_match("bird") == false);
+}
+
+it("should match multiple alternatives") {
+    let pattern = regex::compile("red|green|blue");
+    assert(pattern.is_match("red") == true);
+    assert(pattern.is_match("green") == true);
+    assert(pattern.is_match("blue") == true);
+    assert(pattern.is_match("yellow") == false);
+}
+
+// ============================================================================
+// GROUPS
+// ============================================================================
+
+it("should group patterns with ()") {
+    let pattern = regex::compile("(ab)+");
+    assert(pattern.is_match("ab") == true);
+    assert(pattern.is_match("abab") == true);
+    assert(pattern.is_match("aba") == true);
+}
+
+it("should capture groups") {
+    let pattern = regex::compile("(\\d+)-(\\d+)");
+    let match_result = pattern.find("123-456");
+    assert(match_result.group(1) == "123");
+    assert(match_result.group(2) == "456");
+}
+
+it("should use non-capturing groups with (?:)") {
+    let pattern = regex::compile("(?:ab)+c");
+    assert(pattern.is_match("abc") == true);
+    assert(pattern.is_match("ababc") == true);
+}
+
+// ============================================================================
+// SPECIAL CHARACTERS
+// ============================================================================
+
+it("should match any character with .") {
+    let pattern = regex::compile("a.c");
+    assert(pattern.is_match("abc") == true);
+    assert(pattern.is_match("aXc") == true);
+    assert(pattern.is_match("ac") == false);
+}
+
+it("should escape special characters") {
+    let pattern = regex::compile("\\.");
+    assert(pattern.is_match(".") == true);
+    assert(pattern.is_match("a") == false);
+}
+
+it("should escape all metacharacters") {
+    let pattern = regex::compile("\\[\\]\\(\\)\\{\\}\\^\\$\\.\\*\\+\\?\\|\\\\");
+    assert(pattern.is_match("[](){}^$.*+?|\\") == true);
+}
+
+// ============================================================================
+// FIND AND FIND ALL
+// ============================================================================
+
+it("should find first match") {
+    let pattern = regex::compile("\\d+");
+    let match_result = pattern.find("abc123def456");
+    assert(match_result.text() == "123");
+}
+
+it("should return match position") {
+    let pattern = regex::compile("world");
+    let match_result = pattern.find("hello world");
+    assert(match_result.start() == 6);
+    assert(match_result.end() == 11);
+}
+
+it("should find all matches") {
+    let pattern = regex::compile("\\d+");
+    let matches = pattern.find_all("a1b2c3");
+    assert(matches.len() == 3);
+    assert(matches[0].text() == "1");
+    assert(matches[1].text() == "2");
+    assert(matches[2].text() == "3");
+}
+
+// ============================================================================
+// REPLACE
+// ============================================================================
+
+it("should replace first match") {
+    let pattern = regex::compile("world");
+    let result = pattern.replace("hello world world", "there");
+    assert(result == "hello there world");
+}
+
+it("should replace all matches") {
+    let pattern = regex::compile("a");
+    let result = pattern.replace_all("banana", "o");
+    assert(result == "bonono");
+}
+
+it("should replace with capture group reference") {
+    let pattern = regex::compile("(\\w+)@(\\w+)");
+    let result = pattern.replace("user@host", "$2:$1");
+    assert(result == "host:user");
+}
+
+it("should replace with empty string") {
+    let pattern = regex::compile("\\d+");
+    let result = pattern.replace_all("a1b2c3", "");
+    assert(result == "abc");
+}
+
+// ============================================================================
+// SPLIT
+// ============================================================================
+
+it("should split by pattern") {
+    let pattern = regex::compile(",\\s*");
+    let parts = pattern.split("a, b, c");
+    assert(parts.len() == 3);
+    assert(parts[0] == "a");
+    assert(parts[1] == "b");
+    assert(parts[2] == "c");
+}
+
+it("should split by whitespace") {
+    let pattern = regex::compile("\\s+");
+    let parts = pattern.split("hello   world  test");
+    assert(parts.len() == 3);
+}
+
+// ============================================================================
+// FLAGS AND OPTIONS
+// ============================================================================
+
+it("should match case insensitive with flag") {
+    let pattern = regex::compile("hello", regex::IGNORE_CASE);
+    assert(pattern.is_match("Hello") == true);
+    assert(pattern.is_match("HELLO") == true);
+    assert(pattern.is_match("HeLLo") == true);
+}
+
+it("should match multiline with flag") {
+    let pattern = regex::compile("^hello", regex::MULTILINE);
+    assert(pattern.is_match("world\nhello") == true);
+}
+
+it("should combine flags") {
+    let pattern = regex::compile("^hello$", regex::IGNORE_CASE | regex::MULTILINE);
+    assert(pattern.is_match("HELLO") == true);
+}
+
+// ============================================================================
+// PRACTICAL PATTERNS
+// ============================================================================
+
+it("should match email pattern") {
+    let pattern = regex::compile("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}");
+    assert(pattern.is_match("user@example.com") == true);
+    assert(pattern.is_match("invalid-email") == false);
+    assert(pattern.is_match("test.user@subdomain.example.org") == true);
+}
+
+it("should match URL pattern") {
+    let pattern = regex::compile("https?://[\\w.-]+(/[\\w.-]*)*");
+    assert(pattern.is_match("http://example.com") == true);
+    assert(pattern.is_match("https://example.com/path") == true);
+}
+
+it("should match phone number pattern") {
+    let pattern = regex::compile("\\d{3}-\\d{3}-\\d{4}");
+    assert(pattern.is_match("123-456-7890") == true);
+    assert(pattern.is_match("12-34-5678") == false);
+}
+
+it("should match date pattern") {
+    let pattern = regex::compile("\\d{4}-\\d{2}-\\d{2}");
+    assert(pattern.is_match("2023-12-25") == true);
+    assert(pattern.is_match("23-12-25") == false);
+}
+
+it("should match IP address pattern") {
+    let pattern = regex::compile("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}");
+    assert(pattern.is_match("192.168.1.1") == true);
+    assert(pattern.is_match("10.0.0.1") == true);
+}
+
+it("should match hex color pattern") {
+    let pattern = regex::compile("#[0-9A-Fa-f]{6}");
+    assert(pattern.is_match("#FF0000") == true);
+    assert(pattern.is_match("#abc123") == true);
+    assert(pattern.is_match("#GGG") == false);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle empty pattern") {
+    let pattern = regex::compile("");
+    assert(pattern.is_match("anything") == true);
+}
+
+it("should handle empty input") {
+    let pattern = regex::compile(".*");
+    assert(pattern.is_match("") == true);
+}
+
+it("should handle pattern longer than input") {
+    let pattern = regex::compile("verylongpattern");
+    assert(pattern.is_match("short") == false);
+}
+
+it("should handle greedy vs lazy quantifiers") {
+    let greedy = regex::compile("<.*>");
+    let lazy = regex::compile("<.*?>");
+    let input = "<tag1><tag2>";
+    assert(greedy.find(input).text() == "<tag1><tag2>");
+    assert(lazy.find(input).text() == "<tag1>");
+}

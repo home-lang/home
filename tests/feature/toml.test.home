@@ -1,0 +1,351 @@
+// TOML Parsing Test Suite
+
+// ============================================================================
+// BASIC VALUES
+// ============================================================================
+
+it("should parse string value") {
+    let doc = toml::parse("name = \"Tom Preston-Werner\"");
+    assert(doc["name"].as_string() == "Tom Preston-Werner");
+}
+
+it("should parse integer value") {
+    let doc = toml::parse("port = 8080");
+    assert(doc["port"].as_int() == 8080);
+}
+
+it("should parse negative integer") {
+    let doc = toml::parse("offset = -42");
+    assert(doc["offset"].as_int() == -42);
+}
+
+it("should parse float value") {
+    let doc = toml::parse("pi = 3.14159");
+    assert(doc["pi"].as_float() > 3.14);
+    assert(doc["pi"].as_float() < 3.15);
+}
+
+it("should parse boolean true") {
+    let doc = toml::parse("enabled = true");
+    assert(doc["enabled"].as_bool() == true);
+}
+
+it("should parse boolean false") {
+    let doc = toml::parse("disabled = false");
+    assert(doc["disabled"].as_bool() == false);
+}
+
+// ============================================================================
+// STRING TYPES
+// ============================================================================
+
+it("should parse basic string") {
+    let doc = toml::parse("str = \"Hello, World!\"");
+    assert(doc["str"].as_string() == "Hello, World!");
+}
+
+it("should parse literal string") {
+    let doc = toml::parse("path = 'C:\\Users\\name'");
+    assert(doc["path"].as_string().contains("Users"));
+}
+
+it("should parse multiline basic string") {
+    let toml_str = "str = \"\"\"
+Hello
+World\"\"\"";
+    let doc = toml::parse(toml_str);
+    assert(doc["str"].as_string().contains("Hello"));
+    assert(doc["str"].as_string().contains("World"));
+}
+
+it("should parse multiline literal string") {
+    let toml_str = "str = '''
+Hello
+World'''";
+    let doc = toml::parse(toml_str);
+    assert(doc["str"].as_string().contains("Hello"));
+}
+
+// ============================================================================
+// NUMBER FORMATS
+// ============================================================================
+
+it("should parse hexadecimal") {
+    let doc = toml::parse("hex = 0xDEADBEEF");
+    assert(doc["hex"].as_int() == 0xDEADBEEF);
+}
+
+it("should parse octal") {
+    let doc = toml::parse("oct = 0o755");
+    assert(doc["oct"].as_int() == 493);  // 0o755 in decimal
+}
+
+it("should parse binary") {
+    let doc = toml::parse("bin = 0b11010110");
+    assert(doc["bin"].as_int() == 214);
+}
+
+it("should parse underscored number") {
+    let doc = toml::parse("large = 1_000_000");
+    assert(doc["large"].as_int() == 1000000);
+}
+
+it("should parse scientific notation") {
+    let doc = toml::parse("sci = 5e+22");
+    assert(doc["sci"].as_float() > 4e22);
+}
+
+it("should parse infinity") {
+    let doc = toml::parse("inf_val = inf");
+    let val = doc["inf_val"].as_float();
+    assert(val > 1e308);  // Very large number (infinity)
+}
+
+it("should parse negative infinity") {
+    let doc = toml::parse("neg_inf = -inf");
+    let val = doc["neg_inf"].as_float();
+    assert(val < -1e308);
+}
+
+// ============================================================================
+// ARRAYS
+// ============================================================================
+
+it("should parse integer array") {
+    let doc = toml::parse("numbers = [1, 2, 3, 4, 5]");
+    let arr = doc["numbers"].as_array();
+    assert(arr.len() == 5);
+    assert(arr[0].as_int() == 1);
+    assert(arr[4].as_int() == 5);
+}
+
+it("should parse string array") {
+    let doc = toml::parse("colors = [\"red\", \"green\", \"blue\"]");
+    let arr = doc["colors"].as_array();
+    assert(arr.len() == 3);
+    assert(arr[0].as_string() == "red");
+}
+
+it("should parse nested array") {
+    let doc = toml::parse("matrix = [[1, 2], [3, 4]]");
+    let arr = doc["matrix"].as_array();
+    assert(arr.len() == 2);
+    assert(arr[0].as_array()[0].as_int() == 1);
+}
+
+it("should parse empty array") {
+    let doc = toml::parse("empty = []");
+    let arr = doc["empty"].as_array();
+    assert(arr.len() == 0);
+}
+
+it("should parse multiline array") {
+    let toml_str = "items = [
+    1,
+    2,
+    3
+]";
+    let doc = toml::parse(toml_str);
+    let arr = doc["items"].as_array();
+    assert(arr.len() == 3);
+}
+
+// ============================================================================
+// TABLES
+// ============================================================================
+
+it("should parse simple table") {
+    let toml_str = "[server]
+host = \"localhost\"
+port = 8080";
+    let doc = toml::parse(toml_str);
+    assert(doc["server"]["host"].as_string() == "localhost");
+    assert(doc["server"]["port"].as_int() == 8080);
+}
+
+it("should parse nested tables") {
+    let toml_str = "[database]
+[database.connection]
+host = \"127.0.0.1\"
+port = 5432";
+    let doc = toml::parse(toml_str);
+    assert(doc["database"]["connection"]["host"].as_string() == "127.0.0.1");
+}
+
+it("should parse dotted key table") {
+    let toml_str = "[a.b.c]
+value = 42";
+    let doc = toml::parse(toml_str);
+    assert(doc["a"]["b"]["c"]["value"].as_int() == 42);
+}
+
+it("should parse inline table") {
+    let doc = toml::parse("point = { x = 10, y = 20 }");
+    assert(doc["point"]["x"].as_int() == 10);
+    assert(doc["point"]["y"].as_int() == 20);
+}
+
+// ============================================================================
+// ARRAY OF TABLES
+// ============================================================================
+
+it("should parse array of tables") {
+    let toml_str = "[[products]]
+name = \"Hammer\"
+price = 9.99
+
+[[products]]
+name = \"Nail\"
+price = 0.05";
+    let doc = toml::parse(toml_str);
+    let products = doc["products"].as_array();
+    assert(products.len() == 2);
+    assert(products[0]["name"].as_string() == "Hammer");
+    assert(products[1]["name"].as_string() == "Nail");
+}
+
+// ============================================================================
+// DATETIME
+// ============================================================================
+
+it("should parse offset datetime") {
+    let doc = toml::parse("odt = 2023-12-25T10:30:00Z");
+    let dt = doc["odt"].as_datetime();
+    assert(dt.year == 2023);
+    assert(dt.month == 12);
+    assert(dt.day == 25);
+}
+
+it("should parse local datetime") {
+    let doc = toml::parse("ldt = 2023-12-25T10:30:00");
+    let dt = doc["ldt"].as_datetime();
+    assert(dt.year == 2023);
+}
+
+it("should parse local date") {
+    let doc = toml::parse("ld = 2023-12-25");
+    let dt = doc["ld"].as_datetime();
+    assert(dt.year == 2023);
+    assert(dt.month == 12);
+    assert(dt.day == 25);
+}
+
+it("should parse local time") {
+    let doc = toml::parse("lt = 10:30:00");
+    let dt = doc["lt"].as_datetime();
+    assert(dt.hour == 10);
+    assert(dt.minute == 30);
+}
+
+// ============================================================================
+// COMMENTS
+// ============================================================================
+
+it("should ignore full-line comment") {
+    let toml_str = "# This is a comment
+key = \"value\"";
+    let doc = toml::parse(toml_str);
+    assert(doc["key"].as_string() == "value");
+}
+
+it("should ignore inline comment") {
+    let doc = toml::parse("key = \"value\" # comment");
+    assert(doc["key"].as_string() == "value");
+}
+
+// ============================================================================
+// DOTTED KEYS
+// ============================================================================
+
+it("should parse dotted key") {
+    let doc = toml::parse("physical.color = \"orange\"");
+    assert(doc["physical"]["color"].as_string() == "orange");
+}
+
+it("should parse multiple dotted keys") {
+    let toml_str = "name = \"Apple\"
+physical.color = \"red\"
+physical.shape = \"round\"";
+    let doc = toml::parse(toml_str);
+    assert(doc["physical"]["color"].as_string() == "red");
+    assert(doc["physical"]["shape"].as_string() == "round");
+}
+
+// ============================================================================
+// COMPLEX DOCUMENT
+// ============================================================================
+
+it("should parse complex config") {
+    let toml_str = "# Server configuration
+title = \"My Application\"
+
+[owner]
+name = \"Tom Preston-Werner\"
+
+[database]
+enabled = true
+ports = [8000, 8001, 8002]
+
+[servers.alpha]
+ip = \"10.0.0.1\"
+role = \"frontend\"
+
+[servers.beta]
+ip = \"10.0.0.2\"
+role = \"backend\"";
+    let doc = toml::parse(toml_str);
+
+    assert(doc["title"].as_string() == "My Application");
+    assert(doc["owner"]["name"].as_string() == "Tom Preston-Werner");
+    assert(doc["database"]["enabled"].as_bool() == true);
+    assert(doc["database"]["ports"].as_array().len() == 3);
+    assert(doc["servers"]["alpha"]["ip"].as_string() == "10.0.0.1");
+    assert(doc["servers"]["beta"]["role"].as_string() == "backend");
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle empty document") {
+    let doc = toml::parse("");
+    // Should not error
+}
+
+it("should handle whitespace only") {
+    let doc = toml::parse("   \n\n   ");
+    // Should not error
+}
+
+it("should handle comments only") {
+    let doc = toml::parse("# Comment 1\n# Comment 2");
+    // Should not error
+}
+
+it("should return null for missing key") {
+    let doc = toml::parse("exists = 1");
+    assert(doc.get("nonexistent") == null);
+}
+
+// ============================================================================
+// SERIALIZATION
+// ============================================================================
+
+it("should serialize to string") {
+    let doc = toml::parse("name = \"test\"\nvalue = 42");
+    let serialized = toml::stringify(doc);
+    assert(serialized.contains("name"));
+    assert(serialized.contains("test"));
+}
+
+it("should round-trip document") {
+    let original = "title = \"Example\"
+
+[database]
+port = 5432";
+    let doc = toml::parse(original);
+    let serialized = toml::stringify(doc);
+    let reparsed = toml::parse(serialized);
+    assert(reparsed["title"].as_string() == "Example");
+    assert(reparsed["database"]["port"].as_int() == 5432);
+}

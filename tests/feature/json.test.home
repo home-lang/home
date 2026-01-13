@@ -1,0 +1,443 @@
+// JSON Parsing and Serialization Test Suite
+
+// ============================================================================
+// BASIC VALUE PARSING
+// ============================================================================
+
+it("should parse null") {
+    let value = json::parse("null");
+    assert(value.is_null());
+}
+
+it("should parse true boolean") {
+    let value = json::parse("true");
+    assert(value.as_bool() == true);
+}
+
+it("should parse false boolean") {
+    let value = json::parse("false");
+    assert(value.as_bool() == false);
+}
+
+it("should parse positive integer") {
+    let value = json::parse("42");
+    assert(value.as_int() == 42);
+}
+
+it("should parse negative integer") {
+    let value = json::parse("-123");
+    assert(value.as_int() == -123);
+}
+
+it("should parse zero") {
+    let value = json::parse("0");
+    assert(value.as_int() == 0);
+}
+
+it("should parse float") {
+    let value = json::parse("3.14159");
+    assert(value.as_float() > 3.14);
+    assert(value.as_float() < 3.15);
+}
+
+it("should parse negative float") {
+    let value = json::parse("-2.718");
+    assert(value.as_float() < -2.7);
+}
+
+it("should parse scientific notation") {
+    let value = json::parse("1.5e10");
+    assert(value.as_float() > 1e10);
+}
+
+it("should parse negative exponent") {
+    let value = json::parse("1e-5");
+    assert(value.as_float() < 0.001);
+}
+
+// ============================================================================
+// STRING PARSING
+// ============================================================================
+
+it("should parse simple string") {
+    let value = json::parse("\"hello\"");
+    assert(value.as_string() == "hello");
+}
+
+it("should parse empty string") {
+    let value = json::parse("\"\"");
+    assert(value.as_string() == "");
+}
+
+it("should parse string with spaces") {
+    let value = json::parse("\"hello world\"");
+    assert(value.as_string() == "hello world");
+}
+
+it("should parse string with escaped quotes") {
+    let value = json::parse("\"say \\\"hello\\\"\"");
+    assert(value.as_string().contains("hello"));
+}
+
+it("should parse string with newline escape") {
+    let value = json::parse("\"line1\\nline2\"");
+    assert(value.as_string().contains("line1"));
+}
+
+it("should parse string with tab escape") {
+    let value = json::parse("\"col1\\tcol2\"");
+    assert(value.as_string().len() > 5);
+}
+
+it("should parse unicode string") {
+    let value = json::parse("\"hello \\u0048\\u0065\\u006c\\u006c\\u006f\"");
+    assert(value.as_string().len() > 0);
+}
+
+// ============================================================================
+// ARRAY PARSING
+// ============================================================================
+
+it("should parse empty array") {
+    let value = json::parse("[]");
+    assert(value.is_array());
+    assert(value.len() == 0);
+}
+
+it("should parse array with single integer") {
+    let value = json::parse("[1]");
+    assert(value.len() == 1);
+    assert(value[0].as_int() == 1);
+}
+
+it("should parse array with multiple integers") {
+    let value = json::parse("[1, 2, 3, 4, 5]");
+    assert(value.len() == 5);
+    assert(value[0].as_int() == 1);
+    assert(value[4].as_int() == 5);
+}
+
+it("should parse array with mixed types") {
+    let value = json::parse("[1, \"two\", true, null]");
+    assert(value.len() == 4);
+    assert(value[0].as_int() == 1);
+    assert(value[1].as_string() == "two");
+    assert(value[2].as_bool() == true);
+    assert(value[3].is_null());
+}
+
+it("should parse nested arrays") {
+    let value = json::parse("[[1, 2], [3, 4]]");
+    assert(value.len() == 2);
+    assert(value[0].len() == 2);
+    assert(value[0][0].as_int() == 1);
+    assert(value[1][1].as_int() == 4);
+}
+
+it("should parse deeply nested arrays") {
+    let value = json::parse("[[[1]]]");
+    assert(value[0][0][0].as_int() == 1);
+}
+
+// ============================================================================
+// OBJECT PARSING
+// ============================================================================
+
+it("should parse empty object") {
+    let value = json::parse("{}");
+    assert(value.is_object());
+}
+
+it("should parse object with single field") {
+    let value = json::parse("{\"name\": \"test\"}");
+    assert(value["name"].as_string() == "test");
+}
+
+it("should parse object with multiple fields") {
+    let value = json::parse("{\"a\": 1, \"b\": 2, \"c\": 3}");
+    assert(value["a"].as_int() == 1);
+    assert(value["b"].as_int() == 2);
+    assert(value["c"].as_int() == 3);
+}
+
+it("should parse nested objects") {
+    let value = json::parse("{\"outer\": {\"inner\": 42}}");
+    assert(value["outer"]["inner"].as_int() == 42);
+}
+
+it("should parse object with array field") {
+    let value = json::parse("{\"items\": [1, 2, 3]}");
+    assert(value["items"].len() == 3);
+}
+
+it("should parse complex nested structure") {
+    let value = json::parse("{\"users\": [{\"name\": \"Alice\"}, {\"name\": \"Bob\"}]}");
+    assert(value["users"].len() == 2);
+    assert(value["users"][0]["name"].as_string() == "Alice");
+    assert(value["users"][1]["name"].as_string() == "Bob");
+}
+
+// ============================================================================
+// WHITESPACE HANDLING
+// ============================================================================
+
+it("should parse with leading whitespace") {
+    let value = json::parse("   42");
+    assert(value.as_int() == 42);
+}
+
+it("should parse with trailing whitespace") {
+    let value = json::parse("42   ");
+    assert(value.as_int() == 42);
+}
+
+it("should parse with newlines") {
+    let value = json::parse("{\n  \"key\": \"value\"\n}");
+    assert(value["key"].as_string() == "value");
+}
+
+it("should parse with tabs") {
+    let value = json::parse("{\t\"key\":\t\"value\"\t}");
+    assert(value["key"].as_string() == "value");
+}
+
+it("should parse pretty-printed JSON") {
+    let json_str = "{
+        \"name\": \"test\",
+        \"value\": 123
+    }";
+    let value = json::parse(json_str);
+    assert(value["name"].as_string() == "test");
+    assert(value["value"].as_int() == 123);
+}
+
+// ============================================================================
+// SERIALIZATION
+// ============================================================================
+
+it("should stringify null") {
+    let obj = json::value(null);
+    let result = json::stringify(obj);
+    assert(result == "null");
+}
+
+it("should stringify boolean true") {
+    let obj = json::value(true);
+    let result = json::stringify(obj);
+    assert(result == "true");
+}
+
+it("should stringify boolean false") {
+    let obj = json::value(false);
+    let result = json::stringify(obj);
+    assert(result == "false");
+}
+
+it("should stringify integer") {
+    let obj = json::value(42);
+    let result = json::stringify(obj);
+    assert(result == "42");
+}
+
+it("should stringify string") {
+    let obj = json::value("hello");
+    let result = json::stringify(obj);
+    assert(result == "\"hello\"");
+}
+
+it("should stringify array") {
+    let arr = [1, 2, 3];
+    let result = json::stringify(arr);
+    assert(result.contains("["));
+    assert(result.contains("1"));
+    assert(result.contains("3"));
+}
+
+it("should stringify object") {
+    let obj = { "name": "test", "value": 42 };
+    let result = json::stringify(obj);
+    assert(result.contains("name"));
+    assert(result.contains("test"));
+}
+
+// ============================================================================
+// ROUND-TRIP TESTS
+// ============================================================================
+
+it("should round-trip simple object") {
+    let original = "{\"name\":\"test\",\"value\":123}";
+    let value = json::parse(original);
+    let serialized = json::stringify(value);
+    let reparsed = json::parse(serialized);
+    assert(reparsed["name"].as_string() == "test");
+    assert(reparsed["value"].as_int() == 123);
+}
+
+it("should round-trip array") {
+    let original = "[1, 2, 3, 4, 5]";
+    let value = json::parse(original);
+    let serialized = json::stringify(value);
+    let reparsed = json::parse(serialized);
+    assert(reparsed.len() == 5);
+}
+
+it("should round-trip nested structure") {
+    let original = "{\"data\":{\"items\":[1,2,3]}}";
+    let value = json::parse(original);
+    let serialized = json::stringify(value);
+    let reparsed = json::parse(serialized);
+    assert(reparsed["data"]["items"].len() == 3);
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should parse large numbers") {
+    let value = json::parse("9999999999999");
+    assert(value.as_int() > 999999999);
+}
+
+it("should parse very small float") {
+    let value = json::parse("0.0000001");
+    assert(value.as_float() < 0.001);
+}
+
+it("should parse string with special chars") {
+    let value = json::parse("\"hello\\nworld\\ttab\"");
+    assert(value.as_string().len() > 10);
+}
+
+it("should handle deeply nested objects") {
+    let value = json::parse("{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":1}}}}}");
+    assert(value["a"]["b"]["c"]["d"]["e"].as_int() == 1);
+}
+
+it("should handle large array") {
+    let json_str = "[" + "1," * 99 + "1]";
+    let value = json::parse(json_str);
+    assert(value.len() == 100);
+}
+
+// ============================================================================
+// TYPE CHECKING
+// ============================================================================
+
+it("should check if value is null") {
+    let value = json::parse("null");
+    assert(value.is_null() == true);
+    assert(value.is_bool() == false);
+    assert(value.is_number() == false);
+}
+
+it("should check if value is bool") {
+    let value = json::parse("true");
+    assert(value.is_bool() == true);
+    assert(value.is_null() == false);
+}
+
+it("should check if value is number") {
+    let value = json::parse("42");
+    assert(value.is_number() == true);
+    assert(value.is_string() == false);
+}
+
+it("should check if value is string") {
+    let value = json::parse("\"hello\"");
+    assert(value.is_string() == true);
+    assert(value.is_number() == false);
+}
+
+it("should check if value is array") {
+    let value = json::parse("[1, 2, 3]");
+    assert(value.is_array() == true);
+    assert(value.is_object() == false);
+}
+
+it("should check if value is object") {
+    let value = json::parse("{\"key\": \"value\"}");
+    assert(value.is_object() == true);
+    assert(value.is_array() == false);
+}
+
+// ============================================================================
+// OBJECT FIELD ACCESS
+// ============================================================================
+
+it("should get field or default") {
+    let obj = json::parse("{\"name\": \"test\"}");
+    assert(obj.get("name", "default").as_string() == "test");
+    assert(obj.get("missing", "default").as_string() == "default");
+}
+
+it("should check if field exists") {
+    let obj = json::parse("{\"name\": \"test\"}");
+    assert(obj.has("name") == true);
+    assert(obj.has("missing") == false);
+}
+
+it("should iterate over object keys") {
+    let obj = json::parse("{\"a\": 1, \"b\": 2, \"c\": 3}");
+    let keys = obj.keys();
+    assert(keys.len() == 3);
+}
+
+// ============================================================================
+// ARRAY OPERATIONS
+// ============================================================================
+
+it("should iterate over array") {
+    let arr = json::parse("[1, 2, 3]");
+    let mut sum = 0;
+    for (item in arr) {
+        sum = sum + item.as_int();
+    }
+    assert(sum == 6);
+}
+
+it("should access array by index") {
+    let arr = json::parse("[10, 20, 30]");
+    assert(arr[0].as_int() == 10);
+    assert(arr[1].as_int() == 20);
+    assert(arr[2].as_int() == 30);
+}
+
+it("should get array length") {
+    let arr = json::parse("[1, 2, 3, 4, 5]");
+    assert(arr.len() == 5);
+}
+
+// ============================================================================
+// PRACTICAL USAGE
+// ============================================================================
+
+it("should parse config-like JSON") {
+    let config = json::parse("{
+        \"server\": {
+            \"host\": \"localhost\",
+            \"port\": 8080
+        },
+        \"debug\": true,
+        \"features\": [\"auth\", \"logging\"]
+    }");
+    assert(config["server"]["host"].as_string() == "localhost");
+    assert(config["server"]["port"].as_int() == 8080);
+    assert(config["debug"].as_bool() == true);
+    assert(config["features"].len() == 2);
+}
+
+it("should parse API response-like JSON") {
+    let response = json::parse("{
+        \"status\": \"success\",
+        \"data\": {
+            \"users\": [
+                {\"id\": 1, \"name\": \"Alice\"},
+                {\"id\": 2, \"name\": \"Bob\"}
+            ],
+            \"total\": 2
+        }
+    }");
+    assert(response["status"].as_string() == "success");
+    assert(response["data"]["total"].as_int() == 2);
+    assert(response["data"]["users"][0]["name"].as_string() == "Alice");
+}

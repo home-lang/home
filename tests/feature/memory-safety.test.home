@@ -1,0 +1,455 @@
+// Memory Safety and Ownership Test Suite
+
+// ============================================================================
+// BASIC OWNERSHIP
+// ============================================================================
+
+it("should transfer ownership on assignment") {
+    let s1 = "hello";
+    let s2 = s1;  // Move
+    // s1 is no longer valid here
+    assert(s2 == "hello");
+}
+
+it("should clone to keep ownership") {
+    let s1 = "hello";
+    let s2 = s1.clone();
+    // Both s1 and s2 are valid
+    assert(s1 == "hello");
+    assert(s2 == "hello");
+}
+
+it("should move struct ownership") {
+    struct Data {
+        value: i32,
+    }
+    let d1 = Data { value: 42 };
+    let d2 = d1;  // Move
+    assert(d2.value == 42);
+}
+
+// ============================================================================
+// BORROWING - IMMUTABLE
+// ============================================================================
+
+it("should allow immutable borrow") {
+    let s = "hello";
+    let len = calculate_length(&s);
+    assert(len == 5);
+    assert(s == "hello");  // s still valid
+}
+
+fn calculate_length(s: &string): i32 {
+    return s.len();
+}
+
+it("should allow multiple immutable borrows") {
+    let s = "hello";
+    let r1 = &s;
+    let r2 = &s;
+    let r3 = &s;
+    assert(*r1 == "hello");
+    assert(*r2 == "hello");
+    assert(*r3 == "hello");
+}
+
+it("should pass immutable reference to function") {
+    let data = [1, 2, 3, 4, 5];
+    let sum = sum_array(&data);
+    assert(sum == 15);
+    assert(data.len() == 5);  // data still valid
+}
+
+fn sum_array(arr: &[i32]): i32 {
+    let mut total = 0;
+    for (x in arr) {
+        total = total + x;
+    }
+    return total;
+}
+
+// ============================================================================
+// BORROWING - MUTABLE
+// ============================================================================
+
+it("should allow mutable borrow") {
+    let mut s = "hello";
+    change_string(&mut s);
+    assert(s == "hello, world");
+}
+
+fn change_string(s: &mut string) {
+    *s = *s + ", world";
+}
+
+it("should mutate array through reference") {
+    let mut arr = [1, 2, 3];
+    double_values(&mut arr);
+    assert(arr[0] == 2);
+    assert(arr[1] == 4);
+    assert(arr[2] == 6);
+}
+
+fn double_values(arr: &mut [i32]) {
+    for (i in 0..arr.len()) {
+        arr[i] = arr[i] * 2;
+    }
+}
+
+it("should only allow one mutable borrow at a time") {
+    let mut s = "hello";
+    let r1 = &mut s;
+    *r1 = "world";
+    // Cannot create r2 while r1 is active
+    // let r2 = &mut s;  // This would be a compile error
+    assert(*r1 == "world");
+}
+
+// ============================================================================
+// REFERENCE SCOPE
+// ============================================================================
+
+it("should allow new borrow after previous ends") {
+    let mut s = "hello";
+    {
+        let r1 = &mut s;
+        *r1 = "world";
+    }  // r1 goes out of scope
+    let r2 = &mut s;  // This is allowed now
+    *r2 = "!";
+    assert(*r2 == "!");
+}
+
+it("should allow immutable borrow after mutable borrow ends") {
+    let mut s = "hello";
+    {
+        let r1 = &mut s;
+        *r1 = "world";
+    }
+    let r2 = &s;
+    assert(*r2 == "world");
+}
+
+// ============================================================================
+// STRUCT FIELD BORROWING
+// ============================================================================
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+it("should borrow struct field") {
+    let p = Point { x: 10, y: 20 };
+    let x_ref = &p.x;
+    assert(*x_ref == 10);
+}
+
+it("should mutably borrow struct field") {
+    let mut p = Point { x: 10, y: 20 };
+    let x_ref = &mut p.x;
+    *x_ref = 100;
+    assert(p.x == 100);
+}
+
+it("should borrow multiple struct fields immutably") {
+    let p = Point { x: 10, y: 20 };
+    let x_ref = &p.x;
+    let y_ref = &p.y;
+    assert(*x_ref + *y_ref == 30);
+}
+
+// ============================================================================
+// LIFETIME IN FUNCTIONS
+// ============================================================================
+
+it("should return reference with proper lifetime") {
+    let s = "hello world";
+    let word = first_word(&s);
+    assert(word == "hello");
+}
+
+fn first_word(s: &string): &string {
+    let bytes = s.as_bytes();
+    for (i, byte in bytes.enumerate()) {
+        if (byte == ' ') {
+            return &s[0..i];
+        }
+    }
+    return s;
+}
+
+it("should return longer of two strings") {
+    let s1 = "short";
+    let s2 = "much longer string";
+    let result = longest(&s1, &s2);
+    assert(result == "much longer string");
+}
+
+fn longest<'a>(x: &'a string, y: &'a string): &'a string {
+    if (x.len() > y.len()) {
+        return x;
+    }
+    return y;
+}
+
+// ============================================================================
+// SMART POINTERS
+// ============================================================================
+
+it("should use Box for heap allocation") {
+    let b = Box::new(5);
+    assert(*b == 5);
+}
+
+it("should use Rc for shared ownership") {
+    let a = Rc::new(5);
+    let b = a.clone();
+    let c = a.clone();
+    assert(*a == 5);
+    assert(*b == 5);
+    assert(*c == 5);
+    assert(Rc::strong_count(&a) == 3);
+}
+
+it("should use Arc for thread-safe shared ownership") {
+    let a = Arc::new(5);
+    let handles = [];
+    for (_ in 0..10) {
+        let a_clone = a.clone();
+        handles.push(spawn async {
+            assert(*a_clone == 5);
+        });
+    }
+    for (h in handles) {
+        await h;
+    }
+}
+
+it("should use RefCell for interior mutability") {
+    let cell = RefCell::new(5);
+    {
+        let mut borrow = cell.borrow_mut();
+        *borrow = 10;
+    }
+    assert(*cell.borrow() == 10);
+}
+
+// ============================================================================
+// OPTION AND NONE SAFETY
+// ============================================================================
+
+it("should safely handle Option") {
+    fn find_item(items: &[i32], target: i32): Option<i32> {
+        for (item in items) {
+            if (item == target) {
+                return Some(item);
+            }
+        }
+        return None;
+    }
+
+    let items = [1, 2, 3, 4, 5];
+
+    let found = find_item(&items, 3);
+    assert(found.is_some());
+    assert(found.unwrap() == 3);
+
+    let not_found = find_item(&items, 10);
+    assert(not_found.is_none());
+}
+
+// ============================================================================
+// SLICE SAFETY
+// ============================================================================
+
+it("should safely slice array") {
+    let arr = [1, 2, 3, 4, 5];
+    let slice = &arr[1..4];
+    assert(slice.len() == 3);
+    assert(slice[0] == 2);
+    assert(slice[2] == 4);
+}
+
+it("should safely slice string") {
+    let s = "hello world";
+    let hello = &s[0..5];
+    let world = &s[6..11];
+    assert(hello == "hello");
+    assert(world == "world");
+}
+
+// ============================================================================
+// DROP AND CLEANUP
+// ============================================================================
+
+struct Resource {
+    id: i32,
+}
+
+impl Drop for Resource {
+    fn drop(mut self) {
+        // Cleanup happens automatically
+    }
+}
+
+it("should drop resources when out of scope") {
+    let mut dropped = false;
+    {
+        let r = Resource { id: 1 };
+        // r is valid here
+    }  // r is dropped here
+}
+
+it("should drop in reverse order") {
+    // LIFO order for drops
+    let r1 = Resource { id: 1 };
+    let r2 = Resource { id: 2 };
+    let r3 = Resource { id: 3 };
+    // Drops: r3, r2, r1
+}
+
+// ============================================================================
+// COPY VS MOVE
+// ============================================================================
+
+it("should copy primitive types") {
+    let x = 5;
+    let y = x;  // Copy
+    assert(x == 5);  // x is still valid
+    assert(y == 5);
+}
+
+it("should copy tuples of Copy types") {
+    let t1 = (1, 2, 3);
+    let t2 = t1;  // Copy
+    assert(t1 == (1, 2, 3));
+    assert(t2 == (1, 2, 3));
+}
+
+it("should move non-Copy types") {
+    let v1 = vec![1, 2, 3];
+    let v2 = v1;  // Move
+    // v1 is no longer valid
+    assert(v2.len() == 3);
+}
+
+// ============================================================================
+// BORROWING IN LOOPS
+// ============================================================================
+
+it("should borrow in for loop") {
+    let items = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (item in &items) {
+        sum = sum + *item;
+    }
+    assert(sum == 15);
+    assert(items.len() == 5);  // items still valid
+}
+
+it("should mutably borrow in for loop") {
+    let mut items = [1, 2, 3];
+    for (item in &mut items) {
+        *item = *item * 2;
+    }
+    assert(items[0] == 2);
+    assert(items[1] == 4);
+    assert(items[2] == 6);
+}
+
+// ============================================================================
+// SELF BORROWING IN METHODS
+// ============================================================================
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn get(&self): i32 {
+        return self.value;
+    }
+
+    fn increment(&mut self) {
+        self.value = self.value + 1;
+    }
+
+    fn into_value(self): i32 {
+        return self.value;  // Consumes self
+    }
+}
+
+it("should use immutable self reference") {
+    let c = Counter { value: 10 };
+    assert(c.get() == 10);
+    assert(c.get() == 10);  // Can call multiple times
+}
+
+it("should use mutable self reference") {
+    let mut c = Counter { value: 0 };
+    c.increment();
+    c.increment();
+    c.increment();
+    assert(c.get() == 3);
+}
+
+it("should consume self") {
+    let c = Counter { value: 42 };
+    let value = c.into_value();
+    assert(value == 42);
+    // c is no longer valid
+}
+
+// ============================================================================
+// REFERENCE PATTERNS
+// ============================================================================
+
+it("should match on references") {
+    let opt: Option<&i32> = Some(&5);
+    match opt {
+        Some(&val) => assert(val == 5),
+        None => assert(false),
+    }
+}
+
+it("should destructure with references") {
+    let pair = (1, 2);
+    let (ref a, ref b) = pair;
+    assert(*a == 1);
+    assert(*b == 2);
+    assert(pair == (1, 2));  // pair still valid
+}
+
+// ============================================================================
+// CLOSURE CAPTURES
+// ============================================================================
+
+it("should capture by reference") {
+    let s = "hello";
+    let print_s = || {
+        assert(s == "hello");
+    };
+    print_s();
+    assert(s == "hello");  // s still valid
+}
+
+it("should capture by mutable reference") {
+    let mut count = 0;
+    let mut increment = || {
+        count = count + 1;
+    };
+    increment();
+    increment();
+    increment();
+    assert(count == 3);
+}
+
+it("should move into closure") {
+    let s = String::from("hello");
+    let consume = move || {
+        assert(s == "hello");
+    };
+    consume();
+    // s is no longer valid outside closure
+}

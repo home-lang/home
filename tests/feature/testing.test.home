@@ -1,0 +1,409 @@
+// Testing Framework Test Suite
+
+// ============================================================================
+// BASIC ASSERTIONS
+// ============================================================================
+
+it("should assert truth") {
+    assert(true);
+}
+
+it("should assert equality") {
+    assert(1 + 1 == 2);
+}
+
+it("should assert inequality") {
+    assert(1 != 2);
+}
+
+it("should assert with message") {
+    assert(true, "This should be true");
+}
+
+// ============================================================================
+// EQUALITY ASSERTIONS
+// ============================================================================
+
+it("should assert equal") {
+    assert::equal(42, 42);
+}
+
+it("should assert not equal") {
+    assert::not_equal(1, 2);
+}
+
+it("should assert deep equal for objects") {
+    let a = { x: 1, y: { z: 2 } };
+    let b = { x: 1, y: { z: 2 } };
+    assert::deep_equal(a, b);
+}
+
+it("should assert deep equal for arrays") {
+    assert::deep_equal([1, 2, 3], [1, 2, 3]);
+}
+
+// ============================================================================
+// COMPARISON ASSERTIONS
+// ============================================================================
+
+it("should assert greater than") {
+    assert::greater(5, 3);
+}
+
+it("should assert greater or equal") {
+    assert::greater_or_equal(5, 5);
+    assert::greater_or_equal(5, 3);
+}
+
+it("should assert less than") {
+    assert::less(3, 5);
+}
+
+it("should assert less or equal") {
+    assert::less_or_equal(3, 3);
+    assert::less_or_equal(3, 5);
+}
+
+// ============================================================================
+// TYPE ASSERTIONS
+// ============================================================================
+
+it("should assert type") {
+    assert::is_type(42, "int");
+    assert::is_type("hello", "string");
+    assert::is_type(true, "bool");
+}
+
+it("should assert null") {
+    assert::is_null(null);
+}
+
+it("should assert not null") {
+    assert::is_not_null(42);
+}
+
+// ============================================================================
+// COLLECTION ASSERTIONS
+// ============================================================================
+
+it("should assert contains") {
+    assert::contains([1, 2, 3], 2);
+}
+
+it("should assert does not contain") {
+    assert::not_contains([1, 2, 3], 4);
+}
+
+it("should assert empty") {
+    assert::is_empty([]);
+    assert::is_empty("");
+}
+
+it("should assert not empty") {
+    assert::is_not_empty([1, 2, 3]);
+    assert::is_not_empty("hello");
+}
+
+it("should assert length") {
+    assert::length([1, 2, 3], 3);
+    assert::length("hello", 5);
+}
+
+// ============================================================================
+// STRING ASSERTIONS
+// ============================================================================
+
+it("should assert string contains") {
+    assert::str_contains("hello world", "world");
+}
+
+it("should assert string starts with") {
+    assert::starts_with("hello world", "hello");
+}
+
+it("should assert string ends with") {
+    assert::ends_with("hello world", "world");
+}
+
+it("should assert string matches regex") {
+    assert::matches("hello123", "^[a-z]+[0-9]+$");
+}
+
+// ============================================================================
+// BOOLEAN ASSERTIONS
+// ============================================================================
+
+it("should assert true") {
+    assert::is_true(true);
+    assert::is_true(1 == 1);
+}
+
+it("should assert false") {
+    assert::is_false(false);
+    assert::is_false(1 == 2);
+}
+
+// ============================================================================
+// APPROXIMATE EQUALITY
+// ============================================================================
+
+it("should assert approximately equal") {
+    assert::approx(3.14159, 3.14, tolerance: 0.01);
+}
+
+it("should assert float within delta") {
+    assert::within_delta(10.0, 10.5, 1.0);
+}
+
+// ============================================================================
+// EXCEPTION ASSERTIONS
+// ============================================================================
+
+it("should assert throws") {
+    assert::throws(|| {
+        throw Error::new("expected error");
+    });
+}
+
+it("should assert throws specific error") {
+    assert::throws_with(|| {
+        throw Error::new("specific message");
+    }, "specific message");
+}
+
+it("should assert does not throw") {
+    assert::does_not_throw(|| {
+        let x = 1 + 1;
+    });
+}
+
+// ============================================================================
+// SNAPSHOT TESTING
+// ============================================================================
+
+it("should match snapshot") {
+    let data = { name: "Alice", items: [1, 2, 3] };
+    assert::matches_snapshot(data);
+}
+
+it("should update snapshot") {
+    let data = "test output";
+    assert::matches_snapshot(data, update: true);
+}
+
+// ============================================================================
+// MOCKING
+// ============================================================================
+
+it("should create mock function") {
+    let mock = test::mock();
+
+    mock("arg1", "arg2");
+    mock("arg3");
+
+    assert::equal(mock.call_count(), 2);
+}
+
+it("should track mock calls") {
+    let mock = test::mock();
+    mock(1, 2, 3);
+
+    assert::deep_equal(mock.calls()[0], [1, 2, 3]);
+}
+
+it("should mock return value") {
+    let mock = test::mock().returns(42);
+    assert::equal(mock(), 42);
+}
+
+it("should mock implementation") {
+    let mock = test::mock().implementation(|x| x * 2);
+    assert::equal(mock(5), 10);
+}
+
+it("should mock return values sequence") {
+    let mock = test::mock()
+        .returns_once(1)
+        .returns_once(2)
+        .returns(3);
+
+    assert::equal(mock(), 1);
+    assert::equal(mock(), 2);
+    assert::equal(mock(), 3);
+    assert::equal(mock(), 3);
+}
+
+// ============================================================================
+// SPYING
+// ============================================================================
+
+it("should spy on function") {
+    fn original(x) { return x + 1; }
+
+    let spy = test::spy(original);
+    let result = spy(5);
+
+    assert::equal(result, 6);
+    assert::equal(spy.call_count(), 1);
+}
+
+// ============================================================================
+// SETUP AND TEARDOWN
+// ============================================================================
+
+let test_state = 0;
+
+before_each {
+    test_state = 0;
+}
+
+after_each {
+    test_state = 0;
+}
+
+before_all {
+    // Run once before all tests
+}
+
+after_all {
+    // Run once after all tests
+}
+
+it("should use setup state") {
+    test_state = 42;
+    assert::equal(test_state, 42);
+}
+
+// ============================================================================
+// TEST FIXTURES
+// ============================================================================
+
+fixture("user", {
+    name: "Alice",
+    age: 30,
+});
+
+it("should use fixture") {
+    let user = fixture::get("user");
+    assert::equal(user.name, "Alice");
+}
+
+// ============================================================================
+// PARAMETERIZED TESTS
+// ============================================================================
+
+parameterized([
+    [1, 1, 2],
+    [2, 2, 4],
+    [3, 3, 6],
+])
+it("should add numbers: {0} + {1} = {2}") { |a, b, expected|
+    assert::equal(a + b, expected);
+}
+
+// ============================================================================
+// TEST SKIPPING
+// ============================================================================
+
+skip_it("should be skipped") {
+    // This test is skipped
+    assert(false);
+}
+
+only_it("should run only this test") {
+    // Only this test runs when uncommented
+    assert(true);
+}
+
+// ============================================================================
+// ASYNC TESTS
+// ============================================================================
+
+async_it("should support async tests") {
+    let result = await async_operation();
+    assert::equal(result, "done");
+}
+
+async_it("should timeout async test") {
+    // Test will fail if it takes too long
+}
+
+// ============================================================================
+// TEST TAGS
+// ============================================================================
+
+#[tag("slow")]
+it("should run slow test") {
+    // This test is tagged as slow
+}
+
+#[tag("integration")]
+it("should run integration test") {
+    // This test is tagged as integration
+}
+
+// ============================================================================
+// PROPERTY-BASED TESTING
+// ============================================================================
+
+property("addition is commutative") {
+    forall(int, int, |a, b| {
+        assert::equal(a + b, b + a);
+    });
+}
+
+property("string reverse is involutive") {
+    forall(string, |s| {
+        assert::equal(s.reverse().reverse(), s);
+    });
+}
+
+// ============================================================================
+// BENCHMARK
+// ============================================================================
+
+bench("array creation") {
+    let arr = [];
+    for i in 0..1000 {
+        arr.push(i);
+    }
+}
+
+bench("map access") {
+    let map = { a: 1, b: 2, c: 3 };
+    for _ in 0..1000 {
+        let _ = map["a"];
+    }
+}
+
+// ============================================================================
+// COVERAGE
+// ============================================================================
+
+it("should track code coverage") {
+    // Code coverage is tracked automatically
+    let x = if true { 1 } else { 2 };
+    assert::equal(x, 1);
+}
+
+// ============================================================================
+// CUSTOM MATCHERS
+// ============================================================================
+
+test::add_matcher("is_even", |n| n % 2 == 0);
+
+it("should use custom matcher") {
+    assert::is_even(4);
+}
+
+// ============================================================================
+// TEST REPORTERS
+// ============================================================================
+
+it("should output in different formats") {
+    // Controlled by command line:
+    // home test --reporter=json
+    // home test --reporter=tap
+    // home test --reporter=junit
+}
+

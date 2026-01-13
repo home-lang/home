@@ -1,0 +1,548 @@
+// Concurrency and Parallelism Test Suite
+
+// ============================================================================
+// SPAWNING TASKS
+// ============================================================================
+
+it("should spawn async task") {
+    let handle = spawn async {
+        return 42;
+    };
+    let result = await handle;
+    assert(result == 42);
+}
+
+it("should spawn multiple tasks") {
+    let h1 = spawn async { return 1; };
+    let h2 = spawn async { return 2; };
+    let h3 = spawn async { return 3; };
+
+    let r1 = await h1;
+    let r2 = await h2;
+    let r3 = await h3;
+
+    assert(r1 + r2 + r3 == 6);
+}
+
+it("should capture variables in task") {
+    let x = 10;
+    let handle = spawn async {
+        return x * 2;
+    };
+    let result = await handle;
+    assert(result == 20);
+}
+
+// ============================================================================
+// CHANNELS
+// ============================================================================
+
+it("should send and receive on channel") {
+    let (tx, rx) = channel::new::<i32>();
+
+    spawn async {
+        tx.send(42);
+    };
+
+    let value = await rx.recv();
+    assert(value == 42);
+}
+
+it("should send multiple values") {
+    let (tx, rx) = channel::new::<i32>();
+
+    spawn async {
+        tx.send(1);
+        tx.send(2);
+        tx.send(3);
+    };
+
+    let a = await rx.recv();
+    let b = await rx.recv();
+    let c = await rx.recv();
+
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+}
+
+it("should use buffered channel") {
+    let (tx, rx) = channel::bounded::<i32>(3);
+
+    tx.send(1);
+    tx.send(2);
+    tx.send(3);
+
+    assert(rx.recv() == 1);
+    assert(rx.recv() == 2);
+    assert(rx.recv() == 3);
+}
+
+it("should broadcast to multiple receivers") {
+    let (tx, rx1, rx2) = channel::broadcast::<i32>();
+
+    spawn async {
+        tx.send(42);
+    };
+
+    let v1 = await rx1.recv();
+    let v2 = await rx2.recv();
+
+    assert(v1 == 42);
+    assert(v2 == 42);
+}
+
+// ============================================================================
+// SELECT
+// ============================================================================
+
+it("should select from multiple channels") {
+    let (tx1, rx1) = channel::new::<i32>();
+    let (tx2, rx2) = channel::new::<string>();
+
+    spawn async { tx1.send(42); };
+    spawn async { tx2.send("hello"); };
+
+    let result = select {
+        v = rx1.recv() => "got int: " + v.to_string(),
+        s = rx2.recv() => "got string: " + s,
+    };
+
+    assert(result.starts_with("got"));
+}
+
+it("should select with timeout") {
+    let (tx, rx) = channel::new::<i32>();
+
+    let result = select {
+        v = rx.recv() => Some(v),
+        _ = sleep(100.ms) => None,
+    };
+
+    assert(result.is_none() == true);
+}
+
+// ============================================================================
+// MUTEX
+// ============================================================================
+
+it("should lock and unlock mutex") {
+    let mutex = Mutex::new(0);
+
+    {
+        let mut guard = mutex.lock();
+        *guard = 42;
+    }
+
+    let guard = mutex.lock();
+    assert(*guard == 42);
+}
+
+it("should protect shared state") {
+    let counter = Arc::new(Mutex::new(0));
+
+    let handles: [_] = [];
+    for (_ in 0..10) {
+        let c = counter.clone();
+        handles.push(spawn async {
+            let mut guard = c.lock();
+            *guard = *guard + 1;
+        });
+    }
+
+    for (h in handles) {
+        await h;
+    }
+
+    let final_value = *counter.lock();
+    assert(final_value == 10);
+}
+
+// ============================================================================
+// RWLOCK
+// ============================================================================
+
+it("should allow multiple readers") {
+    let lock = RwLock::new(42);
+
+    let r1 = lock.read();
+    let r2 = lock.read();
+
+    assert(*r1 == 42);
+    assert(*r2 == 42);
+}
+
+it("should block readers during write") {
+    let lock = RwLock::new(0);
+
+    {
+        let mut w = lock.write();
+        *w = 42;
+    }
+
+    let r = lock.read();
+    assert(*r == 42);
+}
+
+// ============================================================================
+// ATOMIC OPERATIONS
+// ============================================================================
+
+it("should atomically increment") {
+    let counter = Atomic::new(0);
+
+    for (_ in 0..100) {
+        counter.fetch_add(1);
+    }
+
+    assert(counter.load() == 100);
+}
+
+it("should compare and swap") {
+    let value = Atomic::new(10);
+
+    let success = value.compare_and_swap(10, 20);
+    assert(success == true);
+    assert(value.load() == 20);
+
+    let fail = value.compare_and_swap(10, 30);
+    assert(fail == false);
+    assert(value.load() == 20);
+}
+
+it("should atomically swap") {
+    let value = Atomic::new(10);
+    let old = value.swap(20);
+    assert(old == 10);
+    assert(value.load() == 20);
+}
+
+// ============================================================================
+// SEMAPHORE
+// ============================================================================
+
+it("should limit concurrent access") {
+    let sem = Semaphore::new(2);
+    let mut active = Atomic::new(0);
+    let mut max_active = Atomic::new(0);
+
+    let handles: [_] = [];
+    for (_ in 0..10) {
+        let s = sem.clone();
+        let a = active.clone();
+        let m = max_active.clone();
+
+        handles.push(spawn async {
+            let _permit = s.acquire();
+            let current = a.fetch_add(1) + 1;
+            if (current > m.load()) {
+                m.store(current);
+            }
+            sleep(10.ms);
+            a.fetch_sub(1);
+        });
+    }
+
+    for (h in handles) {
+        await h;
+    }
+
+    assert(max_active.load() <= 2);
+}
+
+// ============================================================================
+// CONDITION VARIABLES
+// ============================================================================
+
+it("should wait and notify") {
+    let mutex = Mutex::new(false);
+    let cond = CondVar::new();
+
+    let notifier = spawn async {
+        sleep(50.ms);
+        let mut guard = mutex.lock();
+        *guard = true;
+        cond.notify_one();
+    };
+
+    let mut guard = mutex.lock();
+    while (!*guard) {
+        guard = cond.wait(guard);
+    }
+
+    assert(*guard == true);
+    await notifier;
+}
+
+it("should notify all waiters") {
+    let mutex = Mutex::new(0);
+    let cond = CondVar::new();
+    let count = Atomic::new(0);
+
+    let handles: [_] = [];
+    for (_ in 0..3) {
+        let m = mutex.clone();
+        let cv = cond.clone();
+        let c = count.clone();
+
+        handles.push(spawn async {
+            let mut guard = m.lock();
+            while (*guard < 1) {
+                guard = cv.wait(guard);
+            }
+            c.fetch_add(1);
+        });
+    }
+
+    sleep(50.ms);
+
+    {
+        let mut guard = mutex.lock();
+        *guard = 1;
+        cond.notify_all();
+    }
+
+    for (h in handles) {
+        await h;
+    }
+
+    assert(count.load() == 3);
+}
+
+// ============================================================================
+// BARRIER
+// ============================================================================
+
+it("should synchronize at barrier") {
+    let barrier = Barrier::new(3);
+    let results = Arc::new(Mutex::new([]));
+
+    let handles: [_] = [];
+    for (i in 0..3) {
+        let b = barrier.clone();
+        let r = results.clone();
+
+        handles.push(spawn async {
+            // Phase 1
+            r.lock().push(i);
+            b.wait();
+            // Phase 2 - all have completed phase 1
+            assert(r.lock().len() == 3);
+        });
+    }
+
+    for (h in handles) {
+        await h;
+    }
+}
+
+// ============================================================================
+// ONCE
+// ============================================================================
+
+it("should execute only once") {
+    let once = Once::new();
+    let count = Atomic::new(0);
+
+    let handles: [_] = [];
+    for (_ in 0..10) {
+        let o = once.clone();
+        let c = count.clone();
+
+        handles.push(spawn async {
+            o.call_once(|| {
+                c.fetch_add(1);
+            });
+        });
+    }
+
+    for (h in handles) {
+        await h;
+    }
+
+    assert(count.load() == 1);
+}
+
+// ============================================================================
+// THREAD LOCAL
+// ============================================================================
+
+it("should have separate thread local values") {
+    thread_local! {
+        static VALUE: Cell<i32> = Cell::new(0);
+    }
+
+    let h1 = spawn async {
+        VALUE.set(1);
+        sleep(10.ms);
+        return VALUE.get();
+    };
+
+    let h2 = spawn async {
+        VALUE.set(2);
+        sleep(10.ms);
+        return VALUE.get();
+    };
+
+    let r1 = await h1;
+    let r2 = await h2;
+
+    assert(r1 == 1);
+    assert(r2 == 2);
+}
+
+// ============================================================================
+// PARALLEL ITERATION
+// ============================================================================
+
+it("should map in parallel") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8];
+    let result = arr.par_map(|x| x * x);
+    assert(result.sum() == 204);  // 1+4+9+16+25+36+49+64
+}
+
+it("should reduce in parallel") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let sum = arr.par_reduce(0, |a, b| a + b);
+    assert(sum == 55);
+}
+
+it("should filter in parallel") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let evens = arr.par_filter(|x| x % 2 == 0);
+    assert(evens.len() == 5);
+}
+
+// ============================================================================
+// FUTURES AND PROMISES
+// ============================================================================
+
+it("should resolve promise") {
+    let promise = Promise::new::<i32>();
+
+    spawn async {
+        promise.resolve(42);
+    };
+
+    let result = await promise.future();
+    assert(result == 42);
+}
+
+it("should reject promise") {
+    let promise = Promise::new::<i32>();
+
+    spawn async {
+        promise.reject("error");
+    };
+
+    let result = promise.future().catch();
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// TIMEOUTS
+// ============================================================================
+
+it("should timeout long operation") {
+    let handle = spawn async {
+        sleep(1.s);
+        return 42;
+    };
+
+    let result = timeout(100.ms, handle);
+    assert(result.is_err() == true);
+}
+
+it("should complete before timeout") {
+    let handle = spawn async {
+        sleep(10.ms);
+        return 42;
+    };
+
+    let result = timeout(1.s, handle);
+    assert(result.is_ok() == true);
+    assert(result.unwrap() == 42);
+}
+
+// ============================================================================
+// JOIN ALL
+// ============================================================================
+
+it("should join all tasks") {
+    let tasks = [
+        spawn async { return 1; },
+        spawn async { return 2; },
+        spawn async { return 3; },
+    ];
+
+    let results = await join_all(tasks);
+    assert(results.len() == 3);
+    assert(results.sum() == 6);
+}
+
+it("should select first completed") {
+    let tasks = [
+        spawn async { sleep(100.ms); return 1; },
+        spawn async { sleep(10.ms); return 2; },
+        spawn async { sleep(50.ms); return 3; },
+    ];
+
+    let (result, _) = await select_first(tasks);
+    assert(result == 2);
+}
+
+// ============================================================================
+// WORK STEALING
+// ============================================================================
+
+it("should balance work across workers") {
+    let work = (0..1000).collect();
+    let results = work.par_map(|x| {
+        // Simulate varying work
+        let mut sum = 0;
+        for (i in 0..x) {
+            sum = sum + i;
+        }
+        return sum;
+    });
+    assert(results.len() == 1000);
+}
+
+// ============================================================================
+// CANCELLATION
+// ============================================================================
+
+it("should cancel task") {
+    let handle = spawn async {
+        loop {
+            if (is_cancelled()) {
+                return -1;
+            }
+            sleep(10.ms);
+        }
+    };
+
+    sleep(50.ms);
+    handle.cancel();
+
+    let result = await handle;
+    assert(result == -1);
+}
+
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+
+it("should rate limit operations") {
+    let limiter = RateLimiter::new(10.per_second);
+    let start = now();
+    let mut count = 0;
+
+    for (_ in 0..20) {
+        limiter.acquire();
+        count = count + 1;
+    }
+
+    let elapsed = now() - start;
+    assert(elapsed >= 1.s);  // Should take at least 1 second for 20 ops at 10/s
+}

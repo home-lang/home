@@ -1,0 +1,526 @@
+// Database Operations Test Suite
+
+// ============================================================================
+// CONNECTION
+// ============================================================================
+
+it("should create database connection") {
+    let db = db::connect("sqlite::memory:");
+    assert(db.is_connected() == true);
+}
+
+it("should close connection") {
+    let db = db::connect("sqlite::memory:");
+    db.close();
+    assert(db.is_connected() == false);
+}
+
+it("should reconnect after close") {
+    let db = db::connect("sqlite::memory:");
+    db.close();
+    db.reconnect();
+    assert(db.is_connected() == true);
+}
+
+// ============================================================================
+// RAW QUERIES
+// ============================================================================
+
+it("should execute raw SQL") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    // Should not throw
+}
+
+it("should query with results") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    db.execute("INSERT INTO users (name) VALUES ('Alice')");
+
+    let rows = db.query("SELECT * FROM users");
+    assert(rows.len() == 1);
+    assert(rows[0]["name"] == "Alice");
+}
+
+it("should use parameterized queries") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    db.execute("INSERT INTO users (name) VALUES (?)", ["Alice"]);
+
+    let rows = db.query("SELECT * FROM users WHERE name = ?", ["Alice"]);
+    assert(rows.len() == 1);
+}
+
+it("should use named parameters") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    db.execute("INSERT INTO users (name, age) VALUES (:name, :age)", {
+        name: "Alice",
+        age: 30,
+    });
+
+    let rows = db.query("SELECT * FROM users WHERE name = :name", { name: "Alice" });
+    assert(rows.len() == 1);
+}
+
+// ============================================================================
+// QUERY BUILDER
+// ============================================================================
+
+it("should select all columns") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    db.execute("INSERT INTO users (name) VALUES ('Alice')");
+
+    let rows = db.table("users").select("*").get();
+    assert(rows.len() == 1);
+}
+
+it("should select specific columns") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
+    db.execute("INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')");
+
+    let rows = db.table("users").select(["name", "email"]).get();
+    assert(rows[0].has("name") == true);
+    assert(rows[0].has("id") == false);
+}
+
+it("should filter with where") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25)");
+
+    let rows = db.table("users").where("age", ">", 25).get();
+    assert(rows.len() == 1);
+    assert(rows[0]["name"] == "Alice");
+}
+
+it("should chain where clauses") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER, active INTEGER)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice', 30, 1), (2, 'Bob', 25, 1), (3, 'Carol', 35, 0)");
+
+    let rows = db.table("users")
+        .where("age", ">", 20)
+        .where("active", "=", 1)
+        .get();
+    assert(rows.len() == 2);
+}
+
+it("should use or_where") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')");
+
+    let rows = db.table("users")
+        .where("name", "=", "Alice")
+        .or_where("name", "=", "Bob")
+        .get();
+    assert(rows.len() == 2);
+}
+
+it("should use where_in") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')");
+
+    let rows = db.table("users")
+        .where_in("name", ["Alice", "Carol"])
+        .get();
+    assert(rows.len() == 2);
+}
+
+it("should order results") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'Charlie'), (2, 'Alice'), (3, 'Bob')");
+
+    let rows = db.table("users").order_by("name", "ASC").get();
+    assert(rows[0]["name"] == "Alice");
+    assert(rows[2]["name"] == "Charlie");
+}
+
+it("should limit results") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'A'), (2, 'B'), (3, 'C'), (4, 'D')");
+
+    let rows = db.table("users").limit(2).get();
+    assert(rows.len() == 2);
+}
+
+it("should offset results") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'A'), (2, 'B'), (3, 'C')");
+
+    let rows = db.table("users").offset(1).limit(2).get();
+    assert(rows.len() == 2);
+    assert(rows[0]["name"] == "B");
+}
+
+// ============================================================================
+// AGGREGATIONS
+// ============================================================================
+
+it("should count rows") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'A'), (2, 'B'), (3, 'C')");
+
+    let count = db.table("users").count();
+    assert(count == 3);
+}
+
+it("should sum column") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES (1, 100), (2, 200), (3, 150)");
+
+    let total = db.table("orders").sum("amount");
+    assert(total == 450);
+}
+
+it("should average column") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES (1, 100), (2, 200), (3, 150)");
+
+    let avg = db.table("orders").avg("amount");
+    assert(avg == 150);
+}
+
+it("should get min value") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES (1, 100), (2, 200), (3, 150)");
+
+    let min = db.table("orders").min("amount");
+    assert(min == 100);
+}
+
+it("should get max value") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (id INTEGER, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES (1, 100), (2, 200), (3, 150)");
+
+    let max = db.table("orders").max("amount");
+    assert(max == 200);
+}
+
+// ============================================================================
+// INSERTS
+// ============================================================================
+
+it("should insert single row") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+
+    let id = db.table("users").insert({ name: "Alice" });
+    assert(id == 1);
+}
+
+it("should insert multiple rows") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+
+    db.table("users").insert_many([
+        { name: "Alice" },
+        { name: "Bob" },
+        { name: "Carol" },
+    ]);
+
+    let count = db.table("users").count();
+    assert(count == 3);
+}
+
+// ============================================================================
+// UPDATES
+// ============================================================================
+
+it("should update rows") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT, active INTEGER)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice', 0)");
+
+    let affected = db.table("users")
+        .where("id", "=", 1)
+        .update({ active: 1 });
+
+    assert(affected == 1);
+
+    let rows = db.table("users").where("id", "=", 1).get();
+    assert(rows[0]["active"] == 1);
+}
+
+it("should update all rows") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, active INTEGER)");
+    db.execute("INSERT INTO users VALUES (1, 1), (2, 1), (3, 1)");
+
+    let affected = db.table("users").update({ active: 0 });
+    assert(affected == 3);
+}
+
+// ============================================================================
+// DELETES
+// ============================================================================
+
+it("should delete rows") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
+
+    let deleted = db.table("users").where("name", "=", "Alice").delete();
+    assert(deleted == 1);
+
+    let count = db.table("users").count();
+    assert(count == 1);
+}
+
+it("should truncate table") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
+
+    db.table("users").truncate();
+
+    let count = db.table("users").count();
+    assert(count == 0);
+}
+
+// ============================================================================
+// JOINS
+// ============================================================================
+
+it("should inner join tables") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
+    db.execute("INSERT INTO orders VALUES (1, 1, 100), (2, 1, 200)");
+
+    let rows = db.table("users")
+        .join("orders", "users.id", "=", "orders.user_id")
+        .select(["users.name", "orders.amount"])
+        .get();
+
+    assert(rows.len() == 2);
+}
+
+it("should left join tables") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+    db.execute("CREATE TABLE orders (id INTEGER, user_id INTEGER)");
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
+    db.execute("INSERT INTO orders VALUES (1, 1)");
+
+    let rows = db.table("users")
+        .left_join("orders", "users.id", "=", "orders.user_id")
+        .get();
+
+    assert(rows.len() == 2);  // Bob included with null order
+}
+
+// ============================================================================
+// GROUP BY
+// ============================================================================
+
+it("should group results") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (id INTEGER, category TEXT, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES (1, 'A', 100), (2, 'A', 150), (3, 'B', 200)");
+
+    let rows = db.table("orders")
+        .select(["category", "SUM(amount) as total"])
+        .group_by("category")
+        .get();
+
+    assert(rows.len() == 2);
+}
+
+it("should filter groups with having") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE orders (category TEXT, amount INTEGER)");
+    db.execute("INSERT INTO orders VALUES ('A', 100), ('A', 150), ('B', 50)");
+
+    let rows = db.table("orders")
+        .select(["category", "SUM(amount) as total"])
+        .group_by("category")
+        .having("total", ">", 100)
+        .get();
+
+    assert(rows.len() == 1);
+    assert(rows[0]["category"] == "A");
+}
+
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
+it("should commit transaction") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+
+    db.transaction(|| {
+        db.table("users").insert({ name: "Alice" });
+        db.table("users").insert({ name: "Bob" });
+    });
+
+    let count = db.table("users").count();
+    assert(count == 2);
+}
+
+it("should rollback transaction on error") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    db.table("users").insert({ name: "Alice" });
+
+    let result = db.transaction_safe(|| {
+        db.table("users").insert({ name: "Bob" });
+        throw Error::new("Something went wrong");
+    });
+
+    assert(result.is_err() == true);
+    let count = db.table("users").count();
+    assert(count == 1);  // Only Alice, Bob rolled back
+}
+
+it("should use savepoints") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+
+    db.transaction(|| {
+        db.table("users").insert({ name: "Alice" });
+
+        db.savepoint("sp1", || {
+            db.table("users").insert({ name: "Bob" });
+            throw Error::new("Rollback to savepoint");
+        });
+
+        db.table("users").insert({ name: "Carol" });
+    });
+
+    let count = db.table("users").count();
+    assert(count == 2);  // Alice and Carol
+}
+
+// ============================================================================
+// MIGRATIONS
+// ============================================================================
+
+it("should run migration") {
+    let db = db::connect("sqlite::memory:");
+
+    db.migrate(|| {
+        db.schema.create("users", |table| {
+            table.id();
+            table.string("name");
+            table.string("email").unique();
+            table.timestamps();
+        });
+    });
+
+    // Table should exist
+    let tables = db.tables();
+    assert(tables.contains("users"));
+}
+
+it("should rollback migration") {
+    let db = db::connect("sqlite::memory:");
+
+    db.schema.create("users", |table| {
+        table.id();
+        table.string("name");
+    });
+
+    db.schema.drop("users");
+
+    let tables = db.tables();
+    assert(tables.contains("users") == false);
+}
+
+// ============================================================================
+// SCHEMA BUILDER
+// ============================================================================
+
+it("should add column") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER)");
+
+    db.schema.table("users", |table| {
+        table.string("name").nullable();
+    });
+}
+
+it("should drop column") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, temp TEXT)");
+
+    db.schema.table("users", |table| {
+        table.drop_column("temp");
+    });
+}
+
+it("should add index") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, email TEXT)");
+
+    db.schema.table("users", |table| {
+        table.index("email");
+    });
+}
+
+// ============================================================================
+// CONNECTION POOLING
+// ============================================================================
+
+it("should use connection pool") {
+    let pool = db::Pool::new("sqlite::memory:", min: 2, max: 10);
+    let conn = pool.acquire();
+    conn.execute("SELECT 1");
+    conn.release();
+}
+
+it("should timeout on pool exhaustion") {
+    let pool = db::Pool::new("sqlite::memory:", max: 1);
+    let conn1 = pool.acquire();
+
+    let result = pool.acquire_timeout(100.milliseconds);
+    assert(result.is_err() == true);
+
+    conn1.release();
+}
+
+// ============================================================================
+// PREPARED STATEMENTS
+// ============================================================================
+
+it("should prepare statement") {
+    let db = db::connect("sqlite::memory:");
+    db.execute("CREATE TABLE users (id INTEGER, name TEXT)");
+
+    let stmt = db.prepare("INSERT INTO users VALUES (?, ?)");
+    stmt.execute([1, "Alice"]);
+    stmt.execute([2, "Bob"]);
+
+    let count = db.table("users").count();
+    assert(count == 2);
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle connection error") {
+    let result = db::connect_safe("invalid://connection");
+    assert(result.is_err() == true);
+}
+
+it("should handle query error") {
+    let db = db::connect("sqlite::memory:");
+    let result = db.query_safe("INVALID SQL");
+    assert(result.is_err() == true);
+}
+

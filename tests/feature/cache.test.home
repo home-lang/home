@@ -1,0 +1,392 @@
+// Caching Test Suite
+
+// ============================================================================
+// IN-MEMORY CACHE
+// ============================================================================
+
+it("should set and get value") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value");
+    assert(cache.get("key") == "value");
+}
+
+it("should return null for missing key") {
+    let cache = cache::Memory::new();
+    assert(cache.get("missing") == null);
+}
+
+it("should check if key exists") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value");
+    assert(cache.has("key") == true);
+    assert(cache.has("missing") == false);
+}
+
+it("should delete key") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value");
+    cache.delete("key");
+    assert(cache.has("key") == false);
+}
+
+it("should clear all keys") {
+    let cache = cache::Memory::new();
+    cache.set("key1", "value1");
+    cache.set("key2", "value2");
+    cache.clear();
+    assert(cache.size() == 0);
+}
+
+// ============================================================================
+// TTL (TIME TO LIVE)
+// ============================================================================
+
+it("should expire after TTL") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value", ttl: 50.milliseconds);
+    assert(cache.get("key") == "value");
+    sleep(100.milliseconds);
+    assert(cache.get("key") == null);
+}
+
+it("should not expire before TTL") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value", ttl: 1.second);
+    sleep(100.milliseconds);
+    assert(cache.get("key") == "value");
+}
+
+it("should update TTL on set") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value1", ttl: 100.milliseconds);
+    cache.set("key", "value2", ttl: 1.second);
+    sleep(200.milliseconds);
+    assert(cache.get("key") == "value2");
+}
+
+it("should get remaining TTL") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value", ttl: 10.seconds);
+    let remaining = cache.ttl("key");
+    assert(remaining > 9.seconds);
+    assert(remaining <= 10.seconds);
+}
+
+// ============================================================================
+// SIZE LIMITS
+// ============================================================================
+
+it("should limit max size") {
+    let cache = cache::Memory::new(max_size: 3);
+    cache.set("a", 1);
+    cache.set("b", 2);
+    cache.set("c", 3);
+    cache.set("d", 4);  // Should evict oldest
+    assert(cache.size() == 3);
+    assert(cache.has("a") == false);  // Evicted
+}
+
+it("should use LRU eviction") {
+    let cache = cache::Memory::new(max_size: 3, eviction: cache::LRU);
+    cache.set("a", 1);
+    cache.set("b", 2);
+    cache.set("c", 3);
+    cache.get("a");  // Access 'a', making it recently used
+    cache.set("d", 4);  // Should evict 'b' (least recently used)
+    assert(cache.has("a") == true);
+    assert(cache.has("b") == false);
+}
+
+it("should use LFU eviction") {
+    let cache = cache::Memory::new(max_size: 3, eviction: cache::LFU);
+    cache.set("a", 1);
+    cache.set("b", 2);
+    cache.set("c", 3);
+    cache.get("a");
+    cache.get("a");  // 'a' accessed twice
+    cache.get("b");  // 'b' accessed once
+    cache.set("d", 4);  // Should evict 'c' (least frequently used)
+    assert(cache.has("c") == false);
+}
+
+// ============================================================================
+// CACHE OPERATIONS
+// ============================================================================
+
+it("should get or set value") {
+    let cache = cache::Memory::new();
+    let value = cache.get_or_set("key", || expensive_computation());
+    assert(value != null);
+}
+
+it("should increment value") {
+    let cache = cache::Memory::new();
+    cache.set("counter", 0);
+    cache.incr("counter");
+    cache.incr("counter");
+    assert(cache.get("counter") == 2);
+}
+
+it("should increment by amount") {
+    let cache = cache::Memory::new();
+    cache.set("counter", 10);
+    cache.incr_by("counter", 5);
+    assert(cache.get("counter") == 15);
+}
+
+it("should decrement value") {
+    let cache = cache::Memory::new();
+    cache.set("counter", 10);
+    cache.decr("counter");
+    assert(cache.get("counter") == 9);
+}
+
+// ============================================================================
+// BATCH OPERATIONS
+// ============================================================================
+
+it("should set multiple values") {
+    let cache = cache::Memory::new();
+    cache.set_many({
+        "a": 1,
+        "b": 2,
+        "c": 3,
+    });
+    assert(cache.get("a") == 1);
+    assert(cache.get("b") == 2);
+    assert(cache.get("c") == 3);
+}
+
+it("should get multiple values") {
+    let cache = cache::Memory::new();
+    cache.set("a", 1);
+    cache.set("b", 2);
+    let values = cache.get_many(["a", "b", "c"]);
+    assert(values["a"] == 1);
+    assert(values["b"] == 2);
+    assert(values["c"] == null);
+}
+
+it("should delete multiple keys") {
+    let cache = cache::Memory::new();
+    cache.set("a", 1);
+    cache.set("b", 2);
+    cache.set("c", 3);
+    cache.delete_many(["a", "b"]);
+    assert(cache.has("a") == false);
+    assert(cache.has("b") == false);
+    assert(cache.has("c") == true);
+}
+
+// ============================================================================
+// PATTERN MATCHING
+// ============================================================================
+
+it("should find keys by pattern") {
+    let cache = cache::Memory::new();
+    cache.set("user:1", "Alice");
+    cache.set("user:2", "Bob");
+    cache.set("session:1", "data");
+
+    let keys = cache.keys("user:*");
+    assert(keys.len() == 2);
+}
+
+it("should delete by pattern") {
+    let cache = cache::Memory::new();
+    cache.set("temp:1", 1);
+    cache.set("temp:2", 2);
+    cache.set("perm:1", 1);
+
+    cache.delete_pattern("temp:*");
+    assert(cache.has("temp:1") == false);
+    assert(cache.has("perm:1") == true);
+}
+
+// ============================================================================
+// NAMESPACES
+// ============================================================================
+
+it("should use namespace") {
+    let cache = cache::Memory::new();
+    let users = cache.namespace("users");
+
+    users.set("1", "Alice");
+    assert(users.get("1") == "Alice");
+    assert(cache.get("users:1") == "Alice");  // Internal key
+}
+
+it("should clear namespace") {
+    let cache = cache::Memory::new();
+    let users = cache.namespace("users");
+    let sessions = cache.namespace("sessions");
+
+    users.set("1", "Alice");
+    sessions.set("1", "data");
+
+    users.clear();
+    assert(users.size() == 0);
+    assert(sessions.get("1") == "data");  // Unaffected
+}
+
+// ============================================================================
+// TAGS
+// ============================================================================
+
+it("should tag cache entries") {
+    let cache = cache::Memory::new();
+    cache.set("user:1", "Alice", tags: ["users", "active"]);
+    cache.set("user:2", "Bob", tags: ["users"]);
+    cache.set("session:1", "data", tags: ["sessions"]);
+
+    let tagged = cache.get_by_tag("users");
+    assert(tagged.len() == 2);
+}
+
+it("should invalidate by tag") {
+    let cache = cache::Memory::new();
+    cache.set("user:1", "Alice", tags: ["users"]);
+    cache.set("user:2", "Bob", tags: ["users"]);
+    cache.set("config", "data", tags: ["config"]);
+
+    cache.invalidate_tag("users");
+    assert(cache.has("user:1") == false);
+    assert(cache.has("user:2") == false);
+    assert(cache.has("config") == true);
+}
+
+// ============================================================================
+// STATISTICS
+// ============================================================================
+
+it("should track hits and misses") {
+    let cache = cache::Memory::new();
+    cache.set("key", "value");
+
+    cache.get("key");  // Hit
+    cache.get("key");  // Hit
+    cache.get("missing");  // Miss
+
+    let stats = cache.stats();
+    assert(stats.hits == 2);
+    assert(stats.misses == 1);
+    assert(stats.hit_rate() > 0.6);
+}
+
+it("should track size") {
+    let cache = cache::Memory::new();
+    cache.set("a", "value1");
+    cache.set("b", "value2");
+
+    let stats = cache.stats();
+    assert(stats.entries == 2);
+}
+
+// ============================================================================
+// SERIALIZATION
+// ============================================================================
+
+it("should cache complex objects") {
+    let cache = cache::Memory::new();
+    let user = { id: 1, name: "Alice", active: true };
+    cache.set("user:1", user);
+    let retrieved = cache.get("user:1");
+    assert(retrieved.id == 1);
+    assert(retrieved.name == "Alice");
+}
+
+// ============================================================================
+// CALLBACKS
+// ============================================================================
+
+it("should call on evict callback") {
+    let evicted_keys = [];
+
+    let cache = cache::Memory::new(max_size: 2)
+        .on_evict(|key, value| evicted_keys.push(key));
+
+    cache.set("a", 1);
+    cache.set("b", 2);
+    cache.set("c", 3);  // Triggers eviction
+
+    assert(evicted_keys.len() == 1);
+}
+
+it("should call on expire callback") {
+    let expired_keys = [];
+
+    let cache = cache::Memory::new()
+        .on_expire(|key, value| expired_keys.push(key));
+
+    cache.set("temp", "value", ttl: 50.milliseconds);
+    sleep(100.milliseconds);
+    cache.get("temp");  // Triggers expiration check
+
+    assert(expired_keys.contains("temp"));
+}
+
+// ============================================================================
+// THREAD SAFETY
+// ============================================================================
+
+it("should be thread safe") {
+    let cache = cache::Memory::new();
+
+    // Run concurrent operations
+    let handles = [];
+    for i in 0..10 {
+        handles.push(spawn {
+            for j in 0..100 {
+                cache.set("key:{i}:{j}", j);
+                cache.get("key:{i}:{j}");
+            }
+        });
+    }
+
+    for handle in handles {
+        handle.join();
+    }
+}
+
+// ============================================================================
+// FILE-BASED CACHE
+// ============================================================================
+
+it("should persist to file") {
+    let cache = cache::File::new("/tmp/test_cache");
+    cache.set("key", "value");
+
+    // Create new instance to test persistence
+    let cache2 = cache::File::new("/tmp/test_cache");
+    assert(cache2.get("key") == "value");
+}
+
+// ============================================================================
+// LAYERED CACHE
+// ============================================================================
+
+it("should use multi-level cache") {
+    let l1 = cache::Memory::new(max_size: 100);
+    let l2 = cache::Memory::new(max_size: 10000);
+
+    let cache = cache::Layered::new([l1, l2]);
+
+    cache.set("key", "value");
+    assert(l1.has("key") == true);
+    assert(l2.has("key") == true);
+}
+
+it("should promote from L2 to L1") {
+    let l1 = cache::Memory::new(max_size: 1);
+    let l2 = cache::Memory::new();
+
+    let cache = cache::Layered::new([l1, l2]);
+
+    // Set in L2 only
+    l2.set("key", "value");
+
+    // Get should promote to L1
+    cache.get("key");
+    assert(l1.has("key") == true);
+}
+

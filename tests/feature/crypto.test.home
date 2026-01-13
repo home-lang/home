@@ -1,0 +1,319 @@
+// Cryptography and Hashing Test Suite
+
+// ============================================================================
+// HASH FUNCTIONS
+// ============================================================================
+
+it("should compute MD5 hash") {
+    let hash = crypto::md5("hello");
+    assert(hash == "5d41402abc4b2a76b9719d911017c592");
+}
+
+it("should compute SHA-1 hash") {
+    let hash = crypto::sha1("hello");
+    assert(hash == "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d");
+}
+
+it("should compute SHA-256 hash") {
+    let hash = crypto::sha256("hello");
+    assert(hash.len() == 64);
+    assert(hash.starts_with("2cf24dba"));
+}
+
+it("should compute SHA-384 hash") {
+    let hash = crypto::sha384("hello");
+    assert(hash.len() == 96);
+}
+
+it("should compute SHA-512 hash") {
+    let hash = crypto::sha512("hello");
+    assert(hash.len() == 128);
+}
+
+it("should hash empty string") {
+    let hash = crypto::sha256("");
+    assert(hash.len() == 64);
+}
+
+it("should hash bytes") {
+    let data = [0x68, 0x65, 0x6c, 0x6c, 0x6f];  // "hello"
+    let hash = crypto::sha256_bytes(data);
+    assert(hash.len() == 32);  // Raw bytes
+}
+
+// ============================================================================
+// HMAC
+// ============================================================================
+
+it("should compute HMAC-SHA256") {
+    let key = "secret";
+    let message = "hello";
+    let hmac = crypto::hmac_sha256(key, message);
+    assert(hmac.len() == 64);
+}
+
+it("should compute HMAC-SHA512") {
+    let key = "secret";
+    let message = "hello";
+    let hmac = crypto::hmac_sha512(key, message);
+    assert(hmac.len() == 128);
+}
+
+it("should verify HMAC") {
+    let key = "secret";
+    let message = "hello";
+    let hmac = crypto::hmac_sha256(key, message);
+    assert(crypto::verify_hmac_sha256(key, message, hmac) == true);
+}
+
+it("should reject invalid HMAC") {
+    let key = "secret";
+    let message = "hello";
+    assert(crypto::verify_hmac_sha256(key, message, "invalid") == false);
+}
+
+// ============================================================================
+// PASSWORD HASHING
+// ============================================================================
+
+it("should hash password with bcrypt") {
+    let hash = crypto::bcrypt_hash("password123");
+    assert(hash.starts_with("$2"));
+    assert(hash.len() == 60);
+}
+
+it("should verify bcrypt password") {
+    let hash = crypto::bcrypt_hash("password123");
+    assert(crypto::bcrypt_verify("password123", hash) == true);
+    assert(crypto::bcrypt_verify("wrongpassword", hash) == false);
+}
+
+it("should hash with custom cost factor") {
+    let hash = crypto::bcrypt_hash("password", cost: 12);
+    assert(crypto::bcrypt_verify("password", hash) == true);
+}
+
+it("should hash password with argon2") {
+    let hash = crypto::argon2_hash("password123");
+    assert(hash.starts_with("$argon2"));
+}
+
+it("should verify argon2 password") {
+    let hash = crypto::argon2_hash("password123");
+    assert(crypto::argon2_verify("password123", hash) == true);
+    assert(crypto::argon2_verify("wrongpassword", hash) == false);
+}
+
+// ============================================================================
+// SYMMETRIC ENCRYPTION
+// ============================================================================
+
+it("should encrypt with AES-256-GCM") {
+    let key = crypto::generate_key(32);  // 256 bits
+    let plaintext = "secret message";
+    let encrypted = crypto::aes_gcm_encrypt(key, plaintext);
+    assert(encrypted != plaintext);
+}
+
+it("should decrypt with AES-256-GCM") {
+    let key = crypto::generate_key(32);
+    let plaintext = "secret message";
+    let encrypted = crypto::aes_gcm_encrypt(key, plaintext);
+    let decrypted = crypto::aes_gcm_decrypt(key, encrypted);
+    assert(decrypted == plaintext);
+}
+
+it("should fail decryption with wrong key") {
+    let key1 = crypto::generate_key(32);
+    let key2 = crypto::generate_key(32);
+    let encrypted = crypto::aes_gcm_encrypt(key1, "secret");
+    let result = crypto::aes_gcm_decrypt_safe(key2, encrypted);
+    assert(result.is_err() == true);
+}
+
+it("should encrypt with ChaCha20-Poly1305") {
+    let key = crypto::generate_key(32);
+    let plaintext = "secret message";
+    let encrypted = crypto::chacha20_encrypt(key, plaintext);
+    let decrypted = crypto::chacha20_decrypt(key, encrypted);
+    assert(decrypted == plaintext);
+}
+
+// ============================================================================
+// RANDOM NUMBER GENERATION
+// ============================================================================
+
+it("should generate random bytes") {
+    let bytes = crypto::random_bytes(16);
+    assert(bytes.len() == 16);
+}
+
+it("should generate different random bytes") {
+    let bytes1 = crypto::random_bytes(16);
+    let bytes2 = crypto::random_bytes(16);
+    assert(bytes1 != bytes2);
+}
+
+it("should generate random integer") {
+    let n = crypto::random_int(1, 100);
+    assert(n >= 1);
+    assert(n <= 100);
+}
+
+it("should generate UUID v4") {
+    let uuid = crypto::uuid_v4();
+    assert(uuid.len() == 36);
+    assert(uuid[14] == '4');  // Version 4
+}
+
+it("should generate unique UUIDs") {
+    let uuid1 = crypto::uuid_v4();
+    let uuid2 = crypto::uuid_v4();
+    assert(uuid1 != uuid2);
+}
+
+// ============================================================================
+// KEY DERIVATION
+// ============================================================================
+
+it("should derive key with PBKDF2") {
+    let password = "password";
+    let salt = crypto::random_bytes(16);
+    let key = crypto::pbkdf2(password, salt, iterations: 100000, key_len: 32);
+    assert(key.len() == 32);
+}
+
+it("should derive same key with same inputs") {
+    let password = "password";
+    let salt = "fixed_salt".as_bytes();
+    let key1 = crypto::pbkdf2(password, salt, iterations: 1000, key_len: 32);
+    let key2 = crypto::pbkdf2(password, salt, iterations: 1000, key_len: 32);
+    assert(key1 == key2);
+}
+
+it("should derive key with scrypt") {
+    let password = "password";
+    let salt = crypto::random_bytes(16);
+    let key = crypto::scrypt(password, salt, key_len: 32);
+    assert(key.len() == 32);
+}
+
+it("should derive key with HKDF") {
+    let ikm = crypto::random_bytes(32);
+    let salt = crypto::random_bytes(16);
+    let info = "context";
+    let key = crypto::hkdf_sha256(ikm, salt, info, 32);
+    assert(key.len() == 32);
+}
+
+// ============================================================================
+// ENCODING
+// ============================================================================
+
+it("should encode to base64") {
+    let encoded = crypto::base64_encode("hello");
+    assert(encoded == "aGVsbG8=");
+}
+
+it("should decode from base64") {
+    let decoded = crypto::base64_decode("aGVsbG8=");
+    assert(decoded == "hello");
+}
+
+it("should encode to base64url") {
+    let encoded = crypto::base64url_encode("hello?world");
+    assert(!encoded.contains("+"));
+    assert(!encoded.contains("/"));
+}
+
+it("should encode to hex") {
+    let encoded = crypto::hex_encode("hello");
+    assert(encoded == "68656c6c6f");
+}
+
+it("should decode from hex") {
+    let decoded = crypto::hex_decode("68656c6c6f");
+    assert(decoded == "hello");
+}
+
+// ============================================================================
+// DIGITAL SIGNATURES
+// ============================================================================
+
+it("should generate Ed25519 keypair") {
+    let (public_key, private_key) = crypto::ed25519_keygen();
+    assert(public_key.len() == 32);
+    assert(private_key.len() == 64);
+}
+
+it("should sign with Ed25519") {
+    let (public_key, private_key) = crypto::ed25519_keygen();
+    let message = "hello world";
+    let signature = crypto::ed25519_sign(private_key, message);
+    assert(signature.len() == 64);
+}
+
+it("should verify Ed25519 signature") {
+    let (public_key, private_key) = crypto::ed25519_keygen();
+    let message = "hello world";
+    let signature = crypto::ed25519_sign(private_key, message);
+    assert(crypto::ed25519_verify(public_key, message, signature) == true);
+}
+
+it("should reject invalid Ed25519 signature") {
+    let (public_key, _) = crypto::ed25519_keygen();
+    let message = "hello world";
+    let fake_signature = crypto::random_bytes(64);
+    assert(crypto::ed25519_verify(public_key, message, fake_signature) == false);
+}
+
+// ============================================================================
+// RSA
+// ============================================================================
+
+it("should generate RSA keypair") {
+    let (public_key, private_key) = crypto::rsa_keygen(2048);
+    assert(public_key.len() > 0);
+    assert(private_key.len() > 0);
+}
+
+it("should encrypt with RSA") {
+    let (public_key, private_key) = crypto::rsa_keygen(2048);
+    let message = "short secret";
+    let encrypted = crypto::rsa_encrypt(public_key, message);
+    let decrypted = crypto::rsa_decrypt(private_key, encrypted);
+    assert(decrypted == message);
+}
+
+it("should sign with RSA") {
+    let (public_key, private_key) = crypto::rsa_keygen(2048);
+    let message = "hello world";
+    let signature = crypto::rsa_sign(private_key, message);
+    assert(crypto::rsa_verify(public_key, message, signature) == true);
+}
+
+// ============================================================================
+// CONSTANT-TIME COMPARISON
+// ============================================================================
+
+it("should compare in constant time") {
+    let a = "secret_token_123";
+    let b = "secret_token_123";
+    assert(crypto::constant_time_eq(a, b) == true);
+}
+
+it("should reject different values") {
+    let a = "secret_token_123";
+    let b = "secret_token_124";
+    assert(crypto::constant_time_eq(a, b) == false);
+}
+
+// ============================================================================
+// SECURE MEMORY
+// ============================================================================
+
+it("should zero memory") {
+    let mut secret = "password123".as_bytes();
+    crypto::secure_zero(secret);
+    assert(secret.all(|b| b == 0));
+}

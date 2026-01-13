@@ -1,0 +1,397 @@
+// Stream Test Suite
+
+// ============================================================================
+// READABLE STREAMS
+// ============================================================================
+
+it("should read from string stream") {
+    let stream = stream::from_string("hello world");
+    let data = stream.read_all();
+    assert(data == "hello world");
+}
+
+it("should read from bytes stream") {
+    let stream = stream::from_bytes([72, 101, 108, 108, 111]);
+    let data = stream.read_all();
+    assert(data == "Hello");
+}
+
+it("should read chunk by chunk") {
+    let stream = stream::from_string("hello world");
+    let chunk1 = stream.read(5);
+    let chunk2 = stream.read(6);
+    assert(chunk1 == "hello");
+    assert(chunk2 == " world");
+}
+
+it("should detect end of stream") {
+    let stream = stream::from_string("hi");
+    stream.read_all();
+    assert(stream.is_eof() == true);
+}
+
+// ============================================================================
+// WRITABLE STREAMS
+// ============================================================================
+
+it("should write to buffer stream") {
+    let stream = stream::Buffer::new();
+    stream.write("hello ");
+    stream.write("world");
+    assert(stream.to_string() == "hello world");
+}
+
+it("should write bytes") {
+    let stream = stream::Buffer::new();
+    stream.write_bytes([72, 105]);
+    assert(stream.to_bytes() == [72, 105]);
+}
+
+it("should flush stream") {
+    let stream = stream::Buffer::new();
+    stream.write("data");
+    stream.flush();
+}
+
+// ============================================================================
+// DUPLEX STREAMS
+// ============================================================================
+
+it("should create duplex stream") {
+    let duplex = stream::Duplex::new();
+    duplex.write("hello");
+    let data = duplex.read(5);
+    assert(data == "hello");
+}
+
+// ============================================================================
+// TRANSFORM STREAMS
+// ============================================================================
+
+it("should transform stream data") {
+    let transform = stream::Transform::new(|chunk| chunk.to_upper());
+    let source = stream::from_string("hello");
+
+    source.pipe(transform);
+    let result = transform.read_all();
+    assert(result == "HELLO");
+}
+
+it("should chain transforms") {
+    let upper = stream::Transform::new(|c| c.to_upper());
+    let reverse = stream::Transform::new(|c| c.chars().reverse().collect());
+
+    let source = stream::from_string("hello");
+    source.pipe(upper).pipe(reverse);
+
+    let result = reverse.read_all();
+    assert(result == "OLLEH");
+}
+
+// ============================================================================
+// PIPING
+// ============================================================================
+
+it("should pipe streams") {
+    let source = stream::from_string("hello world");
+    let dest = stream::Buffer::new();
+
+    source.pipe(dest);
+    assert(dest.to_string() == "hello world");
+}
+
+it("should pipe multiple destinations") {
+    let source = stream::from_string("hello");
+    let dest1 = stream::Buffer::new();
+    let dest2 = stream::Buffer::new();
+
+    source.tee(dest1, dest2);
+    assert(dest1.to_string() == "hello");
+    assert(dest2.to_string() == "hello");
+}
+
+it("should unpipe stream") {
+    let source = stream::from_string("hello");
+    let dest = stream::Buffer::new();
+
+    source.pipe(dest);
+    source.unpipe(dest);
+}
+
+// ============================================================================
+// LINE READING
+// ============================================================================
+
+it("should read lines") {
+    let stream = stream::from_string("line1\nline2\nline3");
+    let lines = stream.lines().collect();
+    assert(lines.len() == 3);
+    assert(lines[0] == "line1");
+}
+
+it("should read line by line") {
+    let stream = stream::from_string("a\nb\nc");
+    assert(stream.read_line() == "a");
+    assert(stream.read_line() == "b");
+    assert(stream.read_line() == "c");
+}
+
+// ============================================================================
+// ASYNC STREAMS
+// ============================================================================
+
+it("should read async") {
+    let stream = stream::async_from_string("hello");
+    let data = await stream.read_async(5);
+    assert(data == "hello");
+}
+
+it("should iterate async stream") {
+    let stream = stream::async_from_string("hello\nworld");
+    let lines = [];
+
+    for await line in stream.lines() {
+        lines.push(line);
+    }
+
+    assert(lines.len() == 2);
+}
+
+// ============================================================================
+// BUFFERED STREAMS
+// ============================================================================
+
+it("should buffer reads") {
+    let inner = stream::from_string("hello world");
+    let buffered = stream::Buffered::new(inner, buffer_size: 4);
+    let data = buffered.read_all();
+    assert(data == "hello world");
+}
+
+it("should buffer writes") {
+    let inner = stream::Buffer::new();
+    let buffered = stream::BufferedWriter::new(inner, buffer_size: 10);
+    buffered.write("hello ");
+    buffered.write("world");
+    buffered.flush();
+    assert(inner.to_string() == "hello world");
+}
+
+// ============================================================================
+// STREAM COMBINATORS
+// ============================================================================
+
+it("should concatenate streams") {
+    let s1 = stream::from_string("hello ");
+    let s2 = stream::from_string("world");
+    let combined = stream::concat([s1, s2]);
+    assert(combined.read_all() == "hello world");
+}
+
+it("should merge streams") {
+    let s1 = stream::from_string("a");
+    let s2 = stream::from_string("b");
+    let merged = stream::merge([s1, s2]);
+    let data = merged.read_all();
+    assert(data.contains("a"));
+    assert(data.contains("b"));
+}
+
+// ============================================================================
+// SIZE AND POSITION
+// ============================================================================
+
+it("should get stream size") {
+    let stream = stream::from_string("hello");
+    assert(stream.size() == 5);
+}
+
+it("should get current position") {
+    let stream = stream::from_string("hello");
+    stream.read(2);
+    assert(stream.position() == 2);
+}
+
+it("should seek in stream") {
+    let stream = stream::from_string("hello world");
+    stream.seek(6);
+    assert(stream.read(5) == "world");
+}
+
+it("should seek from end") {
+    let stream = stream::from_string("hello world");
+    stream.seek_end(-5);
+    assert(stream.read(5) == "world");
+}
+
+// ============================================================================
+// STREAM EVENTS
+// ============================================================================
+
+it("should emit data event") {
+    let stream = stream::from_string("hello");
+    let received = [];
+
+    stream.on("data", |chunk| received.push(chunk));
+    stream.read_all();
+
+    assert(received.len() > 0);
+}
+
+it("should emit end event") {
+    let stream = stream::from_string("hello");
+    let ended = false;
+
+    stream.on("end", || ended = true);
+    stream.read_all();
+
+    assert(ended == true);
+}
+
+it("should emit error event") {
+    let stream = stream::from_string("hello");
+    let error_received = false;
+
+    stream.on("error", |err| error_received = true);
+}
+
+// ============================================================================
+// COMPRESSION STREAMS
+// ============================================================================
+
+it("should create gzip stream") {
+    let source = stream::from_string("hello world ".repeat(100));
+    let gzip = stream::GzipEncoder::new();
+
+    source.pipe(gzip);
+    let compressed = gzip.read_all_bytes();
+    assert(compressed.len() < 1200);  // Should compress
+}
+
+it("should decompress gzip stream") {
+    let original = "hello world";
+    let compressed = compress::gzip(original);
+
+    let source = stream::from_bytes(compressed);
+    let gunzip = stream::GzipDecoder::new();
+
+    source.pipe(gunzip);
+    assert(gunzip.read_all() == original);
+}
+
+// ============================================================================
+// ENCODING STREAMS
+// ============================================================================
+
+it("should encode to base64 stream") {
+    let source = stream::from_string("hello");
+    let encoder = stream::Base64Encoder::new();
+
+    source.pipe(encoder);
+    assert(encoder.read_all() == "aGVsbG8=");
+}
+
+it("should decode from base64 stream") {
+    let source = stream::from_string("aGVsbG8=");
+    let decoder = stream::Base64Decoder::new();
+
+    source.pipe(decoder);
+    assert(decoder.read_all() == "hello");
+}
+
+// ============================================================================
+// HASH STREAMS
+// ============================================================================
+
+it("should compute hash while streaming") {
+    let source = stream::from_string("hello world");
+    let hasher = stream::Sha256Stream::new();
+
+    source.pipe(hasher);
+    hasher.read_all();  // Consume
+
+    let hash = hasher.finalize();
+    assert(hash.len() == 64);
+}
+
+// ============================================================================
+// LIMIT AND TAKE
+// ============================================================================
+
+it("should limit stream bytes") {
+    let source = stream::from_string("hello world");
+    let limited = source.take(5);
+    assert(limited.read_all() == "hello");
+}
+
+it("should skip bytes") {
+    let source = stream::from_string("hello world");
+    let skipped = source.skip(6);
+    assert(skipped.read_all() == "world");
+}
+
+// ============================================================================
+// PEEK
+// ============================================================================
+
+it("should peek without consuming") {
+    let stream = stream::from_string("hello");
+    let peeked = stream.peek(2);
+    let read = stream.read(2);
+    assert(peeked == "he");
+    assert(read == "he");
+}
+
+// ============================================================================
+// STREAM FROM ITERATOR
+// ============================================================================
+
+it("should create stream from iterator") {
+    let iter = [1, 2, 3, 4, 5].iter();
+    let stream = stream::from_iter(iter);
+    let items = stream.collect();
+    assert(items == [1, 2, 3, 4, 5]);
+}
+
+// ============================================================================
+// NULL AND ZERO STREAMS
+// ============================================================================
+
+it("should create null stream (discards writes)") {
+    let null_stream = stream::null();
+    null_stream.write("ignored");
+    // Data is discarded
+}
+
+it("should create zero stream (infinite zeros)") {
+    let zero_stream = stream::zero();
+    let data = zero_stream.read(5);
+    assert(data == [0, 0, 0, 0, 0]);
+}
+
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+
+it("should rate limit stream") {
+    let source = stream::from_string("hello world");
+    let limited = source.rate_limit(bytes_per_second: 5);
+    // Reading would be throttled
+}
+
+// ============================================================================
+// PROGRESS TRACKING
+// ============================================================================
+
+it("should track progress") {
+    let source = stream::from_string("hello world");
+    let progress_values = [];
+
+    source.on_progress(|bytes, total| {
+        progress_values.push(bytes);
+    });
+
+    source.read_all();
+    assert(progress_values.len() > 0);
+}
+

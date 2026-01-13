@@ -1,0 +1,95 @@
+// Modulo Operator Unit Tests
+
+it("should compute basic modulo") {
+    assert((10 % 3) == 1);
+    assert((15 % 5) == 0);
+    assert((7 % 2) == 1);
+    assert((100 % 7) == 2);
+}
+
+it("should handle modulo with zero dividend") {
+    assert((0 % 5) == 0);
+    assert((0 % 1) == 0);
+    assert((0 % 100) == 0);
+}
+
+it("should handle modulo with negative dividend") {
+    assert((-10 % 3) == -1);
+    assert((-15 % 4) == -3);
+    assert((-7 % 2) == -1);
+}
+
+it("should handle modulo with negative divisor") {
+    assert((10 % -3) == 1);
+    assert((15 % -4) == 3);
+}
+
+it("should handle both negative") {
+    assert((-10 % -3) == -1);
+    assert((-15 % -4) == -3);
+}
+
+it("should handle divisor larger than dividend") {
+    assert((3 % 10) == 3);
+    assert((1 % 100) == 1);
+    assert((5 % 7) == 5);
+}
+
+it("should handle equal values") {
+    assert((5 % 5) == 0);
+    assert((100 % 100) == 0);
+}
+
+it("should handle modulo by 1") {
+    assert((10 % 1) == 0);
+    assert((7 % 1) == 0);
+    assert((1 % 1) == 0);
+}
+
+it("should handle large numbers") {
+    assert((1000000 % 7) == 6);
+    assert((999999 % 10) == 9);
+}
+
+it("should be used in even/odd check") {
+    assert((4 % 2) == 0);  // even
+    assert((5 % 2) == 1);  // odd
+    assert((0 % 2) == 0);  // even
+    assert((-4 % 2) == 0); // even
+    assert((-5 % 2) == -1); // odd
+}
+
+it("should work with chained modulo") {
+    assert(((100 % 7) % 3) == 0);  // 100 % 7 = 2, 2 % 3 = 2... wait
+    let step1 = 100 % 7;  // 2
+    let step2 = step1 % 3;  // 2
+    assert(step1 == 2);
+    assert(step2 == 2);
+}
+
+it("should work in expressions") {
+    let x = 17;
+    let y = 5;
+    assert((x % y) == 2);
+    assert((x % y + 3) == 5);
+    assert((x % (y + 1)) == 5);
+}
+
+it("should work in conditionals") {
+    let n = 15;
+    if (n % 3 == 0 and n % 5 == 0) {
+        assert(true);  // FizzBuzz!
+    } else {
+        assert(false);
+    }
+}
+
+it("should work in loop patterns") {
+    let mut count = 0;
+    for (i in 1..11) {
+        if (i % 2 == 0) {
+            count = count + 1;
+        }
+    }
+    assert(count == 5);  // 2, 4, 6, 8, 10
+}

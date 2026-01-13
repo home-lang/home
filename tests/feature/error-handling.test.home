@@ -1,0 +1,487 @@
+// Error Handling Test Suite
+
+// ============================================================================
+// BASIC RESULT TYPE
+// ============================================================================
+
+it("should create Ok result") {
+    let result: Result<i32, string> = Ok(42);
+    assert(result.is_ok() == true);
+    assert(result.is_err() == false);
+}
+
+it("should create Err result") {
+    let result: Result<i32, string> = Err("something went wrong");
+    assert(result.is_ok() == false);
+    assert(result.is_err() == true);
+}
+
+it("should unwrap Ok result") {
+    let result: Result<i32, string> = Ok(42);
+    assert(result.unwrap() == 42);
+}
+
+it("should unwrap_or with default for Err") {
+    let result: Result<i32, string> = Err("error");
+    assert(result.unwrap_or(0) == 0);
+}
+
+it("should unwrap_or with Ok value") {
+    let result: Result<i32, string> = Ok(42);
+    assert(result.unwrap_or(0) == 42);
+}
+
+it("should get error message") {
+    let result: Result<i32, string> = Err("file not found");
+    assert(result.unwrap_err() == "file not found");
+}
+
+// ============================================================================
+// OPTION TYPE
+// ============================================================================
+
+it("should create Some option") {
+    let opt: Option<i32> = Some(42);
+    assert(opt.is_some() == true);
+    assert(opt.is_none() == false);
+}
+
+it("should create None option") {
+    let opt: Option<i32> = None;
+    assert(opt.is_some() == false);
+    assert(opt.is_none() == true);
+}
+
+it("should unwrap Some option") {
+    let opt: Option<i32> = Some(42);
+    assert(opt.unwrap() == 42);
+}
+
+it("should unwrap_or with None") {
+    let opt: Option<i32> = None;
+    assert(opt.unwrap_or(0) == 0);
+}
+
+it("should unwrap_or with Some") {
+    let opt: Option<i32> = Some(42);
+    assert(opt.unwrap_or(0) == 42);
+}
+
+// ============================================================================
+// RESULT CHAINING - MAP
+// ============================================================================
+
+it("should map Ok result") {
+    let result: Result<i32, string> = Ok(21);
+    let mapped = result.map(|x| x * 2);
+    assert(mapped.unwrap() == 42);
+}
+
+it("should not map Err result") {
+    let result: Result<i32, string> = Err("error");
+    let mapped = result.map(|x| x * 2);
+    assert(mapped.is_err() == true);
+}
+
+it("should map_err on Err") {
+    let result: Result<i32, string> = Err("error");
+    let mapped = result.map_err(|e| e.upper());
+    assert(mapped.unwrap_err() == "ERROR");
+}
+
+it("should not map_err on Ok") {
+    let result: Result<i32, string> = Ok(42);
+    let mapped = result.map_err(|e| e.upper());
+    assert(mapped.unwrap() == 42);
+}
+
+// ============================================================================
+// RESULT CHAINING - AND_THEN
+// ============================================================================
+
+it("should chain with and_then on Ok") {
+    fn double(x: i32): Result<i32, string> {
+        return Ok(x * 2);
+    }
+    let result: Result<i32, string> = Ok(21);
+    let chained = result.and_then(double);
+    assert(chained.unwrap() == 42);
+}
+
+it("should not chain and_then on Err") {
+    fn double(x: i32): Result<i32, string> {
+        return Ok(x * 2);
+    }
+    let result: Result<i32, string> = Err("error");
+    let chained = result.and_then(double);
+    assert(chained.is_err() == true);
+}
+
+it("should propagate error in and_then chain") {
+    fn may_fail(x: i32): Result<i32, string> {
+        if (x < 0) {
+            return Err("negative number");
+        }
+        return Ok(x * 2);
+    }
+    let result: Result<i32, string> = Ok(-5);
+    let chained = result.and_then(may_fail);
+    assert(chained.is_err() == true);
+}
+
+// ============================================================================
+// OPTION CHAINING
+// ============================================================================
+
+it("should map Some option") {
+    let opt: Option<i32> = Some(21);
+    let mapped = opt.map(|x| x * 2);
+    assert(mapped.unwrap() == 42);
+}
+
+it("should not map None option") {
+    let opt: Option<i32> = None;
+    let mapped = opt.map(|x| x * 2);
+    assert(mapped.is_none() == true);
+}
+
+it("should chain with and_then on Some") {
+    fn safe_div(x: i32): Option<i32> {
+        if (x == 0) {
+            return None;
+        }
+        return Some(100 / x);
+    }
+    let opt: Option<i32> = Some(10);
+    let chained = opt.and_then(safe_div);
+    assert(chained.unwrap() == 10);
+}
+
+it("should return None from and_then on None") {
+    fn safe_div(x: i32): Option<i32> {
+        return Some(100 / x);
+    }
+    let opt: Option<i32> = None;
+    let chained = opt.and_then(safe_div);
+    assert(chained.is_none() == true);
+}
+
+// ============================================================================
+// TRY OPERATOR (?)
+// ============================================================================
+
+it("should propagate error with try operator") {
+    fn inner(): Result<i32, string> {
+        return Err("inner error");
+    }
+    fn outer(): Result<i32, string> {
+        let value = try inner();
+        return Ok(value * 2);
+    }
+    let result = outer();
+    assert(result.is_err() == true);
+    assert(result.unwrap_err() == "inner error");
+}
+
+it("should continue with Ok using try operator") {
+    fn inner(): Result<i32, string> {
+        return Ok(21);
+    }
+    fn outer(): Result<i32, string> {
+        let value = try inner();
+        return Ok(value * 2);
+    }
+    let result = outer();
+    assert(result.is_ok() == true);
+    assert(result.unwrap() == 42);
+}
+
+it("should chain multiple try operators") {
+    fn step1(): Result<i32, string> {
+        return Ok(10);
+    }
+    fn step2(x: i32): Result<i32, string> {
+        return Ok(x + 5);
+    }
+    fn step3(x: i32): Result<i32, string> {
+        return Ok(x * 2);
+    }
+    fn combined(): Result<i32, string> {
+        let a = try step1();
+        let b = try step2(a);
+        let c = try step3(b);
+        return Ok(c);
+    }
+    assert(combined().unwrap() == 30);
+}
+
+// ============================================================================
+// OR_ELSE CHAINING
+// ============================================================================
+
+it("should use or_else on Err") {
+    fn fallback(): Result<i32, string> {
+        return Ok(0);
+    }
+    let result: Result<i32, string> = Err("error");
+    let recovered = result.or_else(|_| fallback());
+    assert(recovered.unwrap() == 0);
+}
+
+it("should not use or_else on Ok") {
+    fn fallback(): Result<i32, string> {
+        return Ok(0);
+    }
+    let result: Result<i32, string> = Ok(42);
+    let recovered = result.or_else(|_| fallback());
+    assert(recovered.unwrap() == 42);
+}
+
+it("should chain or_else with another error") {
+    fn fallback1(): Result<i32, string> {
+        return Err("fallback1 failed");
+    }
+    fn fallback2(): Result<i32, string> {
+        return Ok(99);
+    }
+    let result: Result<i32, string> = Err("initial error");
+    let recovered = result.or_else(|_| fallback1()).or_else(|_| fallback2());
+    assert(recovered.unwrap() == 99);
+}
+
+// ============================================================================
+// OPTION OR_ELSE
+// ============================================================================
+
+it("should use or_else on None") {
+    fn fallback(): Option<i32> {
+        return Some(0);
+    }
+    let opt: Option<i32> = None;
+    let recovered = opt.or_else(fallback);
+    assert(recovered.unwrap() == 0);
+}
+
+it("should not use or_else on Some") {
+    fn fallback(): Option<i32> {
+        return Some(0);
+    }
+    let opt: Option<i32> = Some(42);
+    let recovered = opt.or_else(fallback);
+    assert(recovered.unwrap() == 42);
+}
+
+// ============================================================================
+// CONVERTING BETWEEN OPTION AND RESULT
+// ============================================================================
+
+it("should convert Option to Result with ok_or") {
+    let opt: Option<i32> = Some(42);
+    let result = opt.ok_or("no value");
+    assert(result.unwrap() == 42);
+}
+
+it("should convert None to Err with ok_or") {
+    let opt: Option<i32> = None;
+    let result = opt.ok_or("no value");
+    assert(result.is_err() == true);
+    assert(result.unwrap_err() == "no value");
+}
+
+it("should convert Result to Option with ok") {
+    let result: Result<i32, string> = Ok(42);
+    let opt = result.ok();
+    assert(opt.unwrap() == 42);
+}
+
+it("should convert Err Result to None with ok") {
+    let result: Result<i32, string> = Err("error");
+    let opt = result.ok();
+    assert(opt.is_none() == true);
+}
+
+// ============================================================================
+// PATTERN MATCHING WITH RESULT
+// ============================================================================
+
+it("should match Ok variant") {
+    let result: Result<i32, string> = Ok(42);
+    let value = match result {
+        Ok(x) => x,
+        Err(_) => 0,
+    };
+    assert(value == 42);
+}
+
+it("should match Err variant") {
+    let result: Result<i32, string> = Err("error");
+    let value = match result {
+        Ok(x) => x,
+        Err(_) => -1,
+    };
+    assert(value == -1);
+}
+
+it("should match and extract error message") {
+    let result: Result<i32, string> = Err("specific error");
+    let msg = match result {
+        Ok(_) => "success",
+        Err(e) => e,
+    };
+    assert(msg == "specific error");
+}
+
+// ============================================================================
+// PATTERN MATCHING WITH OPTION
+// ============================================================================
+
+it("should match Some variant") {
+    let opt: Option<i32> = Some(42);
+    let value = match opt {
+        Some(x) => x,
+        None => 0,
+    };
+    assert(value == 42);
+}
+
+it("should match None variant") {
+    let opt: Option<i32> = None;
+    let value = match opt {
+        Some(x) => x,
+        None => -1,
+    };
+    assert(value == -1);
+}
+
+// ============================================================================
+// IF LET WITH RESULT AND OPTION
+// ============================================================================
+
+it("should use if let with Some") {
+    let opt: Option<i32> = Some(42);
+    let mut found = false;
+    if let Some(x) = opt {
+        found = x == 42;
+    }
+    assert(found == true);
+}
+
+it("should not enter if let with None") {
+    let opt: Option<i32> = None;
+    let mut found = true;
+    if let Some(_) = opt {
+        found = false;
+    }
+    assert(found == true);
+}
+
+it("should use if let with Ok") {
+    let result: Result<i32, string> = Ok(42);
+    let mut found = false;
+    if let Ok(x) = result {
+        found = x == 42;
+    }
+    assert(found == true);
+}
+
+// ============================================================================
+// PRACTICAL ERROR HANDLING
+// ============================================================================
+
+it("should handle file read error") {
+    fn read_config(): Result<string, string> {
+        // Simulate file not found
+        return Err("file not found: config.json");
+    }
+    let result = read_config();
+    assert(result.is_err() == true);
+    assert(result.unwrap_err().contains("config.json") == true);
+}
+
+it("should handle parse error") {
+    fn parse_int(s: string): Result<i32, string> {
+        if (s == "42") {
+            return Ok(42);
+        }
+        return Err("invalid integer: " + s);
+    }
+    assert(parse_int("42").unwrap() == 42);
+    assert(parse_int("abc").is_err() == true);
+}
+
+it("should handle validation chain") {
+    fn validate_positive(x: i32): Result<i32, string> {
+        if (x <= 0) {
+            return Err("must be positive");
+        }
+        return Ok(x);
+    }
+    fn validate_under_100(x: i32): Result<i32, string> {
+        if (x >= 100) {
+            return Err("must be under 100");
+        }
+        return Ok(x);
+    }
+    fn validate(x: i32): Result<i32, string> {
+        return validate_positive(x).and_then(validate_under_100);
+    }
+    assert(validate(50).is_ok() == true);
+    assert(validate(-5).unwrap_err() == "must be positive");
+    assert(validate(150).unwrap_err() == "must be under 100");
+}
+
+// ============================================================================
+// COLLECTING RESULTS
+// ============================================================================
+
+it("should collect all Ok results") {
+    fn parse_all(strings: [string]): Result<[i32], string> {
+        let mut results: [i32] = [];
+        for (s in strings) {
+            if (s == "1") {
+                results.push(1);
+            } else if (s == "2") {
+                results.push(2);
+            } else {
+                return Err("invalid: " + s);
+            }
+        }
+        return Ok(results);
+    }
+    let result = parse_all(["1", "2", "1"]);
+    assert(result.is_ok() == true);
+    assert(result.unwrap().len() == 3);
+}
+
+it("should fail on first error when collecting") {
+    fn parse_all(strings: [string]): Result<[i32], string> {
+        let mut results: [i32] = [];
+        for (s in strings) {
+            if (s == "1" or s == "2") {
+                results.push(1);
+            } else {
+                return Err("invalid: " + s);
+            }
+        }
+        return Ok(results);
+    }
+    let result = parse_all(["1", "bad", "2"]);
+    assert(result.is_err() == true);
+    assert(result.unwrap_err().contains("bad") == true);
+}
+
+// ============================================================================
+// EXPECT WITH CUSTOM MESSAGE
+// ============================================================================
+
+it("should unwrap with expect on Ok") {
+    let result: Result<i32, string> = Ok(42);
+    let value = result.expect("should not fail");
+    assert(value == 42);
+}
+
+it("should unwrap with expect on Some") {
+    let opt: Option<i32> = Some(42);
+    let value = opt.expect("should have value");
+    assert(value == 42);
+}

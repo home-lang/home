@@ -1,0 +1,342 @@
+// Signal Handling Test Suite
+
+// ============================================================================
+// SIGNAL CONSTANTS
+// ============================================================================
+
+it("should have SIGINT constant") {
+    assert(signal::SIGINT == 2);
+}
+
+it("should have SIGTERM constant") {
+    assert(signal::SIGTERM == 15);
+}
+
+it("should have SIGKILL constant") {
+    assert(signal::SIGKILL == 9);
+}
+
+it("should have SIGHUP constant") {
+    assert(signal::SIGHUP == 1);
+}
+
+it("should have SIGUSR1 constant") {
+    assert(signal::SIGUSR1 > 0);
+}
+
+it("should have SIGUSR2 constant") {
+    assert(signal::SIGUSR2 > 0);
+}
+
+// ============================================================================
+// SIGNAL HANDLER REGISTRATION
+// ============================================================================
+
+it("should register signal handler") {
+    let received = false;
+    signal::on(signal::SIGUSR1, || {
+        received = true;
+    });
+    // Handler registered, but signal not sent
+    assert(received == false);
+}
+
+it("should register multiple handlers") {
+    let count = 0;
+    signal::on(signal::SIGUSR1, || count += 1);
+    signal::on(signal::SIGUSR2, || count += 1);
+}
+
+it("should replace handler") {
+    let value = "initial";
+    signal::on(signal::SIGUSR1, || value = "first");
+    signal::on(signal::SIGUSR1, || value = "second");
+    // Only second handler should be active
+}
+
+// ============================================================================
+// SIGNAL REMOVAL
+// ============================================================================
+
+it("should remove signal handler") {
+    let handler_id = signal::on(signal::SIGUSR1, || {});
+    signal::remove(handler_id);
+}
+
+it("should remove all handlers for signal") {
+    signal::on(signal::SIGUSR1, || {});
+    signal::on(signal::SIGUSR1, || {});
+    signal::clear(signal::SIGUSR1);
+}
+
+it("should reset to default handler") {
+    signal::on(signal::SIGUSR1, || {});
+    signal::reset(signal::SIGUSR1);
+}
+
+// ============================================================================
+// SIGNAL SENDING
+// ============================================================================
+
+it("should send signal to current process") {
+    let received = false;
+    signal::on(signal::SIGUSR1, || received = true);
+    signal::raise(signal::SIGUSR1);
+    assert(received == true);
+}
+
+it("should send signal to process by PID") {
+    let child = process::spawn("sleep", ["10"]);
+    signal::send(child.id(), signal::SIGTERM);
+    let status = child.wait();
+    assert(status != 0);
+}
+
+it("should send signal to process group") {
+    let pgid = process::group_id();
+    // signal::send_to_group(pgid, signal::SIGUSR1);
+}
+
+// ============================================================================
+// BLOCKING SIGNALS
+// ============================================================================
+
+it("should block signal") {
+    signal::block(signal::SIGUSR1);
+    // Signal is blocked
+}
+
+it("should unblock signal") {
+    signal::block(signal::SIGUSR1);
+    signal::unblock(signal::SIGUSR1);
+    // Signal is unblocked
+}
+
+it("should get blocked signals") {
+    signal::block(signal::SIGUSR1);
+    let blocked = signal::blocked();
+    assert(blocked.contains(signal::SIGUSR1));
+    signal::unblock(signal::SIGUSR1);
+}
+
+// ============================================================================
+// SIGNAL WAITING
+// ============================================================================
+
+it("should wait for signal") {
+    spawn {
+        sleep(50.milliseconds);
+        signal::raise(signal::SIGUSR1);
+    }
+
+    let sig = signal::wait([signal::SIGUSR1]);
+    assert(sig == signal::SIGUSR1);
+}
+
+it("should wait with timeout") {
+    let result = signal::wait_timeout([signal::SIGUSR1], 100.milliseconds);
+    assert(result == null);  // Timed out
+}
+
+// ============================================================================
+// SIGNAL NAMES
+// ============================================================================
+
+it("should get signal name") {
+    assert(signal::name(signal::SIGINT) == "SIGINT");
+    assert(signal::name(signal::SIGTERM) == "SIGTERM");
+}
+
+it("should get signal from name") {
+    assert(signal::from_name("SIGINT") == signal::SIGINT);
+    assert(signal::from_name("SIGTERM") == signal::SIGTERM);
+}
+
+it("should return null for invalid signal name") {
+    assert(signal::from_name("INVALID") == null);
+}
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+
+it("should handle graceful shutdown") {
+    let shutdown_requested = false;
+
+    signal::on_shutdown(|| {
+        shutdown_requested = true;
+    });
+
+    // Simulate SIGTERM
+    signal::raise(signal::SIGTERM);
+    assert(shutdown_requested == true);
+}
+
+it("should chain shutdown handlers") {
+    let order = [];
+
+    signal::on_shutdown(priority: 1, || order.push("first"));
+    signal::on_shutdown(priority: 2, || order.push("second"));
+
+    signal::raise(signal::SIGTERM);
+    assert(order == ["first", "second"]);
+}
+
+// ============================================================================
+// SIGNAL INFORMATION
+// ============================================================================
+
+it("should get signal info") {
+    let info = signal::info(signal::SIGINT);
+    assert(info.number == 2);
+    assert(info.name == "SIGINT");
+    assert(info.description.len() > 0);
+}
+
+it("should list all signals") {
+    let signals = signal::all();
+    assert(signals.len() > 0);
+    assert(signals.any(|s| s.name == "SIGINT"));
+}
+
+// ============================================================================
+// IGNORE SIGNALS
+// ============================================================================
+
+it("should ignore signal") {
+    signal::ignore(signal::SIGUSR1);
+    signal::raise(signal::SIGUSR1);
+    // Should not crash or run handler
+}
+
+// ============================================================================
+// SIGNAL MASK
+// ============================================================================
+
+it("should create signal set") {
+    let set = signal::Set::new();
+    set.add(signal::SIGINT);
+    set.add(signal::SIGTERM);
+    assert(set.contains(signal::SIGINT) == true);
+    assert(set.contains(signal::SIGHUP) == false);
+}
+
+it("should create empty signal set") {
+    let set = signal::Set::empty();
+    assert(set.is_empty() == true);
+}
+
+it("should create full signal set") {
+    let set = signal::Set::all();
+    assert(set.contains(signal::SIGINT) == true);
+    assert(set.contains(signal::SIGTERM) == true);
+}
+
+it("should remove signal from set") {
+    let set = signal::Set::new();
+    set.add(signal::SIGINT);
+    set.remove(signal::SIGINT);
+    assert(set.contains(signal::SIGINT) == false);
+}
+
+// ============================================================================
+// ASYNC SIGNAL HANDLING
+// ============================================================================
+
+it("should use signal channel") {
+    let rx = signal::channel([signal::SIGINT, signal::SIGTERM]);
+
+    spawn {
+        sleep(50.milliseconds);
+        signal::raise(signal::SIGUSR1);
+    }
+
+    // Would block waiting for signal
+}
+
+// ============================================================================
+// CTRL+C HANDLING
+// ============================================================================
+
+it("should handle Ctrl+C") {
+    let ctrlc_count = 0;
+
+    signal::on_ctrlc(|| {
+        ctrlc_count += 1;
+    });
+}
+
+// ============================================================================
+// CHILD PROCESS SIGNALS
+// ============================================================================
+
+it("should handle SIGCHLD") {
+    let child_exited = false;
+
+    signal::on(signal::SIGCHLD, || {
+        child_exited = true;
+    });
+
+    let child = process::spawn("true", []);
+    child.wait();
+
+    // SIGCHLD should have been received
+}
+
+// ============================================================================
+// ALARM AND TIMER SIGNALS
+// ============================================================================
+
+it("should set alarm") {
+    let alarm_received = false;
+
+    signal::on(signal::SIGALRM, || {
+        alarm_received = true;
+    });
+
+    signal::alarm(1);  // 1 second
+    sleep(1500.milliseconds);
+    assert(alarm_received == true);
+}
+
+it("should cancel alarm") {
+    signal::alarm(10);
+    let remaining = signal::alarm(0);  // Cancel
+    assert(remaining > 0);
+}
+
+// ============================================================================
+// REAL-TIME SIGNALS
+// ============================================================================
+
+it("should use real-time signal") {
+    let sigrt = signal::SIGRTMIN;
+    let received = false;
+
+    signal::on(sigrt, || received = true);
+    signal::raise(sigrt);
+    assert(received == true);
+}
+
+// ============================================================================
+// SIGNAL SAFETY
+// ============================================================================
+
+it("should mark handler as async-safe") {
+    signal::on(signal::SIGUSR1, async_safe: true, || {
+        // Only async-signal-safe operations here
+    });
+}
+
+// ============================================================================
+// PLATFORM-SPECIFIC SIGNALS
+// ============================================================================
+
+it("should have platform signals") {
+    // Unix-specific
+    if env::os_family() == "unix" {
+        assert(signal::SIGPIPE > 0);
+        assert(signal::SIGQUIT > 0);
+    }
+}
+

@@ -1,0 +1,371 @@
+// Network (TCP/UDP) Test Suite
+
+// ============================================================================
+// IP ADDRESS PARSING
+// ============================================================================
+
+it("should parse IPv4 address") {
+    let ip = net::IpAddr::parse("192.168.1.1");
+    assert(ip.is_ipv4() == true);
+    assert(ip.to_string() == "192.168.1.1");
+}
+
+it("should parse IPv6 address") {
+    let ip = net::IpAddr::parse("::1");
+    assert(ip.is_ipv6() == true);
+}
+
+it("should parse full IPv6 address") {
+    let ip = net::IpAddr::parse("2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+    assert(ip.is_ipv6() == true);
+}
+
+it("should detect loopback address") {
+    let ipv4 = net::IpAddr::parse("127.0.0.1");
+    let ipv6 = net::IpAddr::parse("::1");
+    assert(ipv4.is_loopback() == true);
+    assert(ipv6.is_loopback() == true);
+}
+
+it("should detect private address") {
+    let private = net::IpAddr::parse("192.168.1.1");
+    let public = net::IpAddr::parse("8.8.8.8");
+    assert(private.is_private() == true);
+    assert(public.is_private() == false);
+}
+
+// ============================================================================
+// SOCKET ADDRESS
+// ============================================================================
+
+it("should create socket address") {
+    let addr = net::SocketAddr::new("127.0.0.1", 8080);
+    assert(addr.ip().to_string() == "127.0.0.1");
+    assert(addr.port() == 8080);
+}
+
+it("should parse socket address string") {
+    let addr = net::SocketAddr::parse("192.168.1.1:3000");
+    assert(addr.port() == 3000);
+}
+
+it("should parse IPv6 socket address") {
+    let addr = net::SocketAddr::parse("[::1]:8080");
+    assert(addr.ip().is_ipv6() == true);
+    assert(addr.port() == 8080);
+}
+
+// ============================================================================
+// TCP LISTENER
+// ============================================================================
+
+it("should create TCP listener") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    assert(listener.local_addr().port() > 0);
+    listener.close();
+}
+
+it("should bind to any available port") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let port = listener.local_addr().port();
+    assert(port > 0);
+    listener.close();
+}
+
+it("should accept connections") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    // Connect in background
+    spawn {
+        let client = net::TcpStream::connect(addr);
+        client.close();
+    }
+
+    let conn = listener.accept();
+    assert(conn != null);
+    conn.close();
+    listener.close();
+}
+
+// ============================================================================
+// TCP STREAM
+// ============================================================================
+
+it("should connect to TCP server") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        let conn = listener.accept();
+        conn.close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    assert(client.is_connected() == true);
+    client.close();
+    listener.close();
+}
+
+it("should send and receive data") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        let conn = listener.accept();
+        let data = conn.read(1024);
+        conn.write(data);  // Echo back
+        conn.close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.write("hello");
+    let response = client.read(1024);
+    assert(response == "hello");
+    client.close();
+    listener.close();
+}
+
+it("should set read timeout") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        let conn = listener.accept();
+        sleep(1.second);
+        conn.close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.set_read_timeout(100.milliseconds);
+    let result = client.read_safe(1024);
+    assert(result.is_err() == true);
+    client.close();
+    listener.close();
+}
+
+it("should set write timeout") {
+    let client = net::TcpStream::new();
+    client.set_write_timeout(5.seconds);
+    assert(client.write_timeout() == 5.seconds);
+}
+
+it("should set TCP_NODELAY") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        listener.accept().close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.set_nodelay(true);
+    assert(client.nodelay() == true);
+    client.close();
+    listener.close();
+}
+
+// ============================================================================
+// UDP SOCKET
+// ============================================================================
+
+it("should create UDP socket") {
+    let socket = net::UdpSocket::bind("127.0.0.1:0");
+    assert(socket.local_addr().port() > 0);
+    socket.close();
+}
+
+it("should send UDP datagram") {
+    let receiver = net::UdpSocket::bind("127.0.0.1:0");
+    let recv_addr = receiver.local_addr();
+
+    let sender = net::UdpSocket::bind("127.0.0.1:0");
+    sender.send_to("hello", recv_addr);
+
+    let (data, from) = receiver.recv_from(1024);
+    assert(data == "hello");
+
+    sender.close();
+    receiver.close();
+}
+
+it("should connect UDP socket") {
+    let socket1 = net::UdpSocket::bind("127.0.0.1:0");
+    let socket2 = net::UdpSocket::bind("127.0.0.1:0");
+
+    socket1.connect(socket2.local_addr());
+    socket1.send("hello");
+
+    let (data, _) = socket2.recv_from(1024);
+    assert(data == "hello");
+
+    socket1.close();
+    socket2.close();
+}
+
+it("should set UDP broadcast") {
+    let socket = net::UdpSocket::bind("127.0.0.1:0");
+    socket.set_broadcast(true);
+    assert(socket.broadcast() == true);
+    socket.close();
+}
+
+// ============================================================================
+// DNS RESOLUTION
+// ============================================================================
+
+it("should resolve hostname") {
+    let addrs = net::lookup_host("localhost");
+    assert(addrs.len() > 0);
+}
+
+it("should resolve to IP addresses") {
+    let addrs = net::lookup_host("localhost");
+    for addr in addrs {
+        assert(addr.is_ipv4() or addr.is_ipv6());
+    }
+}
+
+it("should fail for invalid hostname") {
+    let result = net::lookup_host_safe("invalid.hostname.that.does.not.exist.example");
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// SOCKET OPTIONS
+// ============================================================================
+
+it("should set SO_REUSEADDR") {
+    let listener = net::TcpListener::new();
+    listener.set_reuseaddr(true);
+    assert(listener.reuseaddr() == true);
+}
+
+it("should set SO_KEEPALIVE") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        listener.accept().close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.set_keepalive(true);
+    assert(client.keepalive() == true);
+    client.close();
+    listener.close();
+}
+
+it("should set receive buffer size") {
+    let socket = net::UdpSocket::bind("127.0.0.1:0");
+    socket.set_recv_buffer_size(65536);
+    assert(socket.recv_buffer_size() >= 65536);
+    socket.close();
+}
+
+it("should set send buffer size") {
+    let socket = net::UdpSocket::bind("127.0.0.1:0");
+    socket.set_send_buffer_size(65536);
+    assert(socket.send_buffer_size() >= 65536);
+    socket.close();
+}
+
+// ============================================================================
+// MULTICAST
+// ============================================================================
+
+it("should join multicast group") {
+    let socket = net::UdpSocket::bind("0.0.0.0:0");
+    let multicast_addr = net::IpAddr::parse("224.0.0.1");
+    let result = socket.join_multicast(multicast_addr);
+    assert(result.is_ok() == true);
+    socket.close();
+}
+
+it("should leave multicast group") {
+    let socket = net::UdpSocket::bind("0.0.0.0:0");
+    let multicast_addr = net::IpAddr::parse("224.0.0.1");
+    socket.join_multicast(multicast_addr);
+    let result = socket.leave_multicast(multicast_addr);
+    assert(result.is_ok() == true);
+    socket.close();
+}
+
+it("should set multicast TTL") {
+    let socket = net::UdpSocket::bind("0.0.0.0:0");
+    socket.set_multicast_ttl(5);
+    assert(socket.multicast_ttl() == 5);
+    socket.close();
+}
+
+// ============================================================================
+// NON-BLOCKING I/O
+// ============================================================================
+
+it("should set non-blocking mode") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    listener.set_nonblocking(true);
+    let result = listener.accept_nonblocking();
+    assert(result.is_err() == true);  // No pending connections
+    listener.close();
+}
+
+// ============================================================================
+// SHUTDOWN
+// ============================================================================
+
+it("should shutdown read side") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        let conn = listener.accept();
+        conn.write("hello");
+        conn.close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.shutdown(net::Shutdown::Read);
+    // Further reads should fail or return empty
+    client.close();
+    listener.close();
+}
+
+it("should shutdown write side") {
+    let listener = net::TcpListener::bind("127.0.0.1:0");
+    let addr = listener.local_addr();
+
+    spawn {
+        listener.accept().close();
+    }
+
+    let client = net::TcpStream::connect(addr);
+    client.shutdown(net::Shutdown::Write);
+    // Further writes should fail
+    client.close();
+    listener.close();
+}
+
+// ============================================================================
+// NETWORK INTERFACES
+// ============================================================================
+
+it("should list network interfaces") {
+    let interfaces = net::interfaces();
+    assert(interfaces.len() > 0);
+}
+
+it("should get interface addresses") {
+    let interfaces = net::interfaces();
+    for iface in interfaces {
+        // Each interface should have a name
+        assert(iface.name.len() > 0);
+    }
+}
+
+it("should detect loopback interface") {
+    let interfaces = net::interfaces();
+    let has_loopback = interfaces.any(|i| i.is_loopback());
+    assert(has_loopback == true);
+}
+
