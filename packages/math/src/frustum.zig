@@ -104,10 +104,10 @@ pub fn AABB(comptime T: type) type {
         }
 
         /// Create AABB from center and half-extents
-        pub fn fromCenterExtents(center: Vec3, extents: Vec3) Self {
+        pub fn fromCenterExtents(center_pt: Vec3, half_extents: Vec3) Self {
             return .{
-                .min = center.sub(extents),
-                .max = center.add(extents),
+                .min = center_pt.sub(half_extents),
+                .max = center_pt.add(half_extents),
             };
         }
 
@@ -277,14 +277,14 @@ pub fn Frustum(comptime T: type) type {
             var result: Self = undefined;
 
             // Extract rows from matrix (column-major storage)
-            const row0 = Vec3.init(vp.m[0][0], vp.m[1][0], vp.m[2][0]);
-            const row1 = Vec3.init(vp.m[0][1], vp.m[1][1], vp.m[2][1]);
-            const row2 = Vec3.init(vp.m[0][2], vp.m[1][2], vp.m[2][2]);
-            const row3 = Vec3.init(vp.m[0][3], vp.m[1][3], vp.m[2][3]);
-            const w0 = vp.m[3][0];
-            const w1 = vp.m[3][1];
-            const w2 = vp.m[3][2];
-            const w3 = vp.m[3][3];
+            const row0 = Vec3.init(vp.get(0, 0), vp.get(0, 1), vp.get(0, 2));
+            const row1 = Vec3.init(vp.get(1, 0), vp.get(1, 1), vp.get(1, 2));
+            const row2 = Vec3.init(vp.get(2, 0), vp.get(2, 1), vp.get(2, 2));
+            const row3 = Vec3.init(vp.get(3, 0), vp.get(3, 1), vp.get(3, 2));
+            const w0 = vp.get(0, 3);
+            const w1 = vp.get(1, 3);
+            const w2 = vp.get(2, 3);
+            const w3 = vp.get(3, 3);
 
             // Left plane: row3 + row0
             result.planes[LEFT] = PlaneT.init(

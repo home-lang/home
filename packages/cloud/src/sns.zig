@@ -159,7 +159,7 @@ pub const Client = struct {
     }
 
     /// List all topics
-    pub fn listTopics(self: *Self) ![][]const u8 {
+    pub fn listTopics(_: *Self) ![][]const u8 {
         return &[_][]const u8{};
     }
 
@@ -196,8 +196,7 @@ pub const Client = struct {
     }
 
     /// List subscriptions for a topic
-    pub fn listSubscriptionsByTopic(self: *Self, topic_arn: []const u8) ![]Subscription {
-        _ = topic_arn;
+    pub fn listSubscriptionsByTopic(_: *Self, _: []const u8) ![]Subscription {
         return &[_]Subscription{};
     }
 

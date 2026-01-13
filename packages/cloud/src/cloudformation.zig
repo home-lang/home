@@ -693,7 +693,7 @@ pub const Fn = struct {
 
     /// Get an attribute from a resource
     pub fn getAtt(resource: []const u8, attribute: []const u8) CfValue {
-        return CfValue.getAtt(resource, attribute);
+        return CfValue.fromGetAtt(resource, attribute);
     }
 
     /// String substitution

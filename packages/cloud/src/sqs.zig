@@ -121,13 +121,10 @@ pub const Client = struct {
     };
 
     pub fn receiveMessageWithOptions(
-        self: *Self,
-        queue_url: []const u8,
-        options: ReceiveMessageOptions,
+        _: *Self,
+        _: []const u8,
+        _: ReceiveMessageOptions,
     ) ![]Message {
-        _ = options;
-        _ = queue_url;
-
         // In a real implementation, we'd make the HTTP request and parse XML response
         // For now, return empty array
         return &[_]Message{};

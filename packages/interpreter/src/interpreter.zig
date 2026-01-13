@@ -556,6 +556,26 @@ pub const Interpreter = struct {
                 // Type aliases are type-level constructs
                 // No runtime action needed
             },
+            .ImportDecl => |import_decl| {
+                // Import a module - simplified placeholder implementation
+                // Full module support would require infrastructure changes
+                const module_name = import_decl.path[import_decl.path.len - 1];
+
+                // Define the module as a placeholder struct
+                const fields = std.StringHashMap(Value).init(self.arena.allocator());
+
+                if (import_decl.alias) |alias| {
+                    try env.define(alias, Value{ .Struct = .{
+                        .type_name = alias,
+                        .fields = fields,
+                    } });
+                } else {
+                    try env.define(module_name, Value{ .Struct = .{
+                        .type_name = module_name,
+                        .fields = fields,
+                    } });
+                }
+            },
             .TraitDecl => |trait_decl| {
                 // Store trait definition for default method lookup
                 self.trait_defs.put(trait_decl.name, trait_decl) catch {
@@ -778,6 +798,62 @@ pub const Interpreter = struct {
                 // Add the deferred expression to the current scope's defer list
                 // It will be executed when the scope exits (in reverse order)
                 try env.addDefer(defer_stmt.body);
+            },
+            .IfLetStmt => |if_let| {
+                // Evaluate the expression being matched
+                const value = try self.evaluateExpression(if_let.value, env);
+
+                // Check if the pattern matches
+                var matches = false;
+                var bound_value: ?Value = null;
+
+                // Handle patterns like "Option.Some" or just "Some"
+                const pattern = if_let.pattern;
+
+                // Enum variants are stored as Struct values with type_name = variant name
+                if (value == .Struct) {
+                    const struct_val = value.Struct;
+                    // Pattern can be "Option.Some" or just "Some"
+                    // Check if pattern ends with the variant name or matches exactly
+                    const variant_name = struct_val.type_name;
+                    if (std.mem.eql(u8, pattern, variant_name) or
+                        std.mem.endsWith(u8, pattern, variant_name))
+                    {
+                        matches = true;
+                        // Get the payload from the "value" or "0" field
+                        if (struct_val.fields.get("value")) |payload| {
+                            bound_value = payload;
+                        } else if (struct_val.fields.get("0")) |payload| {
+                            bound_value = payload;
+                        }
+                    }
+                }
+
+                if (matches) {
+                    // Create new scope for the then block
+                    var then_env = Environment.init(self.arena.allocator(), env);
+                    defer then_env.deinit();
+
+                    // Bind the extracted value if there's a binding
+                    if (if_let.binding) |binding_name| {
+                        if (bound_value) |bv| {
+                            try then_env.define(binding_name, bv);
+                        }
+                    }
+
+                    // Execute the then block
+                    for (if_let.then_block.statements) |then_stmt| {
+                        try self.executeStatement(then_stmt, &then_env);
+                    }
+                } else if (if_let.else_block) |else_block| {
+                    // Execute the else block
+                    var else_env = Environment.init(self.arena.allocator(), env);
+                    defer else_env.deinit();
+
+                    for (else_block.statements) |else_stmt| {
+                        try self.executeStatement(else_stmt, &else_env);
+                    }
+                }
             },
             .UnionDecl => |_| {
                 // Union declarations are type-level constructs
@@ -1331,18 +1407,22 @@ pub const Interpreter = struct {
 
                 // Try each arm in order
                 for (match_expr.arms) |arm| {
-                    // Check if pattern matches
-                    if (try self.matchPattern(arm.pattern, match_value, env)) {
-                        // Check guard if present
+                    // Create a new scope for this arm's pattern bindings
+                    var arm_env = Environment.init(self.arena.allocator(), env);
+                    defer arm_env.deinit();
+
+                    // Check if pattern matches (this will bind variables in arm_env)
+                    if (try self.matchPattern(arm.pattern, match_value, &arm_env)) {
+                        // Check guard if present (using arm_env for bound variables)
                         if (arm.guard) |guard| {
-                            const guard_result = try self.evaluateExpression(guard, env);
+                            const guard_result = try self.evaluateExpression(guard, &arm_env);
                             if (!guard_result.isTrue()) {
                                 continue;
                             }
                         }
 
                         // Pattern matched and guard passed (if any), evaluate body
-                        return try self.evaluateExpression(arm.body, env);
+                        return try self.evaluateExpression(arm.body, &arm_env);
                     }
                 }
 
@@ -6026,6 +6106,36 @@ pub const Interpreter = struct {
                     }
                 }
                 return false;
+            },
+            .StructLiteral => |struct_lit| {
+                // Struct pattern: Point { x, y }
+                // Check if value is a struct with matching type
+                if (value != .Struct) {
+                    return false;
+                }
+
+                // Check type name matches
+                if (!std.mem.eql(u8, value.Struct.type_name, struct_lit.type_name)) {
+                    return false;
+                }
+
+                // Match each field pattern against the struct's field values
+                for (struct_lit.fields) |field| {
+                    // Get the field value from the struct
+                    const field_value = value.Struct.fields.get(field.name) orelse {
+                        // Field doesn't exist in struct - pattern doesn't match
+                        return false;
+                    };
+
+                    // Match the field pattern against the field value
+                    // For shorthand (x instead of x: x), field.value is an Identifier
+                    // that should bind the value
+                    if (!try self.matchPattern(field.value, field_value, env)) {
+                        return false;
+                    }
+                }
+
+                return true;
             },
             else => {
                 // Unknown pattern type - try to evaluate and compare

@@ -2080,10 +2080,19 @@ pub const Parser = struct {
     }
 
     /// Parse an if-let statement: if let Some(x) = expr { ... }
+    /// Also supports qualified patterns: if let Option.Some(x) = expr { ... }
     fn ifLetStatement(self: *Parser, if_token: Token) !ast.Stmt {
-        // Parse pattern: Some(x), Ok(value), None, etc.
-        const pattern_token = try self.expect(.Identifier, "Expected pattern name after 'if let'");
-        const pattern = pattern_token.lexeme;
+        // Parse pattern: Some(x), Ok(value), None, Option.Some(x), etc.
+        const first_token = try self.expect(.Identifier, "Expected pattern name after 'if let'");
+        var pattern = first_token.lexeme;
+
+        // Handle qualified pattern like Option.Some or Result.Ok
+        if (self.match(&.{.Dot})) {
+            const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
+            // Concatenate the pattern: "Option.Some"
+            const full_pattern = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ pattern, variant_token.lexeme });
+            pattern = full_pattern;
+        }
 
         // Check for binding: Some(x) vs None
         var binding: ?[]const u8 = null;
@@ -4020,6 +4029,74 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 
+    /// Parse a pattern for match expressions - handles struct patterns specially
+    /// Struct pattern: Point { x, y } -> creates struct literal with field identifiers
+    fn parseMatchExprPattern(self: *Parser) !*ast.Expr {
+        // Check for identifier potentially followed by struct pattern
+        if (self.check(.Identifier)) {
+            const start_pos = self.current;
+            const name_token = self.advance();
+            const type_name = name_token.lexeme;
+
+            // Check for struct pattern: Name { field1, field2 }
+            if (self.match(&.{.LeftBrace})) {
+                // Parse struct pattern fields
+                var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                defer fields.deinit(self.allocator);
+
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    const field_token = try self.expect(.Identifier, "Expected field name");
+                    const field_name = field_token.lexeme;
+                    const field_loc = ast.SourceLocation.fromToken(field_token);
+
+                    // Check for explicit value: field: expr or shorthand: just field
+                    var is_shorthand = false;
+                    const field_value = if (self.match(&.{.Colon}))
+                        try self.expression()
+                    else blk: {
+                        // Shorthand: field name is used as identifier expression
+                        is_shorthand = true;
+                        const id_expr = try self.allocator.create(ast.Expr);
+                        id_expr.* = ast.Expr{
+                            .Identifier = ast.Identifier.init(field_name, field_loc),
+                        };
+                        break :blk id_expr;
+                    };
+
+                    try fields.append(self.allocator, ast.FieldInit.init(
+                        field_name,
+                        field_value,
+                        is_shorthand,
+                        field_loc,
+                    ));
+
+                    if (!self.match(&.{.Comma})) break;
+                }
+
+                _ = try self.expect(.RightBrace, "Expected '}' after struct pattern");
+
+                // Create a struct literal expression for this pattern
+                const struct_lit = ast.StructLiteralExpr.init(
+                    type_name,
+                    try fields.toOwnedSlice(self.allocator),
+                    false, // not anonymous
+                    ast.SourceLocation.fromToken(name_token),
+                );
+                const result = try self.allocator.create(ast.Expr);
+                const struct_lit_ptr = try self.allocator.create(ast.StructLiteralExpr);
+                struct_lit_ptr.* = struct_lit;
+                result.* = ast.Expr{ .StructLiteral = struct_lit_ptr };
+                return result;
+            }
+
+            // Not a struct pattern, backtrack and use normal expression
+            self.current = start_pos;
+        }
+
+        // Fall back to normal expression parsing
+        return try self.expression();
+    }
+
     /// Parse a match expression: match value { pattern => expr, ... }
     fn matchExpr(self: *Parser) !*ast.Expr {
         const match_token = self.previous();
@@ -4033,8 +4110,8 @@ pub const Parser = struct {
         defer arms.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
-            // Parse pattern
-            const pattern = try self.expression();
+            // Parse pattern - use special pattern parser that handles struct patterns
+            const pattern = try self.parseMatchExprPattern();
 
             // Parse optional guard: if condition
             var guard: ?*ast.Expr = null;

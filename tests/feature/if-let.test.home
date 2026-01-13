@@ -1,0 +1,107 @@
+// If-Let Statement Test Suite
+// Tests if-let pattern matching for enums
+
+enum Option {
+    Some(i32),
+    None
+}
+
+enum Result {
+    Ok(i32),
+    Err(string)
+}
+
+// ============================================================================
+// BASIC IF-LET
+// ============================================================================
+
+it("should extract value with if-let") {
+    let opt: Option = Option.Some(42);
+    let mut result = 0;
+    if let Some(x) = opt {
+        result = x;
+    }
+    assert(result == 42);
+}
+
+it("should skip if-let when pattern doesn't match") {
+    let opt: Option = Option.None;
+    let mut result = 0;
+    if let Some(x) = opt {
+        result = x;
+    }
+    assert(result == 0);
+}
+
+it("should use if-let else branch") {
+    let opt: Option = Option.None;
+    let mut result = 0;
+    if let Some(x) = opt {
+        result = x;
+    } else {
+        result = -1;
+    }
+    assert(result == -1);
+}
+
+it("should use qualified pattern name") {
+    let opt: Option = Option.Some(100);
+    let mut result = 0;
+    if let Option.Some(x) = opt {
+        result = x;
+    }
+    assert(result == 100);
+}
+
+// ============================================================================
+// IF-LET WITH RESULT
+// ============================================================================
+
+it("should extract Ok value") {
+    let res: Result = Result.Ok(50);
+    let mut result = 0;
+    if let Ok(x) = res {
+        result = x;
+    }
+    assert(result == 50);
+}
+
+it("should handle Err with if-let else") {
+    let res: Result = Result.Err("error");
+    let mut result = 0;
+    if let Ok(x) = res {
+        result = x;
+    } else {
+        result = -100;
+    }
+    assert(result == -100);
+}
+
+// ============================================================================
+// IF-LET WITH EXPRESSIONS
+// ============================================================================
+
+it("should work with function return") {
+    fn get_option(): Option {
+        return Option.Some(25);
+    }
+    
+    let mut result = 0;
+    if let Some(x) = get_option() {
+        result = x;
+    }
+    assert(result == 25);
+}
+
+it("should work with nested if-let") {
+    let opt1: Option = Option.Some(10);
+    let opt2: Option = Option.Some(20);
+    let mut result = 0;
+    
+    if let Some(x) = opt1 {
+        if let Some(y) = opt2 {
+            result = x + y;
+        }
+    }
+    assert(result == 30);
+}

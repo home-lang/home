@@ -164,7 +164,7 @@ pub const Client = struct {
     }
 
     /// List all buckets
-    pub fn listBuckets(self: *Self) ![]Bucket {
+    pub fn listBuckets(_: *Self) ![]Bucket {
         return &[_]Bucket{};
     }
 
@@ -197,16 +197,11 @@ pub const Client = struct {
 
     pub fn putObjectWithOptions(
         self: *Self,
-        bucket: []const u8,
-        key: []const u8,
+        _: []const u8,
+        _: []const u8,
         body: []const u8,
-        options: PutObjectOptions,
+        _: PutObjectOptions,
     ) !PutObjectResult {
-        _ = options;
-        _ = body;
-        _ = key;
-        _ = bucket;
-
         // Calculate mock ETag
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(body, &hash, .{});

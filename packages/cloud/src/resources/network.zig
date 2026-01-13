@@ -297,8 +297,8 @@ pub const Network = struct {
         var props = std.StringHashMap(CfValue).init(allocator);
 
         try props.put("CidrBlock", CfValue.str(options.cidr_block));
-        try props.put("EnableDnsSupport", CfValue.boolean(options.enable_dns_support));
-        try props.put("EnableDnsHostnames", CfValue.boolean(options.enable_dns_hostnames));
+        try props.put("EnableDnsSupport", CfValue.fromBool(options.enable_dns_support));
+        try props.put("EnableDnsHostnames", CfValue.fromBool(options.enable_dns_hostnames));
         try props.put("InstanceTenancy", CfValue.str(options.instance_tenancy.toString()));
 
         // Tags
@@ -336,7 +336,7 @@ pub const Network = struct {
             try props.put("AvailabilityZone", CfValue.str(az));
         }
 
-        try props.put("MapPublicIpOnLaunch", CfValue.boolean(options.map_public_ip_on_launch));
+        try props.put("MapPublicIpOnLaunch", CfValue.fromBool(options.map_public_ip_on_launch));
 
         // Tags
         if (options.tags.len > 0) {
@@ -647,7 +647,7 @@ pub const Network = struct {
 
         // Health check
         if (options.health_check) |hc| {
-            try props.put("HealthCheckEnabled", CfValue.boolean(hc.enabled));
+            try props.put("HealthCheckEnabled", CfValue.fromBool(hc.enabled));
             try props.put("HealthyThresholdCount", CfValue.int(@intCast(hc.healthy_threshold)));
             try props.put("UnhealthyThresholdCount", CfValue.int(@intCast(hc.unhealthy_threshold)));
             try props.put("HealthCheckIntervalSeconds", CfValue.int(@intCast(hc.interval)));
@@ -750,14 +750,14 @@ pub const Network = struct {
         try props.put("ProtocolType", CfValue.str(options.protocol_type.toString()));
 
         if (options.disable_execute_api_endpoint) {
-            try props.put("DisableExecuteApiEndpoint", CfValue.boolean(true));
+            try props.put("DisableExecuteApiEndpoint", CfValue.fromBool(true));
         }
 
         // CORS
         if (options.cors_configuration) |cors| {
             var cors_obj = std.StringHashMap(CfValue).init(allocator);
 
-            try cors_obj.put("AllowCredentials", CfValue.boolean(cors.allow_credentials));
+            try cors_obj.put("AllowCredentials", CfValue.fromBool(cors.allow_credentials));
 
             const headers = try allocator.alloc(CfValue, cors.allow_headers.len);
             for (cors.allow_headers, 0..) |h, i| {

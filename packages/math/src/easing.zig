@@ -187,7 +187,7 @@ pub fn Easing(comptime T: type) type {
         pub fn easeInElastic(t: T) T {
             if (t == 0) return 0;
             if (t == 1) return 1;
-            const c4 = (2 * std.math.pi) / 3;
+            const c4 = (2.0 * std.math.pi) / 3.0;
             return -std.math.pow(T, 2, 10 * t - 10) * @sin((t * 10 - 10.75) * c4);
         }
 
@@ -195,7 +195,7 @@ pub fn Easing(comptime T: type) type {
         pub fn easeOutElastic(t: T) T {
             if (t == 0) return 0;
             if (t == 1) return 1;
-            const c4 = (2 * std.math.pi) / 3;
+            const c4 = (2.0 * std.math.pi) / 3.0;
             return std.math.pow(T, 2, -10 * t) * @sin((t * 10 - 0.75) * c4) + 1;
         }
 

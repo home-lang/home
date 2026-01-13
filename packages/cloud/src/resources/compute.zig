@@ -538,15 +538,15 @@ pub const Compute = struct {
         }
 
         if (options.ebs_optimized) {
-            try props.put("EbsOptimized", CfValue.boolean(true));
+            try props.put("EbsOptimized", CfValue.fromBool(true));
         }
 
         if (options.monitoring) {
-            try props.put("Monitoring", CfValue.boolean(true));
+            try props.put("Monitoring", CfValue.fromBool(true));
         }
 
         if (options.disable_api_termination) {
-            try props.put("DisableApiTermination", CfValue.boolean(true));
+            try props.put("DisableApiTermination", CfValue.fromBool(true));
         }
 
         // Root volume
@@ -557,7 +557,7 @@ pub const Compute = struct {
             var ebs = std.StringHashMap(CfValue).init(allocator);
             try ebs.put("VolumeSize", CfValue.int(@intCast(size)));
             try ebs.put("VolumeType", CfValue.str(options.root_volume_type.toString()));
-            try ebs.put("DeleteOnTermination", CfValue.boolean(true));
+            try ebs.put("DeleteOnTermination", CfValue.fromBool(true));
             try block_devices.put("Ebs", .{ .object = ebs });
 
             const devices = try allocator.alloc(CfValue, 1);
@@ -636,7 +636,7 @@ pub const Compute = struct {
                 var container_obj = std.StringHashMap(CfValue).init(allocator);
                 try container_obj.put("Name", CfValue.str(container.name));
                 try container_obj.put("Image", CfValue.str(container.image));
-                try container_obj.put("Essential", CfValue.boolean(container.essential));
+                try container_obj.put("Essential", CfValue.fromBool(container.essential));
 
                 if (container.cpu) |cpu| {
                     try container_obj.put("Cpu", CfValue.int(@intCast(cpu)));
@@ -721,7 +721,7 @@ pub const Compute = struct {
         try props.put("DesiredCount", CfValue.int(@intCast(options.desired_count)));
         try props.put("LaunchType", CfValue.str(options.launch_type.toString()));
         try props.put("PlatformVersion", CfValue.str(options.platform_version));
-        try props.put("EnableECSManagedTags", CfValue.boolean(options.enable_ecs_managed_tags));
+        try props.put("EnableECSManagedTags", CfValue.fromBool(options.enable_ecs_managed_tags));
         try props.put("PropagateTags", CfValue.str(options.propagate_tags.toString()));
 
         // Network configuration

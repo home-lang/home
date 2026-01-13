@@ -122,10 +122,10 @@ pub const Storage = struct {
         // Public access block
         if (options.block_public_access and !options.public) {
             var public_access = std.StringHashMap(CfValue).init(allocator);
-            try public_access.put("BlockPublicAcls", CfValue.boolean(true));
-            try public_access.put("BlockPublicPolicy", CfValue.boolean(true));
-            try public_access.put("IgnorePublicAcls", CfValue.boolean(true));
-            try public_access.put("RestrictPublicBuckets", CfValue.boolean(true));
+            try public_access.put("BlockPublicAcls", CfValue.fromBool(true));
+            try public_access.put("BlockPublicPolicy", CfValue.fromBool(true));
+            try public_access.put("IgnorePublicAcls", CfValue.fromBool(true));
+            try public_access.put("RestrictPublicBuckets", CfValue.fromBool(true));
             try props.put("PublicAccessBlockConfiguration", .{ .object = public_access });
         }
 

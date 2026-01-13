@@ -191,6 +191,7 @@ pub const Value = union(enum) {
                     try writer.writeAll("<pending future>");
                 }
             },
+            .EnumType => |e| try writer.print("<enum {s}>", .{e.name}),
             .Map => |m| {
                 try writer.writeAll("{");
                 var iter = m.entries.iterator();

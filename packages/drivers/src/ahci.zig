@@ -309,7 +309,7 @@ pub const AhciPort = struct {
         self.port_regs.sata_control = sctl & ~0xF; // DET = 0 (No action)
 
         // Wait for device to re-establish link
-        delay = 0;
+        var delay: u32 = 0;
         while (delay < 100000) : (delay += 1) {
             const ssts = self.port_regs.sata_status;
             if ((ssts & HbaPort.SSTS_DET_MASK) == HbaPort.SSTS_DET_PRESENT) {
@@ -745,6 +745,22 @@ pub fn createBlockDevice(allocator: std.mem.Allocator, port: *AhciPort) !*block.
 
     device.driver_data = port;
     return device;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Spin delay using pause instruction (approximate microseconds)
+fn spinDelay(microseconds: u32) void {
+    // Each pause instruction takes approximately 10-50 cycles
+    // At ~3GHz, that's roughly 10-50 nanoseconds per pause
+    // We aim for ~10 pauses per microsecond as a rough approximation
+    const iterations = microseconds * 10;
+    var i: u32 = 0;
+    while (i < iterations) : (i += 1) {
+        asm volatile ("pause");
+    }
 }
 
 // ============================================================================

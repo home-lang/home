@@ -133,15 +133,11 @@ pub const Client = struct {
 
     /// Send bulk templated emails
     pub fn sendBulkTemplatedEmail(
-        self: *Self,
-        source: []const u8,
-        template_name: []const u8,
-        destinations: []const struct { destination: Destination, replacement_data: []const u8 },
+        _: *Self,
+        _: []const u8,
+        _: []const u8,
+        _: []const struct { destination: Destination, replacement_data: []const u8 },
     ) ![]SendEmailResult {
-        _ = destinations;
-        _ = template_name;
-        _ = source;
-
         return &[_]SendEmailResult{};
     }
 
@@ -158,7 +154,7 @@ pub const Client = struct {
     }
 
     /// List verified identities
-    pub fn listIdentities(self: *Self) ![][]const u8 {
+    pub fn listIdentities(_: *Self) ![][]const u8 {
         return &[_][]const u8{};
     }
 

@@ -142,7 +142,7 @@ pub const Presets = struct {
             var dist_props = std.StringHashMap(CfValue).init(allocator);
             var dist_config = std.StringHashMap(CfValue).init(allocator);
 
-            try dist_config.put("Enabled", CfValue.boolean(true));
+            try dist_config.put("Enabled", CfValue.fromBool(true));
             try dist_config.put("DefaultRootObject", CfValue.str(options.index_document));
             try dist_config.put("HttpVersion", CfValue.str("http2"));
             try dist_config.put("PriceClass", CfValue.str("PriceClass_100"));
@@ -369,7 +369,7 @@ pub const Presets = struct {
         var stage_props = std.StringHashMap(CfValue).init(allocator);
         try stage_props.put("ApiId", Fn.ref(api_id));
         try stage_props.put("StageName", CfValue.str("$default"));
-        try stage_props.put("AutoDeploy", CfValue.boolean(true));
+        try stage_props.put("AutoDeploy", CfValue.fromBool(true));
 
         try template.addResource(stage_id, .{
             .type = "AWS::ApiGatewayV2::Stage",

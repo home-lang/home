@@ -314,8 +314,9 @@ pub fn Quat(comptime T: type) type {
 
             // Pitch (y-axis rotation)
             const sinp = 2.0 * (self.w * self.y - self.z * self.x);
+            const half_pi: T = std.math.pi / 2.0;
             const pitch = if (@abs(sinp) >= 1.0)
-                std.math.copysign(std.math.pi / 2.0, sinp)
+                std.math.copysign(half_pi, sinp)
             else
                 std.math.asin(sinp);
 

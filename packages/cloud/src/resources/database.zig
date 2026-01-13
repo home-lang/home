@@ -325,8 +325,8 @@ pub const Database = struct {
         const port = options.port orelse options.engine.defaultPort();
         try props.put("Port", CfValue.int(@intCast(port)));
 
-        try props.put("MultiAZ", CfValue.boolean(options.multi_az));
-        try props.put("PubliclyAccessible", CfValue.boolean(options.publicly_accessible));
+        try props.put("MultiAZ", CfValue.fromBool(options.multi_az));
+        try props.put("PubliclyAccessible", CfValue.fromBool(options.publicly_accessible));
 
         // Security groups
         if (options.vpc_security_group_refs.len > 0) {
@@ -360,16 +360,16 @@ pub const Database = struct {
             try props.put("PreferredMaintenanceWindow", CfValue.str(window));
         }
 
-        try props.put("AutoMinorVersionUpgrade", CfValue.boolean(options.auto_minor_version_upgrade));
-        try props.put("DeletionProtection", CfValue.boolean(options.deletion_protection));
-        try props.put("StorageEncrypted", CfValue.boolean(options.storage_encrypted));
+        try props.put("AutoMinorVersionUpgrade", CfValue.fromBool(options.auto_minor_version_upgrade));
+        try props.put("DeletionProtection", CfValue.fromBool(options.deletion_protection));
+        try props.put("StorageEncrypted", CfValue.fromBool(options.storage_encrypted));
 
         if (options.kms_key_id) |kms| {
             try props.put("KmsKeyId", CfValue.str(kms));
         }
 
         if (options.performance_insights_enabled) {
-            try props.put("EnablePerformanceInsights", CfValue.boolean(true));
+            try props.put("EnablePerformanceInsights", CfValue.fromBool(true));
         }
 
         if (options.monitoring_interval > 0) {
@@ -584,21 +584,21 @@ pub const Database = struct {
         if (options.ttl_attribute) |ttl| {
             var ttl_spec = std.StringHashMap(CfValue).init(allocator);
             try ttl_spec.put("AttributeName", CfValue.str(ttl));
-            try ttl_spec.put("Enabled", CfValue.boolean(true));
+            try ttl_spec.put("Enabled", CfValue.fromBool(true));
             try props.put("TimeToLiveSpecification", .{ .object = ttl_spec });
         }
 
         // Point in time recovery
         if (options.point_in_time_recovery) {
             var pitr = std.StringHashMap(CfValue).init(allocator);
-            try pitr.put("PointInTimeRecoveryEnabled", CfValue.boolean(true));
+            try pitr.put("PointInTimeRecoveryEnabled", CfValue.fromBool(true));
             try props.put("PointInTimeRecoverySpecification", .{ .object = pitr });
         }
 
         // Encryption
         if (options.encryption != .AWS_OWNED) {
             var sse = std.StringHashMap(CfValue).init(allocator);
-            try sse.put("SSEEnabled", CfValue.boolean(true));
+            try sse.put("SSEEnabled", CfValue.fromBool(true));
             try sse.put("SSEType", CfValue.str(options.encryption.toString()));
             if (options.kms_key_arn) |kms| {
                 try sse.put("KMSMasterKeyId", CfValue.str(kms));

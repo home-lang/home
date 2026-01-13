@@ -96,12 +96,12 @@ pub fn Transform(comptime T: type) type {
 
         /// Transform a vector (applies rotation and scale, no translation)
         pub fn transformVector(self: Self, vec: Vec3) Vec3 {
-            var result = Vec3.init(
+            const scaled = Vec3.init(
                 vec.x * self.scale.x,
                 vec.y * self.scale.y,
                 vec.z * self.scale.z,
             );
-            return self.rotation.rotateVector(result);
+            return self.rotation.rotateVector(scaled);
         }
 
         /// Inverse transform a point from world to local space

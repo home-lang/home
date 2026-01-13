@@ -184,13 +184,12 @@ pub const Client = struct {
     }
 
     /// List all tables
-    pub fn listTables(self: *Self) ![][]const u8 {
+    pub fn listTables(_: *Self) ![][]const u8 {
         return &[_][]const u8{};
     }
 
     /// Describe a table
     pub fn describeTable(self: *Self, table_name: []const u8) !TableDescription {
-        _ = table_name;
         return TableDescription{
             .table_name = try self.allocator.dupe(u8, table_name),
             .table_status = .ACTIVE,
@@ -341,11 +340,8 @@ pub const Client = struct {
     /// Batch get items
     pub fn batchGetItem(
         self: *Self,
-        request_items: std.StringHashMap(BatchGetRequest),
+        _: std.StringHashMap(BatchGetRequest),
     ) !std.StringHashMap([]Item) {
-        _ = self;
-        _ = request_items;
-
         return std.StringHashMap([]Item).init(self.allocator);
     }
 
