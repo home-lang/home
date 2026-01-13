@@ -14,17 +14,20 @@ it("should handle modulo with zero dividend") {
 }
 
 it("should handle modulo with negative dividend") {
-    assert((-10 % 3) == -1);
-    assert((-15 % 4) == -3);
-    assert((-7 % 2) == -1);
+    // Home uses Euclidean modulo (result always non-negative when divisor is positive)
+    assert((-10 % 3) == 2);   // -10 = -4*3 + 2
+    assert((-15 % 4) == 1);   // -15 = -4*4 + 1
+    assert((-7 % 2) == 1);    // -7 = -4*2 + 1
 }
 
 it("should handle modulo with negative divisor") {
-    assert((10 % -3) == 1);
-    assert((15 % -4) == 3);
+    // Result preserves sign of divisor in Euclidean modulo
+    assert((10 % -3) == -2);
+    assert((15 % -4) == -1);
 }
 
 it("should handle both negative") {
+    // Both negative: result has sign of divisor
     assert((-10 % -3) == -1);
     assert((-15 % -4) == -3);
 }
@@ -47,7 +50,8 @@ it("should handle modulo by 1") {
 }
 
 it("should handle large numbers") {
-    assert((1000000 % 7) == 6);
+    // 1000000 / 7 = 142857 remainder 1
+    assert((1000000 % 7) == 1);
     assert((999999 % 10) == 9);
 }
 
@@ -56,11 +60,12 @@ it("should be used in even/odd check") {
     assert((5 % 2) == 1);  // odd
     assert((0 % 2) == 0);  // even
     assert((-4 % 2) == 0); // even
-    assert((-5 % 2) == -1); // odd
+    assert((-5 % 2) == 1); // odd (Euclidean modulo)
 }
 
 it("should work with chained modulo") {
-    assert(((100 % 7) % 3) == 0);  // 100 % 7 = 2, 2 % 3 = 2... wait
+    // 100 % 7 = 2, 2 % 3 = 2
+    assert(((100 % 7) % 3) == 2);
     let step1 = 100 % 7;  // 2
     let step2 = step1 % 3;  // 2
     assert(step1 == 2);

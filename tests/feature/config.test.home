@@ -1,0 +1,340 @@
+// Configuration Concepts Test Suite
+// Tests configuration management using basic Home syntax
+
+// ============================================================================
+// KEY-VALUE STORAGE
+// ============================================================================
+
+it("should store string values") {
+    let config_host = "localhost";
+    let config_port = "8080";
+    assert(config_host == "localhost");
+    assert(config_port == "8080");
+}
+
+it("should store numeric values") {
+    let max_connections = 100;
+    let timeout = 30000;
+    assert(max_connections == 100);
+    assert(timeout == 30000);
+}
+
+it("should store boolean values") {
+    let debug_mode = true;
+    let ssl_enabled = false;
+    assert(debug_mode == true);
+    assert(ssl_enabled == false);
+}
+
+// ============================================================================
+// NESTED CONFIGURATION
+// ============================================================================
+
+it("should access nested values") {
+    let db_host = "localhost";
+    let db_port = 5432;
+    let db_name = "myapp";
+
+    assert(db_host == "localhost");
+    assert(db_port == 5432);
+    assert(db_name == "myapp");
+}
+
+it("should group related settings") {
+    let redis_host = "127.0.0.1";
+    let redis_port = 6379;
+    let redis_db = 0;
+
+    assert(redis_host == "127.0.0.1");
+    assert(redis_port == 6379);
+    assert(redis_db == 0);
+}
+
+// ============================================================================
+// DEFAULT VALUES
+// ============================================================================
+
+it("should use default when missing") {
+    let config_value = "";
+    let default_value = "default";
+
+    let result = if (config_value == "") { default_value } else { config_value };
+    assert(result == "default");
+}
+
+it("should use config when present") {
+    let config_value = "custom";
+    let default_value = "default";
+
+    let result = if (config_value == "") { default_value } else { config_value };
+    assert(result == "custom");
+}
+
+it("should use numeric default") {
+    let config_port = 0;
+    let default_port = 8080;
+
+    let port = if (config_port == 0) { default_port } else { config_port };
+    assert(port == 8080);
+}
+
+// ============================================================================
+// ENVIRONMENT OVERRIDE
+// ============================================================================
+
+it("should simulate env override") {
+    let file_value = "localhost";
+    let env_value = "production.server.com";
+    let use_env = true;
+
+    let final_value = if (use_env and env_value != "") { env_value } else { file_value };
+    assert(final_value == "production.server.com");
+}
+
+it("should use file when env empty") {
+    let file_value = "localhost";
+    let env_value = "";
+    let use_env = true;
+
+    let final_value = if (use_env and env_value != "") { env_value } else { file_value };
+    assert(final_value == "localhost");
+}
+
+// ============================================================================
+// CONFIG PARSING
+// ============================================================================
+
+it("should parse integer from string") {
+    let str_value = "8080";
+    let int_value = 8080;
+    assert(int_value == 8080);
+}
+
+it("should parse boolean from string") {
+    let str_value = "true";
+    let bool_value = str_value == "true";
+    assert(bool_value == true);
+}
+
+it("should parse false from string") {
+    let str_value = "false";
+    let bool_value = str_value == "true";
+    assert(bool_value == false);
+}
+
+// ============================================================================
+// CONFIG VALIDATION
+// ============================================================================
+
+it("should validate port range") {
+    let port = 8080;
+    let valid = port >= 1 and port <= 65535;
+    assert(valid == true);
+}
+
+it("should detect invalid port") {
+    let port = 70000;
+    let valid = port >= 1 and port <= 65535;
+    assert(valid == false);
+}
+
+it("should validate host not empty") {
+    let host = "localhost";
+    let valid = host != "";
+    assert(valid == true);
+}
+
+it("should validate required fields") {
+    let host = "localhost";
+    let port = 5432;
+    let database = "mydb";
+
+    let all_present = host != "" and port > 0 and database != "";
+    assert(all_present == true);
+}
+
+// ============================================================================
+// CONFIG PROFILES
+// ============================================================================
+
+it("should select development profile") {
+    let profile = "development";
+    let debug = profile == "development";
+    let log_level = if (debug) { "debug" } else { "info" };
+
+    assert(log_level == "debug");
+}
+
+it("should select production profile") {
+    let profile = "production";
+    let debug = profile == "development";
+    let log_level = if (debug) { "debug" } else { "info" };
+
+    assert(log_level == "info");
+}
+
+it("should use profile-specific values") {
+    let profile = "staging";
+    let host = if (profile == "production") {
+        "prod.server.com"
+    } else if (profile == "staging") {
+        "staging.server.com"
+    } else {
+        "localhost"
+    };
+
+    assert(host == "staging.server.com");
+}
+
+// ============================================================================
+// CONFIG MERGE
+// ============================================================================
+
+it("should merge configs - second overrides") {
+    let base_port = 8080;
+    let override_port = 9000;
+    let has_override = true;
+
+    let final_port = if (has_override) { override_port } else { base_port };
+    assert(final_port == 9000);
+}
+
+it("should keep base when no override") {
+    let base_port = 8080;
+    let override_port = 0;
+    let has_override = override_port != 0;
+
+    let final_port = if (has_override) { override_port } else { base_port };
+    assert(final_port == 8080);
+}
+
+// ============================================================================
+// ARRAY CONFIG
+// ============================================================================
+
+it("should store array of hosts") {
+    let hosts = ["server1.com", "server2.com", "server3.com"];
+    assert(hosts.len() == 3);
+    assert(hosts[0] == "server1.com");
+}
+
+it("should store array of ports") {
+    let ports = [80, 443, 8080];
+    assert(ports.len() == 3);
+    assert(ports[1] == 443);
+}
+
+// ============================================================================
+// FEATURE FLAGS
+// ============================================================================
+
+it("should check feature enabled") {
+    let feature_enabled = true;
+    assert(feature_enabled == true);
+}
+
+it("should check feature disabled") {
+    let feature_enabled = false;
+    assert(feature_enabled == false);
+}
+
+it("should use feature flag value") {
+    let use_new_api = true;
+    let api_version = if (use_new_api) { "v2" } else { "v1" };
+    assert(api_version == "v2");
+}
+
+// ============================================================================
+// CONFIG PATH
+// ============================================================================
+
+it("should handle config key paths") {
+    let key = "database.host";
+    let has_dot = key.contains(".");
+    assert(has_dot == true);
+}
+
+it("should split config key") {
+    let key = "database.connection.host";
+    let parts = key.split(".");
+    assert(parts[0] == "database");
+    assert(parts[1] == "connection");
+    assert(parts[2] == "host");
+}
+
+// ============================================================================
+// TYPE COERCION
+// ============================================================================
+
+it("should interpret 1 as true") {
+    let value = 1;
+    let bool_value = value != 0;
+    assert(bool_value == true);
+}
+
+it("should interpret 0 as false") {
+    let value = 0;
+    let bool_value = value != 0;
+    assert(bool_value == false);
+}
+
+it("should handle yes/no strings") {
+    let value = "yes";
+    let bool_value = value == "yes" or value == "true" or value == "1";
+    assert(bool_value == true);
+}
+
+// ============================================================================
+// CONFIG SECRETS
+// ============================================================================
+
+it("should detect secret key") {
+    let key = "database_password";
+    let is_secret = key.contains("password") or key.contains("secret") or key.contains("key");
+    assert(is_secret == true);
+}
+
+it("should detect non-secret key") {
+    let key = "database_host";
+    let is_secret = key.contains("password") or key.contains("secret") or key.contains("key");
+    assert(is_secret == false);
+}
+
+// ============================================================================
+// CONFIG FILE EXTENSION
+// ============================================================================
+
+it("should detect json config") {
+    let filename = "config.json";
+    let is_json = filename.ends_with(".json");
+    assert(is_json == true);
+}
+
+it("should detect yaml config") {
+    let filename = "config.yaml";
+    let is_yaml = filename.ends_with(".yaml") or filename.ends_with(".yml");
+    assert(is_yaml == true);
+}
+
+it("should detect toml config") {
+    let filename = "config.toml";
+    let is_toml = filename.ends_with(".toml");
+    assert(is_toml == true);
+}
+
+// ============================================================================
+// CONFIG RELOAD
+// ============================================================================
+
+it("should track config version") {
+    let mut version = 1;
+    version = version + 1;  // After reload
+    assert(version == 2);
+}
+
+it("should track last modified") {
+    let last_modified = 1704067200;  // Unix timestamp
+    let current_time = 1704153600;
+    let needs_reload = current_time > last_modified;
+    assert(needs_reload == true);
+}

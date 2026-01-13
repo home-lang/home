@@ -1,0 +1,417 @@
+// Data Structures Concepts Test Suite
+// Tests data structure patterns using basic Home syntax
+
+// ============================================================================
+// STACK (USING ARRAY)
+// ============================================================================
+
+it("should implement stack push") {
+    let stack = []
+    stack = stack.push(1)
+    stack = stack.push(2)
+    stack = stack.push(3)
+    assert(stack.len() == 3)
+}
+
+it("should implement stack pop (LIFO)") {
+    let stack = [1, 2, 3]
+    let top = stack.last()
+    assert(top == 3)
+}
+
+it("should implement stack peek") {
+    let stack = [1, 2, 3]
+    let top = stack.last()
+    assert(top == 3)
+    assert(stack.len() == 3)  // Not removed
+}
+
+it("should check if stack is empty") {
+    let stack = []
+    assert(stack.is_empty() == true)
+    stack = stack.push(1)
+    assert(stack.is_empty() == false)
+}
+
+// ============================================================================
+// QUEUE (USING ARRAY)
+// ============================================================================
+
+it("should implement queue enqueue") {
+    let queue = []
+    queue = queue.push(1)
+    queue = queue.push(2)
+    queue = queue.push(3)
+    assert(queue.len() == 3)
+}
+
+it("should implement queue dequeue (FIFO)") {
+    let queue = [1, 2, 3]
+    let front = queue.first()
+    assert(front == 1)
+}
+
+it("should peek queue front") {
+    let queue = [1, 2, 3]
+    assert(queue.first() == 1)
+}
+
+// ============================================================================
+// DOUBLE-ENDED QUEUE CONCEPTS
+// ============================================================================
+
+it("should access front and back") {
+    let deque = [1, 2, 3]
+    assert(deque.first() == 1)
+    assert(deque.last() == 3)
+}
+
+// ============================================================================
+// PRIORITY QUEUE CONCEPTS
+// ============================================================================
+
+it("should find minimum in array") {
+    let pq = [3, 1, 4, 1, 5]
+    let mut min = pq[0]
+    for val in pq {
+        if val < min {
+            min = val
+        }
+    }
+    assert(min == 1)
+}
+
+it("should find maximum in array") {
+    let pq = [3, 1, 4, 1, 5]
+    let mut max = pq[0]
+    for val in pq {
+        if val > max {
+            max = val
+        }
+    }
+    assert(max == 5)
+}
+
+// ============================================================================
+// HEAP CONCEPTS
+// ============================================================================
+
+it("should understand min heap property") {
+    // In a min heap, parent is smaller than children
+    let parent = 1
+    let left_child = 3
+    let right_child = 5
+    let is_valid_min_heap = parent < left_child and parent < right_child
+    assert(is_valid_min_heap == true)
+}
+
+it("should understand max heap property") {
+    // In a max heap, parent is larger than children
+    let parent = 10
+    let left_child = 5
+    let right_child = 3
+    let is_valid_max_heap = parent > left_child and parent > right_child
+    assert(is_valid_max_heap == true)
+}
+
+it("should calculate parent index") {
+    // For heap in array: parent(i) = (i - 1) / 2
+    let child_index = 5
+    let parent_index = (child_index - 1) / 2
+    assert(parent_index == 2)
+}
+
+it("should calculate child indices") {
+    // For heap in array: left(i) = 2*i + 1, right(i) = 2*i + 2
+    let parent_index = 2
+    let left_index = 2 * parent_index + 1
+    let right_index = 2 * parent_index + 2
+    assert(left_index == 5)
+    assert(right_index == 6)
+}
+
+// ============================================================================
+// BINARY SEARCH TREE CONCEPTS
+// ============================================================================
+
+it("should understand BST property") {
+    // All left descendants < node < all right descendants
+    let node = 5
+    let left = 3
+    let right = 7
+    let is_valid = left < node and node < right
+    assert(is_valid == true)
+}
+
+it("should search in sorted array (like BST)") {
+    let arr = [1, 3, 5, 7, 9]
+    let target = 5
+    let mut found = false
+    for val in arr {
+        if val == target {
+            found = true
+        }
+    }
+    assert(found == true)
+}
+
+it("should find min in sorted array") {
+    let sorted = [1, 3, 5, 7, 9]
+    assert(sorted.first() == 1)
+}
+
+it("should find max in sorted array") {
+    let sorted = [1, 3, 5, 7, 9]
+    assert(sorted.last() == 9)
+}
+
+// ============================================================================
+// TRAVERSAL ORDER
+// ============================================================================
+
+it("should understand in-order traversal") {
+    // In-order: left, root, right - gives sorted order for BST
+    let in_order = [1, 3, 5, 7, 9]
+    assert(in_order[0] < in_order[1])
+    assert(in_order[1] < in_order[2])
+}
+
+it("should understand pre-order traversal") {
+    // Pre-order: root, left, right
+    let pre_order = [5, 3, 1, 7, 9]  // root first
+    assert(pre_order[0] == 5)  // Root first
+}
+
+it("should understand post-order traversal") {
+    // Post-order: left, right, root
+    let post_order = [1, 3, 9, 7, 5]  // root last
+    assert(post_order[4] == 5)  // Root last
+}
+
+// ============================================================================
+// TRIE CONCEPTS
+// ============================================================================
+
+it("should check prefix") {
+    let word = "hello"
+    let prefix = "hel"
+    let has_prefix = word.starts_with(prefix)
+    assert(has_prefix == true)
+}
+
+it("should find words with prefix") {
+    let words = ["hello", "help", "helicopter", "world"]
+    let prefix = "hel"
+    let mut matches = []
+    for word in words {
+        if word.starts_with(prefix) {
+            matches = matches.push(word)
+        }
+    }
+    assert(matches.len() == 3)
+}
+
+// ============================================================================
+// SET CONCEPTS
+// ============================================================================
+
+it("should track unique values") {
+    let items = [1, 2, 2, 3, 3, 3]
+    let mut unique = []
+    for item in items {
+        if unique.contains(item) == false {
+            unique = unique.push(item)
+        }
+    }
+    assert(unique.len() == 3)
+}
+
+it("should check set membership") {
+    let set = [1, 2, 3]
+    assert(set.contains(2) == true)
+    assert(set.contains(4) == false)
+}
+
+it("should compute set union concept") {
+    let a = [1, 2, 3]
+    let b = [3, 4, 5]
+    let mut result = []
+    for item in a {
+        if result.contains(item) == false {
+            result = result.push(item)
+        }
+    }
+    for item in b {
+        if result.contains(item) == false {
+            result = result.push(item)
+        }
+    }
+    assert(result.len() == 5)
+}
+
+it("should compute set intersection concept") {
+    let a = [1, 2, 3]
+    let b = [2, 3, 4]
+    let mut result = []
+    for item in a {
+        if b.contains(item) {
+            result = result.push(item)
+        }
+    }
+    assert(result.len() == 2)
+}
+
+it("should compute set difference concept") {
+    let a = [1, 2, 3]
+    let b = [2, 3, 4]
+    let mut result = []
+    for item in a {
+        if b.contains(item) == false {
+            result = result.push(item)
+        }
+    }
+    assert(result.len() == 1)
+    assert(result.contains(1) == true)
+}
+
+// ============================================================================
+// MAP/DICTIONARY CONCEPTS
+// ============================================================================
+
+it("should store key-value pairs") {
+    let map = {}
+    map["key"] = "value"
+    assert(map["key"] == "value")
+}
+
+it("should update values") {
+    let map = {}
+    map["count"] = 1
+    map["count"] = map["count"] + 1
+    assert(map["count"] == 2)
+}
+
+// ============================================================================
+// GRAPH CONCEPTS
+// ============================================================================
+
+it("should represent adjacency list") {
+    let graph = {}
+    graph["A"] = ["B", "C"]
+    graph["B"] = ["D"]
+    graph["C"] = ["D"]
+    graph["D"] = []
+    assert(graph["A"].len() == 2)
+}
+
+it("should check if edge exists") {
+    let neighbors = ["B", "C"]
+    let has_edge = neighbors.contains("B")
+    assert(has_edge == true)
+}
+
+it("should count neighbors") {
+    let graph = {}
+    graph["A"] = ["B", "C", "D"]
+    assert(graph["A"].len() == 3)
+}
+
+// ============================================================================
+// BFS CONCEPT
+// ============================================================================
+
+it("should process nodes in order") {
+    // BFS visits nodes level by level
+    let order = ["A", "B", "C", "D"]  // Level 0: A, Level 1: B, C, Level 2: D
+    assert(order[0] == "A")
+}
+
+// ============================================================================
+// DFS CONCEPT
+// ============================================================================
+
+it("should explore depth first") {
+    // DFS goes deep before backtracking
+    let order = ["A", "B", "D", "C"]  // Goes A -> B -> D, then backtracks to C
+    assert(order[0] == "A")
+}
+
+// ============================================================================
+// CYCLE DETECTION
+// ============================================================================
+
+it("should detect cycle in sequence") {
+    let visited = {}
+    visited["A"] = true
+    visited["B"] = true
+    visited["C"] = true
+    // If we try to visit A again, cycle detected
+    let has_cycle = visited["A"] == true
+    assert(has_cycle == true)
+}
+
+// ============================================================================
+// TOPOLOGICAL SORT CONCEPTS
+// ============================================================================
+
+it("should maintain dependency order") {
+    // If A depends on B, B comes before A
+    let order = ["B", "A"]  // B must come first
+    let b_index = 0
+    let a_index = 1
+    assert(b_index < a_index)
+}
+
+// ============================================================================
+// RING BUFFER CONCEPTS
+// ============================================================================
+
+it("should wrap around at capacity") {
+    let capacity = 3
+    let mut write_index = 0
+
+    // Write 4 items to buffer of size 3
+    write_index = (write_index + 1) % capacity  // 1
+    write_index = (write_index + 1) % capacity  // 2
+    write_index = (write_index + 1) % capacity  // 0 (wrapped)
+    write_index = (write_index + 1) % capacity  // 1
+
+    assert(write_index == 1)
+}
+
+// ============================================================================
+// LRU CACHE CONCEPTS
+// ============================================================================
+
+it("should track access order") {
+    let access_order = []
+    access_order = access_order.push("a")
+    access_order = access_order.push("b")
+    access_order = access_order.push("c")
+    access_order = access_order.push("a")  // 'a' accessed again
+
+    assert(access_order.last() == "a")
+}
+
+// ============================================================================
+// LINKED LIST CONCEPTS
+// ============================================================================
+
+it("should understand node structure") {
+    // Each node has value and next pointer
+    let node1_value = 1
+    let node2_value = 2
+    let node1_next = 2  // Points to node2 index
+    assert(node1_next == 2)
+}
+
+// ============================================================================
+// BLOOM FILTER CONCEPTS
+// ============================================================================
+
+it("should understand hash distribution") {
+    // Multiple hash functions reduce false positives
+    let hash1 = 142 % 100
+    let hash2 = 142 % 97
+    assert(hash1 != hash2)  // Different positions: 42 vs 45
+}

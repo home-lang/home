@@ -1,0 +1,475 @@
+// Database Migration Test Suite
+
+// ============================================================================
+// MIGRATION CREATION
+// ============================================================================
+
+it("should create migration") {
+    let migration = migrate::Migration::new("create_users_table");
+    assert(migration != null);
+    assert(migration.name.contains("create_users_table"));
+}
+
+it("should generate timestamp prefix") {
+    let migration = migrate::Migration::new("add_email_column");
+    assert(migration.name.matches(/^\d{14}_/));  // e.g., 20240115120000_
+}
+
+it("should define up migration") {
+    let migration = migrate::Migration::new("create_users");
+
+    migration.up(|| {
+        migrate::sql("CREATE TABLE users (id SERIAL PRIMARY KEY)");
+    });
+}
+
+it("should define down migration") {
+    let migration = migrate::Migration::new("create_users");
+
+    migration.down(|| {
+        migrate::sql("DROP TABLE users");
+    });
+}
+
+// ============================================================================
+// SCHEMA BUILDER
+// ============================================================================
+
+it("should create table") {
+    let migration = migrate::Migration::new("create_users");
+
+    migration.up(|| {
+        migrate::create_table("users", |t| {
+            t.increments("id");
+            t.string("name");
+            t.string("email").unique();
+            t.timestamps();
+        });
+    });
+}
+
+it("should drop table") {
+    let migration = migrate::Migration::new("drop_users");
+
+    migration.up(|| {
+        migrate::drop_table("users");
+    });
+}
+
+it("should drop table if exists") {
+    let migration = migrate::Migration::new("drop_users");
+
+    migration.up(|| {
+        migrate::drop_table_if_exists("users");
+    });
+}
+
+it("should rename table") {
+    let migration = migrate::Migration::new("rename_users");
+
+    migration.up(|| {
+        migrate::rename_table("users", "customers");
+    });
+}
+
+it("should add column") {
+    let migration = migrate::Migration::new("add_phone_to_users");
+
+    migration.up(|| {
+        migrate::alter_table("users", |t| {
+            t.string("phone").nullable();
+        });
+    });
+}
+
+it("should drop column") {
+    let migration = migrate::Migration::new("drop_phone");
+
+    migration.up(|| {
+        migrate::alter_table("users", |t| {
+            t.drop_column("phone");
+        });
+    });
+}
+
+it("should rename column") {
+    let migration = migrate::Migration::new("rename_column");
+
+    migration.up(|| {
+        migrate::alter_table("users", |t| {
+            t.rename_column("name", "full_name");
+        });
+    });
+}
+
+it("should modify column") {
+    let migration = migrate::Migration::new("modify_column");
+
+    migration.up(|| {
+        migrate::alter_table("users", |t| {
+            t.modify("name", "VARCHAR(500)");
+        });
+    });
+}
+
+// ============================================================================
+// COLUMN TYPES
+// ============================================================================
+
+it("should create integer columns") {
+    migrate::create_table("test", |t| {
+        t.integer("count");
+        t.big_integer("big_count");
+        t.small_integer("small_count");
+        t.tiny_integer("tiny_count");
+    });
+}
+
+it("should create string columns") {
+    migrate::create_table("test", |t| {
+        t.string("name", 100);  // VARCHAR(100)
+        t.text("description");
+        t.medium_text("content");
+        t.long_text("body");
+    });
+}
+
+it("should create numeric columns") {
+    migrate::create_table("test", |t| {
+        t.decimal("price", precision: 10, scale: 2);
+        t.float("rating");
+        t.double("amount");
+    });
+}
+
+it("should create date/time columns") {
+    migrate::create_table("test", |t| {
+        t.date("birth_date");
+        t.time("start_time");
+        t.datetime("created_at");
+        t.timestamp("updated_at");
+    });
+}
+
+it("should create boolean column") {
+    migrate::create_table("test", |t| {
+        t.boolean("is_active");
+    });
+}
+
+it("should create JSON column") {
+    migrate::create_table("test", |t| {
+        t.json("metadata");
+        t.jsonb("settings");  // PostgreSQL binary JSON
+    });
+}
+
+it("should create binary column") {
+    migrate::create_table("test", |t| {
+        t.binary("data");
+        t.blob("file_content");
+    });
+}
+
+it("should create UUID column") {
+    migrate::create_table("test", |t| {
+        t.uuid("id").primary();
+    });
+}
+
+it("should create enum column") {
+    migrate::create_table("test", |t| {
+        t.enum("status", ["pending", "active", "completed"]);
+    });
+}
+
+// ============================================================================
+// COLUMN MODIFIERS
+// ============================================================================
+
+it("should set nullable") {
+    migrate::create_table("test", |t| {
+        t.string("optional").nullable();
+        t.string("required").not_null();
+    });
+}
+
+it("should set default value") {
+    migrate::create_table("test", |t| {
+        t.integer("count").default(0);
+        t.boolean("active").default(true);
+        t.timestamp("created_at").default_now();
+    });
+}
+
+it("should set unique constraint") {
+    migrate::create_table("test", |t| {
+        t.string("email").unique();
+    });
+}
+
+it("should set primary key") {
+    migrate::create_table("test", |t| {
+        t.uuid("id").primary();
+    });
+}
+
+it("should set auto increment") {
+    migrate::create_table("test", |t| {
+        t.increments("id");  // Auto-increment primary key
+    });
+}
+
+it("should add index") {
+    migrate::create_table("test", |t| {
+        t.string("name").index();
+    });
+}
+
+it("should add comment") {
+    migrate::create_table("test", |t| {
+        t.string("code").comment("Unique identifier code");
+    });
+}
+
+// ============================================================================
+// INDEXES
+// ============================================================================
+
+it("should create index") {
+    let migration = migrate::Migration::new("add_index");
+
+    migration.up(|| {
+        migrate::create_index("users", "email");
+    });
+}
+
+it("should create composite index") {
+    let migration = migrate::Migration::new("add_composite_index");
+
+    migration.up(|| {
+        migrate::create_index("orders", ["user_id", "created_at"]);
+    });
+}
+
+it("should create unique index") {
+    let migration = migrate::Migration::new("add_unique_index");
+
+    migration.up(|| {
+        migrate::create_unique_index("users", "email");
+    });
+}
+
+it("should drop index") {
+    let migration = migrate::Migration::new("drop_index");
+
+    migration.up(|| {
+        migrate::drop_index("users", "users_email_idx");
+    });
+}
+
+// ============================================================================
+// FOREIGN KEYS
+// ============================================================================
+
+it("should add foreign key") {
+    migrate::create_table("posts", |t| {
+        t.increments("id");
+        t.integer("user_id").references("id").on("users");
+    });
+}
+
+it("should set cascade delete") {
+    migrate::create_table("posts", |t| {
+        t.integer("user_id")
+            .references("id")
+            .on("users")
+            .on_delete("CASCADE");
+    });
+}
+
+it("should set null on delete") {
+    migrate::create_table("comments", |t| {
+        t.integer("author_id")
+            .nullable()
+            .references("id")
+            .on("users")
+            .on_delete("SET NULL");
+    });
+}
+
+it("should drop foreign key") {
+    migrate::alter_table("posts", |t| {
+        t.drop_foreign("posts_user_id_fkey");
+    });
+}
+
+// ============================================================================
+// RUNNING MIGRATIONS
+// ============================================================================
+
+it("should run pending migrations") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+        connection: db::connection(),
+    });
+
+    let result = migrator.migrate();
+    assert(result.success == true);
+}
+
+it("should rollback last migration") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+        connection: db::connection(),
+    });
+
+    migrator.rollback();
+}
+
+it("should rollback multiple migrations") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+    });
+
+    migrator.rollback(steps: 3);
+}
+
+it("should rollback all migrations") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+    });
+
+    migrator.reset();
+}
+
+it("should refresh database") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+    });
+
+    migrator.refresh();  // Rollback all, then migrate all
+}
+
+// ============================================================================
+// MIGRATION STATUS
+// ============================================================================
+
+it("should get migration status") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+    });
+
+    let status = migrator.status();
+    for migration in status {
+        print("{migration.name}: {migration.ran ? 'Ran' : 'Pending'}");
+    }
+}
+
+it("should check pending migrations") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+    });
+
+    let pending = migrator.pending();
+    assert(pending.len() >= 0);
+}
+
+// ============================================================================
+// SEEDING
+// ============================================================================
+
+it("should create seeder") {
+    let seeder = migrate::Seeder::new("UsersSeeder");
+
+    seeder.run(|| {
+        migrate::insert("users", [
+            { name: "Admin", email: "admin@example.com" },
+            { name: "User", email: "user@example.com" },
+        ]);
+    });
+}
+
+it("should run all seeders") {
+    let migrator = migrate::Migrator::new({
+        directory: "migrations",
+        seeders_directory: "seeders",
+    });
+
+    migrator.seed();
+}
+
+it("should run specific seeder") {
+    let migrator = migrate::Migrator::new({});
+    migrator.seed("UsersSeeder");
+}
+
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
+it("should wrap migration in transaction") {
+    let migration = migrate::Migration::new("transactional");
+
+    migration.up(|| {
+        migrate::transaction(|| {
+            migrate::sql("INSERT INTO users (name) VALUES ('Test')");
+            migrate::sql("UPDATE settings SET version = 2");
+        });
+    });
+}
+
+// ============================================================================
+// RAW SQL
+// ============================================================================
+
+it("should execute raw SQL") {
+    let migration = migrate::Migration::new("raw_sql");
+
+    migration.up(|| {
+        migrate::sql("CREATE EXTENSION IF NOT EXISTS 'uuid-ossp'");
+    });
+}
+
+it("should execute SQL from file") {
+    let migration = migrate::Migration::new("from_file");
+
+    migration.up(|| {
+        migrate::sql_file("migrations/sql/complex_procedure.sql");
+    });
+}
+
+// ============================================================================
+// DATABASE-SPECIFIC
+// ============================================================================
+
+it("should handle PostgreSQL specific features") {
+    migrate::create_table("test", |t| {
+        t.uuid("id").primary().default_uuid_generate_v4();
+        t.inet("ip_address");
+        t.tsvector("search_vector");
+    });
+}
+
+it("should handle MySQL specific features") {
+    migrate::create_table("test", |t| {
+        t.string("name").charset("utf8mb4").collation("utf8mb4_unicode_ci");
+    }, engine: "InnoDB");
+}
+
+// ============================================================================
+// VERSION CONTROL
+// ============================================================================
+
+it("should track migration version") {
+    let migrator = migrate::Migrator::new({});
+
+    let version = migrator.current_version();
+    assert(version != null);
+}
+
+it("should migrate to specific version") {
+    let migrator = migrate::Migrator::new({});
+    migrator.migrate_to("20240115120000");
+}
+

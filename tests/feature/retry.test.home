@@ -1,0 +1,397 @@
+// Retry and Backoff Test Suite
+
+// ============================================================================
+// BASIC RETRY
+// ============================================================================
+
+it("should retry on failure") {
+    let attempts = 0;
+
+    let result = retry::run(max_attempts: 3, || {
+        attempts += 1;
+        if attempts < 3 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+
+    assert(attempts == 3);
+    assert(result == "success");
+}
+
+it("should return on first success") {
+    let attempts = 0;
+
+    let result = retry::run(max_attempts: 5, || {
+        attempts += 1;
+        return "success";
+    });
+
+    assert(attempts == 1);
+    assert(result == "success");
+}
+
+it("should fail after max attempts") {
+    let attempts = 0;
+
+    let result = retry::run_safe(max_attempts: 3, || {
+        attempts += 1;
+        throw Error::new("Always fails");
+    });
+
+    assert(attempts == 3);
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// BACKOFF STRATEGIES
+// ============================================================================
+
+it("should use constant backoff") {
+    let start = time::now();
+    let attempts = 0;
+
+    retry::run(max_attempts: 3, backoff: retry::constant(100.milliseconds), || {
+        attempts += 1;
+        if attempts < 3 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+
+    let elapsed = time::now() - start;
+    assert(elapsed >= 200.milliseconds);  // 2 delays of 100ms each
+}
+
+it("should use linear backoff") {
+    let start = time::now();
+    let attempts = 0;
+
+    retry::run(max_attempts: 3, backoff: retry::linear(100.milliseconds), || {
+        attempts += 1;
+        if attempts < 3 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+
+    let elapsed = time::now() - start;
+    assert(elapsed >= 300.milliseconds);  // 100ms + 200ms
+}
+
+it("should use exponential backoff") {
+    let start = time::now();
+    let attempts = 0;
+
+    retry::run(max_attempts: 4, backoff: retry::exponential(100.milliseconds), || {
+        attempts += 1;
+        if attempts < 4 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+
+    let elapsed = time::now() - start;
+    assert(elapsed >= 700.milliseconds);  // 100 + 200 + 400
+}
+
+it("should cap exponential backoff") {
+    let backoff = retry::exponential(100.milliseconds, max: 500.milliseconds);
+    // After cap, delay stays at 500ms
+}
+
+it("should add jitter") {
+    let backoff = retry::exponential(100.milliseconds)
+        .with_jitter(0.1);  // 10% jitter
+
+    // Delays will vary by ±10%
+}
+
+// ============================================================================
+// RETRY CONDITIONS
+// ============================================================================
+
+it("should retry only specific errors") {
+    let attempts = 0;
+
+    let result = retry::run_safe(
+        max_attempts: 3,
+        retry_on: |err| err.is_transient(),
+        || {
+            attempts += 1;
+            throw Error::new("Permanent error").set_transient(false);
+        }
+    );
+
+    assert(attempts == 1);  // Should not retry permanent errors
+}
+
+it("should retry on specific error types") {
+    let result = retry::run_safe(
+        max_attempts: 3,
+        retry_on: [NetworkError, TimeoutError],
+        || {
+            throw ValidationError::new("Invalid");
+        }
+    );
+
+    // Should not retry ValidationError
+}
+
+it("should stop on specific errors") {
+    let result = retry::run_safe(
+        max_attempts: 5,
+        stop_on: [AuthenticationError],
+        || {
+            throw AuthenticationError::new("Invalid credentials");
+        }
+    );
+
+    // Should stop immediately on AuthenticationError
+}
+
+// ============================================================================
+// TIMEOUT
+// ============================================================================
+
+it("should timeout entire retry sequence") {
+    let start = time::now();
+
+    let result = retry::run_safe(
+        max_attempts: 100,
+        timeout: 500.milliseconds,
+        backoff: retry::constant(200.milliseconds),
+        || {
+            throw Error::new("Failed");
+        }
+    );
+
+    let elapsed = time::now() - start;
+    assert(elapsed < 1.second);
+    assert(result.is_err() == true);
+}
+
+it("should timeout individual attempt") {
+    let result = retry::run_safe(
+        max_attempts: 3,
+        attempt_timeout: 100.milliseconds,
+        || {
+            sleep(1.second);  // Too slow
+            return "success";
+        }
+    );
+
+    assert(result.is_err() == true);
+}
+
+// ============================================================================
+// CALLBACKS
+// ============================================================================
+
+it("should call on_retry callback") {
+    let retry_count = 0;
+
+    retry::run(
+        max_attempts: 3,
+        on_retry: |attempt, err, delay| {
+            retry_count += 1;
+        },
+        || {
+            if retry_count < 2 {
+                throw Error::new("Failed");
+            }
+            return "success";
+        }
+    );
+
+    assert(retry_count == 2);
+}
+
+it("should call on_success callback") {
+    let success_called = false;
+
+    retry::run(
+        max_attempts: 3,
+        on_success: |result, attempts| {
+            success_called = true;
+        },
+        || "success"
+    );
+
+    assert(success_called == true);
+}
+
+it("should call on_failure callback") {
+    let failure_called = false;
+
+    retry::run_safe(
+        max_attempts: 2,
+        on_failure: |err, attempts| {
+            failure_called = true;
+        },
+        || {
+            throw Error::new("Failed");
+        }
+    );
+
+    assert(failure_called == true);
+}
+
+// ============================================================================
+// ASYNC RETRY
+// ============================================================================
+
+it("should retry async operations") {
+    let attempts = 0;
+
+    let result = await retry::run_async(max_attempts: 3, async || {
+        attempts += 1;
+        if attempts < 3 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+
+    assert(result == "success");
+}
+
+// ============================================================================
+// BUILDER PATTERN
+// ============================================================================
+
+it("should use builder pattern") {
+    let retryer = retry::Retry::new()
+        .max_attempts(5)
+        .backoff(retry::exponential(100.milliseconds))
+        .jitter(0.1)
+        .timeout(30.seconds)
+        .retry_on(|err| err.is_transient());
+
+    let result = retryer.run(|| {
+        return "success";
+    });
+}
+
+// ============================================================================
+// RETRY CONTEXT
+// ============================================================================
+
+it("should provide retry context") {
+    retry::run(max_attempts: 3, |ctx| {
+        assert(ctx.attempt >= 1);
+        assert(ctx.max_attempts == 3);
+        assert(ctx.elapsed >= 0.seconds);
+
+        if ctx.attempt < 3 {
+            throw Error::new("Failed");
+        }
+        return "success";
+    });
+}
+
+// ============================================================================
+// CIRCUIT BREAKER INTEGRATION
+// ============================================================================
+
+it("should integrate with circuit breaker") {
+    let breaker = circuit::Breaker::new(
+        failure_threshold: 5,
+        reset_timeout: 30.seconds,
+    );
+
+    let result = retry::run_safe(
+        max_attempts: 10,
+        circuit_breaker: breaker,
+        || {
+            throw Error::new("Service unavailable");
+        }
+    );
+
+    // Should stop when circuit opens
+}
+
+// ============================================================================
+// DECORATORS
+// ============================================================================
+
+it("should use retry decorator") {
+    #[retry(max_attempts: 3, backoff: exponential(100.ms))]
+    fn unreliable_operation() {
+        // This function will be automatically retried
+    }
+}
+
+// ============================================================================
+// RETRY STATISTICS
+// ============================================================================
+
+it("should track retry statistics") {
+    let stats = retry::Stats::new();
+
+    retry::run_safe(
+        max_attempts: 3,
+        stats: stats,
+        || {
+            throw Error::new("Failed");
+        }
+    );
+
+    assert(stats.total_attempts == 3);
+    assert(stats.total_failures == 1);
+}
+
+// ============================================================================
+// PREDEFINED POLICIES
+// ============================================================================
+
+it("should use HTTP retry policy") {
+    let policy = retry::policies::http();
+    // Retries on 429, 500, 502, 503, 504
+    // Uses exponential backoff with jitter
+}
+
+it("should use database retry policy") {
+    let policy = retry::policies::database();
+    // Retries on connection errors, deadlocks
+}
+
+it("should use network retry policy") {
+    let policy = retry::policies::network();
+    // Retries on timeout, connection refused
+}
+
+// ============================================================================
+// CUSTOM BACKOFF
+// ============================================================================
+
+it("should use custom backoff function") {
+    let backoff = retry::custom(|attempt| {
+        return attempt * 100.milliseconds;
+    });
+
+    retry::run(max_attempts: 3, backoff: backoff, || {
+        // Operation
+    });
+}
+
+// ============================================================================
+// FIBONACCI BACKOFF
+// ============================================================================
+
+it("should use fibonacci backoff") {
+    let backoff = retry::fibonacci(100.milliseconds);
+    // Delays: 100, 100, 200, 300, 500, 800, ...
+}
+
+// ============================================================================
+// DECORRELATED JITTER
+// ============================================================================
+
+it("should use decorrelated jitter") {
+    let backoff = retry::decorrelated_jitter(
+        base: 100.milliseconds,
+        max: 10.seconds,
+    );
+    // AWS-style decorrelated jitter
+}
+

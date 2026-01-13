@@ -1,0 +1,471 @@
+// Units Conversion Concepts Test Suite
+// Tests unit conversion concepts using basic Home syntax
+
+// ============================================================================
+// LENGTH UNIT CONCEPTS
+// ============================================================================
+
+it("should know meters to kilometers") {
+    let meters = 1000
+    let km = meters / 1000
+    assert(km == 1)
+}
+
+it("should know kilometers to meters") {
+    let km = 1
+    let meters = km * 1000
+    assert(meters == 1000)
+}
+
+it("should know centimeters to meters") {
+    let cm = 100
+    let meters = cm / 100
+    assert(meters == 1)
+}
+
+it("should know millimeters to centimeters") {
+    let mm = 10
+    let cm = mm / 10
+    assert(cm == 1)
+}
+
+it("should know inches to centimeters factor") {
+    // 1 inch = 2.54 cm
+    let factor = 2.54
+    let inches = 1
+    let cm = inches * factor
+    assert(cm == 2.54)
+}
+
+it("should know feet to inches") {
+    let feet = 1
+    let inches = feet * 12
+    assert(inches == 12)
+}
+
+it("should know yards to feet") {
+    let yards = 1
+    let feet = yards * 3
+    assert(feet == 3)
+}
+
+it("should know miles to feet") {
+    let miles = 1
+    let feet = miles * 5280
+    assert(feet == 5280)
+}
+
+// ============================================================================
+// MASS UNIT CONCEPTS
+// ============================================================================
+
+it("should know kilograms to grams") {
+    let kg = 1
+    let grams = kg * 1000
+    assert(grams == 1000)
+}
+
+it("should know grams to milligrams") {
+    let grams = 1
+    let mg = grams * 1000
+    assert(mg == 1000)
+}
+
+it("should know tons to kilograms") {
+    let tons = 1
+    let kg = tons * 1000
+    assert(kg == 1000)
+}
+
+it("should know pounds to ounces") {
+    let pounds = 1
+    let ounces = pounds * 16
+    assert(ounces == 16)
+}
+
+// ============================================================================
+// TEMPERATURE CONCEPTS
+// ============================================================================
+
+it("should convert Celsius to Fahrenheit formula") {
+    // F = C * 9/5 + 32
+    let celsius = 0
+    let fahrenheit = celsius * 9 / 5 + 32
+    assert(fahrenheit == 32)
+}
+
+it("should convert Fahrenheit to Celsius formula") {
+    // C = (F - 32) * 5/9
+    let fahrenheit = 32
+    let celsius = (fahrenheit - 32) * 5 / 9
+    assert(celsius == 0)
+}
+
+it("should know Kelvin offset from Celsius") {
+    // K = C + 273.15
+    let offset = 273
+    let celsius = 0
+    let kelvin = celsius + offset
+    assert(kelvin == 273)
+}
+
+it("should know absolute zero") {
+    let absolute_zero_c = -273
+    let absolute_zero_k = 0
+    assert(absolute_zero_k == 0)
+}
+
+// ============================================================================
+// VOLUME UNIT CONCEPTS
+// ============================================================================
+
+it("should know liters to milliliters") {
+    let liters = 1
+    let ml = liters * 1000
+    assert(ml == 1000)
+}
+
+it("should know cubic meters to liters") {
+    let m3 = 1
+    let liters = m3 * 1000
+    assert(liters == 1000)
+}
+
+it("should know gallons to quarts") {
+    let gallons = 1
+    let quarts = gallons * 4
+    assert(quarts == 4)
+}
+
+it("should know quarts to pints") {
+    let quarts = 1
+    let pints = quarts * 2
+    assert(pints == 2)
+}
+
+it("should know pints to cups") {
+    let pints = 1
+    let cups = pints * 2
+    assert(cups == 2)
+}
+
+// ============================================================================
+// AREA UNIT CONCEPTS
+// ============================================================================
+
+it("should know square meters to square centimeters") {
+    let m2 = 1
+    let cm2 = m2 * 10000
+    assert(cm2 == 10000)
+}
+
+it("should know hectares to square meters") {
+    let ha = 1
+    let m2 = ha * 10000
+    assert(m2 == 10000)
+}
+
+it("should know square kilometers to hectares") {
+    let km2 = 1
+    let ha = km2 * 100
+    assert(ha == 100)
+}
+
+it("should know acres to square feet") {
+    let acres = 1
+    let sq_ft = acres * 43560
+    assert(sq_ft == 43560)
+}
+
+// ============================================================================
+// TIME UNIT CONCEPTS
+// ============================================================================
+
+it("should know hours to minutes") {
+    let hours = 1
+    let minutes = hours * 60
+    assert(minutes == 60)
+}
+
+it("should know minutes to seconds") {
+    let minutes = 1
+    let seconds = minutes * 60
+    assert(seconds == 60)
+}
+
+it("should know days to hours") {
+    let days = 1
+    let hours = days * 24
+    assert(hours == 24)
+}
+
+it("should know weeks to days") {
+    let weeks = 1
+    let days = weeks * 7
+    assert(days == 7)
+}
+
+it("should know seconds to milliseconds") {
+    let seconds = 1
+    let ms = seconds * 1000
+    assert(ms == 1000)
+}
+
+it("should know milliseconds to microseconds") {
+    let ms = 1
+    let us = ms * 1000
+    assert(us == 1000)
+}
+
+it("should know microseconds to nanoseconds") {
+    let us = 1
+    let ns = us * 1000
+    assert(ns == 1000)
+}
+
+// ============================================================================
+// SPEED UNIT CONCEPTS
+// ============================================================================
+
+it("should convert km/h to m/s") {
+    // 1 km/h = 1000m / 3600s
+    let kmh = 36
+    let ms = kmh * 1000 / 3600
+    assert(ms == 10)
+}
+
+it("should know knots to km/h factor") {
+    // 1 knot = 1.852 km/h
+    let factor = 1.852
+    assert(factor == 1.852)
+}
+
+// ============================================================================
+// DATA UNIT CONCEPTS
+// ============================================================================
+
+it("should know bytes to kilobytes (binary)") {
+    let bytes = 1024
+    let kb = bytes / 1024
+    assert(kb == 1)
+}
+
+it("should know kilobytes to megabytes") {
+    let kb = 1024
+    let mb = kb / 1024
+    assert(mb == 1)
+}
+
+it("should know megabytes to gigabytes") {
+    let mb = 1024
+    let gb = mb / 1024
+    assert(gb == 1)
+}
+
+it("should know gigabytes to terabytes") {
+    let gb = 1024
+    let tb = gb / 1024
+    assert(tb == 1)
+}
+
+it("should know bits to bytes") {
+    let bits = 8
+    let bytes = bits / 8
+    assert(bytes == 1)
+}
+
+// ============================================================================
+// ENERGY UNIT CONCEPTS
+// ============================================================================
+
+it("should know kilowatt-hours to watt-hours") {
+    let kwh = 1
+    let wh = kwh * 1000
+    assert(wh == 1000)
+}
+
+it("should know watt-hours to joules") {
+    let wh = 1
+    let joules = wh * 3600
+    assert(joules == 3600)
+}
+
+it("should know kilowatt-hours to joules") {
+    let kwh = 1
+    let joules = kwh * 3600000
+    assert(joules == 3600000)
+}
+
+// ============================================================================
+// PRESSURE UNIT CONCEPTS
+// ============================================================================
+
+it("should know bar to pascals") {
+    let bar = 1
+    let pa = bar * 100000
+    assert(pa == 100000)
+}
+
+it("should know atmospheres to pascals") {
+    let atm = 1
+    let pa = 101325
+    assert(pa == 101325)
+}
+
+// ============================================================================
+// ANGLE UNIT CONCEPTS
+// ============================================================================
+
+it("should know degrees to radians factor") {
+    // pi radians = 180 degrees
+    // 1 degree = pi/180 radians
+    let degrees = 180
+    let radians_approx = 3  // approximately pi
+    assert(radians_approx == 3)
+}
+
+it("should know full circle in degrees") {
+    let full_circle = 360
+    assert(full_circle == 360)
+}
+
+it("should know right angle") {
+    let right_angle = 90
+    assert(right_angle == 90)
+}
+
+// ============================================================================
+// FREQUENCY UNIT CONCEPTS
+// ============================================================================
+
+it("should know hertz to kilohertz") {
+    let hz = 1000
+    let khz = hz / 1000
+    assert(khz == 1)
+}
+
+it("should know kilohertz to megahertz") {
+    let khz = 1000
+    let mhz = khz / 1000
+    assert(mhz == 1)
+}
+
+it("should know megahertz to gigahertz") {
+    let mhz = 1000
+    let ghz = mhz / 1000
+    assert(ghz == 1)
+}
+
+// ============================================================================
+// UNIT PARSING CONCEPTS
+// ============================================================================
+
+it("should parse unit string") {
+    let value_str = "100 km"
+    let parts = value_str.split(" ")
+    assert(parts[0] == "100")
+    assert(parts[1] == "km")
+}
+
+it("should detect compound units") {
+    let unit = "km/h"
+    let is_compound = unit.contains("/")
+    assert(is_compound == true)
+}
+
+it("should detect squared units") {
+    let unit = "m2"
+    let is_squared = unit.ends_with("2")
+    assert(is_squared == true)
+}
+
+it("should detect cubed units") {
+    let unit = "m3"
+    let is_cubed = unit.ends_with("3")
+    assert(is_cubed == true)
+}
+
+// ============================================================================
+// UNIT CATEGORIES
+// ============================================================================
+
+it("should categorize length units") {
+    let length_units = ["m", "km", "cm", "mm", "mi", "ft", "in", "yd"]
+    assert(length_units.contains("m") == true)
+    assert(length_units.contains("km") == true)
+}
+
+it("should categorize mass units") {
+    let mass_units = ["kg", "g", "mg", "t", "lb", "oz"]
+    assert(mass_units.contains("kg") == true)
+}
+
+it("should categorize time units") {
+    let time_units = ["s", "ms", "us", "ns", "min", "h", "d", "wk"]
+    assert(time_units.contains("s") == true)
+    assert(time_units.contains("h") == true)
+}
+
+it("should categorize temperature units") {
+    let temp_units = ["C", "F", "K"]
+    assert(temp_units.len() == 3)
+}
+
+// ============================================================================
+// SI PREFIXES
+// ============================================================================
+
+it("should know SI prefixes") {
+    let prefixes = {}
+    prefixes["k"] = 1000
+    prefixes["M"] = 1000000
+    prefixes["G"] = 1000000000
+    prefixes["m"] = 0.001
+    assert(prefixes["k"] == 1000)
+}
+
+it("should apply kilo prefix") {
+    let base = 1
+    let kilo = base * 1000
+    assert(kilo == 1000)
+}
+
+it("should apply mega prefix") {
+    let base = 1
+    let mega = base * 1000000
+    assert(mega == 1000000)
+}
+
+// ============================================================================
+// CONVERSION FACTORS
+// ============================================================================
+
+it("should track conversion factors") {
+    let factors = {}
+    factors["mi_to_km"] = 1.609
+    factors["lb_to_kg"] = 0.454
+    factors["gal_to_L"] = 3.785
+    assert(factors["mi_to_km"] == 1.609)
+}
+
+// ============================================================================
+// UNIT COMPATIBILITY
+// ============================================================================
+
+it("should check unit compatibility") {
+    let length_units = ["m", "km", "cm"]
+    let mass_units = ["kg", "g", "lb"]
+    let unit1 = "m"
+    let unit2 = "kg"
+    let compatible = length_units.contains(unit1) and length_units.contains(unit2)
+    assert(compatible == false)
+}
+
+it("should check same dimension") {
+    let length_units = ["m", "km", "cm"]
+    let unit1 = "m"
+    let unit2 = "km"
+    let same_dimension = length_units.contains(unit1) and length_units.contains(unit2)
+    assert(same_dimension == true)
+}
+

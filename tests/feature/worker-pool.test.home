@@ -1,0 +1,416 @@
+// Worker Pool Test Suite
+
+// ============================================================================
+// BASIC WORKER POOL
+// ============================================================================
+
+it("should create worker pool") {
+    let pool = workers::Pool::new(size: 4);
+    assert(pool != null);
+    assert(pool.size() == 4);
+}
+
+it("should create pool with default size") {
+    let pool = workers::Pool::new();
+    assert(pool.size() >= 1);  // At least 1, usually CPU count
+}
+
+it("should submit task to pool") {
+    let pool = workers::Pool::new(size: 2);
+    let future = pool.submit(|| {
+        return 42;
+    });
+    assert(future.get() == 42);
+}
+
+it("should execute multiple tasks") {
+    let pool = workers::Pool::new(size: 4);
+    let results = [];
+
+    for i in 0..10 {
+        let future = pool.submit(|| i * 2);
+        results.push(future);
+    }
+
+    for i, future in results {
+        assert(future.get() == i * 2);
+    }
+}
+
+// ============================================================================
+// TASK MANAGEMENT
+// ============================================================================
+
+it("should get task result") {
+    let pool = workers::Pool::new(size: 2);
+    let future = pool.submit(|| "hello");
+    assert(future.get() == "hello");
+}
+
+it("should wait for task completion") {
+    let pool = workers::Pool::new(size: 2);
+    let future = pool.submit(|| {
+        time::sleep(100);
+        return "done";
+    });
+
+    future.wait();
+    assert(future.is_complete() == true);
+}
+
+it("should get result with timeout") {
+    let pool = workers::Pool::new(size: 2);
+    let future = pool.submit(|| {
+        time::sleep(5000);
+        return "slow";
+    });
+
+    let result = future.get(timeout: 100);
+    assert(result == null or result.is_err());
+}
+
+it("should cancel task") {
+    let pool = workers::Pool::new(size: 2);
+    let future = pool.submit(|| {
+        time::sleep(5000);
+        return "never";
+    });
+
+    future.cancel();
+    assert(future.is_cancelled() == true);
+}
+
+// ============================================================================
+// BATCH OPERATIONS
+// ============================================================================
+
+it("should map over items") {
+    let pool = workers::Pool::new(size: 4);
+    let items = [1, 2, 3, 4, 5];
+
+    let results = pool.map(items, |x| x * x);
+    assert(results == [1, 4, 9, 16, 25]);
+}
+
+it("should parallel map") {
+    let pool = workers::Pool::new(size: 4);
+    let items = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    let results = pool.parallel_map(items, |x| {
+        time::sleep(100);  // Simulate work
+        return x * 2;
+    });
+
+    assert(results == [2, 4, 6, 8, 10, 12, 14, 16]);
+}
+
+it("should filter in parallel") {
+    let pool = workers::Pool::new(size: 4);
+    let items = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    let even = pool.parallel_filter(items, |x| x % 2 == 0);
+    assert(even == [2, 4, 6, 8]);
+}
+
+it("should reduce in parallel") {
+    let pool = workers::Pool::new(size: 4);
+    let items = [1, 2, 3, 4, 5];
+
+    let sum = pool.parallel_reduce(items, 0, |acc, x| acc + x);
+    assert(sum == 15);
+}
+
+it("should execute all tasks") {
+    let pool = workers::Pool::new(size: 4);
+
+    let tasks = [
+        || 1,
+        || 2,
+        || 3,
+    ];
+
+    let results = pool.invoke_all(tasks);
+    assert(results == [1, 2, 3]);
+}
+
+it("should execute any task") {
+    let pool = workers::Pool::new(size: 4);
+
+    let tasks = [
+        || { time::sleep(100); return 1; },
+        || { return 2; },  // Returns first
+        || { time::sleep(200); return 3; },
+    ];
+
+    let result = pool.invoke_any(tasks);
+    assert(result == 2);
+}
+
+// ============================================================================
+// POOL CONFIGURATION
+// ============================================================================
+
+it("should configure max queue size") {
+    let pool = workers::Pool::new({
+        size: 2,
+        max_queue: 100,
+    });
+
+    // Queue at most 100 pending tasks
+}
+
+it("should configure task timeout") {
+    let pool = workers::Pool::new({
+        size: 2,
+        task_timeout: 5000,  // 5 seconds max per task
+    });
+}
+
+it("should use custom thread names") {
+    let pool = workers::Pool::new({
+        size: 4,
+        name_prefix: "worker-",
+    });
+}
+
+// ============================================================================
+// POOL LIFECYCLE
+// ============================================================================
+
+it("should shutdown gracefully") {
+    let pool = workers::Pool::new(size: 4);
+
+    pool.submit(|| time::sleep(100));
+    pool.submit(|| time::sleep(100));
+
+    pool.shutdown();  // Wait for tasks to complete
+    assert(pool.is_shutdown() == true);
+}
+
+it("should shutdown now") {
+    let pool = workers::Pool::new(size: 4);
+
+    pool.submit(|| time::sleep(5000));
+
+    pool.shutdown_now();  // Cancel pending tasks
+    assert(pool.is_shutdown() == true);
+}
+
+it("should await termination") {
+    let pool = workers::Pool::new(size: 4);
+
+    pool.submit(|| time::sleep(100));
+    pool.shutdown();
+
+    let terminated = pool.await_termination(timeout: 1000);
+    assert(terminated == true);
+}
+
+// ============================================================================
+// SCHEDULED EXECUTION
+// ============================================================================
+
+it("should schedule delayed task") {
+    let pool = workers::ScheduledPool::new(size: 2);
+
+    let future = pool.schedule(|| "delayed", delay: 500);
+
+    time::sleep(600);
+    assert(future.get() == "delayed");
+}
+
+it("should schedule at fixed rate") {
+    let pool = workers::ScheduledPool::new(size: 2);
+    let count = 0;
+
+    let handle = pool.schedule_at_fixed_rate(|| {
+        count += 1;
+    }, initial_delay: 0, period: 100);
+
+    time::sleep(350);
+    handle.cancel();
+
+    assert(count >= 3);
+}
+
+it("should schedule with fixed delay") {
+    let pool = workers::ScheduledPool::new(size: 2);
+    let count = 0;
+
+    let handle = pool.schedule_with_fixed_delay(|| {
+        count += 1;
+        time::sleep(50);  // Task takes time
+    }, initial_delay: 0, delay: 100);
+
+    time::sleep(400);
+    handle.cancel();
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle task exceptions") {
+    let pool = workers::Pool::new(size: 2);
+
+    let future = pool.submit(|| {
+        throw Error("task failed");
+    });
+
+    let result = future.get();
+    assert(result.is_err() == true);
+}
+
+it("should use error handler") {
+    let errors = [];
+    let pool = workers::Pool::new({
+        size: 2,
+        on_error: |err| errors.push(err),
+    });
+
+    pool.submit(|| throw Error("oops"));
+    time::sleep(100);
+
+    assert(errors.len() == 1);
+}
+
+it("should retry failed tasks") {
+    let attempts = 0;
+    let pool = workers::Pool::new({
+        size: 2,
+        max_retries: 3,
+    });
+
+    pool.submit(|| {
+        attempts += 1;
+        if attempts < 3 {
+            throw Error("not yet");
+        }
+        return "success";
+    });
+}
+
+// ============================================================================
+// WORK STEALING
+// ============================================================================
+
+it("should create work-stealing pool") {
+    let pool = workers::WorkStealingPool::new(parallelism: 4);
+    assert(pool != null);
+}
+
+it("should balance work across threads") {
+    let pool = workers::WorkStealingPool::new(parallelism: 4);
+
+    let results = pool.map([1, 2, 3, 4, 5, 6, 7, 8], |x| {
+        // Uneven work distribution
+        time::sleep(x * 10);
+        return x;
+    });
+}
+
+// ============================================================================
+// FORK/JOIN
+// ============================================================================
+
+it("should fork and join tasks") {
+    let pool = workers::ForkJoinPool::new(parallelism: 4);
+
+    let result = pool.invoke(|| {
+        let left = workers::fork(|| compute_left());
+        let right = workers::fork(|| compute_right());
+        return left.join() + right.join();
+    });
+}
+
+it("should support recursive tasks") {
+    let pool = workers::ForkJoinPool::new(parallelism: 4);
+
+    fn fibonacci(n: int) -> int {
+        if n <= 1 {
+            return n;
+        }
+        let f1 = workers::fork(|| fibonacci(n - 1));
+        let f2 = workers::fork(|| fibonacci(n - 2));
+        return f1.join() + f2.join();
+    }
+
+    let result = pool.invoke(|| fibonacci(10));
+    assert(result == 55);
+}
+
+// ============================================================================
+// MONITORING
+// ============================================================================
+
+it("should get pool stats") {
+    let pool = workers::Pool::new(size: 4);
+
+    for i in 0..10 {
+        pool.submit(|| time::sleep(50));
+    }
+
+    let stats = pool.stats();
+    assert(stats.active_count >= 0);
+    assert(stats.completed_count >= 0);
+    assert(stats.queue_size >= 0);
+}
+
+it("should get task stats") {
+    let pool = workers::Pool::new(size: 4);
+
+    let future = pool.submit(|| {
+        time::sleep(100);
+        return "done";
+    });
+    future.wait();
+
+    let stats = future.stats();
+    assert(stats.execution_time >= 100);
+    assert(stats.wait_time >= 0);
+}
+
+// ============================================================================
+// PRIORITY TASKS
+// ============================================================================
+
+it("should support task priorities") {
+    let pool = workers::Pool::new(size: 1);
+
+    pool.submit(|| "low", priority: workers::LOW);
+    pool.submit(|| "high", priority: workers::HIGH);
+    pool.submit(|| "normal", priority: workers::NORMAL);
+
+    // High priority tasks execute first
+}
+
+// ============================================================================
+// CONTEXT PROPAGATION
+// ============================================================================
+
+it("should propagate context to workers") {
+    let pool = workers::Pool::new(size: 4);
+
+    context::set("request_id", "12345");
+
+    let future = pool.submit(|| {
+        return context::get("request_id");
+    });
+
+    assert(future.get() == "12345");
+}
+
+// ============================================================================
+// RESOURCE CLEANUP
+// ============================================================================
+
+it("should cleanup resources") {
+    let pool = workers::Pool::new(size: 4);
+
+    pool.submit(|| {
+        let resource = acquire_resource();
+        defer resource.release();
+        return process(resource);
+    });
+}
+

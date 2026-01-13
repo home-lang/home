@@ -1,0 +1,397 @@
+// Feature Flags Test Suite
+
+// ============================================================================
+// BASIC FEATURE FLAGS
+// ============================================================================
+
+it("should create feature flag") {
+    let flags = features::Flags::new();
+    flags.define("dark_mode", default: false);
+
+    assert(flags.is_enabled("dark_mode") == false);
+}
+
+it("should enable feature") {
+    let flags = features::Flags::new();
+    flags.define("feature_a", default: false);
+
+    flags.enable("feature_a");
+    assert(flags.is_enabled("feature_a") == true);
+}
+
+it("should disable feature") {
+    let flags = features::Flags::new();
+    flags.define("feature_b", default: true);
+
+    flags.disable("feature_b");
+    assert(flags.is_enabled("feature_b") == false);
+}
+
+it("should toggle feature") {
+    let flags = features::Flags::new();
+    flags.define("toggle_me", default: false);
+
+    flags.toggle("toggle_me");
+    assert(flags.is_enabled("toggle_me") == true);
+
+    flags.toggle("toggle_me");
+    assert(flags.is_enabled("toggle_me") == false);
+}
+
+// ============================================================================
+// CONDITIONAL EXECUTION
+// ============================================================================
+
+it("should execute when enabled") {
+    let flags = features::Flags::new();
+    flags.define("new_feature", default: true);
+
+    let executed = false;
+    flags.when("new_feature", || {
+        executed = true;
+    });
+
+    assert(executed == true);
+}
+
+it("should not execute when disabled") {
+    let flags = features::Flags::new();
+    flags.define("disabled_feature", default: false);
+
+    let executed = false;
+    flags.when("disabled_feature", || {
+        executed = true;
+    });
+
+    assert(executed == false);
+}
+
+it("should execute else branch") {
+    let flags = features::Flags::new();
+    flags.define("feature", default: false);
+
+    let result = flags.when_else("feature",
+        || "enabled",
+        || "disabled"
+    );
+
+    assert(result == "disabled");
+}
+
+it("should return value based on flag") {
+    let flags = features::Flags::new();
+    flags.define("use_new_algo", default: true);
+
+    let algo = flags.get_value("use_new_algo",
+        when_enabled: "v2",
+        when_disabled: "v1"
+    );
+
+    assert(algo == "v2");
+}
+
+// ============================================================================
+// PERCENTAGE ROLLOUT
+// ============================================================================
+
+it("should rollout by percentage") {
+    let flags = features::Flags::new();
+    flags.define("gradual_rollout", {
+        rollout_percentage: 50,
+    });
+
+    // ~50% of users will see the feature
+    let enabled_count = 0;
+    for i in 0..1000 {
+        if flags.is_enabled("gradual_rollout", user_id: i) {
+            enabled_count += 1;
+        }
+    }
+
+    // Should be roughly 500 +/- some variance
+    assert(enabled_count > 400 and enabled_count < 600);
+}
+
+it("should be consistent per user") {
+    let flags = features::Flags::new();
+    flags.define("feature", { rollout_percentage: 50 });
+
+    let first_check = flags.is_enabled("feature", user_id: "user123");
+    let second_check = flags.is_enabled("feature", user_id: "user123");
+
+    assert(first_check == second_check);  // Same result for same user
+}
+
+it("should increase rollout") {
+    let flags = features::Flags::new();
+    flags.define("beta_feature", { rollout_percentage: 10 });
+
+    flags.set_rollout("beta_feature", 50);
+
+    let stats = flags.stats("beta_feature");
+    assert(stats.rollout_percentage == 50);
+}
+
+// ============================================================================
+// USER TARGETING
+// ============================================================================
+
+it("should target specific users") {
+    let flags = features::Flags::new();
+    flags.define("premium_feature", {
+        enabled_users: ["user1", "user2", "user3"],
+    });
+
+    assert(flags.is_enabled("premium_feature", user_id: "user1") == true);
+    assert(flags.is_enabled("premium_feature", user_id: "user99") == false);
+}
+
+it("should target user segments") {
+    let flags = features::Flags::new();
+    flags.define("enterprise_feature", {
+        target_segments: ["enterprise", "beta"],
+    });
+
+    assert(flags.is_enabled("enterprise_feature", segments: ["enterprise"]) == true);
+    assert(flags.is_enabled("enterprise_feature", segments: ["free"]) == false);
+}
+
+it("should target by user attributes") {
+    let flags = features::Flags::new();
+    flags.define("country_feature", {
+        rules: [
+            { attribute: "country", operator: "in", values: ["US", "CA"] },
+        ],
+    });
+
+    assert(flags.is_enabled("country_feature", attributes: { country: "US" }) == true);
+    assert(flags.is_enabled("country_feature", attributes: { country: "UK" }) == false);
+}
+
+it("should use complex targeting rules") {
+    let flags = features::Flags::new();
+    flags.define("complex_feature", {
+        rules: [
+            {
+                conditions: [
+                    { attribute: "plan", operator: "eq", value: "premium" },
+                    { attribute: "country", operator: "in", values: ["US", "CA"] },
+                ],
+                match: "all",  // AND
+            },
+        ],
+    });
+}
+
+// ============================================================================
+// VARIANTS (A/B TESTING)
+// ============================================================================
+
+it("should return variant") {
+    let flags = features::Flags::new();
+    flags.define("button_color", {
+        variants: ["red", "blue", "green"],
+        weights: [50, 30, 20],  // 50% red, 30% blue, 20% green
+    });
+
+    let variant = flags.get_variant("button_color", user_id: "user123");
+    assert(variant == "red" or variant == "blue" or variant == "green");
+}
+
+it("should be consistent per user for variants") {
+    let flags = features::Flags::new();
+    flags.define("experiment", {
+        variants: ["control", "treatment"],
+    });
+
+    let v1 = flags.get_variant("experiment", user_id: "user1");
+    let v2 = flags.get_variant("experiment", user_id: "user1");
+
+    assert(v1 == v2);
+}
+
+it("should track variant exposure") {
+    let flags = features::Flags::new();
+    flags.define("ab_test", { variants: ["A", "B"] });
+
+    let variant = flags.get_variant("ab_test", user_id: "user1", track: true);
+
+    let exposures = flags.exposures("ab_test");
+    assert(exposures.len() > 0);
+}
+
+// ============================================================================
+// ENVIRONMENT-BASED
+// ============================================================================
+
+it("should vary by environment") {
+    let flags = features::Flags::new();
+    flags.define("debug_mode", {
+        environments: {
+            development: true,
+            staging: true,
+            production: false,
+        },
+    });
+
+    assert(flags.is_enabled("debug_mode", environment: "development") == true);
+    assert(flags.is_enabled("debug_mode", environment: "production") == false);
+}
+
+// ============================================================================
+// TIME-BASED
+// ============================================================================
+
+it("should enable at scheduled time") {
+    let flags = features::Flags::new();
+    flags.define("holiday_theme", {
+        enabled_from: "2024-12-01T00:00:00Z",
+        enabled_until: "2024-12-31T23:59:59Z",
+    });
+}
+
+it("should auto-expire feature") {
+    let flags = features::Flags::new();
+    flags.define("temporary_feature", {
+        expires_at: "2024-06-01T00:00:00Z",
+    });
+}
+
+// ============================================================================
+// PERSISTENCE
+// ============================================================================
+
+it("should load from config file") {
+    let flags = features::Flags::from_file("flags.json");
+}
+
+it("should load from remote source") {
+    let flags = features::Flags::from_remote("https://flags.example.com/api");
+}
+
+it("should save flag state") {
+    let flags = features::Flags::new();
+    flags.define("feature", default: true);
+    flags.save("flags.json");
+}
+
+it("should sync with remote") {
+    let flags = features::Flags::new({
+        remote: "https://flags.example.com/api",
+        sync_interval: 60,  // seconds
+    });
+}
+
+// ============================================================================
+// OVERRIDES
+// ============================================================================
+
+it("should override for user") {
+    let flags = features::Flags::new();
+    flags.define("feature", default: false);
+
+    flags.override_for_user("user123", "feature", true);
+    assert(flags.is_enabled("feature", user_id: "user123") == true);
+    assert(flags.is_enabled("feature", user_id: "user456") == false);
+}
+
+it("should override locally") {
+    let flags = features::Flags::new();
+    flags.define("feature", default: false);
+
+    flags.local_override("feature", true);
+    // Local overrides take precedence
+}
+
+it("should clear overrides") {
+    let flags = features::Flags::new();
+    flags.define("feature", default: false);
+
+    flags.override_for_user("user1", "feature", true);
+    flags.clear_overrides("feature");
+
+    assert(flags.is_enabled("feature", user_id: "user1") == false);
+}
+
+// ============================================================================
+// DEPENDENCIES
+// ============================================================================
+
+it("should handle feature dependencies") {
+    let flags = features::Flags::new();
+
+    flags.define("base_feature", default: true);
+    flags.define("advanced_feature", {
+        default: true,
+        requires: ["base_feature"],
+    });
+
+    // advanced_feature is only enabled if base_feature is enabled
+    flags.disable("base_feature");
+    assert(flags.is_enabled("advanced_feature") == false);
+}
+
+// ============================================================================
+// METRICS AND ANALYTICS
+// ============================================================================
+
+it("should track flag evaluations") {
+    let flags = features::Flags::new({ track_evaluations: true });
+    flags.define("tracked_feature", default: true);
+
+    flags.is_enabled("tracked_feature");
+    flags.is_enabled("tracked_feature");
+
+    let stats = flags.stats("tracked_feature");
+    assert(stats.evaluation_count == 2);
+}
+
+it("should export analytics") {
+    let flags = features::Flags::new();
+
+    let analytics = flags.analytics();
+    assert(analytics.total_flags >= 0);
+    assert(analytics.enabled_count >= 0);
+}
+
+// ============================================================================
+// MIDDLEWARE
+// ============================================================================
+
+it("should create feature flag middleware") {
+    let flags = features::Flags::new();
+
+    let middleware = flags.middleware({
+        user_id_extractor: |req| req.user.id,
+        attributes_extractor: |req| { country: req.headers["X-Country"] },
+    });
+}
+
+it("should inject flags into request context") {
+    let flags = features::Flags::new();
+
+    // In request handler:
+    // let is_enabled = req.flags.is_enabled("feature");
+}
+
+// ============================================================================
+// TESTING
+// ============================================================================
+
+it("should allow test mode") {
+    let flags = features::Flags::new({ test_mode: true });
+
+    // All flags can be overridden in tests
+    flags.test_enable("feature");
+    flags.test_disable("other_feature");
+}
+
+it("should reset test state") {
+    let flags = features::Flags::new({ test_mode: true });
+
+    flags.test_enable("feature");
+    flags.reset_test_state();
+
+    // Back to default values
+}
+

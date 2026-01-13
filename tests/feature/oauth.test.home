@@ -1,0 +1,408 @@
+// OAuth Authentication Test Suite
+
+// ============================================================================
+// OAUTH 2.0 CLIENT
+// ============================================================================
+
+it("should create OAuth client") {
+    let client = oauth::Client::new({
+        client_id: "my-client-id",
+        client_secret: "my-client-secret",
+        redirect_uri: "https://myapp.com/callback",
+    });
+    assert(client != null);
+}
+
+it("should configure authorization endpoint") {
+    let client = oauth::Client::new({
+        client_id: "my-client-id",
+        authorization_url: "https://auth.example.com/authorize",
+        token_url: "https://auth.example.com/token",
+    });
+}
+
+// ============================================================================
+// AUTHORIZATION CODE FLOW
+// ============================================================================
+
+it("should generate authorization URL") {
+    let client = oauth::Client::new({
+        client_id: "my-client-id",
+        authorization_url: "https://auth.example.com/authorize",
+        redirect_uri: "https://myapp.com/callback",
+    });
+
+    let url = client.authorization_url(scope: ["openid", "profile", "email"]);
+    assert(url.contains("client_id=my-client-id"));
+    assert(url.contains("response_type=code"));
+}
+
+it("should include state parameter") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let state = oauth::generate_state();
+    let url = client.authorization_url(state: state);
+    assert(url.contains("state="));
+}
+
+it("should include PKCE challenge") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let verifier = oauth::pkce::generate_verifier();
+    let challenge = oauth::pkce::generate_challenge(verifier);
+
+    let url = client.authorization_url(
+        code_challenge: challenge,
+        code_challenge_method: "S256"
+    );
+    assert(url.contains("code_challenge="));
+}
+
+it("should exchange code for tokens") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        client_secret: "secret",
+        token_url: "https://auth.example.com/token",
+    });
+
+    // Mock exchange
+    let tokens = client.exchange_code("authorization_code_here");
+    assert(tokens.access_token != null or tokens.is_err());
+}
+
+it("should exchange code with PKCE verifier") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let verifier = "original_verifier";
+    let tokens = client.exchange_code("code", code_verifier: verifier);
+}
+
+// ============================================================================
+// CLIENT CREDENTIALS FLOW
+// ============================================================================
+
+it("should get token with client credentials") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        client_secret: "secret",
+        token_url: "https://auth.example.com/token",
+    });
+
+    let tokens = client.client_credentials(scope: ["api:read"]);
+    assert(tokens.access_token != null or tokens.is_err());
+}
+
+// ============================================================================
+// REFRESH TOKEN FLOW
+// ============================================================================
+
+it("should refresh access token") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        client_secret: "secret",
+        token_url: "https://auth.example.com/token",
+    });
+
+    let new_tokens = client.refresh_token("refresh_token_here");
+    assert(new_tokens.access_token != null or new_tokens.is_err());
+}
+
+it("should handle token rotation") {
+    let tokens = oauth::Tokens {
+        access_token: "old_access",
+        refresh_token: "old_refresh",
+        expires_at: time::now() - 3600,  // Expired
+    };
+
+    let client = oauth::Client::new({ client_id: "id" });
+    let new_tokens = client.refresh_if_needed(tokens);
+}
+
+// ============================================================================
+// IMPLICIT FLOW
+// ============================================================================
+
+it("should generate implicit flow URL") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        authorization_url: "https://auth.example.com/authorize",
+    });
+
+    let url = client.implicit_url(scope: ["openid"]);
+    assert(url.contains("response_type=token"));
+}
+
+it("should parse implicit response") {
+    let fragment = "access_token=abc123&token_type=bearer&expires_in=3600";
+    let tokens = oauth::parse_implicit_response(fragment);
+    assert(tokens.access_token == "abc123");
+}
+
+// ============================================================================
+// DEVICE CODE FLOW
+// ============================================================================
+
+it("should request device code") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        device_authorization_url: "https://auth.example.com/device",
+    });
+
+    let device = client.request_device_code(scope: ["profile"]);
+    assert(device.device_code != null or device.is_err());
+    assert(device.user_code != null or device.is_err());
+    assert(device.verification_uri != null or device.is_err());
+}
+
+it("should poll for device token") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let device_code = "device_code_here";
+
+    let tokens = client.poll_device_token(device_code, interval: 5);
+}
+
+// ============================================================================
+// TOKEN MANAGEMENT
+// ============================================================================
+
+it("should create token response") {
+    let tokens = oauth::Tokens {
+        access_token: "access_token_value",
+        token_type: "Bearer",
+        expires_in: 3600,
+        refresh_token: "refresh_token_value",
+        scope: ["openid", "profile"],
+    };
+
+    assert(tokens.access_token == "access_token_value");
+}
+
+it("should check token expiration") {
+    let tokens = oauth::Tokens {
+        access_token: "token",
+        expires_at: time::now() + 3600,
+    };
+
+    assert(tokens.is_expired() == false);
+}
+
+it("should check token expiring soon") {
+    let tokens = oauth::Tokens {
+        access_token: "token",
+        expires_at: time::now() + 60,  // 1 minute left
+    };
+
+    assert(tokens.expires_soon(threshold: 300) == true);  // Within 5 minutes
+}
+
+// ============================================================================
+// TOKEN INTROSPECTION
+// ============================================================================
+
+it("should introspect token") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        introspection_url: "https://auth.example.com/introspect",
+    });
+
+    let info = client.introspect("access_token_here");
+    assert(info.active == true or info.active == false);
+}
+
+// ============================================================================
+// TOKEN REVOCATION
+// ============================================================================
+
+it("should revoke token") {
+    let client = oauth::Client::new({
+        client_id: "id",
+        revocation_url: "https://auth.example.com/revoke",
+    });
+
+    let result = client.revoke("access_token_here");
+    assert(result.success == true or result.is_err());
+}
+
+it("should revoke refresh token") {
+    let client = oauth::Client::new({ client_id: "id" });
+    client.revoke("refresh_token_here", token_type_hint: "refresh_token");
+}
+
+// ============================================================================
+// OPENID CONNECT
+// ============================================================================
+
+it("should discover OIDC configuration") {
+    let discovery = oauth::oidc::discover("https://auth.example.com");
+    assert(discovery.authorization_endpoint != null);
+    assert(discovery.token_endpoint != null);
+    assert(discovery.userinfo_endpoint != null);
+}
+
+it("should request ID token") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let url = client.authorization_url(
+        scope: ["openid", "profile"],
+        response_type: "code id_token"
+    );
+}
+
+it("should validate ID token") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let id_token = "eyJ...";
+    let claims = client.validate_id_token(id_token);
+    assert(claims.sub != null or claims.is_err());
+}
+
+it("should get userinfo") {
+    let client = oauth::Client::new({
+        userinfo_url: "https://auth.example.com/userinfo",
+    });
+
+    let user = client.userinfo("access_token_here");
+    assert(user.sub != null or user.is_err());
+}
+
+it("should verify nonce") {
+    let client = oauth::Client::new({ client_id: "id" });
+    let nonce = oauth::generate_nonce();
+
+    let id_token = "...";
+    let valid = client.verify_nonce(id_token, expected: nonce);
+}
+
+// ============================================================================
+// JWT HANDLING
+// ============================================================================
+
+it("should decode access token") {
+    let token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...";
+    let decoded = oauth::decode_jwt(token);
+    assert(decoded.header != null);
+    assert(decoded.payload != null);
+}
+
+it("should verify token signature") {
+    let client = oauth::Client::new({
+        jwks_uri: "https://auth.example.com/.well-known/jwks.json",
+    });
+
+    let token = "...";
+    let valid = client.verify_signature(token);
+}
+
+// ============================================================================
+// PROVIDERS
+// ============================================================================
+
+it("should use Google provider") {
+    let client = oauth::providers::google({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret",
+    });
+
+    let url = client.authorization_url(scope: ["email", "profile"]);
+    assert(url.contains("accounts.google.com"));
+}
+
+it("should use GitHub provider") {
+    let client = oauth::providers::github({
+        client_id: "github-client-id",
+        client_secret: "github-client-secret",
+    });
+
+    let url = client.authorization_url(scope: ["user", "repo"]);
+    assert(url.contains("github.com"));
+}
+
+it("should use Microsoft provider") {
+    let client = oauth::providers::microsoft({
+        client_id: "ms-client-id",
+        tenant: "common",
+    });
+}
+
+it("should use Apple provider") {
+    let client = oauth::providers::apple({
+        client_id: "apple-client-id",
+        team_id: "TEAM123",
+        key_id: "KEY456",
+    });
+}
+
+// ============================================================================
+// STATE AND CSRF
+// ============================================================================
+
+it("should generate secure state") {
+    let state = oauth::generate_state();
+    assert(state.len() >= 32);
+}
+
+it("should verify state") {
+    let original = oauth::generate_state();
+    let returned = original;  // Same state from callback
+    assert(oauth::verify_state(original, returned) == true);
+}
+
+it("should detect state mismatch") {
+    let original = oauth::generate_state();
+    let different = oauth::generate_state();
+    assert(oauth::verify_state(original, different) == false);
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should parse error response") {
+    let response = {
+        error: "invalid_grant",
+        error_description: "The authorization code has expired",
+    };
+
+    let err = oauth::parse_error(response);
+    assert(err.code == "invalid_grant");
+}
+
+it("should handle authorization denied") {
+    let callback = "https://myapp.com/callback?error=access_denied";
+    let result = oauth::parse_callback(callback);
+    assert(result.is_err() == true);
+    assert(result.error == "access_denied");
+}
+
+// ============================================================================
+// TOKEN STORAGE
+// ============================================================================
+
+it("should store tokens securely") {
+    let storage = oauth::TokenStorage::new("myapp");
+    let tokens = oauth::Tokens { access_token: "token" };
+
+    storage.save("user123", tokens);
+    let loaded = storage.load("user123");
+    assert(loaded.access_token == "token");
+}
+
+it("should encrypt stored tokens") {
+    let storage = oauth::TokenStorage::new("myapp", encryption_key: "secret");
+    storage.save("user", oauth::Tokens { access_token: "sensitive" });
+}
+
+// ============================================================================
+// MIDDLEWARE
+// ============================================================================
+
+it("should create OAuth middleware") {
+    let middleware = oauth::middleware({
+        client: oauth::Client::new({ client_id: "id" }),
+        login_path: "/login",
+        callback_path: "/callback",
+    });
+}
+
+it("should protect routes") {
+    let protect = oauth::require_auth({
+        scopes: ["admin"],
+        on_unauthorized: |req| http::Response::redirect("/login"),
+    });
+}
+

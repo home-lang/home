@@ -1,0 +1,343 @@
+// Terminal Colors and ANSI Concepts Test Suite
+// Tests color concepts using basic Home syntax
+
+// ============================================================================
+// ANSI CODE STRUCTURE
+// ============================================================================
+
+it("should build basic ANSI escape sequence") {
+    let escape = "\x1b["
+    let code = "31"
+    let suffix = "m"
+    let red_code = escape + code + suffix
+    assert(red_code == "\x1b[31m")
+}
+
+it("should build reset code") {
+    let reset = "\x1b[0m"
+    assert(reset.len() == 4)
+}
+
+// ============================================================================
+// COLOR CODE VALUES
+// ============================================================================
+
+it("should know foreground color codes") {
+    let black = 30
+    let red = 31
+    let green = 32
+    let yellow = 33
+    let blue = 34
+    let magenta = 35
+    let cyan = 36
+    let white = 37
+
+    assert(red == 31)
+    assert(green == 32)
+    assert(blue == 34)
+}
+
+it("should know background color codes") {
+    let bg_black = 40
+    let bg_red = 41
+    let bg_green = 42
+    let bg_yellow = 43
+    let bg_blue = 44
+
+    assert(bg_red == 41)
+    assert(bg_green == 42)
+}
+
+it("should know bright color codes") {
+    let bright_red = 91
+    let bright_green = 92
+    let bright_yellow = 93
+
+    assert(bright_red == 91)
+    assert(bright_green == 92)
+}
+
+// ============================================================================
+// STYLE CODES
+// ============================================================================
+
+it("should know style codes") {
+    let bold = 1
+    let dim = 2
+    let italic = 3
+    let underline = 4
+    let blink = 5
+    let inverse = 7
+    let hidden = 8
+    let strikethrough = 9
+
+    assert(bold == 1)
+    assert(underline == 4)
+}
+
+// ============================================================================
+// BUILDING COLORED STRINGS
+// ============================================================================
+
+it("should wrap text with color codes") {
+    let text = "error"
+    let red_code = "\x1b[31m"
+    let reset = "\x1b[0m"
+    let colored = red_code + text + reset
+
+    assert(colored.starts_with("\x1b[31m"))
+    assert(colored.ends_with("\x1b[0m"))
+    assert(colored.contains("error"))
+}
+
+it("should combine color and style") {
+    let text = "important"
+    let red = "\x1b[31m"
+    let bold = "\x1b[1m"
+    let reset = "\x1b[0m"
+    let styled = red + bold + text + reset
+
+    assert(styled.contains("\x1b[31m"))
+    assert(styled.contains("\x1b[1m"))
+}
+
+// ============================================================================
+// 256 COLOR FORMAT
+// ============================================================================
+
+it("should build 256 color foreground code") {
+    // Format: \x1b[38;5;COLORm
+    let escape = "\x1b["
+    let prefix = "38;5;"
+    let color = "196"
+    let suffix = "m"
+    let code = escape + prefix + color + suffix
+
+    assert(code == "\x1b[38;5;196m")
+}
+
+it("should build 256 color background code") {
+    // Format: \x1b[48;5;COLORm
+    let escape = "\x1b["
+    let prefix = "48;5;"
+    let color = "21"
+    let suffix = "m"
+    let code = escape + prefix + color + suffix
+
+    assert(code == "\x1b[48;5;21m")
+}
+
+// ============================================================================
+// RGB COLOR FORMAT
+// ============================================================================
+
+it("should build RGB foreground code") {
+    // Format: \x1b[38;2;R;G;Bm
+    let escape = "\x1b["
+    let prefix = "38;2;"
+    let r = "255"
+    let g = "100"
+    let b = "50"
+    let suffix = "m"
+    let code = escape + prefix + r + ";" + g + ";" + b + suffix
+
+    assert(code == "\x1b[38;2;255;100;50m")
+}
+
+it("should build RGB background code") {
+    // Format: \x1b[48;2;R;G;Bm
+    let escape = "\x1b["
+    let prefix = "48;2;"
+    let r = "100"
+    let g = "150"
+    let b = "200"
+    let suffix = "m"
+    let code = escape + prefix + r + ";" + g + ";" + b + suffix
+
+    assert(code == "\x1b[48;2;100;150;200m")
+}
+
+// ============================================================================
+// CURSOR CONTROL CODES
+// ============================================================================
+
+it("should build cursor up code") {
+    // Format: \x1b[nA
+    let n = "2"
+    let code = "\x1b[" + n + "A"
+    assert(code == "\x1b[2A")
+}
+
+it("should build cursor down code") {
+    let n = "2"
+    let code = "\x1b[" + n + "B"
+    assert(code == "\x1b[2B")
+}
+
+it("should build cursor right code") {
+    let n = "5"
+    let code = "\x1b[" + n + "C"
+    assert(code == "\x1b[5C")
+}
+
+it("should build cursor left code") {
+    let n = "5"
+    let code = "\x1b[" + n + "D"
+    assert(code == "\x1b[5D")
+}
+
+it("should build cursor position code") {
+    // Format: \x1b[row;colH
+    let row = "10"
+    let col = "20"
+    let code = "\x1b[" + row + ";" + col + "H"
+    assert(code == "\x1b[10;20H")
+}
+
+it("should know cursor hide code") {
+    let hide = "\x1b[?25l"
+    assert(hide == "\x1b[?25l")
+}
+
+it("should know cursor show code") {
+    let show = "\x1b[?25h"
+    assert(show == "\x1b[?25h")
+}
+
+// ============================================================================
+// SCREEN CONTROL CODES
+// ============================================================================
+
+it("should know clear screen code") {
+    let clear = "\x1b[2J"
+    assert(clear == "\x1b[2J")
+}
+
+it("should know clear line code") {
+    let clear_line = "\x1b[2K"
+    assert(clear_line == "\x1b[2K")
+}
+
+it("should build scroll up code") {
+    let n = "1"
+    let code = "\x1b[" + n + "S"
+    assert(code == "\x1b[1S")
+}
+
+it("should build scroll down code") {
+    let n = "1"
+    let code = "\x1b[" + n + "T"
+    assert(code == "\x1b[1T")
+}
+
+// ============================================================================
+// HEX TO RGB CONVERSION
+// ============================================================================
+
+it("should parse hex digits") {
+    let hex_digits = "0123456789abcdef"
+    assert(hex_digits.len() == 16)
+}
+
+it("should convert single hex digit to decimal") {
+    // 'f' = 15 in hex
+    let hex_chars = "0123456789abcdef"
+    let mut value = 0
+    let digit = "f"
+    for i in 0..hex_chars.len() {
+        if hex_chars.char_at(i) == digit {
+            value = i
+        }
+    }
+    assert(value == 15)
+}
+
+// ============================================================================
+// ANSI DETECTION
+// ============================================================================
+
+it("should detect ANSI escape sequence") {
+    let colored = "\x1b[31mtext\x1b[0m"
+    let has_ansi = colored.contains("\x1b[")
+    assert(has_ansi == true)
+}
+
+it("should detect no ANSI in plain text") {
+    let plain = "plain text"
+    let has_ansi = plain.contains("\x1b[")
+    assert(has_ansi == false)
+}
+
+// ============================================================================
+// COLOR LEVELS
+// ============================================================================
+
+it("should define color support levels") {
+    let no_color = 0
+    let basic = 1
+    let extended = 2
+    let truecolor = 3
+
+    assert(no_color == 0)
+    assert(truecolor == 3)
+}
+
+// ============================================================================
+// PROGRESS BAR CONCEPTS
+// ============================================================================
+
+it("should calculate progress bar fill") {
+    let current = 50
+    let total = 100
+    let width = 20
+    let filled = current * width / total
+    assert(filled == 10)
+}
+
+it("should build progress bar string") {
+    let filled = 10
+    let empty = 10
+    let fill_char = "#"
+    let empty_char = "-"
+    let bar = "[" + fill_char.repeat(filled) + empty_char.repeat(empty) + "]"
+    assert(bar == "[##########----------]")
+}
+
+// ============================================================================
+// BOX DRAWING CHARACTERS
+// ============================================================================
+
+it("should know box drawing characters") {
+    let horizontal = "-"
+    let vertical = "|"
+    let top_left = "+"
+    let top_right = "+"
+    let bottom_left = "+"
+    let bottom_right = "+"
+
+    assert(horizontal == "-")
+    assert(vertical == "|")
+}
+
+// ============================================================================
+// TABLE FORMATTING CONCEPTS
+// ============================================================================
+
+it("should calculate column widths") {
+    let col1 = ["Name", "Alice", "Bob"]
+    let mut max_width = 0
+    for item in col1 {
+        if item.len() > max_width {
+            max_width = item.len()
+        }
+    }
+    assert(max_width == 5)  // "Alice" is longest
+}
+
+it("should pad string to width") {
+    let text = "Hi"
+    let width = 5
+    let padding_needed = width - text.len()
+    let padded = text + " ".repeat(padding_needed)
+    assert(padded.len() == 5)
+}

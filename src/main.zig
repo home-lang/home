@@ -1818,157 +1818,23 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
         try runTestSuite(allocator, file_path, options);
         return;
     }
-    // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| {
-        std.debug.print("{s}Error:{s} Failed to open file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
-        return err;
-    };
-    defer allocator.free(source);
 
-    std.debug.print("{s}Running Tests:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
+    // For single files, use runTestFile which properly handles it() blocks
+    std.debug.print("\n{s}Home Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-    // Use arena allocator for parsing
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
-    // Tokenize
-    var lexer = Lexer.init(arena_allocator, source);
-    const tokens = try lexer.tokenize();
-
-    // Parse
-    var parser = try Parser.init(arena_allocator, tokens.items);
-
-    // Set source root for module resolution based on the file being compiled
-    try parser.module_resolver.setSourceRoot(file_path);
-
-    const program = try parser.parse();
-
-    // Check for parse errors
-    if (parser.errors.items.len > 0) {
-        for (parser.errors.items) |err_item| {
-            std.debug.print("<input>:{d}:{d}: {s}error:{s} {s}\n", .{
-                err_item.line,
-                err_item.column,
-                Color.Red.code(),
-                Color.Reset.code(),
-                err_item.message,
-            });
-        }
-        std.debug.print("\n{d} parse error(s) found\n", .{parser.errors.items.len});
+    const result = runTestFile(allocator, file_path, options.verbose);
+    if (result) |test_count| {
+        std.debug.print("\n{s}━━━━━━━━━━━━━━━━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("{s}✓ All tests passed!{s} ({d} tests)\n\n", .{ Color.Green.code(), Color.Reset.code(), test_count });
+    } else |_| {
+        std.debug.print("\n{s}━━━━━━━━━━━━━━━━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("{s}✗ Tests failed{s}\n\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
-    }
-
-    // Import test discovery and executor modules (inline for now)
-    // We'll need to create these as separate files and import them
-    const TestDiscovery = struct {
-        pub const DiscoveredTest = struct {
-            name: []const u8,
-            fn_decl: *ast.FnDecl,
-            file_path: []const u8,
-            line: usize,
-        };
-
-        pub fn discover(alloc: std.mem.Allocator, prog: *ast.Program, path: []const u8) !std.ArrayList(DiscoveredTest) {
-            var tests = std.ArrayList(DiscoveredTest){};
-            for (prog.statements) |stmt| {
-                switch (stmt) {
-                    .FnDecl => |fn_decl| {
-                        if (fn_decl.is_test) {
-                            try tests.append(alloc, .{
-                                .name = fn_decl.name,
-                                .fn_decl = fn_decl,
-                                .file_path = path,
-                                .line = fn_decl.node.loc.line,
-                            });
-                        }
-                    },
-                    else => {},
-                }
-            }
-            return tests;
-        }
-    };
-
-    // Discover tests
-    var discovered_tests = try TestDiscovery.discover(allocator, program, file_path);
-    defer discovered_tests.deinit(allocator);
-
-    std.debug.print("\n{s}Test Discovery{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    std.debug.print("{s}Found {d} test(s){s}\n\n", .{
-        Color.Green.code(),
-        discovered_tests.items.len,
-        Color.Reset.code(),
-    });
-
-    if (discovered_tests.items.len == 0) {
-        std.debug.print("{s}No tests found.{s} Add @test annotations to functions to mark them as tests.\n", .{
-            Color.Yellow.code(),
-            Color.Reset.code(),
-        });
-        return;
-    }
-
-    // Execute tests
-    var passed: usize = 0;
-    const failed: usize = 0;
-    var total_duration: u64 = 0;
-
-    std.debug.print("{s}Running Tests{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-
-    // For now, we just mark tests as discovered
-    // Full test execution via interpreter would require extending the interpreter API
-    // to execute individual functions
-    for (discovered_tests.items) |test_item| {
-        const start_time = std.time.Instant.now() catch @panic("Timer unsupported");
-
-        // Test functions are discovered and validated
-        // Actual execution would be done via codegen or extended interpreter
-        passed += 1;
-
-        const end_time = std.time.Instant.now() catch @panic("Timer unsupported");
-        const duration = end_time.since(start_time) / std.time.ns_per_ms;
-        total_duration += duration;
-
-        std.debug.print("  {s}✓{s} {s} (found - {d}ms)\n", .{
-            Color.Green.code(),
-            Color.Reset.code(),
-            test_item.name,
-            duration,
-        });
-    }
-
-    // Print summary
-    const total = discovered_tests.items.len;
-    std.debug.print("\n{s}Summary{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    std.debug.print("{s}━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-
-    const pass_color = if (passed == total) Color.Green.code() else Color.Yellow.code();
-    std.debug.print("  Tests:    {s}{d} passed{s}, {d} total\n", .{
-        pass_color,
-        passed,
-        Color.Reset.code(),
-        total,
-    });
-
-    if (failed > 0) {
-        std.debug.print("  Failed:   {s}{d}{s}\n", .{
-            Color.Red.code(),
-            failed,
-            Color.Reset.code(),
-        });
-    }
-
-    std.debug.print("  Duration: {d}ms\n", .{total_duration});
-
-    if (failed > 0) {
-        std.debug.print("\n{s}Tests failed.{s}\n", .{ Color.Red.code(), Color.Reset.code() });
-        std.process.exit(1);
-    } else {
-        std.debug.print("\n{s}All tests passed!{s}\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 }
+
+/// Test options struct
 
 pub fn main() !void {
     // Enable memory tracking in debug builds if configured

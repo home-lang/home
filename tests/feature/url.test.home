@@ -1,0 +1,333 @@
+// URL Parsing Concepts Test Suite
+// Testing URL concepts using basic operations
+
+// ============================================================================
+// URL PARSING
+// ============================================================================
+
+it("should detect scheme") {
+    let url = "https://example.com";
+    let has_scheme = url.contains("://");
+    assert(has_scheme == true);
+}
+
+it("should extract scheme") {
+    let url = "https://example.com";
+    let parts = url.split("://");
+    let scheme = parts[0];
+    assert(scheme == "https");
+}
+
+it("should detect http scheme") {
+    let url = "http://example.com";
+    let is_http = url.starts_with("http://");
+    assert(is_http == true);
+}
+
+it("should detect https scheme") {
+    let url = "https://example.com";
+    let is_https = url.starts_with("https://");
+    assert(is_https == true);
+}
+
+// ============================================================================
+// HOST PARSING
+// ============================================================================
+
+it("should extract host") {
+    let url = "https://example.com/path";
+    let without_scheme = url.replace("https://", "");
+    let parts = without_scheme.split("/");
+    let host = parts[0];
+    assert(host == "example.com");
+}
+
+it("should detect host with port") {
+    let host_port = "example.com:8080";
+    let has_port = host_port.contains(":");
+    assert(has_port == true);
+}
+
+it("should extract port") {
+    let host_port = "example.com:8080";
+    let parts = host_port.split(":");
+    let port = parts[1];
+    assert(port == "8080");
+}
+
+// ============================================================================
+// DEFAULT PORTS
+// ============================================================================
+
+it("should know http default port") {
+    let scheme = "http";
+    let default_port = if (scheme == "http") { 80 } else if (scheme == "https") { 443 } else { 0 };
+    assert(default_port == 80);
+}
+
+it("should know https default port") {
+    let scheme = "https";
+    let default_port = if (scheme == "https") { 443 } else { 80 };
+    assert(default_port == 443);
+}
+
+it("should know ftp default port") {
+    let scheme = "ftp";
+    let default_port = 21;
+    assert(default_port == 21);
+}
+
+// ============================================================================
+// PATH PARSING
+// ============================================================================
+
+it("should detect path") {
+    let url = "https://example.com/path/to/resource";
+    let without_scheme = url.replace("https://", "");
+    let has_path = without_scheme.contains("/");
+    assert(has_path == true);
+}
+
+it("should extract path") {
+    let url = "https://example.com/path/to/resource";
+    let without_scheme = url.replace("https://", "");
+    let parts = without_scheme.split("/");
+    // Path parts: "", "path", "to", "resource"
+    assert(parts.len() >= 3);
+}
+
+it("should handle root path") {
+    let url = "https://example.com/";
+    let path = "/";
+    assert(path == "/");
+}
+
+it("should handle no path") {
+    let url = "https://example.com";
+    let without_scheme = url.replace("https://", "");
+    let has_slash = without_scheme.contains("/");
+    assert(has_slash == false);
+}
+
+// ============================================================================
+// QUERY STRING
+// ============================================================================
+
+it("should detect query string") {
+    let url = "https://example.com?foo=bar";
+    let has_query = url.contains("?");
+    assert(has_query == true);
+}
+
+it("should extract query string") {
+    let url = "https://example.com/path?foo=bar&baz=qux";
+    let parts = url.split("?");
+    let query = parts[1];
+    assert(query == "foo=bar&baz=qux");
+}
+
+it("should parse query parameters") {
+    let query = "foo=bar&baz=qux";
+    let params = query.split("&");
+    assert(params.len() == 2);
+    assert(params[0] == "foo=bar");
+    assert(params[1] == "baz=qux");
+}
+
+it("should parse parameter key-value") {
+    let param = "foo=bar";
+    let parts = param.split("=");
+    let key = parts[0];
+    let value = parts[1];
+    assert(key == "foo");
+    assert(value == "bar");
+}
+
+// ============================================================================
+// FRAGMENT
+// ============================================================================
+
+it("should detect fragment") {
+    let url = "https://example.com/page#section";
+    let has_fragment = url.contains("#");
+    assert(has_fragment == true);
+}
+
+it("should extract fragment") {
+    let url = "https://example.com/page#section";
+    let parts = url.split("#");
+    let fragment = parts[1];
+    assert(fragment == "section");
+}
+
+// ============================================================================
+// USER INFO
+// ============================================================================
+
+it("should detect user info") {
+    let url = "https://user:pass@example.com";
+    let has_userinfo = url.contains("@");
+    assert(has_userinfo == true);
+}
+
+it("should extract username") {
+    let userinfo = "user:pass";
+    let parts = userinfo.split(":");
+    let username = parts[0];
+    assert(username == "user");
+}
+
+it("should extract password") {
+    let userinfo = "user:pass";
+    let parts = userinfo.split(":");
+    let password = parts[1];
+    assert(password == "pass");
+}
+
+// ============================================================================
+// URL ENCODING
+// ============================================================================
+
+it("should detect encoded space") {
+    let encoded = "hello%20world";
+    let has_encoded = encoded.contains("%20");
+    assert(has_encoded == true);
+}
+
+it("should decode space") {
+    let encoded = "hello%20world";
+    let decoded = encoded.replace("%20", " ");
+    assert(decoded == "hello world");
+}
+
+it("should detect plus as space") {
+    let query = "name=John+Doe";
+    let has_plus = query.contains("+");
+    assert(has_plus == true);
+}
+
+// ============================================================================
+// URL SCHEMES
+// ============================================================================
+
+it("should detect file URL") {
+    let url = "file:///path/to/file";
+    let is_file = url.starts_with("file://");
+    assert(is_file == true);
+}
+
+it("should detect mailto URL") {
+    let url = "mailto:user@example.com";
+    let is_mailto = url.starts_with("mailto:");
+    assert(is_mailto == true);
+}
+
+it("should detect tel URL") {
+    let url = "tel:+1-555-555-5555";
+    let is_tel = url.starts_with("tel:");
+    assert(is_tel == true);
+}
+
+it("should detect data URL") {
+    let url = "data:text/plain;base64,SGVsbG8=";
+    let is_data = url.starts_with("data:");
+    assert(is_data == true);
+}
+
+// ============================================================================
+// URL BUILDING
+// ============================================================================
+
+it("should build simple URL") {
+    let scheme = "https";
+    let host = "example.com";
+    let url = scheme + "://" + host;
+    assert(url == "https://example.com");
+}
+
+it("should build URL with port") {
+    let scheme = "https";
+    let host = "example.com";
+    let port = "8080";
+    let url = scheme + "://" + host + ":" + port;
+    assert(url == "https://example.com:8080");
+}
+
+it("should build URL with path") {
+    let base = "https://example.com";
+    let path = "/api/users";
+    let url = base + path;
+    assert(url == "https://example.com/api/users");
+}
+
+it("should build URL with query") {
+    let base = "https://example.com/search";
+    let query = "q=hello";
+    let url = base + "?" + query;
+    assert(url == "https://example.com/search?q=hello");
+}
+
+// ============================================================================
+// URL VALIDATION
+// ============================================================================
+
+it("should validate has scheme") {
+    let url = "https://example.com";
+    let has_scheme = url.contains("://");
+    assert(has_scheme == true);
+}
+
+it("should reject missing scheme") {
+    let url = "example.com";
+    let has_scheme = url.contains("://");
+    assert(has_scheme == false);
+}
+
+it("should validate host present") {
+    let url = "https://example.com";
+    let without_scheme = url.replace("https://", "");
+    let has_host = without_scheme.len() > 0;
+    assert(has_host == true);
+}
+
+// ============================================================================
+// RELATIVE URLS
+// ============================================================================
+
+it("should detect absolute URL") {
+    let url = "https://example.com/path";
+    let is_absolute = url.contains("://");
+    assert(is_absolute == true);
+}
+
+it("should detect relative URL") {
+    let url = "/path/to/resource";
+    let is_relative = url.starts_with("/") and !url.contains("://");
+    assert(is_relative == true);
+}
+
+it("should detect protocol-relative URL") {
+    let url = "//example.com/path";
+    let is_protocol_relative = url.starts_with("//") and !url.contains("://");
+    assert(is_protocol_relative == true);
+}
+
+// ============================================================================
+// COMMON OPERATIONS
+// ============================================================================
+
+it("should join base and relative") {
+    let base = "https://example.com/api";
+    let relative = "/users";
+    // For absolute relative, just use base host
+    let result = "https://example.com/users";
+    assert(result.starts_with("https://"));
+}
+
+it("should normalize trailing slash") {
+    let url = "https://example.com/path/";
+    let normalized = url.trim_end();
+    let no_trailing = normalized.ends_with("/");
+    assert(no_trailing == true);
+}
+

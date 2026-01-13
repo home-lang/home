@@ -1,0 +1,411 @@
+// Task Scheduler Concepts Test Suite
+// Tests scheduler concepts using basic Home syntax
+
+// ============================================================================
+// TASK TRACKING
+// ============================================================================
+
+it("should track task list") {
+    let tasks = []
+    tasks = tasks.push("task1")
+    tasks = tasks.push("task2")
+    assert(tasks.len() == 2)
+}
+
+it("should track task by name") {
+    let tasks = {}
+    tasks["cleanup"] = true
+    tasks["backup"] = true
+    assert(tasks["cleanup"] == true)
+}
+
+it("should remove task") {
+    let tasks = ["task1", "task2", "task3"]
+    // Conceptually removing task2
+    let remaining = ["task1", "task3"]
+    assert(remaining.len() == 2)
+}
+
+// ============================================================================
+// TASK STATE
+// ============================================================================
+
+it("should track running state") {
+    let is_running = false
+    is_running = true
+    assert(is_running == true)
+}
+
+it("should track paused state") {
+    let paused = {}
+    paused["task1"] = false
+    paused["task1"] = true
+    assert(paused["task1"] == true)
+}
+
+it("should resume paused task") {
+    let paused = {}
+    paused["task1"] = true
+    paused["task1"] = false
+    assert(paused["task1"] == false)
+}
+
+// ============================================================================
+// INTERVAL CONCEPTS
+// ============================================================================
+
+it("should understand seconds") {
+    let interval_seconds = 30
+    assert(interval_seconds == 30)
+}
+
+it("should understand minutes") {
+    let interval_minutes = 5
+    let seconds = interval_minutes * 60
+    assert(seconds == 300)
+}
+
+it("should understand hours") {
+    let interval_hours = 2
+    let minutes = interval_hours * 60
+    assert(minutes == 120)
+}
+
+it("should calculate milliseconds") {
+    let seconds = 5
+    let milliseconds = seconds * 1000
+    assert(milliseconds == 5000)
+}
+
+// ============================================================================
+// SCHEDULE TYPES
+// ============================================================================
+
+it("should track schedule type") {
+    let schedule_types = ["interval", "cron", "once", "daily"]
+    assert(schedule_types.contains("interval") == true)
+    assert(schedule_types.contains("cron") == true)
+}
+
+it("should understand daily schedule") {
+    let daily_hour = 0
+    let daily_minute = 0
+    assert(daily_hour == 0)
+    assert(daily_minute == 0)
+}
+
+it("should understand specific time") {
+    let time = "03:00"
+    let parts = time.split(":")
+    assert(parts[0] == "03")
+    assert(parts[1] == "00")
+}
+
+// ============================================================================
+// WEEKDAY SCHEDULING
+// ============================================================================
+
+it("should know weekday names") {
+    let weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    assert(weekdays.len() == 7)
+}
+
+it("should track scheduled days") {
+    let scheduled_days = ["monday", "wednesday", "friday"]
+    assert(scheduled_days.contains("monday") == true)
+    assert(scheduled_days.contains("tuesday") == false)
+}
+
+// ============================================================================
+// MONTHLY SCHEDULING
+// ============================================================================
+
+it("should schedule on day of month") {
+    let day_of_month = 1
+    let is_first = day_of_month == 1
+    assert(is_first == true)
+}
+
+it("should validate day of month") {
+    let day = 15
+    let is_valid = day >= 1 and day <= 31
+    assert(is_valid == true)
+}
+
+// ============================================================================
+// DELAY CONCEPTS
+// ============================================================================
+
+it("should understand delay") {
+    let delay_ms = 5000
+    let delay_seconds = delay_ms / 1000
+    assert(delay_seconds == 5)
+}
+
+it("should track one-time execution") {
+    let run_once = true
+    assert(run_once == true)
+}
+
+// ============================================================================
+// TIMEOUT CONCEPTS
+// ============================================================================
+
+it("should track task timeout") {
+    let timeout_ms = 30000
+    let timeout_seconds = timeout_ms / 1000
+    assert(timeout_seconds == 30)
+}
+
+it("should detect timeout exceeded") {
+    let elapsed = 35000
+    let timeout = 30000
+    let exceeded = elapsed > timeout
+    assert(exceeded == true)
+}
+
+// ============================================================================
+// OVERLAP PREVENTION
+// ============================================================================
+
+it("should track overlap setting") {
+    let allow_overlap = false
+    assert(allow_overlap == false)
+}
+
+it("should track if task is running") {
+    let running = {}
+    running["my_task"] = false
+    running["my_task"] = true
+    assert(running["my_task"] == true)
+}
+
+it("should prevent overlap when disabled") {
+    let allow_overlap = false
+    let task_running = true
+    let should_start = allow_overlap or task_running == false
+    assert(should_start == false)
+}
+
+// ============================================================================
+// RETRY CONCEPTS
+// ============================================================================
+
+it("should track max retries") {
+    let max_retries = 3
+    assert(max_retries == 3)
+}
+
+it("should track retry count") {
+    let mut retry_count = 0
+    retry_count = retry_count + 1
+    retry_count = retry_count + 1
+    assert(retry_count == 2)
+}
+
+it("should check if can retry") {
+    let max_retries = 3
+    let retry_count = 2
+    let can_retry = retry_count < max_retries
+    assert(can_retry == true)
+}
+
+it("should stop at max retries") {
+    let max_retries = 3
+    let retry_count = 3
+    let can_retry = retry_count < max_retries
+    assert(can_retry == false)
+}
+
+it("should track retry delay") {
+    let retry_delay_ms = 5000
+    assert(retry_delay_ms == 5000)
+}
+
+// ============================================================================
+// EXECUTION TRACKING
+// ============================================================================
+
+it("should track execution count") {
+    let mut exec_count = 0
+    exec_count = exec_count + 1
+    exec_count = exec_count + 1
+    exec_count = exec_count + 1
+    assert(exec_count == 3)
+}
+
+it("should track success count") {
+    let mut success = 0
+    success = success + 1
+    success = success + 1
+    assert(success == 2)
+}
+
+it("should track failure count") {
+    let mut failures = 0
+    failures = failures + 1
+    assert(failures == 1)
+}
+
+// ============================================================================
+// CRON EXPRESSION INTEGRATION
+// ============================================================================
+
+it("should parse cron for scheduler") {
+    let cron = "0 0 * * *"
+    let parts = cron.split(" ")
+    assert(parts.len() == 5)
+}
+
+it("should understand midnight cron") {
+    let cron = "0 0 * * *"
+    let parts = cron.split(" ")
+    assert(parts[0] == "0")  // minute
+    assert(parts[1] == "0")  // hour
+}
+
+it("should understand business hours cron") {
+    let cron = "0 9-17 * * 1-5"
+    let has_hour_range = cron.contains("9-17")
+    let has_weekday_range = cron.contains("1-5")
+    assert(has_hour_range == true)
+    assert(has_weekday_range == true)
+}
+
+// ============================================================================
+// TIMEZONE CONCEPTS
+// ============================================================================
+
+it("should track timezone") {
+    let timezone = "America/New_York"
+    assert(timezone.contains("/") == true)
+}
+
+it("should parse timezone") {
+    let timezone = "America/New_York"
+    let parts = timezone.split("/")
+    assert(parts[0] == "America")
+    assert(parts[1] == "New_York")
+}
+
+// ============================================================================
+// DISTRIBUTED LOCKING CONCEPTS
+// ============================================================================
+
+it("should track lock status") {
+    let has_lock = false
+    has_lock = true
+    assert(has_lock == true)
+}
+
+it("should release lock") {
+    let mut has_lock = true
+    has_lock = false
+    assert(has_lock == false)
+}
+
+// ============================================================================
+// PERSISTENCE CONCEPTS
+// ============================================================================
+
+it("should track last run time") {
+    let last_run = "2024-01-15T10:30:00Z"
+    assert(last_run.contains("T") == true)
+}
+
+it("should track next run time") {
+    let next_run = "2024-01-15T11:00:00Z"
+    assert(next_run.contains("T") == true)
+}
+
+// ============================================================================
+// ERROR HANDLING CONCEPTS
+// ============================================================================
+
+it("should track error state") {
+    let last_error = "Connection failed"
+    assert(last_error.len() > 0)
+}
+
+it("should track stop on error setting") {
+    let stop_on_error = false
+    // Scheduler continues after error
+    assert(stop_on_error == false)
+}
+
+// ============================================================================
+// HOOK CONCEPTS
+// ============================================================================
+
+it("should track before hook") {
+    let has_before_hook = true
+    assert(has_before_hook == true)
+}
+
+it("should track after hook") {
+    let has_after_hook = true
+    assert(has_after_hook == true)
+}
+
+it("should track success hook") {
+    let has_success_hook = true
+    assert(has_success_hook == true)
+}
+
+it("should track failure hook") {
+    let has_failure_hook = true
+    assert(has_failure_hook == true)
+}
+
+// ============================================================================
+// HISTORY CONCEPTS
+// ============================================================================
+
+it("should track history size") {
+    let history_size = 100
+    assert(history_size == 100)
+}
+
+it("should track execution history") {
+    let history = []
+    history = history.push("2024-01-15T10:00:00Z")
+    history = history.push("2024-01-15T11:00:00Z")
+    assert(history.len() == 2)
+}
+
+// ============================================================================
+// PRIORITY CONCEPTS
+// ============================================================================
+
+it("should track task priority") {
+    let priority = {}
+    priority["critical"] = 1
+    priority["high"] = 2
+    priority["normal"] = 3
+    priority["low"] = 4
+    assert(priority["critical"] < priority["normal"])
+}
+
+// ============================================================================
+// CONCURRENCY CONCEPTS
+// ============================================================================
+
+it("should track max concurrent tasks") {
+    let max_concurrent = 5
+    assert(max_concurrent == 5)
+}
+
+it("should track active task count") {
+    let mut active = 0
+    active = active + 1
+    active = active + 1
+    assert(active == 2)
+}
+
+it("should check if can start new task") {
+    let max_concurrent = 5
+    let active = 3
+    let can_start = active < max_concurrent
+    assert(can_start == true)
+}
+

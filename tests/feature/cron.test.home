@@ -1,0 +1,375 @@
+// Cron Expression Concepts Test Suite
+// Tests cron parsing patterns using basic Home syntax
+
+// ============================================================================
+// CRON FORMAT STRUCTURE
+// ============================================================================
+
+it("should understand cron field structure") {
+    // Standard cron: minute hour day month weekday
+    let fields = ["*", "*", "*", "*", "*"]
+    assert(fields.len() == 5)
+}
+
+it("should understand cron with seconds") {
+    // Extended cron: second minute hour day month weekday
+    let fields = ["0", "*", "*", "*", "*", "*"]
+    assert(fields.len() == 6)
+}
+
+// ============================================================================
+// FIELD VALUE RANGES
+// ============================================================================
+
+it("should know minute range") {
+    let min_minute = 0
+    let max_minute = 59
+    assert(min_minute == 0)
+    assert(max_minute == 59)
+}
+
+it("should know hour range") {
+    let min_hour = 0
+    let max_hour = 23
+    assert(min_hour == 0)
+    assert(max_hour == 23)
+}
+
+it("should know day of month range") {
+    let min_day = 1
+    let max_day = 31
+    assert(min_day == 1)
+    assert(max_day == 31)
+}
+
+it("should know month range") {
+    let min_month = 1
+    let max_month = 12
+    assert(min_month == 1)
+    assert(max_month == 12)
+}
+
+it("should know day of week range") {
+    let min_dow = 0  // Sunday
+    let max_dow = 6  // Saturday
+    assert(min_dow == 0)
+    assert(max_dow == 6)
+}
+
+// ============================================================================
+// PARSING CRON EXPRESSIONS
+// ============================================================================
+
+it("should split cron expression") {
+    let expr = "30 14 * * *"
+    let parts = expr.split(" ")
+    assert(parts.len() == 5)
+    assert(parts[0] == "30")
+    assert(parts[1] == "14")
+}
+
+it("should parse specific minute") {
+    let expr = "30 * * * *"
+    let parts = expr.split(" ")
+    let minute = parts[0]
+    assert(minute == "30")
+}
+
+it("should parse specific hour") {
+    let expr = "0 14 * * *"
+    let parts = expr.split(" ")
+    let hour = parts[1]
+    assert(hour == "14")
+}
+
+// ============================================================================
+// SPECIAL CHARACTERS
+// ============================================================================
+
+it("should identify wildcard") {
+    let field = "*"
+    let is_wildcard = field == "*"
+    assert(is_wildcard == true)
+}
+
+it("should identify range") {
+    let field = "9-17"
+    let is_range = field.contains("-")
+    assert(is_range == true)
+}
+
+it("should parse range values") {
+    let field = "9-17"
+    let parts = field.split("-")
+    assert(parts[0] == "9")
+    assert(parts[1] == "17")
+}
+
+it("should identify list") {
+    let field = "1,15"
+    let is_list = field.contains(",")
+    assert(is_list == true)
+}
+
+it("should parse list values") {
+    let field = "1,15,28"
+    let parts = field.split(",")
+    assert(parts.len() == 3)
+    assert(parts[0] == "1")
+    assert(parts[1] == "15")
+    assert(parts[2] == "28")
+}
+
+it("should identify step") {
+    let field = "*/15"
+    let is_step = field.contains("/")
+    assert(is_step == true)
+}
+
+it("should parse step value") {
+    let field = "*/15"
+    let parts = field.split("/")
+    assert(parts[0] == "*")
+    assert(parts[1] == "15")
+}
+
+// ============================================================================
+// SPECIAL STRINGS
+// ============================================================================
+
+it("should know yearly equivalent") {
+    // @yearly = 0 0 1 1 *
+    let yearly = "0 0 1 1 *"
+    let parts = yearly.split(" ")
+    assert(parts[0] == "0")   // minute
+    assert(parts[1] == "0")   // hour
+    assert(parts[2] == "1")   // day
+    assert(parts[3] == "1")   // month
+}
+
+it("should know monthly equivalent") {
+    // @monthly = 0 0 1 * *
+    let monthly = "0 0 1 * *"
+    let parts = monthly.split(" ")
+    assert(parts[2] == "1")   // day
+    assert(parts[3] == "*")   // any month
+}
+
+it("should know weekly equivalent") {
+    // @weekly = 0 0 * * 0
+    let weekly = "0 0 * * 0"
+    let parts = weekly.split(" ")
+    assert(parts[4] == "0")   // Sunday
+}
+
+it("should know daily equivalent") {
+    // @daily = 0 0 * * *
+    let daily = "0 0 * * *"
+    let parts = daily.split(" ")
+    assert(parts[0] == "0")
+    assert(parts[1] == "0")
+}
+
+it("should know hourly equivalent") {
+    // @hourly = 0 * * * *
+    let hourly = "0 * * * *"
+    let parts = hourly.split(" ")
+    assert(parts[0] == "0")
+    assert(parts[1] == "*")
+}
+
+// ============================================================================
+// DAY OF WEEK NAMES
+// ============================================================================
+
+it("should map day names to numbers") {
+    let days = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+    assert(days[0] == "SUN")  // 0
+    assert(days[1] == "MON")  // 1
+    assert(days[5] == "FRI")  // 5
+}
+
+it("should parse weekday range") {
+    let range = "MON-FRI"
+    let parts = range.split("-")
+    assert(parts[0] == "MON")
+    assert(parts[1] == "FRI")
+}
+
+// ============================================================================
+// MONTH NAMES
+// ============================================================================
+
+it("should map month names to numbers") {
+    let months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+    assert(months[0] == "JAN")   // 1
+    assert(months[11] == "DEC")  // 12
+}
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+it("should validate minute field") {
+    let minute = 30
+    let is_valid = minute >= 0 and minute <= 59
+    assert(is_valid == true)
+}
+
+it("should reject invalid minute") {
+    let minute = 60
+    let is_valid = minute >= 0 and minute <= 59
+    assert(is_valid == false)
+}
+
+it("should validate hour field") {
+    let hour = 14
+    let is_valid = hour >= 0 and hour <= 23
+    assert(is_valid == true)
+}
+
+it("should reject invalid hour") {
+    let hour = 25
+    let is_valid = hour >= 0 and hour <= 23
+    assert(is_valid == false)
+}
+
+it("should validate day field") {
+    let day = 15
+    let is_valid = day >= 1 and day <= 31
+    assert(is_valid == true)
+}
+
+it("should reject invalid day") {
+    let day = 32
+    let is_valid = day >= 1 and day <= 31
+    assert(is_valid == false)
+}
+
+it("should validate month field") {
+    let month = 6
+    let is_valid = month >= 1 and month <= 12
+    assert(is_valid == true)
+}
+
+it("should reject invalid month") {
+    let month = 13
+    let is_valid = month >= 1 and month <= 12
+    assert(is_valid == false)
+}
+
+it("should validate day of week") {
+    let dow = 3
+    let is_valid = dow >= 0 and dow <= 6
+    assert(is_valid == true)
+}
+
+it("should reject invalid day of week") {
+    let dow = 8
+    let is_valid = dow >= 0 and dow <= 6
+    assert(is_valid == false)
+}
+
+// ============================================================================
+// FIELD COUNT VALIDATION
+// ============================================================================
+
+it("should validate standard cron has 5 fields") {
+    let expr = "* * * * *"
+    let parts = expr.split(" ")
+    let is_valid = parts.len() == 5
+    assert(is_valid == true)
+}
+
+it("should validate extended cron has 6 fields") {
+    let expr = "0 * * * * *"
+    let parts = expr.split(" ")
+    let is_valid = parts.len() == 6
+    assert(is_valid == true)
+}
+
+// ============================================================================
+// MATCHING LOGIC
+// ============================================================================
+
+it("should match wildcard to any value") {
+    let field = "*"
+    let value = 30
+    let matches = field == "*"
+    assert(matches == true)
+}
+
+it("should match specific value") {
+    let field = "30"
+    let value = 30
+    let matches = field == "30"
+    assert(matches == true)
+}
+
+it("should check value in range") {
+    let value = 10
+    let range_start = 9
+    let range_end = 17
+    let in_range = value >= range_start and value <= range_end
+    assert(in_range == true)
+}
+
+it("should check value in list") {
+    let list = [1, 15, 28]
+    let value = 15
+    let in_list = list.contains(value)
+    assert(in_list == true)
+}
+
+it("should check value matches step") {
+    let value = 15
+    let step = 5
+    let matches_step = value % step == 0
+    assert(matches_step == true)
+}
+
+// ============================================================================
+// EXPRESSION BUILDING
+// ============================================================================
+
+it("should build every minute expression") {
+    let expr = "* * * * *"
+    assert(expr == "* * * * *")
+}
+
+it("should build specific time expression") {
+    let minute = "30"
+    let hour = "14"
+    let expr = minute + " " + hour + " * * *"
+    assert(expr == "30 14 * * *")
+}
+
+it("should build weekday expression") {
+    let expr = "0 9 * * 1-5"
+    assert(expr.ends_with("1-5"))
+}
+
+// ============================================================================
+// SCHEDULER CONCEPTS
+// ============================================================================
+
+it("should track scheduled jobs") {
+    let jobs = []
+    jobs = jobs.push("job1")
+    jobs = jobs.push("job2")
+    assert(jobs.len() == 2)
+}
+
+it("should track job paused state") {
+    let paused = {}
+    paused["job1"] = false
+    paused["job1"] = true
+    assert(paused["job1"] == true)
+}
+
+it("should resume paused job") {
+    let paused = {}
+    paused["job1"] = true
+    paused["job1"] = false
+    assert(paused["job1"] == false)
+}

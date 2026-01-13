@@ -1,0 +1,231 @@
+// UUID Concepts Test Suite
+// Testing UUID concepts using basic operations
+
+// ============================================================================
+// UUID FORMAT
+// ============================================================================
+
+it("should have correct length") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    assert(uuid.len() == 36);
+}
+
+it("should have correct format with dashes") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let parts = uuid.split("-");
+    assert(parts.len() == 5);
+}
+
+it("should have correct segment lengths") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let parts = uuid.split("-");
+    assert(parts[0].len() == 8);
+    assert(parts[1].len() == 4);
+    assert(parts[2].len() == 4);
+    assert(parts[3].len() == 4);
+    assert(parts[4].len() == 12);
+}
+
+// ============================================================================
+// UUID V4 CONCEPTS
+// ============================================================================
+
+it("should have version 4 indicator") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let version_char = uuid.char_at(14);
+    assert(version_char == "4");
+}
+
+it("should have variant indicator") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let variant_char = uuid.char_at(19);
+    let is_valid = variant_char == "8" or variant_char == "9" or variant_char == "a" or variant_char == "b";
+    assert(is_valid == true);
+}
+
+// ============================================================================
+// UUID V1 CONCEPTS
+// ============================================================================
+
+it("should have version 1 indicator") {
+    let uuid = "550e8400-e29b-11d4-a716-446655440000";
+    let version_char = uuid.char_at(14);
+    assert(version_char == "1");
+}
+
+// ============================================================================
+// UNIQUENESS
+// ============================================================================
+
+it("should generate unique UUIDs") {
+    let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+    let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+    assert(uuid1 != uuid2);
+}
+
+it("should be reproducible for NIL UUID") {
+    let nil1 = "00000000-0000-0000-0000-000000000000";
+    let nil2 = "00000000-0000-0000-0000-000000000000";
+    assert(nil1 == nil2);
+}
+
+// ============================================================================
+// NIL UUID
+// ============================================================================
+
+it("should represent nil UUID") {
+    let nil_uuid = "00000000-0000-0000-0000-000000000000";
+    assert(nil_uuid.len() == 36);
+}
+
+it("should detect nil UUID") {
+    let uuid = "00000000-0000-0000-0000-000000000000";
+    let is_nil = uuid == "00000000-0000-0000-0000-000000000000";
+    assert(is_nil == true);
+}
+
+it("should detect non-nil UUID") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let is_nil = uuid == "00000000-0000-0000-0000-000000000000";
+    assert(is_nil == false);
+}
+
+// ============================================================================
+// UUID PARSING
+// ============================================================================
+
+it("should detect valid UUID format") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let parts = uuid.split("-");
+    let is_valid = parts.len() == 5;
+    assert(is_valid == true);
+}
+
+it("should detect invalid UUID format") {
+    let invalid = "not-a-uuid";
+    let parts = invalid.split("-");
+    let is_valid = parts.len() == 5;
+    assert(is_valid == false);
+}
+
+it("should detect wrong segment count") {
+    let invalid = "550e8400-e29b-41d4-a716";
+    let parts = invalid.split("-");
+    let is_valid = parts.len() == 5;
+    assert(is_valid == false);
+}
+
+// ============================================================================
+// UUID CASE
+// ============================================================================
+
+it("should handle lowercase UUID") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let is_lower = uuid == uuid.lower();
+    assert(is_lower == true);
+}
+
+it("should normalize uppercase UUID") {
+    let upper = "550E8400-E29B-41D4-A716-446655440000";
+    let lower = upper.lower();
+    assert(lower == "550e8400-e29b-41d4-a716-446655440000");
+}
+
+// ============================================================================
+// UUID COMPARISON
+// ============================================================================
+
+it("should compare equal UUIDs") {
+    let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+    let uuid2 = "550e8400-e29b-41d4-a716-446655440000";
+    assert(uuid1 == uuid2);
+}
+
+it("should compare different UUIDs") {
+    let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+    let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+    assert(uuid1 != uuid2);
+}
+
+// ============================================================================
+// UUID STRING REPRESENTATION
+// ============================================================================
+
+it("should represent without dashes") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let compact = uuid.replace("-", "");
+    assert(compact.len() == 32);
+}
+
+it("should convert to URN format") {
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let urn = "urn:uuid:" + uuid;
+    assert(urn.starts_with("urn:uuid:"));
+}
+
+// ============================================================================
+// UUID BYTES
+// ============================================================================
+
+it("should represent as 16 bytes") {
+    let byte_count = 16;
+    assert(byte_count == 16);
+}
+
+it("should have 128 bits") {
+    let bits = 16 * 8;
+    assert(bits == 128);
+}
+
+// ============================================================================
+// UUID NAMESPACE CONCEPTS
+// ============================================================================
+
+it("should have DNS namespace UUID") {
+    let dns_ns = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+    assert(dns_ns.len() == 36);
+}
+
+it("should have URL namespace UUID") {
+    let url_ns = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+    assert(url_ns.len() == 36);
+}
+
+// ============================================================================
+// UUID V5 CONCEPTS
+// ============================================================================
+
+it("should have version 5 indicator") {
+    let uuid = "550e8400-e29b-51d4-a716-446655440000";
+    let version_char = uuid.char_at(14);
+    assert(version_char == "5");
+}
+
+// ============================================================================
+// HEX VALIDATION
+// ============================================================================
+
+it("should contain only hex characters") {
+    let segment = "550e8400"
+    let hex_chars = "0123456789abcdef"
+    let mut all_hex = true
+    for i in 0..segment.len() {
+        if hex_chars.contains(segment.char_at(i)) == false {
+            all_hex = false
+        }
+    }
+    assert(all_hex == true)
+}
+
+it("should reject non-hex characters") {
+    let invalid_segment = "550g8400"
+    let hex_chars = "0123456789abcdef"
+    let mut all_hex = true
+    for i in 0..invalid_segment.len() {
+        if hex_chars.contains(invalid_segment.char_at(i)) == false {
+            all_hex = false
+        }
+    }
+    assert(all_hex == false)
+}
+

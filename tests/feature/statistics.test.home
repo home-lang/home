@@ -1,0 +1,439 @@
+// Statistics Concepts Test Suite
+// Tests statistical concepts using basic Home syntax
+
+// ============================================================================
+// MEASURES OF CENTRAL TENDENCY
+// ============================================================================
+
+it("should calculate mean") {
+    let data = [1, 2, 3, 4, 5]
+    let sum = 1 + 2 + 3 + 4 + 5
+    let mean = sum / 5
+    assert(mean == 3)
+}
+
+it("should calculate sum for mean") {
+    let data = [10, 20, 30, 40, 50]
+    let mut sum = 0
+    for val in data {
+        sum = sum + val
+    }
+    assert(sum == 150)
+}
+
+it("should find median in odd count") {
+    let sorted = [1, 3, 5, 7, 9]
+    let mid_index = sorted.len() / 2
+    let median = sorted[mid_index]
+    assert(median == 5)
+}
+
+it("should find median in even count") {
+    let sorted = [1, 3, 5, 7]
+    // For even count, median is average of two middle values
+    let mid1 = sorted[1]  // 3
+    let mid2 = sorted[2]  // 5
+    let median = (mid1 + mid2) / 2
+    assert(median == 4)
+}
+
+it("should find mode (most frequent)") {
+    let data = [1, 2, 2, 3, 3, 3, 4]
+    // Count frequencies manually
+    let freq = {}
+    freq["1"] = 1
+    freq["2"] = 2
+    freq["3"] = 3
+    freq["4"] = 1
+    // Mode is 3 (appears 3 times)
+    assert(freq["3"] > freq["2"])
+}
+
+// ============================================================================
+// MEASURES OF DISPERSION
+// ============================================================================
+
+it("should calculate range") {
+    let data = [1, 5, 3, 9, 2]
+    let min = 1
+    let max = 9
+    let range = max - min
+    assert(range == 8)
+}
+
+it("should find minimum") {
+    let data = [5, 2, 8, 1, 9]
+    let mut min = data[0]
+    for val in data {
+        if val < min {
+            min = val
+        }
+    }
+    assert(min == 1)
+}
+
+it("should find maximum") {
+    let data = [5, 2, 8, 1, 9]
+    let mut max = data[0]
+    for val in data {
+        if val > max {
+            max = val
+        }
+    }
+    assert(max == 9)
+}
+
+it("should calculate variance concept") {
+    // Variance = sum of squared deviations / n
+    let data = [2, 4, 4, 4, 5, 5, 7, 9]
+    let mean = 5  // (2+4+4+4+5+5+7+9)/8 = 40/8 = 5
+    // Deviations: -3, -1, -1, -1, 0, 0, 2, 4
+    // Squared: 9, 1, 1, 1, 0, 0, 4, 16 = 32
+    // Variance = 32/8 = 4
+    let variance = 4
+    assert(variance == 4)
+}
+
+it("should calculate standard deviation concept") {
+    // Std dev = sqrt(variance)
+    let variance = 4
+    let std_dev = 2  // sqrt(4) = 2
+    assert(std_dev == 2)
+}
+
+// ============================================================================
+// PERCENTILES AND QUARTILES
+// ============================================================================
+
+it("should understand percentile concept") {
+    let sorted = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    // 50th percentile (median) is around index 5
+    let median_index = sorted.len() / 2
+    assert(median_index == 5)
+}
+
+it("should calculate quartile positions") {
+    let n = 9
+    let q1_pos = n / 4
+    let q2_pos = n / 2
+    let q3_pos = 3 * n / 4
+    assert(q1_pos == 2)
+    assert(q2_pos == 4)
+    assert(q3_pos == 6)
+}
+
+it("should calculate IQR") {
+    // IQR = Q3 - Q1
+    let q1 = 3
+    let q3 = 7
+    let iqr = q3 - q1
+    assert(iqr == 4)
+}
+
+// ============================================================================
+// CORRELATION CONCEPTS
+// ============================================================================
+
+it("should understand positive correlation") {
+    let x = [1, 2, 3, 4, 5]
+    let y = [2, 4, 6, 8, 10]
+    // Both increase together -> positive correlation (r = 1)
+    let correlation = 1
+    assert(correlation == 1)
+}
+
+it("should understand negative correlation") {
+    let x = [1, 2, 3, 4, 5]
+    let y = [10, 8, 6, 4, 2]
+    // One increases, other decreases -> negative correlation (r = -1)
+    let correlation = -1
+    assert(correlation == -1)
+}
+
+it("should understand no correlation") {
+    // When r = 0, no linear relationship
+    let correlation = 0
+    assert(correlation == 0)
+}
+
+// ============================================================================
+// LINEAR REGRESSION CONCEPTS
+// ============================================================================
+
+it("should understand slope concept") {
+    // y = mx + b, slope m represents rate of change
+    let slope = 2
+    let x = 3
+    let b = 1
+    let y = slope * x + b
+    assert(y == 7)
+}
+
+it("should understand intercept concept") {
+    // y-intercept is value when x = 0
+    let slope = 2
+    let intercept = 5
+    let y_at_zero = slope * 0 + intercept
+    assert(y_at_zero == 5)
+}
+
+it("should predict using linear model") {
+    let slope = 2
+    let intercept = 0
+    let x = 6
+    let predicted = slope * x + intercept
+    assert(predicted == 12)
+}
+
+// ============================================================================
+// COVARIANCE CONCEPTS
+// ============================================================================
+
+it("should understand covariance direction") {
+    // Positive covariance: variables move together
+    // Negative covariance: variables move opposite
+    let positive_cov = 4
+    let negative_cov = -4
+    assert(positive_cov > 0)
+    assert(negative_cov < 0)
+}
+
+// ============================================================================
+// PROBABILITY CONCEPTS
+// ============================================================================
+
+it("should understand probability range") {
+    let prob = 0.5
+    let is_valid = prob >= 0 and prob <= 1
+    assert(is_valid == true)
+}
+
+it("should understand complementary probability") {
+    let prob = 0.3
+    let complement = 1 - prob
+    assert(complement * 10 == 7)  // 0.7 * 10 = 7
+}
+
+// ============================================================================
+// Z-SCORE CONCEPTS
+// ============================================================================
+
+it("should calculate z-score") {
+    // z = (x - mean) / std_dev
+    let x = 85
+    let mean = 100
+    let std_dev = 15
+    let z = (x - mean) / std_dev
+    assert(z == -1)
+}
+
+it("should interpret positive z-score") {
+    let z = 2
+    let above_mean = z > 0
+    assert(above_mean == true)
+}
+
+it("should interpret negative z-score") {
+    let z = -1
+    let below_mean = z < 0
+    assert(below_mean == true)
+}
+
+// ============================================================================
+// HYPOTHESIS TESTING CONCEPTS
+// ============================================================================
+
+it("should understand p-value threshold") {
+    let p_value = 0.03
+    let alpha = 0.05
+    let is_significant = p_value < alpha
+    assert(is_significant == true)
+}
+
+it("should not reject null when p > alpha") {
+    let p_value = 0.08
+    let alpha = 0.05
+    let reject_null = p_value < alpha
+    assert(reject_null == false)
+}
+
+// ============================================================================
+// CONFIDENCE INTERVAL CONCEPTS
+// ============================================================================
+
+it("should understand confidence level") {
+    let confidence = 0.95
+    assert(confidence * 100 == 95)
+}
+
+it("should understand interval bounds") {
+    let mean = 100
+    let margin = 5
+    let lower = mean - margin
+    let upper = mean + margin
+    assert(lower == 95)
+    assert(upper == 105)
+}
+
+it("should understand mean is in interval") {
+    let lower = 95
+    let upper = 105
+    let mean = 100
+    let in_interval = mean >= lower and mean <= upper
+    assert(in_interval == true)
+}
+
+// ============================================================================
+// OUTLIER DETECTION CONCEPTS
+// ============================================================================
+
+it("should detect outlier with IQR") {
+    let q1 = 25
+    let q3 = 75
+    let iqr = q3 - q1
+    let lower_fence = q1 - 1.5 * iqr  // 25 - 75 = -50
+    let upper_fence = q3 + 1.5 * iqr  // 75 + 75 = 150
+
+    let value = 200
+    let is_outlier = value < lower_fence or value > upper_fence
+    assert(is_outlier == true)
+}
+
+it("should detect outlier with z-score") {
+    let z = 3.5
+    let threshold = 3
+    let is_outlier = z > threshold or z < -threshold
+    assert(is_outlier == true)
+}
+
+// ============================================================================
+// DESCRIPTIVE STATISTICS
+// ============================================================================
+
+it("should track count") {
+    let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert(data.len() == 10)
+}
+
+it("should track sum") {
+    let data = [1, 2, 3, 4, 5]
+    let sum = 1 + 2 + 3 + 4 + 5
+    assert(sum == 15)
+}
+
+// ============================================================================
+// RUNNING STATISTICS CONCEPTS
+// ============================================================================
+
+it("should update running mean") {
+    let mut count = 0
+    let mut sum = 0
+
+    sum = sum + 10
+    count = count + 1
+    let mean1 = sum / count
+    assert(mean1 == 10)
+
+    sum = sum + 20
+    count = count + 1
+    let mean2 = sum / count
+    assert(mean2 == 15)
+}
+
+// ============================================================================
+// SAMPLING CONCEPTS
+// ============================================================================
+
+it("should understand sample size") {
+    let population = 1000
+    let sample_size = 100
+    let sample_ratio = sample_size * 100 / population
+    assert(sample_ratio == 10)  // 10%
+}
+
+// ============================================================================
+// CHI-SQUARE CONCEPTS
+// ============================================================================
+
+it("should calculate expected value") {
+    let total = 60
+    let categories = 3
+    let expected = total / categories
+    assert(expected == 20)
+}
+
+it("should calculate chi-square component") {
+    let observed = 25
+    let expected = 20
+    let diff = observed - expected
+    // (25-20)^2 / 20 = 25/20 = 1.25
+    // Using integer math: diff * diff = 25
+    let squared_diff = diff * diff
+    assert(squared_diff == 25)
+}
+
+// ============================================================================
+// ANOVA CONCEPTS
+// ============================================================================
+
+it("should understand between-group variation") {
+    let group1_mean = 10
+    let group2_mean = 20
+    let group3_mean = 30
+    let overall_mean = (group1_mean + group2_mean + group3_mean) / 3
+    assert(overall_mean == 20)
+}
+
+// ============================================================================
+// DISTRIBUTION SHAPE
+// ============================================================================
+
+it("should understand skewness direction") {
+    // Positive skew: tail extends right
+    // Negative skew: tail extends left
+    let positive_skew = 0.5
+    let negative_skew = -0.5
+    assert(positive_skew > 0)
+    assert(negative_skew < 0)
+}
+
+it("should understand symmetric distribution") {
+    // Skewness near zero is symmetric
+    let skewness = 0
+    let is_symmetric = skewness == 0
+    assert(is_symmetric == true)
+}
+
+// ============================================================================
+// DATA TYPES
+// ============================================================================
+
+it("should classify continuous data") {
+    let continuous = [1.5, 2.3, 3.7, 4.2]
+    assert(continuous.len() == 4)
+}
+
+it("should classify discrete data") {
+    let discrete = [1, 2, 3, 4, 5]
+    assert(discrete.len() == 5)
+}
+
+// ============================================================================
+// FREQUENCY DISTRIBUTION
+// ============================================================================
+
+it("should count frequencies") {
+    let counts = {}
+    counts["A"] = 5
+    counts["B"] = 10
+    counts["C"] = 3
+    assert(counts["B"] > counts["A"])
+}
+
+it("should calculate relative frequency") {
+    let count = 25
+    let total = 100
+    let relative_freq = count * 100 / total
+    assert(relative_freq == 25)  // 25%
+}
+

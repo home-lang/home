@@ -1,0 +1,286 @@
+// Semantic Versioning Concepts Test Suite
+// Testing semver concepts using basic operations
+
+// ============================================================================
+// PARSING
+// ============================================================================
+
+it("should parse simple version") {
+    let version = "1.2.3";
+    let parts = version.split(".");
+    assert(parts.len() == 3);
+    assert(parts[0] == "1");
+    assert(parts[1] == "2");
+    assert(parts[2] == "3");
+}
+
+it("should parse major version") {
+    let version = "1.2.3";
+    let parts = version.split(".");
+    let major = parts[0];
+    assert(major == "1");
+}
+
+it("should parse minor version") {
+    let version = "1.2.3";
+    let parts = version.split(".");
+    let minor = parts[1];
+    assert(minor == "2");
+}
+
+it("should parse patch version") {
+    let version = "1.2.3";
+    let parts = version.split(".");
+    let patch = parts[2];
+    assert(patch == "3");
+}
+
+// ============================================================================
+// PRERELEASE
+// ============================================================================
+
+it("should detect prerelease") {
+    let version = "1.0.0-alpha";
+    let has_prerelease = version.contains("-");
+    assert(has_prerelease == true);
+}
+
+it("should extract prerelease") {
+    let version = "1.0.0-alpha.1";
+    let parts = version.split("-");
+    let prerelease = parts[1];
+    assert(prerelease == "alpha.1");
+}
+
+it("should detect no prerelease") {
+    let version = "1.0.0";
+    let has_prerelease = version.contains("-");
+    assert(has_prerelease == false);
+}
+
+// ============================================================================
+// BUILD METADATA
+// ============================================================================
+
+it("should detect build metadata") {
+    let version = "1.0.0+build.123";
+    let has_build = version.contains("+");
+    assert(has_build == true);
+}
+
+it("should extract build metadata") {
+    let version = "1.0.0+build.123";
+    let parts = version.split("+");
+    let build = parts[1];
+    assert(build == "build.123");
+}
+
+it("should parse both prerelease and build") {
+    let version = "1.0.0-beta.2+build.456";
+    let has_prerelease = version.contains("-");
+    let has_build = version.contains("+");
+    assert(has_prerelease == true);
+    assert(has_build == true);
+}
+
+// ============================================================================
+// V PREFIX
+// ============================================================================
+
+it("should detect v prefix") {
+    let version = "v1.2.3";
+    let has_v = version.starts_with("v");
+    assert(has_v == true);
+}
+
+it("should strip v prefix") {
+    let version = "v1.2.3";
+    let stripped = version.replace("v", "");
+    assert(stripped == "1.2.3");
+}
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+it("should validate semver format") {
+    let version = "1.2.3";
+    let parts = version.split(".");
+    let is_valid = parts.len() == 3;
+    assert(is_valid == true);
+}
+
+it("should detect invalid semver") {
+    let version = "1.2";
+    let parts = version.split(".");
+    let is_valid = parts.len() == 3;
+    assert(is_valid == false);
+}
+
+it("should detect too many parts") {
+    let version = "1.2.3.4";
+    let parts = version.split(".");
+    let is_valid = parts.len() == 3;
+    assert(is_valid == false);
+}
+
+// ============================================================================
+// COMPARISON CONCEPTS
+// ============================================================================
+
+it("should compare major versions") {
+    let v1_major = 1;
+    let v2_major = 2;
+    let v1_less = v1_major < v2_major;
+    assert(v1_less == true);
+}
+
+it("should compare minor when major equal") {
+    let v1 = [1, 2, 0];
+    let v2 = [1, 3, 0];
+    // v1 < v2 when major same, minor differs
+    let result = v1[1] < v2[1];
+    assert(result == true);
+}
+
+it("should compare patch when major and minor equal") {
+    let v1 = [1, 2, 3];
+    let v2 = [1, 2, 5];
+    let result = v1[2] < v2[2];
+    assert(result == true);
+}
+
+// ============================================================================
+// INCREMENT CONCEPTS
+// ============================================================================
+
+it("should increment major") {
+    let major = 1;
+    let new_major = major + 1;
+    assert(new_major == 2);
+}
+
+it("should increment minor") {
+    let minor = 2;
+    let new_minor = minor + 1;
+    assert(new_minor == 3);
+}
+
+it("should increment patch") {
+    let patch = 3;
+    let new_patch = patch + 1;
+    assert(new_patch == 4);
+}
+
+it("should reset minor and patch on major bump") {
+    let version = [1, 5, 10];
+    let new_version = [version[0] + 1, 0, 0];
+    assert(new_version[0] == 2);
+    assert(new_version[1] == 0);
+    assert(new_version[2] == 0);
+}
+
+it("should reset patch on minor bump") {
+    let version = [1, 2, 5];
+    let new_version = [version[0], version[1] + 1, 0];
+    assert(new_version[1] == 3);
+    assert(new_version[2] == 0);
+}
+
+// ============================================================================
+// RANGE CONCEPTS
+// ============================================================================
+
+it("should detect caret range") {
+    let range = "^1.2.3";
+    let is_caret = range.starts_with("^");
+    assert(is_caret == true);
+}
+
+it("should detect tilde range") {
+    let range = "~1.2.3";
+    let is_tilde = range.starts_with("~");
+    assert(is_tilde == true);
+}
+
+it("should detect greater than") {
+    let range = ">1.0.0";
+    let is_gt = range.starts_with(">");
+    assert(is_gt == true);
+}
+
+it("should detect less than") {
+    let range = "<2.0.0";
+    let is_lt = range.starts_with("<");
+    assert(is_lt == true);
+}
+
+it("should detect greater or equal") {
+    let range = ">=1.0.0";
+    let is_gte = range.starts_with(">=");
+    assert(is_gte == true);
+}
+
+// ============================================================================
+// VERSION SATISFIES RANGE
+// ============================================================================
+
+it("should check version in exact range") {
+    let version = [1, 2, 3];
+    let range_version = [1, 2, 3];
+    let matches = version[0] == range_version[0] and version[1] == range_version[1] and version[2] == range_version[2];
+    assert(matches == true);
+}
+
+it("should check version greater than") {
+    let version = [1, 3, 0];
+    let min = [1, 2, 0];
+    let is_greater = version[0] > min[0] or (version[0] == min[0] and version[1] > min[1]);
+    assert(is_greater == true);
+}
+
+// ============================================================================
+// STRING REPRESENTATION
+// ============================================================================
+
+it("should format version string") {
+    let major = "1";
+    let minor = "2";
+    let patch = "3";
+    let version = major + "." + minor + "." + patch;
+    assert(version == "1.2.3");
+}
+
+it("should format with prerelease") {
+    let base = "1.0.0";
+    let prerelease = "alpha";
+    let version = base + "-" + prerelease;
+    assert(version == "1.0.0-alpha");
+}
+
+it("should format with build") {
+    let base = "1.0.0";
+    let build = "20231225";
+    let version = base + "+" + build;
+    assert(version == "1.0.0+20231225");
+}
+
+// ============================================================================
+// PRERELEASE COMPARISON
+// ============================================================================
+
+it("should compare prerelease vs release") {
+    // Prerelease is less than release
+    let has_prerelease = true;
+    let is_less = has_prerelease;  // 1.0.0-alpha < 1.0.0
+    assert(is_less == true);
+}
+
+it("should compare prerelease identifiers") {
+    let pre1 = "alpha";
+    let pre2 = "beta";
+    // alpha comes before beta alphabetically
+    let diff = pre1 != pre2;
+    assert(diff == true);
+}
+

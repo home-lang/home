@@ -1,0 +1,436 @@
+// Health Check Test Suite
+
+// ============================================================================
+// BASIC HEALTH CHECKS
+// ============================================================================
+
+it("should create health checker") {
+    let health = health::Checker::new();
+    assert(health != null);
+}
+
+it("should register check") {
+    let health = health::Checker::new();
+
+    health.register("database", || {
+        // Check database connectivity
+        return db::ping();
+    });
+
+    assert(health.checks().contains("database"));
+}
+
+it("should run health check") {
+    let health = health::Checker::new();
+
+    health.register("always_healthy", || {
+        return health::Result::healthy();
+    });
+
+    let result = health.check("always_healthy");
+    assert(result.status == "healthy");
+}
+
+it("should run all checks") {
+    let health = health::Checker::new();
+
+    health.register("check1", || health::Result::healthy());
+    health.register("check2", || health::Result::healthy());
+
+    let results = health.check_all();
+    assert(results.overall_status == "healthy");
+}
+
+// ============================================================================
+// HEALTH RESULT TYPES
+// ============================================================================
+
+it("should return healthy result") {
+    let result = health::Result::healthy();
+    assert(result.status == "healthy");
+}
+
+it("should return healthy with details") {
+    let result = health::Result::healthy({
+        message: "Database connection pool healthy",
+        connections: 10,
+        max_connections: 20,
+    });
+
+    assert(result.status == "healthy");
+    assert(result.details.connections == 10);
+}
+
+it("should return unhealthy result") {
+    let result = health::Result::unhealthy("Connection failed");
+    assert(result.status == "unhealthy");
+    assert(result.message == "Connection failed");
+}
+
+it("should return degraded result") {
+    let result = health::Result::degraded("High latency detected");
+    assert(result.status == "degraded");
+}
+
+// ============================================================================
+// COMMON CHECKS
+// ============================================================================
+
+it("should check database") {
+    let health = health::Checker::new();
+
+    health.register("postgres", health::checks::postgres({
+        connection_string: "postgresql://localhost/db",
+        timeout: 5000,
+    }));
+}
+
+it("should check Redis") {
+    let health = health::Checker::new();
+
+    health.register("redis", health::checks::redis({
+        url: "redis://localhost:6379",
+        timeout: 1000,
+    }));
+}
+
+it("should check HTTP endpoint") {
+    let health = health::Checker::new();
+
+    health.register("api", health::checks::http({
+        url: "https://api.example.com/health",
+        expected_status: 200,
+        timeout: 5000,
+    }));
+}
+
+it("should check disk space") {
+    let health = health::Checker::new();
+
+    health.register("disk", health::checks::disk({
+        path: "/",
+        min_free_bytes: 1024 * 1024 * 100,  // 100MB
+    }));
+}
+
+it("should check memory") {
+    let health = health::Checker::new();
+
+    health.register("memory", health::checks::memory({
+        max_usage_percent: 90,
+    }));
+}
+
+it("should check CPU") {
+    let health = health::Checker::new();
+
+    health.register("cpu", health::checks::cpu({
+        max_usage_percent: 80,
+        sample_duration: 1000,
+    }));
+}
+
+// ============================================================================
+// CHECK CONFIGURATION
+// ============================================================================
+
+it("should set check timeout") {
+    let health = health::Checker::new();
+
+    health.register("slow_check", || {
+        time::sleep(5000);
+        return health::Result::healthy();
+    }, timeout: 1000);
+
+    let result = health.check("slow_check");
+    assert(result.status == "unhealthy");  // Timed out
+}
+
+it("should set check interval") {
+    let health = health::Checker::new();
+
+    health.register("periodic", || {
+        return health::Result::healthy();
+    }, interval: 30000);  // Check every 30 seconds
+}
+
+it("should set failure threshold") {
+    let health = health::Checker::new();
+
+    health.register("flaky", || {
+        // Might fail occasionally
+    }, failure_threshold: 3);  // Only unhealthy after 3 consecutive failures
+}
+
+// ============================================================================
+// LIVENESS VS READINESS
+// ============================================================================
+
+it("should distinguish liveness checks") {
+    let health = health::Checker::new();
+
+    health.register("process", || {
+        return health::Result::healthy();
+    }, type: "liveness");
+
+    let liveness = health.liveness_check();
+    assert(liveness.status == "healthy");
+}
+
+it("should distinguish readiness checks") {
+    let health = health::Checker::new();
+
+    health.register("database", || {
+        return db::is_ready() ? health::Result::healthy() : health::Result::unhealthy("Not ready");
+    }, type: "readiness");
+
+    let readiness = health.readiness_check();
+}
+
+it("should support startup checks") {
+    let health = health::Checker::new();
+
+    health.register("initialization", || {
+        return app::is_initialized() ? health::Result::healthy() : health::Result::unhealthy("Still starting");
+    }, type: "startup");
+
+    let startup = health.startup_check();
+}
+
+// ============================================================================
+// AGGREGATION
+// ============================================================================
+
+it("should aggregate check results") {
+    let health = health::Checker::new();
+
+    health.register("check1", || health::Result::healthy());
+    health.register("check2", || health::Result::unhealthy("Failed"));
+
+    let aggregate = health.check_all();
+    assert(aggregate.overall_status == "unhealthy");
+    assert(aggregate.healthy_count == 1);
+    assert(aggregate.unhealthy_count == 1);
+}
+
+it("should use custom aggregation strategy") {
+    let health = health::Checker::new({
+        aggregation: "any_healthy",  // Healthy if any check passes
+    });
+
+    health.register("check1", || health::Result::unhealthy("Down"));
+    health.register("check2", || health::Result::healthy());
+
+    let aggregate = health.check_all();
+    assert(aggregate.overall_status == "healthy");
+}
+
+// ============================================================================
+// HTTP ENDPOINT
+// ============================================================================
+
+it("should create health endpoint") {
+    let health = health::Checker::new();
+    let handler = health.http_handler();
+
+    // GET /health returns JSON status
+}
+
+it("should return correct status codes") {
+    let health = health::Checker::new();
+    health.register("check", || health::Result::healthy());
+
+    let handler = health.http_handler();
+    // 200 for healthy
+    // 503 for unhealthy
+    // 429 for degraded
+}
+
+it("should customize endpoint path") {
+    let health = health::Checker::new();
+    let handler = health.http_handler({ path: "/healthz" });
+}
+
+it("should separate endpoints") {
+    let health = health::Checker::new();
+
+    // Kubernetes-style endpoints
+    let handlers = health.kubernetes_handlers();
+    // handlers.liveness  -> /healthz
+    // handlers.readiness -> /ready
+    // handlers.startup   -> /startup
+}
+
+// ============================================================================
+// CACHING
+// ============================================================================
+
+it("should cache results") {
+    let health = health::Checker::new({ cache_ttl: 5000 });
+
+    health.register("expensive_check", || {
+        // Expensive operation
+        return health::Result::healthy();
+    });
+
+    // Second call within 5 seconds uses cached result
+}
+
+it("should force refresh") {
+    let health = health::Checker::new({ cache_ttl: 60000 });
+
+    let result = health.check("check", force: true);
+    // Ignores cache
+}
+
+// ============================================================================
+// CALLBACKS AND HOOKS
+// ============================================================================
+
+it("should trigger callback on status change") {
+    let health = health::Checker::new();
+    let status_changes = [];
+
+    health.on_status_change(|check_name, old_status, new_status| {
+        status_changes.push({ check_name, old_status, new_status });
+    });
+
+    health.register("flaky", || {
+        // Changes status
+    });
+}
+
+it("should trigger callback on unhealthy") {
+    let health = health::Checker::new();
+
+    health.on_unhealthy(|check_name, result| {
+        alert::send("Health check failed: {check_name}");
+    });
+}
+
+it("should trigger recovery callback") {
+    let health = health::Checker::new();
+
+    health.on_recovery(|check_name| {
+        log::info("Health check recovered: {check_name}");
+    });
+}
+
+// ============================================================================
+// METRICS INTEGRATION
+// ============================================================================
+
+it("should export metrics") {
+    let health = health::Checker::new();
+
+    let metrics = health.metrics();
+    assert(metrics.total_checks >= 0);
+    assert(metrics.healthy_checks >= 0);
+    assert(metrics.check_duration_ms >= 0);
+}
+
+it("should integrate with metrics collector") {
+    let health = health::Checker::new();
+
+    health.register_metrics(metrics::Registry::default());
+    // Exports: health_check_status, health_check_duration_seconds
+}
+
+// ============================================================================
+// DEPENDENCIES
+// ============================================================================
+
+it("should handle check dependencies") {
+    let health = health::Checker::new();
+
+    health.register("database", || health::Result::healthy());
+    health.register("cache", || health::Result::healthy(), {
+        depends_on: ["database"],
+    });
+
+    // Cache check skipped if database is unhealthy
+}
+
+it("should run checks in order") {
+    let health = health::Checker::new();
+    let order = [];
+
+    health.register("first", || { order.push("first"); return health::Result::healthy(); });
+    health.register("second", || { order.push("second"); return health::Result::healthy(); }, {
+        depends_on: ["first"],
+    });
+
+    health.check_all();
+    assert(order == ["first", "second"]);
+}
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+
+it("should mark as shutting down") {
+    let health = health::Checker::new();
+
+    health.start_shutdown();
+
+    let result = health.readiness_check();
+    assert(result.status == "unhealthy");
+    assert(result.message.contains("shutting down"));
+}
+
+it("should delay shutdown for drain") {
+    let health = health::Checker::new({ shutdown_delay: 10000 });
+
+    health.start_shutdown();
+    // Waits 10 seconds before reporting unhealthy
+}
+
+// ============================================================================
+// ASYNC CHECKS
+// ============================================================================
+
+it("should run async check") {
+    let health = health::Checker::new();
+
+    health.register_async("async_check", async || {
+        let response = await http::get("https://api.example.com/health");
+        return response.status == 200
+            ? health::Result::healthy()
+            : health::Result::unhealthy("API down");
+    });
+}
+
+it("should run checks in parallel") {
+    let health = health::Checker::new({ parallel: true });
+
+    health.register("check1", || time::sleep(1000));
+    health.register("check2", || time::sleep(1000));
+    health.register("check3", || time::sleep(1000));
+
+    let start = time::now();
+    health.check_all();
+    let duration = time::now() - start;
+
+    assert(duration < 2000);  // Should be ~1 second, not 3
+}
+
+// ============================================================================
+// CUSTOM OUTPUT FORMAT
+// ============================================================================
+
+it("should output JSON format") {
+    let health = health::Checker::new();
+    health.register("test", || health::Result::healthy());
+
+    let json = health.to_json();
+    assert(json.contains("status"));
+}
+
+it("should output custom format") {
+    let health = health::Checker::new();
+
+    let output = health.format(|results| {
+        return "Status: " + results.overall_status;
+    });
+}
+

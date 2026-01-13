@@ -1,0 +1,314 @@
+// Path Manipulation Concepts Test Suite
+// Testing path concepts using basic operations
+
+// ============================================================================
+// PATH CREATION
+// ============================================================================
+
+it("should represent path string") {
+    let path = "/usr/local/bin";
+    assert(path.len() > 0);
+}
+
+it("should detect absolute path") {
+    let path = "/usr/local/bin";
+    let is_absolute = path.starts_with("/");
+    assert(is_absolute == true);
+}
+
+it("should detect relative path") {
+    let path = "local/bin";
+    let is_absolute = path.starts_with("/");
+    assert(is_absolute == false);
+}
+
+// ============================================================================
+// PATH COMPONENTS
+// ============================================================================
+
+it("should split path into components") {
+    let path = "/usr/local/bin";
+    let parts = path.split("/");
+    // First is empty due to leading /
+    assert(parts.len() == 4);
+    assert(parts[1] == "usr");
+}
+
+it("should get last component") {
+    let path = "/usr/local/bin";
+    let parts = path.split("/");
+    let last = parts[parts.len() - 1];
+    assert(last == "bin");
+}
+
+it("should get file name") {
+    let path = "/path/to/file.txt";
+    let parts = path.split("/");
+    let filename = parts[parts.len() - 1];
+    assert(filename == "file.txt");
+}
+
+// ============================================================================
+// FILE EXTENSION
+// ============================================================================
+
+it("should detect extension") {
+    let filename = "file.txt";
+    let has_ext = filename.contains(".");
+    assert(has_ext == true);
+}
+
+it("should extract extension") {
+    let filename = "file.txt";
+    let parts = filename.split(".");
+    let ext = parts[parts.len() - 1];
+    assert(ext == "txt");
+}
+
+it("should handle multiple extensions") {
+    let filename = "archive.tar.gz";
+    let parts = filename.split(".");
+    assert(parts.len() == 3);
+    assert(parts[2] == "gz");
+}
+
+it("should handle no extension") {
+    let filename = "README";
+    let has_ext = filename.contains(".");
+    assert(has_ext == false);
+}
+
+// ============================================================================
+// FILE STEM
+// ============================================================================
+
+it("should extract file stem") {
+    let filename = "file.txt";
+    let parts = filename.split(".");
+    let stem = parts[0];
+    assert(stem == "file");
+}
+
+it("should handle multiple dots in stem") {
+    let filename = "my.file.txt";
+    let parts = filename.split(".");
+    // Stem would be "my.file"
+    assert(parts[0] == "my");
+}
+
+// ============================================================================
+// PARENT DIRECTORY
+// ============================================================================
+
+it("should get parent path") {
+    let path = "/usr/local/bin";
+    let parts = path.split("/");
+    // Reconstruct parent
+    let mut parent = "";
+    for (i in 0..parts.len() - 1) {
+        if (parts[i].len() > 0) {
+            parent = parent + "/" + parts[i];
+        }
+    }
+    assert(parent == "/usr/local");
+}
+
+it("should handle root parent") {
+    let path = "/usr";
+    let parts = path.split("/");
+    // Parent of /usr is /
+    let parent = "/";
+    assert(parent == "/");
+}
+
+// ============================================================================
+// PATH JOINING
+// ============================================================================
+
+it("should join paths") {
+    let base = "/usr/local";
+    let segment = "bin";
+    let joined = base + "/" + segment;
+    assert(joined == "/usr/local/bin");
+}
+
+it("should join multiple segments") {
+    let base = "/home";
+    let segments = ["user", "documents"];
+    let mut path = base;
+    for (seg in segments) {
+        path = path + "/" + seg;
+    }
+    assert(path == "/home/user/documents");
+}
+
+it("should handle absolute path in join") {
+    let base = "/usr/local";
+    let absolute = "/etc";
+    // Absolute path replaces base
+    let is_absolute = absolute.starts_with("/");
+    let result = if (is_absolute) { absolute } else { base + "/" + absolute };
+    assert(result == "/etc");
+}
+
+// ============================================================================
+// PATH MODIFICATION
+// ============================================================================
+
+it("should replace file name") {
+    let path = "/path/to/old.txt";
+    let parts = path.split("/");
+    let mut new_parts = [];
+    for (i in 0..parts.len() - 1) {
+        new_parts = new_parts.push(parts[i]);
+    }
+    new_parts = new_parts.push("new.txt");
+    // Would rebuild path
+    assert(new_parts[new_parts.len() - 1] == "new.txt");
+}
+
+it("should replace extension") {
+    let filename = "file.txt";
+    let parts = filename.split(".");
+    let new_name = parts[0] + ".md";
+    assert(new_name == "file.md");
+}
+
+// ============================================================================
+// PATH NORMALIZATION
+// ============================================================================
+
+it("should detect current dir reference") {
+    let path = "./local/bin";
+    let has_dot = path.starts_with("./");
+    assert(has_dot == true);
+}
+
+it("should detect parent dir reference") {
+    let path = "../local/bin";
+    let has_dotdot = path.starts_with("../");
+    assert(has_dotdot == true);
+}
+
+it("should remove redundant separators") {
+    let path = "/usr//local///bin";
+    let normalized = path.replace("///", "/").replace("//", "/");
+    assert(normalized == "/usr/local/bin");
+}
+
+// ============================================================================
+// SPECIAL PATHS
+// ============================================================================
+
+it("should detect home directory marker") {
+    let path = "~/documents";
+    let is_home = path.starts_with("~");
+    assert(is_home == true);
+}
+
+it("should detect Windows path") {
+    let path = "C:\\Users\\name";
+    let is_windows = path.contains(":\\");
+    assert(is_windows == true);
+}
+
+it("should detect UNC path") {
+    let path = "\\\\server\\share";
+    let is_unc = path.starts_with("\\\\");
+    assert(is_unc == true);
+}
+
+// ============================================================================
+// PATH CHECKING
+// ============================================================================
+
+it("should check path starts with prefix") {
+    let path = "/usr/local/bin";
+    let prefix = "/usr";
+    let starts = path.starts_with(prefix);
+    assert(starts == true);
+}
+
+it("should check path ends with suffix") {
+    let path = "/path/to/file.txt";
+    let has_txt = path.ends_with(".txt");
+    assert(has_txt == true);
+}
+
+it("should check path contains segment") {
+    let path = "/usr/local/bin";
+    let has_local = path.contains("/local/");
+    assert(has_local == true);
+}
+
+// ============================================================================
+// PATH COMPARISON
+// ============================================================================
+
+it("should compare equal paths") {
+    let path1 = "/usr/local";
+    let path2 = "/usr/local";
+    assert(path1 == path2);
+}
+
+it("should compare different paths") {
+    let path1 = "/usr/local";
+    let path2 = "/usr/bin";
+    assert(path1 != path2);
+}
+
+// ============================================================================
+// PATH SEPARATOR
+// ============================================================================
+
+it("should detect Unix separator") {
+    let sep = "/";
+    let is_unix = sep == "/";
+    assert(is_unix == true);
+}
+
+it("should detect Windows separator") {
+    let sep = "\\";
+    let is_windows = sep == "\\";
+    assert(is_windows == true);
+}
+
+// ============================================================================
+// COMMON PATH OPERATIONS
+// ============================================================================
+
+it("should count path depth") {
+    let path = "/usr/local/bin";
+    let parts = path.split("/");
+    let mut depth = 0;
+    for (p in parts) {
+        if (p.len() > 0) {
+            depth = depth + 1;
+        }
+    }
+    assert(depth == 3);
+}
+
+it("should check path is within directory") {
+    let path = "/home/user/documents/file.txt";
+    let dir = "/home/user";
+    let is_within = path.starts_with(dir);
+    assert(is_within == true);
+}
+
+// ============================================================================
+// TEMPORARY PATHS
+// ============================================================================
+
+it("should represent temp directory") {
+    let tmp = "/tmp";
+    assert(tmp == "/tmp");
+}
+
+it("should build temp file path") {
+    let tmp_dir = "/tmp";
+    let filename = "test.txt";
+    let path = tmp_dir + "/" + filename;
+    assert(path == "/tmp/test.txt");
+}
+

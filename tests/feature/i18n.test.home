@@ -1,0 +1,326 @@
+// Internationalization (i18n) Concepts Test Suite
+// Tests i18n concepts using basic Home syntax
+
+// ============================================================================
+// LOCALE PARSING
+// ============================================================================
+
+it("should parse locale string") {
+    let locale = "en-US"
+    let parts = locale.split("-")
+    assert(parts.len() == 2)
+    assert(parts[0] == "en")
+    assert(parts[1] == "US")
+}
+
+it("should parse locale with script") {
+    let locale = "zh-Hans-CN"
+    let parts = locale.split("-")
+    assert(parts.len() == 3)
+    assert(parts[0] == "zh")
+    assert(parts[1] == "Hans")
+    assert(parts[2] == "CN")
+}
+
+it("should detect language code") {
+    let locale = "en-US"
+    let language = locale.split("-")[0]
+    assert(language == "en")
+}
+
+it("should detect region code") {
+    let locale = "en-US"
+    let region = locale.split("-")[1]
+    assert(region == "US")
+}
+
+// ============================================================================
+// TRANSLATION KEY CONCEPTS
+// ============================================================================
+
+it("should use dot notation for nested keys") {
+    let key = "errors.not_found"
+    let parts = key.split(".")
+    assert(parts.len() == 2)
+    assert(parts[0] == "errors")
+    assert(parts[1] == "not_found")
+}
+
+it("should use namespace prefix") {
+    let key = "common:save"
+    let has_namespace = key.contains(":")
+    assert(has_namespace == true)
+}
+
+it("should extract namespace") {
+    let key = "common:save"
+    let parts = key.split(":")
+    assert(parts[0] == "common")
+    assert(parts[1] == "save")
+}
+
+// ============================================================================
+// PLACEHOLDER CONCEPTS
+// ============================================================================
+
+it("should detect placeholder") {
+    let template = "Hello, {name}!"
+    let has_placeholder = template.contains("{")
+    assert(has_placeholder == true)
+}
+
+it("should replace placeholder") {
+    let template = "Hello, NAME!"
+    let result = template.replace("NAME", "Alice")
+    assert(result == "Hello, Alice!")
+}
+
+it("should handle multiple placeholders") {
+    let template = "Hello NAME, welcome to PLACE"
+    let step1 = template.replace("NAME", "Alice")
+    let result = step1.replace("PLACE", "Paris")
+    assert(result == "Hello Alice, welcome to Paris")
+}
+
+// ============================================================================
+// PLURALIZATION CONCEPTS
+// ============================================================================
+
+it("should select zero form") {
+    let count = 0
+    let form = if count == 0 { "zero" } else if count == 1 { "one" } else { "other" }
+    assert(form == "zero")
+}
+
+it("should select one form") {
+    let count = 1
+    let form = if count == 0 { "zero" } else if count == 1 { "one" } else { "other" }
+    assert(form == "one")
+}
+
+it("should select other form") {
+    let count = 5
+    let form = if count == 0 { "zero" } else if count == 1 { "one" } else { "other" }
+    assert(form == "other")
+}
+
+// ============================================================================
+// NUMBER FORMATTING CONCEPTS
+// ============================================================================
+
+it("should understand thousands separator") {
+    let us_separator = ","
+    let de_separator = "."
+    assert(us_separator != de_separator)
+}
+
+it("should understand decimal separator") {
+    let us_decimal = "."
+    let de_decimal = ","
+    assert(us_decimal != de_decimal)
+}
+
+it("should format number parts") {
+    let whole = "1234567"
+    let decimal = "89"
+    let us_format = whole + "." + decimal
+    assert(us_format == "1234567.89")
+}
+
+// ============================================================================
+// CURRENCY CONCEPTS
+// ============================================================================
+
+it("should format currency symbol before") {
+    let symbol = "$"
+    let amount = "100.00"
+    let formatted = symbol + amount
+    assert(formatted == "$100.00")
+}
+
+it("should format currency symbol after") {
+    let amount = "100,00"
+    let symbol = " EUR"
+    let formatted = amount + symbol
+    assert(formatted == "100,00 EUR")
+}
+
+it("should know currency codes") {
+    let codes = ["USD", "EUR", "GBP", "JPY"]
+    assert(codes.contains("USD") == true)
+    assert(codes.contains("EUR") == true)
+}
+
+// ============================================================================
+// DATE FORMAT CONCEPTS
+// ============================================================================
+
+it("should understand US date format") {
+    let month = "12"
+    let day = "25"
+    let year = "2023"
+    let us_format = month + "/" + day + "/" + year
+    assert(us_format == "12/25/2023")
+}
+
+it("should understand European date format") {
+    let day = "25"
+    let month = "12"
+    let year = "2023"
+    let eu_format = day + "." + month + "." + year
+    assert(eu_format == "25.12.2023")
+}
+
+it("should understand ISO date format") {
+    let year = "2023"
+    let month = "12"
+    let day = "25"
+    let iso_format = year + "-" + month + "-" + day
+    assert(iso_format == "2023-12-25")
+}
+
+// ============================================================================
+// TIME FORMAT CONCEPTS
+// ============================================================================
+
+it("should format 12-hour time") {
+    let hour = 14
+    let hour_12 = if hour > 12 { hour - 12 } else { hour }
+    let period = if hour >= 12 { "PM" } else { "AM" }
+    assert(hour_12 == 2)
+    assert(period == "PM")
+}
+
+it("should format 24-hour time") {
+    let hour = "14"
+    let minute = "30"
+    let time_24 = hour + ":" + minute
+    assert(time_24 == "14:30")
+}
+
+// ============================================================================
+// TEXT DIRECTION
+// ============================================================================
+
+it("should identify LTR languages") {
+    let ltr_languages = ["en", "fr", "de", "es", "zh"]
+    assert(ltr_languages.contains("en") == true)
+}
+
+it("should identify RTL languages") {
+    let rtl_languages = ["ar", "he", "fa", "ur"]
+    assert(rtl_languages.contains("ar") == true)
+    assert(rtl_languages.contains("he") == true)
+}
+
+it("should determine direction for locale") {
+    let rtl_codes = ["ar", "he", "fa", "ur"]
+    let locale = "en"
+    let is_rtl = rtl_codes.contains(locale)
+    assert(is_rtl == false)
+}
+
+// ============================================================================
+// LIST FORMATTING CONCEPTS
+// ============================================================================
+
+it("should join with and") {
+    let items = ["Apple", "Banana", "Cherry"]
+    let joined = items[0] + ", " + items[1] + ", and " + items[2]
+    assert(joined == "Apple, Banana, and Cherry")
+}
+
+it("should join with or") {
+    let items = ["Red", "Green", "Blue"]
+    let joined = items[0] + ", " + items[1] + ", or " + items[2]
+    assert(joined == "Red, Green, or Blue")
+}
+
+it("should handle two items") {
+    let items = ["Alice", "Bob"]
+    let joined = items[0] + " and " + items[1]
+    assert(joined == "Alice and Bob")
+}
+
+// ============================================================================
+// RELATIVE TIME CONCEPTS
+// ============================================================================
+
+it("should express yesterday") {
+    let days_ago = 1
+    let relative = if days_ago == 1 { "yesterday" } else { "days ago" }
+    assert(relative == "yesterday")
+}
+
+it("should express tomorrow") {
+    let days_ahead = 1
+    let relative = if days_ahead == 1 { "tomorrow" } else { "days from now" }
+    assert(relative == "tomorrow")
+}
+
+it("should express hours ago") {
+    let hours = 2
+    let relative = "hours ago"
+    assert(relative == "hours ago")
+}
+
+// ============================================================================
+// LANGUAGE NAMES
+// ============================================================================
+
+it("should map language codes to names") {
+    let languages = {}
+    languages["en"] = "English"
+    languages["fr"] = "French"
+    languages["de"] = "German"
+    languages["es"] = "Spanish"
+    assert(languages["en"] == "English")
+    assert(languages["fr"] == "French")
+}
+
+// ============================================================================
+// REGION NAMES
+// ============================================================================
+
+it("should map region codes to names") {
+    let regions = {}
+    regions["US"] = "United States"
+    regions["FR"] = "France"
+    regions["DE"] = "Germany"
+    assert(regions["US"] == "United States")
+    assert(regions["FR"] == "France")
+}
+
+// ============================================================================
+// FALLBACK CONCEPTS
+// ============================================================================
+
+it("should have fallback chain") {
+    let primary = "fr-CA"
+    let fallbacks = ["fr", "en"]
+    assert(fallbacks.len() == 2)
+    assert(fallbacks[0] == "fr")
+}
+
+it("should use base language as fallback") {
+    let locale = "fr-CA"
+    let base = locale.split("-")[0]
+    assert(base == "fr")
+}
+
+// ============================================================================
+// LOCALE VALIDATION
+// ============================================================================
+
+it("should validate language code length") {
+    let code = "en"
+    let is_valid = code.len() == 2 or code.len() == 3
+    assert(is_valid == true)
+}
+
+it("should validate region code is uppercase") {
+    let region = "US"
+    let is_upper = region == region.upper()
+    assert(is_upper == true)
+}
+

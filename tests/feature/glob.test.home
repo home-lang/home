@@ -1,0 +1,283 @@
+// Glob Pattern Matching Concepts Test Suite
+// Testing glob concepts using basic operations
+
+// ============================================================================
+// EXACT MATCHING
+// ============================================================================
+
+it("should match exact string") {
+    let pattern = "hello.txt";
+    let filename = "hello.txt";
+    let matches = pattern == filename;
+    assert(matches == true);
+}
+
+it("should not match different string") {
+    let pattern = "hello.txt";
+    let filename = "world.txt";
+    let matches = pattern == filename;
+    assert(matches == false);
+}
+
+// ============================================================================
+// ASTERISK WILDCARD CONCEPTS
+// ============================================================================
+
+it("should detect asterisk wildcard") {
+    let pattern = "*.txt";
+    let has_asterisk = pattern.contains("*");
+    assert(has_asterisk == true);
+}
+
+it("should match extension pattern") {
+    let pattern = "*.txt";
+    let filename = "file.txt";
+    // *.txt matches anything ending with .txt
+    let matches_ext = filename.ends_with(".txt");
+    assert(matches_ext == true);
+}
+
+it("should not match different extension") {
+    let pattern = "*.txt";
+    let filename = "file.md";
+    let matches_ext = filename.ends_with(".txt");
+    assert(matches_ext == false);
+}
+
+it("should match prefix pattern") {
+    let pattern = "hello*";
+    let filename = "hello-world.txt";
+    let matches_prefix = filename.starts_with("hello");
+    assert(matches_prefix == true);
+}
+
+// ============================================================================
+// QUESTION MARK WILDCARD CONCEPTS
+// ============================================================================
+
+it("should detect question mark wildcard") {
+    let pattern = "file?.txt";
+    let has_question = pattern.contains("?");
+    assert(has_question == true);
+}
+
+it("should represent single character match") {
+    // ? matches exactly one character
+    let filename = "file1.txt";
+    let base = "file";
+    let ext = ".txt";
+    let rest = filename.replace(base, "").replace(ext, "");
+    assert(rest.len() == 1);
+}
+
+it("should not match multiple characters") {
+    // file?.txt should not match file12.txt
+    let filename = "file12.txt";
+    let base = "file";
+    let ext = ".txt";
+    let rest = filename.replace(base, "").replace(ext, "");
+    let matches_single = rest.len() == 1;
+    assert(matches_single == false);
+}
+
+// ============================================================================
+// CHARACTER CLASS CONCEPTS
+// ============================================================================
+
+it("should detect character class") {
+    let pattern = "file[123].txt";
+    let has_bracket = pattern.contains("[");
+    assert(has_bracket == true);
+}
+
+it("should represent character set") {
+    let allowed = "123";
+    let char = "1";
+    let matches = allowed.contains(char);
+    assert(matches == true);
+}
+
+it("should not match outside character set") {
+    let allowed = "123";
+    let char = "4";
+    let matches = allowed.contains(char);
+    assert(matches == false);
+}
+
+// ============================================================================
+// DOUBLE ASTERISK CONCEPTS
+// ============================================================================
+
+it("should detect recursive pattern") {
+    let pattern = "**/*.txt";
+    let is_recursive = pattern.contains("**");
+    assert(is_recursive == true);
+}
+
+it("should match in subdirectory") {
+    let pattern_ext = ".txt";
+    let path = "path/to/file.txt";
+    let matches = path.ends_with(pattern_ext);
+    assert(matches == true);
+}
+
+// ============================================================================
+// NEGATION CONCEPTS
+// ============================================================================
+
+it("should detect negation pattern") {
+    let pattern = "!*.log";
+    let is_negation = pattern.starts_with("!");
+    assert(is_negation == true);
+}
+
+it("should exclude negated pattern") {
+    let pattern = "*.log";
+    let filename = "error.log";
+    let matches = filename.ends_with(".log");
+    let excluded = matches;  // Would be excluded by !*.log
+    assert(excluded == true);
+}
+
+// ============================================================================
+// BRACE EXPANSION CONCEPTS
+// ============================================================================
+
+it("should detect brace pattern") {
+    let pattern_str = "file.{txt,md}";
+    let has_brace = pattern_str.contains("{");
+    assert(has_brace == true);
+}
+
+it("should expand brace pattern") {
+    let extensions = ["txt", "md"];
+    let filename = "file.txt";
+    let mut matches = false;
+    for ext in extensions {
+        if filename.ends_with("." + ext) {
+            matches = true
+        }
+    }
+    assert(matches == true)
+}
+
+// ============================================================================
+// PATH SEPARATOR
+// ============================================================================
+
+it("should detect path in pattern") {
+    let pattern = "src/**/*.js";
+    let has_path = pattern.contains("/");
+    assert(has_path == true);
+}
+
+it("should match directory prefix") {
+    let pattern_dir = "src/";
+    let path = "src/file.js";
+    let in_dir = path.starts_with(pattern_dir);
+    assert(in_dir == true);
+}
+
+// ============================================================================
+// CASE SENSITIVITY
+// ============================================================================
+
+it("should be case sensitive by default") {
+    let pattern = "FILE.txt";
+    let filename = "file.txt";
+    let matches = pattern == filename;
+    assert(matches == false);
+}
+
+it("should support case insensitive") {
+    let pattern = "FILE.txt";
+    let filename = "file.txt";
+    let matches = pattern.lower() == filename.lower();
+    assert(matches == true);
+}
+
+// ============================================================================
+// DOT FILES
+// ============================================================================
+
+it("should detect dot file") {
+    let filename = ".gitignore";
+    let is_dotfile = filename.starts_with(".");
+    assert(is_dotfile == true);
+}
+
+it("should not match dot files by default") {
+    // * typically doesn't match dot files
+    let filename = ".hidden";
+    let is_hidden = filename.starts_with(".");
+    assert(is_hidden == true);
+}
+
+// ============================================================================
+// COMMON PATTERNS
+// ============================================================================
+
+it("should match all files pattern") {
+    let pattern = "*";
+    let has_wildcard = pattern == "*";
+    assert(has_wildcard == true);
+}
+
+it("should match all js files") {
+    let pattern = "*.js";
+    let filename = "app.js";
+    let matches = filename.ends_with(".js");
+    assert(matches == true);
+}
+
+it("should match test files") {
+    let pattern = "*.test.js";
+    let filename = "app.test.js";
+    let matches = filename.ends_with(".test.js");
+    assert(matches == true);
+}
+
+it("should match node modules") {
+    let pattern = "**/node_modules/**";
+    let path = "project/node_modules/package/index.js";
+    let matches = path.contains("/node_modules/");
+    assert(matches == true);
+}
+
+// ============================================================================
+// MULTIPLE PATTERNS
+// ============================================================================
+
+it("should track multiple patterns") {
+    let patterns = ["*.js", "*.ts", "*.jsx"];
+    assert(patterns.len() == 3);
+}
+
+it("should match any pattern") {
+    let patterns = [".js", ".ts"];
+    let filename = "app.ts";
+    let mut matches = false;
+    for ext in patterns {
+        if filename.ends_with(ext) {
+            matches = true
+        }
+    }
+    assert(matches == true)
+}
+
+// ============================================================================
+// GITIGNORE STYLE
+// ============================================================================
+
+it("should detect directory only pattern") {
+    let pattern = "build/";
+    let is_dir_only = pattern.ends_with("/");
+    assert(is_dir_only == true);
+}
+
+it("should detect anchored pattern") {
+    let pattern = "/root.txt";
+    let is_anchored = pattern.starts_with("/");
+    assert(is_anchored == true);
+}
+

@@ -1,0 +1,439 @@
+// Rate Limiting Test Suite
+
+// ============================================================================
+// BASIC RATE LIMITER
+// ============================================================================
+
+it("should create rate limiter") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);  // 100 req/min
+    assert(limiter != null);
+}
+
+it("should allow requests under limit") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    for i in 0..10 {
+        let result = limiter.check("client1");
+        assert(result.allowed == true);
+    }
+}
+
+it("should block requests over limit") {
+    let limiter = ratelimit::Limiter::new(max: 5, window: 60);
+
+    for i in 0..5 {
+        limiter.check("client1");
+    }
+
+    let result = limiter.check("client1");
+    assert(result.allowed == false);
+}
+
+it("should track remaining requests") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    limiter.check("client1");
+    limiter.check("client1");
+    limiter.check("client1");
+
+    let status = limiter.status("client1");
+    assert(status.remaining == 7);
+}
+
+it("should provide reset time") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+    limiter.check("client1");
+
+    let status = limiter.status("client1");
+    assert(status.reset_at > time::now());
+}
+
+// ============================================================================
+// SLIDING WINDOW
+// ============================================================================
+
+it("should use sliding window") {
+    let limiter = ratelimit::SlidingWindow::new(max: 100, window: 60);
+
+    // More accurate than fixed windows
+    for i in 0..50 {
+        limiter.check("client1");
+    }
+
+    // Wait for window to slide
+    // Requests should gradually become available
+}
+
+it("should track request history") {
+    let limiter = ratelimit::SlidingWindow::new(max: 10, window: 60);
+
+    limiter.check("client1");
+    limiter.check("client1");
+
+    let history = limiter.history("client1");
+    assert(history.len() == 2);
+}
+
+// ============================================================================
+// TOKEN BUCKET
+// ============================================================================
+
+it("should create token bucket") {
+    let bucket = ratelimit::TokenBucket::new({
+        capacity: 100,
+        refill_rate: 10,  // 10 tokens per second
+    });
+    assert(bucket != null);
+}
+
+it("should consume tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 100, refill_rate: 10);
+
+    let result = bucket.consume(1);
+    assert(result.allowed == true);
+    assert(bucket.tokens() == 99);
+}
+
+it("should consume multiple tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 100, refill_rate: 10);
+
+    let result = bucket.consume(50);
+    assert(result.allowed == true);
+    assert(bucket.tokens() == 50);
+}
+
+it("should reject when insufficient tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 10, refill_rate: 1);
+
+    bucket.consume(10);  // Empty the bucket
+
+    let result = bucket.consume(1);
+    assert(result.allowed == false);
+}
+
+it("should refill tokens over time") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 10, refill_rate: 10);
+
+    bucket.consume(10);  // Empty
+    // After 1 second, should have ~10 tokens
+    time::sleep(1000);
+
+    let tokens = bucket.tokens();
+    assert(tokens >= 9);  // Allow some timing variance
+}
+
+// ============================================================================
+// LEAKY BUCKET
+// ============================================================================
+
+it("should create leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new({
+        capacity: 100,
+        leak_rate: 10,  // 10 per second
+    });
+    assert(bucket != null);
+}
+
+it("should add to leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 100, leak_rate: 10);
+
+    let result = bucket.add(1);
+    assert(result.allowed == true);
+}
+
+it("should overflow leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 10, leak_rate: 1);
+
+    // Fill up the bucket
+    for i in 0..10 {
+        bucket.add(1);
+    }
+
+    let result = bucket.add(1);
+    assert(result.allowed == false);
+}
+
+it("should leak over time") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 10, leak_rate: 10);
+
+    bucket.add(10);  // Fill up
+    time::sleep(1000);  // Wait 1 second
+
+    let result = bucket.add(5);
+    assert(result.allowed == true);
+}
+
+// ============================================================================
+// FIXED WINDOW
+// ============================================================================
+
+it("should use fixed window") {
+    let limiter = ratelimit::FixedWindow::new(max: 100, window: 60);
+
+    for i in 0..100 {
+        assert(limiter.check("client").allowed == true);
+    }
+
+    assert(limiter.check("client").allowed == false);
+}
+
+it("should reset at window boundary") {
+    let limiter = ratelimit::FixedWindow::new(max: 10, window: 1);  // 1 second window
+
+    for i in 0..10 {
+        limiter.check("client");
+    }
+
+    time::sleep(1100);  // Wait for window reset
+
+    assert(limiter.check("client").allowed == true);
+}
+
+// ============================================================================
+// CONCURRENT LIMITER
+// ============================================================================
+
+it("should limit concurrent requests") {
+    let limiter = ratelimit::Concurrent::new(max: 5);
+
+    let permits = [];
+    for i in 0..5 {
+        let permit = limiter.acquire("client");
+        assert(permit != null);
+        permits.push(permit);
+    }
+
+    // 6th should fail
+    let result = limiter.try_acquire("client");
+    assert(result == null);
+}
+
+it("should release on permit drop") {
+    let limiter = ratelimit::Concurrent::new(max: 1);
+
+    {
+        let permit = limiter.acquire("client");
+        // permit dropped at end of scope
+    }
+
+    // Should be able to acquire again
+    let permit = limiter.acquire("client");
+    assert(permit != null);
+}
+
+// ============================================================================
+// PER-KEY LIMITS
+// ============================================================================
+
+it("should limit per key") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    for i in 0..10 {
+        limiter.check("client1");
+    }
+
+    // client1 is at limit
+    assert(limiter.check("client1").allowed == false);
+
+    // client2 should still work
+    assert(limiter.check("client2").allowed == true);
+}
+
+it("should support composite keys") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    let key = ratelimit::key("user:123", "endpoint:/api/data");
+    limiter.check(key);
+}
+
+// ============================================================================
+// DISTRIBUTED RATE LIMITING
+// ============================================================================
+
+it("should use Redis backend") {
+    let limiter = ratelimit::Limiter::new({
+        max: 100,
+        window: 60,
+        backend: ratelimit::redis("redis://localhost:6379"),
+    });
+}
+
+it("should sync across instances") {
+    let backend = ratelimit::redis("redis://localhost:6379");
+
+    let limiter1 = ratelimit::Limiter::new(max: 10, window: 60, backend: backend);
+    let limiter2 = ratelimit::Limiter::new(max: 10, window: 60, backend: backend);
+
+    for i in 0..5 {
+        limiter1.check("shared_client");
+    }
+
+    let status = limiter2.status("shared_client");
+    assert(status.remaining == 5);
+}
+
+// ============================================================================
+// RATE LIMIT HEADERS
+// ============================================================================
+
+it("should generate rate limit headers") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+    limiter.check("client");
+
+    let headers = limiter.headers("client");
+    assert(headers["X-RateLimit-Limit"] == "100");
+    assert(headers["X-RateLimit-Remaining"] == "99");
+    assert(headers["X-RateLimit-Reset"] != null);
+}
+
+it("should include Retry-After when limited") {
+    let limiter = ratelimit::Limiter::new(max: 1, window: 60);
+    limiter.check("client");
+    limiter.check("client");  // Over limit
+
+    let headers = limiter.headers("client");
+    assert(headers["Retry-After"] != null);
+}
+
+// ============================================================================
+// MIDDLEWARE
+// ============================================================================
+
+it("should create rate limit middleware") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 100, window: 60),
+        key_fn: |req| req.ip(),
+        on_limited: |req| http::Response::too_many_requests(),
+    });
+}
+
+it("should use IP-based key") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 100, window: 60),
+        key_fn: ratelimit::by_ip(),
+    });
+}
+
+it("should use user-based key") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 1000, window: 60),
+        key_fn: |req| req.user.id,
+    });
+}
+
+// ============================================================================
+// TIERED LIMITS
+// ============================================================================
+
+it("should support tiered limits") {
+    let limiter = ratelimit::Tiered::new({
+        free: { max: 100, window: 3600 },
+        basic: { max: 1000, window: 3600 },
+        premium: { max: 10000, window: 3600 },
+    });
+
+    let result = limiter.check("user1", tier: "basic");
+    assert(result.limit == 1000);
+}
+
+it("should upgrade tier dynamically") {
+    let limiter = ratelimit::Tiered::new({
+        free: { max: 100, window: 3600 },
+        premium: { max: 10000, window: 3600 },
+    });
+
+    limiter.set_tier("user1", "premium");
+    let status = limiter.status("user1");
+    assert(status.limit == 10000);
+}
+
+// ============================================================================
+// COST-BASED LIMITING
+// ============================================================================
+
+it("should support request costs") {
+    let limiter = ratelimit::Limiter::new(max: 1000, window: 60);
+
+    // Different endpoints have different costs
+    limiter.check("client", cost: 1);   // Simple read
+    limiter.check("client", cost: 10);  // Complex query
+    limiter.check("client", cost: 100); // Expensive operation
+
+    let status = limiter.status("client");
+    assert(status.remaining == 889);  // 1000 - 111
+}
+
+// ============================================================================
+// BURST HANDLING
+// ============================================================================
+
+it("should allow bursts") {
+    let limiter = ratelimit::TokenBucket::new({
+        capacity: 100,      // Max burst
+        refill_rate: 10,    // Sustained rate
+    });
+
+    // Can burst up to 100
+    let result = limiter.consume(50);
+    assert(result.allowed == true);
+}
+
+it("should smooth traffic with leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new({
+        capacity: 10,
+        leak_rate: 1,  // 1 per second
+    });
+
+    // Requests are processed at steady rate regardless of bursts
+}
+
+// ============================================================================
+// ANALYTICS
+// ============================================================================
+
+it("should track rate limit metrics") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    for i in 0..150 {
+        limiter.check("client");
+    }
+
+    let metrics = limiter.metrics("client");
+    assert(metrics.allowed_count == 100);
+    assert(metrics.blocked_count == 50);
+}
+
+it("should get global metrics") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    let metrics = limiter.global_metrics();
+    assert(metrics.total_requests >= 0);
+    assert(metrics.blocked_percentage >= 0);
+}
+
+// ============================================================================
+// GRACEFUL DEGRADATION
+// ============================================================================
+
+it("should warn before limiting") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    for i in 0..90 {
+        limiter.check("client");
+    }
+
+    let status = limiter.status("client");
+    assert(status.warning == true);  // At 90% capacity
+}
+
+it("should use soft limits") {
+    let limiter = ratelimit::Limiter::new({
+        max: 100,
+        window: 60,
+        soft_limit: 80,
+    });
+
+    // At soft limit: still allowed but warned
+    // At hard limit: blocked
+}
+

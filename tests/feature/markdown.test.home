@@ -1,0 +1,385 @@
+// Markdown Parsing and Rendering Test Suite
+
+// ============================================================================
+// BASIC PARSING
+// ============================================================================
+
+it("should parse markdown to HTML") {
+    let md = "# Hello World";
+    let html = markdown::to_html(md);
+    assert(html.contains("<h1>"));
+    assert(html.contains("Hello World"));
+}
+
+it("should parse inline markdown") {
+    let md = "This is **bold** and *italic*";
+    let html = markdown::to_html(md);
+    assert(html.contains("<strong>bold</strong>"));
+    assert(html.contains("<em>italic</em>"));
+}
+
+// ============================================================================
+// HEADINGS
+// ============================================================================
+
+it("should parse h1") {
+    let html = markdown::to_html("# Heading 1");
+    assert(html.contains("<h1>Heading 1</h1>"));
+}
+
+it("should parse h2") {
+    let html = markdown::to_html("## Heading 2");
+    assert(html.contains("<h2>Heading 2</h2>"));
+}
+
+it("should parse h3 through h6") {
+    assert(markdown::to_html("### H3").contains("<h3>"));
+    assert(markdown::to_html("#### H4").contains("<h4>"));
+    assert(markdown::to_html("##### H5").contains("<h5>"));
+    assert(markdown::to_html("###### H6").contains("<h6>"));
+}
+
+it("should parse setext-style h1") {
+    let md = "Heading\n=======";
+    let html = markdown::to_html(md);
+    assert(html.contains("<h1>Heading</h1>"));
+}
+
+it("should parse setext-style h2") {
+    let md = "Heading\n-------";
+    let html = markdown::to_html(md);
+    assert(html.contains("<h2>Heading</h2>"));
+}
+
+// ============================================================================
+// EMPHASIS
+// ============================================================================
+
+it("should parse bold with asterisks") {
+    let html = markdown::to_html("**bold**");
+    assert(html.contains("<strong>bold</strong>"));
+}
+
+it("should parse bold with underscores") {
+    let html = markdown::to_html("__bold__");
+    assert(html.contains("<strong>bold</strong>"));
+}
+
+it("should parse italic with asterisks") {
+    let html = markdown::to_html("*italic*");
+    assert(html.contains("<em>italic</em>"));
+}
+
+it("should parse italic with underscores") {
+    let html = markdown::to_html("_italic_");
+    assert(html.contains("<em>italic</em>"));
+}
+
+it("should parse bold italic") {
+    let html = markdown::to_html("***bold italic***");
+    assert(html.contains("<strong><em>") or html.contains("<em><strong>"));
+}
+
+it("should parse strikethrough") {
+    let html = markdown::to_html("~~deleted~~");
+    assert(html.contains("<del>deleted</del>"));
+}
+
+// ============================================================================
+// LINKS
+// ============================================================================
+
+it("should parse inline links") {
+    let html = markdown::to_html("[Link](https://example.com)");
+    assert(html.contains("href=\"https://example.com\""));
+    assert(html.contains(">Link</a>"));
+}
+
+it("should parse links with title") {
+    let html = markdown::to_html("[Link](https://example.com \"Title\")");
+    assert(html.contains("title=\"Title\""));
+}
+
+it("should parse reference links") {
+    let md = "[Link][ref]\n\n[ref]: https://example.com";
+    let html = markdown::to_html(md);
+    assert(html.contains("href=\"https://example.com\""));
+}
+
+it("should parse auto links") {
+    let html = markdown::to_html("<https://example.com>");
+    assert(html.contains("href=\"https://example.com\""));
+}
+
+it("should parse email links") {
+    let html = markdown::to_html("<user@example.com>");
+    assert(html.contains("mailto:"));
+}
+
+// ============================================================================
+// IMAGES
+// ============================================================================
+
+it("should parse images") {
+    let html = markdown::to_html("![Alt text](image.png)");
+    assert(html.contains("<img"));
+    assert(html.contains("src=\"image.png\""));
+    assert(html.contains("alt=\"Alt text\""));
+}
+
+it("should parse images with title") {
+    let html = markdown::to_html("![Alt](image.png \"Title\")");
+    assert(html.contains("title=\"Title\""));
+}
+
+// ============================================================================
+// LISTS
+// ============================================================================
+
+it("should parse unordered list with dashes") {
+    let md = "- Item 1\n- Item 2\n- Item 3";
+    let html = markdown::to_html(md);
+    assert(html.contains("<ul>"));
+    assert(html.contains("<li>Item 1</li>"));
+}
+
+it("should parse unordered list with asterisks") {
+    let md = "* Item 1\n* Item 2";
+    let html = markdown::to_html(md);
+    assert(html.contains("<ul>"));
+}
+
+it("should parse ordered list") {
+    let md = "1. First\n2. Second\n3. Third";
+    let html = markdown::to_html(md);
+    assert(html.contains("<ol>"));
+    assert(html.contains("<li>First</li>"));
+}
+
+it("should parse nested lists") {
+    let md = "- Parent\n  - Child\n    - Grandchild";
+    let html = markdown::to_html(md);
+    assert(html.contains("<ul>"));
+}
+
+it("should parse task lists") {
+    let md = "- [x] Done\n- [ ] Todo";
+    let html = markdown::to_html(md);
+    assert(html.contains("checked"));
+}
+
+// ============================================================================
+// CODE
+// ============================================================================
+
+it("should parse inline code") {
+    let html = markdown::to_html("Use `code` here");
+    assert(html.contains("<code>code</code>"));
+}
+
+it("should parse fenced code block") {
+    let md = "```\ncode block\n```";
+    let html = markdown::to_html(md);
+    assert(html.contains("<pre>"));
+    assert(html.contains("<code>"));
+}
+
+it("should parse code block with language") {
+    let md = "```javascript\nconst x = 1;\n```";
+    let html = markdown::to_html(md);
+    assert(html.contains("language-javascript") or html.contains("class=\"javascript\""));
+}
+
+it("should parse indented code block") {
+    let md = "    code line 1\n    code line 2";
+    let html = markdown::to_html(md);
+    assert(html.contains("<pre>"));
+}
+
+// ============================================================================
+// BLOCKQUOTES
+// ============================================================================
+
+it("should parse blockquote") {
+    let html = markdown::to_html("> Quote");
+    assert(html.contains("<blockquote>"));
+}
+
+it("should parse nested blockquotes") {
+    let md = "> Level 1\n>> Level 2";
+    let html = markdown::to_html(md);
+    assert(html.match_count("<blockquote>") >= 2);
+}
+
+// ============================================================================
+// HORIZONTAL RULES
+// ============================================================================
+
+it("should parse horizontal rule with dashes") {
+    let html = markdown::to_html("---");
+    assert(html.contains("<hr"));
+}
+
+it("should parse horizontal rule with asterisks") {
+    let html = markdown::to_html("***");
+    assert(html.contains("<hr"));
+}
+
+it("should parse horizontal rule with underscores") {
+    let html = markdown::to_html("___");
+    assert(html.contains("<hr"));
+}
+
+// ============================================================================
+// TABLES
+// ============================================================================
+
+it("should parse table") {
+    let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+    let html = markdown::to_html(md);
+    assert(html.contains("<table>"));
+    assert(html.contains("<th>A</th>"));
+    assert(html.contains("<td>1</td>"));
+}
+
+it("should parse table alignment") {
+    let md = "| Left | Center | Right |\n|:-----|:------:|------:|\n| L | C | R |";
+    let html = markdown::to_html(md);
+    assert(html.contains("text-align") or html.contains("align"));
+}
+
+// ============================================================================
+// LINE BREAKS
+// ============================================================================
+
+it("should parse hard line break") {
+    let md = "Line 1  \nLine 2";  // Two spaces before newline
+    let html = markdown::to_html(md);
+    assert(html.contains("<br"));
+}
+
+it("should parse paragraphs") {
+    let md = "Para 1\n\nPara 2";
+    let html = markdown::to_html(md);
+    assert(html.match_count("<p>") == 2);
+}
+
+// ============================================================================
+// HTML PASSTHROUGH
+// ============================================================================
+
+it("should allow inline HTML") {
+    let md = "Text <span class=\"custom\">styled</span> text";
+    let html = markdown::to_html(md);
+    assert(html.contains("<span class=\"custom\">"));
+}
+
+it("should allow block HTML") {
+    let md = "<div class=\"note\">\nContent\n</div>";
+    let html = markdown::to_html(md);
+    assert(html.contains("<div class=\"note\">"));
+}
+
+// ============================================================================
+// ESCAPING
+// ============================================================================
+
+it("should escape special characters") {
+    let html = markdown::to_html("\\*not italic\\*");
+    assert(!html.contains("<em>"));
+    assert(html.contains("*not italic*"));
+}
+
+// ============================================================================
+// EXTENSIONS
+// ============================================================================
+
+it("should parse footnotes") {
+    let md = "Text[^1]\n\n[^1]: Footnote content";
+    let html = markdown::to_html(md, footnotes: true);
+    assert(html.contains("footnote"));
+}
+
+it("should parse definition lists") {
+    let md = "Term\n: Definition";
+    let html = markdown::to_html(md, definition_lists: true);
+    assert(html.contains("<dl>") or html.contains("<dt>"));
+}
+
+it("should parse abbreviations") {
+    let md = "HTML is great\n\n*[HTML]: Hyper Text Markup Language";
+    let html = markdown::to_html(md, abbreviations: true);
+    assert(html.contains("<abbr") or html.contains("title="));
+}
+
+it("should auto-link URLs") {
+    let html = markdown::to_html("Visit https://example.com", autolink: true);
+    assert(html.contains("href=\"https://example.com\""));
+}
+
+// ============================================================================
+// SYNTAX HIGHLIGHTING
+// ============================================================================
+
+it("should highlight code syntax") {
+    let md = "```python\ndef hello():\n    print('hi')\n```";
+    let html = markdown::to_html(md, highlight: true);
+    assert(html.contains("class="));  // Has syntax classes
+}
+
+// ============================================================================
+// TABLE OF CONTENTS
+// ============================================================================
+
+it("should generate TOC") {
+    let md = "# H1\n## H2\n### H3";
+    let toc = markdown::toc(md);
+    assert(toc.len() == 3);
+    assert(toc[0].level == 1);
+    assert(toc[0].text == "H1");
+}
+
+// ============================================================================
+// FRONT MATTER
+// ============================================================================
+
+it("should parse YAML front matter") {
+    let md = "---\ntitle: Hello\nauthor: Me\n---\n\n# Content";
+    let result = markdown::parse_with_front_matter(md);
+    assert(result.front_matter["title"] == "Hello");
+    assert(result.content.contains("# Content"));
+}
+
+// ============================================================================
+// AST
+// ============================================================================
+
+it("should parse to AST") {
+    let md = "# Hello\n\nParagraph";
+    let ast = markdown::parse(md);
+    assert(ast.type == "document");
+    assert(ast.children.len() >= 2);
+}
+
+// ============================================================================
+// RENDERING OPTIONS
+// ============================================================================
+
+it("should use custom renderer") {
+    let md = "# Hello";
+    let html = markdown::to_html(md, renderer: {
+        heading: |node| "<h{node.level} class=\"custom\">{node.text}</h{node.level}>",
+    });
+    assert(html.contains("class=\"custom\""));
+}
+
+// ============================================================================
+// SANITIZATION
+// ============================================================================
+
+it("should sanitize output") {
+    let md = "Hello <script>alert('xss')</script>";
+    let html = markdown::to_html(md, sanitize: true);
+    assert(!html.contains("<script>"));
+}
+

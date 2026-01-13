@@ -1,0 +1,408 @@
+// Geometry Concepts Test Suite
+
+// ============================================================================
+// BASIC POINT OPERATIONS
+// ============================================================================
+
+it("should represent 2D points") {
+    let x = 3;
+    let y = 4;
+    assert(x == 3);
+    assert(y == 4);
+}
+
+it("should calculate distance from origin") {
+    let x = 3;
+    let y = 4;
+    // Distance = sqrt(x^2 + y^2) = sqrt(9 + 16) = sqrt(25) = 5
+    let distance_squared = x * x + y * y;
+    assert(distance_squared == 25);
+}
+
+it("should calculate distance between points") {
+    let x1 = 0;
+    let y1 = 0;
+    let x2 = 3;
+    let y2 = 4;
+
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let distance_squared = dx * dx + dy * dy;
+    assert(distance_squared == 25);
+}
+
+it("should calculate midpoint") {
+    let x1 = 0;
+    let y1 = 0;
+    let x2 = 10;
+    let y2 = 10;
+
+    let mid_x = (x1 + x2) / 2;
+    let mid_y = (y1 + y2) / 2;
+
+    assert(mid_x == 5);
+    assert(mid_y == 5);
+}
+
+// ============================================================================
+// VECTOR OPERATIONS
+// ============================================================================
+
+it("should add vectors") {
+    let v1_x = 1;
+    let v1_y = 2;
+    let v2_x = 3;
+    let v2_y = 4;
+
+    let result_x = v1_x + v2_x;
+    let result_y = v1_y + v2_y;
+
+    assert(result_x == 4);
+    assert(result_y == 6);
+}
+
+it("should subtract vectors") {
+    let v1_x = 5;
+    let v1_y = 7;
+    let v2_x = 2;
+    let v2_y = 3;
+
+    let result_x = v1_x - v2_x;
+    let result_y = v1_y - v2_y;
+
+    assert(result_x == 3);
+    assert(result_y == 4);
+}
+
+it("should scale vector") {
+    let x = 2;
+    let y = 3;
+    let scale = 4;
+
+    let scaled_x = x * scale;
+    let scaled_y = y * scale;
+
+    assert(scaled_x == 8);
+    assert(scaled_y == 12);
+}
+
+it("should calculate dot product") {
+    let v1_x = 1;
+    let v1_y = 2;
+    let v2_x = 3;
+    let v2_y = 4;
+
+    let dot = v1_x * v2_x + v1_y * v2_y;
+    assert(dot == 11);  // 1*3 + 2*4 = 3 + 8 = 11
+}
+
+it("should calculate cross product 2D") {
+    let v1_x = 2;
+    let v1_y = 3;
+    let v2_x = 4;
+    let v2_y = 5;
+
+    // 2D cross product gives a scalar (z component)
+    let cross = v1_x * v2_y - v1_y * v2_x;
+    assert(cross == -2);  // 2*5 - 3*4 = 10 - 12 = -2
+}
+
+// ============================================================================
+// RECTANGLE OPERATIONS
+// ============================================================================
+
+it("should calculate rectangle area") {
+    let width = 10;
+    let height = 5;
+
+    let area = width * height;
+    assert(area == 50);
+}
+
+it("should calculate rectangle perimeter") {
+    let width = 10;
+    let height = 5;
+
+    let perimeter = 2 * (width + height);
+    assert(perimeter == 30);
+}
+
+it("should check point inside rectangle") {
+    let rect_x = 0;
+    let rect_y = 0;
+    let rect_width = 10;
+    let rect_height = 10;
+
+    let point_x = 5;
+    let point_y = 5;
+
+    let inside_x = point_x >= rect_x and point_x <= rect_x + rect_width;
+    let inside_y = point_y >= rect_y and point_y <= rect_y + rect_height;
+    let inside = inside_x and inside_y;
+
+    assert(inside == true);
+}
+
+it("should check point outside rectangle") {
+    let rect_x = 0;
+    let rect_y = 0;
+    let rect_width = 10;
+    let rect_height = 10;
+
+    let point_x = 15;
+    let point_y = 5;
+
+    let inside_x = point_x >= rect_x and point_x <= rect_x + rect_width;
+    let inside_y = point_y >= rect_y and point_y <= rect_y + rect_height;
+    let inside = inside_x and inside_y;
+
+    assert(inside == false);
+}
+
+// ============================================================================
+// CIRCLE OPERATIONS
+// ============================================================================
+
+it("should calculate circle area approximation") {
+    let radius = 5;
+    // Using pi ≈ 3.14
+    let pi_approx = 314;  // Using integers: 314/100 = 3.14
+    let area_times_100 = pi_approx * radius * radius;
+    // area ≈ 78.5, so area_times_100 ≈ 7850
+    assert(area_times_100 == 7850);
+}
+
+it("should calculate circle circumference approximation") {
+    let radius = 5;
+    let pi_approx = 314;  // 3.14 * 100
+    let circumference_times_100 = 2 * pi_approx * radius;
+    // circumference ≈ 31.4, so * 100 = 3140
+    assert(circumference_times_100 == 3140);
+}
+
+it("should check point inside circle") {
+    let center_x = 0;
+    let center_y = 0;
+    let radius = 5;
+
+    let point_x = 3;
+    let point_y = 4;
+
+    let dx = point_x - center_x;
+    let dy = point_y - center_y;
+    let distance_squared = dx * dx + dy * dy;
+    let radius_squared = radius * radius;
+
+    assert(distance_squared <= radius_squared);  // 25 <= 25
+}
+
+it("should check point outside circle") {
+    let center_x = 0;
+    let center_y = 0;
+    let radius = 5;
+
+    let point_x = 10;
+    let point_y = 0;
+
+    let dx = point_x - center_x;
+    let dy = point_y - center_y;
+    let distance_squared = dx * dx + dy * dy;
+    let radius_squared = radius * radius;
+
+    assert(distance_squared > radius_squared);  // 100 > 25
+}
+
+// ============================================================================
+// TRIANGLE OPERATIONS
+// ============================================================================
+
+it("should calculate triangle area with base and height") {
+    let base = 10;
+    let height = 6;
+
+    let area_times_2 = base * height;
+    let area = area_times_2 / 2;
+
+    assert(area == 30);
+}
+
+it("should calculate triangle perimeter") {
+    let side1 = 3;
+    let side2 = 4;
+    let side3 = 5;
+
+    let perimeter = side1 + side2 + side3;
+    assert(perimeter == 12);
+}
+
+it("should check right triangle") {
+    let a = 3;
+    let b = 4;
+    let c = 5;  // hypotenuse
+
+    // Pythagorean theorem: a² + b² = c²
+    let left_side = a * a + b * b;
+    let right_side = c * c;
+
+    assert(left_side == right_side);  // 9 + 16 = 25
+}
+
+it("should check not right triangle") {
+    let a = 3;
+    let b = 4;
+    let c = 6;  // not a right triangle
+
+    let left_side = a * a + b * b;
+    let right_side = c * c;
+
+    assert(left_side != right_side);  // 25 != 36
+}
+
+// ============================================================================
+// LINE SEGMENT OPERATIONS
+// ============================================================================
+
+it("should calculate line segment length squared") {
+    let x1 = 0;
+    let y1 = 0;
+    let x2 = 3;
+    let y2 = 4;
+
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length_squared = dx * dx + dy * dy;
+
+    assert(length_squared == 25);
+}
+
+it("should check if point is on horizontal line") {
+    let line_y = 5;
+    let line_x_start = 0;
+    let line_x_end = 10;
+
+    let point_x = 5;
+    let point_y = 5;
+
+    let on_line = point_y == line_y and point_x >= line_x_start and point_x <= line_x_end;
+    assert(on_line == true);
+}
+
+it("should check collinear points") {
+    // Three points are collinear if cross product is zero
+    let x1 = 0;
+    let y1 = 0;
+    let x2 = 2;
+    let y2 = 2;
+    let x3 = 4;
+    let y3 = 4;
+
+    // Vector from p1 to p2
+    let v1_x = x2 - x1;
+    let v1_y = y2 - y1;
+
+    // Vector from p1 to p3
+    let v2_x = x3 - x1;
+    let v2_y = y3 - y1;
+
+    let cross = v1_x * v2_y - v1_y * v2_x;
+    assert(cross == 0);  // Collinear
+}
+
+// ============================================================================
+// BOUNDING BOX OPERATIONS
+// ============================================================================
+
+it("should calculate bounding box") {
+    let points_x = [2, 8, 5, 1, 9];
+    let points_y = [3, 7, 2, 9, 4];
+
+    let mut min_x = points_x[0];
+    let mut max_x = points_x[0];
+    let mut min_y = points_y[0];
+    let mut max_y = points_y[0];
+
+    for (i in 0..5) {
+        if (points_x[i] < min_x) { min_x = points_x[i]; }
+        if (points_x[i] > max_x) { max_x = points_x[i]; }
+        if (points_y[i] < min_y) { min_y = points_y[i]; }
+        if (points_y[i] > max_y) { max_y = points_y[i]; }
+    }
+
+    assert(min_x == 1);
+    assert(max_x == 9);
+    assert(min_y == 2);
+    assert(max_y == 9);
+}
+
+// ============================================================================
+// ANGLE OPERATIONS (using degree integers)
+// ============================================================================
+
+it("should normalize angle") {
+    let angle = 450;  // degrees
+    let normalized = angle % 360;
+    assert(normalized == 90);
+}
+
+it("should calculate supplementary angle") {
+    let angle = 60;
+    let supplementary = 180 - angle;
+    assert(supplementary == 120);
+}
+
+it("should calculate complementary angle") {
+    let angle = 30;
+    let complementary = 90 - angle;
+    assert(complementary == 60);
+}
+
+it("should check angle sum in triangle") {
+    let angle1 = 60;
+    let angle2 = 60;
+    let angle3 = 60;
+
+    let sum = angle1 + angle2 + angle3;
+    assert(sum == 180);
+}
+
+// ============================================================================
+// 3D POINT OPERATIONS
+// ============================================================================
+
+it("should represent 3D points") {
+    let x = 1;
+    let y = 2;
+    let z = 3;
+
+    assert(x == 1);
+    assert(y == 2);
+    assert(z == 3);
+}
+
+it("should calculate 3D distance squared") {
+    let x1 = 0;
+    let y1 = 0;
+    let z1 = 0;
+    let x2 = 1;
+    let y2 = 2;
+    let z2 = 2;
+
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let dz = z2 - z1;
+    let distance_squared = dx * dx + dy * dy + dz * dz;
+
+    assert(distance_squared == 9);  // 1 + 4 + 4 = 9
+}
+
+it("should calculate 3D dot product") {
+    let v1_x = 1;
+    let v1_y = 2;
+    let v1_z = 3;
+    let v2_x = 4;
+    let v2_y = 5;
+    let v2_z = 6;
+
+    let dot = v1_x * v2_x + v1_y * v2_y + v1_z * v2_z;
+    assert(dot == 32);  // 4 + 10 + 18 = 32
+}

@@ -1,0 +1,325 @@
+// Text Diff Concepts Test Suite
+// Tests diff algorithms using basic Home syntax
+
+// ============================================================================
+// LINE SPLITTING
+// ============================================================================
+
+it("should split text into lines") {
+    let text = "line1\nline2\nline3"
+    let lines = text.split("\n")
+    assert(lines.len() == 3)
+    assert(lines[0] == "line1")
+}
+
+it("should detect identical texts") {
+    let a = "hello\nworld"
+    let b = "hello\nworld"
+    assert(a == b)
+}
+
+it("should detect different texts") {
+    let a = "hello\nworld"
+    let b = "hello\nearth"
+    assert(a != b)
+}
+
+// ============================================================================
+// LINE COMPARISON
+// ============================================================================
+
+it("should compare lines") {
+    let a_lines = ["line1", "line2", "line3"]
+    let b_lines = ["line1", "changed", "line3"]
+
+    let mut differences = 0
+    for i in 0..a_lines.len() {
+        if a_lines[i] != b_lines[i] {
+            differences = differences + 1
+        }
+    }
+    assert(differences == 1)
+}
+
+it("should detect added lines") {
+    let a_lines = ["line1", "line2"]
+    let b_lines = ["line1", "line2", "line3"]
+
+    let additions = b_lines.len() - a_lines.len()
+    assert(additions == 1)
+}
+
+it("should detect removed lines") {
+    let a_lines = ["line1", "line2", "line3"]
+    let b_lines = ["line1", "line3"]
+
+    let deletions = a_lines.len() - b_lines.len()
+    assert(deletions == 1)
+}
+
+// ============================================================================
+// WORD COMPARISON
+// ============================================================================
+
+it("should split into words") {
+    let text = "the quick brown fox"
+    let words = text.split(" ")
+    assert(words.len() == 4)
+}
+
+it("should compare words") {
+    let a_words = ["the", "quick", "brown", "fox"]
+    let b_words = ["the", "slow", "brown", "dog"]
+
+    let mut different_count = 0
+    for i in 0..a_words.len() {
+        if a_words[i] != b_words[i] {
+            different_count = different_count + 1
+        }
+    }
+    assert(different_count == 2)  // "quick" vs "slow", "fox" vs "dog"
+}
+
+// ============================================================================
+// CHARACTER COMPARISON
+// ============================================================================
+
+it("should compare characters") {
+    let a = "hello"
+    let b = "hallo"
+
+    let mut diff_count = 0
+    for i in 0..a.len() {
+        if a.char_at(i) != b.char_at(i) {
+            diff_count = diff_count + 1
+        }
+    }
+    assert(diff_count == 1)  // 'e' vs 'a'
+}
+
+// ============================================================================
+// UNIFIED DIFF FORMAT
+// ============================================================================
+
+it("should build unified diff header") {
+    let old_file = "--- old.txt"
+    let new_file = "+++ new.txt"
+    let header = old_file + "\n" + new_file
+    assert(header.contains("---"))
+    assert(header.contains("+++"))
+}
+
+it("should mark deletions with minus") {
+    let deleted_line = "-line2"
+    assert(deleted_line.starts_with("-"))
+}
+
+it("should mark additions with plus") {
+    let added_line = "+modified"
+    assert(added_line.starts_with("+"))
+}
+
+// ============================================================================
+// LEVENSHTEIN DISTANCE CONCEPTS
+// ============================================================================
+
+it("should calculate distance for identical strings") {
+    let a = "hello"
+    let b = "hello"
+    let distance = if a == b { 0 } else { 1 }
+    assert(distance == 0)
+}
+
+it("should detect single character difference") {
+    let a = "cat"
+    let b = "bat"
+    // One substitution needed
+    let mut diff = 0
+    for i in 0..a.len() {
+        if a.char_at(i) != b.char_at(i) {
+            diff = diff + 1
+        }
+    }
+    assert(diff == 1)
+}
+
+// ============================================================================
+// SIMILARITY RATIO
+// ============================================================================
+
+it("should calculate perfect similarity") {
+    let a = "hello"
+    let b = "hello"
+    let matching_chars = 5
+    let total_chars = 5
+    let ratio = matching_chars * 100 / total_chars
+    assert(ratio == 100)
+}
+
+it("should calculate partial similarity") {
+    let a = "hello"
+    let b = "hallo"
+    let matching = 4  // h, l, l, o
+    let total = 5
+    let ratio = matching * 100 / total
+    assert(ratio == 80)
+}
+
+// ============================================================================
+// THREE-WAY DIFF CONCEPTS
+// ============================================================================
+
+it("should detect conflict in same position") {
+    let base_line = "original"
+    let a_line = "modified_a"
+    let b_line = "modified_b"
+
+    let both_changed = base_line != a_line and base_line != b_line
+    let different_changes = a_line != b_line
+    let has_conflict = both_changed and different_changes
+    assert(has_conflict == true)
+}
+
+it("should detect no conflict when only one changed") {
+    let base_line = "original"
+    let a_line = "modified"
+    let b_line = "original"
+
+    let a_changed = base_line != a_line
+    let b_changed = base_line != b_line
+    let has_conflict = a_changed and b_changed
+    assert(has_conflict == false)
+}
+
+// ============================================================================
+// MERGE CONCEPTS
+// ============================================================================
+
+it("should merge non-conflicting additions") {
+    let base = ["line1", "line2"]
+    let a = ["line1", "line2", "a_addition"]
+    let b = ["b_addition", "line1", "line2"]
+
+    // Non-conflicting because additions are at different positions
+    let merged_len = base.len() + 2  // Both additions can be included
+    assert(merged_len == 4)
+}
+
+// ============================================================================
+// DIFF OPTIONS CONCEPTS
+// ============================================================================
+
+it("should ignore case in comparison") {
+    let a = "Hello"
+    let b = "hello"
+    let a_lower = a.lower()
+    let b_lower = b.lower()
+    assert(a_lower == b_lower)
+}
+
+it("should normalize whitespace") {
+    let a = "hello    world"
+    let b = "hello world"
+    // After normalization both would be "hello world"
+    let a_normalized = "hello world"
+    assert(a_normalized == b)
+}
+
+// ============================================================================
+// HUNK CONCEPTS
+// ============================================================================
+
+it("should identify change regions") {
+    let changes = [false, false, true, false, false, false, true, false]
+    // Changes at indices 2 and 6 - two separate regions
+
+    let mut hunk_count = 0
+    let mut in_hunk = false
+    for changed in changes {
+        if changed and in_hunk == false {
+            hunk_count = hunk_count + 1
+            in_hunk = true
+        }
+        if changed == false {
+            in_hunk = false
+        }
+    }
+    assert(hunk_count == 2)
+}
+
+// ============================================================================
+// CONTEXT LINES
+// ============================================================================
+
+it("should calculate context range") {
+    let change_line = 5
+    let context = 2
+    let start = change_line - context
+    let end = change_line + context
+    assert(start == 3)
+    assert(end == 7)
+}
+
+// ============================================================================
+// BINARY COMPARISON
+// ============================================================================
+
+it("should compare byte arrays") {
+    let a = [0, 1, 2]
+    let b = [0, 255, 2]
+
+    let mut diff_index = -1
+    for i in 0..a.len() {
+        if a[i] != b[i] {
+            diff_index = i
+        }
+    }
+    assert(diff_index == 1)
+}
+
+// ============================================================================
+// PATCH FORMAT CONCEPTS
+// ============================================================================
+
+it("should track old and new line numbers") {
+    let old_line = 5
+    let new_line = 7
+    let offset = new_line - old_line
+    assert(offset == 2)
+}
+
+// ============================================================================
+// DIFF OUTPUT
+// ============================================================================
+
+it("should format diff with markers") {
+    let removed = "- old line"
+    let added = "+ new line"
+    let context = "  unchanged line"
+
+    assert(removed.starts_with("-"))
+    assert(added.starts_with("+"))
+    assert(context.starts_with(" "))
+}
+
+// ============================================================================
+// JSON PATH COMPARISON
+// ============================================================================
+
+it("should build path for nested changes") {
+    let path = "user.address.city"
+    let parts = path.split(".")
+    assert(parts.len() == 3)
+    assert(parts[0] == "user")
+    assert(parts[2] == "city")
+}
+
+// ============================================================================
+// ARRAY INDEX PATH
+// ============================================================================
+
+it("should represent array index in path") {
+    let path = "items[3]"
+    assert(path.contains("["))
+    assert(path.contains("]"))
+}

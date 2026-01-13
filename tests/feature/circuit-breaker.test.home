@@ -1,0 +1,360 @@
+// Circuit Breaker Concepts Test Suite
+// Tests circuit breaker pattern using basic Home syntax
+
+// ============================================================================
+// CIRCUIT BREAKER STATE MANAGEMENT
+// ============================================================================
+
+it("should track circuit breaker state") {
+    // States: 0 = closed, 1 = open, 2 = half-open
+    let state = 0;  // Start closed
+    assert(state == 0);
+}
+
+it("should count failures") {
+    let mut failure_count = 0;
+    let threshold = 3;
+
+    // Simulate failures
+    failure_count = failure_count + 1;
+    failure_count = failure_count + 1;
+    failure_count = failure_count + 1;
+
+    assert(failure_count == threshold);
+}
+
+it("should open on threshold") {
+    let mut state = 0;  // closed
+    let mut failure_count = 0;
+    let threshold = 3;
+
+    // Simulate reaching threshold
+    for (_ in 0..3) {
+        failure_count = failure_count + 1;
+        if (failure_count >= threshold) {
+            state = 1;  // open
+        }
+    }
+
+    assert(state == 1);
+    assert(failure_count == 3);
+}
+
+it("should track success count") {
+    let mut success_count = 0;
+
+    // Simulate successful calls
+    for (_ in 0..5) {
+        success_count = success_count + 1;
+    }
+
+    assert(success_count == 5);
+}
+
+it("should reset failure count on success") {
+    let mut failure_count = 2;
+    let success = true;
+
+    if (success) {
+        failure_count = 0;
+    }
+
+    assert(failure_count == 0);
+}
+
+// ============================================================================
+// STATE TRANSITIONS
+// ============================================================================
+
+it("should transition closed to open") {
+    let mut state = 0;  // closed
+    let failures = 5;
+    let threshold = 3;
+
+    if (failures >= threshold) {
+        state = 1;  // open
+    }
+
+    assert(state == 1);
+}
+
+it("should transition open to half-open after timeout") {
+    let mut state = 1;  // open
+    let timeout_elapsed = true;
+
+    if (state == 1 and timeout_elapsed) {
+        state = 2;  // half-open
+    }
+
+    assert(state == 2);
+}
+
+it("should transition half-open to closed on success") {
+    let mut state = 2;  // half-open
+    let success = true;
+
+    if (state == 2 and success) {
+        state = 0;  // closed
+    }
+
+    assert(state == 0);
+}
+
+it("should transition half-open to open on failure") {
+    let mut state = 2;  // half-open
+    let success = false;
+
+    if (state == 2 and !success) {
+        state = 1;  // open
+    }
+
+    assert(state == 1);
+}
+
+// ============================================================================
+// CALL EXECUTION
+// ============================================================================
+
+it("should allow calls when closed") {
+    let state = 0;  // closed
+    let call_allowed = state == 0;
+
+    assert(call_allowed == true);
+}
+
+it("should reject calls when open") {
+    let state = 1;  // open
+    let call_allowed = state != 1;
+
+    assert(call_allowed == false);
+}
+
+it("should allow probe call when half-open") {
+    let state = 2;  // half-open
+    let call_allowed = state == 2;
+
+    assert(call_allowed == true);
+}
+
+// ============================================================================
+// FAILURE TRACKING
+// ============================================================================
+
+it("should track consecutive failures") {
+    let mut consecutive_failures = 0;
+    let results = [false, false, false, true, false];
+
+    for (result in results) {
+        if (result) {
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures = consecutive_failures + 1;
+        }
+    }
+
+    // Last result is false, so consecutive_failures = 1
+    assert(consecutive_failures == 1);
+}
+
+it("should track failure rate") {
+    let total_calls = 100;
+    let failed_calls = 20;
+    let failure_rate = (failed_calls * 100) / total_calls;
+
+    assert(failure_rate == 20);  // 20% failure rate
+}
+
+it("should check threshold percentage") {
+    let total = 10;
+    let failures = 6;
+    let threshold_percent = 50;
+
+    let current_percent = (failures * 100) / total;
+    let exceeded = current_percent > threshold_percent;
+
+    assert(exceeded == true);  // 60% > 50%
+}
+
+// ============================================================================
+// TIMEOUT MANAGEMENT
+// ============================================================================
+
+it("should track timeout period") {
+    let timeout_ms = 30000;
+    let elapsed_ms = 35000;
+    let timeout_expired = elapsed_ms >= timeout_ms;
+
+    assert(timeout_expired == true);
+}
+
+it("should not expire before timeout") {
+    let timeout_ms = 30000;
+    let elapsed_ms = 15000;
+    let timeout_expired = elapsed_ms >= timeout_ms;
+
+    assert(timeout_expired == false);
+}
+
+it("should calculate remaining timeout") {
+    let timeout_ms = 30000;
+    let elapsed_ms = 12000;
+    let remaining = timeout_ms - elapsed_ms;
+
+    assert(remaining == 18000);
+}
+
+// ============================================================================
+// CIRCUIT BREAKER SIMULATION
+// ============================================================================
+
+it("should simulate circuit breaker lifecycle") {
+    let mut state = 0;  // Start closed
+    let mut failures = 0;
+    let threshold = 3;
+
+    // Simulate failures until open
+    for (_ in 0..3) {
+        failures = failures + 1;
+        if (failures >= threshold) {
+            state = 1;  // Open
+        }
+    }
+    assert(state == 1);
+
+    // Simulate timeout elapsed
+    state = 2;  // Half-open
+    assert(state == 2);
+
+    // Simulate successful probe
+    state = 0;  // Closed
+    failures = 0;
+    assert(state == 0);
+    assert(failures == 0);
+}
+
+it("should simulate failure during half-open") {
+    let mut state = 2;  // half-open
+    let probe_success = false;
+
+    if (!probe_success) {
+        state = 1;  // back to open
+    }
+
+    assert(state == 1);
+}
+
+// ============================================================================
+// HEALTH METRICS
+// ============================================================================
+
+it("should calculate health score") {
+    let successes = 95;
+    let failures = 5;
+    let total = successes + failures;
+    let health_score = (successes * 100) / total;
+
+    assert(health_score == 95);
+}
+
+it("should track call latency") {
+    let latencies = [100, 150, 200, 120, 180];
+    let mut total = 0;
+
+    for (lat in latencies) {
+        total = total + lat;
+    }
+
+    let avg_latency = total / 5;
+    assert(avg_latency == 150);
+}
+
+it("should detect slow calls") {
+    let call_time = 5000;
+    let slow_threshold = 3000;
+    let is_slow = call_time > slow_threshold;
+
+    assert(is_slow == true);
+}
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+it("should use configurable threshold") {
+    let threshold_values = [1, 3, 5, 10];
+
+    assert(threshold_values[0] == 1);
+    assert(threshold_values[1] == 3);
+    assert(threshold_values[2] == 5);
+    assert(threshold_values[3] == 10);
+}
+
+it("should use configurable timeout") {
+    let timeout_values = [1000, 5000, 30000, 60000];
+
+    assert(timeout_values[0] == 1000);
+    assert(timeout_values[3] == 60000);
+}
+
+// ============================================================================
+// WINDOW-BASED TRACKING
+// ============================================================================
+
+it("should track sliding window") {
+    let mut window = [0, 0, 0, 0, 0];  // Last 5 results: 0=success, 1=failure
+    let window_size = 5;
+
+    // Add some failures
+    window[0] = 1;
+    window[2] = 1;
+    window[4] = 1;
+
+    let mut failures = 0;
+    for (result in window) {
+        if (result == 1) {
+            failures = failures + 1;
+        }
+    }
+
+    assert(failures == 3);
+}
+
+it("should calculate window failure rate") {
+    let window = [1, 0, 1, 0, 0, 1, 0, 0, 1, 0];  // 4 failures in 10
+    let mut failures = 0;
+
+    for (result in window) {
+        if (result == 1) {
+            failures = failures + 1;
+        }
+    }
+
+    let failure_rate = (failures * 100) / 10;
+    assert(failure_rate == 40);
+}
+
+// ============================================================================
+// HALF-OPEN BEHAVIOR
+// ============================================================================
+
+it("should limit probes in half-open") {
+    let state = 2;  // half-open
+    let max_probes = 3;
+    let current_probes = 2;
+    let can_probe = state == 2 and current_probes < max_probes;
+
+    assert(can_probe == true);
+}
+
+it("should track successful probes") {
+    let mut successful_probes = 0;
+    let required_probes = 3;
+
+    // Simulate successful probes
+    successful_probes = successful_probes + 1;
+    successful_probes = successful_probes + 1;
+    successful_probes = successful_probes + 1;
+
+    let ready_to_close = successful_probes >= required_probes;
+    assert(ready_to_close == true);
+}

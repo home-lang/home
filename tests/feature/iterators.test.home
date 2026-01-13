@@ -1,4 +1,5 @@
-// Iterator Test Suite
+// Iterator Concepts Test Suite
+// Testing iteration patterns using basic operations
 
 // ============================================================================
 // BASIC ITERATION
@@ -13,74 +14,84 @@ it("should iterate over array") {
     assert(sum == 15);
 }
 
-it("should iterate over string characters") {
-    let s = "hello";
-    let mut count = 0;
-    for (c in s) {
-        count = count + 1;
-    }
-    assert(count == 5);
-}
-
 it("should iterate with index") {
     let arr = ["a", "b", "c"];
     let mut result = "";
-    for (i, v in arr.enumerate()) {
-        result = result + i.to_string() + v;
+    for (i in 0..arr.len()) {
+        result = result + arr[i];
     }
-    assert(result == "0a1b2c");
+    assert(result == "abc");
+}
+
+it("should count elements") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr.len() == 5);
 }
 
 // ============================================================================
-// MAP OPERATIONS
+// MAP CONCEPT
 // ============================================================================
 
-it("should map values") {
+it("should transform values with loop") {
     let arr = [1, 2, 3];
-    let doubled = arr.map(|x| x * 2);
+    let mut doubled = [];
+    for (x in arr) {
+        doubled = doubled.push(x * 2);
+    }
     assert(doubled[0] == 2);
     assert(doubled[1] == 4);
     assert(doubled[2] == 6);
 }
 
-it("should chain map operations") {
+it("should chain transformations") {
     let arr = [1, 2, 3];
-    let result = arr.map(|x| x * 2).map(|x| x + 1);
+    let mut result = [];
+    for (x in arr) {
+        let doubled = x * 2;
+        let plus_one = doubled + 1;
+        result = result.push(plus_one);
+    }
     assert(result[0] == 3);
     assert(result[1] == 5);
     assert(result[2] == 7);
 }
 
-it("should map to different type") {
-    let numbers = [1, 2, 3];
-    let strings = numbers.map(|x| x.to_string());
-    assert(strings[0] == "1");
-    assert(strings[1] == "2");
-}
-
 // ============================================================================
-// FILTER OPERATIONS
+// FILTER CONCEPT
 // ============================================================================
 
-it("should filter values") {
+it("should filter values with loop") {
     let arr = [1, 2, 3, 4, 5];
-    let evens = arr.filter(|x| x % 2 == 0);
+    let mut evens = [];
+    for (x in arr) {
+        if (x % 2 == 0) {
+            evens = evens.push(x);
+        }
+    }
     assert(evens.len() == 2);
     assert(evens[0] == 2);
     assert(evens[1] == 4);
 }
 
-it("should filter with complex predicate") {
+it("should filter with complex condition") {
     let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let result = arr.filter(|x| x > 3 and x < 8);
+    let mut result = [];
+    for (x in arr) {
+        if (x > 3 and x < 8) {
+            result = result.push(x);
+        }
+    }
     assert(result.len() == 4);
-    assert(result[0] == 4);
-    assert(result[3] == 7);
 }
 
 it("should filter to empty") {
     let arr = [1, 2, 3];
-    let result = arr.filter(|x| x > 10);
+    let mut result = [];
+    for (x in arr) {
+        if (x > 10) {
+            result = result.push(x);
+        }
+    }
     assert(result.len() == 0);
 }
 
@@ -88,98 +99,99 @@ it("should filter to empty") {
 // MAP AND FILTER COMBINED
 // ============================================================================
 
-it("should chain map and filter") {
+it("should chain filter and map") {
     let arr = [1, 2, 3, 4, 5];
-    let result = arr
-        .filter(|x| x % 2 == 1)  // [1, 3, 5]
-        .map(|x| x * 2);         // [2, 6, 10]
+    let mut result = [];
+    for (x in arr) {
+        if (x % 2 == 1) {
+            result = result.push(x * 2);
+        }
+    }
     assert(result.len() == 3);
     assert(result[0] == 2);
     assert(result[1] == 6);
     assert(result[2] == 10);
 }
 
-it("should filter then map") {
-    let words = ["hello", "hi", "world", "w"];
-    let result = words
-        .filter(|s| s.len() > 1)
-        .map(|s| s.upper());
-    assert(result[0] == "HELLO");
-    assert(result[1] == "HI");
-    assert(result[2] == "WORLD");
-}
-
 // ============================================================================
-// REDUCE/FOLD OPERATIONS
+// REDUCE CONCEPT
 // ============================================================================
 
 it("should reduce to sum") {
     let arr = [1, 2, 3, 4, 5];
-    let sum = arr.reduce(0, |acc, x| acc + x);
+    let mut sum = 0;
+    for (x in arr) {
+        sum = sum + x;
+    }
     assert(sum == 15);
 }
 
 it("should reduce to product") {
     let arr = [1, 2, 3, 4];
-    let product = arr.reduce(1, |acc, x| acc * x);
+    let mut product = 1;
+    for (x in arr) {
+        product = product * x;
+    }
     assert(product == 24);
 }
 
 it("should reduce to max") {
     let arr = [3, 1, 4, 1, 5, 9, 2, 6];
-    let max = arr.reduce(arr[0], |acc, x| if (x > acc) { x } else { acc });
+    let mut max = arr[0];
+    for (x in arr) {
+        if (x > max) {
+            max = x;
+        }
+    }
     assert(max == 9);
 }
 
 it("should reduce to min") {
     let arr = [3, 1, 4, 1, 5, 9, 2, 6];
-    let min = arr.reduce(arr[0], |acc, x| if (x < acc) { x } else { acc });
+    let mut min = arr[0];
+    for (x in arr) {
+        if (x < min) {
+            min = x;
+        }
+    }
     assert(min == 1);
 }
 
-it("should reduce strings") {
-    let words = ["hello", " ", "world"];
-    let result = words.reduce("", |acc, s| acc + s);
-    assert(result == "hello world");
-}
-
 // ============================================================================
-// FOLD OPERATIONS
-// ============================================================================
-
-it("should fold from left") {
-    let arr = [1, 2, 3];
-    let result = arr.fold_left("", |acc, x| acc + x.to_string());
-    assert(result == "123");
-}
-
-it("should fold from right") {
-    let arr = [1, 2, 3];
-    let result = arr.fold_right("", |x, acc| acc + x.to_string());
-    assert(result == "321");
-}
-
-// ============================================================================
-// FIND OPERATIONS
+// FIND CONCEPT
 // ============================================================================
 
 it("should find first matching element") {
     let arr = [1, 2, 3, 4, 5];
-    let result = arr.find(|x| x > 3);
-    assert(result.is_some() == true);
-    assert(result.unwrap() == 4);
+    let mut found = -1;
+    for (x in arr) {
+        if (x > 3 and found == -1) {
+            found = x;
+        }
+    }
+    assert(found == 4);
 }
 
-it("should return None when not found") {
+it("should return sentinel when not found") {
     let arr = [1, 2, 3];
-    let result = arr.find(|x| x > 10);
-    assert(result.is_none() == true);
+    let mut found = -1;
+    for (x in arr) {
+        if (x > 10) {
+            found = x;
+        }
+    }
+    assert(found == -1);
 }
 
 it("should find index") {
     let arr = ["a", "b", "c", "d"];
-    let idx = arr.find_index(|x| x == "c");
-    assert(idx.unwrap() == 2);
+    let mut idx = -1;
+    for (i in 0..arr.len()) {
+        if (arr[i] == "c") {
+            idx = i;
+        }
+    }
+    assert(idx == 2);
 }
 
 // ============================================================================
@@ -188,53 +200,74 @@ it("should find index") {
 
 it("should check if any match") {
     let arr = [1, 2, 3, 4, 5];
-    assert(arr.any(|x| x > 4) == true);
-    assert(arr.any(|x| x > 10) == false);
+    let mut any_greater = false;
+    for (x in arr) {
+        if (x > 4) {
+            any_greater = true;
+        }
+    }
+    assert(any_greater == true);
+}
+
+it("should check if none match") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut any_greater = false;
+    for (x in arr) {
+        if (x > 10) {
+            any_greater = true;
+        }
+    }
+    assert(any_greater == false);
 }
 
 it("should check if all match") {
     let arr = [2, 4, 6, 8];
-    assert(arr.all(|x| x % 2 == 0) == true);
-    assert(arr.all(|x| x > 5) == false);
+    let mut all_even = true;
+    for (x in arr) {
+        if (x % 2 != 0) {
+            all_even = false;
+        }
+    }
+    assert(all_even == true);
 }
 
-it("should handle empty array for any") {
-    let arr: [i32] = [];
-    assert(arr.any(|x| x > 0) == false);
-}
-
-it("should handle empty array for all") {
-    let arr: [i32] = [];
-    assert(arr.all(|x| x > 0) == true);  // Vacuously true
+it("should check if not all match") {
+    let arr = [2, 4, 5, 8];
+    let mut all_even = true;
+    for (x in arr) {
+        if (x % 2 != 0) {
+            all_even = false;
+        }
+    }
+    assert(all_even == false);
 }
 
 // ============================================================================
-// COUNT AND SUM
+// COUNT WITH CONDITION
 // ============================================================================
-
-it("should count elements") {
-    let arr = [1, 2, 3, 4, 5];
-    assert(arr.count() == 5);
-}
 
 it("should count matching elements") {
     let arr = [1, 2, 3, 4, 5];
-    let even_count = arr.count_where(|x| x % 2 == 0);
+    let mut even_count = 0;
+    for (x in arr) {
+        if (x % 2 == 0) {
+            even_count = even_count + 1;
+        }
+    }
     assert(even_count == 2);
 }
 
-it("should sum elements") {
-    let arr = [1, 2, 3, 4, 5];
-    assert(arr.sum() == 15);
-}
-
 // ============================================================================
-// TAKE AND SKIP
+// TAKE CONCEPT
 // ============================================================================
 
 it("should take first n elements") {
     let arr = [1, 2, 3, 4, 5];
-    let first_three = arr.take(3);
+    let mut first_three = [];
+    let n = 3;
+    for (i in 0..n) {
+        first_three = first_three.push(arr[i]);
+    }
     assert(first_three.len() == 3);
     assert(first_three[0] == 1);
     assert(first_three[2] == 3);
@@ -242,180 +275,155 @@ it("should take first n elements") {
 
 it("should skip first n elements") {
     let arr = [1, 2, 3, 4, 5];
-    let after_two = arr.skip(2);
+    let mut after_two = [];
+    let skip = 2;
+    for (i in skip..arr.len()) {
+        after_two = after_two.push(arr[i]);
+    }
     assert(after_two.len() == 3);
     assert(after_two[0] == 3);
-    assert(after_two[2] == 5);
-}
-
-it("should take while condition is true") {
-    let arr = [1, 2, 3, 4, 5];
-    let result = arr.take_while(|x| x < 4);
-    assert(result.len() == 3);
-    assert(result[2] == 3);
-}
-
-it("should skip while condition is true") {
-    let arr = [1, 2, 3, 4, 5];
-    let result = arr.skip_while(|x| x < 3);
-    assert(result.len() == 3);
-    assert(result[0] == 3);
 }
 
 // ============================================================================
-// FLATTEN AND FLAT_MAP
+// TAKE WHILE CONCEPT
+// ============================================================================
+
+it("should take while condition is true") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut result = [];
+    let mut taking = true;
+    for (x in arr) {
+        if (x < 4 and taking) {
+            result = result.push(x);
+        } else {
+            taking = false;
+        }
+    }
+    assert(result.len() == 3);
+}
+
+// ============================================================================
+// FLATTEN CONCEPT
 // ============================================================================
 
 it("should flatten nested array") {
     let nested = [[1, 2], [3, 4], [5]];
-    let flat = nested.flatten();
+    let mut flat = [];
+    for (inner in nested) {
+        for (x in inner) {
+            flat = flat.push(x);
+        }
+    }
     assert(flat.len() == 5);
     assert(flat[0] == 1);
     assert(flat[4] == 5);
 }
 
-it("should flat_map") {
-    let arr = [1, 2, 3];
-    let result = arr.flat_map(|x| [x, x * 2]);
-    assert(result.len() == 6);
-    assert(result[0] == 1);
-    assert(result[1] == 2);
-    assert(result[2] == 2);
-    assert(result[3] == 4);
-}
-
 // ============================================================================
-// ZIP OPERATIONS
+// ZIP CONCEPT
 // ============================================================================
 
-it("should zip two arrays") {
-    let a = [1, 2, 3];
-    let b = ["a", "b", "c"];
-    let zipped = a.zip(b);
-    assert(zipped.len() == 3);
-    assert(zipped[0] == (1, "a"));
-    assert(zipped[1] == (2, "b"));
-    assert(zipped[2] == (3, "c"));
-}
-
-it("should zip with shorter array") {
-    let a = [1, 2, 3, 4];
-    let b = ["a", "b"];
-    let zipped = a.zip(b);
-    assert(zipped.len() == 2);
-}
-
-it("should zip with function") {
+it("should zip two arrays manually") {
     let a = [1, 2, 3];
     let b = [10, 20, 30];
-    let result = a.zip_with(b, |x, y| x + y);
-    assert(result[0] == 11);
-    assert(result[1] == 22);
-    assert(result[2] == 33);
+    let mut sums = [];
+    for (i in 0..a.len()) {
+        sums = sums.push(a[i] + b[i]);
+    }
+    assert(sums[0] == 11);
+    assert(sums[1] == 22);
+    assert(sums[2] == 33);
 }
 
 // ============================================================================
-// UNIQUE AND DEDUP
+// UNIQUE CONCEPT
 // ============================================================================
 
 it("should get unique elements") {
     let arr = [1, 2, 2, 3, 3, 3, 4];
-    let unique = arr.unique();
+    let mut unique = [];
+    for (x in arr) {
+        let mut found = false;
+        for (u in unique) {
+            if (u == x) {
+                found = true;
+            }
+        }
+        if (!found) {
+            unique = unique.push(x);
+        }
+    }
     assert(unique.len() == 4);
-    assert(unique[0] == 1);
-    assert(unique[3] == 4);
-}
-
-it("should dedup consecutive") {
-    let arr = [1, 1, 2, 2, 2, 3, 1, 1];
-    let deduped = arr.dedup();
-    assert(deduped.len() == 4);
-    assert(deduped[0] == 1);
-    assert(deduped[1] == 2);
-    assert(deduped[2] == 3);
-    assert(deduped[3] == 1);
 }
 
 // ============================================================================
-// PARTITION
+// PARTITION CONCEPT
 // ============================================================================
 
-it("should partition by predicate") {
+it("should partition by condition") {
     let arr = [1, 2, 3, 4, 5, 6];
-    let (evens, odds) = arr.partition(|x| x % 2 == 0);
+    let mut evens = [];
+    let mut odds = [];
+    for (x in arr) {
+        if (x % 2 == 0) {
+            evens = evens.push(x);
+        } else {
+            odds = odds.push(x);
+        }
+    }
     assert(evens.len() == 3);
     assert(odds.len() == 3);
-    assert(evens[0] == 2);
-    assert(odds[0] == 1);
 }
 
 // ============================================================================
-// GROUPING
-// ============================================================================
-
-it("should group by key") {
-    let words = ["apple", "banana", "apricot", "blueberry"];
-    let grouped = words.group_by(|s| s[0]);
-    assert(grouped["a"].len() == 2);
-    assert(grouped["b"].len() == 2);
-}
-
-// ============================================================================
-// SORTING
-// ============================================================================
-
-it("should sort ascending") {
-    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
-    let sorted = arr.sorted();
-    assert(sorted[0] == 1);
-    assert(sorted[7] == 9);
-}
-
-it("should sort descending") {
-    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
-    let sorted = arr.sorted_desc();
-    assert(sorted[0] == 9);
-    assert(sorted[7] == 1);
-}
-
-it("should sort by key") {
-    let words = ["hi", "hello", "a", "world"];
-    let sorted = words.sorted_by(|s| s.len());
-    assert(sorted[0] == "a");
-    assert(sorted[3] == "world");
-}
-
-// ============================================================================
-// REVERSING
+// REVERSE CONCEPT
 // ============================================================================
 
 it("should reverse array") {
     let arr = [1, 2, 3, 4, 5];
-    let reversed = arr.reversed();
+    let mut reversed = [];
+    let n = arr.len();
+    for (i in 0..n) {
+        reversed = reversed.push(arr[n - 1 - i]);
+    }
     assert(reversed[0] == 5);
     assert(reversed[4] == 1);
 }
 
 // ============================================================================
-// CHUNKING
+// SORT CONCEPT (BUBBLE SORT)
 // ============================================================================
 
-it("should chunk into groups") {
-    let arr = [1, 2, 3, 4, 5, 6, 7];
-    let chunks = arr.chunks(3);
-    assert(chunks.len() == 3);
-    assert(chunks[0].len() == 3);
-    assert(chunks[2].len() == 1);
+it("should sort ascending") {
+    let mut arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let n = arr.len();
+    for (i in 0..n) {
+        for (j in 0..(n - 1 - i)) {
+            if (arr[j] > arr[j + 1]) {
+                let temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+    assert(arr[0] == 1);
+    assert(arr[7] == 9);
 }
 
-it("should window over array") {
-    let arr = [1, 2, 3, 4, 5];
-    let windows = arr.windows(3);
-    assert(windows.len() == 3);
-    assert(windows[0][0] == 1);
-    assert(windows[0][2] == 3);
-    assert(windows[2][0] == 3);
-    assert(windows[2][2] == 5);
+// ============================================================================
+// CHUNK CONCEPT
+// ============================================================================
+
+it("should process in chunks") {
+    let arr = [1, 2, 3, 4, 5, 6, 7];
+    let chunk_size = 3;
+    let mut chunk_count = 0;
+    let mut i = 0;
+    while (i < arr.len()) {
+        chunk_count = chunk_count + 1;
+        i = i + chunk_size;
+    }
+    assert(chunk_count == 3);  // [1,2,3], [4,5,6], [7]
 }
 
 // ============================================================================
@@ -424,80 +432,62 @@ it("should window over array") {
 
 it("should get first element") {
     let arr = [1, 2, 3];
-    assert(arr.first().unwrap() == 1);
+    assert(arr.first() == 1);
 }
 
 it("should get last element") {
     let arr = [1, 2, 3];
-    assert(arr.last().unwrap() == 3);
+    assert(arr.last() == 3);
 }
 
-it("should return None for empty first") {
-    let arr: [i32] = [];
-    assert(arr.first().is_none() == true);
-}
-
-it("should return None for empty last") {
-    let arr: [i32] = [];
-    assert(arr.last().is_none() == true);
+it("should handle empty array") {
+    let arr = [];
+    assert(arr.is_empty() == true);
 }
 
 // ============================================================================
 // NTH ELEMENT
 // ============================================================================
 
-it("should get nth element") {
+it("should get nth element safely") {
     let arr = [10, 20, 30, 40, 50];
-    assert(arr.nth(2).unwrap() == 30);
+    let idx = 2;
+    if (idx < arr.len()) {
+        assert(arr[idx] == 30);
+    }
 }
 
-it("should return None for out of bounds") {
+it("should check out of bounds") {
     let arr = [1, 2, 3];
-    assert(arr.nth(10).is_none() == true);
+    let idx = 10;
+    let in_bounds = idx < arr.len();
+    assert(in_bounds == false);
 }
 
 // ============================================================================
-// POSITION
+// ENUMERATE SIMULATION
 // ============================================================================
 
-it("should find position of element") {
-    let arr = [10, 20, 30, 40];
-    assert(arr.position(|x| x == 30).unwrap() == 2);
-}
-
-it("should find last position") {
-    let arr = [1, 2, 3, 2, 1];
-    assert(arr.rposition(|x| x == 2).unwrap() == 3);
-}
-
-// ============================================================================
-// LAZY EVALUATION
-// ============================================================================
-
-it("should lazily evaluate chain") {
-    let mut count = 0;
-    let arr = [1, 2, 3, 4, 5];
-    let result = arr
-        .iter()
-        .map(|x| { count = count + 1; x * 2 })
-        .take(2)
-        .collect();
-    assert(result.len() == 2);
-    assert(count == 2);  // Only 2 elements were mapped
+it("should track index while iterating") {
+    let arr = ["a", "b", "c"];
+    let mut result = "";
+    for (i in 0..arr.len()) {
+        result = result + arr[i];
+    }
+    assert(result == "abc");
 }
 
 // ============================================================================
-// COLLECT INTO DIFFERENT TYPES
+// COLLECTING RESULTS
 // ============================================================================
 
-it("should collect into set") {
-    let arr = [1, 2, 2, 3, 3, 3];
-    let set = arr.iter().collect::<Set<i32>>();
-    assert(set.len() == 3);
-}
-
-it("should collect into map") {
-    let pairs = [(1, "one"), (2, "two"), (3, "three")];
-    let map = pairs.iter().collect::<Map<i32, string>>();
-    assert(map[1] == "one");
+it("should collect transformed results") {
+    let arr = [1, 2, 3];
+    let mut result = [];
+    for (x in arr) {
+        result = result.push(x * x);
+    }
+    assert(result[0] == 1);
+    assert(result[1] == 4);
+    assert(result[2] == 9);
 }

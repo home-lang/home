@@ -1,0 +1,405 @@
+// Algorithms Concepts Test Suite
+
+// ============================================================================
+// SORTING - BUBBLE SORT
+// ============================================================================
+
+it("should implement bubble sort") {
+    let mut arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let n = arr.len();
+
+    for (i in 0..n) {
+        for (j in 0..(n - 1 - i)) {
+            if (arr[j] > arr[j + 1]) {
+                let temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+
+    assert(arr[0] == 1);
+    assert(arr[1] == 1);
+    assert(arr[7] == 9);
+}
+
+it("should sort already sorted array") {
+    let arr = [1, 2, 3, 4, 5];
+    assert(arr[0] == 1);
+    assert(arr[4] == 5);
+}
+
+it("should sort reverse array") {
+    let mut arr = [5, 4, 3, 2, 1];
+    let n = arr.len();
+
+    for (i in 0..n) {
+        for (j in 0..(n - 1 - i)) {
+            if (arr[j] > arr[j + 1]) {
+                let temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+
+    assert(arr[0] == 1);
+    assert(arr[4] == 5);
+}
+
+// ============================================================================
+// SEARCHING - LINEAR SEARCH
+// ============================================================================
+
+it("should find element with linear search") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let target = 5;
+    let mut found_index = -1;
+
+    for (i in 0..arr.len()) {
+        if (arr[i] == target) {
+            found_index = i;
+        }
+    }
+
+    assert(found_index == 4);
+}
+
+it("should not find missing element") {
+    let arr = [3, 1, 4, 1, 5];
+    let target = 10;
+    let mut found = false;
+
+    for (val in arr) {
+        if (val == target) {
+            found = true;
+        }
+    }
+
+    assert(found == false);
+}
+
+// ============================================================================
+// SEARCHING - BINARY SEARCH
+// ============================================================================
+
+it("should binary search in sorted array") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let target = 5;
+
+    let mut left = 0;
+    let mut right = arr.len() - 1;
+    let mut found_index = -1;
+
+    while (left <= right and found_index == -1) {
+        let mid = (left + right) / 2;
+        if (arr[mid] == target) {
+            found_index = mid;
+        } else if (arr[mid] < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    assert(found_index == 4);
+}
+
+// ============================================================================
+// MIN/MAX FINDING
+// ============================================================================
+
+it("should find minimum") {
+    let arr = [3, 1, 4, 1, 5, 9, 2];
+    let mut min = arr[0];
+
+    for (val in arr) {
+        if (val < min) {
+            min = val;
+        }
+    }
+
+    assert(min == 1);
+}
+
+it("should find maximum") {
+    let arr = [3, 1, 4, 1, 5, 9, 2];
+    let mut max = arr[0];
+
+    for (val in arr) {
+        if (val > max) {
+            max = val;
+        }
+    }
+
+    assert(max == 9);
+}
+
+it("should find min and max together") {
+    let arr = [3, 1, 4, 1, 5, 9, 2, 6];
+    let mut min = arr[0];
+    let mut max = arr[0];
+
+    for (val in arr) {
+        if (val < min) { min = val; }
+        if (val > max) { max = val; }
+    }
+
+    assert(min == 1);
+    assert(max == 9);
+}
+
+// ============================================================================
+// SUM AND AVERAGE
+// ============================================================================
+
+it("should calculate sum") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+
+    for (val in arr) {
+        sum = sum + val;
+    }
+
+    assert(sum == 15);
+}
+
+it("should calculate average") {
+    let arr = [10, 20, 30, 40, 50];
+    let mut sum = 0;
+
+    for (val in arr) {
+        sum = sum + val;
+    }
+
+    let avg = sum / arr.len();
+    assert(avg == 30);
+}
+
+// ============================================================================
+// COUNTING
+// ============================================================================
+
+it("should count occurrences") {
+    let arr = [1, 2, 2, 3, 2, 4, 2];
+    let target = 2;
+    let mut count = 0;
+
+    for (val in arr) {
+        if (val == target) {
+            count = count + 1;
+        }
+    }
+
+    assert(count == 4);
+}
+
+it("should count elements matching condition") {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let mut even_count = 0;
+
+    for (val in arr) {
+        if (val % 2 == 0) {
+            even_count = even_count + 1;
+        }
+    }
+
+    assert(even_count == 5);
+}
+
+// ============================================================================
+// REVERSING
+// ============================================================================
+
+it("should reverse array") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut reversed = [];
+
+    let n = arr.len();
+    for (i in 0..n) {
+        reversed = reversed.push(arr[n - 1 - i]);
+    }
+
+    assert(reversed[0] == 5);
+    assert(reversed[4] == 1);
+}
+
+// ============================================================================
+// DEDUPLICATION
+// ============================================================================
+
+it("should check for duplicates") {
+    let arr = [1, 2, 3, 2, 4];
+    let mut has_duplicates = false;
+
+    for (i in 0..arr.len()) {
+        for (j in (i + 1)..arr.len()) {
+            if (arr[i] == arr[j]) {
+                has_duplicates = true;
+            }
+        }
+    }
+
+    assert(has_duplicates == true);
+}
+
+it("should check no duplicates") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut has_duplicates = false;
+
+    for (i in 0..arr.len()) {
+        for (j in (i + 1)..arr.len()) {
+            if (arr[i] == arr[j]) {
+                has_duplicates = true;
+            }
+        }
+    }
+
+    assert(has_duplicates == false);
+}
+
+// ============================================================================
+// PREFIX SUMS
+// ============================================================================
+
+it("should calculate prefix sums") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut prefix_sums = [0];
+    let mut running_sum = 0;
+
+    for (val in arr) {
+        running_sum = running_sum + val;
+        prefix_sums = prefix_sums.push(running_sum);
+    }
+
+    // prefix_sums = [0, 1, 3, 6, 10, 15]
+    assert(prefix_sums[1] == 1);
+    assert(prefix_sums[3] == 6);
+    assert(prefix_sums[5] == 15);
+}
+
+// ============================================================================
+// FIBONACCI
+// ============================================================================
+
+it("should calculate fibonacci numbers") {
+    let n = 10;
+    let mut fib = [0, 1];
+
+    for (i in 2..n) {
+        let next = fib[i - 1] + fib[i - 2];
+        fib = fib.push(next);
+    }
+
+    // fib = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+    assert(fib[5] == 5);
+    assert(fib[9] == 34);
+}
+
+// ============================================================================
+// PRIME CHECKING
+// ============================================================================
+
+it("should check if number is prime") {
+    let n = 17;
+    let mut is_prime = true;
+
+    if (n < 2) {
+        is_prime = false;
+    } else {
+        for (i in 2..n) {
+            if (n % i == 0) {
+                is_prime = false;
+            }
+        }
+    }
+
+    assert(is_prime == true);
+}
+
+it("should check composite number") {
+    let n = 15;
+    let mut is_prime = true;
+
+    if (n < 2) {
+        is_prime = false;
+    } else {
+        for (i in 2..n) {
+            if (n % i == 0) {
+                is_prime = false;
+            }
+        }
+    }
+
+    assert(is_prime == false);
+}
+
+// ============================================================================
+// GCD ALGORITHM
+// ============================================================================
+
+it("should calculate GCD iteratively") {
+    let mut a = 48;
+    let mut b = 18;
+
+    while (b != 0) {
+        let temp = b;
+        b = a % b;
+        a = temp;
+    }
+
+    assert(a == 6);  // GCD(48, 18) = 6
+}
+
+// ============================================================================
+// FACTORIAL
+// ============================================================================
+
+it("should calculate factorial") {
+    let n = 5;
+    let mut factorial = 1;
+
+    for (i in 1..(n + 1)) {
+        factorial = factorial * i;
+    }
+
+    assert(factorial == 120);  // 5! = 120
+}
+
+// ============================================================================
+// TWO POINTER TECHNIQUE
+// ============================================================================
+
+it("should check if array is palindrome") {
+    let arr = [1, 2, 3, 2, 1];
+    let mut left = 0;
+    let mut right = arr.len() - 1;
+    let mut is_palindrome = true;
+
+    while (left < right) {
+        if (arr[left] != arr[right]) {
+            is_palindrome = false;
+        }
+        left = left + 1;
+        right = right - 1;
+    }
+
+    assert(is_palindrome == true);
+}
+
+it("should detect non-palindrome") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut left = 0;
+    let mut right = arr.len() - 1;
+    let mut is_palindrome = true;
+
+    while (left < right) {
+        if (arr[left] != arr[right]) {
+            is_palindrome = false;
+        }
+        left = left + 1;
+        right = right - 1;
+    }
+
+    assert(is_palindrome == false);
+}

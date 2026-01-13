@@ -1,0 +1,356 @@
+// MIME Types Concepts Test Suite
+// Tests MIME type concepts using basic Home syntax
+
+// ============================================================================
+// MIME TYPE STRUCTURE
+// ============================================================================
+
+it("should parse MIME type parts") {
+    let mime = "text/html"
+    let parts = mime.split("/")
+    assert(parts.len() == 2)
+    assert(parts[0] == "text")
+    assert(parts[1] == "html")
+}
+
+it("should identify type") {
+    let mime = "text/html"
+    let type_part = mime.split("/")[0]
+    assert(type_part == "text")
+}
+
+it("should identify subtype") {
+    let mime = "text/html"
+    let subtype = mime.split("/")[1]
+    assert(subtype == "html")
+}
+
+// ============================================================================
+// COMMON MIME TYPES
+// ============================================================================
+
+it("should know text MIME types") {
+    let text_plain = "text/plain"
+    let text_html = "text/html"
+    let text_css = "text/css"
+    let text_csv = "text/csv"
+
+    assert(text_plain.starts_with("text/"))
+    assert(text_html.starts_with("text/"))
+    assert(text_css.starts_with("text/"))
+}
+
+it("should know application MIME types") {
+    let json = "application/json"
+    let xml = "application/xml"
+    let pdf = "application/pdf"
+    let zip = "application/zip"
+
+    assert(json.starts_with("application/"))
+    assert(pdf.starts_with("application/"))
+}
+
+it("should know image MIME types") {
+    let png = "image/png"
+    let jpeg = "image/jpeg"
+    let gif = "image/gif"
+    let svg = "image/svg+xml"
+    let webp = "image/webp"
+
+    assert(png.starts_with("image/"))
+    assert(jpeg.starts_with("image/"))
+}
+
+it("should know audio MIME types") {
+    let mp3 = "audio/mpeg"
+    let wav = "audio/wav"
+    let ogg = "audio/ogg"
+
+    assert(mp3.starts_with("audio/"))
+    assert(wav.starts_with("audio/"))
+}
+
+it("should know video MIME types") {
+    let mp4 = "video/mp4"
+    let webm = "video/webm"
+
+    assert(mp4.starts_with("video/"))
+    assert(webm.starts_with("video/"))
+}
+
+// ============================================================================
+// EXTENSION MAPPING
+// ============================================================================
+
+it("should map extension to MIME") {
+    let extensions = {}
+    extensions["txt"] = "text/plain"
+    extensions["html"] = "text/html"
+    extensions["json"] = "application/json"
+    extensions["pdf"] = "application/pdf"
+    extensions["png"] = "image/png"
+
+    assert(extensions["txt"] == "text/plain")
+    assert(extensions["json"] == "application/json")
+}
+
+it("should map MIME to extension") {
+    let mimes = {}
+    mimes["text/plain"] = "txt"
+    mimes["application/pdf"] = "pdf"
+    mimes["image/jpeg"] = "jpg"
+
+    assert(mimes["text/plain"] == "txt")
+    assert(mimes["image/jpeg"] == "jpg")
+}
+
+it("should get extension from filename") {
+    let filename = "document.pdf"
+    let parts = filename.split(".")
+    let ext = parts[parts.len() - 1]
+    assert(ext == "pdf")
+}
+
+// ============================================================================
+// MIME WITH PARAMETERS
+// ============================================================================
+
+it("should parse MIME with charset") {
+    let mime = "text/html; charset=utf-8"
+    let has_params = mime.contains(";")
+    assert(has_params == true)
+}
+
+it("should extract essence (type/subtype)") {
+    let full = "text/html; charset=utf-8"
+    let parts = full.split(";")
+    let essence = parts[0]
+    assert(essence == "text/html")
+}
+
+it("should extract charset parameter") {
+    let mime = "text/html; charset=utf-8"
+    let has_charset = mime.contains("charset=")
+    assert(has_charset == true)
+}
+
+it("should parse parameter value") {
+    let param = "charset=utf-8"
+    let parts = param.split("=")
+    assert(parts[0] == "charset")
+    assert(parts[1] == "utf-8")
+}
+
+// ============================================================================
+// TYPE CHECKING
+// ============================================================================
+
+it("should check if text type") {
+    let mime = "text/plain"
+    let is_text = mime.starts_with("text/")
+    assert(is_text == true)
+}
+
+it("should check if image type") {
+    let mime = "image/png"
+    let is_image = mime.starts_with("image/")
+    assert(is_image == true)
+}
+
+it("should check if audio type") {
+    let mime = "audio/mpeg"
+    let is_audio = mime.starts_with("audio/")
+    assert(is_audio == true)
+}
+
+it("should check if video type") {
+    let mime = "video/mp4"
+    let is_video = mime.starts_with("video/")
+    assert(is_video == true)
+}
+
+it("should check if application type") {
+    let mime = "application/json"
+    let is_app = mime.starts_with("application/")
+    assert(is_app == true)
+}
+
+// ============================================================================
+// MULTIPART
+// ============================================================================
+
+it("should detect multipart type") {
+    let mime = "multipart/form-data; boundary=----WebKitFormBoundary"
+    let is_multipart = mime.starts_with("multipart/")
+    assert(is_multipart == true)
+}
+
+it("should extract boundary") {
+    let param = "boundary=----WebKitFormBoundary"
+    let parts = param.split("=")
+    assert(parts[1] == "----WebKitFormBoundary")
+}
+
+// ============================================================================
+// CONTENT NEGOTIATION
+// ============================================================================
+
+it("should parse Accept header types") {
+    let accept = "text/html, application/json"
+    let types = accept.split(", ")
+    assert(types.len() == 2)
+    assert(types[0] == "text/html")
+}
+
+it("should detect quality parameter") {
+    let type_with_q = "application/json;q=0.9"
+    let has_quality = type_with_q.contains("q=")
+    assert(has_quality == true)
+}
+
+it("should parse quality value") {
+    let param = "q=0.9"
+    let parts = param.split("=")
+    assert(parts[1] == "0.9")
+}
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+it("should validate MIME has slash") {
+    let valid = "text/plain"
+    let invalid = "invalid"
+    assert(valid.contains("/") == true)
+    assert(invalid.contains("/") == false)
+}
+
+it("should validate MIME has type") {
+    let mime = "text/plain"
+    let parts = mime.split("/")
+    let has_type = parts[0].len() > 0
+    assert(has_type == true)
+}
+
+it("should validate MIME has subtype") {
+    let mime = "text/plain"
+    let parts = mime.split("/")
+    let has_subtype = parts[1].len() > 0
+    assert(has_subtype == true)
+}
+
+it("should reject empty type") {
+    let invalid = "/plain"
+    let parts = invalid.split("/")
+    let is_valid = parts[0].len() > 0
+    assert(is_valid == false)
+}
+
+// ============================================================================
+// WILDCARD MATCHING
+// ============================================================================
+
+it("should detect type wildcard") {
+    let pattern = "*/*"
+    let is_wildcard = pattern == "*/*"
+    assert(is_wildcard == true)
+}
+
+it("should detect subtype wildcard") {
+    let pattern = "text/*"
+    let has_star = pattern.ends_with("/*")
+    assert(has_star == true)
+}
+
+it("should match wildcard pattern") {
+    let mime = "text/html"
+    let pattern = "text/*"
+    let pattern_type = pattern.split("/")[0]
+    let mime_type = mime.split("/")[0]
+    let matches = pattern_type == mime_type
+    assert(matches == true)
+}
+
+// ============================================================================
+// MAGIC BYTES CONCEPTS
+// ============================================================================
+
+it("should know PNG magic bytes") {
+    let png_magic = [137, 80, 78, 71, 13, 10, 26, 10]
+    assert(png_magic[0] == 137)
+    assert(png_magic[1] == 80)  // P
+    assert(png_magic[2] == 78)  // N
+    assert(png_magic[3] == 71)  // G
+}
+
+it("should know JPEG magic bytes") {
+    let jpeg_magic = [255, 216, 255]
+    assert(jpeg_magic[0] == 255)
+    assert(jpeg_magic[1] == 216)
+}
+
+it("should know PDF magic bytes") {
+    let pdf_magic = [37, 80, 68, 70]  // %PDF
+    assert(pdf_magic[0] == 37)  // %
+    assert(pdf_magic[1] == 80)  // P
+}
+
+it("should know ZIP magic bytes") {
+    let zip_magic = [80, 75, 3, 4]  // PK
+    assert(zip_magic[0] == 80)  // P
+    assert(zip_magic[1] == 75)  // K
+}
+
+it("should know GIF magic bytes") {
+    let gif_magic = [71, 73, 70, 56]  // GIF8
+    assert(gif_magic[0] == 71)  // G
+    assert(gif_magic[1] == 73)  // I
+    assert(gif_magic[2] == 70)  // F
+}
+
+// ============================================================================
+// BINARY VS TEXT
+// ============================================================================
+
+it("should identify binary types") {
+    let binary_types = ["application/octet-stream", "image/png", "application/pdf"]
+    assert(binary_types.len() == 3)
+}
+
+it("should identify text-based types") {
+    let text_types = ["text/plain", "text/html", "application/json", "application/xml"]
+    assert(text_types.len() == 4)
+}
+
+// ============================================================================
+// DEFAULT MIME TYPE
+// ============================================================================
+
+it("should have default binary type") {
+    let default_binary = "application/octet-stream"
+    assert(default_binary == "application/octet-stream")
+}
+
+it("should use octet-stream for unknown") {
+    let unknown_ext = "xyz"
+    let default_mime = "application/octet-stream"
+    // Unknown extensions default to octet-stream
+    assert(default_mime.starts_with("application/"))
+}
+
+// ============================================================================
+// CASE SENSITIVITY
+// ============================================================================
+
+it("should normalize MIME to lowercase") {
+    let upper = "TEXT/HTML"
+    let lower = upper.lower()
+    assert(lower == "text/html")
+}
+
+it("should normalize extension to lowercase") {
+    let ext = "TXT"
+    let lower = ext.lower()
+    assert(lower == "txt")
+}
+
