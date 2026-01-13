@@ -68,6 +68,10 @@ pub const Interpreter = struct {
     continue_target: ?LoopTarget,
     /// Registry for impl methods: type_name -> (method_name -> FnDecl)
     impl_methods: std.StringHashMap(std.StringHashMap(*ast.FnDecl)),
+    /// Registry for trait definitions: trait_name -> TraitDecl
+    trait_defs: std.StringHashMap(*ast.TraitDecl),
+    /// Registry for trait implementations: type_name -> list of trait names
+    trait_impls: std.StringHashMap(std.ArrayList([]const u8)),
     /// Whether to print verbose test output (each test name)
     verbose_tests: bool,
 
@@ -93,6 +97,8 @@ pub const Interpreter = struct {
         interpreter.break_target = null;
         interpreter.continue_target = null;
         interpreter.impl_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
+        interpreter.trait_defs = std.StringHashMap(*ast.TraitDecl).init(arena_allocator);
+        interpreter.trait_impls = std.StringHashMap(std.ArrayList([]const u8)).init(arena_allocator);
         interpreter.verbose_tests = true; // Default to verbose for backward compatibility
 
         return interpreter;
@@ -158,6 +164,29 @@ pub const Interpreter = struct {
                     Value.Void;
 
                 try env.define(decl.name, value);
+            },
+            .TupleDestructureDecl => |decl| {
+                // Evaluate the tuple expression
+                const value = try self.evaluateExpression(decl.value, env);
+
+                // Check if it's an array (tuples are represented as arrays)
+                if (value != .Array) {
+                    std.debug.print("Error: Cannot destructure non-tuple value\n", .{});
+                    return error.RuntimeError;
+                }
+
+                const elements = value.Array;
+
+                // Check if we have enough elements
+                if (elements.len < decl.names.len) {
+                    std.debug.print("Error: Not enough elements in tuple for destructuring\n", .{});
+                    return error.RuntimeError;
+                }
+
+                // Assign each element to its corresponding variable name
+                for (decl.names, 0..) |name, i| {
+                    try env.define(name, elements[i]);
+                }
             },
             .FnDecl => |fn_decl| {
                 // Store function in environment
@@ -527,9 +556,11 @@ pub const Interpreter = struct {
                 // Type aliases are type-level constructs
                 // No runtime action needed
             },
-            .TraitDecl => |_| {
-                // Trait declarations are type-level constructs
-                // No runtime action needed
+            .TraitDecl => |trait_decl| {
+                // Store trait definition for default method lookup
+                self.trait_defs.put(trait_decl.name, trait_decl) catch {
+                    return error.RuntimeError;
+                };
             },
             .ImplDecl => |impl_decl| {
                 // Register impl methods in the method registry
@@ -552,6 +583,19 @@ pub const Interpreter = struct {
                 // Register each method
                 for (impl_decl.methods) |method| {
                     method_map.put(method.name, method) catch {
+                        return error.RuntimeError;
+                    };
+                }
+
+                // Track trait implementation if this is a trait impl
+                if (impl_decl.trait_name) |trait_name| {
+                    const trait_result = self.trait_impls.getOrPut(type_name) catch {
+                        return error.RuntimeError;
+                    };
+                    if (!trait_result.found_existing) {
+                        trait_result.value_ptr.* = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                    }
+                    trait_result.value_ptr.append(self.arena.allocator(), trait_name) catch {
                         return error.RuntimeError;
                     };
                 }
@@ -1547,6 +1591,64 @@ pub const Interpreter = struct {
 
                 return Value{ .Array = elements };
             },
+            .ArrayComprehension => |comp| {
+                // Array comprehension: [expr for var in iterable if condition]
+                const iterable_val = try self.evaluateExpression(comp.iterable, env);
+                const allocator = self.arena.allocator();
+
+                // Result array
+                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+
+                // Handle iterable types
+                if (iterable_val == .Array) {
+                    for (iterable_val.Array) |item| {
+                        // Create new scope for the iteration variable
+                        var iter_env = Environment.init(allocator, env);
+                        defer iter_env.deinit();
+
+                        try iter_env.define(comp.variable, item);
+
+                        // Check condition if present
+                        if (comp.condition) |cond| {
+                            const cond_val = try self.evaluateExpression(cond, &iter_env);
+                            if (!cond_val.isTrue()) {
+                                continue;
+                            }
+                        }
+
+                        // Evaluate element expression and add to result
+                        const elem_val = try self.evaluateExpression(comp.element_expr, &iter_env);
+                        try result.append(allocator, elem_val);
+                    }
+                } else if (iterable_val == .Range) {
+                    const range = iterable_val.Range;
+                    var i = range.start;
+                    while (i < range.end) : (i += 1) {
+                        // Create new scope for the iteration variable
+                        var iter_env = Environment.init(allocator, env);
+                        defer iter_env.deinit();
+
+                        try iter_env.define(comp.variable, Value{ .Int = i });
+
+                        // Check condition if present
+                        if (comp.condition) |cond| {
+                            const cond_val = try self.evaluateExpression(cond, &iter_env);
+                            if (!cond_val.isTrue()) {
+                                continue;
+                            }
+                        }
+
+                        // Evaluate element expression and add to result
+                        const elem_val = try self.evaluateExpression(comp.element_expr, &iter_env);
+                        try result.append(allocator, elem_val);
+                    }
+                } else {
+                    std.debug.print("Cannot iterate over non-iterable value in comprehension\n", .{});
+                    return error.RuntimeError;
+                }
+
+                return Value{ .Array = try result.toOwnedSlice(allocator) };
+            },
             .TryExpr => |try_expr| {
                 // Try expression: expr? or expr else default
                 const operand_result = self.evaluateExpression(try_expr.operand, env) catch |err| {
@@ -1564,8 +1666,9 @@ pub const Interpreter = struct {
                         if (try_expr.else_branch) |else_branch| {
                             return try self.evaluateExpression(else_branch, env);
                         }
-                        // Propagate error by returning it
-                        return error.RuntimeError;
+                        // Propagate error by returning the Err value via return mechanism
+                        self.return_value = operand_result;
+                        return error.Return;
                     }
                     // If it's Ok, unwrap the value
                     if (std.mem.eql(u8, operand_result.Struct.type_name, "Ok")) {
@@ -1579,12 +1682,27 @@ pub const Interpreter = struct {
                     }
                 }
 
-                // Check for None (Option type)
+                // Check for None (Option type) - represented as Struct with type_name "None"
+                if (operand_result == .Struct) {
+                    if (std.mem.eql(u8, operand_result.Struct.type_name, "None")) {
+                        if (try_expr.else_branch) |else_branch| {
+                            return try self.evaluateExpression(else_branch, env);
+                        }
+                        // Propagate None by returning it via return mechanism
+                        self.return_value = operand_result;
+                        return error.Return;
+                    }
+                }
+
+                // Check for None as Void value (old style)
                 if (operand_result == .Void) {
                     if (try_expr.else_branch) |else_branch| {
                         return try self.evaluateExpression(else_branch, env);
                     }
-                    return error.RuntimeError;
+                    // Create a None struct and propagate it
+                    const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                    self.return_value = Value{ .Struct = .{ .type_name = "None", .fields = fields } };
+                    return error.Return;
                 }
 
                 // If result has Some wrapper, unwrap it
@@ -1704,6 +1822,15 @@ pub const Interpreter = struct {
                     try entries.put(key_str, value);
                 }
                 return Value{ .Map = .{ .entries = entries } };
+            },
+            .ReturnExpr => |ret_expr| {
+                // Return expression - evaluate the value and trigger early return
+                const value = if (ret_expr.value) |val_expr|
+                    try self.evaluateExpression(val_expr, env)
+                else
+                    Value.Void;
+                self.return_value = value;
+                return error.Return;
             },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
@@ -2124,12 +2251,290 @@ pub const Interpreter = struct {
             // Handle struct methods (from impl blocks)
             if (obj_value == .Struct) {
                 const struct_val = obj_value.Struct;
+                const type_name = struct_val.type_name;
+                const method_name = member.member;
+
+                // Handle built-in Result/Option methods
+                if (std.mem.eql(u8, type_name, "Ok") or std.mem.eql(u8, type_name, "Err") or
+                    std.mem.eql(u8, type_name, "Some") or std.mem.eql(u8, type_name, "None"))
+                {
+                    if (std.mem.eql(u8, method_name, "is_ok")) {
+                        return Value{ .Bool = std.mem.eql(u8, type_name, "Ok") };
+                    } else if (std.mem.eql(u8, method_name, "is_err")) {
+                        return Value{ .Bool = std.mem.eql(u8, type_name, "Err") };
+                    } else if (std.mem.eql(u8, method_name, "is_some")) {
+                        return Value{ .Bool = std.mem.eql(u8, type_name, "Some") };
+                    } else if (std.mem.eql(u8, method_name, "is_none")) {
+                        return Value{ .Bool = std.mem.eql(u8, type_name, "None") };
+                    } else if (std.mem.eql(u8, method_name, "unwrap")) {
+                        if (std.mem.eql(u8, type_name, "Ok") or std.mem.eql(u8, type_name, "Some")) {
+                            if (struct_val.fields.get("value")) |inner| return inner;
+                            if (struct_val.fields.get("0")) |inner| return inner;
+                        }
+                        std.debug.print("Cannot unwrap Err or None\n", .{});
+                        return error.RuntimeError;
+                    } else if (std.mem.eql(u8, method_name, "unwrap_or")) {
+                        if (call.args.len != 1) {
+                            std.debug.print("unwrap_or() requires exactly 1 argument\n", .{});
+                            return error.InvalidArguments;
+                        }
+                        if (std.mem.eql(u8, type_name, "Ok") or std.mem.eql(u8, type_name, "Some")) {
+                            if (struct_val.fields.get("value")) |inner| return inner;
+                            if (struct_val.fields.get("0")) |inner| return inner;
+                        }
+                        // Return default value for Err/None
+                        return try self.evaluateExpression(call.args[0], env);
+                    } else if (std.mem.eql(u8, method_name, "unwrap_err")) {
+                        if (std.mem.eql(u8, type_name, "Err")) {
+                            if (struct_val.fields.get("value")) |inner| return inner;
+                            if (struct_val.fields.get("0")) |inner| return inner;
+                        }
+                        std.debug.print("Cannot unwrap_err on Ok\n", .{});
+                        return error.RuntimeError;
+                    } else if (std.mem.eql(u8, method_name, "expect")) {
+                        if (std.mem.eql(u8, type_name, "Ok") or std.mem.eql(u8, type_name, "Some")) {
+                            if (struct_val.fields.get("value")) |inner| return inner;
+                            if (struct_val.fields.get("0")) |inner| return inner;
+                        }
+                        // Panic with message for Err/None
+                        if (call.args.len >= 1) {
+                            const msg = try self.evaluateExpression(call.args[0], env);
+                            if (msg == .String) {
+                                std.debug.print("expect failed: {s}\n", .{msg.String});
+                            }
+                        }
+                        return error.RuntimeError;
+                    } else if (std.mem.eql(u8, method_name, "map")) {
+                        if (call.args.len != 1) {
+                            std.debug.print("map() requires exactly 1 argument\n", .{});
+                            return error.InvalidArguments;
+                        }
+                        if (std.mem.eql(u8, type_name, "Ok") or std.mem.eql(u8, type_name, "Some")) {
+                            const mapper = try self.evaluateExpression(call.args[0], env);
+                            if (mapper != .Closure) {
+                                std.debug.print("map() requires a closure argument\n", .{});
+                                return error.TypeMismatch;
+                            }
+                            const inner = struct_val.fields.get("value") orelse struct_val.fields.get("0") orelse return error.RuntimeError;
+                            const closure = mapper.Closure;
+                            const allocator = self.arena.allocator();
+                            // Create closure environment
+                            var closure_env = Environment.init(allocator, env);
+                            // Bind captured variables
+                            for (closure.captured_names, 0..) |name, i| {
+                                try closure_env.define(name, closure.captured_values[i]);
+                            }
+                            // Bind parameter
+                            if (closure.param_names.len > 0) {
+                                try closure_env.define(closure.param_names[0], inner);
+                            }
+                            // Execute closure body
+                            const mapped = try self.evaluateClosureBody(closure, &closure_env);
+                            // Wrap in same type
+                            var new_fields = std.StringHashMap(Value).init(allocator);
+                            try new_fields.put("value", mapped);
+                            try new_fields.put("0", mapped);
+                            return Value{ .Struct = .{ .type_name = type_name, .fields = new_fields } };
+                        }
+                        // Err/None pass through unchanged
+                        return obj_value;
+                    } else if (std.mem.eql(u8, method_name, "map_err")) {
+                        if (call.args.len != 1) {
+                            std.debug.print("map_err() requires exactly 1 argument\n", .{});
+                            return error.InvalidArguments;
+                        }
+                        if (std.mem.eql(u8, type_name, "Err")) {
+                            const mapper = try self.evaluateExpression(call.args[0], env);
+                            if (mapper != .Closure) {
+                                std.debug.print("map_err() requires a closure argument\n", .{});
+                                return error.TypeMismatch;
+                            }
+                            const inner = struct_val.fields.get("value") orelse struct_val.fields.get("0") orelse return error.RuntimeError;
+                            const closure = mapper.Closure;
+                            const allocator = self.arena.allocator();
+                            // Create closure environment
+                            var closure_env = Environment.init(allocator, env);
+                            // Bind captured variables
+                            for (closure.captured_names, 0..) |name, i| {
+                                try closure_env.define(name, closure.captured_values[i]);
+                            }
+                            // Bind parameter
+                            if (closure.param_names.len > 0) {
+                                try closure_env.define(closure.param_names[0], inner);
+                            }
+                            // Execute closure body
+                            const mapped = try self.evaluateClosureBody(closure, &closure_env);
+                            // Wrap in Err type
+                            var new_fields = std.StringHashMap(Value).init(allocator);
+                            try new_fields.put("value", mapped);
+                            try new_fields.put("0", mapped);
+                            return Value{ .Struct = .{ .type_name = "Err", .fields = new_fields } };
+                        }
+                        // Ok/Some/None pass through unchanged
+                        return obj_value;
+                    } else if (std.mem.eql(u8, method_name, "and_then")) {
+                        // and_then(fn) - chain operations on Results
+                        if (call.args.len != 1) {
+                            std.debug.print("and_then() requires exactly 1 argument\n", .{});
+                            return error.InvalidArguments;
+                        }
+                        if (std.mem.eql(u8, type_name, "Ok")) {
+                            // Get the inner value
+                            const inner = struct_val.fields.get("value") orelse struct_val.fields.get("0") orelse return error.RuntimeError;
+
+                            // Evaluate the function argument
+                            const fn_arg = call.args[0];
+
+                            // The argument could be a function name (identifier) or a closure
+                            if (fn_arg.* == .Identifier) {
+                                // Look up the function by name
+                                const fn_name = fn_arg.Identifier.name;
+                                if (env.get(fn_name)) |fn_value| {
+                                    if (fn_value == .Function) {
+                                        // For user-defined functions, we need to bind the parameter directly
+                                        const func = fn_value.Function;
+                                        var func_env = Environment.init(self.arena.allocator(), env);
+                                        if (func.params.len > 0) {
+                                            try func_env.define(func.params[0].name, inner);
+                                        }
+                                        // Execute function body
+                                        for (func.body.statements) |stmt| {
+                                            self.executeStatement(stmt, &func_env) catch |err| {
+                                                if (err == error.Return) {
+                                                    if (self.return_value) |rv| {
+                                                        self.return_value = null;
+                                                        return rv;
+                                                    }
+                                                }
+                                                return err;
+                                            };
+                                        }
+                                        return Value{ .Void = {} };
+                                    }
+                                    if (fn_value == .Closure) {
+                                        const closure = fn_value.Closure;
+                                        var closure_env = Environment.init(self.arena.allocator(), env);
+                                        for (closure.captured_names, 0..) |name, i| {
+                                            try closure_env.define(name, closure.captured_values[i]);
+                                        }
+                                        if (closure.param_names.len > 0) {
+                                            try closure_env.define(closure.param_names[0], inner);
+                                        }
+                                        return try self.evaluateClosureBody(closure, &closure_env);
+                                    }
+                                }
+                                std.debug.print("and_then() requires a function argument\n", .{});
+                                return error.RuntimeError;
+                            } else {
+                                // It's a closure expression
+                                const closure_val = try self.evaluateExpression(fn_arg, env);
+                                if (closure_val != .Closure) {
+                                    std.debug.print("and_then() requires a function or closure argument\n", .{});
+                                    return error.TypeMismatch;
+                                }
+                                const closure = closure_val.Closure;
+                                var closure_env = Environment.init(self.arena.allocator(), env);
+                                for (closure.captured_names, 0..) |name, i| {
+                                    try closure_env.define(name, closure.captured_values[i]);
+                                }
+                                if (closure.param_names.len > 0) {
+                                    try closure_env.define(closure.param_names[0], inner);
+                                }
+                                return try self.evaluateClosureBody(closure, &closure_env);
+                            }
+                        }
+                        // Err/None pass through unchanged
+                        return obj_value;
+                    } else if (std.mem.eql(u8, method_name, "or_else")) {
+                        // or_else(fn) - recover from error on Results
+                        if (call.args.len != 1) {
+                            std.debug.print("or_else() requires exactly 1 argument\n", .{});
+                            return error.InvalidArguments;
+                        }
+                        if (std.mem.eql(u8, type_name, "Err")) {
+                            // Evaluate the function argument
+                            const fn_arg = call.args[0];
+
+                            // The argument could be a function name (identifier) or a closure
+                            if (fn_arg.* == .Identifier) {
+                                // Look up the function by name
+                                const fn_name = fn_arg.Identifier.name;
+                                if (env.get(fn_name)) |fn_value| {
+                                    if (fn_value == .Function) {
+                                        // For user-defined functions with no params (like fallback_value)
+                                        const func = fn_value.Function;
+                                        var func_env = Environment.init(self.arena.allocator(), env);
+                                        // Execute function body
+                                        for (func.body.statements) |stmt| {
+                                            self.executeStatement(stmt, &func_env) catch |err| {
+                                                if (err == error.Return) {
+                                                    if (self.return_value) |rv| {
+                                                        self.return_value = null;
+                                                        return rv;
+                                                    }
+                                                }
+                                                return err;
+                                            };
+                                        }
+                                        return Value{ .Void = {} };
+                                    }
+                                    if (fn_value == .Closure) {
+                                        const closure = fn_value.Closure;
+                                        var closure_env = Environment.init(self.arena.allocator(), env);
+                                        for (closure.captured_names, 0..) |name, i| {
+                                            try closure_env.define(name, closure.captured_values[i]);
+                                        }
+                                        return try self.evaluateClosureBody(closure, &closure_env);
+                                    }
+                                }
+                                std.debug.print("or_else() requires a function argument\n", .{});
+                                return error.RuntimeError;
+                            } else {
+                                // It's a closure expression
+                                const closure_val = try self.evaluateExpression(fn_arg, env);
+                                if (closure_val != .Closure) {
+                                    std.debug.print("or_else() requires a function or closure argument\n", .{});
+                                    return error.TypeMismatch;
+                                }
+                                const closure = closure_val.Closure;
+                                var closure_env = Environment.init(self.arena.allocator(), env);
+                                for (closure.captured_names, 0..) |name, i| {
+                                    try closure_env.define(name, closure.captured_values[i]);
+                                }
+                                return try self.evaluateClosureBody(closure, &closure_env);
+                            }
+                        }
+                        // Ok/Some pass through unchanged
+                        return obj_value;
+                    }
+                }
+
                 // Look up method in impl_methods registry
                 if (self.impl_methods.get(struct_val.type_name)) |method_map| {
                     if (method_map.get(member.member)) |method| {
                         return try self.callImplMethod(method, obj_value, call.args, env);
                     }
                 }
+
+                // Check for default trait implementation
+                if (self.trait_impls.get(struct_val.type_name)) |trait_list| {
+                    for (trait_list.items) |trait_name| {
+                        if (self.trait_defs.get(trait_name)) |trait_decl| {
+                            // Look for a default implementation in this trait
+                            for (trait_decl.methods) |trait_method| {
+                                if (std.mem.eql(u8, trait_method.name, member.member)) {
+                                    if (trait_method.has_default_impl) {
+                                        if (trait_method.default_body) |body| {
+                                            // Execute the default implementation
+                                            return try self.executeTraitDefaultMethod(trait_method, body, obj_value, call.args, env);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 std.debug.print("No method '{s}' found for type '{s}'\n", .{ member.member, struct_val.type_name });
                 return error.UndefinedFunction;
             }
@@ -2142,7 +2547,17 @@ pub const Interpreter = struct {
         if (call.callee.* == .Identifier) {
             const func_name = call.callee.Identifier.name;
 
-            // Handle built-in functions
+            // Check for user-defined function FIRST (allows shadowing builtins)
+            if (env.get(func_name)) |func_value| {
+                if (func_value == .Function) {
+                    return try self.callUserFunctionWithNamed(func_value.Function, call.args, call.named_args, env);
+                }
+                if (func_value == .Closure) {
+                    return try self.callClosureWithNamed(func_value.Closure, call.args, call.named_args, env);
+                }
+            }
+
+            // Handle built-in functions (only if not shadowed by user-defined)
             if (std.mem.eql(u8, func_name, "print")) {
                 return try self.builtinPrint(call.args, env);
             } else if (std.mem.eql(u8, func_name, "assert")) {
@@ -2180,18 +2595,374 @@ pub const Interpreter = struct {
                 try fields.put("value", inner_value);
                 try fields.put("0", inner_value);
                 return Value{ .Struct = .{ .type_name = "Some", .fields = fields }};
+            } else if (std.mem.eql(u8, func_name, "typeof")) {
+                // typeof(value) - returns type name as string
+                if (call.args.len != 1) {
+                    std.debug.print("typeof() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                const type_name = switch (val) {
+                    .Int => "int",
+                    .Float => "float",
+                    .String => "string",
+                    .Bool => "bool",
+                    .Array => "array",
+                    .Struct => |s| s.type_name,
+                    .Function => "function",
+                    .Closure => "closure",
+                    .Void => "void",
+                    .Map => "map",
+                    .Range => "range",
+                    .EnumType => "enum",
+                    .Reference => "reference",
+                    .Future => "future",
+                };
+                return Value{ .String = type_name };
+            } else if (std.mem.eql(u8, func_name, "len")) {
+                // len(value) - returns length of string, array, or map
+                if (call.args.len != 1) {
+                    std.debug.print("len() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                return switch (val) {
+                    .String => |s| Value{ .Int = @intCast(s.len) },
+                    .Array => |a| Value{ .Int = @intCast(a.len) },
+                    .Map => |m| Value{ .Int = @intCast(m.entries.count()) },
+                    else => {
+                        std.debug.print("len() requires string, array, or map\n", .{});
+                        return error.InvalidArguments;
+                    },
+                };
+            } else if (std.mem.eql(u8, func_name, "range")) {
+                // range(end) or range(start, end) or range(start, end, step)
+                if (call.args.len == 0 or call.args.len > 3) {
+                    std.debug.print("range() requires 1-3 arguments\n", .{});
+                    return error.InvalidArguments;
+                }
+                var start: i64 = 0;
+                var end: i64 = 0;
+                var step: i64 = 1;
+                if (call.args.len == 1) {
+                    const end_val = try self.evaluateExpression(call.args[0], env);
+                    if (end_val != .Int) {
+                        std.debug.print("range() arguments must be integers\n", .{});
+                        return error.TypeMismatch;
+                    }
+                    end = end_val.Int;
+                } else if (call.args.len >= 2) {
+                    const start_val = try self.evaluateExpression(call.args[0], env);
+                    const end_val = try self.evaluateExpression(call.args[1], env);
+                    if (start_val != .Int or end_val != .Int) {
+                        std.debug.print("range() arguments must be integers\n", .{});
+                        return error.TypeMismatch;
+                    }
+                    start = start_val.Int;
+                    end = end_val.Int;
+                    if (call.args.len == 3) {
+                        const step_val = try self.evaluateExpression(call.args[2], env);
+                        if (step_val != .Int) {
+                            std.debug.print("range() step must be an integer\n", .{});
+                            return error.TypeMismatch;
+                        }
+                        step = step_val.Int;
+                        if (step == 0) {
+                            std.debug.print("range() step cannot be zero\n", .{});
+                            return error.InvalidArguments;
+                        }
+                    }
+                }
+                return Value{ .Range = .{ .start = start, .end = end, .inclusive = false, .step = step } };
+            } else if (std.mem.eql(u8, func_name, "min")) {
+                // min(a, b) - returns the smaller of two values
+                if (call.args.len != 2) {
+                    std.debug.print("min() requires exactly 2 arguments\n", .{});
+                    return error.InvalidArguments;
+                }
+                const a = try self.evaluateExpression(call.args[0], env);
+                const b = try self.evaluateExpression(call.args[1], env);
+                if (a == .Int and b == .Int) {
+                    return Value{ .Int = @min(a.Int, b.Int) };
+                } else if (a == .Float and b == .Float) {
+                    return Value{ .Float = @min(a.Float, b.Float) };
+                } else if (a == .Int and b == .Float) {
+                    return Value{ .Float = @min(@as(f64, @floatFromInt(a.Int)), b.Float) };
+                } else if (a == .Float and b == .Int) {
+                    return Value{ .Float = @min(a.Float, @as(f64, @floatFromInt(b.Int))) };
+                }
+                std.debug.print("min() requires numeric arguments\n", .{});
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "max")) {
+                // max(a, b) - returns the larger of two values
+                if (call.args.len != 2) {
+                    std.debug.print("max() requires exactly 2 arguments\n", .{});
+                    return error.InvalidArguments;
+                }
+                const a = try self.evaluateExpression(call.args[0], env);
+                const b = try self.evaluateExpression(call.args[1], env);
+                if (a == .Int and b == .Int) {
+                    return Value{ .Int = @max(a.Int, b.Int) };
+                } else if (a == .Float and b == .Float) {
+                    return Value{ .Float = @max(a.Float, b.Float) };
+                } else if (a == .Int and b == .Float) {
+                    return Value{ .Float = @max(@as(f64, @floatFromInt(a.Int)), b.Float) };
+                } else if (a == .Float and b == .Int) {
+                    return Value{ .Float = @max(a.Float, @as(f64, @floatFromInt(b.Int))) };
+                }
+                std.debug.print("max() requires numeric arguments\n", .{});
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "to_string")) {
+                // to_string(value) - converts value to string
+                if (call.args.len != 1) {
+                    std.debug.print("to_string() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .String = try self.valueToString(val) };
+            } else if (std.mem.eql(u8, func_name, "abs")) {
+                // abs(value) - absolute value
+                if (call.args.len != 1) {
+                    std.debug.print("abs() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Int) {
+                    return Value{ .Int = if (val.Int < 0) -val.Int else val.Int };
+                } else if (val == .Float) {
+                    return Value{ .Float = @abs(val.Float) };
+                }
+                std.debug.print("abs() requires numeric argument\n", .{});
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "clone")) {
+                // clone(value) - deep clone value
+                if (call.args.len != 1) {
+                    std.debug.print("clone() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                // For primitives, values are already copied. For arrays, create new array
+                return switch (val) {
+                    .Array => |arr| blk: {
+                        const new_arr = try self.arena.allocator().alloc(Value, arr.len);
+                        @memcpy(new_arr, arr);
+                        break :blk Value{ .Array = new_arr };
+                    },
+                    else => val, // Primitives are value types, already cloned
+                };
+            } else if (std.mem.eql(u8, func_name, "is_ok")) {
+                // is_ok(result) - check if Result is Ok
+                if (call.args.len != 1) {
+                    std.debug.print("is_ok() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Struct) {
+                    return Value{ .Bool = std.mem.eql(u8, val.Struct.type_name, "Ok") };
+                }
+                return Value{ .Bool = false };
+            } else if (std.mem.eql(u8, func_name, "is_err")) {
+                // is_err(result) - check if Result is Err
+                if (call.args.len != 1) {
+                    std.debug.print("is_err() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Struct) {
+                    return Value{ .Bool = std.mem.eql(u8, val.Struct.type_name, "Err") };
+                }
+                return Value{ .Bool = false };
+            } else if (std.mem.eql(u8, func_name, "is_some")) {
+                // is_some(option) - check if Option is Some
+                if (call.args.len != 1) {
+                    std.debug.print("is_some() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Struct) {
+                    return Value{ .Bool = std.mem.eql(u8, val.Struct.type_name, "Some") };
+                }
+                return Value{ .Bool = false };
+            } else if (std.mem.eql(u8, func_name, "is_none")) {
+                // is_none(option) - check if Option is None
+                if (call.args.len != 1) {
+                    std.debug.print("is_none() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Struct) {
+                    return Value{ .Bool = std.mem.eql(u8, val.Struct.type_name, "None") };
+                }
+                if (val == .Void) {
+                    return Value{ .Bool = true };
+                }
+                return Value{ .Bool = false };
+            } else if (std.mem.eql(u8, func_name, "size_of")) {
+                // size_of(type) - returns size of type in bytes
+                if (call.args.len != 1) {
+                    std.debug.print("size_of() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                // Handle type names passed as identifiers
+                if (call.args[0].* == .Identifier) {
+                    const type_name = call.args[0].Identifier.name;
+                    if (std.mem.eql(u8, type_name, "i8") or std.mem.eql(u8, type_name, "u8")) {
+                        return Value{ .Int = 1 };
+                    } else if (std.mem.eql(u8, type_name, "i16") or std.mem.eql(u8, type_name, "u16")) {
+                        return Value{ .Int = 2 };
+                    } else if (std.mem.eql(u8, type_name, "i32") or std.mem.eql(u8, type_name, "u32") or std.mem.eql(u8, type_name, "f32")) {
+                        return Value{ .Int = 4 };
+                    } else if (std.mem.eql(u8, type_name, "i64") or std.mem.eql(u8, type_name, "u64") or std.mem.eql(u8, type_name, "f64")) {
+                        return Value{ .Int = 8 };
+                    } else if (std.mem.eql(u8, type_name, "i128") or std.mem.eql(u8, type_name, "u128")) {
+                        return Value{ .Int = 16 };
+                    } else if (std.mem.eql(u8, type_name, "bool")) {
+                        return Value{ .Int = 1 };
+                    } else if (std.mem.eql(u8, type_name, "char")) {
+                        return Value{ .Int = 4 }; // UTF-8 codepoint
+                    }
+                }
+                std.debug.print("size_of() requires a type argument\n", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, func_name, "default")) {
+                // default(type) - returns default value for type
+                if (call.args.len != 1) {
+                    std.debug.print("default() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                if (call.args[0].* == .Identifier) {
+                    const type_name = call.args[0].Identifier.name;
+                    if (std.mem.eql(u8, type_name, "i8") or std.mem.eql(u8, type_name, "i16") or
+                        std.mem.eql(u8, type_name, "i32") or std.mem.eql(u8, type_name, "i64") or
+                        std.mem.eql(u8, type_name, "u8") or std.mem.eql(u8, type_name, "u16") or
+                        std.mem.eql(u8, type_name, "u32") or std.mem.eql(u8, type_name, "u64") or
+                        std.mem.eql(u8, type_name, "int"))
+                    {
+                        return Value{ .Int = 0 };
+                    } else if (std.mem.eql(u8, type_name, "f32") or std.mem.eql(u8, type_name, "f64") or
+                        std.mem.eql(u8, type_name, "float"))
+                    {
+                        return Value{ .Float = 0.0 };
+                    } else if (std.mem.eql(u8, type_name, "bool")) {
+                        return Value{ .Bool = false };
+                    } else if (std.mem.eql(u8, type_name, "string")) {
+                        return Value{ .String = "" };
+                    }
+                }
+                std.debug.print("default() requires a type argument\n", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, func_name, "parse_int")) {
+                // parse_int(str) - parses string to integer
+                if (call.args.len != 1) {
+                    std.debug.print("parse_int() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val != .String) {
+                    std.debug.print("parse_int() requires a string argument\n", .{});
+                    return error.TypeMismatch;
+                }
+                const parsed = std.fmt.parseInt(i64, val.String, 10) catch {
+                    std.debug.print("parse_int() failed to parse: {s}\n", .{val.String});
+                    return error.RuntimeError;
+                };
+                return Value{ .Int = parsed };
+            } else if (std.mem.eql(u8, func_name, "parse_float")) {
+                // parse_float(str) - parses string to float
+                if (call.args.len != 1) {
+                    std.debug.print("parse_float() requires exactly 1 argument\n", .{});
+                    return error.InvalidArguments;
+                }
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val != .String) {
+                    std.debug.print("parse_float() requires a string argument\n", .{});
+                    return error.TypeMismatch;
+                }
+                const parsed = std.fmt.parseFloat(f64, val.String) catch {
+                    std.debug.print("parse_float() failed to parse: {s}\n", .{val.String});
+                    return error.RuntimeError;
+                };
+                return Value{ .Float = parsed };
+            } else if (std.mem.eql(u8, func_name, "is_int")) {
+                // is_int(value) - checks if value is an integer
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .Bool = val == .Int };
+            } else if (std.mem.eql(u8, func_name, "is_string")) {
+                // is_string(value) - checks if value is a string
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .Bool = val == .String };
+            } else if (std.mem.eql(u8, func_name, "is_array")) {
+                // is_array(value) - checks if value is an array
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .Bool = val == .Array };
+            } else if (std.mem.eql(u8, func_name, "is_bool")) {
+                // is_bool(value) - checks if value is a boolean
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .Bool = val == .Bool };
+            } else if (std.mem.eql(u8, func_name, "is_float")) {
+                // is_float(value) - checks if value is a float
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                return Value{ .Bool = val == .Float };
+            } else if (std.mem.eql(u8, func_name, "floor")) {
+                // floor(value) - floor of float
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Float) {
+                    return Value{ .Int = @intFromFloat(@floor(val.Float)) };
+                } else if (val == .Int) {
+                    return val;
+                }
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "ceil")) {
+                // ceil(value) - ceiling of float
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Float) {
+                    return Value{ .Int = @intFromFloat(@ceil(val.Float)) };
+                } else if (val == .Int) {
+                    return val;
+                }
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "round")) {
+                // round(value) - round float to nearest integer
+                if (call.args.len != 1) return error.InvalidArguments;
+                const val = try self.evaluateExpression(call.args[0], env);
+                if (val == .Float) {
+                    return Value{ .Int = @intFromFloat(@round(val.Float)) };
+                } else if (val == .Int) {
+                    return val;
+                }
+                return error.TypeMismatch;
+            } else if (std.mem.eql(u8, func_name, "random")) {
+                // random(min, max) - random integer in range [min, max]
+                if (call.args.len != 2) {
+                    std.debug.print("random() requires exactly 2 arguments (min, max)\n", .{});
+                    return error.InvalidArguments;
+                }
+                const min_val = try self.evaluateExpression(call.args[0], env);
+                const max_val = try self.evaluateExpression(call.args[1], env);
+                if (min_val != .Int or max_val != .Int) {
+                    return error.TypeMismatch;
+                }
+                const min: i64 = min_val.Int;
+                const max: i64 = max_val.Int;
+                const range_size: u64 = @intCast(max - min + 1);
+                const random_value: i64 = @intCast(std.crypto.random.int(u64) % range_size);
+                return Value{ .Int = min + random_value };
+            } else if (std.mem.eql(u8, func_name, "random_float")) {
+                // random_float() - random float between 0 and 1
+                const rand_int = std.crypto.random.int(u64);
+                const max_val: f64 = @floatFromInt(std.math.maxInt(u64));
+                return Value{ .Float = @as(f64, @floatFromInt(rand_int)) / max_val };
             }
 
-            // Look up user-defined function or closure
-            if (env.get(func_name)) |func_value| {
-                if (func_value == .Function) {
-                    return try self.callUserFunctionWithNamed(func_value.Function, call.args, call.named_args, env);
-                }
-                if (func_value == .Closure) {
-                    return try self.callClosureWithNamed(func_value.Closure, call.args, call.named_args, env);
-                }
-            }
-
+            // User-defined functions are checked first at the top of this block,
+            // so if we get here, the function is not defined
             std.debug.print("Undefined function: {s}\n", .{func_name});
             return error.UndefinedFunction;
         }
@@ -2611,23 +3382,22 @@ pub const Interpreter = struct {
             return arr[arr.len - 1];
         }
 
-        // push(value) - returns new array with value appended (functional style, does not mutate)
+        // push(value) - returns new array with value appended (functional style)
         if (std.mem.eql(u8, method, "push")) {
-            _ = var_name; // Not used - functional style
+            _ = var_name; // Available for future in-place mutation support
             if (args.len != 1) {
                 std.debug.print("push() requires exactly 1 argument\n", .{});
                 return error.InvalidArguments;
             }
             const new_value = try self.evaluateExpression(args[0], env);
-            var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
+            const new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             @memcpy(new_arr[0..arr.len], arr);
             new_arr[arr.len] = new_value;
             return Value{ .Array = new_arr };
         }
 
-        // pop() - returns new array with last element removed (functional style, does not mutate)
+        // pop() - returns new array with last element removed (functional style)
         if (std.mem.eql(u8, method, "pop")) {
-            _ = var_name; // Not used - functional style
             if (arr.len == 0) {
                 return Value{ .Array = &.{} };
             }
@@ -2636,9 +3406,8 @@ pub const Interpreter = struct {
             return Value{ .Array = new_arr };
         }
 
-        // shift() - returns new array with first element removed (functional style, does not mutate)
+        // shift() - returns new array with first element removed (functional style)
         if (std.mem.eql(u8, method, "shift")) {
-            _ = var_name; // Not used - functional style
             if (arr.len == 0) {
                 return Value{ .Array = &.{} };
             }
@@ -2647,15 +3416,14 @@ pub const Interpreter = struct {
             return Value{ .Array = new_arr };
         }
 
-        // unshift(value) - returns new array with value prepended (functional style, does not mutate)
+        // unshift(value) - returns new array with value prepended (functional style)
         if (std.mem.eql(u8, method, "unshift")) {
-            _ = var_name; // Not used - functional style
             if (args.len != 1) {
                 std.debug.print("unshift() requires exactly 1 argument\n", .{});
                 return error.InvalidArguments;
             }
             const new_value = try self.evaluateExpression(args[0], env);
-            var new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
+            const new_arr = try self.arena.allocator().alloc(Value, arr.len + 1);
             new_arr[0] = new_value;
             @memcpy(new_arr[1..], arr);
             return Value{ .Array = new_arr };
@@ -2688,6 +3456,83 @@ pub const Interpreter = struct {
             return Value{ .Array = new_arr };
         }
 
+        // enumerate() - returns array of [index, element] pairs
+        if (std.mem.eql(u8, method, "enumerate")) {
+            var new_arr = try self.arena.allocator().alloc(Value, arr.len);
+            for (arr, 0..) |elem, i| {
+                // Create a 2-element array for each (index, value) pair
+                var pair = try self.arena.allocator().alloc(Value, 2);
+                pair[0] = Value{ .Int = @as(i64, @intCast(i)) };
+                pair[1] = elem;
+                new_arr[i] = Value{ .Array = pair };
+            }
+            return Value{ .Array = new_arr };
+        }
+
+        // zip(other) - returns array of [elem1, elem2] pairs from two arrays
+        if (std.mem.eql(u8, method, "zip")) {
+            if (args.len != 1) {
+                std.debug.print("zip() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const other_val = try self.evaluateExpression(args[0], env);
+            if (other_val != .Array) {
+                std.debug.print("zip() argument must be an array\n", .{});
+                return error.TypeMismatch;
+            }
+            const other = other_val.Array;
+            const min_len = @min(arr.len, other.len);
+            var new_arr = try self.arena.allocator().alloc(Value, min_len);
+            for (0..min_len) |i| {
+                var pair = try self.arena.allocator().alloc(Value, 2);
+                pair[0] = arr[i];
+                pair[1] = other[i];
+                new_arr[i] = Value{ .Array = pair };
+            }
+            return Value{ .Array = new_arr };
+        }
+
+        // partition(predicate) - partition array into [matching, non-matching]
+        if (std.mem.eql(u8, method, "partition")) {
+            if (args.len != 1) {
+                std.debug.print("partition() requires exactly 1 argument (predicate)\n", .{});
+                return error.InvalidArguments;
+            }
+            const predicate_val = try self.evaluateExpression(args[0], env);
+            if (predicate_val != .Closure) {
+                std.debug.print("partition() requires a closure argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = predicate_val.Closure;
+            const allocator = self.arena.allocator();
+            var matching = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var non_matching = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            for (arr) |elem| {
+                // Create closure environment
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, i| {
+                    try closure_env.define(name, closure.captured_values[i]);
+                }
+                // Bind parameter
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], elem);
+                }
+                // Execute closure body
+                const result = try self.evaluateClosureBody(closure, &closure_env);
+                if (result.isTrue()) {
+                    try matching.append(allocator, elem);
+                } else {
+                    try non_matching.append(allocator, elem);
+                }
+            }
+            // Return tuple as 2-element array
+            const result_pair = try allocator.alloc(Value, 2);
+            result_pair[0] = Value{ .Array = try matching.toOwnedSlice(allocator) };
+            result_pair[1] = Value{ .Array = try non_matching.toOwnedSlice(allocator) };
+            return Value{ .Array = result_pair };
+        }
+
         // contains(value) - check if array contains a value
         if (std.mem.eql(u8, method, "contains")) {
             if (args.len != 1) {
@@ -2712,6 +3557,55 @@ pub const Interpreter = struct {
             const search_val = try self.evaluateExpression(args[0], env);
             for (arr, 0..) |elem, i| {
                 if (valuesEqual(elem, search_val)) {
+                    return Value{ .Int = @as(i64, @intCast(i)) };
+                }
+            }
+            return Value{ .Int = -1 };
+        }
+
+        // last_index_of(value) - returns last index of value or -1 if not found
+        if (std.mem.eql(u8, method, "last_index_of")) {
+            if (args.len != 1) {
+                std.debug.print("last_index_of() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const search_val = try self.evaluateExpression(args[0], env);
+            var last_index: i64 = -1;
+            for (arr, 0..) |elem, i| {
+                if (valuesEqual(elem, search_val)) {
+                    last_index = @as(i64, @intCast(i));
+                }
+            }
+            return Value{ .Int = last_index };
+        }
+
+        // find_index(predicate) - returns index of first element matching predicate or -1
+        if (std.mem.eql(u8, method, "find_index")) {
+            if (args.len != 1) {
+                std.debug.print("find_index() requires exactly 1 argument (predicate)\n", .{});
+                return error.InvalidArguments;
+            }
+            const predicate_val = try self.evaluateExpression(args[0], env);
+            if (predicate_val != .Closure) {
+                std.debug.print("find_index() requires a closure argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = predicate_val.Closure;
+            const allocator = self.arena.allocator();
+            for (arr, 0..) |elem, i| {
+                // Create closure environment
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, j| {
+                    try closure_env.define(name, closure.captured_values[j]);
+                }
+                // Bind parameter
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], elem);
+                }
+                // Execute closure body
+                const result = try self.evaluateClosureBody(closure, &closure_env);
+                if (result.isTrue()) {
                     return Value{ .Int = @as(i64, @intCast(i)) };
                 }
             }
@@ -2865,6 +3759,84 @@ pub const Interpreter = struct {
             return Value{ .Array = new_arr };
         }
 
+        // chunk(size) - splits array into chunks of given size
+        if (std.mem.eql(u8, method, "chunk")) {
+            if (args.len != 1) {
+                std.debug.print("chunk() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const size_val = try self.evaluateExpression(args[0], env);
+            if (size_val != .Int or size_val.Int <= 0) {
+                std.debug.print("chunk() requires positive integer argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const allocator = self.arena.allocator();
+            const chunk_size: usize = @intCast(size_val.Int);
+            const num_chunks = (arr.len + chunk_size - 1) / chunk_size; // ceiling division
+            var chunks = try allocator.alloc(Value, num_chunks);
+            var chunk_idx: usize = 0;
+            var i: usize = 0;
+            while (i < arr.len) : (chunk_idx += 1) {
+                const end = @min(i + chunk_size, arr.len);
+                const chunk_len = end - i;
+                const chunk = try allocator.alloc(Value, chunk_len);
+                @memcpy(chunk, arr[i..end]);
+                chunks[chunk_idx] = Value{ .Array = chunk };
+                i = end;
+            }
+            return Value{ .Array = chunks };
+        }
+
+        // group_by(closure) - groups elements by key function result
+        if (std.mem.eql(u8, method, "group_by")) {
+            if (args.len != 1) {
+                std.debug.print("group_by() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const key_fn = try self.evaluateExpression(args[0], env);
+            if (key_fn != .Closure) {
+                std.debug.print("group_by() requires a closure argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = key_fn.Closure;
+            const allocator = self.arena.allocator();
+
+            // Use a map to group elements by their key
+            var groups = std.StringHashMap(std.ArrayList(Value)).init(allocator);
+
+            for (arr) |elem| {
+                // Create closure environment
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, i| {
+                    try closure_env.define(name, closure.captured_values[i]);
+                }
+                // Bind parameter
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], elem);
+                }
+                // Execute closure body to get key
+                const key = try self.evaluateClosureBody(closure, &closure_env);
+                const key_str = try self.valueToString(key);
+
+                // Add element to its group
+                const gop = try groups.getOrPut(key_str);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                }
+                try gop.value_ptr.append(allocator, elem);
+            }
+
+            // Convert to map Value (using MapValue struct)
+            var result_entries = std.StringHashMap(Value).init(allocator);
+            var iter = groups.iterator();
+            while (iter.next()) |entry| {
+                result_entries.put(entry.key_ptr.*, Value{ .Array = try entry.value_ptr.toOwnedSlice(allocator) }) catch {};
+            }
+
+            return Value{ .Map = .{ .entries = result_entries } };
+        }
+
         // map(closure) - applies closure to each element, returns new array
         if (std.mem.eql(u8, method, "map")) {
             if (args.len != 1) {
@@ -2966,6 +3938,333 @@ pub const Interpreter = struct {
                 accumulator = try self.evaluateClosureBody(closure, &closure_env);
             }
             return accumulator;
+        }
+
+        // fold_right(closure, initial) - reduces array from right to left
+        if (std.mem.eql(u8, method, "fold_right")) {
+            if (args.len != 2) {
+                std.debug.print("fold_right() requires 2 arguments (closure and initial value)\n", .{});
+                return error.InvalidArguments;
+            }
+            const closure_val = try self.evaluateExpression(args[0], env);
+            if (closure_val != .Closure) {
+                std.debug.print("fold_right() requires a closure as first argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = closure_val.Closure;
+            const allocator = self.arena.allocator();
+            var accumulator = try self.evaluateExpression(args[1], env);
+            // Iterate from right to left
+            var i: usize = arr.len;
+            while (i > 0) {
+                i -= 1;
+                const elem = arr[i];
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, j| {
+                    try closure_env.define(name, closure.captured_values[j]);
+                }
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], accumulator);
+                }
+                if (closure.param_names.len > 1) {
+                    try closure_env.define(closure.param_names[1], elem);
+                }
+                accumulator = try self.evaluateClosureBody(closure, &closure_env);
+            }
+            return accumulator;
+        }
+
+        // flat_map(closure) - maps each element to an array and flattens
+        if (std.mem.eql(u8, method, "flat_map")) {
+            if (args.len != 1) {
+                std.debug.print("flat_map() requires exactly 1 argument (a closure)\n", .{});
+                return error.InvalidArguments;
+            }
+            const closure_val = try self.evaluateExpression(args[0], env);
+            if (closure_val != .Closure) {
+                std.debug.print("flat_map() requires a closure argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = closure_val.Closure;
+            const allocator = self.arena.allocator();
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            for (arr) |elem| {
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, i| {
+                    try closure_env.define(name, closure.captured_values[i]);
+                }
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], elem);
+                }
+                const mapped = try self.evaluateClosureBody(closure, &closure_env);
+                // Flatten: if result is array, append all elements; otherwise append single value
+                if (mapped == .Array) {
+                    for (mapped.Array) |inner| {
+                        try result.append(allocator, inner);
+                    }
+                } else {
+                    try result.append(allocator, mapped);
+                }
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
+        }
+
+        // compact() - removes null/void values from array
+        if (std.mem.eql(u8, method, "compact")) {
+            const allocator = self.arena.allocator();
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            for (arr) |elem| {
+                // Skip Void and null values
+                if (elem != .Void) {
+                    try result.append(allocator, elem);
+                }
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
+        }
+
+        // scan(closure, initial) - like reduce but returns all intermediate values
+        if (std.mem.eql(u8, method, "scan")) {
+            if (args.len != 2) {
+                std.debug.print("scan() requires 2 arguments (closure and initial value)\n", .{});
+                return error.InvalidArguments;
+            }
+            const closure_val = try self.evaluateExpression(args[0], env);
+            if (closure_val != .Closure) {
+                std.debug.print("scan() requires a closure as first argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const closure = closure_val.Closure;
+            const allocator = self.arena.allocator();
+            var accumulator = try self.evaluateExpression(args[1], env);
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            for (arr) |elem| {
+                var closure_env = Environment.init(allocator, env);
+                // Bind captured variables
+                for (closure.captured_names, 0..) |name, i| {
+                    try closure_env.define(name, closure.captured_values[i]);
+                }
+                if (closure.param_names.len > 0) {
+                    try closure_env.define(closure.param_names[0], accumulator);
+                }
+                if (closure.param_names.len > 1) {
+                    try closure_env.define(closure.param_names[1], elem);
+                }
+                accumulator = try self.evaluateClosureBody(closure, &closure_env);
+                try result.append(allocator, accumulator);
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
+        }
+
+        // frequencies() - count occurrences of each element
+        if (std.mem.eql(u8, method, "frequencies")) {
+            const allocator = self.arena.allocator();
+            var counts = std.StringHashMap(i64).init(allocator);
+            for (arr) |elem| {
+                const key_str = try self.valueToString(elem);
+                const gop = try counts.getOrPut(key_str);
+                if (gop.found_existing) {
+                    gop.value_ptr.* += 1;
+                } else {
+                    gop.value_ptr.* = 1;
+                }
+            }
+            // Convert to map Value
+            var result_entries = std.StringHashMap(Value).init(allocator);
+            var iter = counts.iterator();
+            while (iter.next()) |entry| {
+                result_entries.put(entry.key_ptr.*, Value{ .Int = entry.value_ptr.* }) catch {};
+            }
+            return Value{ .Map = .{ .entries = result_entries } };
+        }
+
+        // windows(size) - create sliding windows of given size
+        if (std.mem.eql(u8, method, "windows")) {
+            if (args.len != 1) {
+                std.debug.print("windows() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const size_val = try self.evaluateExpression(args[0], env);
+            if (size_val != .Int or size_val.Int <= 0) {
+                std.debug.print("windows() requires positive integer argument\n", .{});
+                return error.TypeMismatch;
+            }
+            const allocator = self.arena.allocator();
+            const size: usize = @intCast(size_val.Int);
+            if (size > arr.len) {
+                return Value{ .Array = &.{} };
+            }
+            const num_windows = arr.len - size + 1;
+            var windows_arr = try allocator.alloc(Value, num_windows);
+            for (0..num_windows) |i| {
+                const window = try allocator.alloc(Value, size);
+                @memcpy(window, arr[i .. i + size]);
+                windows_arr[i] = Value{ .Array = window };
+            }
+            return Value{ .Array = windows_arr };
+        }
+
+        // intersperse(separator) - insert separator between elements
+        if (std.mem.eql(u8, method, "intersperse")) {
+            if (args.len != 1) {
+                std.debug.print("intersperse() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const sep = try self.evaluateExpression(args[0], env);
+            const allocator = self.arena.allocator();
+            if (arr.len == 0) return Value{ .Array = &.{} };
+            const new_len = arr.len * 2 - 1;
+            var result = try allocator.alloc(Value, new_len);
+            for (0..arr.len) |i| {
+                result[i * 2] = arr[i];
+                if (i < arr.len - 1) {
+                    result[i * 2 + 1] = sep;
+                }
+            }
+            return Value{ .Array = result };
+        }
+
+        // dedup() - remove consecutive duplicates
+        if (std.mem.eql(u8, method, "dedup")) {
+            const allocator = self.arena.allocator();
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var prev: ?Value = null;
+            for (arr) |elem| {
+                if (prev == null or !valuesEqual(elem, prev.?)) {
+                    try result.append(allocator, elem);
+                    prev = elem;
+                }
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
+        }
+
+        // sample(n) - get n random elements
+        if (std.mem.eql(u8, method, "sample")) {
+            if (args.len != 1) {
+                std.debug.print("sample() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const n_val = try self.evaluateExpression(args[0], env);
+            if (n_val != .Int or n_val.Int < 0) {
+                return error.TypeMismatch;
+            }
+            const allocator = self.arena.allocator();
+            const n: usize = @intCast(@min(n_val.Int, @as(i64, @intCast(arr.len))));
+            var result = try allocator.alloc(Value, n);
+            // Simple reservoir sampling
+            for (0..n) |i| {
+                const idx = std.crypto.random.int(usize) % arr.len;
+                result[i] = arr[idx];
+            }
+            return Value{ .Array = result };
+        }
+
+        // shuffle() - return shuffled copy
+        if (std.mem.eql(u8, method, "shuffle")) {
+            const allocator = self.arena.allocator();
+            var result = try allocator.alloc(Value, arr.len);
+            @memcpy(result, arr);
+            // Fisher-Yates shuffle
+            var i: usize = arr.len;
+            while (i > 1) {
+                i -= 1;
+                const j = std.crypto.random.int(usize) % (i + 1);
+                const tmp = result[i];
+                result[i] = result[j];
+                result[j] = tmp;
+            }
+            return Value{ .Array = result };
+        }
+
+        // combinations(k) - generate all k-combinations
+        if (std.mem.eql(u8, method, "combinations")) {
+            if (args.len != 1) {
+                std.debug.print("combinations() requires exactly 1 argument\n", .{});
+                return error.InvalidArguments;
+            }
+            const k_val = try self.evaluateExpression(args[0], env);
+            if (k_val != .Int or k_val.Int < 0) {
+                return error.TypeMismatch;
+            }
+            const allocator = self.arena.allocator();
+            const k: usize = @intCast(k_val.Int);
+            if (k > arr.len or k == 0) {
+                return Value{ .Array = &.{} };
+            }
+            // Simple implementation: count combinations for small inputs
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            // Generate combinations using simple iteration
+            var combo = try allocator.alloc(usize, k);
+            for (0..k) |i| combo[i] = i;
+            while (true) {
+                // Add current combination
+                var combo_arr = try allocator.alloc(Value, k);
+                for (0..k) |i| combo_arr[i] = arr[combo[i]];
+                try result.append(allocator, Value{ .Array = combo_arr });
+                // Generate next combination
+                var i: usize = k;
+                while (i > 0) {
+                    i -= 1;
+                    if (combo[i] < arr.len - k + i) {
+                        combo[i] += 1;
+                        for (i + 1..k) |j| combo[j] = combo[j - 1] + 1;
+                        break;
+                    }
+                } else break;
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
+        }
+
+        // permutations() - generate all permutations
+        if (std.mem.eql(u8, method, "permutations")) {
+            const allocator = self.arena.allocator();
+            if (arr.len == 0) return Value{ .Array = &.{} };
+            if (arr.len == 1) {
+                var result = try allocator.alloc(Value, 1);
+                var inner = try allocator.alloc(Value, 1);
+                inner[0] = arr[0];
+                result[0] = Value{ .Array = inner };
+                return Value{ .Array = result };
+            }
+            // Simple factorial limit
+            if (arr.len > 8) {
+                std.debug.print("permutations() limited to 8 elements\n", .{});
+                return error.RuntimeError;
+            }
+            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var indices = try allocator.alloc(usize, arr.len);
+            for (0..arr.len) |i| indices[i] = i;
+            // Heap's algorithm
+            var c = try allocator.alloc(usize, arr.len);
+            @memset(c, 0);
+            // Add initial permutation
+            var perm = try allocator.alloc(Value, arr.len);
+            for (0..arr.len) |i| perm[i] = arr[indices[i]];
+            try result.append(allocator, Value{ .Array = perm });
+            var i: usize = 0;
+            while (i < arr.len) {
+                if (c[i] < i) {
+                    if (i % 2 == 0) {
+                        const tmp = indices[0];
+                        indices[0] = indices[i];
+                        indices[i] = tmp;
+                    } else {
+                        const tmp = indices[c[i]];
+                        indices[c[i]] = indices[i];
+                        indices[i] = tmp;
+                    }
+                    var perm2 = try allocator.alloc(Value, arr.len);
+                    for (0..arr.len) |j| perm2[j] = arr[indices[j]];
+                    try result.append(allocator, Value{ .Array = perm2 });
+                    c[i] += 1;
+                    i = 0;
+                } else {
+                    c[i] = 0;
+                    i += 1;
+                }
+            }
+            return Value{ .Array = try result.toOwnedSlice(allocator) };
         }
 
         // find(closure) - returns first element where closure returns true
@@ -3280,6 +4579,41 @@ pub const Interpreter = struct {
             return Value{ .Array = try entries_list.toOwnedSlice(self.arena.allocator()) };
         }
 
+        // insert(key, value) / put(key, value) / set(key, value) - adds or updates entry
+        if (std.mem.eql(u8, method, "insert") or std.mem.eql(u8, method, "put") or std.mem.eql(u8, method, "set")) {
+            if (args.len != 2) {
+                std.debug.print("{s}() requires exactly 2 arguments (key, value)\n", .{method});
+                return error.InvalidArguments;
+            }
+            const key_val = try self.evaluateExpression(args[0], env);
+            const value_val = try self.evaluateExpression(args[1], env);
+            const key_str = switch (key_val) {
+                .String => |s| s,
+                .Int => |i| blk: {
+                    const buf = try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                    break :blk buf;
+                },
+                else => {
+                    std.debug.print("{s}() key must be a string or integer\n", .{method});
+                    return error.TypeMismatch;
+                },
+            };
+
+            // Create new map with the added/updated entry
+            var new_entries = std.StringHashMap(Value).init(self.arena.allocator());
+            var iter = map.entries.iterator();
+            while (iter.next()) |entry| {
+                try new_entries.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            try new_entries.put(key_str, value_val);
+
+            // Update variable if we have a name
+            if (var_name) |name| {
+                try env.set(name, Value{ .Map = .{ .entries = new_entries } });
+            }
+            return Value.Void;
+        }
+
         std.debug.print("Unknown map method: {s}\n", .{method});
         return error.UndefinedFunction;
     }
@@ -3588,6 +4922,59 @@ pub const Interpreter = struct {
         // Execute method body
         var method_err: ?InterpreterError = null;
         for (method.body.statements) |stmt| {
+            self.executeStatement(stmt, &method_env) catch |err| {
+                method_err = err;
+                break;
+            };
+        }
+
+        // Execute defers in reverse order before returning
+        const defers = method_env.getDefers();
+        var i: usize = defers.len;
+        while (i > 0) {
+            i -= 1;
+            _ = self.evaluateExpression(defers[i], &method_env) catch {};
+        }
+
+        // Handle return or error
+        if (method_err) |err| {
+            if (err == error.Return) {
+                // Return statement was executed
+                const ret_value = self.return_value.?;
+                self.return_value = null;
+                return ret_value;
+            }
+            return err;
+        }
+
+        // No explicit return, return void
+        return Value.Void;
+    }
+
+    /// Execute a default trait method implementation
+    fn executeTraitDefaultMethod(self: *Interpreter, method: ast.TraitMethod, body: *ast.BlockStmt, self_value: Value, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
+        // Create new environment for method scope
+        var method_env = Environment.init(self.arena.allocator(), parent_env);
+        defer method_env.deinit();
+
+        // Bind self to the struct value (default methods always have self)
+        try method_env.define("self", self_value);
+
+        // Bind other parameters to arguments
+        const param_start: usize = 1; // Skip self
+        if (method.params.len > param_start) {
+            const actual_params = method.params[param_start..];
+            for (actual_params, 0..) |param, i| {
+                if (i < args.len) {
+                    const arg_value = try self.evaluateExpression(args[i], parent_env);
+                    try method_env.define(param.name, arg_value);
+                }
+            }
+        }
+
+        // Execute method body
+        var method_err: ?InterpreterError = null;
+        for (body.statements) |stmt| {
             self.executeStatement(stmt, &method_env) catch |err| {
                 method_err = err;
                 break;
@@ -4708,6 +6095,32 @@ pub const Interpreter = struct {
                     return true;
                 }
                 return false;
+            },
+            .Struct => |struct_pattern| {
+                // Struct pattern: Point { x, y } or Point { x: 10, y: val }
+                if (value != .Struct) {
+                    return false;
+                }
+
+                // Check struct name matches (if provided)
+                if (struct_pattern.name.len > 0 and !std.mem.eql(u8, value.Struct.type_name, struct_pattern.name)) {
+                    return false;
+                }
+
+                // Match each field
+                for (struct_pattern.fields) |field_pattern| {
+                    // Get the field value from the struct
+                    const field_value = value.Struct.fields.get(field_pattern.name) orelse {
+                        return false;  // Field doesn't exist
+                    };
+
+                    // Match the field pattern
+                    if (!try self.matchPatternNode(field_pattern.pattern, field_value, env)) {
+                        return false;
+                    }
+                }
+
+                return true;
             },
             else => {
                 // Other pattern types not yet implemented

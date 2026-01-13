@@ -44,3 +44,4 @@ packages/.DS_Store
 /packages/database/.zig-cache
 /packages/routing/.zig-cache
 /packages/app/.zig-cache
+/packages/compression/.zig-cache

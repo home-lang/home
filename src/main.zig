@@ -964,29 +964,33 @@ fn printTestUsage() void {
         \\  home t [options] [path]         (shorthand)
         \\
         \\{s}Options:{s}
-        \\  -d, --discover [path]   Discover test files (*.test.home, *.test.hm)
         \\  -v, --verbose           Show detailed test output
         \\  -b, --bail              Stop on first test failure
         \\  --timeout <ms>          Set test timeout in milliseconds (default: 5000)
+        \\  -p, --package <name>    Run tests only for a specific package
+        \\  --zig                   Run only Zig unit tests
+        \\  --home                  Run only Home integration tests
         \\  -h, --help              Show this help message
         \\
         \\{s}Examples:{s}
-        \\  home test                       Run all tests in current directory
+        \\  home test                       Run all tests (monorepo-aware)
+        \\  home test tests/                Run tests in specific directory
         \\  home test src/math.test.home    Run specific test file
-        \\  home t --discover               Discover all test files
-        \\  home t -d tests/                Discover tests in tests/ directory
-        \\  home test src/ -v               Run tests with verbose output
+        \\  home test -p lexer              Run tests for lexer package only
+        \\  home test --zig                 Run only Zig unit tests
+        \\  home test --home -v             Run Home tests with verbose output
         \\  home test --bail                Stop on first failure
-        \\  home test --timeout 10000       Set 10 second timeout
+        \\
+        \\{s}Monorepo Support:{s}
+        \\  Automatically discovers tests in:
+        \\    - tests/                       Integration tests (*.test.home)
+        \\    - packages/*/tests/            Package unit tests
+        \\    - src/                         Inline tests
         \\
         \\{s}Test File Patterns:{s}
-        \\  *.test.home                     Full extension test files
-        \\  *.test.hm                       Short extension test files
-        \\
-        \\{s}Test Syntaxes Supported:{s}
-        \\  @test fn test_name() {{ }}        Traditional annotation
-        \\  it('description') {{ }}            JavaScript/Jest-style
-        \\  @it "description" {{ }}            Attribute-based
+        \\  *.test.home                     Home integration test files
+        \\  *.test.hm                       Home test files (short ext)
+        \\  *_test.zig                      Zig unit test files
         \\
     , .{
         Color.Blue.code(),
@@ -1180,6 +1184,74 @@ fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_fi
     }
 }
 
+/// Discovers all test locations in a monorepo structure
+/// Returns paths to: tests/, packages/*/tests/, and any .test.home files
+fn discoverMonorepoTests(allocator: std.mem.Allocator, test_files: *std.ArrayList([]const u8), zig_test_dirs: *std.ArrayList([]const u8)) !void {
+    // 1. Check for tests/ directory (Home integration tests)
+    if (std.fs.cwd().statFile("tests")) |stat| {
+        if (stat.kind == .directory) {
+            discoverTestFiles(allocator, "tests", test_files) catch {};
+        }
+    } else |_| {}
+
+    // 2. Check for packages/ directory (monorepo packages)
+    var packages_dir = std.fs.cwd().openDir("packages", .{ .iterate = true }) catch {
+        return; // No packages directory
+    };
+    defer packages_dir.close();
+
+    var pkg_iter = packages_dir.iterate();
+    while (try pkg_iter.next()) |pkg_entry| {
+        if (pkg_entry.kind == .directory) {
+            // Check for tests/ subdirectory in each package
+            const pkg_tests_path = try std.fs.path.join(allocator, &.{ "packages", pkg_entry.name, "tests" });
+
+            if (std.fs.cwd().statFile(pkg_tests_path)) |stat| {
+                if (stat.kind == .directory) {
+                    // Check if it has Zig tests or Home tests
+                    var tests_dir = std.fs.cwd().openDir(pkg_tests_path, .{ .iterate = true }) catch continue;
+                    defer tests_dir.close();
+
+                    var has_zig_tests = false;
+                    var has_home_tests = false;
+
+                    var test_iter = tests_dir.iterate();
+                    while (try test_iter.next()) |test_entry| {
+                        if (test_entry.kind == .file) {
+                            if (std.mem.endsWith(u8, test_entry.name, "_test.zig") or
+                                std.mem.endsWith(u8, test_entry.name, "_tests.zig"))
+                            {
+                                has_zig_tests = true;
+                            }
+                            if (isTestFile(test_entry.name)) {
+                                has_home_tests = true;
+                            }
+                        }
+                    }
+
+                    if (has_zig_tests) {
+                        const path_copy = try allocator.dupe(u8, pkg_tests_path);
+                        try zig_test_dirs.append(allocator, path_copy);
+                    }
+
+                    if (has_home_tests) {
+                        discoverTestFiles(allocator, pkg_tests_path, test_files) catch {};
+                    }
+                }
+            } else |_| {}
+
+            allocator.free(pkg_tests_path);
+        }
+    }
+
+    // 3. Also check src/ directory for inline tests
+    if (std.fs.cwd().statFile("src")) |stat| {
+        if (stat.kind == .directory) {
+            discoverTestFiles(allocator, "src", test_files) catch {};
+        }
+    } else |_| {}
+}
+
 fn isTestFile(filename: []const u8) bool {
     return std.mem.endsWith(u8, filename, ".test.home") or
            std.mem.endsWith(u8, filename, ".test.hm");
@@ -1197,6 +1269,275 @@ fn shouldSkipDirectory(dirname: []const u8) bool {
         }
     }
     return false;
+}
+
+/// Runs tests across the entire monorepo
+fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
+    const start_time = std.time.Instant.now() catch null;
+
+    std.debug.print("\n{s}Home Monorepo Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+
+    // Discover all tests
+    var home_test_files = std.ArrayList([]const u8){};
+    defer {
+        for (home_test_files.items) |file| {
+            allocator.free(file);
+        }
+        home_test_files.deinit(allocator);
+    }
+
+    var zig_test_dirs = std.ArrayList([]const u8){};
+    defer {
+        for (zig_test_dirs.items) |dir| {
+            allocator.free(dir);
+        }
+        zig_test_dirs.deinit(allocator);
+    }
+
+    try discoverMonorepoTests(allocator, &home_test_files, &zig_test_dirs);
+
+    // Filter by package if specified
+    if (options.package) |pkg_name| {
+        std.debug.print("{s}Filtering:{s} package '{s}'\n\n", .{
+            Color.Cyan.code(),
+            Color.Reset.code(),
+            pkg_name,
+        });
+
+        // Filter home tests
+        var filtered_home = std.ArrayList([]const u8){};
+        for (home_test_files.items) |file| {
+            if (std.mem.indexOf(u8, file, pkg_name) != null) {
+                try filtered_home.append(allocator, file);
+            } else {
+                allocator.free(file);
+            }
+        }
+        home_test_files.deinit(allocator);
+        home_test_files = filtered_home;
+
+        // Filter zig test dirs
+        var filtered_zig = std.ArrayList([]const u8){};
+        for (zig_test_dirs.items) |dir| {
+            if (std.mem.indexOf(u8, dir, pkg_name) != null) {
+                try filtered_zig.append(allocator, dir);
+            } else {
+                allocator.free(dir);
+            }
+        }
+        zig_test_dirs.deinit(allocator);
+        zig_test_dirs = filtered_zig;
+    }
+
+    // Track results
+    var total_home_tests: usize = 0;
+    var passed_home_files: usize = 0;
+    var failed_home_files: usize = 0;
+    var zig_packages_passed: usize = 0;
+    var zig_packages_failed: usize = 0;
+
+    // Run Home integration tests (unless --zig only)
+    if (!options.zig_only and home_test_files.items.len > 0) {
+        std.debug.print("{s}Home Integration Tests{s}\n", .{ Color.Magenta.code(), Color.Reset.code() });
+        std.debug.print("Found {d} test file(s)\n\n", .{home_test_files.items.len});
+
+        for (home_test_files.items) |file_path| {
+            const result = runTestFile(allocator, file_path, options.verbose);
+            if (result) |test_count| {
+                passed_home_files += 1;
+                total_home_tests += test_count;
+            } else |_| {
+                failed_home_files += 1;
+                if (options.bail) {
+                    std.debug.print("\n{s}Bailed!{s} Stopping after first failure\n", .{
+                        Color.Yellow.code(),
+                        Color.Reset.code(),
+                    });
+                    break;
+                }
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Run Zig unit tests (unless --home only)
+    if (!options.home_only and zig_test_dirs.items.len > 0 and !options.bail) {
+        std.debug.print("{s}Zig Unit Tests{s}\n", .{ Color.Magenta.code(), Color.Reset.code() });
+        std.debug.print("Found {d} package(s) with tests\n\n", .{zig_test_dirs.items.len});
+
+        for (zig_test_dirs.items) |test_dir| {
+            const result = runZigTests(allocator, test_dir, options.verbose);
+            if (result) {
+                zig_packages_passed += 1;
+            } else |_| {
+                zig_packages_failed += 1;
+                if (options.bail) {
+                    std.debug.print("\n{s}Bailed!{s} Stopping after first failure\n", .{
+                        Color.Yellow.code(),
+                        Color.Reset.code(),
+                    });
+                    break;
+                }
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Print summary
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("{s}Test Summary{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    const total_failed = failed_home_files + zig_packages_failed;
+    if (total_failed == 0) {
+        std.debug.print("{s}✓ All tests passed!{s}\n\n", .{ Color.Green.code(), Color.Reset.code() });
+    } else {
+        std.debug.print("{s}✗ Some tests failed{s}\n\n", .{ Color.Red.code(), Color.Reset.code() });
+    }
+
+    if (!options.zig_only) {
+        std.debug.print("  {s}Home Tests:{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("    Files:  {s}{d} passed{s}", .{ Color.Green.code(), passed_home_files, Color.Reset.code() });
+        if (failed_home_files > 0) {
+            std.debug.print(", {s}{d} failed{s}", .{ Color.Red.code(), failed_home_files, Color.Reset.code() });
+        }
+        std.debug.print("\n    Tests:  {d} total\n", .{total_home_tests});
+    }
+
+    if (!options.home_only and zig_test_dirs.items.len > 0) {
+        std.debug.print("  {s}Zig Tests:{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("    Packages:  {s}{d} passed{s}", .{ Color.Green.code(), zig_packages_passed, Color.Reset.code() });
+        if (zig_packages_failed > 0) {
+            std.debug.print(", {s}{d} failed{s}", .{ Color.Red.code(), zig_packages_failed, Color.Reset.code() });
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Print elapsed time
+    if (start_time) |start| {
+        if (std.time.Instant.now() catch null) |end| {
+            const elapsed_ns = end.since(start);
+            const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+            std.debug.print("\n  Time:   {d:.2}s\n", .{elapsed_s});
+        }
+    }
+    std.debug.print("\n", .{});
+
+    if (total_failed > 0) {
+        std.process.exit(1);
+    }
+}
+
+/// Runs Zig unit tests for a package
+fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool) !void {
+    // Extract package name from path (packages/<name>/tests)
+    var path_parts = std.mem.splitScalar(u8, test_dir, '/');
+    var pkg_name: []const u8 = "unknown";
+    while (path_parts.next()) |part| {
+        if (std.mem.eql(u8, part, "packages")) {
+            if (path_parts.next()) |name| {
+                pkg_name = name;
+                break;
+            }
+        }
+    }
+
+    // Try to run zig build test for the package
+    const build_file_path = try std.fs.path.join(allocator, &.{ "packages", pkg_name, "build.zig" });
+    defer allocator.free(build_file_path);
+
+    // Check if package has its own build.zig
+    if (std.fs.cwd().statFile(build_file_path)) |_| {
+        // Run zig build test from package directory
+        const pkg_dir = try std.fs.path.join(allocator, &.{ "packages", pkg_name });
+        defer allocator.free(pkg_dir);
+
+        var child = std.process.Child.init(&.{ "zig", "build", "test" }, allocator);
+        child.cwd = pkg_dir;
+
+        if (!verbose) {
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+        }
+
+        const term = child.spawnAndWait() catch |err| {
+            std.debug.print("{s}FAIL{s} {s} (zig build test failed: {})\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                pkg_name,
+                err,
+            });
+            return err;
+        };
+
+        if (term.Exited == 0) {
+            std.debug.print("{s}PASS{s} {s}\n", .{
+                Color.Green.code(),
+                Color.Reset.code(),
+                pkg_name,
+            });
+        } else {
+            std.debug.print("{s}FAIL{s} {s}\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                pkg_name,
+            });
+            return error.TestFailed;
+        }
+    } else |_| {
+        // No build.zig, try running zig test directly on test files
+        var tests_dir = std.fs.cwd().openDir(test_dir, .{ .iterate = true }) catch {
+            std.debug.print("{s}SKIP{s} {s} (no tests directory)\n", .{
+                Color.Yellow.code(),
+                Color.Reset.code(),
+                pkg_name,
+            });
+            return;
+        };
+        defer tests_dir.close();
+
+        var any_failed = false;
+        var iter = tests_dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file and
+                (std.mem.endsWith(u8, entry.name, "_test.zig") or
+                std.mem.endsWith(u8, entry.name, "_tests.zig")))
+            {
+                const test_file = try std.fs.path.join(allocator, &.{ test_dir, entry.name });
+                defer allocator.free(test_file);
+
+                var child = std.process.Child.init(&.{ "zig", "test", test_file }, allocator);
+                if (!verbose) {
+                    child.stdout_behavior = .Ignore;
+                    child.stderr_behavior = .Ignore;
+                }
+
+                const term = child.spawnAndWait() catch {
+                    any_failed = true;
+                    continue;
+                };
+
+                if (term.Exited != 0) {
+                    any_failed = true;
+                }
+            }
+        }
+
+        if (any_failed) {
+            std.debug.print("{s}FAIL{s} {s}\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                pkg_name,
+            });
+            return error.TestFailed;
+        } else {
+            std.debug.print("{s}PASS{s} {s}\n", .{
+                Color.Green.code(),
+                Color.Reset.code(),
+                pkg_name,
+            });
+        }
+    }
 }
 
 fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: TestOptions) !void {
@@ -1407,6 +1748,9 @@ const TestOptions = struct {
     verbose: bool = false,
     bail: bool = false,
     timeout_ms: u32 = 5000,
+    zig_only: bool = false,
+    home_only: bool = false,
+    package: ?[]const u8 = null,
 };
 
 fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
@@ -1414,6 +1758,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     var options = TestOptions{};
     var path_arg: ?[]const u8 = null;
     var i: usize = 0;
+    var show_help = false;
 
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -1426,14 +1771,30 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
                 i += 1;
                 options.timeout_ms = std.fmt.parseInt(u32, args[i], 10) catch 5000;
             }
+        } else if (std.mem.eql(u8, arg, "--zig")) {
+            options.zig_only = true;
+        } else if (std.mem.eql(u8, arg, "--home")) {
+            options.home_only = true;
+        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--package")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                options.package = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            show_help = true;
         } else if (arg[0] != '-') {
             path_arg = arg;
         }
     }
 
-    // If no args, auto-discover and run tests in "tests/" directory
+    if (show_help) {
+        printTestUsage();
+        return;
+    }
+
+    // If no args, auto-discover and run tests across the monorepo
     if (path_arg == null) {
-        try runTestSuite(allocator, "tests", options);
+        try runMonorepoTests(allocator, options);
         return;
     }
 

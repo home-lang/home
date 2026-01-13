@@ -766,14 +766,36 @@ pub const Parser = struct {
         };
         const name = name_token.lexeme;
 
-        // Parse generic type parameters if present: fn name<T, U>()
-        var type_params = std.ArrayList([]const u8){};
+        // Parse generic type parameters if present: fn name<T, U>() or fn name<T: Trait>()
+        var type_params = std.ArrayList(ast.GenericParam){};
         defer type_params.deinit(self.allocator);
 
         if (self.match(&.{.Less})) {
             while (!self.check(.Greater) and !self.isAtEnd()) {
                 const type_param = try self.expect(.Identifier, "Expected type parameter name");
-                try type_params.append(self.allocator, type_param.lexeme);
+                const param_name = type_param.lexeme;
+
+                // Parse optional trait bounds: <T: Trait> or <T: Trait1 + Trait2>
+                var bounds = std.ArrayList([]const u8){};
+                defer bounds.deinit(self.allocator);
+
+                if (self.match(&.{.Colon})) {
+                    // Parse first trait bound
+                    const bound_token = try self.expect(.Identifier, "Expected trait name after ':'");
+                    try bounds.append(self.allocator, bound_token.lexeme);
+
+                    // Parse additional bounds with '+'
+                    while (self.match(&.{.Plus})) {
+                        const next_bound = try self.expect(.Identifier, "Expected trait name after '+'");
+                        try bounds.append(self.allocator, next_bound.lexeme);
+                    }
+                }
+
+                try type_params.append(self.allocator, ast.GenericParam{
+                    .name = param_name,
+                    .bounds = try bounds.toOwnedSlice(self.allocator),
+                    .default_type = null,
+                });
 
                 if (!self.match(&.{.Comma})) break;
             }
@@ -1002,14 +1024,36 @@ pub const Parser = struct {
         const name_token = try self.expect(.Identifier, "Expected struct name");
         const name = name_token.lexeme;
 
-        // Parse generic type parameters if present: struct Name<T, U>
-        var type_params = std.ArrayList([]const u8){};
+        // Parse generic type parameters if present: struct Name<T, U> or struct Name<T: Trait>
+        var type_params = std.ArrayList(ast.GenericParam){};
         defer type_params.deinit(self.allocator);
 
         if (self.match(&.{.Less})) {
             while (!self.check(.Greater) and !self.isAtEnd()) {
                 const type_param = try self.expect(.Identifier, "Expected type parameter name");
-                try type_params.append(self.allocator, type_param.lexeme);
+                const param_name = type_param.lexeme;
+
+                // Parse optional trait bounds: <T: Trait> or <T: Trait1 + Trait2>
+                var bounds = std.ArrayList([]const u8){};
+                defer bounds.deinit(self.allocator);
+
+                if (self.match(&.{.Colon})) {
+                    // Parse first trait bound
+                    const bound_token = try self.expect(.Identifier, "Expected trait name after ':'");
+                    try bounds.append(self.allocator, bound_token.lexeme);
+
+                    // Parse additional bounds with '+'
+                    while (self.match(&.{.Plus})) {
+                        const next_bound = try self.expect(.Identifier, "Expected trait name after '+'");
+                        try bounds.append(self.allocator, next_bound.lexeme);
+                    }
+                }
+
+                try type_params.append(self.allocator, ast.GenericParam{
+                    .name = param_name,
+                    .bounds = try bounds.toOwnedSlice(self.allocator),
+                    .default_type = null,
+                });
 
                 if (!self.match(&.{.Comma})) break;
             }
@@ -5123,6 +5167,42 @@ pub const Parser = struct {
 
                     const expr = try self.allocator.create(ast.Expr);
                     expr.* = ast.Expr{ .ArrayRepeat = repeat_expr };
+                    return expr;
+                }
+
+                // Check for list comprehension syntax: [expr for var in iterable if condition]
+                if (self.match(&.{.For})) {
+                    // Parse variable name
+                    const var_token = try self.expect(.Identifier, "Expected identifier after 'for' in comprehension");
+                    const variable = var_token.lexeme;
+
+                    // Expect 'in'
+                    _ = try self.expect(.In, "Expected 'in' after variable in comprehension");
+
+                    // Parse iterable expression
+                    const iterable = try self.expression();
+
+                    // Check for optional condition
+                    var condition: ?*ast.Expr = null;
+                    if (self.match(&.{.If})) {
+                        condition = try self.expression();
+                    }
+
+                    _ = try self.expect(.RightBracket, "Expected ']' after comprehension");
+
+                    // Create ArrayComprehension
+                    const comp = try self.allocator.create(ast.ArrayComprehension);
+                    comp.* = ast.ArrayComprehension.init(
+                        first_elem,
+                        variable,
+                        iterable,
+                        condition,
+                        false, // is_async
+                        ast.SourceLocation.fromToken(bracket_token),
+                    );
+
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .ArrayComprehension = comp };
                     return expr;
                 }
 

@@ -1,0 +1,88 @@
+// Tuple Destructuring Test Suite
+// Tests tuple destructuring patterns in let bindings
+
+// ============================================================================
+// BASIC TUPLE DESTRUCTURING
+// ============================================================================
+
+it("should destructure simple tuple") {
+    let (a, b) = (1, 2);
+    assert(a == 1);
+    assert(b == 2);
+}
+
+it("should destructure three element tuple") {
+    let (x, y, z) = (10, 20, 30);
+    assert(x == 10);
+    assert(y == 20);
+    assert(z == 30);
+}
+
+it("should destructure mixed types") {
+    let (name, age) = ("Alice", 30);
+    assert(name == "Alice");
+    assert(age == 30);
+}
+
+it("should destructure from array") {
+    let (a, b, c) = [1, 2, 3];
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+}
+
+it("should destructure zero values") {
+    let (a, b) = (0, 0);
+    assert(a == 0);
+    assert(b == 0);
+}
+
+it("should destructure negative values") {
+    let (a, b) = (-10, -20);
+    assert(a == -10);
+    assert(b == -20);
+}
+
+it("should destructure with expressions") {
+    let x = 5;
+    let (a, b) = (x * 2, x + 3);
+    assert(a == 10);
+    assert(b == 8);
+}
+
+it("should destructure four element tuple") {
+    let (a, b, c, d) = (1, 2, 3, 4);
+    assert(a == 1);
+    assert(b == 2);
+    assert(c == 3);
+    assert(d == 4);
+}
+
+it("should destructure and use in expressions") {
+    let (x, y) = (3, 4);
+    assert(x * x + y * y == 25);
+}
+
+it("should destructure string tuple") {
+    let (first, last) = ("John", "Doe");
+    assert(first == "John");
+    assert(last == "Doe");
+}
+
+it("should destructure with function call result") {
+    fn make_pair(): (i32, i32) {
+        return (100, 200);
+    }
+    let (a, b) = make_pair();
+    assert(a == 100);
+    assert(b == 200);
+}
+
+it("should use destructured values in loop") {
+    let (start, end) = (1, 5);
+    let mut sum = 0;
+    for (i in start..end) {
+        sum = sum + i;
+    }
+    assert(sum == 10);  // 1 + 2 + 3 + 4
+}

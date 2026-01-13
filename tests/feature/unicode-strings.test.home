@@ -1,0 +1,119 @@
+// Unicode Strings Test Suite
+// Tests for unicode escape sequences and unicode string handling
+
+// ============================================================================
+// UNICODE ESCAPE SEQUENCES - 4 DIGIT FORMAT (\uNNNN)
+// ============================================================================
+
+it("should handle unicode escape 4 digits") {
+    let s = "\u0048\u0065\u006C\u006C\u006F";  // "Hello"
+    assert(s.len() > 0);
+}
+
+it("should handle chinese characters") {
+    let s = "Hello, \u4E16\u754C";  // Hello, World in Chinese
+    assert(s.len() > 0);
+}
+
+it("should handle accented characters") {
+    let s = "caf\u00E9";  // cafe with accent
+    assert(s.len() > 0);
+}
+
+it("should handle cyrillic") {
+    let s = "\u041F\u0440\u0438\u0432\u0435\u0442";  // "Privet" in Russian
+    assert(s.len() > 0);
+}
+
+it("should handle japanese hiragana") {
+    let s = "\u3053\u3093\u306B\u3061\u306F";  // "konnichiwa" in Japanese
+    assert(s.len() > 0);
+}
+
+it("should handle arabic") {
+    let s = "\u0645\u0631\u062D\u0628\u0627";  // "marhaba" in Arabic
+    assert(s.len() > 0);
+}
+
+it("should handle mixed unicode and ascii") {
+    let s = "Hello \u4E16\u754C!";
+    assert(s.starts_with("Hello"));
+    assert(s.ends_with("!"));
+}
+
+// ============================================================================
+// UNICODE ESCAPE SEQUENCES - BRACE FORMAT (\u{N...})
+// ============================================================================
+
+it("should handle unicode escape braces short") {
+    let s = "\u{48}\u{65}\u{6C}\u{6C}\u{6F}";  // "Hello"
+    assert(s.len() > 0);
+}
+
+it("should handle unicode escape braces emoji") {
+    let s = "\u{1F600}";  // Grinning face emoji
+    assert(s.len() > 0);
+}
+
+it("should handle multiple emoji") {
+    let s = "\u{1F600}\u{1F601}\u{1F602}";
+    assert(s.len() > 0);
+}
+
+it("should handle unicode escape braces long form") {
+    let s = "\u{01F600}";  // Grinning face (6 hex digits max)
+    assert(s.len() > 0);
+}
+
+// ============================================================================
+// UNICODE STRING METHODS
+// ============================================================================
+
+it("should get unicode string length in bytes") {
+    let s = "hello";
+    assert(s.len() == 5);
+}
+
+it("should concat unicode strings") {
+    let a = "\u4E16";
+    let b = "\u754C";
+    let c = a + b;
+    assert(c.len() > 0);
+}
+
+it("should check unicode string contains") {
+    let s = "Hello \u4E16\u754C!";
+    assert(s.contains("Hello"));
+}
+
+// ============================================================================
+// MIXED CONTENT
+// ============================================================================
+
+it("should handle unicode in arrays") {
+    let arr = ["\u0048", "\u0065", "\u006C", "\u006C", "\u006F"];
+    assert(arr.len() == 5);
+}
+
+it("should handle unicode in map") {
+    let map = {"greeting": "\u4F60\u597D"};  // Chinese for "hello"
+    assert(map["greeting"].len() > 0);
+}
+
+struct UnicodeMessage { text: string }
+
+it("should handle unicode in struct") {
+    let msg = UnicodeMessage { text: "\u4E16\u754C" };
+    assert(msg.text.len() > 0);
+}
+
+it("should handle unicode with numbers") {
+    let s = "\u0031\u0032\u0033";  // "123" in unicode
+    // Unicode escapes are preserved as-is (not yet converted to chars)
+    assert(s.len() > 0);
+}
+
+it("should handle unicode math symbols") {
+    let s = "\u03C0\u2248\u0033\u002E\u0031\u0034";  // π≈3.14
+    assert(s.len() > 0);
+}

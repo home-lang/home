@@ -754,12 +754,8 @@ it("should store Results in array") {
 
 it("should filter Ok values from array") {
     let results = [Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)];
-    let mut oks: [i32] = [];
-    for (r in results) {
-        if (r.is_ok()) {
-            oks.push(r else 0);
-        }
-    }
+    // Use functional filter approach instead of mutable push
+    let oks = results.filter(|r| r.is_ok()).map(|r| r else 0);
     assert(oks.len() == 3);
     assert(oks[0] == 1);
     assert(oks[1] == 2);

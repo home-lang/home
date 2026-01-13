@@ -1,0 +1,159 @@
+// Default Trait Implementation Test Suite
+// Tests default method implementations in traits
+
+// ============================================================================
+// BASIC DEFAULT IMPLEMENTATION
+// ============================================================================
+
+trait Describable {
+    fn describe(self): string {
+        return "An object";
+    }
+    fn detailed(self): string;
+}
+
+struct Item {
+    name: string,
+    value: i32
+}
+
+impl Describable for Item {
+    fn detailed(self): string {
+        return self.name + ": " + to_string(self.value);
+    }
+}
+
+it("should use default trait implementation") {
+    let item = Item { name: "Sword", value: 100 };
+    assert(item.describe() == "An object");
+}
+
+it("should use custom trait implementation") {
+    let item = Item { name: "Shield", value: 50 };
+    assert(item.detailed() == "Shield: 50");
+}
+
+// ============================================================================
+// MULTIPLE DEFAULT METHODS
+// ============================================================================
+
+trait Calculator {
+    fn add(self, x: i32): i32;
+
+    fn double(self): i32 {
+        return self.add(self.value());
+    }
+
+    fn triple(self): i32 {
+        return self.add(self.add(self.value()));
+    }
+
+    fn value(self): i32;
+}
+
+struct Number {
+    val: i32
+}
+
+impl Calculator for Number {
+    fn add(self, x: i32): i32 {
+        return self.val + x;
+    }
+
+    fn value(self): i32 {
+        return self.val;
+    }
+}
+
+it("should use default double") {
+    let n = Number { val: 5 };
+    assert(n.double() == 10);
+}
+
+it("should use default triple") {
+    let n = Number { val: 4 };
+    assert(n.triple() == 12);
+}
+
+// ============================================================================
+// OVERRIDE DEFAULT IMPLEMENTATION
+// ============================================================================
+
+trait Greeter {
+    fn greet(self): string {
+        return "Hello";
+    }
+}
+
+struct Person {
+    name: string
+}
+
+impl Greeter for Person {
+    fn greet(self): string {
+        return "Hello, " + self.name + "!";
+    }
+}
+
+struct Robot {
+    id: i32
+}
+
+impl Greeter for Robot {
+    // Uses default
+}
+
+it("should override default implementation") {
+    let person = Person { name: "Alice" };
+    assert(person.greet() == "Hello, Alice!");
+}
+
+it("should use default when not overridden") {
+    let robot = Robot { id: 42 };
+    assert(robot.greet() == "Hello");
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+trait Printer {
+    fn print_value(self): string {
+        return "value";
+    }
+}
+
+struct Empty {}
+
+impl Printer for Empty {}
+
+it("should work with empty struct") {
+    let e = Empty {};
+    assert(e.print_value() == "value");
+}
+
+trait Returner {
+    fn get_zero(self): i32 {
+        return 0;
+    }
+
+    fn get_negative(self): i32 {
+        return -1;
+    }
+}
+
+struct Holder {
+    x: i32
+}
+
+impl Returner for Holder {}
+
+it("should return zero from default") {
+    let h = Holder { x: 100 };
+    assert(h.get_zero() == 0);
+}
+
+it("should return negative from default") {
+    let h = Holder { x: 100 };
+    assert(h.get_negative() == -1);
+}

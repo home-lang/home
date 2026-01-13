@@ -1354,11 +1354,11 @@ pub const Expr = union(NodeType) {
     StructLiteral: *StructLiteralExpr,
     TupleStructLiteral: void,
     AnonymousStruct: void,
-    ArrayComprehension: void,
-    DictComprehension: void,
-    SetComprehension: void,
-    NestedComprehension: void,
-    GeneratorExpr: void,
+    ArrayComprehension: *ArrayComprehension,
+    DictComprehension: *DictComprehension,
+    SetComprehension: *SetComprehension,
+    NestedComprehension: *NestedComprehension,
+    GeneratorExpr: *GeneratorExpr,
     SplatExpr: void,
     ArrayDestructuring: void,
     ObjectDestructuring: void,
@@ -1994,11 +1994,11 @@ pub const Stmt = union(NodeType) {
     StructLiteral: void,  // Handled via pointer deinit
     TupleStructLiteral: void,
     AnonymousStruct: void,
-    ArrayComprehension: void,
-    DictComprehension: void,
-    SetComprehension: void,
-    NestedComprehension: void,
-    GeneratorExpr: void,
+    ArrayComprehension: *ArrayComprehension,
+    DictComprehension: *DictComprehension,
+    SetComprehension: *SetComprehension,
+    NestedComprehension: *NestedComprehension,
+    GeneratorExpr: *GeneratorExpr,
     SplatExpr: void,
     ArrayDestructuring: void,
     ObjectDestructuring: void,
@@ -2076,7 +2076,7 @@ pub const StructDecl = struct {
     node: Node,
     name: []const u8,
     fields: []const StructField,
-    type_params: []const []const u8, // Generic type parameters e.g. ["T", "E"]
+    type_params: []const GenericParam, // Generic type parameters with optional trait bounds
     methods: []const *FnDecl = &.{}, // Methods defined inside struct body
     is_public: bool = false,
     attributes: []const Attribute = &.{},
@@ -2084,7 +2084,7 @@ pub const StructDecl = struct {
     layout: StructLayout = .Auto, // Struct memory layout
     alignment: ?u32 = null, // Explicit alignment in bytes (for Aligned layout)
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, loc: SourceLocation) !*StructDecl {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const GenericParam, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);
         decl.* = .{
             .node = .{ .type = .StructDecl, .loc = loc },
@@ -2095,7 +2095,7 @@ pub const StructDecl = struct {
         return decl;
     }
 
-    pub fn initWithMethods(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const []const u8, methods: []const *FnDecl, loc: SourceLocation) !*StructDecl {
+    pub fn initWithMethods(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const GenericParam, methods: []const *FnDecl, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);
         decl.* = .{
             .node = .{ .type = .StructDecl, .loc = loc },
@@ -2198,7 +2198,7 @@ pub const FnDecl = struct {
     return_type: ?[]const u8,
     body: *BlockStmt,
     is_async: bool,
-    type_params: []const []const u8,
+    type_params: []const GenericParam,
     is_test: bool = false,
     is_public: bool = false,
     is_exported: bool = false, // export keyword for C ABI exports
@@ -2211,7 +2211,7 @@ pub const FnDecl = struct {
     /// In ensures clauses, |result| binds the return value
     ensures_clauses: []const ContractClause = &.{},
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const []const u8, is_test: bool, loc: SourceLocation) !*FnDecl {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, params: []const Parameter, return_type: ?[]const u8, body: *BlockStmt, is_async: bool, type_params: []const GenericParam, is_test: bool, loc: SourceLocation) !*FnDecl {
         const decl = try allocator.create(FnDecl);
         decl.* = .{
             .node = .{ .type = .FnDecl, .loc = loc },

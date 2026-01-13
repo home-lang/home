@@ -1,0 +1,145 @@
+// Trait Bounds Test Suite
+// Tests trait bounds on generic functions and structs
+
+// ============================================================================
+// BASIC TRAIT DEFINITIONS
+// ============================================================================
+
+trait Printable {
+    fn to_string(self): string;
+}
+
+trait Comparable {
+    fn compare(self, other: Self): i32;
+}
+
+trait Addable {
+    fn add(self, other: Self): Self;
+}
+
+// ============================================================================
+// STRUCT IMPLEMENTATIONS
+// ============================================================================
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+impl Printable for Point {
+    fn to_string(self): string {
+        return "Point(" + to_string(self.x) + ", " + to_string(self.y) + ")";
+    }
+}
+
+impl Comparable for Point {
+    fn compare(self, other: Point): i32 {
+        let self_sum = self.x + self.y;
+        let other_sum = other.x + other.y;
+        if (self_sum < other_sum) { return -1; }
+        if (self_sum > other_sum) { return 1; }
+        return 0;
+    }
+}
+
+// ============================================================================
+// SINGLE TRAIT BOUND
+// ============================================================================
+
+fn print_it<T: Printable>(item: T): string {
+    return item.to_string();
+}
+
+it("should use trait bound on generic function") {
+    let p = Point { x: 5, y: 10 };
+    let result = print_it(p);
+    assert(result.contains("5"));
+    assert(result.contains("10"));
+}
+
+fn compare_items<T: Comparable>(a: T, b: T): i32 {
+    return a.compare(b);
+}
+
+it("should use Comparable trait bound") {
+    let p1 = Point { x: 1, y: 1 };
+    let p2 = Point { x: 2, y: 2 };
+    assert(compare_items(p1, p2) == -1);
+}
+
+it("should compare equal items") {
+    let p1 = Point { x: 5, y: 5 };
+    let p2 = Point { x: 5, y: 5 };
+    assert(compare_items(p1, p2) == 0);
+}
+
+it("should compare reversed order") {
+    let p1 = Point { x: 10, y: 10 };
+    let p2 = Point { x: 1, y: 1 };
+    assert(compare_items(p1, p2) == 1);
+}
+
+// ============================================================================
+// TRAIT BOUNDS WITH GENERICS
+// ============================================================================
+
+struct Number {
+    value: i32
+}
+
+impl Printable for Number {
+    fn to_string(self): string {
+        return "Number(" + to_string(self.value) + ")";
+    }
+}
+
+it("should work with different types implementing same trait") {
+    let p = Point { x: 1, y: 2 };
+    let n = Number { value: 42 };
+
+    let p_str = print_it(p);
+    let n_str = print_it(n);
+
+    assert(p_str.contains("Point"));
+    assert(n_str.contains("Number"));
+}
+
+// ============================================================================
+// GENERIC STRUCT WITH TRAIT BOUNDS
+// ============================================================================
+
+fn format_pair<T: Printable>(a: T, b: T): string {
+    return "(" + a.to_string() + ", " + b.to_string() + ")";
+}
+
+it("should format pair with trait bound") {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 3, y: 4 };
+    let result = format_pair(p1, p2);
+    assert(result.contains("Point"));
+    assert(result.contains("1"));
+    assert(result.contains("3"));
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should work with zero values") {
+    let p = Point { x: 0, y: 0 };
+    let result = print_it(p);
+    assert(result.contains("0"));
+}
+
+it("should work with negative values") {
+    let p = Point { x: -10, y: -20 };
+    let result = print_it(p);
+    assert(result.contains("-10"));
+    assert(result.contains("-20"));
+}
+
+it("should compare with negative values") {
+    let p1 = Point { x: -5, y: -5 };
+    let p2 = Point { x: -1, y: -1 };
+    assert(compare_items(p1, p2) == -1);
+}
