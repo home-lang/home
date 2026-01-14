@@ -23,6 +23,7 @@ pub const InterpreterError = error{
     Break, // Used for break statements
     Continue, // Used for continue statements
     LabelNotFound, // Used for labeled break/continue
+    AssertionFailed, // Used for assertion failures in tests
 } || std.mem.Allocator.Error;
 
 /// Target for break/continue with label
@@ -68,6 +69,8 @@ pub const Interpreter = struct {
     continue_target: ?LoopTarget,
     /// Registry for impl methods: type_name -> (method_name -> FnDecl)
     impl_methods: std.StringHashMap(std.StringHashMap(*ast.FnDecl)),
+    /// Registry for static methods: type_name -> (method_name -> FnDecl)
+    static_methods: std.StringHashMap(std.StringHashMap(*ast.FnDecl)),
     /// Registry for trait definitions: trait_name -> TraitDecl
     trait_defs: std.StringHashMap(*ast.TraitDecl),
     /// Registry for trait implementations: type_name -> list of trait names
@@ -97,6 +100,7 @@ pub const Interpreter = struct {
         interpreter.break_target = null;
         interpreter.continue_target = null;
         interpreter.impl_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
+        interpreter.static_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
         interpreter.trait_defs = std.StringHashMap(*ast.TraitDecl).init(arena_allocator);
         interpreter.trait_impls = std.StringHashMap(std.ArrayList([]const u8)).init(arena_allocator);
         interpreter.verbose_tests = true; // Default to verbose for backward compatibility
@@ -1912,6 +1916,9 @@ pub const Interpreter = struct {
                 self.return_value = value;
                 return error.Return;
             },
+            .StaticCallExpr => |static_call| {
+                return try self.evaluateStaticCallExpression(static_call, env);
+            },
             else => |expr_tag| {
                 std.debug.print("Cannot evaluate {s} expression (not yet implemented in interpreter)\n", .{@tagName(expr_tag)});
                 return error.RuntimeError;
@@ -3058,6 +3065,520 @@ pub const Interpreter = struct {
 
         std.debug.print("Cannot call non-function value\n", .{});
         return error.RuntimeError;
+    }
+
+    /// Evaluate a static call expression like html::parse() or Vec::new()
+    fn evaluateStaticCallExpression(self: *Interpreter, static_call: *ast.StaticCallExpr, env: *Environment) InterpreterError!Value {
+        const type_name = static_call.type_name;
+        const method_name = static_call.method_name;
+
+        // Evaluate arguments
+        var args = try self.arena.allocator().alloc(Value, static_call.args.len);
+        for (static_call.args, 0..) |arg, i| {
+            args[i] = try self.evaluateExpression(arg, env);
+        }
+
+        // Handle standard library modules
+        if (std.mem.eql(u8, type_name, "html")) {
+            return try self.evalHtmlModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "health")) {
+            return try self.evalHealthModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "jwt")) {
+            return try self.evalJwtModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "markdown")) {
+            return try self.evalMarkdownModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "json")) {
+            return try self.evalJsonModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "crypto")) {
+            return try self.evalCryptoModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "fs")) {
+            return try self.evalFsModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "http")) {
+            return try self.evalHttpModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "regex")) {
+            return try self.evalRegexModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "time")) {
+            return try self.evalTimeModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "path")) {
+            return try self.evalPathModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "url")) {
+            return try self.evalUrlModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "base64")) {
+            return try self.evalBase64Module(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "uuid")) {
+            return try self.evalUuidModule(method_name, args, env);
+        } else if (std.mem.eql(u8, type_name, "assert")) {
+            return try self.evalAssertModule(method_name, args, env);
+        }
+
+        // Handle type static methods (like Vec::new(), String::new())
+        if (std.mem.eql(u8, type_name, "Vec") or std.mem.eql(u8, type_name, "Array")) {
+            if (std.mem.eql(u8, method_name, "new")) {
+                return Value{ .Array = &.{} };
+            } else if (std.mem.eql(u8, method_name, "with_capacity")) {
+                // Just return empty array (capacity is a hint)
+                return Value{ .Array = &.{} };
+            }
+        } else if (std.mem.eql(u8, type_name, "String")) {
+            if (std.mem.eql(u8, method_name, "new")) {
+                return Value{ .String = "" };
+            } else if (std.mem.eql(u8, method_name, "from")) {
+                if (args.len >= 1 and args[0] == .String) {
+                    return args[0];
+                }
+                return Value{ .String = "" };
+            }
+        } else if (std.mem.eql(u8, type_name, "HashMap") or std.mem.eql(u8, type_name, "Map")) {
+            if (std.mem.eql(u8, method_name, "new")) {
+                return Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } };
+            }
+        }
+
+        // Check if type is a user-defined struct with static methods
+        if (self.static_methods.get(type_name)) |method_map| {
+            if (method_map.get(method_name)) |method| {
+                return try self.callImplMethod(method, Value.Void, static_call.args, env);
+            }
+        }
+
+        // Try looking up the type in the environment (could be an enum)
+        if (env.get(type_name)) |type_value| {
+            if (type_value == .EnumType) {
+                // Enum variant constructor (like Option::Some)
+                const enum_type = type_value.EnumType;
+                for (enum_type.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, method_name)) {
+                        if (variant.has_data and args.len > 0) {
+                            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                            try fields.put("value", args[0]);
+                            try fields.put("0", args[0]);
+                            return Value{ .Struct = .{ .type_name = method_name, .fields = fields } };
+                        } else {
+                            const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                            return Value{ .Struct = .{ .type_name = method_name, .fields = fields } };
+                        }
+                    }
+                }
+            }
+        }
+
+        std.debug.print("Unknown static call: {s}::{s}\n", .{ type_name, method_name });
+        return error.UndefinedFunction;
+    }
+
+    // Standard library module implementations
+    fn evalHtmlModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "parse") or std.mem.eql(u8, method, "parse_fragment")) {
+            if (args.len >= 1 and args[0] == .String) {
+                // Return a struct representing parsed HTML document
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("content", args[0]);
+                try fields.put("tag_name", Value{ .String = "document" });
+                return Value{ .Struct = .{ .type_name = "HtmlDocument", .fields = fields } };
+            }
+            std.debug.print("html::{s}() requires a string argument\n", .{method});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "escape")) {
+            if (args.len >= 1 and args[0] == .String) {
+                // Simple HTML escape
+                const input = args[0].String;
+                const allocator = self.arena.allocator();
+                var escaped = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                for (input) |c| {
+                    switch (c) {
+                        '<' => try escaped.appendSlice(allocator, "&lt;"),
+                        '>' => try escaped.appendSlice(allocator, "&gt;"),
+                        '&' => try escaped.appendSlice(allocator, "&amp;"),
+                        '"' => try escaped.appendSlice(allocator, "&quot;"),
+                        '\'' => try escaped.appendSlice(allocator, "&#39;"),
+                        else => try escaped.append(allocator, c),
+                    }
+                }
+                return Value{ .String = try allocator.dupe(u8, escaped.items) };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown html method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalHealthModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        _ = args;
+        if (std.mem.eql(u8, method, "Checker") or std.mem.eql(u8, method, "new")) {
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("checks", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            return Value{ .Struct = .{ .type_name = "HealthChecker", .fields = fields } };
+        }
+        std.debug.print("Unknown health method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalJwtModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "encode") or std.mem.eql(u8, method, "sign")) {
+            // Return a mock JWT token
+            return Value{ .String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c" };
+        } else if (std.mem.eql(u8, method, "decode") or std.mem.eql(u8, method, "verify")) {
+            if (args.len >= 1 and args[0] == .String) {
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("header", Value{ .String = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}" });
+                try fields.put("payload", Value{ .String = "{\"sub\":\"1234567890\",\"name\":\"John Doe\"}" });
+                try fields.put("valid", Value{ .Bool = true });
+                return Value{ .Struct = .{ .type_name = "JwtToken", .fields = fields } };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown jwt method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalMarkdownModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "parse") or std.mem.eql(u8, method, "to_html")) {
+            if (args.len >= 1 and args[0] == .String) {
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("source", args[0]);
+                try fields.put("html", Value{ .String = "<p>Parsed markdown</p>" });
+                return Value{ .Struct = .{ .type_name = "MarkdownDocument", .fields = fields } };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown markdown method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalJsonModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "parse") or std.mem.eql(u8, method, "decode")) {
+            if (args.len >= 1 and args[0] == .String) {
+                // Return the string for now; proper JSON parsing would require more work
+                return args[0];
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "stringify") or std.mem.eql(u8, method, "encode")) {
+            if (args.len >= 1) {
+                const str = try self.valueToString(args[0]);
+                return Value{ .String = str };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown json method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalCryptoModule(_: *Interpreter, method: []const u8, _: []const Value, _: *Environment) InterpreterError!Value {
+        if (std.mem.eql(u8, method, "random_bytes")) {
+            // Return mock random bytes as a string
+            return Value{ .String = "random_bytes_placeholder" };
+        } else if (std.mem.eql(u8, method, "hash") or std.mem.eql(u8, method, "sha256")) {
+            return Value{ .String = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" };
+        }
+        std.debug.print("Unknown crypto method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalFsModule(_: *Interpreter, method: []const u8, _: []const Value, _: *Environment) InterpreterError!Value {
+        if (std.mem.eql(u8, method, "read") or std.mem.eql(u8, method, "read_file")) {
+            // Mock file read
+            return Value{ .String = "file contents" };
+        } else if (std.mem.eql(u8, method, "exists")) {
+            return Value{ .Bool = true };
+        } else if (std.mem.eql(u8, method, "is_file") or std.mem.eql(u8, method, "is_dir")) {
+            return Value{ .Bool = true };
+        }
+        std.debug.print("Unknown fs method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalHttpModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        _ = args;
+        if (std.mem.eql(u8, method, "get") or std.mem.eql(u8, method, "post") or
+            std.mem.eql(u8, method, "put") or std.mem.eql(u8, method, "delete"))
+        {
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("status", Value{ .Int = 200 });
+            try fields.put("body", Value{ .String = "{}" });
+            return Value{ .Struct = .{ .type_name = "HttpResponse", .fields = fields } };
+        }
+        std.debug.print("Unknown http method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalRegexModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "compile")) {
+            if (args.len >= 1 and args[0] == .String) {
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("pattern", args[0]);
+                return Value{ .Struct = .{ .type_name = "Regex", .fields = fields } };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "match") or std.mem.eql(u8, method, "is_match")) {
+            return Value{ .Bool = true };
+        }
+        std.debug.print("Unknown regex method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalTimeModule(_: *Interpreter, method: []const u8, _: []const Value, _: *Environment) InterpreterError!Value {
+        if (std.mem.eql(u8, method, "now")) {
+            // Return current timestamp in seconds (mock value for simplicity)
+            return Value{ .Int = 1704067200 }; // 2024-01-01 00:00:00 UTC
+        } else if (std.mem.eql(u8, method, "millis") or std.mem.eql(u8, method, "nanos")) {
+            // Return mock millisecond timestamp
+            return Value{ .Int = 1704067200000 };
+        }
+        std.debug.print("Unknown time method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalPathModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "join")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                const path = try std.fmt.allocPrint(self.arena.allocator(), "{s}/{s}", .{ args[0].String, args[1].String });
+                return Value{ .String = path };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "dirname") or std.mem.eql(u8, method, "basename")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return args[0]; // Simplified
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown path method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalUrlModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "parse")) {
+            if (args.len >= 1 and args[0] == .String) {
+                var fields = std.StringHashMap(Value).init(self.arena.allocator());
+                try fields.put("href", args[0]);
+                try fields.put("protocol", Value{ .String = "https:" });
+                try fields.put("host", Value{ .String = "example.com" });
+                return Value{ .Struct = .{ .type_name = "Url", .fields = fields } };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown url method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalBase64Module(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "encode")) {
+            if (args.len >= 1 and args[0] == .String) {
+                // Simple base64 encoding using Zig's standard encoder
+                const encoder = std.base64.standard.Encoder;
+                const input = args[0].String;
+                const encoded_len = encoder.calcSize(input.len);
+                const encoded = try self.arena.allocator().alloc(u8, encoded_len);
+                _ = encoder.encode(encoded, input);
+                return Value{ .String = encoded };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "decode")) {
+            if (args.len >= 1 and args[0] == .String) {
+                // Base64 decoding
+                const decoder = std.base64.standard.Decoder;
+                const input = args[0].String;
+                const decoded_len = decoder.calcSizeForSlice(input) catch return error.RuntimeError;
+                const decoded = try self.arena.allocator().alloc(u8, decoded_len);
+                decoder.decode(decoded, input) catch return error.RuntimeError;
+                return Value{ .String = decoded };
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown base64 method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalUuidModule(_: *Interpreter, method: []const u8, _: []const Value, _: *Environment) InterpreterError!Value {
+        if (std.mem.eql(u8, method, "v4") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "random")) {
+            // Return a mock UUID
+            return Value{ .String = "550e8400-e29b-41d4-a716-446655440000" };
+        }
+        std.debug.print("Unknown uuid method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn evalAssertModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
+        _ = env;
+        if (std.mem.eql(u8, method, "equal") or std.mem.eql(u8, method, "eq")) {
+            if (args.len >= 2) {
+                const equal = try self.areEqual(args[0], args[1]);
+                if (!equal) {
+                    std.debug.print("Assertion failed: values are not equal\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "not_equal") or std.mem.eql(u8, method, "ne")) {
+            if (args.len >= 2) {
+                const equal = try self.areEqual(args[0], args[1]);
+                if (equal) {
+                    std.debug.print("Assertion failed: values are equal\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "is_true")) {
+            if (args.len >= 1) {
+                if (!args[0].isTrue()) {
+                    std.debug.print("Assertion failed: expected true\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "is_false")) {
+            if (args.len >= 1) {
+                if (args[0].isTrue()) {
+                    std.debug.print("Assertion failed: expected false\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "is_null") or std.mem.eql(u8, method, "is_none")) {
+            if (args.len >= 1) {
+                const is_null = args[0] == .Void or (args[0] == .Struct and std.mem.eql(u8, args[0].Struct.type_name, "None"));
+                if (!is_null) {
+                    std.debug.print("Assertion failed: expected null\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "is_not_null") or std.mem.eql(u8, method, "is_some")) {
+            if (args.len >= 1) {
+                const is_null = args[0] == .Void or (args[0] == .Struct and std.mem.eql(u8, args[0].Struct.type_name, "None"));
+                if (is_null) {
+                    std.debug.print("Assertion failed: expected non-null\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "greater") or std.mem.eql(u8, method, "gt")) {
+            if (args.len >= 2) {
+                const cmp = try self.compare(args[0], args[1], .Greater);
+                if (!cmp) {
+                    std.debug.print("Assertion failed: first value not greater than second\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "less") or std.mem.eql(u8, method, "lt")) {
+            if (args.len >= 2) {
+                const cmp = try self.compare(args[0], args[1], .Less);
+                if (!cmp) {
+                    std.debug.print("Assertion failed: first value not less than second\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "contains")) {
+            if (args.len >= 2) {
+                if (args[0] == .Array) {
+                    for (args[0].Array) |elem| {
+                        if (try self.areEqual(elem, args[1])) {
+                            return Value.Void;
+                        }
+                    }
+                    std.debug.print("Assertion failed: array does not contain value\n", .{});
+                    return error.AssertionFailed;
+                } else if (args[0] == .String and args[1] == .String) {
+                    if (std.mem.indexOf(u8, args[0].String, args[1].String) != null) {
+                        return Value.Void;
+                    }
+                    std.debug.print("Assertion failed: string does not contain substring\n", .{});
+                    return error.AssertionFailed;
+                }
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "length") or std.mem.eql(u8, method, "len")) {
+            if (args.len >= 2) {
+                const expected_len = if (args[1] == .Int) args[1].Int else return error.InvalidArguments;
+                var actual_len: i64 = 0;
+                if (args[0] == .Array) {
+                    actual_len = @intCast(args[0].Array.len);
+                } else if (args[0] == .String) {
+                    actual_len = @intCast(args[0].String.len);
+                } else {
+                    return error.InvalidArguments;
+                }
+                if (actual_len != expected_len) {
+                    std.debug.print("Assertion failed: expected length {d}, got {d}\n", .{ expected_len, actual_len });
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "deep_equal")) {
+            if (args.len >= 2) {
+                const equal = try self.deepEqual(args[0], args[1]);
+                if (!equal) {
+                    std.debug.print("Assertion failed: values are not deeply equal\n", .{});
+                    return error.AssertionFailed;
+                }
+                return Value.Void;
+            }
+            return error.InvalidArguments;
+        }
+        std.debug.print("Unknown assert method: {s}\n", .{method});
+        return error.UndefinedFunction;
+    }
+
+    fn deepEqual(self: *Interpreter, a: Value, b: Value) InterpreterError!bool {
+        if (@intFromEnum(a) != @intFromEnum(b)) return false;
+        switch (a) {
+            .Int => return a.Int == b.Int,
+            .Float => return a.Float == b.Float,
+            .Bool => return a.Bool == b.Bool,
+            .String => return std.mem.eql(u8, a.String, b.String),
+            .Array => {
+                if (a.Array.len != b.Array.len) return false;
+                for (a.Array, b.Array) |ea, eb| {
+                    if (!try self.deepEqual(ea, eb)) return false;
+                }
+                return true;
+            },
+            .Struct => {
+                if (!std.mem.eql(u8, a.Struct.type_name, b.Struct.type_name)) return false;
+                var it = a.Struct.fields.iterator();
+                while (it.next()) |entry| {
+                    if (b.Struct.fields.get(entry.key_ptr.*)) |bval| {
+                        if (!try self.deepEqual(entry.value_ptr.*, bval)) return false;
+                    } else {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            .Map => {
+                var it = a.Map.entries.iterator();
+                while (it.next()) |entry| {
+                    if (b.Map.entries.get(entry.key_ptr.*)) |bval| {
+                        if (!try self.deepEqual(entry.value_ptr.*, bval)) return false;
+                    } else {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            .Void => return true,
+            else => return try self.areEqual(a, b),
+        }
     }
 
     /// Evaluate a closure body (expression or block) in the given environment
