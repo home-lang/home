@@ -844,9 +844,12 @@ pub const Parser = struct {
                 if (is_self_param and (is_ref_self or is_mut_self or !has_colon)) {
                     // Use "Self" as the type for shorthand self parameters
                     param_type = try self.allocator.dupe(u8, "Self");
-                } else {
-                    _ = try self.expect(.Colon, "Expected ':' after parameter name");
+                } else if (has_colon) {
+                    _ = self.advance(); // consume the colon
                     param_type = try self.parseTypeAnnotation();
+                } else {
+                    // Allow untyped parameters - use "any" as default type
+                    param_type = try self.allocator.dupe(u8, "any");
                 }
 
                 // Check for default value
@@ -4339,7 +4342,26 @@ pub const Parser = struct {
                 defer entries.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                    const key = try self.expression();
+                    // For map keys, if it's an identifier followed by colon, treat as string literal key
+                    var key: *ast.Expr = undefined;
+                    if (self.check(.Identifier)) {
+                        const key_pos = self.current;
+                        const key_token = self.advance();
+                        if (self.check(.Colon)) {
+                            // This is a shorthand identifier key - convert to string literal
+                            const str_lit = try self.allocator.create(ast.Expr);
+                            str_lit.* = ast.Expr{
+                                .StringLiteral = ast.StringLiteral.init(key_token.lexeme, ast.SourceLocation.fromToken(key_token)),
+                            };
+                            key = str_lit;
+                        } else {
+                            // Not followed by colon, parse as regular expression
+                            self.current = key_pos;
+                            key = try self.expression();
+                        }
+                    } else {
+                        key = try self.expression();
+                    }
                     _ = try self.expect(.Colon, "Expected ':' after map key");
                     const value = try self.expression();
 
@@ -4672,10 +4694,21 @@ pub const Parser = struct {
 
                 // Keep consuming identifier::identifier until we see ( or end of path
                 while (true) {
-                    // Accept Identifier or 'default' keyword as next segment
+                    // Accept Identifier or certain keywords as next segment
+                    // Keywords like fn, struct, union, enum, type can be valid path segments (e.g., ffi::fn, ffi::struct)
                     const next_token = if (self.match(&.{.Identifier}))
                         self.previous()
                     else if (self.match(&.{.Default}))
+                        self.previous()
+                    else if (self.match(&.{.Fn}))
+                        self.previous()
+                    else if (self.match(&.{.Struct}))
+                        self.previous()
+                    else if (self.match(&.{.Enum}))
+                        self.previous()
+                    else if (self.match(&.{.Union}))
+                        self.previous()
+                    else if (self.match(&.{.Type}))
                         self.previous()
                     else {
                         try self.reportError("Expected identifier after '::'");
@@ -4712,27 +4745,164 @@ pub const Parser = struct {
                 if (self.match(&.{.LeftParen})) {
                     var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
                     defer args.deinit(self.allocator);
+                    var named_args = std.ArrayList(ast.NamedArg){ .items = &.{}, .capacity = 0 };
+                    defer named_args.deinit(self.allocator);
+
+                    var seen_named = false;
 
                     if (!self.check(.RightParen)) {
                         while (true) {
-                            const arg = try self.expression();
-                            try args.append(self.allocator, arg);
+                            // Check if this is a named argument: identifier followed by colon
+                            if (self.check(.Identifier)) {
+                                const saved_pos = self.current;
+                                const name_token = self.advance();
+
+                                if (self.check(.Colon)) {
+                                    // This is a named argument
+                                    _ = self.advance(); // consume the colon
+                                    const value = try self.expression();
+                                    try named_args.append(self.allocator, .{
+                                        .name = name_token.lexeme,
+                                        .value = value,
+                                    });
+                                    seen_named = true;
+                                } else {
+                                    // Not a named argument, backtrack and parse as expression
+                                    self.current = saved_pos;
+
+                                    if (seen_named) {
+                                        try self.reportError("Positional arguments cannot follow named arguments");
+                                        return error.UnexpectedToken;
+                                    }
+
+                                    const arg = try self.expression();
+                                    try args.append(self.allocator, arg);
+                                }
+                            } else {
+                                // Not starting with identifier, must be positional
+                                if (seen_named) {
+                                    try self.reportError("Positional arguments cannot follow named arguments");
+                                    return error.UnexpectedToken;
+                                }
+
+                                const arg = try self.expression();
+                                try args.append(self.allocator, arg);
+                            }
+
                             if (!self.match(&.{.Comma})) break;
                         }
                     }
 
                     _ = try self.expect(.RightParen, "Expected ')' after arguments");
 
-                    const static_call = try ast.StaticCallExpr.init(
+                    const static_call = if (named_args.items.len > 0)
+                        try ast.StaticCallExpr.initWithNamedArgs(
+                            self.allocator,
+                            type_name,
+                            method_name,
+                            try args.toOwnedSlice(self.allocator),
+                            try named_args.toOwnedSlice(self.allocator),
+                            ast.SourceLocation.fromToken(token),
+                        )
+                    else
+                        try ast.StaticCallExpr.init(
+                            self.allocator,
+                            type_name,
+                            method_name,
+                            try args.toOwnedSlice(self.allocator),
+                            ast.SourceLocation.fromToken(token),
+                        );
+
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .StaticCallExpr = static_call };
+                    return expr;
+                } else if (self.check(.LeftBrace)) {
+                    // Check for struct literal with path: module::Type { field: value }
+                    const checkpoint = self.current;
+                    _ = self.advance(); // consume '{'
+
+                    const is_struct_literal = blk: {
+                        // Empty braces {} is a struct literal
+                        if (self.check(.RightBrace)) break :blk true;
+
+                        // If next token is an identifier followed by :, it's a struct literal
+                        if (self.check(.Identifier)) {
+                            const after_ident_pos = self.current + 1;
+                            if (after_ident_pos < self.tokens.len) {
+                                if (self.tokens[after_ident_pos].type == .Colon) {
+                                    break :blk true;
+                                }
+                            }
+                        }
+                        break :blk false;
+                    };
+
+                    if (is_struct_literal) {
+                        // Build full type name including path (e.g., "oauth::Tokens")
+                        var full_type_name: []const u8 = undefined;
+                        if (parts.len == 1) {
+                            full_type_name = parts[0];
+                        } else {
+                            var full_name = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                            for (parts, 0..) |part, i| {
+                                if (i > 0) try full_name.appendSlice(self.allocator, "::");
+                                try full_name.appendSlice(self.allocator, part);
+                            }
+                            full_type_name = try full_name.toOwnedSlice(self.allocator);
+                        }
+
+                        // Parse struct fields
+                        var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+
+                        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                            const field_name_token = try self.expect(.Identifier, "Expected field name");
+                            _ = try self.expect(.Colon, "Expected ':' after field name");
+                            const field_value = try self.expression();
+
+                            try fields.append(self.allocator, .{
+                                .name = field_name_token.lexeme,
+                                .value = field_value,
+                                .is_shorthand = false,
+                                .loc = ast.SourceLocation.fromToken(field_name_token),
+                            });
+
+                            if (!self.match(&.{.Comma})) break;
+                            if (self.check(.RightBrace)) break;
+                        }
+
+                        _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+
+                        const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
+                        struct_lit.* = ast.StructLiteralExpr.init(
+                            full_type_name,
+                            try fields.toOwnedSlice(self.allocator),
+                            false,
+                            ast.SourceLocation.fromToken(token),
+                        );
+
+                        const expr = try self.allocator.create(ast.Expr);
+                        expr.* = ast.Expr{ .StructLiteral = struct_lit };
+                        return expr;
+                    } else {
+                        // Not a struct literal, restore position
+                        self.current = checkpoint;
+                    }
+
+                    // Fall through to member expression handling
+                    const type_id = try self.allocator.create(ast.Expr);
+                    type_id.* = ast.Expr{
+                        .Identifier = ast.Identifier.init(type_name, ast.SourceLocation.fromToken(token)),
+                    };
+
+                    const member_expr = try ast.MemberExpr.init(
                         self.allocator,
-                        type_name,
+                        type_id,
                         method_name,
-                        try args.toOwnedSlice(self.allocator),
                         ast.SourceLocation.fromToken(token),
                     );
 
                     const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{ .StaticCallExpr = static_call };
+                    expr.* = ast.Expr{ .MemberExpr = member_expr };
                     return expr;
                 } else {
                     // Static method reference without call (e.g., for passing as callback)

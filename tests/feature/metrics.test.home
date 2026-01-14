@@ -5,34 +5,36 @@
 // ============================================================================
 
 it("should create counter") {
-    let counter = metrics::Counter::new("requests_total", {
+    let counter = Counter::new("requests_total", {
         description: "Total number of requests",
-    });
-    assert(counter != null);
+    })
+    assert(counter != null)
 }
 
 it("should increment counter") {
-    let counter = metrics::Counter::new("counter");
-    counter.inc();
-    counter.inc();
-    counter.inc();
-    assert(counter.value() == 3);
+    let counter = Counter::new("counter")
+    counter.inc()
+    counter.inc()
+    counter.inc()
+    assert(counter.value() == 3)
 }
 
 it("should increment by amount") {
-    let counter = metrics::Counter::new("counter");
-    counter.inc(5);
-    counter.inc(3);
-    assert(counter.value() == 8);
+    let counter = Counter::new("counter")
+    counter.inc(5)
+    counter.inc(3)
+    assert(counter.value() == 8)
 }
 
 it("should use labeled counter") {
-    let counter = metrics::Counter::new("http_requests", {
+    let counter = Counter::new("http_requests", {
         labels: ["method", "path", "status"],
-    });
+    })
 
-    counter.inc(labels: { method: "GET", path: "/api", status: "200" });
-    counter.inc(labels: { method: "POST", path: "/api", status: "201" });
+    let labels1 = { method: "GET", path: "/api", status: "200" }
+    let labels2 = { method: "POST", path: "/api", status: "201" }
+    counter.inc_with_labels(labels1)
+    counter.inc_with_labels(labels2)
 }
 
 // ============================================================================
@@ -40,35 +42,36 @@ it("should use labeled counter") {
 // ============================================================================
 
 it("should create gauge") {
-    let gauge = metrics::Gauge::new("temperature", {
+    let gauge = Gauge::new("temperature", {
         description: "Current temperature",
-    });
-    assert(gauge != null);
+    })
+    assert(gauge != null)
 }
 
 it("should set gauge value") {
-    let gauge = metrics::Gauge::new("gauge");
-    gauge.set(42);
-    assert(gauge.value() == 42);
+    let gauge = Gauge::new("gauge")
+    gauge.set(42)
+    assert(gauge.value() == 42)
 }
 
 it("should increment gauge") {
-    let gauge = metrics::Gauge::new("gauge");
-    gauge.set(10);
-    gauge.inc();
-    assert(gauge.value() == 11);
+    let gauge = Gauge::new("gauge")
+    gauge.set(10)
+    gauge.inc()
+    assert(gauge.value() == 11)
 }
 
 it("should decrement gauge") {
-    let gauge = metrics::Gauge::new("gauge");
-    gauge.set(10);
-    gauge.dec();
-    assert(gauge.value() == 9);
+    let gauge = Gauge::new("gauge")
+    gauge.set(10)
+    gauge.dec()
+    assert(gauge.value() == 9)
 }
 
 it("should track gauge with function") {
-    let gauge = metrics::Gauge::new("active_connections");
-    gauge.track(|| connections.count());
+    let gauge = Gauge::new("active_connections")
+    let count_fn = fn() { return 42 }
+    gauge.track(count_fn)
 }
 
 // ============================================================================
@@ -76,58 +79,58 @@ it("should track gauge with function") {
 // ============================================================================
 
 it("should create histogram") {
-    let histogram = metrics::Histogram::new("request_duration", {
+    let histogram = Histogram::new("request_duration", {
         description: "Request duration in milliseconds",
         buckets: [10, 50, 100, 500, 1000],
-    });
-    assert(histogram != null);
+    })
+    assert(histogram != null)
 }
 
 it("should observe values") {
-    let histogram = metrics::Histogram::new("duration", {
+    let histogram = Histogram::new("duration", {
         buckets: [10, 50, 100],
-    });
+    })
 
-    histogram.observe(5);
-    histogram.observe(25);
-    histogram.observe(75);
-    histogram.observe(150);
+    histogram.observe(5)
+    histogram.observe(25)
+    histogram.observe(75)
+    histogram.observe(150)
 
-    assert(histogram.count() == 4);
+    assert(histogram.count() == 4)
 }
 
 it("should calculate percentiles") {
-    let histogram = metrics::Histogram::new("latency", {
+    let histogram = Histogram::new("latency", {
         buckets: [10, 50, 100, 500, 1000],
-    });
+    })
 
     for i in 0..100 {
-        histogram.observe(i);
+        histogram.observe(i)
     }
 
-    let p50 = histogram.percentile(50);
-    let p95 = histogram.percentile(95);
-    let p99 = histogram.percentile(99);
+    let p50 = histogram.percentile(50)
+    let p95 = histogram.percentile(95)
+    let p99 = histogram.percentile(99)
 }
 
 it("should get histogram statistics") {
-    let histogram = metrics::Histogram::new("values");
+    let histogram = Histogram::new("values")
 
-    histogram.observe(10);
-    histogram.observe(20);
-    histogram.observe(30);
+    histogram.observe(10)
+    histogram.observe(20)
+    histogram.observe(30)
 
-    assert(histogram.sum() == 60);
-    assert(histogram.count() == 3);
-    assert(histogram.mean() == 20);
+    assert(histogram.sum() == 60)
+    assert(histogram.count() == 3)
+    assert(histogram.mean() == 20)
 }
 
 it("should time operations") {
-    let histogram = metrics::Histogram::new("operation_duration");
+    let histogram = Histogram::new("operation_duration")
 
-    let timer = histogram.start_timer();
+    let timer = histogram.start_timer()
     // ... do work ...
-    timer.stop();
+    timer.stop()
 }
 
 // ============================================================================
@@ -135,24 +138,24 @@ it("should time operations") {
 // ============================================================================
 
 it("should create summary") {
-    let summary = metrics::Summary::new("response_size", {
+    let summary = Summary::new("response_size", {
         description: "Response size in bytes",
         quantiles: [0.5, 0.9, 0.99],
-    });
-    assert(summary != null);
+    })
+    assert(summary != null)
 }
 
 it("should calculate quantiles") {
-    let summary = metrics::Summary::new("size", {
+    let summary = Summary::new("size", {
         quantiles: [0.5, 0.9, 0.99],
-    });
+    })
 
     for i in 0..1000 {
-        summary.observe(i);
+        summary.observe(i)
     }
 
-    let q50 = summary.quantile(0.5);
-    assert(q50 > 490 and q50 < 510);
+    let q50 = summary.quantile(0.5)
+    assert(q50 > 490 and q50 < 510)
 }
 
 // ============================================================================
@@ -160,43 +163,43 @@ it("should calculate quantiles") {
 // ============================================================================
 
 it("should register metrics") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
-    let counter = metrics::Counter::new("requests");
-    let gauge = metrics::Gauge::new("connections");
+    let counter = Counter::new("requests")
+    let gauge = Gauge::new("connections")
 
-    registry.register(counter);
-    registry.register(gauge);
+    registry.register(counter)
+    registry.register(gauge)
 
-    assert(registry.metrics().len() == 2);
+    assert(registry.metrics().len() == 2)
 }
 
 it("should get or create metric") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
-    let counter1 = registry.counter("requests");
-    let counter2 = registry.counter("requests");
+    let counter1 = registry.counter("requests")
+    let counter2 = registry.counter("requests")
 
-    assert(counter1 == counter2);  // Same instance
+    assert(counter1 == counter2)  // Same instance
 }
 
 it("should unregister metric") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
-    let counter = registry.counter("temporary");
-    registry.unregister("temporary");
+    let counter = registry.counter("temporary")
+    registry.unregister("temporary")
 
-    assert(registry.get("temporary") == null);
+    assert(registry.get("temporary") == null)
 }
 
 it("should clear all metrics") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
-    registry.counter("a");
-    registry.counter("b");
-    registry.clear();
+    registry.counter("a")
+    registry.counter("b")
+    registry.clear()
 
-    assert(registry.metrics().len() == 0);
+    assert(registry.metrics().len() == 0)
 }
 
 // ============================================================================
@@ -204,40 +207,41 @@ it("should clear all metrics") {
 // ============================================================================
 
 it("should export to Prometheus format") {
-    let registry = metrics::Registry::new();
-    let counter = registry.counter("http_requests_total");
-    counter.inc(100);
+    let registry = Registry::new()
+    let counter = registry.counter("http_requests_total")
+    counter.inc(100)
 
-    let output = metrics::export::prometheus(registry);
-    assert(output.contains("http_requests_total 100"));
+    let output = export_prometheus(registry)
+    assert(output.contains("http_requests_total 100"))
 }
 
 it("should export to StatsD format") {
-    let registry = metrics::Registry::new();
-    let counter = registry.counter("requests");
-    counter.inc(50);
+    let registry = Registry::new()
+    let counter = registry.counter("requests")
+    counter.inc(50)
 
-    let output = metrics::export::statsd(registry);
-    assert(output.contains("requests:50|c"));
+    let output = export_statsd(registry)
+    assert(output.contains("requests:50|c"))
 }
 
 it("should export to JSON") {
-    let registry = metrics::Registry::new();
-    let gauge = registry.gauge("temperature");
-    gauge.set(22.5);
+    let registry = Registry::new()
+    let gauge = registry.gauge("temperature")
+    gauge.set(22.5)
 
-    let json = metrics::export::json(registry);
-    assert(json.contains("temperature"));
+    let json = export_json(registry)
+    assert(json.contains("temperature"))
 }
 
 it("should push to Prometheus pushgateway") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
-    metrics::push({
+    let config = {
         registry: registry,
         gateway: "http://pushgateway:9091",
         job: "my-job",
-    });
+    }
+    push_metrics(config)
 }
 
 // ============================================================================
@@ -245,28 +249,31 @@ it("should push to Prometheus pushgateway") {
 // ============================================================================
 
 it("should use default labels") {
-    let registry = metrics::Registry::new({
+    let config = {
         default_labels: {
             service: "my-service",
             environment: "production",
         },
-    });
+    }
+    let registry = Registry::new_with_config(config)
 
-    let counter = registry.counter("requests");
+    let counter = registry.counter("requests")
     // All metrics will have service and environment labels
 }
 
 it("should combine labels") {
-    let counter = metrics::Counter::new("http_requests", {
+    let counter = Counter::new("http_requests", {
         labels: ["method", "path"],
-    });
+    })
 
-    counter.inc(labels: { method: "GET", path: "/api" });
-    counter.inc(labels: { method: "GET", path: "/api" });
-    counter.inc(labels: { method: "POST", path: "/api" });
+    let labels1 = { method: "GET", path: "/api" }
+    let labels2 = { method: "POST", path: "/api" }
+    counter.inc_with_labels(labels1)
+    counter.inc_with_labels(labels1)
+    counter.inc_with_labels(labels2)
 
-    let get_count = counter.value(labels: { method: "GET", path: "/api" });
-    assert(get_count == 2);
+    let get_count = counter.value_with_labels(labels1)
+    assert(get_count == 2)
 }
 
 // ============================================================================
@@ -274,21 +281,22 @@ it("should combine labels") {
 // ============================================================================
 
 it("should measure duration") {
-    let histogram = metrics::Histogram::new("duration_ms");
+    let histogram = Histogram::new("duration_ms")
 
-    metrics::time(histogram, || {
-        time::sleep(100);
-    });
+    let measure_fn = fn() {
+        sleep(100)
+    }
+    time_operation(histogram, measure_fn)
 
-    assert(histogram.count() == 1);
-    assert(histogram.sum() >= 100);
+    assert(histogram.count() == 1)
+    assert(histogram.sum() >= 100)
 }
 
 it("should use timer context") {
-    let histogram = metrics::Histogram::new("operation_time");
+    let histogram = Histogram::new("operation_time")
 
     {
-        let timer = histogram.timer();
+        let timer = histogram.timer()
         // ... operation ...
     }  // Timer stops when dropped
 }
@@ -298,21 +306,21 @@ it("should use timer context") {
 // ============================================================================
 
 it("should aggregate across instances") {
-    let registry = metrics::Registry::new();
+    let registry = Registry::new()
 
     // Multiple instances reporting
-    registry.counter("requests").inc(100);
-    registry.counter("requests").inc(50);
+    registry.counter("requests").inc(100)
+    registry.counter("requests").inc(50)
 
-    assert(registry.counter("requests").value() == 150);
+    assert(registry.counter("requests").value() == 150)
 }
 
 it("should window metrics") {
-    let counter = metrics::Counter::new("requests", {
+    let counter = Counter::new("requests", {
         window: 60,  // Rolling 60-second window
-    });
+    })
 
-    counter.inc();
+    counter.inc()
     // After 60 seconds, counter resets
 }
 
@@ -321,12 +329,13 @@ it("should window metrics") {
 // ============================================================================
 
 it("should record span metrics") {
-    let histogram = metrics::Histogram::new("span_duration");
+    let histogram = Histogram::new("span_duration")
 
-    let span = tracing::span("operation");
-    span.on_end(|duration| {
-        histogram.observe(duration);
-    });
+    let span = create_span("operation")
+    let on_end_fn = fn(duration) {
+        histogram.observe(duration)
+    }
+    span.on_end(on_end_fn)
 }
 
 // ============================================================================
@@ -334,18 +343,21 @@ it("should record span metrics") {
 // ============================================================================
 
 it("should track uptime") {
-    let uptime = metrics::Gauge::new("uptime_seconds");
-    uptime.track(|| time::since_start() / 1000);
+    let uptime = Gauge::new("uptime_seconds")
+    let uptime_fn = fn() { return time_since_start() / 1000 }
+    uptime.track(uptime_fn)
 }
 
 it("should track memory usage") {
-    let memory = metrics::Gauge::new("memory_bytes");
-    memory.track(|| runtime::memory_usage());
+    let memory = Gauge::new("memory_bytes")
+    let memory_fn = fn() { return memory_usage() }
+    memory.track(memory_fn)
 }
 
 it("should track CPU usage") {
-    let cpu = metrics::Gauge::new("cpu_percent");
-    cpu.track(|| runtime::cpu_usage());
+    let cpu = Gauge::new("cpu_percent")
+    let cpu_fn = fn() { return cpu_usage() }
+    cpu.track(cpu_fn)
 }
 
 // ============================================================================
@@ -353,15 +365,16 @@ it("should track CPU usage") {
 // ============================================================================
 
 it("should create custom collector") {
-    let collector = metrics::Collector::new("custom", || {
+    let collect_fn = fn() {
         return [
             { name: "custom_metric_a", value: 42 },
             { name: "custom_metric_b", value: 100 },
-        ];
-    });
+        ]
+    }
+    let collector = Collector::new("custom", collect_fn)
 
-    let registry = metrics::Registry::new();
-    registry.register_collector(collector);
+    let registry = Registry::new()
+    registry.register_collector(collector)
 }
 
 // ============================================================================
@@ -369,18 +382,20 @@ it("should create custom collector") {
 // ============================================================================
 
 it("should create metrics middleware") {
-    let middleware = metrics::http_middleware({
+    let config = {
         histogram: "http_request_duration_seconds",
         counter: "http_requests_total",
         labels: ["method", "path", "status"],
-    });
+    }
+    let middleware = http_metrics_middleware(config)
 }
 
 it("should expose metrics endpoint") {
-    let handler = metrics::endpoint({
+    let config = {
         path: "/metrics",
         format: "prometheus",
-    });
+    }
+    let handler = metrics_endpoint(config)
 }
 
 // ============================================================================
@@ -388,19 +403,22 @@ it("should expose metrics endpoint") {
 // ============================================================================
 
 it("should define alert threshold") {
-    let counter = metrics::Counter::new("errors");
+    let counter = Counter::new("errors")
 
-    counter.on_threshold(100, |value| {
-        alert::send("Error count exceeded 100: {value}");
-    });
+    let alert_fn = fn(value) {
+        send_alert("Error count exceeded 100: " + str(value))
+    }
+    counter.on_threshold(100, alert_fn)
 }
 
 it("should alert on rate") {
-    let counter = metrics::Counter::new("requests");
+    let counter = Counter::new("requests")
 
-    counter.on_rate_threshold(1000, window: 60, |rate| {
-        alert::send("Request rate exceeded 1000/min: {rate}");
-    });
+    let alert_fn = fn(rate) {
+        send_alert("Request rate exceeded 1000/min: " + str(rate))
+    }
+    let config = { window: 60 }
+    counter.on_rate_threshold(1000, config, alert_fn)
 }
 
 // ============================================================================
@@ -408,14 +426,15 @@ it("should alert on rate") {
 // ============================================================================
 
 it("should create metric group") {
-    let http = metrics::Group::new("http", {
+    let config = {
         labels: ["method", "path"],
-    });
+    }
+    let http = MetricGroup::new("http", config)
 
-    http.counter("requests_total");
-    http.histogram("request_duration_seconds");
-    http.gauge("active_requests");
+    http.counter("requests_total")
+    http.histogram("request_duration_seconds")
+    http.gauge("active_requests")
 
-    http.counter("requests_total").inc(labels: { method: "GET", path: "/" });
+    let labels = { method: "GET", path: "/" }
+    http.counter("requests_total").inc_with_labels(labels)
 }
-

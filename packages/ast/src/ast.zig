@@ -720,6 +720,8 @@ pub const StaticCallExpr = struct {
     type_name: []const u8,
     method_name: []const u8,
     args: []const *Expr,
+    /// Named arguments (empty if none provided)
+    named_args: []const NamedArg = &.{},
 
     pub fn init(allocator: std.mem.Allocator, type_name: []const u8, method_name: []const u8, args: []const *Expr, loc: SourceLocation) !*StaticCallExpr {
         const expr = try allocator.create(StaticCallExpr);
@@ -728,6 +730,19 @@ pub const StaticCallExpr = struct {
             .type_name = type_name,
             .method_name = method_name,
             .args = args,
+            .named_args = &.{},
+        };
+        return expr;
+    }
+
+    pub fn initWithNamedArgs(allocator: std.mem.Allocator, type_name: []const u8, method_name: []const u8, args: []const *Expr, named_args: []const NamedArg, loc: SourceLocation) !*StaticCallExpr {
+        const expr = try allocator.create(StaticCallExpr);
+        expr.* = .{
+            .node = .{ .type = .StaticCallExpr, .loc = loc },
+            .type_name = type_name,
+            .method_name = method_name,
+            .args = args,
+            .named_args = named_args,
         };
         return expr;
     }

@@ -5,18 +5,18 @@
 // ============================================================================
 
 it("should load C library") {
-    let lib = ffi::load("libc");
-    assert(lib != null);
+    let lib = ffi::load("libc")
+    assert(lib != null)
 }
 
 it("should load library by path") {
-    let lib = ffi::load("/usr/lib/libm.dylib");
-    assert(lib != null);
+    let lib = ffi::load("/usr/lib/libm.dylib")
+    assert(lib != null)
 }
 
 it("should handle library not found") {
-    let result = ffi::load("nonexistent_library");
-    assert(result == null or result.is_err());
+    let result = ffi::load("nonexistent_library")
+    assert(result == null or result.is_err())
 }
 
 // ============================================================================
@@ -24,29 +24,29 @@ it("should handle library not found") {
 // ============================================================================
 
 it("should bind C function") {
-    let lib = ffi::load("libc");
-    let strlen = lib.bind("strlen", ffi::fn([ffi::ptr], ffi::size_t));
-    assert(strlen != null);
+    let lib = ffi::load("libc")
+    let strlen = lib.bind("strlen", ffi::fn([ffi::ptr], ffi::size_t))
+    assert(strlen != null)
 }
 
 it("should call bound function") {
-    let lib = ffi::load("libc");
-    let strlen = lib.bind("strlen", ffi::fn([ffi::ptr], ffi::size_t));
-    let len = strlen("hello");
-    assert(len == 5);
+    let lib = ffi::load("libc")
+    let strlen = lib.bind("strlen", ffi::fn([ffi::ptr], ffi::size_t))
+    let len = strlen("hello")
+    assert(len == 5)
 }
 
 it("should bind function with multiple args") {
-    let lib = ffi::load("libc");
-    let strcmp = lib.bind("strcmp", ffi::fn([ffi::ptr, ffi::ptr], ffi::int));
-    let result = strcmp("abc", "abc");
-    assert(result == 0);
+    let lib = ffi::load("libc")
+    let strcmp = lib.bind("strcmp", ffi::fn([ffi::ptr, ffi::ptr], ffi::int))
+    let result = strcmp("abc", "abc")
+    assert(result == 0)
 }
 
 it("should bind void function") {
-    let lib = ffi::load("libc");
-    let free = lib.bind("free", ffi::fn([ffi::ptr], ffi::void));
-    assert(free != null);
+    let lib = ffi::load("libc")
+    let free = lib.bind("free", ffi::fn([ffi::ptr], ffi::void))
+    assert(free != null)
 }
 
 // ============================================================================
@@ -57,17 +57,17 @@ it("should define struct type") {
     let point = ffi::struct({
         x: ffi::double,
         y: ffi::double,
-    });
-    assert(point.size() == 16);  // Two 8-byte doubles
+    })
+    assert(point.size() == 16)  // Two 8-byte doubles
 }
 
 it("should define nested struct") {
-    let inner = ffi::struct({ value: ffi::int });
+    let inner = ffi::struct({ value: ffi::int })
     let outer = ffi::struct({
         data: inner,
         count: ffi::int,
-    });
-    assert(outer.size() >= 8);
+    })
+    assert(outer.size() >= 8)
 }
 
 it("should define union type") {
@@ -75,13 +75,13 @@ it("should define union type") {
         as_int: ffi::int,
         as_float: ffi::float,
         as_bytes: ffi::array(ffi::char, 4),
-    });
-    assert(variant.size() == 4);
+    })
+    assert(variant.size() == 4)
 }
 
 it("should define array type") {
-    let arr_type = ffi::array(ffi::int, 10);
-    assert(arr_type.size() == 40);  // 10 * 4 bytes
+    let arr_type = ffi::array(ffi::int, 10)
+    assert(arr_type.size() == 40)  // 10 * 4 bytes
 }
 
 // ============================================================================
@@ -89,26 +89,26 @@ it("should define array type") {
 // ============================================================================
 
 it("should have correct type sizes") {
-    assert(ffi::char.size() == 1);
-    assert(ffi::short.size() == 2);
-    assert(ffi::int.size() == 4);
-    assert(ffi::long.size() >= 4);
-    assert(ffi::float.size() == 4);
-    assert(ffi::double.size() == 8);
+    assert(ffi::char.size() == 1)
+    assert(ffi::short.size() == 2)
+    assert(ffi::int.size() == 4)
+    assert(ffi::long.size() >= 4)
+    assert(ffi::float.size() == 4)
+    assert(ffi::double.size() == 8)
 }
 
 it("should support signed types") {
-    assert(ffi::int8.size() == 1);
-    assert(ffi::int16.size() == 2);
-    assert(ffi::int32.size() == 4);
-    assert(ffi::int64.size() == 8);
+    assert(ffi::int8.size() == 1)
+    assert(ffi::int16.size() == 2)
+    assert(ffi::int32.size() == 4)
+    assert(ffi::int64.size() == 8)
 }
 
 it("should support unsigned types") {
-    assert(ffi::uint8.size() == 1);
-    assert(ffi::uint16.size() == 2);
-    assert(ffi::uint32.size() == 4);
-    assert(ffi::uint64.size() == 8);
+    assert(ffi::uint8.size() == 1)
+    assert(ffi::uint16.size() == 2)
+    assert(ffi::uint32.size() == 4)
+    assert(ffi::uint64.size() == 8)
 }
 
 // ============================================================================
@@ -116,29 +116,29 @@ it("should support unsigned types") {
 // ============================================================================
 
 it("should create pointer") {
-    let data = 42;
-    let ptr = ffi::ptr_to(data);
-    assert(ptr != null);
+    let data = 42
+    let ptr = ffi::ptr_to(data)
+    assert(ptr != null)
 }
 
 it("should dereference pointer") {
-    let data = 42;
-    let ptr = ffi::ptr_to(data);
-    let value = ffi::deref(ptr, ffi::int);
-    assert(value == 42);
+    let data = 42
+    let ptr = ffi::ptr_to(data)
+    let value = ffi::deref(ptr, ffi::int)
+    assert(value == 42)
 }
 
 it("should handle null pointer") {
-    let ptr = ffi::null_ptr();
-    assert(ffi::is_null(ptr) == true);
+    let ptr = ffi::null_ptr()
+    assert(ffi::is_null(ptr) == true)
 }
 
 it("should do pointer arithmetic") {
-    let arr = [1, 2, 3, 4, 5];
-    let ptr = ffi::ptr_to(arr);
-    let offset_ptr = ffi::ptr_offset(ptr, 2, ffi::int);
-    let value = ffi::deref(offset_ptr, ffi::int);
-    assert(value == 3);
+    let arr = [1, 2, 3, 4, 5]
+    let ptr = ffi::ptr_to(arr)
+    let offset_ptr = ffi::ptr_offset(ptr, 2, ffi::int)
+    let value = ffi::deref(offset_ptr, ffi::int)
+    assert(value == 3)
 }
 
 // ============================================================================
@@ -146,23 +146,23 @@ it("should do pointer arithmetic") {
 // ============================================================================
 
 it("should allocate memory") {
-    let ptr = ffi::malloc(1024);
-    assert(ptr != null);
-    ffi::free(ptr);
+    let ptr = ffi::malloc(1024)
+    assert(ptr != null)
+    ffi::free(ptr)
 }
 
 it("should allocate zeroed memory") {
-    let ptr = ffi::calloc(10, ffi::int.size());
-    let value = ffi::deref(ptr, ffi::int);
-    assert(value == 0);
-    ffi::free(ptr);
+    let ptr = ffi::calloc(10, ffi::int.size())
+    let value = ffi::deref(ptr, ffi::int)
+    assert(value == 0)
+    ffi::free(ptr)
 }
 
 it("should reallocate memory") {
-    let ptr = ffi::malloc(100);
-    let new_ptr = ffi::realloc(ptr, 200);
-    assert(new_ptr != null);
-    ffi::free(new_ptr);
+    let ptr = ffi::malloc(100)
+    let new_ptr = ffi::realloc(ptr, 200)
+    assert(new_ptr != null)
+    ffi::free(new_ptr)
 }
 
 // ============================================================================
@@ -170,22 +170,22 @@ it("should reallocate memory") {
 // ============================================================================
 
 it("should convert string to C string") {
-    let home_str = "hello";
-    let c_str = ffi::to_c_string(home_str);
-    assert(c_str != null);
+    let home_str = "hello"
+    let c_str = ffi::to_c_string(home_str)
+    assert(c_str != null)
 }
 
 it("should convert C string to string") {
-    let lib = ffi::load("libc");
-    let c_str = ffi::to_c_string("hello");
-    let home_str = ffi::from_c_string(c_str);
-    assert(home_str == "hello");
+    let lib = ffi::load("libc")
+    let c_str = ffi::to_c_string("hello")
+    let home_str = ffi::from_c_string(c_str)
+    assert(home_str == "hello")
 }
 
 it("should handle string with null bytes") {
-    let c_str = ffi::to_c_string("hello\x00world");
-    let home_str = ffi::from_c_string(c_str);
-    assert(home_str == "hello");  // Truncated at null
+    let c_str = ffi::to_c_string("hello\x00world")
+    let home_str = ffi::from_c_string(c_str)
+    assert(home_str == "hello")  // Truncated at null
 }
 
 // ============================================================================
@@ -193,32 +193,32 @@ it("should handle string with null bytes") {
 // ============================================================================
 
 it("should create struct instance") {
-    let Point = ffi::struct({ x: ffi::double, y: ffi::double });
-    let p = Point.new({ x: 1.0, y: 2.0 });
-    assert(p.x == 1.0);
-    assert(p.y == 2.0);
+    let Point = ffi::struct({ x: ffi::double, y: ffi::double })
+    let p = Point.new({ x: 1.0, y: 2.0 })
+    assert(p.x == 1.0)
+    assert(p.y == 2.0)
 }
 
 it("should access struct fields") {
-    let Point = ffi::struct({ x: ffi::int, y: ffi::int });
-    let p = Point.new({ x: 10, y: 20 });
-    assert(ffi::get_field(p, "x") == 10);
+    let Point = ffi::struct({ x: ffi::int, y: ffi::int })
+    let p = Point.new({ x: 10, y: 20 })
+    assert(ffi::get_field(p, "x") == 10)
 }
 
 it("should set struct fields") {
-    let Point = ffi::struct({ x: ffi::int, y: ffi::int });
-    let p = Point.new({ x: 0, y: 0 });
-    ffi::set_field(p, "x", 42);
-    assert(p.x == 42);
+    let Point = ffi::struct({ x: ffi::int, y: ffi::int })
+    let p = Point.new({ x: 0, y: 0 })
+    ffi::set_field(p, "x", 42)
+    assert(p.x == 42)
 }
 
 it("should get struct field offset") {
     let Record = ffi::struct({
         a: ffi::char,
         b: ffi::int,
-    });
-    let offset = Record.offset_of("b");
-    assert(offset >= 1);  // After padding
+    })
+    let offset = Record.offset_of("b")
+    assert(offset >= 1)  // After padding
 }
 
 // ============================================================================
@@ -226,24 +226,24 @@ it("should get struct field offset") {
 // ============================================================================
 
 it("should create callback") {
-    let callback = ffi::callback(ffi::fn([ffi::int, ffi::int], ffi::int), |a, b| {
-        return a + b;
-    });
-    assert(callback != null);
+    let callback = ffi::callback(ffi::fn([ffi::int, ffi::int], ffi::int), fn(a, b) {
+        return a + b
+    })
+    assert(callback != null)
 }
 
 it("should pass callback to C") {
-    let lib = ffi::load("libc");
-    let qsort = lib.bind("qsort", ffi::fn([ffi::ptr, ffi::size_t, ffi::size_t, ffi::ptr], ffi::void));
+    let lib = ffi::load("libc")
+    let qsort = lib.bind("qsort", ffi::fn([ffi::ptr, ffi::size_t, ffi::size_t, ffi::ptr], ffi::void))
 
-    let compare = ffi::callback(ffi::fn([ffi::ptr, ffi::ptr], ffi::int), |a, b| {
-        let va = ffi::deref(a, ffi::int);
-        let vb = ffi::deref(b, ffi::int);
-        return va - vb;
-    });
+    let compare = ffi::callback(ffi::fn([ffi::ptr, ffi::ptr], ffi::int), fn(a, b) {
+        let va = ffi::deref(a, ffi::int)
+        let vb = ffi::deref(b, ffi::int)
+        return va - vb
+    })
 
-    let arr = [3, 1, 4, 1, 5];
-    qsort(ffi::ptr_to(arr), 5, ffi::int.size(), compare);
+    let arr = [3, 1, 4, 1, 5]
+    qsort(ffi::ptr_to(arr), 5, ffi::int.size(), compare)
 }
 
 // ============================================================================
@@ -251,14 +251,14 @@ it("should pass callback to C") {
 // ============================================================================
 
 it("should call variadic function") {
-    let lib = ffi::load("libc");
-    let sprintf = lib.bind_variadic("sprintf", ffi::fn([ffi::ptr, ffi::ptr], ffi::int));
+    let lib = ffi::load("libc")
+    let sprintf = lib.bind_variadic("sprintf", ffi::fn([ffi::ptr, ffi::ptr], ffi::int))
 
-    let buffer = ffi::malloc(100);
-    sprintf(buffer, "%d + %d = %d", 1, 2, 3);
-    let result = ffi::from_c_string(buffer);
-    assert(result == "1 + 2 = 3");
-    ffi::free(buffer);
+    let buffer = ffi::malloc(100)
+    sprintf(buffer, "%d + %d = %d", 1, 2, 3)
+    let result = ffi::from_c_string(buffer)
+    assert(result == "1 + 2 = 3")
+    ffi::free(buffer)
 }
 
 // ============================================================================
@@ -266,19 +266,19 @@ it("should call variadic function") {
 // ============================================================================
 
 it("should get errno") {
-    let err = ffi::errno();
-    assert(err >= 0);
+    let err = ffi::errno()
+    assert(err >= 0)
 }
 
 it("should set errno") {
-    ffi::set_errno(0);
-    assert(ffi::errno() == 0);
+    ffi::set_errno(0)
+    assert(ffi::errno() == 0)
 }
 
 it("should get error string") {
-    ffi::set_errno(2);  // ENOENT
-    let msg = ffi::strerror(2);
-    assert(msg.len() > 0);
+    ffi::set_errno(2)  // ENOENT
+    let msg = ffi::strerror(2)
+    assert(msg.len() > 0)
 }
 
 // ============================================================================
@@ -286,18 +286,18 @@ it("should get error string") {
 // ============================================================================
 
 it("should detect platform") {
-    let platform = ffi::platform();
-    assert(platform == "darwin" or platform == "linux" or platform == "windows");
+    let platform = ffi::platform()
+    assert(platform == "darwin" or platform == "linux" or platform == "windows")
 }
 
 it("should detect architecture") {
-    let arch = ffi::arch();
-    assert(arch == "x86_64" or arch == "aarch64" or arch == "arm64");
+    let arch = ffi::arch()
+    assert(arch == "x86_64" or arch == "aarch64" or arch == "arm64")
 }
 
 it("should detect endianness") {
-    let endian = ffi::endianness();
-    assert(endian == "little" or endian == "big");
+    let endian = ffi::endianness()
+    assert(endian == "little" or endian == "big")
 }
 
 // ============================================================================
@@ -305,15 +305,15 @@ it("should detect endianness") {
 // ============================================================================
 
 it("should check symbol exists") {
-    let lib = ffi::load("libc");
-    assert(lib.has_symbol("strlen") == true);
-    assert(lib.has_symbol("nonexistent_symbol") == false);
+    let lib = ffi::load("libc")
+    assert(lib.has_symbol("strlen") == true)
+    assert(lib.has_symbol("nonexistent_symbol") == false)
 }
 
 it("should get symbol address") {
-    let lib = ffi::load("libc");
-    let addr = lib.symbol_address("strlen");
-    assert(addr != null);
+    let lib = ffi::load("libc")
+    let addr = lib.symbol_address("strlen")
+    assert(addr != null)
 }
 
 // ============================================================================
@@ -321,17 +321,16 @@ it("should get symbol address") {
 // ============================================================================
 
 it("should convert bytes to struct") {
-    let Point = ffi::struct({ x: ffi::int, y: ffi::int });
-    let bytes = [0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
-    let p = ffi::from_bytes(bytes, Point);
-    assert(p.x == 1);
-    assert(p.y == 2);
+    let Point = ffi::struct({ x: ffi::int, y: ffi::int })
+    let bytes = [0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]
+    let p = ffi::from_bytes(bytes, Point)
+    assert(p.x == 1)
+    assert(p.y == 2)
 }
 
 it("should convert struct to bytes") {
-    let Point = ffi::struct({ x: ffi::int, y: ffi::int });
-    let p = Point.new({ x: 1, y: 2 });
-    let bytes = ffi::to_bytes(p);
-    assert(bytes.len() == 8);
+    let Point = ffi::struct({ x: ffi::int, y: ffi::int })
+    let p = Point.new({ x: 1, y: 2 })
+    let bytes = ffi::to_bytes(p)
+    assert(bytes.len() == 8)
 }
-

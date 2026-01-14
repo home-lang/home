@@ -24,8 +24,8 @@ it("should get type of map") {
 }
 
 it("should get type of function") {
-    let fn = |x| x * 2;
-    assert(reflect::type_of(fn) == "function");
+    let func = |x| x * 2;
+    assert(reflect::type_of(func) == "function");
 }
 
 // ============================================================================
@@ -70,7 +70,8 @@ it("should check array") {
 }
 
 it("should check map") {
-    assert(reflect::is_map({ a: 1 }) == true);
+    let m = { "a": 1 };
+    assert(reflect::is_map(m) == true);
     assert(reflect::is_map([1, 2]) == false);
 }
 
@@ -160,8 +161,8 @@ it("should get function name") {
 }
 
 it("should get function arity") {
-    let fn = |a, b, c| a + b + c;
-    assert(reflect::arity(fn) == 3);
+    let f = |a, b, c| a + b + c;
+    assert(reflect::arity(f) == 3);
 }
 
 it("should get function parameters") {
@@ -214,8 +215,14 @@ it("should check convertible") {
 // ============================================================================
 
 it("should check deep equality") {
-    let a = { x: [1, 2, { y: 3 }] };
-    let b = { x: [1, 2, { y: 3 }] };
+    let inner_a = { "y": 3 };
+    let arr_a = [1, 2, inner_a];
+    let a = { "x": arr_a };
+
+    let inner_b = { "y": 3 };
+    let arr_b = [1, 2, inner_b];
+    let b = { "x": arr_b };
+
     assert(reflect::deep_equal(a, b) == true);
 }
 
@@ -229,18 +236,20 @@ it("should compare types") {
 // ============================================================================
 
 it("should shallow copy") {
-    let original = { a: 1, b: [1, 2, 3] };
+    let arr = [1, 2, 3];
+    let original = { "a": 1, "b": arr };
     let copy = reflect::shallow_copy(original);
-    assert(copy.a == 1);
-    copy.a = 2;
-    assert(original.a == 1);  // Original unchanged
+    assert(copy["a"] == 1);
+    copy["a"] = 2;
+    assert(original["a"] == 1);  // Original unchanged
 }
 
 it("should deep copy") {
-    let original = { a: 1, b: [1, 2, 3] };
+    let arr = [1, 2, 3];
+    let original = { "a": 1, "b": arr };
     let copy = reflect::deep_copy(original);
-    copy.b[0] = 100;
-    assert(original.b[0] == 1);  // Original unchanged
+    copy["b"][0] = 100;
+    assert(original["b"][0] == 1);  // Original unchanged
 }
 
 // ============================================================================
@@ -248,21 +257,21 @@ it("should deep copy") {
 // ============================================================================
 
 it("should enumerate object keys") {
-    let obj = { a: 1, b: 2, c: 3 };
+    let obj = { "a": 1, "b": 2, "c": 3 };
     let keys = reflect::keys(obj);
     assert(keys.len() == 3);
     assert(keys.contains("a"));
 }
 
 it("should enumerate object values") {
-    let obj = { a: 1, b: 2, c: 3 };
+    let obj = { "a": 1, "b": 2, "c": 3 };
     let values = reflect::values(obj);
     assert(values.len() == 3);
     assert(values.contains(1));
 }
 
 it("should enumerate object entries") {
-    let obj = { a: 1, b: 2 };
+    let obj = { "a": 1, "b": 2 };
     let entries = reflect::entries(obj);
     assert(entries.len() == 2);
 }
@@ -330,9 +339,9 @@ it("should call function dynamically") {
 }
 
 it("should apply function with array args") {
-    let fn = |a, b, c| a + b + c;
+    let f = |a, b, c| a + b + c;
     let args = [1, 2, 3];
-    let result = reflect::apply(fn, args);
+    let result = reflect::apply(f, args);
     assert(result == 6);
 }
 
@@ -342,7 +351,8 @@ it("should apply function with array args") {
 
 it("should create instance dynamically") {
     struct Point { x: int, y: int }
-    let p = reflect::create(Point, { x: 10, y: 20 });
+    let init_values = { "x": 10, "y": 20 };
+    let p = reflect::create(Point, init_values);
     assert(p.x == 10);
     assert(p.y == 20);
 }
@@ -357,18 +367,20 @@ it("should create array dynamically") {
 // ============================================================================
 
 it("should create proxy") {
-    let obj = { value: 42 };
-    let proxy = reflect::proxy(obj, {
-        get: |target, prop| {
-            print("Accessing: {prop}");
-            return target[prop];
-        },
-        set: |target, prop, value| {
-            print("Setting {prop} to {value}");
-            target[prop] = value;
-        },
-    });
-    assert(proxy.value == 42);
+    let obj = { "value": 42 };
+
+    // Create handler functions
+    let get_handler = |target, prop| {
+        print("Accessing: " + prop);
+        return target[prop];
+    };
+    let set_handler = |target, prop, value| {
+        print("Setting " + prop + " to " + value);
+        target[prop] = value;
+    };
+
+    let proxy = reflect::proxy(obj, get_handler, set_handler);
+    assert(proxy["value"] == 42);
 }
 
 // ============================================================================
@@ -394,4 +406,3 @@ it("should get caller info") {
     let caller = get_caller();
     assert(caller.function != null);
 }
-

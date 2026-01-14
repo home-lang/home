@@ -5,20 +5,22 @@
 // ============================================================================
 
 it("should create OAuth client") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "my-client-id",
         client_secret: "my-client-secret",
         redirect_uri: "https://myapp.com/callback",
-    });
-    assert(client != null);
+    }
+    let client = oauth::Client::new(config)
+    assert(client != null)
 }
 
 it("should configure authorization endpoint") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "my-client-id",
         authorization_url: "https://auth.example.com/authorize",
         token_url: "https://auth.example.com/token",
-    });
+    }
+    let client = oauth::Client::new(config)
 }
 
 // ============================================================================
@@ -26,52 +28,59 @@ it("should configure authorization endpoint") {
 // ============================================================================
 
 it("should generate authorization URL") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "my-client-id",
         authorization_url: "https://auth.example.com/authorize",
         redirect_uri: "https://myapp.com/callback",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let url = client.authorization_url(scope: ["openid", "profile", "email"]);
-    assert(url.contains("client_id=my-client-id"));
-    assert(url.contains("response_type=code"));
+    let scopes = ["openid", "profile", "email"]
+    let url = client.authorization_url_with_scope(scopes)
+    assert(url.contains("client_id=my-client-id"))
+    assert(url.contains("response_type=code"))
 }
 
 it("should include state parameter") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let state = oauth::generate_state();
-    let url = client.authorization_url(state: state);
-    assert(url.contains("state="));
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let state = oauth::generate_state()
+    let url = client.authorization_url_with_state(state)
+    assert(url.contains("state="))
 }
 
 it("should include PKCE challenge") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let verifier = oauth::pkce::generate_verifier();
-    let challenge = oauth::pkce::generate_challenge(verifier);
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let verifier = oauth::pkce::generate_verifier()
+    let challenge = oauth::pkce::generate_challenge(verifier)
 
-    let url = client.authorization_url(
+    let pkce_config = {
         code_challenge: challenge,
         code_challenge_method: "S256"
-    );
-    assert(url.contains("code_challenge="));
+    }
+    let url = client.authorization_url_with_pkce(pkce_config)
+    assert(url.contains("code_challenge="))
 }
 
 it("should exchange code for tokens") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         client_secret: "secret",
         token_url: "https://auth.example.com/token",
-    });
+    }
+    let client = oauth::Client::new(config)
 
     // Mock exchange
-    let tokens = client.exchange_code("authorization_code_here");
-    assert(tokens.access_token != null or tokens.is_err());
+    let tokens = client.exchange_code("authorization_code_here")
+    assert(tokens.access_token != null or tokens.is_err())
 }
 
 it("should exchange code with PKCE verifier") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let verifier = "original_verifier";
-    let tokens = client.exchange_code("code", code_verifier: verifier);
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let verifier = "original_verifier"
+    let tokens = client.exchange_code_with_verifier("code", verifier)
 }
 
 // ============================================================================
@@ -79,14 +88,16 @@ it("should exchange code with PKCE verifier") {
 // ============================================================================
 
 it("should get token with client credentials") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         client_secret: "secret",
         token_url: "https://auth.example.com/token",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let tokens = client.client_credentials(scope: ["api:read"]);
-    assert(tokens.access_token != null or tokens.is_err());
+    let scopes = ["api:read"]
+    let tokens = client.client_credentials(scopes)
+    assert(tokens.access_token != null or tokens.is_err())
 }
 
 // ============================================================================
@@ -94,25 +105,27 @@ it("should get token with client credentials") {
 // ============================================================================
 
 it("should refresh access token") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         client_secret: "secret",
         token_url: "https://auth.example.com/token",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let new_tokens = client.refresh_token("refresh_token_here");
-    assert(new_tokens.access_token != null or new_tokens.is_err());
+    let new_tokens = client.refresh_token("refresh_token_here")
+    assert(new_tokens.access_token != null or new_tokens.is_err())
 }
 
 it("should handle token rotation") {
     let tokens = oauth::Tokens {
         access_token: "old_access",
         refresh_token: "old_refresh",
-        expires_at: time::now() - 3600,  // Expired
-    };
+        expires_at: time::now() - 3600,
+    }
 
-    let client = oauth::Client::new({ client_id: "id" });
-    let new_tokens = client.refresh_if_needed(tokens);
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let new_tokens = client.refresh_if_needed(tokens)
 }
 
 // ============================================================================
@@ -120,19 +133,21 @@ it("should handle token rotation") {
 // ============================================================================
 
 it("should generate implicit flow URL") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         authorization_url: "https://auth.example.com/authorize",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let url = client.implicit_url(scope: ["openid"]);
-    assert(url.contains("response_type=token"));
+    let scopes = ["openid"]
+    let url = client.implicit_url(scopes)
+    assert(url.contains("response_type=token"))
 }
 
 it("should parse implicit response") {
-    let fragment = "access_token=abc123&token_type=bearer&expires_in=3600";
-    let tokens = oauth::parse_implicit_response(fragment);
-    assert(tokens.access_token == "abc123");
+    let fragment = "access_token=abc123&token_type=bearer&expires_in=3600"
+    let tokens = oauth::parse_implicit_response(fragment)
+    assert(tokens.access_token == "abc123")
 }
 
 // ============================================================================
@@ -140,22 +155,26 @@ it("should parse implicit response") {
 // ============================================================================
 
 it("should request device code") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         device_authorization_url: "https://auth.example.com/device",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let device = client.request_device_code(scope: ["profile"]);
-    assert(device.device_code != null or device.is_err());
-    assert(device.user_code != null or device.is_err());
-    assert(device.verification_uri != null or device.is_err());
+    let scopes = ["profile"]
+    let device = client.request_device_code(scopes)
+    assert(device.device_code != null or device.is_err())
+    assert(device.user_code != null or device.is_err())
+    assert(device.verification_uri != null or device.is_err())
 }
 
 it("should poll for device token") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let device_code = "device_code_here";
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let device_code = "device_code_here"
+    let interval = 5
 
-    let tokens = client.poll_device_token(device_code, interval: 5);
+    let tokens = client.poll_device_token(device_code, interval)
 }
 
 // ============================================================================
@@ -169,27 +188,28 @@ it("should create token response") {
         expires_in: 3600,
         refresh_token: "refresh_token_value",
         scope: ["openid", "profile"],
-    };
+    }
 
-    assert(tokens.access_token == "access_token_value");
+    assert(tokens.access_token == "access_token_value")
 }
 
 it("should check token expiration") {
     let tokens = oauth::Tokens {
         access_token: "token",
         expires_at: time::now() + 3600,
-    };
+    }
 
-    assert(tokens.is_expired() == false);
+    assert(tokens.is_expired() == false)
 }
 
 it("should check token expiring soon") {
     let tokens = oauth::Tokens {
         access_token: "token",
-        expires_at: time::now() + 60,  // 1 minute left
-    };
+        expires_at: time::now() + 60,
+    }
 
-    assert(tokens.expires_soon(threshold: 300) == true);  // Within 5 minutes
+    let threshold = 300
+    assert(tokens.expires_soon(threshold) == true)
 }
 
 // ============================================================================
@@ -197,13 +217,14 @@ it("should check token expiring soon") {
 // ============================================================================
 
 it("should introspect token") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         introspection_url: "https://auth.example.com/introspect",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let info = client.introspect("access_token_here");
-    assert(info.active == true or info.active == false);
+    let info = client.introspect("access_token_here")
+    assert(info.active == true or info.active == false)
 }
 
 // ============================================================================
@@ -211,18 +232,20 @@ it("should introspect token") {
 // ============================================================================
 
 it("should revoke token") {
-    let client = oauth::Client::new({
+    let config = {
         client_id: "id",
         revocation_url: "https://auth.example.com/revoke",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let result = client.revoke("access_token_here");
-    assert(result.success == true or result.is_err());
+    let result = client.revoke("access_token_here")
+    assert(result.success == true or result.is_err())
 }
 
 it("should revoke refresh token") {
-    let client = oauth::Client::new({ client_id: "id" });
-    client.revoke("refresh_token_here", token_type_hint: "refresh_token");
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    client.revoke_with_hint("refresh_token_here", "refresh_token")
 }
 
 // ============================================================================
@@ -230,42 +253,47 @@ it("should revoke refresh token") {
 // ============================================================================
 
 it("should discover OIDC configuration") {
-    let discovery = oauth::oidc::discover("https://auth.example.com");
-    assert(discovery.authorization_endpoint != null);
-    assert(discovery.token_endpoint != null);
-    assert(discovery.userinfo_endpoint != null);
+    let discovery = oauth::oidc::discover("https://auth.example.com")
+    assert(discovery.authorization_endpoint != null)
+    assert(discovery.token_endpoint != null)
+    assert(discovery.userinfo_endpoint != null)
 }
 
 it("should request ID token") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let url = client.authorization_url(
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let opts = {
         scope: ["openid", "profile"],
         response_type: "code id_token"
-    );
+    }
+    let url = client.authorization_url_with_options(opts)
 }
 
 it("should validate ID token") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let id_token = "eyJ...";
-    let claims = client.validate_id_token(id_token);
-    assert(claims.sub != null or claims.is_err());
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let id_token = "eyJ..."
+    let claims = client.validate_id_token(id_token)
+    assert(claims.sub != null or claims.is_err())
 }
 
 it("should get userinfo") {
-    let client = oauth::Client::new({
+    let config = {
         userinfo_url: "https://auth.example.com/userinfo",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let user = client.userinfo("access_token_here");
-    assert(user.sub != null or user.is_err());
+    let user = client.userinfo("access_token_here")
+    assert(user.sub != null or user.is_err())
 }
 
 it("should verify nonce") {
-    let client = oauth::Client::new({ client_id: "id" });
-    let nonce = oauth::generate_nonce();
+    let config = { client_id: "id" }
+    let client = oauth::Client::new(config)
+    let nonce = oauth::generate_nonce()
 
-    let id_token = "...";
-    let valid = client.verify_nonce(id_token, expected: nonce);
+    let id_token = "..."
+    let valid = client.verify_nonce(id_token, nonce)
 }
 
 // ============================================================================
@@ -273,19 +301,20 @@ it("should verify nonce") {
 // ============================================================================
 
 it("should decode access token") {
-    let token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...";
-    let decoded = oauth::decode_jwt(token);
-    assert(decoded.header != null);
-    assert(decoded.payload != null);
+    let token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+    let decoded = oauth::decode_jwt(token)
+    assert(decoded.header != null)
+    assert(decoded.payload != null)
 }
 
 it("should verify token signature") {
-    let client = oauth::Client::new({
+    let config = {
         jwks_uri: "https://auth.example.com/.well-known/jwks.json",
-    });
+    }
+    let client = oauth::Client::new(config)
 
-    let token = "...";
-    let valid = client.verify_signature(token);
+    let token = "..."
+    let valid = client.verify_signature(token)
 }
 
 // ============================================================================
@@ -293,38 +322,44 @@ it("should verify token signature") {
 // ============================================================================
 
 it("should use Google provider") {
-    let client = oauth::providers::google({
+    let config = {
         client_id: "google-client-id",
         client_secret: "google-client-secret",
-    });
+    }
+    let client = oauth::providers::google(config)
 
-    let url = client.authorization_url(scope: ["email", "profile"]);
-    assert(url.contains("accounts.google.com"));
+    let scopes = ["email", "profile"]
+    let url = client.authorization_url_with_scope(scopes)
+    assert(url.contains("accounts.google.com"))
 }
 
 it("should use GitHub provider") {
-    let client = oauth::providers::github({
+    let config = {
         client_id: "github-client-id",
         client_secret: "github-client-secret",
-    });
+    }
+    let client = oauth::providers::github(config)
 
-    let url = client.authorization_url(scope: ["user", "repo"]);
-    assert(url.contains("github.com"));
+    let scopes = ["user", "repo"]
+    let url = client.authorization_url_with_scope(scopes)
+    assert(url.contains("github.com"))
 }
 
 it("should use Microsoft provider") {
-    let client = oauth::providers::microsoft({
+    let config = {
         client_id: "ms-client-id",
         tenant: "common",
-    });
+    }
+    let client = oauth::providers::microsoft(config)
 }
 
 it("should use Apple provider") {
-    let client = oauth::providers::apple({
+    let config = {
         client_id: "apple-client-id",
         team_id: "TEAM123",
         key_id: "KEY456",
-    });
+    }
+    let client = oauth::providers::apple(config)
 }
 
 // ============================================================================
@@ -332,20 +367,20 @@ it("should use Apple provider") {
 // ============================================================================
 
 it("should generate secure state") {
-    let state = oauth::generate_state();
-    assert(state.len() >= 32);
+    let state = oauth::generate_state()
+    assert(state.len() >= 32)
 }
 
 it("should verify state") {
-    let original = oauth::generate_state();
-    let returned = original;  // Same state from callback
-    assert(oauth::verify_state(original, returned) == true);
+    let original = oauth::generate_state()
+    let returned = original
+    assert(oauth::verify_state(original, returned) == true)
 }
 
 it("should detect state mismatch") {
-    let original = oauth::generate_state();
-    let different = oauth::generate_state();
-    assert(oauth::verify_state(original, different) == false);
+    let original = oauth::generate_state()
+    let different = oauth::generate_state()
+    assert(oauth::verify_state(original, different) == false)
 }
 
 // ============================================================================
@@ -356,17 +391,17 @@ it("should parse error response") {
     let response = {
         error: "invalid_grant",
         error_description: "The authorization code has expired",
-    };
+    }
 
-    let err = oauth::parse_error(response);
-    assert(err.code == "invalid_grant");
+    let err = oauth::parse_error(response)
+    assert(err.code == "invalid_grant")
 }
 
 it("should handle authorization denied") {
-    let callback = "https://myapp.com/callback?error=access_denied";
-    let result = oauth::parse_callback(callback);
-    assert(result.is_err() == true);
-    assert(result.error == "access_denied");
+    let callback = "https://myapp.com/callback?error=access_denied"
+    let result = oauth::parse_callback(callback)
+    assert(result.is_err() == true)
+    assert(result.error == "access_denied")
 }
 
 // ============================================================================
@@ -374,17 +409,19 @@ it("should handle authorization denied") {
 // ============================================================================
 
 it("should store tokens securely") {
-    let storage = oauth::TokenStorage::new("myapp");
-    let tokens = oauth::Tokens { access_token: "token" };
+    let storage = oauth::TokenStorage::new("myapp")
+    let tokens = oauth::Tokens { access_token: "token" }
 
-    storage.save("user123", tokens);
-    let loaded = storage.load("user123");
-    assert(loaded.access_token == "token");
+    storage.save("user123", tokens)
+    let loaded = storage.load("user123")
+    assert(loaded.access_token == "token")
 }
 
 it("should encrypt stored tokens") {
-    let storage = oauth::TokenStorage::new("myapp", encryption_key: "secret");
-    storage.save("user", oauth::Tokens { access_token: "sensitive" });
+    let config = { encryption_key: "secret" }
+    let storage = oauth::TokenStorage::new_with_config("myapp", config)
+    let tokens = oauth::Tokens { access_token: "sensitive" }
+    storage.save("user", tokens)
 }
 
 // ============================================================================
@@ -392,17 +429,25 @@ it("should encrypt stored tokens") {
 // ============================================================================
 
 it("should create OAuth middleware") {
-    let middleware = oauth::middleware({
-        client: oauth::Client::new({ client_id: "id" }),
+    let client_config = { client_id: "id" }
+    let client = oauth::Client::new(client_config)
+
+    let middleware_config = {
+        client: client,
         login_path: "/login",
         callback_path: "/callback",
-    });
+    }
+    let middleware = oauth::middleware(middleware_config)
 }
 
 it("should protect routes") {
-    let protect = oauth::require_auth({
-        scopes: ["admin"],
-        on_unauthorized: |req| http::Response::redirect("/login"),
-    });
-}
+    fn on_unauth(req) {
+        return http::Response::redirect("/login")
+    }
 
+    let config = {
+        scopes: ["admin"],
+        on_unauthorized: on_unauth,
+    }
+    let protect = oauth::require_auth(config)
+}

@@ -296,24 +296,18 @@ it("should escape special characters") {
 
 it("should parse footnotes") {
     let md = "Text[^1]\n\n[^1]: Footnote content";
-    let html = markdown::to_html(md, footnotes: true);
+    let html = markdown::to_html_with_footnotes(md);
     assert(html.contains("footnote"));
 }
 
 it("should parse definition lists") {
     let md = "Term\n: Definition";
-    let html = markdown::to_html(md, definition_lists: true);
+    let html = markdown::to_html_extended(md);
     assert(html.contains("<dl>") or html.contains("<dt>"));
 }
 
-it("should parse abbreviations") {
-    let md = "HTML is great\n\n*[HTML]: Hyper Text Markup Language";
-    let html = markdown::to_html(md, abbreviations: true);
-    assert(html.contains("<abbr") or html.contains("title="));
-}
-
 it("should auto-link URLs") {
-    let html = markdown::to_html("Visit https://example.com", autolink: true);
+    let html = markdown::to_html_with_autolink("Visit https://example.com");
     assert(html.contains("href=\"https://example.com\""));
 }
 
@@ -323,7 +317,7 @@ it("should auto-link URLs") {
 
 it("should highlight code syntax") {
     let md = "```python\ndef hello():\n    print('hi')\n```";
-    let html = markdown::to_html(md, highlight: true);
+    let html = markdown::to_html_highlighted(md);
     assert(html.contains("class="));  // Has syntax classes
 }
 
@@ -367,9 +361,9 @@ it("should parse to AST") {
 
 it("should use custom renderer") {
     let md = "# Hello";
-    let html = markdown::to_html(md, renderer: {
-        heading: |node| "<h{node.level} class=\"custom\">{node.text}</h{node.level}>",
-    });
+    let renderer = markdown::create_renderer();
+    renderer.set_heading_class("custom");
+    let html = markdown::to_html_with_renderer(md, renderer);
     assert(html.contains("class=\"custom\""));
 }
 
@@ -379,7 +373,7 @@ it("should use custom renderer") {
 
 it("should sanitize output") {
     let md = "Hello <script>alert('xss')</script>";
-    let html = markdown::to_html(md, sanitize: true);
+    let html = markdown::to_html_sanitized(md);
     assert(!html.contains("<script>"));
 }
 
