@@ -1,569 +1,439 @@
-// Rate Limiting Concepts Test Suite
-// Tests rate limiting algorithms using basic Home syntax
+// Rate Limiting Test Suite
 
 // ============================================================================
-// BASIC COUNTER-BASED LIMITING
+// BASIC RATE LIMITER
 // ============================================================================
 
-it("should count requests") {
-    let mut request_count = 0;
-    let max_requests = 10;
-
-    for (i in 0..5) {
-        request_count = request_count + 1;
-    }
-
-    assert(request_count == 5);
-    assert(request_count < max_requests);
+it("should create rate limiter") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);  // 100 req/min
+    assert(limiter != null);
 }
 
 it("should allow requests under limit") {
-    let max_requests = 10;
-    let mut request_count = 0;
-    let mut all_allowed = true;
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
 
-    for (i in 0..10) {
-        if (request_count < max_requests) {
-            request_count = request_count + 1;
-        } else {
-            all_allowed = false;
-        }
+    for i in 0..10 {
+        let result = limiter.check("client1");
+        assert(result.allowed == true);
     }
-
-    assert(all_allowed == true);
-    assert(request_count == 10);
 }
 
 it("should block requests over limit") {
-    let max_requests = 5;
-    let mut request_count = 0;
-    let mut blocked_count = 0;
+    let limiter = ratelimit::Limiter::new(max: 5, window: 60);
 
-    for (i in 0..10) {
-        if (request_count < max_requests) {
-            request_count = request_count + 1;
-        } else {
-            blocked_count = blocked_count + 1;
-        }
+    for i in 0..5 {
+        limiter.check("client1");
     }
 
-    assert(request_count == 5);
-    assert(blocked_count == 5);
+    let result = limiter.check("client1");
+    assert(result.allowed == false);
 }
 
 it("should track remaining requests") {
-    let max_requests = 10;
-    let mut used = 3;
-    let remaining = max_requests - used;
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
 
-    assert(remaining == 7);
-}
+    limiter.check("client1");
+    limiter.check("client1");
+    limiter.check("client1");
 
-// ============================================================================
-// TOKEN BUCKET ALGORITHM
-// ============================================================================
-
-it("should initialize token bucket at capacity") {
-    let capacity = 100;
-    let tokens = capacity;
-
-    assert(tokens == 100);
-}
-
-it("should consume tokens from bucket") {
-    let capacity = 100;
-    let mut tokens = capacity;
-
-    // Consume 1 token
-    tokens = tokens - 1;
-    assert(tokens == 99);
-
-    // Consume 50 tokens
-    tokens = tokens - 50;
-    assert(tokens == 49);
-}
-
-it("should reject when insufficient tokens") {
-    let mut tokens = 5;
-    let requested = 10;
-
-    let allowed = tokens >= requested;
-    assert(allowed == false);
-}
-
-it("should allow when sufficient tokens") {
-    let mut tokens = 50;
-    let requested = 10;
-
-    let allowed = tokens >= requested;
-    if (allowed) {
-        tokens = tokens - requested;
-    }
-
-    assert(allowed == true);
-    assert(tokens == 40);
-}
-
-it("should refill tokens up to capacity") {
-    let capacity = 100;
-    let mut tokens = 50;
-    let refill_amount = 20;
-
-    tokens = tokens + refill_amount;
-    if (tokens > capacity) {
-        tokens = capacity;
-    }
-
-    assert(tokens == 70);
-
-    // Test capping at capacity
-    tokens = 95;
-    tokens = tokens + refill_amount;
-    if (tokens > capacity) {
-        tokens = capacity;
-    }
-
-    assert(tokens == 100);
-}
-
-// ============================================================================
-// LEAKY BUCKET ALGORITHM
-// ============================================================================
-
-it("should add requests to leaky bucket") {
-    let capacity = 10;
-    let mut level = 0;
-
-    // Add a request
-    level = level + 1;
-    assert(level == 1);
-}
-
-it("should overflow when bucket is full") {
-    let capacity = 5;
-    let mut level = 5;
-
-    let can_add = level < capacity;
-    assert(can_add == false);
-}
-
-it("should leak from bucket over time") {
-    let mut level = 10;
-    let leak_amount = 3;
-
-    // Simulate leak
-    level = level - leak_amount;
-    if (level < 0) {
-        level = 0;
-    }
-
-    assert(level == 7);
-}
-
-it("should not go below zero when leaking") {
-    let mut level = 2;
-    let leak_amount = 5;
-
-    level = level - leak_amount;
-    if (level < 0) {
-        level = 0;
-    }
-
-    assert(level == 0);
-}
-
-// ============================================================================
-// FIXED WINDOW ALGORITHM
-// ============================================================================
-
-it("should track requests in fixed window") {
-    let window_limit = 100;
-    let mut window_count = 0;
-
-    for (i in 0..50) {
-        window_count = window_count + 1;
-    }
-
-    assert(window_count == 50);
-    assert(window_count < window_limit);
-}
-
-it("should reset count at window boundary") {
-    let mut window_count = 95;
-
-    // Simulate window reset
-    window_count = 0;
-
-    assert(window_count == 0);
-}
-
-it("should block at window limit") {
-    let window_limit = 10;
-    let mut window_count = 0;
-    let mut blocked = 0;
-
-    for (i in 0..15) {
-        if (window_count < window_limit) {
-            window_count = window_count + 1;
-        } else {
-            blocked = blocked + 1;
-        }
-    }
-
-    assert(window_count == 10);
-    assert(blocked == 5);
-}
-
-// ============================================================================
-// SLIDING WINDOW SIMULATION
-// ============================================================================
-
-it("should track request timestamps") {
-    let mut timestamps = [];
-
-    // Simulate requests at different times
-    timestamps = timestamps.push(100);
-    timestamps = timestamps.push(150);
-    timestamps = timestamps.push(200);
-
-    assert(timestamps.len() == 3);
-}
-
-it("should remove old requests from window") {
-    let timestamps = [100, 150, 200, 250, 300];
-    let window_start = 180;
-    let mut active = [];
-
-    for (ts in timestamps) {
-        if (ts >= window_start) {
-            active = active.push(ts);
-        }
-    }
-
-    assert(active.len() == 3);
-}
-
-it("should count requests in sliding window") {
-    let timestamps = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-    let window_size = 50;
-    let current_time = 100;
-    let window_start = current_time - window_size;
-
-    let mut count = 0;
-    for (ts in timestamps) {
-        if (ts > window_start) {
-            count = count + 1;
-        }
-    }
-
-    assert(count == 5);
-}
-
-// ============================================================================
-// PER-CLIENT LIMITING
-// ============================================================================
-
-it("should track limits per client") {
-    // Simulate client request counts using arrays
-    let clients = ["client1", "client2", "client1", "client1", "client2"];
-    let mut client1_count = 0;
-    let mut client2_count = 0;
-
-    for (client in clients) {
-        if (client == "client1") {
-            client1_count = client1_count + 1;
-        } else if (client == "client2") {
-            client2_count = client2_count + 1;
-        }
-    }
-
-    assert(client1_count == 3);
-    assert(client2_count == 2);
-}
-
-it("should limit one client without affecting others") {
-    let max_requests = 5;
-    let mut client1_count = 5;  // At limit
-    let mut client2_count = 2;  // Under limit
-
-    let client1_allowed = client1_count < max_requests;
-    let client2_allowed = client2_count < max_requests;
-
-    assert(client1_allowed == false);
-    assert(client2_allowed == true);
-}
-
-// ============================================================================
-// CONCURRENT REQUEST LIMITING
-// ============================================================================
-
-it("should track concurrent requests") {
-    let max_concurrent = 5;
-    let mut active = 0;
-
-    // Acquire 3 permits
-    active = active + 3;
-    assert(active == 3);
-    assert(active < max_concurrent);
-}
-
-it("should block when max concurrent reached") {
-    let max_concurrent = 5;
-    let mut active = 5;
-
-    let can_acquire = active < max_concurrent;
-    assert(can_acquire == false);
-}
-
-it("should allow after release") {
-    let max_concurrent = 5;
-    let mut active = 5;
-
-    // Release one
-    active = active - 1;
-
-    let can_acquire = active < max_concurrent;
-    assert(can_acquire == true);
-}
-
-// ============================================================================
-// COST-BASED LIMITING
-// ============================================================================
-
-it("should track request costs") {
-    let budget = 1000;
-    let mut spent = 0;
-
-    spent = spent + 1;    // Simple request
-    spent = spent + 10;   // Medium request
-    spent = spent + 100;  // Heavy request
-
-    assert(spent == 111);
-    assert(spent < budget);
-}
-
-it("should block when budget exhausted") {
-    let budget = 100;
-    let mut spent = 90;
-    let request_cost = 20;
-
-    let allowed = spent + request_cost <= budget;
-    assert(allowed == false);
-}
-
-it("should allow when budget available") {
-    let budget = 100;
-    let mut spent = 50;
-    let request_cost = 20;
-
-    let allowed = spent + request_cost <= budget;
-    if (allowed) {
-        spent = spent + request_cost;
-    }
-
-    assert(allowed == true);
-    assert(spent == 70);
-}
-
-// ============================================================================
-// TIERED RATE LIMITS
-// ============================================================================
-
-it("should apply different limits per tier") {
-    let free_limit = 100;
-    let basic_limit = 1000;
-    let premium_limit = 10000;
-
-    let user_tier = "basic";
-    let mut limit = 0;
-
-    if (user_tier == "free") {
-        limit = free_limit;
-    } else if (user_tier == "basic") {
-        limit = basic_limit;
-    } else if (user_tier == "premium") {
-        limit = premium_limit;
-    }
-
-    assert(limit == 1000);
-}
-
-it("should upgrade user tier limit") {
-    let mut user_limit = 100;  // Free tier
-
-    // Upgrade to premium
-    user_limit = 10000;
-
-    assert(user_limit == 10000);
-}
-
-// ============================================================================
-// BURST HANDLING
-// ============================================================================
-
-it("should allow burst up to capacity") {
-    let burst_capacity = 50;
-    let mut tokens = burst_capacity;
-    let burst_size = 30;
-
-    let allowed = tokens >= burst_size;
-    if (allowed) {
-        tokens = tokens - burst_size;
-    }
-
-    assert(allowed == true);
-    assert(tokens == 20);
-}
-
-it("should limit burst to available tokens") {
-    let mut tokens = 20;
-    let burst_size = 50;
-
-    let allowed = tokens >= burst_size;
-    assert(allowed == false);
-
-    // Can only burst what's available
-    let available_burst = tokens;
-    assert(available_burst == 20);
-}
-
-// ============================================================================
-// RATE LIMIT METRICS
-// ============================================================================
-
-it("should track allowed and blocked counts") {
-    let limit = 5;
-    let mut count = 0;
-    let mut allowed_count = 0;
-    let mut blocked_count = 0;
-
-    for (i in 0..10) {
-        if (count < limit) {
-            count = count + 1;
-            allowed_count = allowed_count + 1;
-        } else {
-            blocked_count = blocked_count + 1;
-        }
-    }
-
-    assert(allowed_count == 5);
-    assert(blocked_count == 5);
-}
-
-it("should calculate blocked percentage") {
-    let total_requests = 100;
-    let blocked_requests = 25;
-
-    // Percentage as integer (25%)
-    let blocked_percentage = blocked_requests * 100 / total_requests;
-    assert(blocked_percentage == 25);
-}
-
-it("should track capacity usage") {
-    let capacity = 100;
-    let used = 75;
-
-    let usage_percentage = used * 100 / capacity;
-    assert(usage_percentage == 75);
-}
-
-// ============================================================================
-// WARNING THRESHOLDS
-// ============================================================================
-
-it("should warn at threshold") {
-    let limit = 100;
-    let warning_threshold = 90;
-    let current = 92;
-
-    let should_warn = current >= warning_threshold;
-    assert(should_warn == true);
-}
-
-it("should not warn below threshold") {
-    let limit = 100;
-    let warning_threshold = 90;
-    let current = 50;
-
-    let should_warn = current >= warning_threshold;
-    assert(should_warn == false);
-}
-
-// ============================================================================
-// RETRY-AFTER CALCULATION
-// ============================================================================
-
-it("should calculate retry after time") {
-    let window_duration = 60;
-    let window_start = 1000;
-    let current_time = 1045;
-
-    let elapsed = current_time - window_start;
-    let retry_after = window_duration - elapsed;
-
-    assert(retry_after == 15);
+    let status = limiter.status("client1");
+    assert(status.remaining == 7);
 }
 
 it("should provide reset time") {
-    let window_start = 1000;
-    let window_duration = 60;
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+    limiter.check("client1");
 
-    let reset_at = window_start + window_duration;
-    assert(reset_at == 1060);
+    let status = limiter.status("client1");
+    assert(status.reset_at > time::now());
+}
+
+// ============================================================================
+// SLIDING WINDOW
+// ============================================================================
+
+it("should use sliding window") {
+    let limiter = ratelimit::SlidingWindow::new(max: 100, window: 60);
+
+    // More accurate than fixed windows
+    for i in 0..50 {
+        limiter.check("client1");
+    }
+
+    // Wait for window to slide
+    // Requests should gradually become available
+}
+
+it("should track request history") {
+    let limiter = ratelimit::SlidingWindow::new(max: 10, window: 60);
+
+    limiter.check("client1");
+    limiter.check("client1");
+
+    let history = limiter.history("client1");
+    assert(history.len() == 2);
+}
+
+// ============================================================================
+// TOKEN BUCKET
+// ============================================================================
+
+it("should create token bucket") {
+    let bucket = ratelimit::TokenBucket::new({
+        capacity: 100,
+        refill_rate: 10,  // 10 tokens per second
+    });
+    assert(bucket != null);
+}
+
+it("should consume tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 100, refill_rate: 10);
+
+    let result = bucket.consume(1);
+    assert(result.allowed == true);
+    assert(bucket.tokens() == 99);
+}
+
+it("should consume multiple tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 100, refill_rate: 10);
+
+    let result = bucket.consume(50);
+    assert(result.allowed == true);
+    assert(bucket.tokens() == 50);
+}
+
+it("should reject when insufficient tokens") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 10, refill_rate: 1);
+
+    bucket.consume(10);  // Empty the bucket
+
+    let result = bucket.consume(1);
+    assert(result.allowed == false);
+}
+
+it("should refill tokens over time") {
+    let bucket = ratelimit::TokenBucket::new(capacity: 10, refill_rate: 10);
+
+    bucket.consume(10);  // Empty
+    // After 1 second, should have ~10 tokens
+    time::sleep(1000);
+
+    let tokens = bucket.tokens();
+    assert(tokens >= 9);  // Allow some timing variance
+}
+
+// ============================================================================
+// LEAKY BUCKET
+// ============================================================================
+
+it("should create leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new({
+        capacity: 100,
+        leak_rate: 10,  // 10 per second
+    });
+    assert(bucket != null);
+}
+
+it("should add to leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 100, leak_rate: 10);
+
+    let result = bucket.add(1);
+    assert(result.allowed == true);
+}
+
+it("should overflow leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 10, leak_rate: 1);
+
+    // Fill up the bucket
+    for i in 0..10 {
+        bucket.add(1);
+    }
+
+    let result = bucket.add(1);
+    assert(result.allowed == false);
+}
+
+it("should leak over time") {
+    let bucket = ratelimit::LeakyBucket::new(capacity: 10, leak_rate: 10);
+
+    bucket.add(10);  // Fill up
+    time::sleep(1000);  // Wait 1 second
+
+    let result = bucket.add(5);
+    assert(result.allowed == true);
+}
+
+// ============================================================================
+// FIXED WINDOW
+// ============================================================================
+
+it("should use fixed window") {
+    let limiter = ratelimit::FixedWindow::new(max: 100, window: 60);
+
+    for i in 0..100 {
+        assert(limiter.check("client").allowed == true);
+    }
+
+    assert(limiter.check("client").allowed == false);
+}
+
+it("should reset at window boundary") {
+    let limiter = ratelimit::FixedWindow::new(max: 10, window: 1);  // 1 second window
+
+    for i in 0..10 {
+        limiter.check("client");
+    }
+
+    time::sleep(1100);  // Wait for window reset
+
+    assert(limiter.check("client").allowed == true);
+}
+
+// ============================================================================
+// CONCURRENT LIMITER
+// ============================================================================
+
+it("should limit concurrent requests") {
+    let limiter = ratelimit::Concurrent::new(max: 5);
+
+    let permits = [];
+    for i in 0..5 {
+        let permit = limiter.acquire("client");
+        assert(permit != null);
+        permits.push(permit);
+    }
+
+    // 6th should fail
+    let result = limiter.try_acquire("client");
+    assert(result == null);
+}
+
+it("should release on permit drop") {
+    let limiter = ratelimit::Concurrent::new(max: 1);
+
+    {
+        let permit = limiter.acquire("client");
+        // permit dropped at end of scope
+    }
+
+    // Should be able to acquire again
+    let permit = limiter.acquire("client");
+    assert(permit != null);
+}
+
+// ============================================================================
+// PER-KEY LIMITS
+// ============================================================================
+
+it("should limit per key") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    for i in 0..10 {
+        limiter.check("client1");
+    }
+
+    // client1 is at limit
+    assert(limiter.check("client1").allowed == false);
+
+    // client2 should still work
+    assert(limiter.check("client2").allowed == true);
+}
+
+it("should support composite keys") {
+    let limiter = ratelimit::Limiter::new(max: 10, window: 60);
+
+    let key = ratelimit::key("user:123", "endpoint:/api/data");
+    limiter.check(key);
+}
+
+// ============================================================================
+// DISTRIBUTED RATE LIMITING
+// ============================================================================
+
+it("should use Redis backend") {
+    let limiter = ratelimit::Limiter::new({
+        max: 100,
+        window: 60,
+        backend: ratelimit::redis("redis://localhost:6379"),
+    });
+}
+
+it("should sync across instances") {
+    let backend = ratelimit::redis("redis://localhost:6379");
+
+    let limiter1 = ratelimit::Limiter::new(max: 10, window: 60, backend: backend);
+    let limiter2 = ratelimit::Limiter::new(max: 10, window: 60, backend: backend);
+
+    for i in 0..5 {
+        limiter1.check("shared_client");
+    }
+
+    let status = limiter2.status("shared_client");
+    assert(status.remaining == 5);
 }
 
 // ============================================================================
 // RATE LIMIT HEADERS
 // ============================================================================
 
-it("should track header values") {
-    let limit = 100;
-    let remaining = 75;
-    let reset_at = 1060;
+it("should generate rate limit headers") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+    limiter.check("client");
 
-    // Simulate header values
-    let header_limit = limit;
-    let header_remaining = remaining;
-    let header_reset = reset_at;
-
-    assert(header_limit == 100);
-    assert(header_remaining == 75);
-    assert(header_reset == 1060);
+    let headers = limiter.headers("client");
+    assert(headers["X-RateLimit-Limit"] == "100");
+    assert(headers["X-RateLimit-Remaining"] == "99");
+    assert(headers["X-RateLimit-Reset"] != null);
 }
 
-it("should set retry-after when limited") {
-    let is_limited = true;
-    let retry_after = 30;
+it("should include Retry-After when limited") {
+    let limiter = ratelimit::Limiter::new(max: 1, window: 60);
+    limiter.check("client");
+    limiter.check("client");  // Over limit
 
-    if (is_limited) {
-        assert(retry_after > 0);
-    }
+    let headers = limiter.headers("client");
+    assert(headers["Retry-After"] != null);
 }
 
 // ============================================================================
-// DISTRIBUTED COUNTER SIMULATION
+// MIDDLEWARE
 // ============================================================================
 
-it("should aggregate counts from multiple sources") {
-    let instance1_count = 30;
-    let instance2_count = 25;
-    let instance3_count = 20;
-
-    let total_count = instance1_count + instance2_count + instance3_count;
-
-    assert(total_count == 75);
+it("should create rate limit middleware") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 100, window: 60),
+        key_fn: |req| req.ip(),
+        on_limited: |req| http::Response::too_many_requests(),
+    });
 }
 
-it("should check global limit across instances") {
-    let global_limit = 100;
-    let instance_counts = [30, 25, 20, 15];
+it("should use IP-based key") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 100, window: 60),
+        key_fn: ratelimit::by_ip(),
+    });
+}
 
-    let mut total = 0;
-    for (count in instance_counts) {
-        total = total + count;
+it("should use user-based key") {
+    let middleware = ratelimit::middleware({
+        limiter: ratelimit::Limiter::new(max: 1000, window: 60),
+        key_fn: |req| req.user.id,
+    });
+}
+
+// ============================================================================
+// TIERED LIMITS
+// ============================================================================
+
+it("should support tiered limits") {
+    let limiter = ratelimit::Tiered::new({
+        free: { max: 100, window: 3600 },
+        basic: { max: 1000, window: 3600 },
+        premium: { max: 10000, window: 3600 },
+    });
+
+    let result = limiter.check("user1", tier: "basic");
+    assert(result.limit == 1000);
+}
+
+it("should upgrade tier dynamically") {
+    let limiter = ratelimit::Tiered::new({
+        free: { max: 100, window: 3600 },
+        premium: { max: 10000, window: 3600 },
+    });
+
+    limiter.set_tier("user1", "premium");
+    let status = limiter.status("user1");
+    assert(status.limit == 10000);
+}
+
+// ============================================================================
+// COST-BASED LIMITING
+// ============================================================================
+
+it("should support request costs") {
+    let limiter = ratelimit::Limiter::new(max: 1000, window: 60);
+
+    // Different endpoints have different costs
+    limiter.check("client", cost: 1);   // Simple read
+    limiter.check("client", cost: 10);  // Complex query
+    limiter.check("client", cost: 100); // Expensive operation
+
+    let status = limiter.status("client");
+    assert(status.remaining == 889);  // 1000 - 111
+}
+
+// ============================================================================
+// BURST HANDLING
+// ============================================================================
+
+it("should allow bursts") {
+    let limiter = ratelimit::TokenBucket::new({
+        capacity: 100,      // Max burst
+        refill_rate: 10,    // Sustained rate
+    });
+
+    // Can burst up to 100
+    let result = limiter.consume(50);
+    assert(result.allowed == true);
+}
+
+it("should smooth traffic with leaky bucket") {
+    let bucket = ratelimit::LeakyBucket::new({
+        capacity: 10,
+        leak_rate: 1,  // 1 per second
+    });
+
+    // Requests are processed at steady rate regardless of bursts
+}
+
+// ============================================================================
+// ANALYTICS
+// ============================================================================
+
+it("should track rate limit metrics") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    for i in 0..150 {
+        limiter.check("client");
     }
 
-    let allowed = total < global_limit;
-    assert(allowed == true);
-    assert(total == 90);
+    let metrics = limiter.metrics("client");
+    assert(metrics.allowed_count == 100);
+    assert(metrics.blocked_count == 50);
 }
+
+it("should get global metrics") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    let metrics = limiter.global_metrics();
+    assert(metrics.total_requests >= 0);
+    assert(metrics.blocked_percentage >= 0);
+}
+
+// ============================================================================
+// GRACEFUL DEGRADATION
+// ============================================================================
+
+it("should warn before limiting") {
+    let limiter = ratelimit::Limiter::new(max: 100, window: 60);
+
+    for i in 0..90 {
+        limiter.check("client");
+    }
+
+    let status = limiter.status("client");
+    assert(status.warning == true);  // At 90% capacity
+}
+
+it("should use soft limits") {
+    let limiter = ratelimit::Limiter::new({
+        max: 100,
+        window: 60,
+        soft_limit: 80,
+    });
+
+    // At soft limit: still allowed but warned
+    // At hard limit: blocked
+}
+

@@ -1,326 +1,470 @@
 // Retry and Backoff Concepts Test Suite
-// Tests retry patterns using basic Home syntax
+// Tests retry patterns using existing language constructs
 
 // ============================================================================
-// BASIC RETRY LOGIC
+// BASIC RETRY SIMULATION
 // ============================================================================
 
-it("should track retry attempts") {
-    let max_attempts = 3;
-    let mut attempts = 0;
-
-    for (_ in 0..max_attempts) {
-        attempts = attempts + 1;
-    }
-
-    assert(attempts == 3);
+struct RetryResult {
+    success: bool,
+    attempts: i32,
+    value: str,
 }
 
-it("should stop on success") {
+fn retry_operation(max_attempts: i32, fail_until: i32): RetryResult {
     let mut attempts = 0;
-    let success_on_attempt = 2;
-    let mut succeeded = false;
+    let mut success = false;
+    let mut value = "";
 
-    for (_ in 0..5) {
+    for _ in 0..max_attempts {
         attempts = attempts + 1;
-        if (attempts == success_on_attempt) {
-            succeeded = true;
-        }
-        if (succeeded) {
-            // Would break out in real code
+        if (attempts >= fail_until) {
+            success = true;
+            value = "success";
+            break;
         }
     }
 
-    assert(attempts >= success_on_attempt);
+    return RetryResult { success: success, attempts: attempts, value: value };
+}
+
+it("should retry on failure") {
+    let result = retry_operation(5, 3);  // Fail until attempt 3
+    assert(result.success == true);
+    assert(result.attempts == 3);
+    assert(result.value == "success");
+}
+
+it("should return on first success") {
+    let result = retry_operation(5, 1);  // Succeed on first attempt
+    assert(result.success == true);
+    assert(result.attempts == 1);
 }
 
 it("should fail after max attempts") {
-    let max_attempts = 3;
-    let mut attempts = 0;
-    let success = false;
-
-    while (attempts < max_attempts and !success) {
-        attempts = attempts + 1;
-    }
-
-    assert(attempts == 3);
-    assert(success == false);
+    let result = retry_operation(3, 10);  // Never succeeds within 3 attempts
+    assert(result.success == false);
+    assert(result.attempts == 3);
 }
 
 // ============================================================================
-// BACKOFF CALCULATION
+// BACKOFF STRATEGIES
 // ============================================================================
 
+fn constant_backoff(base_delay: i32, attempt: i32): i32 {
+    return base_delay;
+}
+
+fn linear_backoff(base_delay: i32, attempt: i32): i32 {
+    return base_delay * attempt;
+}
+
+fn exponential_backoff(base_delay: i32, attempt: i32): i32 {
+    let mut result = base_delay;
+    for _ in 1..attempt {
+        result = result * 2;
+    }
+    return result;
+}
+
 it("should calculate constant backoff") {
-    let delay = 1000;  // ms
-    let attempt = 3;
-    let backoff = delay;  // Constant: same delay each time
-    assert(backoff == 1000);
+    assert(constant_backoff(100, 1) == 100);
+    assert(constant_backoff(100, 2) == 100);
+    assert(constant_backoff(100, 3) == 100);
 }
 
 it("should calculate linear backoff") {
-    let base_delay = 1000;
-    let attempt = 3;
-    let backoff = base_delay * attempt;
-    assert(backoff == 3000);
+    assert(linear_backoff(100, 1) == 100);
+    assert(linear_backoff(100, 2) == 200);
+    assert(linear_backoff(100, 3) == 300);
 }
 
 it("should calculate exponential backoff") {
-    let base_delay = 100;
-    let attempt = 4;
-    // 2^(attempt-1) * base_delay
-    let multiplier = 1 << (attempt - 1);  // 2^3 = 8
-    let backoff = base_delay * multiplier;
-    assert(backoff == 800);
+    assert(exponential_backoff(100, 1) == 100);
+    assert(exponential_backoff(100, 2) == 200);
+    assert(exponential_backoff(100, 3) == 400);
+    assert(exponential_backoff(100, 4) == 800);
+}
+
+fn capped_exponential_backoff(base_delay: i32, attempt: i32, max_delay: i32): i32 {
+    let delay = exponential_backoff(base_delay, attempt);
+    if (delay > max_delay) {
+        return max_delay;
+    }
+    return delay;
 }
 
 it("should cap exponential backoff") {
-    let base_delay = 1000;
-    let max_delay = 30000;
-    let attempt = 10;
-    let multiplier = 1 << (attempt - 1);
-    let calculated = base_delay * multiplier;
-    let backoff = if (calculated > max_delay) { max_delay } else { calculated };
-    assert(backoff == max_delay);
+    assert(capped_exponential_backoff(100, 1, 500) == 100);
+    assert(capped_exponential_backoff(100, 3, 500) == 400);
+    assert(capped_exponential_backoff(100, 4, 500) == 500);  // Capped
+    assert(capped_exponential_backoff(100, 5, 500) == 500);  // Capped
 }
 
 // ============================================================================
-// JITTER
+// JITTER SIMULATION
 // ============================================================================
 
-it("should add jitter range") {
-    let base_delay = 1000;
-    let jitter_factor = 25;  // 25% jitter
-    let jitter_amount = (base_delay * jitter_factor) / 100;
-    assert(jitter_amount == 250);
+fn add_jitter(delay: i32, jitter_percent: i32): i32 {
+    // Simple jitter simulation: delay ± jitter_percent
+    // In real implementation, this would use random numbers
+    let jitter_amount = (delay * jitter_percent) / 100;
+    return delay + jitter_amount;  // Just add for testing
 }
 
-it("should calculate jitter bounds") {
-    let delay = 1000;
-    let jitter_percent = 20;
-    let min_delay = delay - (delay * jitter_percent) / 100;
-    let max_delay = delay + (delay * jitter_percent) / 100;
-    assert(min_delay == 800);
-    assert(max_delay == 1200);
+it("should add jitter to delay") {
+    let base_delay = 100;
+    let with_jitter = add_jitter(base_delay, 10);  // 10% jitter
+    assert(with_jitter == 110);  // 100 + 10%
 }
 
 // ============================================================================
-// RETRY POLICIES
+// RETRY CONDITIONS
 // ============================================================================
 
-it("should track retry policy") {
-    let max_attempts = 5;
-    let base_delay = 1000;
-    let max_delay = 60000;
-
-    assert(max_attempts == 5);
-    assert(base_delay == 1000);
-    assert(max_delay == 60000);
+struct ErrorInfo {
+    message: str,
+    is_transient: bool,
+    error_code: i32,
 }
 
-it("should check attempts remaining") {
-    let max_attempts = 5;
-    let current_attempt = 3;
-    let remaining = max_attempts - current_attempt;
-    assert(remaining == 2);
+fn should_retry(error: ErrorInfo): bool {
+    // Only retry transient errors
+    return error.is_transient;
 }
 
-it("should check if should retry") {
-    let max_attempts = 3;
-    let current_attempt = 2;
-    let should_retry = current_attempt < max_attempts;
-    assert(should_retry == true);
-}
-
-it("should not retry after max") {
-    let max_attempts = 3;
-    let current_attempt = 3;
-    let should_retry = current_attempt < max_attempts;
-    assert(should_retry == false);
-}
-
-// ============================================================================
-// ERROR CLASSIFICATION
-// ============================================================================
-
-it("should identify retryable error") {
-    let error_code = 503;  // Service Unavailable
-    let retryable_codes = [408, 429, 500, 502, 503, 504];
-    let is_retryable = retryable_codes.contains(error_code);
-    assert(is_retryable == true);
-}
-
-it("should identify non-retryable error") {
-    let error_code = 400;  // Bad Request
-    let retryable_codes = [408, 429, 500, 502, 503, 504];
-    let is_retryable = retryable_codes.contains(error_code);
-    assert(is_retryable == false);
-}
-
-it("should skip retry on 4xx") {
-    let error_code = 404;
-    let is_client_error = error_code >= 400 and error_code < 500;
-    let should_retry = !is_client_error;
-    assert(should_retry == false);
-}
-
-// ============================================================================
-// TIMEOUT HANDLING
-// ============================================================================
-
-it("should track total timeout") {
-    let timeout_ms = 30000;
-    let elapsed_ms = 15000;
-    let remaining = timeout_ms - elapsed_ms;
-    assert(remaining == 15000);
-}
-
-it("should check timeout exceeded") {
-    let timeout_ms = 30000;
-    let elapsed_ms = 35000;
-    let exceeded = elapsed_ms > timeout_ms;
-    assert(exceeded == true);
-}
-
-it("should adjust retry for timeout") {
-    let total_timeout = 10000;
-    let elapsed = 8000;
-    let next_delay = 3000;
-    let would_exceed = elapsed + next_delay > total_timeout;
-    assert(would_exceed == true);
-}
-
-// ============================================================================
-// RETRY STATISTICS
-// ============================================================================
-
-it("should track total attempts") {
-    let mut total_attempts = 0;
-    for (_ in 0..5) {
-        total_attempts = total_attempts + 1;
+fn should_retry_code(error: ErrorInfo, retryable_codes: [i32]): bool {
+    for code in retryable_codes {
+        if (code == error.error_code) {
+            return true;
+        }
     }
-    assert(total_attempts == 5);
+    return false;
 }
 
-it("should track total delay") {
-    let delays = [100, 200, 400, 800];
-    let mut total = 0;
-    for (d in delays) {
-        total = total + d;
-    }
-    assert(total == 1500);
+it("should retry transient errors") {
+    let transient_error = ErrorInfo { message: "Timeout", is_transient: true, error_code: 504 };
+    let permanent_error = ErrorInfo { message: "Not Found", is_transient: false, error_code: 404 };
+
+    assert(should_retry(transient_error) == true);
+    assert(should_retry(permanent_error) == false);
 }
 
-it("should calculate success rate") {
-    let total_operations = 100;
-    let successful = 95;
-    let success_rate = (successful * 100) / total_operations;
-    assert(success_rate == 95);
-}
+it("should retry specific error codes") {
+    let retryable_codes = [429, 500, 502, 503, 504];
 
-// ============================================================================
-// CIRCUIT BREAKER INTEGRATION
-// ============================================================================
+    let error_429 = ErrorInfo { message: "Too Many Requests", is_transient: true, error_code: 429 };
+    let error_404 = ErrorInfo { message: "Not Found", is_transient: false, error_code: 404 };
+    let error_503 = ErrorInfo { message: "Service Unavailable", is_transient: true, error_code: 503 };
 
-it("should track consecutive failures") {
-    let mut consecutive_failures = 0;
-    let threshold = 5;
-
-    for (_ in 0..3) {
-        consecutive_failures = consecutive_failures + 1;
-    }
-
-    let circuit_open = consecutive_failures >= threshold;
-    assert(circuit_open == false);
-}
-
-it("should open circuit on threshold") {
-    let consecutive_failures = 5;
-    let threshold = 5;
-    let circuit_open = consecutive_failures >= threshold;
-    assert(circuit_open == true);
-}
-
-// ============================================================================
-// RETRY CONTEXT
-// ============================================================================
-
-it("should track attempt number") {
-    let attempt = 3;
-    let is_first = attempt == 1;
-    let is_last = attempt == 5;
-    assert(is_first == false);
-}
-
-it("should calculate delay for attempt") {
-    let base = 100;
-    let attempt = 3;
-    let delays = [base, base * 2, base * 4, base * 8];
-    let delay = delays[attempt - 1];
-    assert(delay == 400);
-}
-
-// ============================================================================
-// DEADLINE HANDLING
-// ============================================================================
-
-it("should check deadline") {
-    let deadline = 1704100000;
-    let now = 1704099000;
-    let has_time = now < deadline;
-    assert(has_time == true);
-}
-
-it("should detect past deadline") {
-    let deadline = 1704100000;
-    let now = 1704101000;
-    let has_time = now < deadline;
-    assert(has_time == false);
+    assert(should_retry_code(error_429, retryable_codes) == true);
+    assert(should_retry_code(error_404, retryable_codes) == false);
+    assert(should_retry_code(error_503, retryable_codes) == true);
 }
 
 // ============================================================================
 // RETRY WITH CONDITION
 // ============================================================================
 
-it("should retry on specific condition") {
-    let error_type = "timeout";
-    let retry_on = ["timeout", "connection_reset", "rate_limited"];
-    let should_retry = retry_on.contains(error_type);
-    assert(should_retry == true);
+fn retry_with_condition(max_attempts: i32, errors: [ErrorInfo]): RetryResult {
+    let mut attempts = 0;
+
+    for error in errors {
+        attempts = attempts + 1;
+        if (attempts > max_attempts) {
+            break;
+        }
+        if (!should_retry(error)) {
+            // Non-retryable error, stop immediately
+            return RetryResult { success: false, attempts: attempts, value: error.message };
+        }
+    }
+
+    return RetryResult { success: true, attempts: attempts, value: "success" };
 }
 
-it("should not retry on excluded condition") {
-    let error_type = "invalid_input";
-    let retry_on = ["timeout", "connection_reset"];
-    let should_retry = retry_on.contains(error_type);
-    assert(should_retry == false);
+it("should stop on non-retryable error") {
+    let errors = [
+        ErrorInfo { message: "Timeout", is_transient: true, error_code: 504 },
+        ErrorInfo { message: "Auth Failed", is_transient: false, error_code: 401 },
+    ];
+
+    let result = retry_with_condition(5, errors);
+    assert(result.success == false);
+    assert(result.attempts == 2);
+    assert(result.value == "Auth Failed");
+}
+
+// ============================================================================
+// RETRY STATISTICS
+// ============================================================================
+
+struct RetryStats {
+    total_attempts: i32,
+    successful_attempts: i32,
+    failed_attempts: i32,
+    total_delay: i32,
+}
+
+fn new_stats(): RetryStats {
+    return RetryStats {
+        total_attempts: 0,
+        successful_attempts: 0,
+        failed_attempts: 0,
+        total_delay: 0,
+    };
+}
+
+fn record_attempt(stats: RetryStats, success: bool, delay: i32): RetryStats {
+    return RetryStats {
+        total_attempts: stats.total_attempts + 1,
+        successful_attempts: if (success) { stats.successful_attempts + 1 } else { stats.successful_attempts },
+        failed_attempts: if (!success) { stats.failed_attempts + 1 } else { stats.failed_attempts },
+        total_delay: stats.total_delay + delay,
+    };
+}
+
+it("should track retry statistics") {
+    let mut stats = new_stats();
+
+    stats = record_attempt(stats, false, 100);  // First attempt fails
+    stats = record_attempt(stats, false, 200);  // Second attempt fails
+    stats = record_attempt(stats, true, 0);     // Third attempt succeeds
+
+    assert(stats.total_attempts == 3);
+    assert(stats.successful_attempts == 1);
+    assert(stats.failed_attempts == 2);
+    assert(stats.total_delay == 300);
+}
+
+// ============================================================================
+// RETRY CONTEXT
+// ============================================================================
+
+struct RetryContext {
+    attempt: i32,
+    max_attempts: i32,
+    last_error: str,
+    total_elapsed: i32,
+}
+
+fn new_context(max_attempts: i32): RetryContext {
+    return RetryContext {
+        attempt: 0,
+        max_attempts: max_attempts,
+        last_error: "",
+        total_elapsed: 0,
+    };
+}
+
+fn next_attempt(ctx: RetryContext, error: str, delay: i32): RetryContext {
+    return RetryContext {
+        attempt: ctx.attempt + 1,
+        max_attempts: ctx.max_attempts,
+        last_error: error,
+        total_elapsed: ctx.total_elapsed + delay,
+    };
+}
+
+fn has_attempts_left(ctx: RetryContext): bool {
+    return ctx.attempt < ctx.max_attempts;
+}
+
+it("should provide retry context") {
+    let mut ctx = new_context(3);
+
+    assert(ctx.attempt == 0);
+    assert(ctx.max_attempts == 3);
+    assert(has_attempts_left(ctx) == true);
+
+    ctx = next_attempt(ctx, "Error 1", 100);
+    assert(ctx.attempt == 1);
+    assert(ctx.last_error == "Error 1");
+    assert(has_attempts_left(ctx) == true);
+
+    ctx = next_attempt(ctx, "Error 2", 200);
+    ctx = next_attempt(ctx, "Error 3", 400);
+
+    assert(ctx.attempt == 3);
+    assert(ctx.total_elapsed == 700);
+    assert(has_attempts_left(ctx) == false);
+}
+
+// ============================================================================
+// CIRCUIT BREAKER STATE
+// ============================================================================
+
+struct CircuitBreaker {
+    failure_count: i32,
+    failure_threshold: i32,
+    state: str,  // "closed", "open", "half-open"
+}
+
+fn new_breaker(threshold: i32): CircuitBreaker {
+    return CircuitBreaker {
+        failure_count: 0,
+        failure_threshold: threshold,
+        state: "closed",
+    };
+}
+
+fn record_failure(breaker: CircuitBreaker): CircuitBreaker {
+    let new_count = breaker.failure_count + 1;
+    let new_state = if (new_count >= breaker.failure_threshold) { "open" } else { "closed" };
+    return CircuitBreaker {
+        failure_count: new_count,
+        failure_threshold: breaker.failure_threshold,
+        state: new_state,
+    };
+}
+
+fn record_success(breaker: CircuitBreaker): CircuitBreaker {
+    return CircuitBreaker {
+        failure_count: 0,
+        failure_threshold: breaker.failure_threshold,
+        state: "closed",
+    };
+}
+
+fn is_circuit_open(breaker: CircuitBreaker): bool {
+    return breaker.state == "open";
+}
+
+it("should open circuit after threshold failures") {
+    let mut breaker = new_breaker(3);
+
+    assert(is_circuit_open(breaker) == false);
+
+    breaker = record_failure(breaker);
+    assert(is_circuit_open(breaker) == false);
+
+    breaker = record_failure(breaker);
+    assert(is_circuit_open(breaker) == false);
+
+    breaker = record_failure(breaker);
+    assert(is_circuit_open(breaker) == true);
+}
+
+it("should close circuit on success") {
+    let mut breaker = new_breaker(2);
+
+    breaker = record_failure(breaker);
+    breaker = record_failure(breaker);
+    assert(is_circuit_open(breaker) == true);
+
+    breaker = record_success(breaker);
+    assert(is_circuit_open(breaker) == false);
+    assert(breaker.failure_count == 0);
 }
 
 // ============================================================================
 // FIBONACCI BACKOFF
 // ============================================================================
 
-it("should calculate fibonacci backoff") {
-    let mut fib = [100, 100];
-    for (i in 2..6) {
-        let next = fib[i - 1] + fib[i - 2];
-        fib = fib.push(next);
+fn fibonacci_backoff(base_delay: i32, attempt: i32): i32 {
+    if (attempt <= 1) { return base_delay; }
+    if (attempt == 2) { return base_delay; }
+
+    let mut prev = base_delay;
+    let mut curr = base_delay;
+
+    for _ in 2..attempt {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
     }
-    // [100, 100, 200, 300, 500, 800]
-    assert(fib[4] == 500);
-    assert(fib[5] == 800);
+
+    return curr;
+}
+
+it("should calculate fibonacci backoff") {
+    // Sequence: base, base, 2*base, 3*base, 5*base, 8*base...
+    let base = 100;
+    assert(fibonacci_backoff(base, 1) == 100);
+    assert(fibonacci_backoff(base, 2) == 100);
+    assert(fibonacci_backoff(base, 3) == 200);
+    assert(fibonacci_backoff(base, 4) == 300);
+    assert(fibonacci_backoff(base, 5) == 500);
+    assert(fibonacci_backoff(base, 6) == 800);
 }
 
 // ============================================================================
-// DECORRELATED JITTER
+// RETRY POLICY
 // ============================================================================
 
-it("should track previous delay for decorrelated jitter") {
-    let mut prev_delay = 100;
-    let base = 100;
-    let cap = 10000;
+struct RetryPolicy {
+    max_attempts: i32,
+    base_delay: i32,
+    max_delay: i32,
+    backoff_type: str,  // "constant", "linear", "exponential", "fibonacci"
+}
 
-    // Decorrelated jitter: delay = min(cap, random(base, prev_delay * 3))
-    let max_next = prev_delay * 3;
-    assert(max_next == 300);
+fn calculate_delay(policy: RetryPolicy, attempt: i32): i32 {
+    let delay = if (policy.backoff_type == "constant") {
+        constant_backoff(policy.base_delay, attempt)
+    } else if (policy.backoff_type == "linear") {
+        linear_backoff(policy.base_delay, attempt)
+    } else if (policy.backoff_type == "exponential") {
+        exponential_backoff(policy.base_delay, attempt)
+    } else if (policy.backoff_type == "fibonacci") {
+        fibonacci_backoff(policy.base_delay, attempt)
+    } else {
+        policy.base_delay
+    };
+
+    if (delay > policy.max_delay) {
+        return policy.max_delay;
+    }
+    return delay;
+}
+
+it("should use retry policy") {
+    let http_policy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: 100,
+        max_delay: 5000,
+        backoff_type: "exponential",
+    };
+
+    assert(calculate_delay(http_policy, 1) == 100);
+    assert(calculate_delay(http_policy, 2) == 200);
+    assert(calculate_delay(http_policy, 3) == 400);
+}
+
+it("should cap delay at max") {
+    let policy = RetryPolicy {
+        max_attempts: 5,
+        base_delay: 1000,
+        max_delay: 3000,
+        backoff_type: "exponential",
+    };
+
+    assert(calculate_delay(policy, 1) == 1000);
+    assert(calculate_delay(policy, 2) == 2000);
+    assert(calculate_delay(policy, 3) == 3000);  // Capped
+    assert(calculate_delay(policy, 4) == 3000);  // Capped
+}
+
+// ============================================================================
+// TOTAL DELAY CALCULATION
+// ============================================================================
+
+fn calculate_total_delay(policy: RetryPolicy): i32 {
+    let mut total = 0;
+    for attempt in 1..(policy.max_attempts + 1) {
+        total = total + calculate_delay(policy, attempt);
+    }
+    return total;
+}
+
+it("should calculate total delay for policy") {
+    let policy = RetryPolicy {
+        max_attempts: 4,
+        base_delay: 100,
+        max_delay: 10000,
+        backoff_type: "exponential",
+    };
+
+    // 100 + 200 + 400 + 800 = 1500
+    assert(calculate_total_delay(policy) == 1500);
 }

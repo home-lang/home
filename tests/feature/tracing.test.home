@@ -1,413 +1,448 @@
-// Distributed Tracing Concepts Test Suite
-// Tests tracing patterns using basic Home syntax
+// Distributed Tracing Test Suite
 
 // ============================================================================
-// BASIC SPAN CONCEPTS
+// BASIC SPANS
 // ============================================================================
 
-it("should create span with name") {
-    let span_name = "operation_name";
-    let span_started = true;
-    let span_ended = false;
-
-    assert(span_name == "operation_name");
-    assert(span_started == true);
+it("should create span") {
+    let span = tracing::span("operation_name");
+    assert(span != null);
+    span.end();
 }
 
-it("should track span lifecycle") {
-    let mut span_active = false;
+it("should auto-end span with scope") {
+    {
+        let span = tracing::span("scoped_operation");
+        // span automatically ends when scope exits
+    }
+}
 
-    // Start span
-    span_active = true;
-    assert(span_active == true);
-
-    // End span
-    span_active = false;
-    assert(span_active == false);
+it("should set span name") {
+    let span = tracing::span("my_operation");
+    assert(span.name() == "my_operation");
 }
 
 it("should generate trace ID") {
-    // Simulate 128-bit hex trace ID (32 chars)
-    let trace_id = "0af7651916cd43dd8448eb211c80319c";
-    assert(trace_id.len() == 32);
+    let span = tracing::span("operation");
+    assert(span.trace_id() != null);
+    assert(span.trace_id().len() == 32);  // 128-bit hex
+    span.end();
 }
 
 it("should generate span ID") {
-    // Simulate 64-bit hex span ID (16 chars)
-    let span_id = "b7ad6b7169203331";
-    assert(span_id.len() == 16);
+    let span = tracing::span("operation");
+    assert(span.span_id() != null);
+    assert(span.span_id().len() == 16);  // 64-bit hex
+    span.end();
 }
 
 // ============================================================================
-// SPAN ATTRIBUTES CONCEPTS
+// SPAN ATTRIBUTES
 // ============================================================================
 
-it("should set span attributes") {
-    let mut attributes = [];
-
-    attributes = attributes.push("user_id:123");
-    attributes = attributes.push("request_size:1024");
-    attributes = attributes.push("is_premium:true");
-
-    assert(attributes.len() == 3);
+it("should set attributes") {
+    let span = tracing::span("operation");
+    span.set_attribute("user_id", "123");
+    span.set_attribute("request_size", 1024);
+    span.set_attribute("is_premium", true);
+    span.end();
 }
 
-it("should get span attribute") {
-    let attribute_key = "key";
-    let attribute_value = "value";
-
-    assert(attribute_key == "key");
-    assert(attribute_value == "value");
+it("should set multiple attributes") {
+    let span = tracing::span("operation");
+    span.set_attributes({
+        "http.method": "GET",
+        "http.url": "/api/users",
+        "http.status_code": 200,
+    });
+    span.end();
 }
 
-it("should set HTTP attributes") {
-    let http_method = "GET";
-    let http_url = "/api/users";
-    let http_status = 200;
-
-    assert(http_method == "GET");
-    assert(http_url == "/api/users");
-    assert(http_status == 200);
+it("should get attribute") {
+    let span = tracing::span("operation");
+    span.set_attribute("key", "value");
+    assert(span.get_attribute("key") == "value");
+    span.end();
 }
 
 // ============================================================================
-// SPAN EVENTS CONCEPTS
+// SPAN EVENTS
 // ============================================================================
 
-it("should add span events") {
-    let mut events = [];
-
-    events = events.push("cache_miss");
-    events = events.push("db_query");
-    events = events.push("response_sent");
-
-    assert(events.len() == 3);
-    assert(events[0] == "cache_miss");
+it("should add event") {
+    let span = tracing::span("operation");
+    span.add_event("cache_miss");
+    span.end();
 }
 
 it("should add event with attributes") {
-    let event_name = "exception";
-    let exception_type = "ValueError";
-    let exception_message = "Invalid input";
+    let span = tracing::span("operation");
+    span.add_event("exception", {
+        "exception.type": "ValueError",
+        "exception.message": "Invalid input",
+    });
+    span.end();
+}
 
-    assert(event_name == "exception");
-    assert(exception_type == "ValueError");
+it("should add event with timestamp") {
+    let span = tracing::span("operation");
+    span.add_event("checkpoint", timestamp: time::now());
+    span.end();
 }
 
 // ============================================================================
-// SPAN STATUS CONCEPTS
+// SPAN STATUS
 // ============================================================================
 
-it("should set span status to ok") {
-    let status = "OK";
-    assert(status == "OK");
+it("should set ok status") {
+    let span = tracing::span("operation");
+    span.set_status(tracing::Status::OK);
+    span.end();
 }
 
-it("should set span status to error") {
-    let status = "ERROR";
-    let error_message = "Something went wrong";
-
-    assert(status == "ERROR");
-    assert(error_message.len() > 0);
+it("should set error status") {
+    let span = tracing::span("operation");
+    span.set_status(tracing::Status::ERROR, "Something went wrong");
+    span.end();
 }
 
-it("should record exception in span") {
-    let has_exception = true;
-    let exception_recorded = true;
-
-    assert(has_exception == true);
-    assert(exception_recorded == true);
-}
-
-// ============================================================================
-// SPAN HIERARCHY CONCEPTS
-// ============================================================================
-
-it("should create parent-child span relationship") {
-    let parent_span_id = "parent123";
-    let child_span_id = "child456";
-    let child_parent_id = "parent123";
-
-    assert(child_parent_id == parent_span_id);
-}
-
-it("should share trace ID across spans") {
-    let trace_id = "trace789";
-    let parent_trace_id = trace_id;
-    let child_trace_id = trace_id;
-
-    assert(parent_trace_id == child_trace_id);
-}
-
-it("should track current span") {
-    let mut current_span = "none";
-
-    // Enter outer span
-    current_span = "outer";
-    assert(current_span == "outer");
-
-    // Enter inner span
-    current_span = "inner";
-    assert(current_span == "inner");
-
-    // Exit inner span
-    current_span = "outer";
-    assert(current_span == "outer");
+it("should record exception") {
+    let span = tracing::span("operation");
+    try {
+        throw Error("Test error");
+    } catch (e) {
+        span.record_exception(e);
+    }
+    span.end();
 }
 
 // ============================================================================
-// CONTEXT PROPAGATION CONCEPTS
+// SPAN HIERARCHY
+// ============================================================================
+
+it("should create child span") {
+    let parent = tracing::span("parent");
+    let child = tracing::span("child", parent: parent);
+
+    assert(child.parent_span_id() == parent.span_id());
+    assert(child.trace_id() == parent.trace_id());
+
+    child.end();
+    parent.end();
+}
+
+it("should use current span as parent") {
+    tracing::with_span("parent", || {
+        let child = tracing::span("child");
+        // Automatically uses current span as parent
+        child.end();
+    });
+}
+
+it("should get current span") {
+    tracing::with_span("outer", || {
+        let current = tracing::current_span();
+        assert(current.name() == "outer");
+    });
+}
+
+// ============================================================================
+// CONTEXT PROPAGATION
 // ============================================================================
 
 it("should extract trace context from headers") {
-    let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-    let parts = traceparent.split("-");
+    let headers = {
+        "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    };
 
-    assert(parts.len() == 4);
-    assert(parts[0] == "00");
+    let context = tracing::extract(headers);
+    assert(context.trace_id() == "0af7651916cd43dd8448eb211c80319c");
 }
 
 it("should inject trace context into headers") {
-    let trace_id = "0af7651916cd43dd8448eb211c80319c";
-    let span_id = "b7ad6b7169203331";
-    let traceparent = "00-" + trace_id + "-" + span_id + "-01";
+    let span = tracing::span("operation");
+    let headers = {};
 
-    assert(traceparent.starts_with("00-"));
-    assert(traceparent.contains(trace_id));
+    tracing::inject(headers, span);
+
+    assert(headers["traceparent"] != null);
+    span.end();
 }
 
 it("should propagate W3C trace context") {
-    let traceparent = "00-traceid-spanid-01";
-    assert(traceparent.starts_with("00-"));
+    let span = tracing::span("operation");
+    let headers = {};
+
+    tracing::inject(headers, span, format: "w3c");
+    assert(headers["traceparent"].starts_with("00-"));
+    span.end();
 }
 
 it("should propagate B3 headers") {
-    let x_b3_trace_id = "463ac35c9f6413ad48485a3953bb6124";
-    let x_b3_span_id = "0020000000000001";
+    let span = tracing::span("operation");
+    let headers = {};
 
-    assert(x_b3_trace_id.len() == 32);
-    assert(x_b3_span_id.len() == 16);
+    tracing::inject(headers, span, format: "b3");
+    assert(headers["X-B3-TraceId"] != null);
+    span.end();
 }
 
 // ============================================================================
-// SPAN KINDS CONCEPTS
+// SPAN KINDS
 // ============================================================================
 
-it("should identify server span kind") {
-    let kind = "SERVER";
-    assert(kind == "SERVER");
+it("should create server span") {
+    let span = tracing::span("handle_request", kind: tracing::SpanKind::SERVER);
+    span.end();
 }
 
-it("should identify client span kind") {
-    let kind = "CLIENT";
-    assert(kind == "CLIENT");
+it("should create client span") {
+    let span = tracing::span("http_call", kind: tracing::SpanKind::CLIENT);
+    span.end();
 }
 
-it("should identify producer span kind") {
-    let kind = "PRODUCER";
-    assert(kind == "PRODUCER");
+it("should create producer span") {
+    let span = tracing::span("send_message", kind: tracing::SpanKind::PRODUCER);
+    span.end();
 }
 
-it("should identify consumer span kind") {
-    let kind = "CONSUMER";
-    assert(kind == "CONSUMER");
+it("should create consumer span") {
+    let span = tracing::span("receive_message", kind: tracing::SpanKind::CONSUMER);
+    span.end();
 }
 
-it("should identify internal span kind") {
-    let kind = "INTERNAL";
-    assert(kind == "INTERNAL");
+it("should create internal span") {
+    let span = tracing::span("internal_op", kind: tracing::SpanKind::INTERNAL);
+    span.end();
 }
 
 // ============================================================================
-// SEMANTIC CONVENTIONS CONCEPTS
+// SEMANTIC CONVENTIONS
 // ============================================================================
 
 it("should use HTTP semantic conventions") {
-    let http_method = "POST";
-    let http_url = "https://api.example.com/users";
-    let http_status_code = 201;
-
-    assert(http_method == "POST");
-    assert(http_url.starts_with("https://"));
-    assert(http_status_code == 201);
+    let span = tracing::span("http_request");
+    span.set_attributes({
+        "http.method": "POST",
+        "http.url": "https://api.example.com/users",
+        "http.status_code": 201,
+        "http.request_content_length": 256,
+        "http.response_content_length": 128,
+    });
+    span.end();
 }
 
 it("should use database semantic conventions") {
-    let db_system = "postgresql";
-    let db_name = "users";
-    let db_operation = "SELECT";
-
-    assert(db_system == "postgresql");
-    assert(db_operation == "SELECT");
+    let span = tracing::span("db_query");
+    span.set_attributes({
+        "db.system": "postgresql",
+        "db.name": "users",
+        "db.operation": "SELECT",
+        "db.statement": "SELECT * FROM users WHERE id = ?",
+    });
+    span.end();
 }
 
 it("should use messaging semantic conventions") {
-    let messaging_system = "rabbitmq";
-    let messaging_destination = "orders";
-    let messaging_operation = "send";
-
-    assert(messaging_system == "rabbitmq");
-    assert(messaging_operation == "send");
+    let span = tracing::span("message_send");
+    span.set_attributes({
+        "messaging.system": "rabbitmq",
+        "messaging.destination": "orders",
+        "messaging.operation": "send",
+    });
+    span.end();
 }
 
 // ============================================================================
-// TRACER CONFIGURATION CONCEPTS
+// TRACER CONFIGURATION
 // ============================================================================
 
-it("should configure tracer with service name") {
-    let service_name = "my-service";
-    let version = "1.0.0";
-
-    assert(service_name == "my-service");
-    assert(version == "1.0.0");
+it("should create tracer") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        version: "1.0.0",
+    });
+    assert(tracer != null);
 }
 
-it("should configure sampling rate") {
-    let sampling_rate = 0.1;
-    let should_sample = sampling_rate > 0;
-
-    assert(should_sample == true);
+it("should configure sampling") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        sampler: tracing::AlwaysSample(),
+    });
 }
 
-// ============================================================================
-// EXPORTER CONCEPTS
-// ============================================================================
-
-it("should configure exporter endpoint") {
-    let jaeger_endpoint = "http://localhost:14268/api/traces";
-    let zipkin_endpoint = "http://localhost:9411/api/v2/spans";
-    let otlp_endpoint = "http://localhost:4317";
-
-    assert(jaeger_endpoint.contains("jaeger") == false);
-    assert(zipkin_endpoint.contains("zipkin") == false);
-    assert(otlp_endpoint.contains("4317"));
+it("should use probability sampler") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        sampler: tracing::ProbabilitySampler(0.1),  // 10% sampling
+    });
 }
 
-// ============================================================================
-// BAGGAGE CONCEPTS
-// ============================================================================
-
-it("should set and get baggage") {
-    let mut baggage = [];
-
-    baggage = baggage.push("user_id=123");
-    baggage = baggage.push("tenant=acme");
-
-    assert(baggage.len() == 2);
-}
-
-it("should propagate baggage in headers") {
-    let baggage_value = "user_id=123,tenant=acme";
-    assert(baggage_value.contains("user_id"));
-    assert(baggage_value.contains("tenant"));
+it("should use rate limiting sampler") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        sampler: tracing::RateLimitingSampler(10),  // 10 traces/second
+    });
 }
 
 // ============================================================================
-// SPAN LINKS CONCEPTS
+// EXPORTERS
 // ============================================================================
 
-it("should link related spans") {
-    let span1_id = "span1";
-    let span2_id = "span2";
-    let mut links = [];
+it("should export to Jaeger") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        exporter: tracing::exporters::jaeger({
+            endpoint: "http://localhost:14268/api/traces",
+        }),
+    });
+}
 
-    links = links.push(span1_id);
+it("should export to Zipkin") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        exporter: tracing::exporters::zipkin({
+            endpoint: "http://localhost:9411/api/v2/spans",
+        }),
+    });
+}
 
-    assert(links.contains(span1_id));
+it("should export to OTLP") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        exporter: tracing::exporters::otlp({
+            endpoint: "http://localhost:4317",
+        }),
+    });
+}
+
+it("should export to console") {
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        exporter: tracing::exporters::console(),
+    });
 }
 
 // ============================================================================
-// RESOURCE CONCEPTS
+// MIDDLEWARE
+// ============================================================================
+
+it("should create HTTP tracing middleware") {
+    let middleware = tracing::http_middleware({
+        tracer: tracer,
+        propagators: ["w3c", "b3"],
+    });
+}
+
+it("should trace incoming requests") {
+    let middleware = tracing::http_middleware({
+        tracer: tracer,
+        operation_name: |req| "HTTP {req.method} {req.path}",
+    });
+}
+
+// ============================================================================
+// BAGGAGE
+// ============================================================================
+
+it("should set baggage") {
+    let span = tracing::span("operation");
+    tracing::set_baggage("user_id", "123");
+    tracing::set_baggage("tenant", "acme");
+    span.end();
+}
+
+it("should get baggage") {
+    tracing::set_baggage("key", "value");
+    let value = tracing::get_baggage("key");
+    assert(value == "value");
+}
+
+it("should propagate baggage") {
+    tracing::set_baggage("session_id", "abc123");
+
+    let headers = {};
+    tracing::inject_baggage(headers);
+
+    assert(headers["baggage"] != null);
+}
+
+// ============================================================================
+// LINKS
+// ============================================================================
+
+it("should add span link") {
+    let span1 = tracing::span("operation1");
+    span1.end();
+
+    let span2 = tracing::span("operation2");
+    span2.add_link(span1.context(), {
+        "relationship": "caused_by",
+    });
+    span2.end();
+}
+
+// ============================================================================
+// RESOURCE
 // ============================================================================
 
 it("should set resource attributes") {
-    let service_version = "1.0.0";
-    let deployment_env = "production";
-    let host_name = "server-1";
-
-    assert(service_version == "1.0.0");
-    assert(deployment_env == "production");
-    assert(host_name == "server-1");
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        resource: {
+            "service.version": "1.0.0",
+            "deployment.environment": "production",
+            "host.name": "server-1",
+        },
+    });
 }
 
 // ============================================================================
-// BATCH PROCESSING CONCEPTS
+// BATCH PROCESSING
 // ============================================================================
 
 it("should batch span exports") {
-    let max_batch_size = 100;
-    let scheduled_delay_ms = 5000;
-
-    assert(max_batch_size == 100);
-    assert(scheduled_delay_ms == 5000);
+    let tracer = tracing::Tracer::new({
+        service_name: "my-service",
+        batch_processor: {
+            max_batch_size: 100,
+            scheduled_delay: 5000,  // ms
+        },
+    });
 }
 
-it("should flush pending spans") {
-    let mut pending_spans = [];
-    pending_spans = pending_spans.push("span1");
-    pending_spans = pending_spans.push("span2");
+it("should flush spans") {
+    let tracer = tracing::Tracer::new({ service_name: "my-service" });
 
-    // Simulate flush
-    let flushed_count = pending_spans.len();
-    pending_spans = [];
+    // ... create spans ...
 
-    assert(flushed_count == 2);
-    assert(pending_spans.is_empty());
+    tracer.flush();  // Force export pending spans
 }
 
 // ============================================================================
-// ASYNC TRACING CONCEPTS
+// ASYNC TRACING
 // ============================================================================
 
-it("should preserve context in async operations") {
-    let parent_span_id = "parent";
-    let async_child_parent_id = parent_span_id;
+it("should trace async operations") {
+    async {
+        let span = tracing::span("async_operation");
 
-    assert(async_child_parent_id == parent_span_id);
+        await some_async_work();
+
+        span.end();
+    }
 }
 
-// ============================================================================
-// TIMING CONCEPTS
-// ============================================================================
+it("should preserve context across async") {
+    let span = tracing::span("parent");
 
-it("should track span duration") {
-    let start_time = 1000;
-    let end_time = 1500;
-    let duration = end_time - start_time;
+    await async {
+        let child = tracing::span("async_child");
+        assert(child.parent_span_id() == span.span_id());
+        child.end();
+    };
 
-    assert(duration == 500);
+    span.end();
 }
 
-// ============================================================================
-// MIDDLEWARE CONCEPTS
-// ============================================================================
-
-it("should extract operation name from request") {
-    let method = "GET";
-    let path = "/api/users";
-    let operation_name = "HTTP " + method + " " + path;
-
-    assert(operation_name == "HTTP GET /api/users");
-}
-
-// ============================================================================
-// SAMPLING CONCEPTS
-// ============================================================================
-
-it("should implement probability sampling") {
-    let sample_rate = 0.1;
-    let total_requests = 100;
-    let expected_samples = 10;
-
-    // Simulate sampling decision
-    let should_sample = sample_rate > 0;
-    assert(should_sample == true);
-}
-
-it("should implement rate limiting sampling") {
-    let traces_per_second = 10;
-    let current_count = 5;
-
-    let within_limit = current_count < traces_per_second;
-    assert(within_limit == true);
-}

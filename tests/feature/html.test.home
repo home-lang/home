@@ -1,387 +1,373 @@
 // HTML Parsing and Manipulation Test Suite
-// Tests HTML concepts using basic Home syntax
 
 // ============================================================================
-// TAG DETECTION
+// PARSING
 // ============================================================================
 
-it("should detect opening tag") {
-    let tag = "<p>";
-    assert(tag.starts_with("<"));
-    assert(tag.ends_with(">"));
-    assert(!tag.contains("/"));
+it("should parse simple HTML") {
+    let doc = html::parse("<html><body><p>Hello</p></body></html>");
+    assert(doc != null);
 }
 
-it("should detect closing tag") {
-    let tag = "</p>";
-    assert(tag.starts_with("</"));
-    assert(tag.ends_with(">"));
+it("should parse HTML fragment") {
+    let fragment = html::parse_fragment("<p>Hello</p><p>World</p>");
+    assert(fragment.children().len() == 2);
 }
 
-it("should detect self-closing tag") {
-    let tag = "<br/>";
-    assert(tag.starts_with("<"));
-    assert(tag.ends_with("/>"));
+it("should handle malformed HTML") {
+    let doc = html::parse("<p>Unclosed paragraph<div>Mixed</p></div>");
+    // Should parse gracefully
+    assert(doc != null);
 }
 
-// ============================================================================
-// TAG NAME EXTRACTION
-// ============================================================================
-
-it("should identify tag names") {
-    let tags = ["p", "div", "span", "a", "ul", "li"];
-    assert(tags.contains("p"));
-    assert(tags.contains("div"));
-    assert(tags.len() == 6);
-}
-
-it("should normalize tag names to lowercase") {
-    let tag = "DIV";
-    let normalized = tag.lower();
-    assert(normalized == "div");
+it("should preserve text content") {
+    let doc = html::parse("<p>Hello World</p>");
+    assert(doc.text_content() == "Hello World");
 }
 
 // ============================================================================
-// ATTRIBUTE PARSING
+// QUERYING
 // ============================================================================
 
-it("should detect attribute presence") {
-    let attr_string = "href=\"https://example.com\"";
-    assert(attr_string.contains("href"));
-    assert(attr_string.contains("="));
+it("should select by tag name") {
+    let doc = html::parse("<html><body><p>One</p><p>Two</p></body></html>");
+    let paragraphs = doc.select("p");
+    assert(paragraphs.len() == 2);
 }
 
-it("should detect id attribute") {
-    let html = "<div id=\"main\">";
-    assert(html.contains("id="));
-    assert(html.contains("main"));
+it("should select by id") {
+    let doc = html::parse("<div id=\"main\">Content</div>");
+    let elem = doc.select_one("#main");
+    assert(elem.text_content() == "Content");
 }
 
-it("should detect class attribute") {
-    let html = "<div class=\"container\">";
-    assert(html.contains("class="));
-    assert(html.contains("container"));
+it("should select by class") {
+    let doc = html::parse("<p class=\"highlight\">Text</p><p>Other</p>");
+    let highlighted = doc.select(".highlight");
+    assert(highlighted.len() == 1);
 }
 
-it("should detect multiple classes") {
-    let classes = "foo bar baz";
-    let class_list = classes.split(" ");
-    assert(class_list.len() == 3);
-    assert(class_list.contains("foo"));
-    assert(class_list.contains("bar"));
-    assert(class_list.contains("baz"));
+it("should select by attribute") {
+    let doc = html::parse("<a href=\"https://example.com\">Link</a>");
+    let links = doc.select("[href]");
+    assert(links.len() == 1);
 }
 
-it("should detect data attributes") {
-    let html = "<div data-value=\"42\">";
-    assert(html.contains("data-"));
-    assert(html.contains("42"));
+it("should select by attribute value") {
+    let doc = html::parse("<input type=\"text\"><input type=\"password\">");
+    let text_inputs = doc.select("[type='text']");
+    assert(text_inputs.len() == 1);
 }
 
-// ============================================================================
-// TEXT CONTENT
-// ============================================================================
-
-it("should extract text between tags") {
-    let content = "Hello World";
-    assert(content == "Hello World");
-    assert(content.len() == 11);
+it("should select with complex selectors") {
+    let doc = html::parse("<div><p class=\"intro\">First</p><p>Second</p></div>");
+    let elem = doc.select_one("div > p.intro");
+    assert(elem.text_content() == "First");
 }
 
-it("should handle empty content") {
-    let content = "";
-    assert(content.len() == 0);
+it("should select descendants") {
+    let doc = html::parse("<div><span><a>Link</a></span></div>");
+    let link = doc.select_one("div a");
+    assert(link.tag_name() == "a");
 }
 
-it("should trim whitespace from content") {
-    let content = "  Hello  ";
-    let trimmed = content.trim();
-    assert(trimmed == "Hello");
+it("should select siblings") {
+    let doc = html::parse("<p>First</p><p>Second</p>");
+    let second = doc.select_one("p + p");
+    assert(second.text_content() == "Second");
 }
 
 // ============================================================================
-// SELECTOR PATTERNS
+// ELEMENT PROPERTIES
 // ============================================================================
 
-it("should recognize id selector") {
-    let selector = "#main";
-    assert(selector.starts_with("#"));
+it("should get tag name") {
+    let doc = html::parse("<DIV>Content</DIV>");
+    let div = doc.select_one("div");
+    assert(div.tag_name() == "div");
 }
 
-it("should recognize class selector") {
-    let selector = ".container";
-    assert(selector.starts_with("."));
+it("should get attribute") {
+    let doc = html::parse("<a href=\"https://example.com\" target=\"_blank\">Link</a>");
+    let link = doc.select_one("a");
+    assert(link.attr("href") == "https://example.com");
+    assert(link.attr("target") == "_blank");
 }
 
-it("should recognize tag selector") {
-    let selector = "div";
-    assert(!selector.starts_with("#"));
-    assert(!selector.starts_with("."));
+it("should check attribute exists") {
+    let doc = html::parse("<input disabled>");
+    let input = doc.select_one("input");
+    assert(input.has_attr("disabled") == true);
+    assert(input.has_attr("readonly") == false);
 }
 
-it("should recognize attribute selector") {
-    let selector = "[href]";
-    assert(selector.starts_with("["));
-    assert(selector.ends_with("]"));
+it("should get all attributes") {
+    let doc = html::parse("<div id=\"main\" class=\"container\" data-value=\"42\"></div>");
+    let div = doc.select_one("div");
+    let attrs = div.attrs();
+    assert(attrs["id"] == "main");
+    assert(attrs["class"] == "container");
 }
 
-it("should recognize descendant selector") {
-    let selector = "div p";
-    assert(selector.contains(" "));
-}
-
-it("should recognize child selector") {
-    let selector = "div > p";
-    assert(selector.contains(">"));
-}
-
-it("should recognize sibling selector") {
-    let selector = "p + p";
-    assert(selector.contains("+"));
-}
-
-// ============================================================================
-// DOM TREE STRUCTURE
-// ============================================================================
-
-it("should track parent-child relationships") {
-    let parent = "div";
-    let children = ["p", "span", "a"];
-    assert(children.len() == 3);
-    assert(children.contains("p"));
-}
-
-it("should track sibling order") {
-    let siblings = ["first", "second", "third"];
-    assert(siblings.first() == "first");
-    assert(siblings.last() == "third");
-}
-
-it("should get child count") {
-    let children = ["li", "li", "li"];
-    assert(children.len() == 3);
-}
-
-it("should check if element has children") {
-    let children = ["p"];
-    assert(!children.is_empty());
-
-    let empty_children = [1];
-    let remaining = empty_children.pop();
-    assert(remaining.is_empty());
-}
-
-// ============================================================================
-// HTML ENTITY ENCODING
-// ============================================================================
-
-it("should identify less than entity") {
-    let entity = "&lt;";
-    let decoded = "<";
-    assert(entity.contains("lt"));
-    assert(decoded == "<");
-}
-
-it("should identify greater than entity") {
-    let entity = "&gt;";
-    let decoded = ">";
-    assert(entity.contains("gt"));
-    assert(decoded == ">");
-}
-
-it("should identify ampersand entity") {
-    let entity = "&amp;";
-    let decoded = "&";
-    assert(entity.contains("amp"));
-}
-
-it("should identify quote entity") {
-    let entity = "&quot;";
-    assert(entity.contains("quot"));
-}
-
-it("should identify apostrophe entity") {
-    let entity = "&#39;";
-    assert(entity.contains("39"));
-}
-
-// ============================================================================
-// HTML SANITIZATION PATTERNS
-// ============================================================================
-
-it("should detect script tags") {
-    let html = "<script>alert('xss')</script>";
-    let is_dangerous = html.contains("<script");
-    assert(is_dangerous == true);
-}
-
-it("should detect onclick handlers") {
-    let html = "<p onclick=\"evil()\">Text</p>";
-    let is_dangerous = html.contains("onclick");
-    assert(is_dangerous == true);
-}
-
-it("should detect event handlers") {
-    let dangerous_attrs = ["onclick", "onload", "onerror", "onmouseover"];
-    assert(dangerous_attrs.contains("onclick"));
-    assert(dangerous_attrs.contains("onload"));
-}
-
-it("should identify safe tags") {
-    let safe_tags = ["p", "div", "span", "b", "i", "strong", "em"];
-    assert(safe_tags.contains("p"));
-    assert(safe_tags.contains("strong"));
-    assert(!safe_tags.contains("script"));
-}
-
-it("should identify safe attributes") {
-    let safe_attrs = ["href", "src", "class", "id", "alt", "title"];
-    assert(safe_attrs.contains("href"));
-    assert(safe_attrs.contains("class"));
-    assert(!safe_attrs.contains("onclick"));
-}
-
-// ============================================================================
-// CSS CLASS MANIPULATION
-// ============================================================================
-
-it("should add class to list") {
-    let mut classes = ["existing"];
-    classes = classes.push("new");
-    assert(classes.contains("existing"));
-    assert(classes.contains("new"));
-}
-
-it("should check if class exists") {
-    let classes = ["foo", "bar", "baz"];
+it("should get classes") {
+    let doc = html::parse("<div class=\"foo bar baz\"></div>");
+    let div = doc.select_one("div");
+    let classes = div.classes();
     assert(classes.contains("foo"));
-    assert(!classes.contains("nonexistent"));
+    assert(classes.contains("bar"));
 }
 
-it("should track class toggle state") {
-    let mut has_class = true;
-    has_class = !has_class;
-    assert(has_class == false);
-    has_class = !has_class;
-    assert(has_class == true);
+it("should get inner HTML") {
+    let doc = html::parse("<div><p>Hello</p></div>");
+    let div = doc.select_one("div");
+    assert(div.inner_html() == "<p>Hello</p>");
 }
 
-// ============================================================================
-// VOID ELEMENTS
-// ============================================================================
-
-it("should identify void elements") {
-    let void_elements = ["br", "hr", "img", "input", "meta", "link"];
-    assert(void_elements.contains("br"));
-    assert(void_elements.contains("img"));
-    assert(!void_elements.contains("div"));
-}
-
-it("should check if tag is void") {
-    let tag = "br";
-    let void_elements = ["br", "hr", "img", "input"];
-    let is_void = void_elements.contains(tag);
-    assert(is_void == true);
+it("should get outer HTML") {
+    let doc = html::parse("<div><p>Hello</p></div>");
+    let p = doc.select_one("p");
+    assert(p.outer_html() == "<p>Hello</p>");
 }
 
 // ============================================================================
-// BLOCK VS INLINE ELEMENTS
+// TRAVERSAL
 // ============================================================================
 
-it("should identify block elements") {
-    let block_elements = ["div", "p", "h1", "ul", "ol", "li", "table"];
-    assert(block_elements.contains("div"));
-    assert(block_elements.contains("p"));
+it("should get parent") {
+    let doc = html::parse("<div><p>Text</p></div>");
+    let p = doc.select_one("p");
+    assert(p.parent().tag_name() == "div");
 }
 
-it("should identify inline elements") {
-    let inline_elements = ["span", "a", "strong", "em", "b", "i"];
-    assert(inline_elements.contains("span"));
-    assert(inline_elements.contains("a"));
+it("should get children") {
+    let doc = html::parse("<ul><li>1</li><li>2</li><li>3</li></ul>");
+    let ul = doc.select_one("ul");
+    assert(ul.children().len() == 3);
 }
 
-// ============================================================================
-// HTML VALIDATION PATTERNS
-// ============================================================================
-
-it("should detect unclosed tags") {
-    let open_tags = ["div", "p", "span"];
-    let close_tags = ["div", "span"];
-    let is_balanced = open_tags.len() == close_tags.len();
-    assert(is_balanced == false);
+it("should get first child") {
+    let doc = html::parse("<div><span>First</span><span>Second</span></div>");
+    let div = doc.select_one("div");
+    assert(div.first_child().text_content() == "First");
 }
 
-it("should detect balanced tags") {
-    let open_count = 3;
-    let close_count = 3;
-    assert(open_count == close_count);
+it("should get last child") {
+    let doc = html::parse("<div><span>First</span><span>Last</span></div>");
+    let div = doc.select_one("div");
+    assert(div.last_child().text_content() == "Last");
 }
 
-// ============================================================================
-// INNER VS OUTER HTML
-// ============================================================================
-
-it("should distinguish inner content") {
-    let outer = "<div><p>Hello</p></div>";
-    let inner = "<p>Hello</p>";
-    assert(outer.contains(inner));
-    assert(outer.len() > inner.len());
+it("should get next sibling") {
+    let doc = html::parse("<p>One</p><p>Two</p><p>Three</p>");
+    let first = doc.select_one("p");
+    assert(first.next_sibling().text_content() == "Two");
 }
 
-it("should include wrapper in outer") {
-    let outer = "<p>Hello</p>";
-    assert(outer.starts_with("<p>"));
-    assert(outer.ends_with("</p>"));
+it("should get previous sibling") {
+    let doc = html::parse("<p>One</p><p>Two</p>");
+    let second = doc.select("p")[1];
+    assert(second.prev_sibling().text_content() == "One");
+}
+
+it("should get ancestors") {
+    let doc = html::parse("<html><body><div><p>Text</p></div></body></html>");
+    let p = doc.select_one("p");
+    let ancestors = p.ancestors();
+    assert(ancestors.len() >= 3);  // div, body, html
 }
 
 // ============================================================================
-// PRETTY PRINTING
+// MODIFICATION
 // ============================================================================
 
-it("should detect newlines for pretty print") {
-    let pretty = "<div>\n  <p>Hello</p>\n</div>";
+it("should set attribute") {
+    let doc = html::parse("<a>Link</a>");
+    let link = doc.select_one("a");
+    link.set_attr("href", "https://example.com");
+    assert(link.attr("href") == "https://example.com");
+}
+
+it("should remove attribute") {
+    let doc = html::parse("<div class=\"old\">Content</div>");
+    let div = doc.select_one("div");
+    div.remove_attr("class");
+    assert(div.has_attr("class") == false);
+}
+
+it("should set text content") {
+    let doc = html::parse("<p>Old</p>");
+    let p = doc.select_one("p");
+    p.set_text("New");
+    assert(p.text_content() == "New");
+}
+
+it("should set inner HTML") {
+    let doc = html::parse("<div></div>");
+    let div = doc.select_one("div");
+    div.set_inner_html("<p>Added</p>");
+    assert(div.select_one("p") != null);
+}
+
+it("should add class") {
+    let doc = html::parse("<div class=\"existing\"></div>");
+    let div = doc.select_one("div");
+    div.add_class("new");
+    assert(div.classes().contains("new"));
+    assert(div.classes().contains("existing"));
+}
+
+it("should remove class") {
+    let doc = html::parse("<div class=\"foo bar\"></div>");
+    let div = doc.select_one("div");
+    div.remove_class("foo");
+    assert(div.classes().contains("foo") == false);
+    assert(div.classes().contains("bar") == true);
+}
+
+it("should toggle class") {
+    let doc = html::parse("<div class=\"active\"></div>");
+    let div = doc.select_one("div");
+    div.toggle_class("active");
+    assert(div.classes().contains("active") == false);
+    div.toggle_class("active");
+    assert(div.classes().contains("active") == true);
+}
+
+// ============================================================================
+// DOM MANIPULATION
+// ============================================================================
+
+it("should append child") {
+    let doc = html::parse("<ul></ul>");
+    let ul = doc.select_one("ul");
+    let li = html::create_element("li");
+    li.set_text("Item");
+    ul.append_child(li);
+    assert(ul.children().len() == 1);
+}
+
+it("should prepend child") {
+    let doc = html::parse("<ul><li>Existing</li></ul>");
+    let ul = doc.select_one("ul");
+    let li = html::create_element("li");
+    li.set_text("First");
+    ul.prepend_child(li);
+    assert(ul.first_child().text_content() == "First");
+}
+
+it("should remove element") {
+    let doc = html::parse("<div><p>Remove me</p></div>");
+    let p = doc.select_one("p");
+    p.remove();
+    assert(doc.select_one("p") == null);
+}
+
+it("should replace element") {
+    let doc = html::parse("<div><p>Old</p></div>");
+    let p = doc.select_one("p");
+    let span = html::create_element("span");
+    span.set_text("New");
+    p.replace_with(span);
+    assert(doc.select_one("span").text_content() == "New");
+}
+
+it("should insert before") {
+    let doc = html::parse("<div><p>After</p></div>");
+    let p = doc.select_one("p");
+    let span = html::create_element("span");
+    span.set_text("Before");
+    p.insert_before(span);
+    assert(doc.select_one("div").first_child().tag_name() == "span");
+}
+
+it("should insert after") {
+    let doc = html::parse("<div><p>Before</p></div>");
+    let p = doc.select_one("p");
+    let span = html::create_element("span");
+    span.set_text("After");
+    p.insert_after(span);
+    assert(doc.select_one("div").last_child().tag_name() == "span");
+}
+
+// ============================================================================
+// SANITIZATION
+// ============================================================================
+
+it("should sanitize HTML") {
+    let dirty = "<p onclick=\"alert('xss')\">Safe text<script>evil()</script></p>";
+    let clean = html::sanitize(dirty);
+    assert(!clean.contains("onclick"));
+    assert(!clean.contains("script"));
+    assert(clean.contains("Safe text"));
+}
+
+it("should allow specific tags") {
+    let input = "<p><b>Bold</b><script>bad</script></p>";
+    let clean = html::sanitize(input, allowed_tags: ["p", "b"]);
+    assert(clean.contains("<b>"));
+    assert(!clean.contains("script"));
+}
+
+it("should allow specific attributes") {
+    let input = "<a href=\"safe\" onclick=\"bad\">Link</a>";
+    let clean = html::sanitize(input, allowed_attrs: { "a": ["href"] });
+    assert(clean.contains("href"));
+    assert(!clean.contains("onclick"));
+}
+
+it("should strip all HTML") {
+    let input = "<p>Hello <b>World</b></p>";
+    let text = html::strip_tags(input);
+    assert(text == "Hello World");
+}
+
+// ============================================================================
+// SERIALIZATION
+// ============================================================================
+
+it("should serialize to string") {
+    let doc = html::parse("<p>Hello</p>");
+    let str = doc.to_string();
+    assert(str.contains("<p>Hello</p>"));
+}
+
+it("should pretty print") {
+    let doc = html::parse("<div><p>Hello</p></div>");
+    let pretty = doc.to_string(pretty: true);
     assert(pretty.contains("\n"));
 }
 
-it("should detect indentation") {
-    let indented = "  <p>Hello</p>";
-    assert(indented.starts_with("  "));
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+it("should validate HTML") {
+    let result = html::validate("<p>Valid</p>");
+    assert(result.is_valid == true);
+}
+
+it("should report validation errors") {
+    let result = html::validate("<p>Unclosed");
+    assert(result.errors.len() > 0);
 }
 
 // ============================================================================
-// URL HANDLING IN ATTRIBUTES
+// ENCODING
 // ============================================================================
 
-it("should detect absolute URLs") {
-    let url = "https://example.com";
-    assert(url.starts_with("https://"));
+it("should encode entities") {
+    let encoded = html::encode("<script>alert('xss')</script>");
+    assert(encoded == "&lt;script&gt;alert('xss')&lt;/script&gt;");
 }
 
-it("should detect relative URLs") {
-    let url = "/path/to/page";
-    assert(url.starts_with("/"));
-    assert(!url.contains("://"));
+it("should decode entities") {
+    let decoded = html::decode("&lt;p&gt;Hello&lt;/p&gt;");
+    assert(decoded == "<p>Hello</p>");
 }
 
-it("should detect protocol-relative URLs") {
-    let url = "//example.com/path";
-    assert(url.starts_with("//"));
+it("should encode special characters") {
+    assert(html::encode("&") == "&amp;");
+    assert(html::encode("\"") == "&quot;");
+    assert(html::encode("'") == "&#39;");
 }
 
-// ============================================================================
-// SPECIAL CHARACTERS
-// ============================================================================
-
-it("should handle quotes in attributes") {
-    let double_quote = "\"";
-    let single_quote = "'";
-    assert(double_quote.len() == 1);
-    assert(single_quote.len() == 1);
-}
-
-it("should escape special characters in content") {
-    let special_chars = ["<", ">", "&", "\"", "'"];
-    assert(special_chars.len() == 5);
-    assert(special_chars.contains("<"));
-    assert(special_chars.contains("&"));
-}

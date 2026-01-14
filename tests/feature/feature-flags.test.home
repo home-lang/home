@@ -1,322 +1,441 @@
 // Feature Flags Concepts Test Suite
-// Tests feature flag patterns using basic Home syntax
+// Tests feature flag patterns using existing language constructs
 
 // ============================================================================
-// BASIC FLAG STATES
+// BASIC FEATURE FLAG STRUCT
 // ============================================================================
 
-it("should track enabled flag") {
-    let flag_enabled = true;
-    assert(flag_enabled == true);
+struct FeatureFlag {
+    name: str,
+    enabled: bool,
+    rollout_percentage: i32,
 }
 
-it("should track disabled flag") {
-    let flag_enabled = false;
-    assert(flag_enabled == false);
+fn new_flag(name: str, enabled: bool): FeatureFlag {
+    return FeatureFlag { name: name, enabled: enabled, rollout_percentage: 100 };
 }
 
-it("should toggle flag state") {
-    let mut flag = false;
-    flag = !flag;
-    assert(flag == true);
+fn new_rollout_flag(name: str, percentage: i32): FeatureFlag {
+    return FeatureFlag { name: name, enabled: true, rollout_percentage: percentage };
 }
 
-// ============================================================================
-// FLAG STORAGE
-// ============================================================================
-
-it("should store multiple flags") {
-    let flags = [true, false, true, true, false];
-    assert(flags.len() == 5);
-    assert(flags[0] == true);
-    assert(flags[1] == false);
+fn is_flag_enabled(flag: FeatureFlag): bool {
+    return flag.enabled;
 }
 
-it("should store flag names") {
-    let flag_names = ["new_ui", "dark_mode", "beta_features"];
-    assert(flag_names.contains("dark_mode") == true);
+fn toggle_flag(flag: FeatureFlag): FeatureFlag {
+    return FeatureFlag { name: flag.name, enabled: !flag.enabled, rollout_percentage: flag.rollout_percentage };
 }
 
-// ============================================================================
-// FLAG LOOKUP
-// ============================================================================
-
-it("should check flag by name") {
-    let flag_name = "new_feature";
-    let enabled_flags = ["new_feature", "other_feature"];
-    let is_enabled = enabled_flags.contains(flag_name);
-    assert(is_enabled == true);
+it("should create feature flag") {
+    let flag = new_flag("dark_mode", false);
+    assert(is_flag_enabled(flag) == false);
+    assert(flag.name == "dark_mode");
 }
 
-it("should return false for missing flag") {
-    let flag_name = "missing_flag";
-    let enabled_flags = ["feature_a", "feature_b"];
-    let is_enabled = enabled_flags.contains(flag_name);
-    assert(is_enabled == false);
+it("should enable feature flag") {
+    let flag = new_flag("feature_a", true);
+    assert(is_flag_enabled(flag) == true);
+}
+
+it("should toggle feature flag") {
+    let flag = new_flag("toggle_me", false);
+    let toggled = toggle_flag(flag);
+    assert(is_flag_enabled(toggled) == true);
+
+    let toggled_again = toggle_flag(toggled);
+    assert(is_flag_enabled(toggled_again) == false);
 }
 
 // ============================================================================
-// DEFAULT VALUES
+// FEATURE FLAG COLLECTION
 // ============================================================================
 
-it("should use default when flag missing") {
-    let flag_value = false;  // Not set
-    let default_value = true;
-
-    let result = if (!flag_value) { default_value } else { flag_value };
-    assert(result == true);
+struct FlagManager {
+    flags: [FeatureFlag],
 }
 
-it("should override default when flag set") {
-    let flag_value = true;  // Set explicitly
-    let default_value = false;
+fn new_manager(): FlagManager {
+    return FlagManager { flags: [] };
+}
 
-    let result = flag_value;  // Use flag value
-    assert(result == true);
+fn define_flag(manager: FlagManager, name: str, enabled: bool): FlagManager {
+    let new_flag = FeatureFlag { name: name, enabled: enabled, rollout_percentage: 100 };
+    return FlagManager { flags: manager.flags.push(new_flag) };
+}
+
+fn check_flag_enabled(manager: FlagManager, name: str): bool {
+    for flag in manager.flags {
+        if (flag.name == name) {
+            return flag.enabled;
+        }
+    }
+    return false;
+}
+
+it("should manage multiple flags") {
+    let m1 = new_manager();
+    let m2 = define_flag(m1, "feature_a", true);
+    let m3 = define_flag(m2, "feature_b", false);
+    let manager = define_flag(m3, "feature_c", true);
+
+    assert(check_flag_enabled(manager, "feature_a") == true);
+    assert(check_flag_enabled(manager, "feature_b") == false);
+    assert(check_flag_enabled(manager, "feature_c") == true);
+}
+
+it("should return false for undefined flag") {
+    let manager = new_manager();
+    assert(check_flag_enabled(manager, "nonexistent") == false);
 }
 
 // ============================================================================
-// PERCENTAGE ROLLOUT
+// CONDITIONAL EXECUTION BASED ON FLAGS
 // ============================================================================
 
-it("should calculate rollout percentage") {
-    let enabled_users = 30;
-    let total_users = 100;
-    let percentage = (enabled_users * 100) / total_users;
-    assert(percentage == 30);
+it("should execute when flag enabled") {
+    let flag = new_flag("new_feature", true);
+    let mut executed = false;
+
+    if (is_flag_enabled(flag)) {
+        executed = true;
+    }
+
+    assert(executed == true);
 }
 
-it("should check if in rollout") {
-    let user_bucket = 25;  // User's bucket (0-99)
-    let rollout_percentage = 50;
-    let in_rollout = user_bucket < rollout_percentage;
-    assert(in_rollout == true);
+it("should not execute when flag disabled") {
+    let flag = new_flag("disabled_feature", false);
+    let mut executed = false;
+
+    if (is_flag_enabled(flag)) {
+        executed = true;
+    }
+
+    assert(executed == false);
 }
 
-it("should exclude from rollout") {
-    let user_bucket = 75;
-    let rollout_percentage = 50;
-    let in_rollout = user_bucket < rollout_percentage;
-    assert(in_rollout == false);
+it("should choose value based on flag") {
+    let flag = new_flag("use_new_algo", true);
+    let algo = if (is_flag_enabled(flag)) { "v2" } else { "v1" };
+    assert(algo == "v2");
+}
+
+// ============================================================================
+// PERCENTAGE ROLLOUT SIMULATION
+// ============================================================================
+
+fn hash_user_id(user_id: i32, flag_name: str): i32 {
+    // Simple hash function for consistent user bucketing
+    let hash = user_id * 31 + flag_name.len();
+    return (hash % 100) + 1;  // Returns 1-100
+}
+
+fn is_enabled_for_user(flag: FeatureFlag, user_id: i32): bool {
+    if (!flag.enabled) {
+        return false;
+    }
+    let bucket = hash_user_id(user_id, flag.name);
+    return bucket <= flag.rollout_percentage;
+}
+
+it("should rollout by percentage") {
+    let flag = new_rollout_flag("gradual_rollout", 50);
+
+    let mut enabled_count = 0;
+    for i in 0..100 {
+        if (is_enabled_for_user(flag, i)) {
+            enabled_count = enabled_count + 1;
+        }
+    }
+
+    // Should be roughly 50 +/- some variance
+    assert(enabled_count > 30);
+    assert(enabled_count < 70);
+}
+
+it("should be consistent per user") {
+    let flag = new_rollout_flag("feature", 50);
+
+    let first_check = is_enabled_for_user(flag, 123);
+    let second_check = is_enabled_for_user(flag, 123);
+
+    assert(first_check == second_check);
+}
+
+it("should enable for all users at 100%") {
+    let flag = new_rollout_flag("full_rollout", 100);
+
+    let mut all_enabled = true;
+    for i in 0..50 {
+        if (!is_enabled_for_user(flag, i)) {
+            all_enabled = false;
+        }
+    }
+
+    assert(all_enabled == true);
+}
+
+it("should disable for all users at 0%") {
+    let flag = FeatureFlag { name: "no_rollout", enabled: true, rollout_percentage: 0 };
+
+    let mut any_enabled = false;
+    for i in 0..50 {
+        if (is_enabled_for_user(flag, i)) {
+            any_enabled = true;
+        }
+    }
+
+    assert(any_enabled == false);
 }
 
 // ============================================================================
 // USER TARGETING
 // ============================================================================
 
-it("should target specific user") {
-    let target_users = ["user123", "user456", "user789"];
-    let current_user = "user456";
-    let is_targeted = target_users.contains(current_user);
-    assert(is_targeted == true);
+struct TargetedFlag {
+    name: str,
+    enabled_users: [str],
 }
 
-it("should not target unlisted user") {
-    let target_users = ["user123", "user456"];
-    let current_user = "user999";
-    let is_targeted = target_users.contains(current_user);
-    assert(is_targeted == false);
+fn is_user_targeted(flag: TargetedFlag, user_id: str): bool {
+    for u in flag.enabled_users {
+        if (u == user_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+it("should target specific users") {
+    let flag = TargetedFlag {
+        name: "premium_feature",
+        enabled_users: ["user1", "user2", "user3"],
+    };
+
+    assert(is_user_targeted(flag, "user1") == true);
+    assert(is_user_targeted(flag, "user2") == true);
+    assert(is_user_targeted(flag, "user99") == false);
+}
+
+// ============================================================================
+// SEGMENT TARGETING
+// ============================================================================
+
+struct SegmentFlag {
+    name: str,
+    target_segments: [str],
+}
+
+fn has_segment(user_segments: [str], target: str): bool {
+    for seg in user_segments {
+        if (seg == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn is_segment_targeted(flag: SegmentFlag, user_segments: [str]): bool {
+    for target in flag.target_segments {
+        if (has_segment(user_segments, target)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+it("should target user segments") {
+    let flag = SegmentFlag {
+        name: "enterprise_feature",
+        target_segments: ["enterprise", "beta"],
+    };
+
+    assert(is_segment_targeted(flag, ["enterprise", "active"]) == true);
+    assert(is_segment_targeted(flag, ["beta"]) == true);
+    assert(is_segment_targeted(flag, ["free", "active"]) == false);
+}
+
+// ============================================================================
+// VARIANTS (A/B TESTING)
+// ============================================================================
+
+struct Variant {
+    name: str,
+    weight: i32,
+}
+
+fn get_variant(variants: [Variant], user_id: i32): str {
+    let mut total_weight = 0;
+    for v in variants {
+        total_weight = total_weight + v.weight;
+    }
+
+    let bucket = (user_id * 17) % total_weight;
+    let mut cumulative = 0;
+
+    for v in variants {
+        cumulative = cumulative + v.weight;
+        if (bucket < cumulative) {
+            return v.name;
+        }
+    }
+
+    return variants[0].name;
+}
+
+it("should return a variant") {
+    let variants = [
+        Variant { name: "red", weight: 50 },
+        Variant { name: "blue", weight: 30 },
+        Variant { name: "green", weight: 20 },
+    ];
+
+    let variant = get_variant(variants, 123);
+    assert(variant == "red" or variant == "blue" or variant == "green");
+}
+
+it("should be consistent per user for variants") {
+    let variants = [
+        Variant { name: "control", weight: 50 },
+        Variant { name: "treatment", weight: 50 },
+    ];
+
+    let v1 = get_variant(variants, 456);
+    let v2 = get_variant(variants, 456);
+
+    assert(v1 == v2);
 }
 
 // ============================================================================
 // ENVIRONMENT-BASED FLAGS
 // ============================================================================
 
-it("should enable in development") {
-    let environment = "development";
-    let enabled_in_dev = environment == "development";
-    assert(enabled_in_dev == true);
+struct EnvFlag {
+    name: str,
+    dev_enabled: bool,
+    staging_enabled: bool,
+    prod_enabled: bool,
 }
 
-it("should disable in production") {
-    let environment = "production";
-    let beta_allowed = environment != "production";
-    assert(beta_allowed == false);
+fn is_enabled_in_env(flag: EnvFlag, env: str): bool {
+    if (env == "development") { return flag.dev_enabled; }
+    if (env == "staging") { return flag.staging_enabled; }
+    if (env == "production") { return flag.prod_enabled; }
+    return false;
 }
 
-it("should check multiple environments") {
-    let environment = "staging";
-    let allowed = environment == "development" or environment == "staging";
-    assert(allowed == true);
-}
-
-// ============================================================================
-// A/B TESTING VARIANTS
-// ============================================================================
-
-it("should select variant A") {
-    let user_bucket = 30;
-    let variant = if (user_bucket < 50) { "A" } else { "B" };
-    assert(variant == "A");
-}
-
-it("should select variant B") {
-    let user_bucket = 75;
-    let variant = if (user_bucket < 50) { "A" } else { "B" };
-    assert(variant == "B");
-}
-
-it("should handle multiple variants") {
-    let user_bucket = 65;
-    let variant = if (user_bucket < 33) {
-        "control"
-    } else if (user_bucket < 66) {
-        "variant_a"
-    } else {
-        "variant_b"
+it("should vary by environment") {
+    let flag = EnvFlag {
+        name: "debug_mode",
+        dev_enabled: true,
+        staging_enabled: true,
+        prod_enabled: false,
     };
-    assert(variant == "variant_a");
-}
 
-// ============================================================================
-// FLAG EXPIRATION
-// ============================================================================
-
-it("should check flag expiration") {
-    let expiry_time = 1704067200;
-    let current_time = 1704153600;
-    let is_expired = current_time > expiry_time;
-    assert(is_expired == true);
-}
-
-it("should check flag not expired") {
-    let expiry_time = 1704200000;
-    let current_time = 1704100000;
-    let is_expired = current_time > expiry_time;
-    assert(is_expired == false);
+    assert(is_enabled_in_env(flag, "development") == true);
+    assert(is_enabled_in_env(flag, "staging") == true);
+    assert(is_enabled_in_env(flag, "production") == false);
 }
 
 // ============================================================================
 // FLAG DEPENDENCIES
 // ============================================================================
 
-it("should check dependent flag") {
-    let parent_enabled = true;
-    let child_enabled = true;
-    let effective = parent_enabled and child_enabled;
-    assert(effective == true);
-}
+it("should handle feature dependencies") {
+    let base_enabled = true;
+    let advanced_enabled = true;
 
-it("should disable when parent disabled") {
-    let parent_enabled = false;
-    let child_enabled = true;
-    let effective = parent_enabled and child_enabled;
-    assert(effective == false);
-}
+    // Advanced feature requires base feature
+    let effective_advanced = base_enabled and advanced_enabled;
+    assert(effective_advanced == true);
 
-// ============================================================================
-// GRADUAL ROLLOUT
-// ============================================================================
-
-it("should track rollout progress") {
-    let mut rollout_percent = 10;
-    rollout_percent = rollout_percent + 10;  // Increase
-    assert(rollout_percent == 20);
-}
-
-it("should calculate next rollout step") {
-    let current = 50;
-    let step = 10;
-    let next = current + step;
-    assert(next == 60);
-}
-
-it("should cap at 100 percent") {
-    let current = 95;
-    let step = 10;
-    let next = if (current + step > 100) { 100 } else { current + step };
-    assert(next == 100);
+    // When base is disabled, advanced is also disabled
+    let base_disabled = false;
+    let effective_when_base_off = base_disabled and advanced_enabled;
+    assert(effective_when_base_off == false);
 }
 
 // ============================================================================
-// FLAG OVERRIDE
+// FLAG STATISTICS
 // ============================================================================
 
-it("should override global flag") {
-    let global_value = false;
-    let user_override = true;
-    let has_override = true;
-
-    let effective = if (has_override) { user_override } else { global_value };
-    assert(effective == true);
+struct FlagStats {
+    evaluation_count: i32,
+    enabled_count: i32,
+    disabled_count: i32,
 }
 
-it("should use global when no override") {
-    let global_value = true;
-    let has_override = false;
+it("should track flag evaluations") {
+    let mut stats = FlagStats {
+        evaluation_count: 0,
+        enabled_count: 0,
+        disabled_count: 0,
+    };
 
-    let effective = if (has_override) { false } else { global_value };
-    assert(effective == true);
-}
+    let flag = new_flag("tracked", true);
 
-// ============================================================================
-// FLAG COMBINATIONS
-// ============================================================================
+    // Simulate evaluations
+    for _ in 0..10 {
+        stats = FlagStats {
+            evaluation_count: stats.evaluation_count + 1,
+            enabled_count: if (flag.enabled) { stats.enabled_count + 1 } else { stats.enabled_count },
+            disabled_count: if (!flag.enabled) { stats.disabled_count + 1 } else { stats.disabled_count },
+        };
+    }
 
-it("should require all flags enabled") {
-    let flag_a = true;
-    let flag_b = true;
-    let flag_c = true;
-    let all_enabled = flag_a and flag_b and flag_c;
-    assert(all_enabled == true);
-}
-
-it("should require any flag enabled") {
-    let flag_a = false;
-    let flag_b = true;
-    let flag_c = false;
-    let any_enabled = flag_a or flag_b or flag_c;
-    assert(any_enabled == true);
+    assert(stats.evaluation_count == 10);
+    assert(stats.enabled_count == 10);
+    assert(stats.disabled_count == 0);
 }
 
 // ============================================================================
-// FLAG METADATA
+// OVERRIDE MECHANISM
 // ============================================================================
 
-it("should track flag creation time") {
-    let created_at = 1704067200;
-    assert(created_at > 0);
+struct FlagWithOverride {
+    name: str,
+    default_value: bool,
+    has_override: bool,
+    override_value: bool,
 }
 
-it("should track flag description") {
-    let description = "Enables new checkout flow";
-    assert(description.len() > 0);
+fn get_effective_value(flag: FlagWithOverride): bool {
+    if (flag.has_override) {
+        return flag.override_value;
+    }
+    return flag.default_value;
 }
 
-it("should track flag owner") {
-    let owner = "team-checkout";
-    assert(owner == "team-checkout");
+it("should use default when no override") {
+    let flag = FlagWithOverride {
+        name: "feature",
+        default_value: false,
+        has_override: false,
+        override_value: false,
+    };
+
+    assert(get_effective_value(flag) == false);
 }
 
-// ============================================================================
-// KILLSWITCH
-// ============================================================================
+it("should use override when set") {
+    let flag = FlagWithOverride {
+        name: "feature",
+        default_value: false,
+        has_override: true,
+        override_value: true,
+    };
 
-it("should disable via killswitch") {
-    let feature_enabled = true;
-    let killswitch_active = true;
-    let effective = feature_enabled and !killswitch_active;
-    assert(effective == false);
+    assert(get_effective_value(flag) == true);
 }
 
-it("should allow when killswitch inactive") {
-    let feature_enabled = true;
-    let killswitch_active = false;
-    let effective = feature_enabled and !killswitch_active;
-    assert(effective == true);
-}
+it("should override can disable enabled flag") {
+    let flag = FlagWithOverride {
+        name: "feature",
+        default_value: true,
+        has_override: true,
+        override_value: false,
+    };
 
-// ============================================================================
-// FLAG HISTORY
-// ============================================================================
-
-it("should track flag changes") {
-    let mut history = [false];
-    history = history.push(true);
-    history = history.push(true);
-    history = history.push(false);
-
-    assert(history.len() == 4);
-    assert(history[0] == false);
-    assert(history[3] == false);
+    assert(get_effective_value(flag) == false);
 }

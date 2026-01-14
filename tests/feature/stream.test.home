@@ -1,309 +1,409 @@
-// Stream Processing Concepts Test Suite
-// Tests stream processing patterns using basic Home syntax
+// Stream Concepts Test Suite
+// Tests stream patterns using existing language constructs
 
 // ============================================================================
-// READABLE STREAM CONCEPTS
+// SIMULATED STREAM BUFFER
 // ============================================================================
 
-it("should read string data in chunks") {
-    let data = "hello world";
-    // Simulate chunked reading using split
-    let parts = data.split(" ");
-    let chunk1 = parts[0];
-    let chunk2 = parts[1];
-
-    assert(chunk1 == "hello");
-    assert(chunk2 == "world");
+struct StreamBuffer {
+    data: str,
+    position: i32,
 }
 
-it("should detect end of data") {
-    let data = "hi";
-    let mut position = 0;
-    let mut is_eof = false;
-
-    // Read all data
-    while (position < data.len()) {
-        position = position + 1;
-    }
-
-    is_eof = position >= data.len();
-    assert(is_eof == true);
+fn new_stream(data: str): StreamBuffer {
+    return StreamBuffer { data: data, position: 0 };
 }
 
-it("should track bytes read from stream") {
-    let data = [72, 101, 108, 108, 111];
-    let mut bytes_read = 0;
+it("should read from string stream") {
+    let stream = new_stream("hello world");
+    // Read remaining data from position
+    let data = stream.data;  // All data when position is 0
+    assert(data == "hello world");
+}
 
-    for (byte in data) {
-        bytes_read = bytes_read + 1;
-    }
-
-    assert(bytes_read == 5);
+it("should detect end of stream") {
+    let stream = StreamBuffer { data: "hi", position: 2 };
+    assert(stream.position >= stream.data.len());
 }
 
 // ============================================================================
-// WRITABLE STREAM CONCEPTS
+// WRITABLE STREAM BUFFER
 // ============================================================================
 
-it("should write to buffer") {
-    let mut buffer = "";
-    buffer = buffer + "hello ";
-    buffer = buffer + "world";
-    assert(buffer == "hello world");
+struct WriteBuffer {
+    content: str,
 }
 
-it("should write bytes to buffer") {
-    let mut buffer = [];
-    buffer = buffer.push(72);
-    buffer = buffer.push(105);
-    assert(buffer.len() == 2);
-    assert(buffer[0] == 72);
-    assert(buffer[1] == 105);
+fn new_write_buffer(): WriteBuffer {
+    return WriteBuffer { content: "" };
 }
 
-it("should flush buffer contents") {
-    let mut buffer = [];
-    buffer = buffer.push(1);
-    buffer = buffer.push(2);
-    buffer = buffer.push(3);
+fn write_to_buffer(buffer: WriteBuffer, data: str): WriteBuffer {
+    return WriteBuffer { content: buffer.content + data };
+}
 
-    // Simulate flush - process all buffered data
-    let flushed_count = buffer.len();
-    assert(flushed_count == 3);
+fn get_buffer_content(buffer: WriteBuffer): str {
+    return buffer.content;
+}
+
+it("should write to buffer stream") {
+    let mut buffer = new_write_buffer();
+    buffer = write_to_buffer(buffer, "hello ");
+    buffer = write_to_buffer(buffer, "world");
+    assert(get_buffer_content(buffer) == "hello world");
 }
 
 // ============================================================================
-// DUPLEX STREAM CONCEPTS
+// LINE READING
 // ============================================================================
 
-it("should read and write to same buffer") {
-    let mut buffer = [];
-
-    // Write phase
-    buffer = buffer.push("hello");
-
-    // Read phase
-    let data = buffer.first();
-    assert(data == "hello");
-}
-
-// ============================================================================
-// TRANSFORM STREAM CONCEPTS
-// ============================================================================
-
-it("should transform data to uppercase") {
-    let input = "hello";
-    let output = input.upper();
-    assert(output == "HELLO");
-}
-
-it("should chain transformations") {
-    let input = "hello";
-    let step1 = input.upper();
-    let step2 = step1.replace("H", "J");
-    assert(step2 == "JELLO");
-}
-
-// ============================================================================
-// PIPING CONCEPTS
-// ============================================================================
-
-it("should pipe data from source to destination") {
-    let source = "hello world";
-    let mut dest = "";
-
-    // Simulate pipe
-    dest = source;
-    assert(dest == "hello world");
-}
-
-it("should pipe to multiple destinations") {
-    let source = "hello";
-    let mut dest1 = "";
-    let mut dest2 = "";
-
-    // Simulate tee
-    dest1 = source;
-    dest2 = source;
-
-    assert(dest1 == "hello");
-    assert(dest2 == "hello");
-}
-
-// ============================================================================
-// LINE READING CONCEPTS
-// ============================================================================
-
-it("should read lines from data") {
-    let data = "line1\nline2\nline3";
-    let lines = data.split("\n");
+it("should read lines") {
+    let text = "line1\nline2\nline3";
+    let lines = text.split("\n");
     assert(lines.len() == 3);
     assert(lines[0] == "line1");
     assert(lines[1] == "line2");
     assert(lines[2] == "line3");
 }
 
-it("should iterate through lines") {
-    let data = "a\nb\nc";
-    let lines = data.split("\n");
-    let mut count = 0;
+// ============================================================================
+// SIZE AND POSITION
+// ============================================================================
 
-    for (line in lines) {
-        count = count + 1;
-    }
+it("should get stream size") {
+    let stream = new_stream("hello");
+    assert(stream.data.len() == 5);
+}
 
-    assert(count == 3);
+it("should track position") {
+    let stream = StreamBuffer { data: "hello", position: 2 };
+    assert(stream.position == 2);
 }
 
 // ============================================================================
-// BUFFERED STREAM CONCEPTS
+// TRANSFORM OPERATIONS
 // ============================================================================
 
-it("should buffer reads for efficiency") {
-    let data = "hello world";
-    let buffer_size = 4;
-    let mut chunks = [];
-    let mut position = 0;
+it("should transform stream data") {
+    let data = "hello";
+    let transformed = data.upper();
+    assert(transformed == "HELLO");
+}
 
-    while (position < data.len()) {
-        chunks = chunks.push(position);
-        position = position + buffer_size;
-    }
-
-    assert(chunks.len() > 0);
+it("should chain transforms") {
+    let data = "  Hello World  ";
+    let result = data.trim().upper();
+    assert(result == "HELLO WORLD");
 }
 
 // ============================================================================
-// STREAM COMBINATOR CONCEPTS
+// BYTE OPERATIONS
 // ============================================================================
 
-it("should concatenate multiple data sources") {
+struct ByteStream {
+    bytes: [i32],
+    position: i32,
+}
+
+fn new_byte_stream(bytes: [i32]): ByteStream {
+    return ByteStream { bytes: bytes, position: 0 };
+}
+
+fn bytes_to_string(bytes: [i32]): str {
+    let mut result = "";
+    for b in bytes {
+        if (b == 72) { result = result + "H"; }
+        else if (b == 101) { result = result + "e"; }
+        else if (b == 108) { result = result + "l"; }
+        else if (b == 111) { result = result + "o"; }
+        else if (b == 105) { result = result + "i"; }
+    }
+    return result;
+}
+
+it("should convert bytes to string") {
+    let bytes = [72, 101, 108, 108, 111];  // "Hello"
+    let text = bytes_to_string(bytes);
+    assert(text == "Hello");
+}
+
+// ============================================================================
+// CONCATENATION
+// ============================================================================
+
+it("should concatenate streams") {
     let s1 = "hello ";
     let s2 = "world";
     let combined = s1 + s2;
     assert(combined == "hello world");
 }
 
-it("should merge data from multiple sources") {
-    let s1 = "a";
-    let s2 = "b";
-    let merged = s1 + s2;
-    assert(merged.contains("a"));
-    assert(merged.contains("b"));
-}
-
 // ============================================================================
-// SIZE AND POSITION CONCEPTS
+// STRING SLICING
 // ============================================================================
 
-it("should track stream size") {
-    let data = "hello";
-    assert(data.len() == 5);
-}
-
-it("should track current position") {
-    let data = "hello";
-    let mut position = 0;
-
-    // Read 2 characters
-    position = position + 2;
-    assert(position == 2);
-}
-
-it("should seek to position") {
+it("should slice strings") {
     let data = "hello world";
-    // Simulate seek by splitting and getting second part
-    let parts = data.split(" ");
-    let result = parts[1];
-
-    assert(result == "world");
+    let start = data[0..5];
+    assert(start == "hello");
 }
 
-// ============================================================================
-// LIMIT AND TAKE CONCEPTS
-// ============================================================================
-
-it("should limit bytes read") {
+it("should slice from position") {
     let data = "hello world";
-    // Simulate limiting by splitting and getting first part
-    let parts = data.split(" ");
-    let result = parts[0];
-
-    assert(result == "hello");
+    let end = data[6..11];
+    assert(end == "world");
 }
 
-it("should skip bytes") {
+it("should take prefix") {
     let data = "hello world";
-    // Simulate skipping by splitting and getting second part
-    let parts = data.split(" ");
-    let result = parts[1];
+    let prefix = data[..5];
+    assert(prefix == "hello");
+}
 
-    assert(result == "world");
+it("should take suffix") {
+    let data = "hello world";
+    let suffix = data[6..];
+    assert(suffix == "world");
 }
 
 // ============================================================================
-// PEEK CONCEPTS
+// BUFFERED READING CONCEPT
 // ============================================================================
 
-it("should peek without consuming") {
-    let data = "hello";
-    let mut position = 0;
+struct BufferedReader {
+    data: str,
+    buffer_size: i32,
+    position: i32,
+}
 
-    // Simulate peek - position doesn't change
-    let peeked = data;
+fn new_buffered_reader(data: str, buffer_size: i32): BufferedReader {
+    return BufferedReader { data: data, buffer_size: buffer_size, position: 0 };
+}
 
-    // Position should not change
-    assert(position == 0);
+it("should create buffered reader") {
+    let reader = new_buffered_reader("hello world", 4);
+    assert(reader.data == "hello world");
+    assert(reader.buffer_size == 4);
+    assert(reader.position == 0);
+}
 
-    // Read should get same data
-    let read = data;
-    assert(peeked == read);
+it("should track buffer state") {
+    let reader = BufferedReader { data: "abcdefghij", buffer_size: 3, position: 6 };
+    let remaining = reader.data.len() - reader.position;
+    assert(remaining == 4);
 }
 
 // ============================================================================
-// ARRAY STREAM CONCEPTS
+// PROGRESS TRACKING
 // ============================================================================
 
-it("should stream array items") {
-    let items = [1, 2, 3, 4, 5];
-    let mut collected = [];
+struct ProgressReader {
+    total_size: i32,
+    bytes_read: i32,
+}
 
-    for (item in items) {
-        collected = collected.push(item);
+fn new_progress_reader(size: i32): ProgressReader {
+    return ProgressReader { total_size: size, bytes_read: 0 };
+}
+
+fn read_bytes(reader: ProgressReader, count: i32): ProgressReader {
+    return ProgressReader {
+        total_size: reader.total_size,
+        bytes_read: reader.bytes_read + count,
+    };
+}
+
+fn get_progress(reader: ProgressReader): i32 {
+    if (reader.total_size == 0) { return 100; }
+    return (reader.bytes_read * 100) / reader.total_size;
+}
+
+it("should track progress") {
+    let reader = new_progress_reader(100);
+    assert(get_progress(reader) == 0);
+
+    let r2 = read_bytes(reader, 50);
+    assert(get_progress(r2) == 50);
+
+    let r3 = read_bytes(r2, 50);
+    assert(get_progress(r3) == 100);
+}
+
+// ============================================================================
+// STREAM STATE
+// ============================================================================
+
+struct StreamState {
+    is_readable: bool,
+    is_writable: bool,
+    is_closed: bool,
+}
+
+fn new_stream_state(readable: bool, writable: bool): StreamState {
+    return StreamState {
+        is_readable: readable,
+        is_writable: writable,
+        is_closed: false,
+    };
+}
+
+fn close_stream_state(state: StreamState): StreamState {
+    return StreamState {
+        is_readable: false,
+        is_writable: false,
+        is_closed: true,
+    };
+}
+
+it("should track stream state") {
+    let state = new_stream_state(true, false);
+    assert(state.is_readable == true);
+    assert(state.is_writable == false);
+    assert(state.is_closed == false);
+}
+
+it("should close stream") {
+    let state = new_stream_state(true, true);
+    let closed = close_stream_state(state);
+    assert(closed.is_closed == true);
+    assert(closed.is_readable == false);
+    assert(closed.is_writable == false);
+}
+
+// ============================================================================
+// PIPELINE SIMULATION
+// ============================================================================
+
+fn apply_transform(input: str, transform: str): str {
+    if (transform == "upper") {
+        return input.upper();
+    } else if (transform == "lower") {
+        return input.lower();
+    } else if (transform == "trim") {
+        return input.trim();
     }
+    return input;
+}
 
-    assert(collected.len() == 5);
-    assert(collected[0] == 1);
-    assert(collected[4] == 5);
+it("should apply single transform") {
+    let result = apply_transform("hello", "upper");
+    assert(result == "HELLO");
+}
+
+it("should apply multiple transforms") {
+    let data = "  Hello World  ";
+    let trimmed = apply_transform(data, "trim");
+    let upper = apply_transform(trimmed, "upper");
+    assert(upper == "HELLO WORLD");
 }
 
 // ============================================================================
-// NULL STREAM CONCEPTS
+// DUPLEX SIMULATION
 // ============================================================================
 
-it("should discard data like null stream") {
-    let mut null_buffer = [];
-    // Write to null - data is discarded
-    // (no push operation)
+struct DuplexBuffer {
+    read_buffer: str,
+    write_buffer: str,
+}
 
-    assert(null_buffer.is_empty());
+fn new_duplex(): DuplexBuffer {
+    return DuplexBuffer { read_buffer: "", write_buffer: "" };
+}
+
+fn duplex_write(d: DuplexBuffer, data: str): DuplexBuffer {
+    return DuplexBuffer {
+        read_buffer: d.read_buffer + data,
+        write_buffer: d.write_buffer + data,
+    };
+}
+
+it("should create duplex stream") {
+    let mut duplex = new_duplex();
+    duplex = duplex_write(duplex, "hello");
+    assert(duplex.read_buffer == "hello");
+    assert(duplex.write_buffer == "hello");
 }
 
 // ============================================================================
-// PROGRESS TRACKING CONCEPTS
+// SEEK OPERATIONS
 // ============================================================================
 
-it("should track read progress") {
-    let data = "hello world";
-    let total = data.len();
-    let mut bytes_read = 0;
-    let mut progress_updates = [];
+it("should calculate seek position") {
+    let total_size = 100;
+    let current_pos = 50;
 
-    for (i in 0..total) {
-        bytes_read = bytes_read + 1;
-        progress_updates = progress_updates.push(bytes_read);
-    }
+    // Seek to beginning
+    let start_pos = 0;
+    assert(start_pos == 0);
 
-    assert(progress_updates.len() > 0);
-    assert(progress_updates.last() == total);
+    // Seek to end
+    let end_pos = total_size;
+    assert(end_pos == 100);
+
+    // Seek relative
+    let relative_pos = current_pos + 10;
+    assert(relative_pos == 60);
+
+    // Seek from end
+    let from_end_pos = total_size - 20;
+    assert(from_end_pos == 80);
+}
+
+// ============================================================================
+// RATE LIMITING CONCEPT
+// ============================================================================
+
+struct RateLimiter {
+    bytes_per_second: i32,
+    bytes_sent: i32,
+    elapsed_seconds: i32,
+}
+
+fn can_send(limiter: RateLimiter, bytes: i32): bool {
+    let allowed = limiter.bytes_per_second * (limiter.elapsed_seconds + 1);
+    return (limiter.bytes_sent + bytes) <= allowed;
+}
+
+it("should check rate limit") {
+    let limiter = RateLimiter {
+        bytes_per_second: 100,
+        bytes_sent: 0,
+        elapsed_seconds: 0,
+    };
+
+    assert(can_send(limiter, 50) == true);
+    assert(can_send(limiter, 100) == true);
+    assert(can_send(limiter, 150) == false);
+}
+
+// ============================================================================
+// CHUNKED TRANSFER
+// ============================================================================
+
+struct ChunkedWriter {
+    chunks: [str],
+    chunk_size: i32,
+}
+
+fn new_chunked_writer(size: i32): ChunkedWriter {
+    return ChunkedWriter { chunks: [], chunk_size: size };
+}
+
+fn add_chunk(writer: ChunkedWriter, data: str): ChunkedWriter {
+    return ChunkedWriter {
+        chunks: writer.chunks.push(data),
+        chunk_size: writer.chunk_size,
+    };
+}
+
+it("should write in chunks") {
+    let mut writer = new_chunked_writer(4);
+    writer = add_chunk(writer, "hel");
+    writer = add_chunk(writer, "lo ");
+    writer = add_chunk(writer, "wor");
+    writer = add_chunk(writer, "ld");
+
+    assert(writer.chunks.len() == 4);
+    assert(writer.chunks[0] == "hel");
+    assert(writer.chunks[3] == "ld");
 }

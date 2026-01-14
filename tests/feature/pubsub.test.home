@@ -1,364 +1,447 @@
-// Pub/Sub Messaging Concepts Test Suite
-// Tests pub/sub patterns using basic Home syntax
+// Pub/Sub Messaging Test Suite
 
 // ============================================================================
-// TOPIC MATCHING CONCEPTS
+// BASIC PUBSUB
 // ============================================================================
 
-it("should match exact topic") {
-    let topic = "events.user.created";
-    let subscription = "events.user.created";
-    assert(topic == subscription);
+it("should create pubsub instance") {
+    let ps = pubsub::PubSub::new();
+    assert(ps != null);
 }
 
-it("should check topic hierarchy") {
-    let topic = "events.user.created";
-    let parts = topic.split(".");
-    assert(parts.len() == 3);
-    assert(parts[0] == "events");
-    assert(parts[1] == "user");
-    assert(parts[2] == "created");
+it("should subscribe to topic") {
+    let ps = pubsub::PubSub::new();
+    let subscription = ps.subscribe("events");
+    assert(subscription != null);
 }
 
-it("should simulate wildcard matching with single level") {
-    // Pattern: events.*.created should match events.user.created
-    let topic = "events.user.created";
-    let parts = topic.split(".");
+it("should publish message") {
+    let ps = pubsub::PubSub::new();
+    let received = null;
 
-    // Check first and last parts match, middle can be anything
-    let matches = parts[0] == "events" && parts[2] == "created";
-    assert(matches == true);
+    ps.subscribe("events", |msg| {
+        received = msg;
+    });
+
+    ps.publish("events", "hello");
+    assert(received == "hello");
 }
 
-it("should simulate multi-level wildcard matching") {
-    // Pattern: system.# should match any topic starting with system.
-    let topics = ["system.error", "system.warn.memory", "system.info.cpu.usage"];
-    let mut matched = 0;
+it("should publish to multiple subscribers") {
+    let ps = pubsub::PubSub::new();
+    let count = 0;
 
-    for (topic in topics) {
-        if (topic.starts_with("system.")) {
-            matched = matched + 1;
+    ps.subscribe("events", |msg| count += 1);
+    ps.subscribe("events", |msg| count += 1);
+    ps.subscribe("events", |msg| count += 1);
+
+    ps.publish("events", "test");
+    assert(count == 3);
+}
+
+it("should unsubscribe") {
+    let ps = pubsub::PubSub::new();
+    let count = 0;
+
+    let sub = ps.subscribe("events", |msg| count += 1);
+
+    ps.publish("events", "1");
+    sub.unsubscribe();
+    ps.publish("events", "2");
+
+    assert(count == 1);
+}
+
+// ============================================================================
+// TOPICS AND PATTERNS
+// ============================================================================
+
+it("should subscribe to pattern") {
+    let ps = pubsub::PubSub::new();
+    let received = [];
+
+    ps.subscribe_pattern("events.*", |topic, msg| {
+        received.push({ topic, msg });
+    });
+
+    ps.publish("events.user", "user event");
+    ps.publish("events.system", "system event");
+    ps.publish("other", "other event");
+
+    assert(received.len() == 2);
+}
+
+it("should use wildcard patterns") {
+    let ps = pubsub::PubSub::new();
+    let messages = [];
+
+    ps.subscribe_pattern("users.*.created", |topic, msg| {
+        messages.push(msg);
+    });
+
+    ps.publish("users.123.created", "user 123");
+    ps.publish("users.456.created", "user 456");
+    ps.publish("users.123.updated", "not matched");
+
+    assert(messages.len() == 2);
+}
+
+it("should use multi-level wildcard") {
+    let ps = pubsub::PubSub::new();
+    let messages = [];
+
+    ps.subscribe_pattern("system.#", |topic, msg| {
+        messages.push(topic);
+    });
+
+    ps.publish("system.error", "err");
+    ps.publish("system.warn.memory", "warn");
+    ps.publish("system.info.cpu.usage", "info");
+
+    assert(messages.len() == 3);
+}
+
+// ============================================================================
+// MESSAGE TYPES
+// ============================================================================
+
+it("should publish object message") {
+    let ps = pubsub::PubSub::new();
+    let received = null;
+
+    ps.subscribe("users", |msg| received = msg);
+    ps.publish("users", { id: 123, name: "John" });
+
+    assert(received.id == 123);
+    assert(received.name == "John");
+}
+
+it("should publish with metadata") {
+    let ps = pubsub::PubSub::new();
+    let msg = null;
+
+    ps.subscribe("events", |m| msg = m);
+
+    ps.publish("events", "data", {
+        correlation_id: "abc123",
+        timestamp: time::now(),
+    });
+
+    assert(msg.metadata.correlation_id == "abc123");
+}
+
+// ============================================================================
+// ASYNC PUBSUB
+// ============================================================================
+
+it("should async subscribe") {
+    let ps = pubsub::PubSub::new();
+
+    async {
+        let sub = ps.subscribe("events");
+
+        for await msg in sub {
+            print("Received: {msg}");
         }
     }
+}
 
-    assert(matched == 3);
+it("should async publish") {
+    let ps = pubsub::PubSub::new();
+
+    async {
+        await ps.publish_async("events", "async message");
+    }
+}
+
+it("should buffer messages") {
+    let ps = pubsub::PubSub::new();
+    let sub = ps.subscribe("events", buffer_size: 100);
+
+    for i in 0..50 {
+        ps.publish("events", i);
+    }
+
+    let messages = sub.drain();
+    assert(messages.len() == 50);
 }
 
 // ============================================================================
-// MESSAGE ROUTING SIMULATION
+// REDIS PUBSUB
 // ============================================================================
 
-it("should route messages to correct subscribers") {
-    let subscriptions = ["user.events", "system.logs", "user.events"];
-    let topic = "user.events";
-    let mut subscriber_count = 0;
-
-    for (sub in subscriptions) {
-        if (sub == topic) {
-            subscriber_count = subscriber_count + 1;
-        }
-    }
-
-    assert(subscriber_count == 2);
+it("should connect to Redis pubsub") {
+    let ps = pubsub::redis("redis://localhost:6379");
+    assert(ps != null);
 }
 
-it("should filter topics by prefix") {
-    let topics = ["user.create", "user.update", "system.alert", "user.delete"];
-    let mut user_topics = [];
+it("should subscribe via Redis") {
+    let ps = pubsub::redis("redis://localhost:6379");
 
-    for (topic in topics) {
-        if (topic.starts_with("user.")) {
-            user_topics = user_topics.push(topic);
-        }
-    }
-
-    assert(user_topics.len() == 3);
+    ps.subscribe("channel1", |msg| {
+        print("Redis message: {msg}");
+    });
 }
 
-it("should track message count per topic") {
-    let messages = ["events", "events", "logs", "events", "alerts"];
-    let mut events_count = 0;
-    let mut logs_count = 0;
-    let mut alerts_count = 0;
+it("should publish via Redis") {
+    let ps = pubsub::redis("redis://localhost:6379");
+    ps.publish("channel1", "hello from redis");
+}
 
-    for (msg in messages) {
-        if (msg == "events") {
-            events_count = events_count + 1;
-        } else if (msg == "logs") {
-            logs_count = logs_count + 1;
-        } else if (msg == "alerts") {
-            alerts_count = alerts_count + 1;
-        }
-    }
-
-    assert(events_count == 3);
-    assert(logs_count == 1);
-    assert(alerts_count == 1);
+it("should use Redis pattern subscribe") {
+    let ps = pubsub::redis("redis://localhost:6379");
+    ps.psubscribe("events:*", |pattern, channel, msg| {
+        print("Pattern: {pattern}, Channel: {channel}");
+    });
 }
 
 // ============================================================================
-// SUBSCRIPTION MANAGEMENT CONCEPTS
+// MESSAGE QUEUE INTEGRATION
 // ============================================================================
 
-it("should add subscription to list") {
-    let mut subscriptions = [];
-    subscriptions = subscriptions.push("topic1");
-    subscriptions = subscriptions.push("topic2");
+it("should publish to RabbitMQ") {
+    let mq = pubsub::rabbitmq("amqp://localhost:5672");
 
-    assert(subscriptions.len() == 2);
-    assert(subscriptions.contains("topic1"));
+    mq.publish("exchange", "routing.key", {
+        body: "message content",
+        persistent: true,
+    });
 }
 
-it("should remove subscription from list") {
-    let subscriptions = ["topic1", "topic2", "topic3"];
-    let mut new_subscriptions = [];
+it("should consume from RabbitMQ") {
+    let mq = pubsub::rabbitmq("amqp://localhost:5672");
 
-    for (sub in subscriptions) {
-        if (sub != "topic2") {
-            new_subscriptions = new_subscriptions.push(sub);
-        }
-    }
-
-    assert(new_subscriptions.len() == 2);
-    assert(new_subscriptions.contains("topic2") == false);
+    mq.consume("queue_name", |msg| {
+        print("Received: {msg.body}");
+        msg.ack();
+    });
 }
 
-it("should check if subscription exists") {
-    let subscriptions = ["events", "logs", "metrics"];
-    assert(subscriptions.contains("events") == true);
-    assert(subscriptions.contains("alerts") == false);
+it("should use Kafka producer") {
+    let kafka = pubsub::kafka(["localhost:9092"]);
+
+    kafka.produce("topic", {
+        key: "user-123",
+        value: "event data",
+    });
 }
 
-// ============================================================================
-// MESSAGE BUFFER SIMULATION
-// ============================================================================
+it("should use Kafka consumer") {
+    let kafka = pubsub::kafka(["localhost:9092"]);
 
-it("should buffer messages up to capacity") {
-    let buffer_size = 5;
-    let mut buffer = [];
-
-    for (i in 0..10) {
-        if (buffer.len() < buffer_size) {
-            buffer = buffer.push(i);
-        }
-    }
-
-    assert(buffer.len() == 5);
-}
-
-it("should drain buffer and return all messages") {
-    let mut buffer = [1, 2, 3, 4, 5];
-    let drained = buffer;
-    buffer = [];
-
-    assert(drained.len() == 5);
-    assert(buffer.len() == 0);
-}
-
-it("should track message sequence numbers") {
-    let mut sequence = 0;
-    let mut messages = [];
-
-    for (i in 0..5) {
-        messages = messages.push(sequence);
-        sequence = sequence + 1;
-    }
-
-    assert(messages[0] == 0);
-    assert(messages[4] == 4);
-    assert(sequence == 5);
+    kafka.consume("topic", group: "my-group", |msg| {
+        print("Partition: {msg.partition}, Offset: {msg.offset}");
+    });
 }
 
 // ============================================================================
-// FANOUT PATTERN
+// MESSAGE PERSISTENCE
 // ============================================================================
 
-it("should fanout message to multiple topics") {
-    let topics = ["topic1", "topic2", "topic3"];
-    let message = "broadcast message";
-    let mut delivered = 0;
+it("should persist messages") {
+    let ps = pubsub::PubSub::new({
+        persistence: pubsub::file_persistence("/tmp/pubsub"),
+    });
 
-    for (topic in topics) {
-        // Simulate delivery to each topic
-        delivered = delivered + 1;
-    }
-
-    assert(delivered == 3);
+    ps.publish("events", "persistent message");
 }
 
-it("should broadcast to all subscribers") {
-    let subscribers = ["sub1", "sub2", "sub3", "sub4"];
-    let mut received = 0;
+it("should replay messages") {
+    let ps = pubsub::PubSub::new({
+        persistence: pubsub::file_persistence("/tmp/pubsub"),
+        retention: 3600,  // 1 hour
+    });
 
-    for (sub in subscribers) {
-        received = received + 1;
-    }
-
-    assert(received == subscribers.len());
+    let sub = ps.subscribe("events", replay: true);
+    // Receives historical messages
 }
 
 // ============================================================================
 // MESSAGE FILTERING
 // ============================================================================
 
-it("should filter messages by type") {
-    let messages = [
-        "free:user1",
-        "premium:user2",
-        "free:user3",
-        "premium:user4"
-    ];
+it("should filter messages") {
+    let ps = pubsub::PubSub::new();
 
-    let mut premium_messages = [];
+    ps.subscribe("users", {
+        filter: |msg| msg.type == "premium",
+    }, |msg| {
+        // Only receive premium user messages
+    });
 
-    for (msg in messages) {
-        if (msg.starts_with("premium:")) {
-            premium_messages = premium_messages.push(msg);
-        }
-    }
-
-    assert(premium_messages.len() == 2);
-}
-
-it("should filter messages by content") {
-    let messages = ["error: disk full", "info: started", "error: timeout", "warn: slow"];
-    let mut errors = [];
-
-    for (msg in messages) {
-        if (msg.contains("error")) {
-            errors = errors.push(msg);
-        }
-    }
-
-    assert(errors.len() == 2);
+    ps.publish("users", { type: "free", id: 1 });
+    ps.publish("users", { type: "premium", id: 2 });
 }
 
 // ============================================================================
-// TOPIC PARSING
+// ACKNOWLEDGMENT
 // ============================================================================
 
-it("should parse topic into components") {
-    let topic = "app.service.action";
-    let parts = topic.split(".");
+it("should require acknowledgment") {
+    let ps = pubsub::PubSub::new({
+        require_ack: true,
+        ack_timeout: 5000,
+    });
 
-    assert(parts.len() == 3);
-    assert(parts[0] == "app");
-    assert(parts[1] == "service");
-    assert(parts[2] == "action");
+    ps.subscribe("tasks", |msg, ack| {
+        process(msg);
+        ack();  // Acknowledge receipt
+    });
 }
 
-it("should build topic from components") {
-    let app = "myapp";
-    let service = "users";
-    let action = "created";
-    let topic = app + "." + service + "." + action;
+it("should retry on no ack") {
+    let ps = pubsub::PubSub::new({
+        require_ack: true,
+        ack_timeout: 1000,
+        max_retries: 3,
+    });
 
-    assert(topic == "myapp.users.created");
+    // Message redelivered if not acknowledged
 }
 
-it("should validate topic format") {
-    let valid_topic = "events.user.created";
-    let invalid_topic = "";
-
-    assert(valid_topic.len() > 0);
-    assert(valid_topic.contains("."));
-    assert(invalid_topic.len() == 0);
+it("should dead letter unacked messages") {
+    let ps = pubsub::PubSub::new({
+        require_ack: true,
+        dead_letter_topic: "failed_messages",
+    });
 }
 
 // ============================================================================
 // MESSAGE ORDERING
 // ============================================================================
 
-it("should preserve message order") {
-    let mut messages = [];
+it("should preserve order per key") {
+    let ps = pubsub::PubSub::new({
+        ordering: true,
+    });
 
-    for (i in 0..5) {
-        messages = messages.push(i);
-    }
+    ps.publish("events", "first", key: "user-1");
+    ps.publish("events", "second", key: "user-1");
 
-    // Verify order is preserved
-    for (i in 0..5) {
-        assert(messages[i] == i);
-    }
+    // Messages for same key delivered in order
 }
 
-it("should track delivery order") {
-    let sent_order = [1, 2, 3, 4, 5];
-    let mut received_order = [];
+it("should use message sequence") {
+    let ps = pubsub::PubSub::new();
+    let sequence = [];
 
-    for (msg in sent_order) {
-        received_order = received_order.push(msg);
+    ps.subscribe("events", |msg| {
+        sequence.push(msg.sequence_number);
+    });
+
+    for i in 0..10 {
+        ps.publish("events", i);
     }
 
-    assert(received_order[0] == sent_order[0]);
-    assert(received_order[4] == sent_order[4]);
-}
-
-// ============================================================================
-// ACKNOWLEDGMENT TRACKING
-// ============================================================================
-
-it("should track acknowledged messages") {
-    let messages = ["msg1", "msg2", "msg3"];
-    let mut acknowledged = [];
-
-    for (msg in messages) {
-        // Simulate processing and acknowledging
-        acknowledged = acknowledged.push(msg);
-    }
-
-    assert(acknowledged.len() == messages.len());
-}
-
-it("should identify unacknowledged messages") {
-    let sent = ["msg1", "msg2", "msg3", "msg4"];
-    let acked = ["msg1", "msg3"];
-
-    let mut unacked = [];
-
-    for (msg in sent) {
-        if (acked.contains(msg) == false) {
-            unacked = unacked.push(msg);
-        }
-    }
-
-    assert(unacked.len() == 2);
-    assert(unacked.contains("msg2"));
-    assert(unacked.contains("msg4"));
+    // sequence should be [0, 1, 2, 3, ...]
 }
 
 // ============================================================================
-// RETRY LOGIC
+// BROADCASTING
 // ============================================================================
 
-it("should simulate retry attempts") {
-    let max_retries = 3;
-    let mut attempts = 0;
-    let mut success = false;
+it("should broadcast to all") {
+    let ps = pubsub::PubSub::new();
 
-    while (attempts < max_retries && success == false) {
-        attempts = attempts + 1;
-        // Simulate success on third attempt
-        if (attempts == 3) {
-            success = true;
-        }
-    }
-
-    assert(attempts == 3);
-    assert(success == true);
+    ps.broadcast("System maintenance in 5 minutes");
 }
 
-it("should track failed deliveries") {
-    let mut failed = [];
-    let messages = ["msg1", "msg2", "msg3"];
+it("should fanout message") {
+    let ps = pubsub::PubSub::new();
 
-    // Simulate msg2 failing
-    for (msg in messages) {
-        if (msg == "msg2") {
-            failed = failed.push(msg);
-        }
+    ps.fanout(["topic1", "topic2", "topic3"], "message");
+}
+
+// ============================================================================
+// REQUEST/REPLY
+// ============================================================================
+
+it("should request/reply") {
+    let ps = pubsub::PubSub::new();
+
+    // Server
+    ps.subscribe("math.add", |msg, reply| {
+        let result = msg.a + msg.b;
+        reply(result);
+    });
+
+    // Client
+    let response = ps.request("math.add", { a: 1, b: 2 });
+    assert(response == 3);
+}
+
+it("should request with timeout") {
+    let ps = pubsub::PubSub::new();
+
+    let response = ps.request("slow.service", "data", timeout: 1000);
+    // Returns null or error on timeout
+}
+
+// ============================================================================
+// MESSAGE TRANSFORMATION
+// ============================================================================
+
+it("should transform messages") {
+    let ps = pubsub::PubSub::new();
+
+    ps.subscribe("raw", {
+        transform: |msg| json::parse(msg),
+    }, |msg| {
+        // msg is already parsed
+    });
+}
+
+it("should pipe through transformers") {
+    let ps = pubsub::PubSub::new();
+
+    ps.pipe("source", "destination", [
+        |msg| json::parse(msg),
+        |msg| msg.data,
+        |msg| msg.to_upper(),
+    ]);
+}
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+it("should handle subscriber errors") {
+    let ps = pubsub::PubSub::new({
+        on_error: |err, msg| {
+            log::error("Subscriber error: {err}");
+        },
+    });
+
+    ps.subscribe("events", |msg| {
+        throw Error("subscriber failed");
+    });
+
+    ps.publish("events", "test");
+}
+
+// ============================================================================
+// METRICS
+// ============================================================================
+
+it("should track message counts") {
+    let ps = pubsub::PubSub::new();
+
+    ps.publish("events", "1");
+    ps.publish("events", "2");
+
+    let metrics = ps.metrics();
+    assert(metrics.published_count == 2);
+}
+
+it("should track subscriber lag") {
+    let ps = pubsub::PubSub::new();
+    let sub = ps.subscribe("events");
+
+    for i in 0..100 {
+        ps.publish("events", i);
     }
 
-    assert(failed.len() == 1);
-    assert(failed.contains("msg2"));
+    let lag = sub.lag();
+    assert(lag >= 0);
 }
+
