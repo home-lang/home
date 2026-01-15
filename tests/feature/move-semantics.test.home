@@ -9,7 +9,7 @@ struct Point {
 it("should allow basic move") {
     let s = "Hello";
     let t = s;
-    assert(true);
+    assert(t == "Hello");
 }
 
 it("should copy primitive types") {
@@ -33,7 +33,8 @@ it("should allow reinitialize after move") {
     let t = s;
     let s = "World";
     let u = s;
-    assert(true);
+    assert(t == "Hello");
+    assert(u == "World");
 }
 
 it("should move array") {
@@ -48,7 +49,7 @@ it("should return ownership from function") {
         return s;
     }
     let s = create_string();
-    assert(true);
+    assert(s == "Created");
 }
 
 it("should move struct to function") {
@@ -84,7 +85,7 @@ it("should chain moves") {
     let b = a;
     let c = b;
     let d = c;
-    assert(true);
+    assert(d == "original");
 }
 
 it("should move array elements") {
@@ -98,7 +99,7 @@ it("should move array elements") {
 it("should handle conditional move") {
     let s = "value";
     let t = if (true) { s } else { "other" };
-    assert(true);
+    assert(t == "value");
 }
 
 it("should move through nested function calls") {
@@ -109,7 +110,7 @@ it("should move through nested function calls") {
         return inner(s);
     }
     let result = outer("nested");
-    assert(true);
+    assert(result == "nested");
 }
 
 it("should move multiple values") {
@@ -117,7 +118,8 @@ it("should move multiple values") {
     let b = "second";
     let c = a;
     let d = b;
-    assert(true);
+    assert(c == "first");
+    assert(d == "second");
 }
 
 it("should handle move with primitives") {

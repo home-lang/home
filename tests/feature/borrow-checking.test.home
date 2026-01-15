@@ -8,20 +8,23 @@ struct Counter {
 it("should allow immutable borrow") {
     let x = 42;
     let y = &x;
-    assert(true);
+    assert(*y == 42);
 }
 
 it("should allow mutable borrow") {
     let mut x = 42;
     let y = &mut x;
-    assert(true);
+    *y = 100;
+    assert(x == 100);
 }
 
 it("should allow multiple immutable borrows") {
     let x = 42;
     let y = &x;
     let z = &x;
-    assert(true);
+    assert(*y == 42);
+    assert(*z == 42);
+    assert(*y == *z);
 }
 
 it("should track borrow lifetimes") {
@@ -30,13 +33,13 @@ it("should track borrow lifetimes") {
     }
     let x = 42;
     let r = get_ref(&x);
-    assert(true);
+    assert(*r == 42);
 }
 
 it("should handle struct borrowing") {
     let counter = Counter { value: 0 };
     let r = &counter;
-    assert(true);
+    assert((*r).value == 0);
 }
 
 it("should borrow in function") {
@@ -52,15 +55,16 @@ it("should allow re-borrow after drop") {
     let x = 10;
     {
         let r1 = &x;
+        assert(*r1 == 10);
     }
     let r2 = &x;
-    assert(true);
+    assert(*r2 == 10);
 }
 
 it("should borrow array element") {
     let arr = [1, 2, 3];
     let elem = &arr[0];
-    assert(true);
+    assert(*elem == 1);
 }
 
 it("should handle nested borrow") {
@@ -68,7 +72,8 @@ it("should handle nested borrow") {
     let w = Wrapper { data: 42 };
     let r1 = &w;
     let r2 = &w;
-    assert(true);
+    assert((*r1).data == 42);
+    assert((*r2).data == 42);
 }
 
 it("should borrow in loop") {
@@ -85,22 +90,24 @@ it("should handle mutable reborrow") {
     let mut x = 5;
     {
         let r = &mut x;
+        *r = 10;
     }
     let r2 = &mut x;
-    assert(true);
+    *r2 = 20;
+    assert(x == 20);
 }
 
 it("should borrow struct field") {
     let c = Counter { value: 42 };
     let r = &c.value;
-    assert(true);
+    assert(*r == 42);
 }
 
 it("should handle reference in conditional") {
     let x = 10;
     let y = 20;
     let r = if (true) { &x } else { &y };
-    assert(true);
+    assert(*r == 10);
 }
 
 it("should track multiple struct borrows") {
@@ -108,6 +115,7 @@ it("should track multiple struct borrows") {
     let c2 = Counter { value: 2 };
     let r1 = &c1;
     let r2 = &c2;
-    assert(true);
+    assert((*r1).value == 1);
+    assert((*r2).value == 2);
 }
 

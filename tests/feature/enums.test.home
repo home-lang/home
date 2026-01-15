@@ -5,21 +5,34 @@ enum Status { Active, Inactive, Pending }
 enum Direction { North, South, East, West }
 
 it("should define and register enums") {
-    let c = Color;
-    let s = Status;
-    let d = Direction;
+    let c = Color.Red;
+    let s = Status.Active;
+    let d = Direction.North;
+    // Verify variants can be matched
+    let c_val = match (c) { Color.Red => 1, Color.Green => 2, Color.Blue => 3 };
+    let s_val = match (s) { Status.Active => 1, Status.Inactive => 2, Status.Pending => 3 };
+    let d_val = match (d) { Direction.North => 1, Direction.South => 2, Direction.East => 3, Direction.West => 4 };
+    assert(c_val == 1);
+    assert(s_val == 1);
+    assert(d_val == 1);
 }
 
 it("should access Color variants") {
     let red = Color.Red;
     let green = Color.Green;
     let blue = Color.Blue;
+    assert(match (red) { Color.Red => true, _ => false } == true);
+    assert(match (green) { Color.Green => true, _ => false } == true);
+    assert(match (blue) { Color.Blue => true, _ => false } == true);
 }
 
 it("should access Status variants") {
     let active = Status.Active;
     let inactive = Status.Inactive;
     let pending = Status.Pending;
+    assert(match (active) { Status.Active => true, _ => false } == true);
+    assert(match (inactive) { Status.Inactive => true, _ => false } == true);
+    assert(match (pending) { Status.Pending => true, _ => false } == true);
 }
 
 it("should access Direction variants") {
@@ -27,6 +40,10 @@ it("should access Direction variants") {
     let s = Direction.South;
     let e = Direction.East;
     let w = Direction.West;
+    assert(match (n) { Direction.North => true, _ => false } == true);
+    assert(match (s) { Direction.South => true, _ => false } == true);
+    assert(match (e) { Direction.East => true, _ => false } == true);
+    assert(match (w) { Direction.West => true, _ => false } == true);
 }
 
 enum Priority { Low, Medium, High, Critical }
@@ -37,6 +54,10 @@ it("should access Priority variants") {
     let medium = Priority.Medium;
     let high = Priority.High;
     let critical = Priority.Critical;
+    assert(match (low) { Priority.Low => true, _ => false } == true);
+    assert(match (medium) { Priority.Medium => true, _ => false } == true);
+    assert(match (high) { Priority.High => true, _ => false } == true);
+    assert(match (critical) { Priority.Critical => true, _ => false } == true);
 }
 
 it("should match on enum variants") {

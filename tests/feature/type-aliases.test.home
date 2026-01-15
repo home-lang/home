@@ -89,21 +89,25 @@ type Point2D = (i32, i32);
 
 it("should alias tuple types") {
     let p: Point2D = (10, 20);
-    assert(true);
+    assert(p[0] == 10);
+    assert(p[1] == 20);
 }
 
 type Pair = (i32, i32);
 
 it("should create pair tuple") {
     let p: Pair = (5, 10);
-    assert(true);
+    assert(p[0] == 5);
+    assert(p[1] == 10);
 }
 
 type Triple = (i32, i32, i32);
 
 it("should alias triple tuple") {
     let t: Triple = (1, 2, 3);
-    assert(true);
+    assert(t[0] == 1);
+    assert(t[1] == 2);
+    assert(t[2] == 3);
 }
 
 // ============================================================================
