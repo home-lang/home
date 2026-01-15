@@ -4,125 +4,154 @@
 // MIGRATION CREATION
 // ============================================================================
 
-it("should create migration") {
+it("should create migration with name") {
     let migration = migrate::Migration::new("create_users_table")
     assert(migration != null)
     assert(migration.name.contains("create_users_table"))
 }
 
-it("should generate timestamp prefix") {
+it("should generate timestamp prefix for migration name") {
     let migration = migrate::Migration::new("add_email_column")
-    // Should have timestamp prefix
-    assert(migration.name.len() > 15)
+    // Migration name should include timestamp prefix (at least 14 chars for YYYYMMDDHHMMSS)
+    assert(migration.name.len() > 14)
+    assert(migration.name.contains("add_email_column"))
 }
 
-it("should have version field") {
-    let migration = migrate::Migration::new("test")
+it("should initialize migration with version 1") {
+    let migration = migrate::Migration::new("initial")
     assert(migration.version == 1)
 }
 
-it("should track applied status") {
-    let migration = migrate::Migration::new("test")
+it("should initialize migration as not applied") {
+    let migration = migrate::Migration::new("pending_migration")
     assert(migration.applied == false)
 }
 
 // ============================================================================
-// MIGRATOR
+// MIGRATOR CREATION
 // ============================================================================
 
-it("should create migrator") {
+it("should create migrator instance") {
     let migrator = migrate::Migrator::new()
     assert(migrator != null)
 }
 
-it("should create migrator with config") {
-    let config = { directory: "migrations" }
+it("should create migrator with custom directory") {
+    let config = { directory: "db/migrations" }
     let migrator = migrate::Migrator::new(config)
     assert(migrator != null)
 }
 
-it("should register migration") {
+it("should add migration to migrator") {
     let migrator = migrate::Migrator::new()
     let migration = migrate::Migration::new("users")
     migrator.add(migration)
+    // Should not throw
+    assert(migrator != null)
 }
 
-it("should run migrations") {
-    let migrator = migrate::Migrator::new()
-    migrator.run()
-}
+// ============================================================================
+// MIGRATION STATUS
+// ============================================================================
 
-it("should rollback migrations") {
-    let migrator = migrate::Migrator::new()
-    migrator.rollback()
-}
-
-it("should reset migrations") {
-    let migrator = migrate::Migrator::new()
-    migrator.reset()
-}
-
-it("should refresh migrations") {
-    let migrator = migrate::Migrator::new()
-    migrator.refresh()
-}
-
-it("should get migration status") {
+it("should get migration status as struct") {
     let migrator = migrate::Migrator::new()
     let status = migrator.status()
     assert(status != null)
 }
 
-it("should get pending migrations") {
+it("should get pending migrations as array") {
     let migrator = migrate::Migrator::new()
     let pending = migrator.pending()
     assert(pending != null)
 }
 
-it("should get applied migrations") {
+it("should get applied migrations as array") {
     let migrator = migrate::Migrator::new()
     let applied = migrator.applied()
     assert(applied != null)
 }
 
 // ============================================================================
-// SCHEMA OPERATIONS
+// MIGRATION OPERATIONS
 // ============================================================================
 
-it("should execute SQL") {
-    migrate::sql("CREATE TABLE users (id INT)")
+it("should run migrations without error") {
+    let migrator = migrate::Migrator::new()
+    migrator.run()
+    // Should complete without throwing
+    assert(migrator != null)
 }
+
+it("should rollback migrations without error") {
+    let migrator = migrate::Migrator::new()
+    migrator.rollback()
+    assert(migrator != null)
+}
+
+it("should reset all migrations") {
+    let migrator = migrate::Migrator::new()
+    migrator.reset()
+    assert(migrator != null)
+}
+
+it("should refresh migrations (reset + run)") {
+    let migrator = migrate::Migrator::new()
+    migrator.refresh()
+    assert(migrator != null)
+}
+
+// ============================================================================
+// SQL OPERATIONS
+// ============================================================================
+
+it("should execute raw SQL") {
+    migrate::sql("CREATE TABLE test_table (id INTEGER PRIMARY KEY)")
+    // Should not throw
+}
+
+it("should execute SQL with parameters") {
+    migrate::sql("INSERT INTO test_table (id) VALUES (1)")
+}
+
+// ============================================================================
+// TABLE OPERATIONS
+// ============================================================================
 
 it("should create table") {
     migrate::create_table("users")
 }
 
 it("should drop table") {
-    migrate::drop_table("users")
+    migrate::drop_table("old_table")
 }
 
-it("should drop table if exists") {
-    migrate::drop_table_if_exists("users")
+it("should drop table if exists without error") {
+    migrate::drop_table_if_exists("maybe_exists")
 }
 
 it("should rename table") {
-    migrate::rename_table("users", "customers")
+    migrate::rename_table("old_name", "new_name")
 }
 
 it("should alter table") {
     migrate::alter_table("users")
 }
 
-it("should create index") {
+// ============================================================================
+// INDEX OPERATIONS
+// ============================================================================
+
+it("should create index on column") {
     migrate::create_index("users", "email")
+}
+
+it("should create unique index") {
+    migrate::create_unique_index("users", "username")
 }
 
 it("should drop index") {
     migrate::drop_index("users", "users_email_idx")
-}
-
-it("should create unique index") {
-    migrate::create_unique_index("users", "email")
 }
 
 // ============================================================================
@@ -130,118 +159,138 @@ it("should create unique index") {
 // ============================================================================
 
 it("should create table builder") {
-    let builder = migrate::table("users")
+    let builder = migrate::table("products")
     assert(builder != null)
 }
 
-it("should add increments column") {
-    let builder = migrate::table("users")
+it("should add auto-incrementing primary key") {
+    let builder = migrate::table("items")
     builder.increments("id")
+    assert(builder != null)
 }
 
-it("should add string column") {
+it("should add string column with max length") {
     let builder = migrate::table("users")
     builder.string("name")
+    assert(builder != null)
 }
 
 it("should add integer column") {
-    let builder = migrate::table("users")
-    builder.integer("count")
+    let builder = migrate::table("orders")
+    builder.integer("quantity")
+    assert(builder != null)
 }
 
-it("should add text column") {
-    let builder = migrate::table("users")
-    builder.text("description")
+it("should add text column for large content") {
+    let builder = migrate::table("posts")
+    builder.text("content")
+    assert(builder != null)
 }
 
 it("should add boolean column") {
     let builder = migrate::table("users")
     builder.boolean("is_active")
+    assert(builder != null)
 }
 
-it("should add timestamp columns") {
-    let builder = migrate::table("users")
+it("should add timestamp columns (created_at, updated_at)") {
+    let builder = migrate::table("records")
     builder.timestamps()
+    assert(builder != null)
 }
 
 it("should add date column") {
-    let builder = migrate::table("users")
-    builder.date("birth_date")
+    let builder = migrate::table("events")
+    builder.date("event_date")
+    assert(builder != null)
 }
 
 it("should add datetime column") {
-    let builder = migrate::table("users")
-    builder.datetime("created_at")
+    let builder = migrate::table("logs")
+    builder.datetime("logged_at")
+    assert(builder != null)
 }
 
 it("should add json column") {
-    let builder = migrate::table("users")
-    builder.json("metadata")
+    let builder = migrate::table("settings")
+    builder.json("preferences")
+    assert(builder != null)
 }
 
 it("should add binary column") {
-    let builder = migrate::table("users")
+    let builder = migrate::table("files")
     builder.binary("data")
+    assert(builder != null)
 }
 
 it("should add uuid column") {
-    let builder = migrate::table("users")
-    builder.uuid("id")
+    let builder = migrate::table("entities")
+    builder.uuid("guid")
+    assert(builder != null)
 }
 
 it("should add enum column") {
-    let builder = migrate::table("users")
+    let builder = migrate::table("tickets")
     builder.enum("status")
+    assert(builder != null)
 }
 
 it("should add float column") {
-    let builder = migrate::table("users")
+    let builder = migrate::table("products")
     builder.float("rating")
+    assert(builder != null)
 }
 
-it("should add decimal column") {
-    let builder = migrate::table("users")
-    builder.decimal("price")
+it("should add decimal column for money") {
+    let builder = migrate::table("invoices")
+    builder.decimal("total")
+    assert(builder != null)
 }
 
 // ============================================================================
 // COLUMN MODIFIERS
 // ============================================================================
 
-it("should set nullable") {
-    let builder = migrate::table("users")
-    let col = builder.string("email")
+it("should make column nullable") {
+    let builder = migrate::table("profiles")
+    let col = builder.string("bio")
     col.nullable()
+    assert(builder != null)
 }
 
-it("should set unique") {
-    let builder = migrate::table("users")
+it("should make column unique") {
+    let builder = migrate::table("accounts")
     let col = builder.string("email")
     col.unique()
+    assert(builder != null)
 }
 
-it("should set primary key") {
-    let builder = migrate::table("users")
+it("should set column as primary key") {
+    let builder = migrate::table("custom")
     let col = builder.uuid("id")
     col.primary()
+    assert(builder != null)
 }
 
-it("should set default value") {
-    let builder = migrate::table("users")
+it("should set default value for column") {
+    let builder = migrate::table("counters")
     let col = builder.integer("count")
     col.default(0)
+    assert(builder != null)
 }
 
-it("should set index") {
-    let builder = migrate::table("users")
-    let col = builder.string("name")
+it("should add index to column") {
+    let builder = migrate::table("searches")
+    let col = builder.string("query")
     col.index()
+    assert(builder != null)
 }
 
-it("should set comment") {
-    let builder = migrate::table("users")
+it("should add comment to column") {
+    let builder = migrate::table("documented")
     let col = builder.string("code")
-    col.comment("Code field")
+    col.comment("Unique identifier code")
+    assert(builder != null)
 }
 
 // ============================================================================
@@ -253,48 +302,62 @@ it("should create seeder") {
     assert(seeder != null)
 }
 
-it("should run seeder") {
+it("should run all seeders") {
     let migrator = migrate::Migrator::new()
     migrator.seed()
+    assert(migrator != null)
 }
 
-it("should run specific seeder") {
+it("should run specific seeder by name") {
     let migrator = migrate::Migrator::new()
-    migrator.seed("UsersSeeder")
+    migrator.seed("AdminSeeder")
+    assert(migrator != null)
 }
 
 // ============================================================================
 // VERSION CONTROL
 // ============================================================================
 
-it("should get current version") {
+it("should get current migration version") {
     let migrator = migrate::Migrator::new()
     let version = migrator.current_version()
+    // Version should be a string (timestamp)
 }
 
-it("should migrate to version") {
+it("should migrate to specific version") {
     let migrator = migrate::Migrator::new()
     migrator.migrate_to("20240115120000")
+    assert(migrator != null)
 }
 
 // ============================================================================
 // TRANSACTION SUPPORT
 // ============================================================================
 
-it("should support transactions") {
+it("should support transaction wrapper") {
     migrate::transaction()
 }
 
-it("should execute SQL file") {
-    migrate::sql_file("migration.sql")
+it("should execute SQL from file") {
+    migrate::sql_file("seed_data.sql")
 }
 
 // ============================================================================
-// INSERT/DATA OPERATIONS
+// DATA OPERATIONS
 // ============================================================================
 
-it("should insert data") {
-    let data = { name: "Admin", email: "admin@example.com" }
+it("should insert data into table") {
+    let data = { name: "Admin", email: "admin@example.com", role: "admin" }
     migrate::insert("users", data)
+}
+
+it("should insert multiple records") {
+    let users = [
+        { name: "User1", email: "user1@example.com" },
+        { name: "User2", email: "user2@example.com" }
+    ]
+    for user in users {
+        migrate::insert("users", user)
+    }
 }
 

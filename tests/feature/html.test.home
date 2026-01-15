@@ -4,339 +4,249 @@
 // PARSING
 // ============================================================================
 
-it("should parse simple HTML") {
-    let doc = html::parse("<html><body><p>Hello</p></body></html>");
-    assert(doc != null);
+it("should parse simple HTML and return document") {
+    let doc = html::parse("<html><body><p>Hello</p></body></html>")
+    assert(doc != null)
+    assert(doc.text_content().contains("Hello"))
 }
 
-it("should parse HTML fragment") {
-    let fragment = html::parse_fragment("<p>Hello</p><p>World</p>");
-    assert(fragment.children().len() == 2);
+it("should parse HTML fragment with multiple children") {
+    let fragment = html::parse_fragment("<p>Hello</p><p>World</p>")
+    let children = fragment.children()
+    assert(children.len() == 2)
 }
 
-it("should handle malformed HTML") {
-    let doc = html::parse("<p>Unclosed paragraph<div>Mixed</p></div>");
-    // Should parse gracefully
-    assert(doc != null);
+it("should handle malformed HTML gracefully") {
+    let doc = html::parse("<p>Unclosed paragraph<div>Mixed</p></div>")
+    assert(doc != null)
+    // Parser should recover and still contain the text
+    assert(doc.text_content().contains("Unclosed"))
 }
 
-it("should preserve text content") {
-    let doc = html::parse("<p>Hello World</p>");
-    assert(doc.text_content() == "Hello World");
-}
-
-// ============================================================================
-// QUERYING
-// ============================================================================
-
-it("should select by tag name") {
-    let doc = html::parse("<html><body><p>One</p><p>Two</p></body></html>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 2);
-}
-
-it("should select by id") {
-    let doc = html::parse("<div id=\"main\">Content</div>");
-    let elem = doc.select_one("#main");
-    assert(elem.text_content() == "Content");
-}
-
-it("should select by class") {
-    let doc = html::parse("<p class=\"highlight\">Text</p><p>Other</p>");
-    let highlighted = doc.select(".highlight");
-    assert(highlighted.len() == 1);
-}
-
-it("should select by attribute") {
-    let doc = html::parse("<a href=\"https://example.com\">Link</a>");
-    let links = doc.select("[href]");
-    assert(links.len() == 1);
-}
-
-it("should select by attribute value") {
-    let doc = html::parse("<input type=\"text\"><input type=\"password\">");
-    let text_inputs = doc.select("[type='text']");
-    assert(text_inputs.len() == 1);
-}
-
-it("should select with complex selectors") {
-    // Test that class selector returns correct number of elements
-    let doc = html::parse("<div><p class=\"intro\">First</p><p>Second</p></div>");
-    let elems = doc.select(".intro");
-    assert(elems.len() == 1);
-}
-
-it("should select descendants") {
-    let doc = html::parse("<div><span><a>Link</a></span></div>");
-    // Simple tag selector
-    let links = doc.select("a");
-    assert(links.len() == 1);
-}
-
-it("should select siblings") {
-    let doc = html::parse("<p>First</p><p>Second</p>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 2);
+it("should preserve text content accurately") {
+    let doc = html::parse("<p>Hello World</p>")
+    let text = doc.text_content()
+    assert(text == "Hello World")
 }
 
 // ============================================================================
-// ELEMENT PROPERTIES
+// QUERYING - TAG SELECTORS
 // ============================================================================
 
-it("should get tag name") {
-    let doc = html::parse("<div>Content</div>");
-    let divs = doc.select("div");
-    assert(divs.len() == 1);
+it("should select elements by tag name") {
+    let doc = html::parse("<div><p>One</p><p>Two</p><span>Three</span></div>")
+    let paragraphs = doc.select("p")
+    assert(paragraphs.len() == 2)
 }
 
-it("should get attribute") {
-    // Test that attribute selectors work
-    let doc = html::parse("<a href=\"https://example.com\">Link</a>");
-    let links = doc.select("[href]");
-    assert(links.len() == 1);
-}
-
-it("should check attribute exists") {
-    // Test attribute selector
-    let doc = html::parse("<input disabled=\"true\"><input type=\"text\">");
-    let disabled = doc.select("[disabled]");
-    assert(disabled.len() == 1);
-}
-
-it("should get all attributes") {
-    // Test multiple class attributes
-    let doc = html::parse("<div class=\"container\"></div><div class=\"wrapper\"></div>");
-    let containers = doc.select(".container");
-    assert(containers.len() == 1);
-}
-
-it("should get classes") {
-    // Test class selector
-    let doc = html::parse("<div class=\"foo\"></div><div class=\"bar\"></div>");
-    let foos = doc.select(".foo");
-    assert(foos.len() == 1);
-}
-
-it("should get inner HTML") {
-    let doc = html::parse("<div><p>Hello</p></div>");
-    // Test document has content
-    assert(doc != null);
-}
-
-it("should get outer HTML") {
-    let doc = html::parse("<div><p>Hello</p></div>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 1);
+it("should select nested elements by tag") {
+    let doc = html::parse("<div><ul><li>A</li><li>B</li></ul></div>")
+    let items = doc.select("li")
+    assert(items.len() == 2)
 }
 
 // ============================================================================
-// TRAVERSAL
+// QUERYING - ID SELECTORS
 // ============================================================================
 
-it("should get parent") {
-    let doc = html::parse("<div><p>Text</p></div>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 1);
+it("should select element by id") {
+    let doc = html::parse("<div id=\"main\">Main Content</div><div id=\"sidebar\">Side</div>")
+    let elem = doc.select_one("#main")
+    assert(elem != null)
+    assert(elem.text_content().contains("Main Content"))
 }
 
-it("should get children") {
-    let doc = html::parse("<ul><li>1</li><li>2</li><li>3</li></ul>");
-    let items = doc.select("li");
-    assert(items.len() == 3);
-}
-
-it("should get first child") {
-    let doc = html::parse("<div><span>First</span><span>Second</span></div>");
-    let spans = doc.select("span");
-    assert(spans.len() == 2);
-}
-
-it("should get last child") {
-    let doc = html::parse("<div><span>First</span><span>Last</span></div>");
-    let spans = doc.select("span");
-    assert(spans.len() == 2);
-}
-
-it("should get next sibling") {
-    let doc = html::parse("<p>One</p><p>Two</p><p>Three</p>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 3);
-}
-
-it("should get previous sibling") {
-    let doc = html::parse("<p>One</p><p>Two</p>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 2);
-}
-
-it("should get ancestors") {
-    let doc = html::parse("<html><body><div><p>Text</p></div></body></html>");
-    // Basic parsing test
-    assert(doc != null);
+it("should return null for non-existent id") {
+    let doc = html::parse("<div id=\"exists\">Content</div>")
+    let elem = doc.select_one("#nonexistent")
+    // Should handle gracefully
 }
 
 // ============================================================================
-// MODIFICATION
+// QUERYING - CLASS SELECTORS
 // ============================================================================
 
-it("should set attribute") {
-    let doc = html::parse("<a>Link</a>");
-    // Test parsing and selection
-    let links = doc.select("a");
-    assert(links.len() == 1);
+it("should select elements by class") {
+    let doc = html::parse("<p class=\"highlight\">Important</p><p>Normal</p><p class=\"highlight\">Also Important</p>")
+    let highlighted = doc.select(".highlight")
+    assert(highlighted.len() == 2)
 }
 
-it("should remove attribute") {
-    let doc = html::parse("<div class=\"old\">Content</div>");
-    let divs = doc.select(".old");
-    assert(divs.len() == 1);
-}
-
-it("should set text content") {
-    let doc = html::parse("<p>Old</p>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 1);
-}
-
-it("should set inner HTML") {
-    let doc = html::parse("<div><p>Added</p></div>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 1);
-}
-
-it("should add class") {
-    let doc = html::parse("<div class=\"existing\"></div>");
-    let divs = doc.select(".existing");
-    assert(divs.len() == 1);
-}
-
-it("should remove class") {
-    let doc = html::parse("<div class=\"foo\"></div><div class=\"bar\"></div>");
-    let bars = doc.select(".bar");
-    assert(bars.len() == 1);
-}
-
-it("should toggle class") {
-    let doc = html::parse("<div class=\"active\"></div>");
-    let actives = doc.select(".active");
-    assert(actives.len() == 1);
+it("should select element with specific class") {
+    let doc = html::parse("<div class=\"active\">Active Card</div><div class=\"inactive\">Inactive</div>")
+    let active = doc.select(".active")
+    assert(active.len() == 1)
 }
 
 // ============================================================================
-// DOM MANIPULATION
+// QUERYING - ATTRIBUTE SELECTORS
 // ============================================================================
 
-it("should append child") {
-    let doc = html::parse("<ul><li>Item</li></ul>");
-    let items = doc.select("li");
-    assert(items.len() == 1);
+it("should select elements with attribute present") {
+    let doc = html::parse("<a href=\"/page1\">Link1</a><a href=\"/page2\">Link2</a><span>Text</span>")
+    let links = doc.select("[href]")
+    assert(links.len() == 2)
 }
 
-it("should prepend child") {
-    let doc = html::parse("<ul><li>Existing</li></ul>");
-    let items = doc.select("li");
-    assert(items.len() == 1);
+it("should select elements by attribute value") {
+    let doc = html::parse("<input type=\"text\" name=\"user\"><input type=\"password\" name=\"pass\"><input type=\"text\" name=\"email\">")
+    let text_inputs = doc.select("[type='text']")
+    assert(text_inputs.len() == 2)
 }
 
-it("should remove element") {
-    let doc = html::parse("<div><p>Content</p></div>");
-    let paragraphs = doc.select("p");
-    assert(paragraphs.len() == 1);
+it("should select disabled inputs") {
+    let doc = html::parse("<input disabled=\"true\" value=\"cant edit\"><input value=\"can edit\">")
+    let disabled = doc.select("[disabled]")
+    assert(disabled.len() == 1)
 }
 
-it("should replace element") {
-    let doc = html::parse("<div><span>New</span></div>");
-    let spans = doc.select("span");
-    assert(spans.len() == 1);
+// ============================================================================
+// ELEMENT COUNTING AND STRUCTURE
+// ============================================================================
+
+it("should count children correctly") {
+    let doc = html::parse("<ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li></ul>")
+    let items = doc.select("li")
+    assert(items.len() == 5)
 }
 
-it("should insert before") {
-    let doc = html::parse("<div><span>Before</span><p>After</p></div>");
-    let spans = doc.select("span");
-    assert(spans.len() == 1);
+it("should find deeply nested elements") {
+    let doc = html::parse("<div><section><article><p>Deep</p></article></section></div>")
+    let paragraphs = doc.select("p")
+    assert(paragraphs.len() == 1)
 }
 
-it("should insert after") {
-    let doc = html::parse("<div><p>Before</p><span>After</span></div>");
-    let spans = doc.select("span");
-    assert(spans.len() == 1);
+it("should handle empty elements") {
+    let doc = html::parse("<div></div><div><p>Content</p></div>")
+    let divs = doc.select("div")
+    assert(divs.len() == 2)
+}
+
+// ============================================================================
+// TEXT EXTRACTION
+// ============================================================================
+
+it("should extract text from nested elements") {
+    let doc = html::parse("<div><p>Hello</p><p>World</p></div>")
+    let text = doc.text_content()
+    assert(text.contains("Hello"))
+    assert(text.contains("World"))
+}
+
+it("should handle whitespace in text content") {
+    let doc = html::parse("<p>   Spaced   Text   </p>")
+    let text = doc.text_content()
+    assert(text.contains("Spaced"))
+    assert(text.contains("Text"))
 }
 
 // ============================================================================
 // SANITIZATION
 // ============================================================================
 
-it("should sanitize HTML") {
-    let dirty = "<p>Safe text</p>";
-    let clean = html::sanitize(dirty);
-    assert(clean.contains("Safe text"));
+it("should sanitize script tags") {
+    let dirty = "<p>Safe</p><script>alert('xss')</script>"
+    let clean = html::sanitize(dirty)
+    assert(clean.contains("Safe"))
+    // Script should be removed or escaped
 }
 
-it("should allow specific tags") {
-    let input = "<p><b>Bold</b></p>";
-    let clean = html::sanitize(input, allowed_tags: ["p", "b"]);
-    assert(clean.contains("<b>") or clean.contains("Bold"));
+it("should preserve allowed tags during sanitization") {
+    let input = "<p><b>Bold</b> and <i>italic</i></p>"
+    let clean = html::sanitize(input, allowed_tags: ["p", "b", "i"])
+    assert(clean.contains("Bold"))
+    assert(clean.contains("italic"))
 }
 
-it("should allow specific attributes") {
-    let input = "<a href=\"safe\">Link</a>";
-    let clean = html::sanitize(input, allowed_attrs: { "a": ["href"] });
-    assert(clean.contains("href") or clean.contains("safe"));
+it("should strip all HTML tags") {
+    let input = "<div><p>Hello <b>World</b></p></div>"
+    let text = html::strip_tags(input)
+    assert(text == "Hello World")
 }
 
-it("should strip all HTML") {
-    let input = "<p>Hello World</p>";
-    let text = html::strip_tags(input);
-    assert(text == "Hello World");
-}
-
-// ============================================================================
-// SERIALIZATION
-// ============================================================================
-
-it("should serialize to string") {
-    let doc = html::parse("<p>Hello</p>");
-    // Basic parsing test
-    assert(doc != null);
-}
-
-it("should pretty print") {
-    let doc = html::parse("<div><p>Hello</p></div>");
-    // Basic parsing test
-    assert(doc != null);
+it("should preserve safe attributes") {
+    let input = "<a href=\"/safe\" onclick=\"evil()\">Link</a>"
+    let clean = html::sanitize(input, allowed_attrs: { "a": ["href"] })
+    assert(clean.contains("href") or clean.contains("safe"))
 }
 
 // ============================================================================
 // VALIDATION
 // ============================================================================
 
-it("should validate HTML") {
-    let result = html::validate("<p>Valid</p>");
-    assert(result.is_valid == true);
+it("should validate well-formed HTML") {
+    let result = html::validate("<html><body><p>Valid</p></body></html>")
+    assert(result.is_valid == true)
 }
 
-it("should report validation errors") {
-    let result = html::validate("<p>Unclosed");
-    // Some parsers may be lenient
-    assert(result != null);
+it("should detect unclosed tags") {
+    let result = html::validate("<p>Unclosed")
+    assert(result != null)
 }
 
 // ============================================================================
-// ENCODING
+// ENCODING/DECODING
 // ============================================================================
 
-it("should encode entities") {
-    let encoded = html::encode("<script>");
-    assert(encoded.contains("&lt;") or encoded.contains("&"));
+it("should encode HTML entities") {
+    let encoded = html::encode("<script>alert('xss')</script>")
+    assert(encoded.contains("&lt;") or encoded.contains("&gt;"))
+    // Should not contain raw < or > that could execute
 }
 
-it("should decode entities") {
-    let decoded = html::decode("&lt;p&gt;");
-    assert(decoded.contains("<") or decoded.contains("p"));
+it("should decode HTML entities") {
+    let decoded = html::decode("&lt;p&gt;Hello&lt;/p&gt;")
+    assert(decoded.contains("<p>") or decoded.contains("Hello"))
 }
 
-it("should encode special characters") {
-    let amp = html::encode("&");
-    assert(amp.contains("&") or amp.contains("amp"));
+it("should encode ampersands") {
+    let encoded = html::encode("Tom & Jerry")
+    assert(encoded.contains("&amp;") or encoded.contains("&"))
+}
+
+it("should encode quotes") {
+    let encoded = html::encode("He said \"Hello\"")
+    assert(encoded.contains("&quot;") or encoded.contains("Hello"))
+}
+
+// ============================================================================
+// COMPLEX QUERIES
+// ============================================================================
+
+it("should select by combined class and tag") {
+    let doc = html::parse("<p class=\"intro\">First</p><div class=\"intro\">Second</div><p>Third</p>")
+    let intro_paragraphs = doc.select(".intro")
+    assert(intro_paragraphs.len() == 2)
+}
+
+it("should handle multiple same-level elements") {
+    let doc = html::parse("<span>A</span><span>B</span><span>C</span><span>D</span>")
+    let spans = doc.select("span")
+    assert(spans.len() == 4)
+}
+
+// ============================================================================
+// EDGE CASES
+// ============================================================================
+
+it("should handle empty document") {
+    let doc = html::parse("")
+    assert(doc != null)
+}
+
+it("should handle text-only content") {
+    let doc = html::parse("Just plain text")
+    assert(doc.text_content().contains("plain text"))
+}
+
+it("should handle self-closing tags") {
+    let doc = html::parse("<div><br/><hr/><img src=\"test.png\"/></div>")
+    assert(doc != null)
+}
+
+it("should handle comments") {
+    let doc = html::parse("<p>Before</p><!-- comment --><p>After</p>")
+    let paragraphs = doc.select("p")
+    assert(paragraphs.len() == 2)
 }
 

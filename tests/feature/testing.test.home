@@ -182,6 +182,7 @@ it("should verify mock") {
 it("should reset mock") {
     let mock = testing::mock()
     mock.reset()
+    assert(mock != null)
 }
 
 // ============================================================================
@@ -210,11 +211,13 @@ it("should create test suite") {
 it("should add test to suite") {
     let suite = testing::Suite::new("My Suite")
     suite.add("test name")
+    assert(suite != null)
 }
 
 it("should run test suite") {
     let suite = testing::Suite::new("My Suite")
     suite.run()
+    assert(suite != null)
 }
 
 it("should get suite results") {
@@ -235,6 +238,7 @@ it("should create fixture") {
 it("should get fixture value") {
     let fixture = testing::Fixture::new("user")
     fixture.set("name", "Alice")
+    assert(fixture != null)
 }
 
 // ============================================================================
