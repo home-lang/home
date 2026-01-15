@@ -1,372 +1,518 @@
 // Database Concepts Test Suite
-// Testing database concepts using basic operations
+// Testing database query building and data manipulation patterns
 
 // ============================================================================
-// CONNECTION CONCEPTS
+// QUERY BUILDER - SELECT
 // ============================================================================
 
-it("should represent connection string") {
-    let conn_str = "sqlite::memory:";
-    assert(conn_str.contains("sqlite"));
+it("should build valid select query with table") {
+    fn build_select(table: string): string {
+        return "SELECT * FROM " + table
+    }
+    let query = build_select("users")
+    assert(query == "SELECT * FROM users")
+    assert(query.starts_with("SELECT"))
+    assert(query.ends_with("users"))
 }
 
-it("should represent connected state") {
-    let is_connected = true;
-    assert(is_connected == true);
+it("should build select with specific columns") {
+    fn build_select_columns(table: string, columns: [string]): string {
+        let mut cols = ""
+        for (i in 0..columns.len()) {
+            if (i > 0) { cols = cols + ", " }
+            cols = cols + columns[i]
+        }
+        return "SELECT " + cols + " FROM " + table
+    }
+    let query = build_select_columns("users", ["id", "name", "email"])
+    assert(query == "SELECT id, name, email FROM users")
 }
 
-it("should represent disconnected state") {
-    let is_connected = false;
-    assert(is_connected == false);
+it("should build select with where clause") {
+    fn build_where(column: string, op: string, value: string): string {
+        return column + " " + op + " " + value
+    }
+    let where1 = build_where("age", ">", "25")
+    let where2 = build_where("status", "=", "'active'")
+    let where3 = build_where("name", "LIKE", "'%john%'")
+    assert(where1 == "age > 25")
+    assert(where2 == "status = 'active'")
+    assert(where3 == "name LIKE '%john%'")
 }
 
-// ============================================================================
-// TABLE CONCEPTS
-// ============================================================================
-
-it("should represent table name") {
-    let table = "users";
-    assert(table == "users");
+it("should build select with order by") {
+    fn build_order_by(columns: [(string, string)]): string {
+        let mut result = "ORDER BY "
+        for (i in 0..columns.len()) {
+            if (i > 0) { result = result + ", " }
+            result = result + columns[i][0] + " " + columns[i][1]
+        }
+        return result
+    }
+    let order = build_order_by([("name", "ASC"), ("created_at", "DESC")])
+    assert(order == "ORDER BY name ASC, created_at DESC")
 }
 
-it("should represent column names") {
-    let columns = ["id", "name", "email"];
-    assert(columns.len() == 3);
-}
-
-it("should represent row as array") {
-    let row = [1, "Alice", "alice@example.com"];
-    assert(row.len() == 3);
-    assert(row[1] == "Alice");
-}
-
-// ============================================================================
-// QUERY CONCEPTS
-// ============================================================================
-
-it("should build select query") {
-    let table = "users";
-    let query = "SELECT * FROM " + table;
-    assert(query == "SELECT * FROM users");
-}
-
-it("should build select with columns") {
-    let columns = ["name", "email"];
-    let cols = columns[0] + ", " + columns[1];
-    let query = "SELECT " + cols + " FROM users";
-    assert(query.contains("name"));
-    assert(query.contains("email"));
-}
-
-it("should build where clause") {
-    let column = "age";
-    let operator = ">";
-    let value = "25";
-    let where_clause = column + " " + operator + " " + value;
-    assert(where_clause == "age > 25");
-}
-
-it("should build order by") {
-    let column = "name";
-    let direction = "ASC";
-    let order = "ORDER BY " + column + " " + direction;
-    assert(order == "ORDER BY name ASC");
-}
-
-it("should build limit") {
-    let limit = 10;
-    let clause = "LIMIT 10";
-    assert(clause.contains("LIMIT"));
+it("should build select with limit and offset") {
+    fn build_pagination(limit: i32, offset: i32): string {
+        return "LIMIT " + to_string(limit) + " OFFSET " + to_string(offset)
+    }
+    let page1 = build_pagination(10, 0)
+    let page2 = build_pagination(10, 10)
+    let page3 = build_pagination(25, 50)
+    assert(page1 == "LIMIT 10 OFFSET 0")
+    assert(page2 == "LIMIT 10 OFFSET 10")
+    assert(page3 == "LIMIT 25 OFFSET 50")
 }
 
 // ============================================================================
-// INSERT CONCEPTS
+// QUERY BUILDER - INSERT
 // ============================================================================
 
-it("should build insert query") {
-    let table = "users";
-    let columns = "(name, email)";
-    let values = "('Alice', 'alice@example.com')";
-    let query = "INSERT INTO " + table + " " + columns + " VALUES " + values;
-    assert(query.contains("INSERT INTO"));
-    assert(query.contains("VALUES"));
+it("should build insert with values") {
+    fn build_insert(table: string, columns: [string], values: [string]): string {
+        let mut cols = "("
+        let mut vals = "("
+        for (i in 0..columns.len()) {
+            if (i > 0) {
+                cols = cols + ", "
+                vals = vals + ", "
+            }
+            cols = cols + columns[i]
+            vals = vals + values[i]
+        }
+        cols = cols + ")"
+        vals = vals + ")"
+        return "INSERT INTO " + table + " " + cols + " VALUES " + vals
+    }
+    let query = build_insert("users", ["name", "email"], ["'Alice'", "'alice@example.com'"])
+    assert(query == "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')")
 }
 
-it("should represent inserted ID") {
-    let inserted_id = 1;
-    assert(inserted_id > 0);
-}
+it("should build bulk insert") {
+    fn build_bulk_insert(table: string, columns: [string], rows: [[string]]): string {
+        let mut cols = "("
+        for (i in 0..columns.len()) {
+            if (i > 0) { cols = cols + ", " }
+            cols = cols + columns[i]
+        }
+        cols = cols + ")"
 
-// ============================================================================
-// UPDATE CONCEPTS
-// ============================================================================
-
-it("should build update query") {
-    let table = "users";
-    let set_clause = "name = 'Bob'";
-    let where_clause = "id = 1";
-    let query = "UPDATE " + table + " SET " + set_clause + " WHERE " + where_clause;
-    assert(query.contains("UPDATE"));
-    assert(query.contains("SET"));
-}
-
-it("should track affected rows") {
-    let affected_rows = 3;
-    assert(affected_rows == 3);
-}
-
-// ============================================================================
-// DELETE CONCEPTS
-// ============================================================================
-
-it("should build delete query") {
-    let table = "users";
-    let where_clause = "id = 1";
-    let query = "DELETE FROM " + table + " WHERE " + where_clause;
-    assert(query.contains("DELETE FROM"));
-}
-
-it("should build truncate") {
-    let table = "users";
-    let query = "TRUNCATE TABLE " + table;
-    assert(query.contains("TRUNCATE"));
+        let mut values = ""
+        for (r in 0..rows.len()) {
+            if (r > 0) { values = values + ", " }
+            values = values + "("
+            for (c in 0..rows[r].len()) {
+                if (c > 0) { values = values + ", " }
+                values = values + rows[r][c]
+            }
+            values = values + ")"
+        }
+        return "INSERT INTO " + table + " " + cols + " VALUES " + values
+    }
+    let query = build_bulk_insert("users", ["name"], [["'A'"], ["'B'"], ["'C'"]])
+    assert(query == "INSERT INTO users (name) VALUES ('A'), ('B'), ('C')")
 }
 
 // ============================================================================
-// JOIN CONCEPTS
+// QUERY BUILDER - UPDATE
 // ============================================================================
 
-it("should represent inner join") {
-    let join_type = "INNER JOIN";
-    let table = "orders";
-    let on_clause = "users.id = orders.user_id";
-    let join = join_type + " " + table + " ON " + on_clause;
-    assert(join.contains("INNER JOIN"));
-}
-
-it("should represent left join") {
-    let join_type = "LEFT JOIN";
-    let is_left = join_type == "LEFT JOIN";
-    assert(is_left == true);
-}
-
-it("should represent right join") {
-    let join_type = "RIGHT JOIN";
-    let is_right = join_type == "RIGHT JOIN";
-    assert(is_right == true);
+it("should build update with set clause") {
+    fn build_update(table: string, sets: [(string, string)], where_clause: string): string {
+        let mut set_str = ""
+        for (i in 0..sets.len()) {
+            if (i > 0) { set_str = set_str + ", " }
+            set_str = set_str + sets[i][0] + " = " + sets[i][1]
+        }
+        return "UPDATE " + table + " SET " + set_str + " WHERE " + where_clause
+    }
+    let query = build_update("users", [("name", "'Bob'"), ("age", "30")], "id = 1")
+    assert(query == "UPDATE users SET name = 'Bob', age = 30 WHERE id = 1")
 }
 
 // ============================================================================
-// AGGREGATION CONCEPTS
+// QUERY BUILDER - DELETE
 // ============================================================================
 
-it("should represent count") {
-    let agg = "COUNT(*)";
-    assert(agg == "COUNT(*)");
+it("should build delete with where") {
+    fn build_delete(table: string, where_clause: string): string {
+        return "DELETE FROM " + table + " WHERE " + where_clause
+    }
+    let query = build_delete("users", "id = 1")
+    assert(query == "DELETE FROM users WHERE id = 1")
 }
 
-it("should represent sum") {
-    let column = "amount";
-    let agg = "SUM(" + column + ")";
-    assert(agg == "SUM(amount)");
-}
-
-it("should represent avg") {
-    let column = "price";
-    let agg = "AVG(" + column + ")";
-    assert(agg == "AVG(price)");
-}
-
-it("should represent min") {
-    let column = "age";
-    let agg = "MIN(" + column + ")";
-    assert(agg == "MIN(age)");
-}
-
-it("should represent max") {
-    let column = "score";
-    let agg = "MAX(" + column + ")";
-    assert(agg == "MAX(score)");
+it("should build delete with multiple conditions") {
+    fn build_delete_multi(table: string, conditions: [string]): string {
+        let mut where_str = ""
+        for (i in 0..conditions.len()) {
+            if (i > 0) { where_str = where_str + " AND " }
+            where_str = where_str + conditions[i]
+        }
+        return "DELETE FROM " + table + " WHERE " + where_str
+    }
+    let query = build_delete_multi("users", ["status = 'inactive'", "created_at < '2020-01-01'"])
+    assert(query == "DELETE FROM users WHERE status = 'inactive' AND created_at < '2020-01-01'")
 }
 
 // ============================================================================
-// GROUP BY CONCEPTS
+// QUERY BUILDER - JOINS
 // ============================================================================
 
-it("should build group by") {
-    let column = "category";
-    let clause = "GROUP BY " + column;
-    assert(clause == "GROUP BY category");
+it("should build inner join") {
+    fn build_join(type: string, table: string, on_clause: string): string {
+        return type + " " + table + " ON " + on_clause
+    }
+    let join = build_join("INNER JOIN", "orders", "users.id = orders.user_id")
+    assert(join == "INNER JOIN orders ON users.id = orders.user_id")
 }
 
-it("should build having clause") {
-    let condition = "COUNT(*) > 5";
-    let clause = "HAVING " + condition;
-    assert(clause.contains("HAVING"));
+it("should build multi-table join query") {
+    fn build_multi_join(base: string, joins: [string]): string {
+        let mut query = "SELECT * FROM " + base
+        for (j in joins) {
+            query = query + " " + j
+        }
+        return query
+    }
+    let query = build_multi_join("users", [
+        "INNER JOIN orders ON users.id = orders.user_id",
+        "LEFT JOIN payments ON orders.id = payments.order_id"
+    ])
+    assert(query.contains("INNER JOIN orders"))
+    assert(query.contains("LEFT JOIN payments"))
+    assert(query.starts_with("SELECT * FROM users"))
 }
 
 // ============================================================================
-// TRANSACTION CONCEPTS
+// QUERY BUILDER - AGGREGATIONS
 // ============================================================================
 
-it("should represent transaction start") {
-    let command = "BEGIN TRANSACTION";
-    assert(command.contains("BEGIN"));
+it("should build aggregation queries") {
+    fn build_agg(func: string, column: string, alias: string): string {
+        return func + "(" + column + ") AS " + alias
+    }
+    let count = build_agg("COUNT", "*", "total")
+    let sum = build_agg("SUM", "amount", "total_amount")
+    let avg = build_agg("AVG", "price", "avg_price")
+    assert(count == "COUNT(*) AS total")
+    assert(sum == "SUM(amount) AS total_amount")
+    assert(avg == "AVG(price) AS avg_price")
 }
 
-it("should represent commit") {
-    let command = "COMMIT";
-    assert(command == "COMMIT");
-}
-
-it("should represent rollback") {
-    let command = "ROLLBACK";
-    assert(command == "ROLLBACK");
-}
-
-it("should represent savepoint") {
-    let name = "sp1";
-    let command = "SAVEPOINT " + name;
-    assert(command == "SAVEPOINT sp1");
+it("should build group by with having") {
+    fn build_group_by(columns: [string], having: string): string {
+        let mut result = "GROUP BY "
+        for (i in 0..columns.len()) {
+            if (i > 0) { result = result + ", " }
+            result = result + columns[i]
+        }
+        if (having.len() > 0) {
+            result = result + " HAVING " + having
+        }
+        return result
+    }
+    let group = build_group_by(["category", "status"], "COUNT(*) > 5")
+    assert(group == "GROUP BY category, status HAVING COUNT(*) > 5")
 }
 
 // ============================================================================
 // PARAMETER BINDING
 // ============================================================================
 
-it("should represent positional placeholder") {
-    let query = "SELECT * FROM users WHERE id = ?";
-    let has_placeholder = query.contains("?");
-    assert(has_placeholder == true);
+it("should count positional placeholders") {
+    fn count_placeholders(query: string): i32 {
+        let mut count = 0
+        for (i in 0..query.len()) {
+            if (query.char_at(i) == "?") { count = count + 1 }
+        }
+        return count
+    }
+    let q1 = "SELECT * FROM users WHERE id = ?"
+    let q2 = "INSERT INTO users (a, b, c) VALUES (?, ?, ?)"
+    let q3 = "UPDATE users SET a = ?, b = ? WHERE id = ?"
+    assert(count_placeholders(q1) == 1)
+    assert(count_placeholders(q2) == 3)
+    assert(count_placeholders(q3) == 3)
 }
 
-it("should represent named placeholder") {
-    let query = "SELECT * FROM users WHERE id = :id";
-    let has_named = query.contains(":id");
-    assert(has_named == true);
+it("should replace named placeholders") {
+    fn replace_param(query: string, name: string, value: string): string {
+        return query.replace(":" + name, value)
+    }
+    let query = "SELECT * FROM users WHERE id = :id AND status = :status"
+    let result = replace_param(replace_param(query, "id", "1"), "status", "'active'")
+    assert(result == "SELECT * FROM users WHERE id = 1 AND status = 'active'")
 }
 
-it("should count placeholders") {
-    let query = "INSERT INTO users (a, b, c) VALUES (?, ?, ?)";
-    let mut count = 0;
-    for (i in 0..query.len()) {
-        if (query.char_at(i) == "?") {
-            count = count + 1;
+// ============================================================================
+// TRANSACTION SIMULATION
+// ============================================================================
+
+it("should track transaction state") {
+    // Transaction state machine
+    fn get_next_state(current: string, action: string): string {
+        if (current == "idle" and action == "begin") { return "active" }
+        if (current == "active" and action == "commit") { return "committed" }
+        if (current == "active" and action == "rollback") { return "rolled_back" }
+        return "error"
+    }
+
+    let s1 = get_next_state("idle", "begin")
+    assert(s1 == "active")
+
+    let s2 = get_next_state("active", "commit")
+    assert(s2 == "committed")
+
+    let s3 = get_next_state("active", "rollback")
+    assert(s3 == "rolled_back")
+
+    let s4 = get_next_state("idle", "commit")
+    assert(s4 == "error")
+}
+
+it("should support rollback on error") {
+    fn should_rollback(error_occurred: bool, auto_rollback: bool): bool {
+        return error_occurred and auto_rollback
+    }
+
+    assert(should_rollback(true, true) == true)
+    assert(should_rollback(true, false) == false)
+    assert(should_rollback(false, true) == false)
+    assert(should_rollback(false, false) == false)
+}
+
+// ============================================================================
+// CONNECTION POOL SIMULATION
+// ============================================================================
+
+it("should manage connection pool") {
+    fn can_acquire(active: i32, max_size: i32): bool {
+        return active < max_size
+    }
+
+    fn acquire(active: i32, max_size: i32): i32 {
+        if (active < max_size) { return active + 1 }
+        return active
+    }
+
+    fn release(active: i32): i32 {
+        if (active > 0) { return active - 1 }
+        return 0
+    }
+
+    let max_size = 5
+    let mut active = 0
+
+    // Acquire connections
+    assert(can_acquire(active, max_size) == true)
+    active = acquire(active, max_size)
+    assert(active == 1)
+
+    active = acquire(active, max_size)
+    active = acquire(active, max_size)
+    assert(active == 3)
+
+    // Release one
+    active = release(active)
+    assert(active == 2)
+}
+
+it("should reject when pool exhausted") {
+    fn can_acquire(active: i32, max_size: i32): bool {
+        return active < max_size
+    }
+
+    assert(can_acquire(2, 2) == false)  // Pool full
+    assert(can_acquire(1, 2) == true)   // Pool has room
+    assert(can_acquire(0, 2) == true)   // Pool empty
+    assert(can_acquire(5, 5) == false)  // Pool full
+}
+
+// ============================================================================
+// RESULT SET OPERATIONS
+// ============================================================================
+
+it("should iterate result rows") {
+    let names = ["Alice", "Bob", "Carol"]
+
+    let mut count = 0
+    for (name in names) {
+        count = count + 1
+    }
+
+    assert(count == 3)
+    assert(names[0] == "Alice")
+    assert(names[1] == "Bob")
+    assert(names[2] == "Carol")
+}
+
+it("should filter result rows") {
+    let statuses = ["active", "inactive", "active", "inactive"]
+
+    let mut active_count = 0
+    for (status in statuses) {
+        if (status == "active") {
+            active_count = active_count + 1
         }
     }
-    assert(count == 3);
+
+    assert(active_count == 2)
+}
+
+it("should aggregate result values") {
+    let amounts = [100, 200, 150]
+
+    let mut total = 0
+    for (amount in amounts) {
+        total = total + amount
+    }
+
+    let count = amounts.len()
+    let avg = total / count
+    assert(total == 450)
+    assert(count == 3)
+    assert(avg == 150)
 }
 
 // ============================================================================
-// SCHEMA CONCEPTS
+// SCHEMA VALIDATION
 // ============================================================================
 
-it("should represent create table") {
-    let table = "users";
-    let sql = "CREATE TABLE " + table + " (id INTEGER PRIMARY KEY)";
-    assert(sql.contains("CREATE TABLE"));
+it("should validate column types") {
+    fn is_valid_type(type_name: string): bool {
+        let valid_types = ["INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "DATETIME"]
+        for (t in valid_types) {
+            if (t == type_name) { return true }
+        }
+        return false
+    }
+
+    assert(is_valid_type("INTEGER") == true)
+    assert(is_valid_type("TEXT") == true)
+    assert(is_valid_type("INVALID") == false)
+    assert(is_valid_type("datetime") == false)  // Case sensitive
 }
 
-it("should represent drop table") {
-    let table = "users";
-    let sql = "DROP TABLE " + table;
-    assert(sql.contains("DROP TABLE"));
-}
+it("should build create table DDL") {
+    fn build_create_table(name: string, columns: [(string, string, bool)]): string {
+        let mut sql = "CREATE TABLE " + name + " ("
+        for (i in 0..columns.len()) {
+            if (i > 0) { sql = sql + ", " }
+            sql = sql + columns[i][0] + " " + columns[i][1]
+            if (columns[i][2]) { sql = sql + " PRIMARY KEY" }
+        }
+        sql = sql + ")"
+        return sql
+    }
 
-it("should represent column types") {
-    let types = ["INTEGER", "TEXT", "REAL", "BLOB"];
-    assert(types.len() == 4);
-}
-
-it("should represent primary key") {
-    let constraint = "PRIMARY KEY";
-    assert(constraint == "PRIMARY KEY");
-}
-
-it("should represent foreign key") {
-    let constraint = "FOREIGN KEY (user_id) REFERENCES users(id)";
-    assert(constraint.contains("FOREIGN KEY"));
-    assert(constraint.contains("REFERENCES"));
-}
-
-// ============================================================================
-// INDEX CONCEPTS
-// ============================================================================
-
-it("should represent create index") {
-    let sql = "CREATE INDEX idx_users_email ON users(email)";
-    assert(sql.contains("CREATE INDEX"));
-}
-
-it("should represent unique index") {
-    let sql = "CREATE UNIQUE INDEX idx_users_email ON users(email)";
-    assert(sql.contains("UNIQUE"));
-}
-
-it("should represent drop index") {
-    let sql = "DROP INDEX idx_users_email";
-    assert(sql.contains("DROP INDEX"));
+    let ddl = build_create_table("users", [
+        ("id", "INTEGER", true),
+        ("name", "TEXT", false),
+        ("email", "TEXT", false)
+    ])
+    assert(ddl == "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
 }
 
 // ============================================================================
-// CONNECTION POOL CONCEPTS
+// SQL INJECTION PREVENTION
 // ============================================================================
 
-it("should represent pool size") {
-    let min_size = 2;
-    let max_size = 10;
-    assert(min_size < max_size);
+it("should escape single quotes") {
+    fn escape_string(s: string): string {
+        return s.replace("'", "''")
+    }
+
+    let safe = escape_string("O'Brien")
+    assert(safe == "O''Brien")
+
+    let malicious = escape_string("'; DROP TABLE users; --")
+    assert(malicious == "''; DROP TABLE users; --")
 }
 
-it("should track active connections") {
-    let active = 5;
-    let max_size = 10;
-    let available = max_size - active;
-    assert(available == 5);
+it("should validate identifier names") {
+    // Simple identifier validation using string checks
+    fn has_invalid_chars(name: string): bool {
+        return name.contains("-") or name.contains(" ") or name.contains(".")
+    }
+
+    fn starts_with_letter_or_underscore(name: string): bool {
+        if (name.len() == 0) { return false }
+        return name.starts_with("_") or
+               name.starts_with("a") or name.starts_with("b") or name.starts_with("c") or
+               name.starts_with("d") or name.starts_with("e") or name.starts_with("f") or
+               name.starts_with("u") or name.starts_with("p") or name.starts_with("t")
+    }
+
+    // Valid identifiers
+    assert(has_invalid_chars("users") == false)
+    assert(has_invalid_chars("user_name") == false)
+    assert(has_invalid_chars("_private") == false)
+
+    // Invalid identifiers
+    assert(has_invalid_chars("user-name") == true)
+    assert(has_invalid_chars("user name") == true)
+    assert(has_invalid_chars("user.name") == true)
+
+    // Check starts with letter/underscore
+    assert(starts_with_letter_or_underscore("users") == true)
+    assert(starts_with_letter_or_underscore("_private") == true)
+    assert(starts_with_letter_or_underscore("") == false)
 }
 
 // ============================================================================
-// RESULT SET CONCEPTS
+// QUERY EXECUTION TRACKING
 // ============================================================================
 
-it("should represent result rows") {
-    let rows = [
-        [1, "Alice"],
-        [2, "Bob"],
-        [3, "Carol"]
-    ];
-    assert(rows.len() == 3);
-}
+it("should track query execution stats") {
+    let mut total_queries = 0
+    let mut total_rows_affected = 0
 
-it("should access result by index") {
-    let row = [1, "Alice", "alice@example.com"];
-    let id = row[0];
-    let name = row[1];
-    assert(id == 1);
-    assert(name == "Alice");
-}
+    // Simulate query executions
+    fn execute(queries: i32, rows: i32, new_rows: i32): (i32, i32) {
+        return (queries + 1, rows + new_rows)
+    }
 
-it("should detect empty result") {
-    let rows = [];
-    assert(rows.is_empty() == true);
+    let (q1, r1) = execute(total_queries, total_rows_affected, 1)
+    let (q2, r2) = execute(q1, r1, 5)
+    let (q3, r3) = execute(q2, r2, 3)
+
+    assert(q3 == 3)
+    assert(r3 == 9)
 }
 
 // ============================================================================
-// ERROR CONCEPTS
+// ERROR HANDLING
 // ============================================================================
 
-it("should represent connection error") {
-    let error_type = "ConnectionError";
-    assert(error_type == "ConnectionError");
+it("should categorize database errors") {
+    fn get_error_category(code: i32): string {
+        if (code >= 1000 and code < 2000) { return "connection" }
+        if (code >= 2000 and code < 3000) { return "query" }
+        if (code >= 3000 and code < 4000) { return "constraint" }
+        if (code >= 4000 and code < 5000) { return "timeout" }
+        return "unknown"
+    }
+
+    assert(get_error_category(1001) == "connection")
+    assert(get_error_category(2045) == "query")
+    assert(get_error_category(3001) == "constraint")
+    assert(get_error_category(4500) == "timeout")
+    assert(get_error_category(9999) == "unknown")
 }
 
-it("should represent query error") {
-    let error_type = "QueryError";
-    assert(error_type == "QueryError");
-}
+it("should check if error is retryable") {
+    fn is_retryable(error_type: string): bool {
+        let retryable = ["connection", "timeout", "deadlock"]
+        for (t in retryable) {
+            if (t == error_type) { return true }
+        }
+        return false
+    }
 
-it("should represent constraint violation") {
-    let error_type = "ConstraintViolation";
-    assert(error_type == "ConstraintViolation");
+    assert(is_retryable("connection") == true)
+    assert(is_retryable("timeout") == true)
+    assert(is_retryable("constraint") == false)
+    assert(is_retryable("query") == false)
 }
-
