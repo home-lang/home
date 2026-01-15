@@ -1,367 +1,709 @@
 // Process Concepts Test Suite
-// Testing process management concepts using basic operations
+// Testing process management concepts with actual logic
 
 // ============================================================================
-// PROCESS ID CONCEPTS
+// PROCESS ID VALIDATION
 // ============================================================================
 
-it("should represent process ID") {
-    let pid = 12345;
-    assert(pid > 0);
+fn is_valid_pid(pid: i32): bool {
+    return pid > 0;
 }
 
-it("should represent parent process ID") {
-    let ppid = 1234;
-    assert(ppid > 0);
+fn is_init_process(pid: i32): bool {
+    return pid == 1;
 }
 
-it("should have different PID and PPID") {
-    let pid = 12345;
-    let ppid = 1234;
-    assert(pid != ppid);
+fn is_kernel_process(pid: i32): bool {
+    return pid <= 2;
 }
 
-// ============================================================================
-// EXIT CODE CONCEPTS
-// ============================================================================
-
-it("should represent success exit code") {
-    let exit_code = 0;
-    let is_success = exit_code == 0;
-    assert(is_success == true);
+fn are_related_processes(pid: i32, ppid: i32): bool {
+    // A process cannot be its own parent, and both must be valid
+    return pid != ppid and pid > 0 and ppid > 0;
 }
 
-it("should represent failure exit code") {
-    let exit_code = 1;
-    let is_success = exit_code == 0;
-    assert(is_success == false);
+it("should validate process IDs") {
+    assert(is_valid_pid(1) == true);
+    assert(is_valid_pid(12345) == true);
+    assert(is_valid_pid(0) == false);
+    assert(is_valid_pid(-1) == false);
 }
 
-it("should represent signal termination") {
-    let exit_code = 128 + 9;  // SIGKILL
-    let was_signaled = exit_code > 128;
-    assert(was_signaled == true);
+it("should identify init process") {
+    assert(is_init_process(1) == true);
+    assert(is_init_process(2) == false);
+    assert(is_init_process(1234) == false);
 }
 
-// ============================================================================
-// COMMAND BUILDING
-// ============================================================================
-
-it("should represent command name") {
-    let cmd = "echo";
-    assert(cmd == "echo");
+it("should identify kernel processes") {
+    assert(is_kernel_process(1) == true);
+    assert(is_kernel_process(2) == true);
+    assert(is_kernel_process(3) == false);
+    assert(is_kernel_process(1000) == false);
 }
 
-it("should represent command arguments") {
-    let args = ["hello", "world"];
-    assert(args.len() == 2);
-    assert(args[0] == "hello");
-}
-
-it("should build command line") {
-    let cmd = "echo";
-    let args = ["hello", "world"];
-    let cmdline = cmd + " " + args[0] + " " + args[1];
-    assert(cmdline == "echo hello world");
+it("should validate process relationships") {
+    assert(are_related_processes(1234, 1) == true);
+    assert(are_related_processes(5678, 1234) == true);
+    assert(are_related_processes(100, 100) == false);
+    assert(are_related_processes(0, 1) == false);
 }
 
 // ============================================================================
-// ENVIRONMENT VARIABLES FOR PROCESS
+// EXIT CODE INTERPRETATION
 // ============================================================================
 
-it("should set environment for process") {
-    let env_vars = [["MY_VAR", "value"], ["OTHER", "data"]];
-    assert(env_vars.len() == 2);
-    assert(env_vars[0][0] == "MY_VAR");
+fn is_success_exit(code: i32): bool {
+    return code == 0;
 }
 
-it("should inherit environment") {
-    let inherit = true;
-    assert(inherit == true);
+fn is_failure_exit(code: i32): bool {
+    return code != 0 and code < 128;
 }
 
-it("should clear environment") {
-    let env_vars = [];
-    assert(env_vars.is_empty() == true);
+fn was_killed_by_signal(code: i32): bool {
+    return code >= 128;
 }
 
-// ============================================================================
-// WORKING DIRECTORY
-// ============================================================================
-
-it("should set working directory") {
-    let cwd = "/tmp";
-    assert(cwd == "/tmp");
+fn get_signal_from_exit(code: i32): i32 {
+    if (code >= 128) {
+        return code - 128;
+    }
+    return 0;
 }
 
-it("should use default working directory") {
-    let cwd = ".";
-    assert(cwd == ".");
+fn get_exit_category(code: i32): string {
+    if (code == 0) { return "success"; }
+    if (code == 1) { return "general_error"; }
+    if (code == 2) { return "misuse"; }
+    if (code == 126) { return "not_executable"; }
+    if (code == 127) { return "command_not_found"; }
+    if (code >= 128) { return "signal_terminated"; }
+    return "error";
 }
 
-// ============================================================================
-// STDOUT/STDERR CAPTURE
-// ============================================================================
-
-it("should represent stdout") {
-    let stdout = "Hello, World!";
-    assert(stdout.len() > 0);
+it("should interpret exit codes") {
+    assert(is_success_exit(0) == true);
+    assert(is_success_exit(1) == false);
+    assert(is_failure_exit(1) == true);
+    assert(is_failure_exit(0) == false);
+    assert(is_failure_exit(137) == false);
 }
 
-it("should represent stderr") {
-    let stderr = "Error: something went wrong";
-    assert(stderr.contains("Error"));
+it("should detect signal termination") {
+    assert(was_killed_by_signal(137) == true);
+    assert(was_killed_by_signal(143) == true);
+    assert(was_killed_by_signal(1) == false);
+    assert(was_killed_by_signal(0) == false);
 }
 
-it("should separate stdout and stderr") {
-    let stdout = "output";
-    let stderr = "error";
-    assert(stdout != stderr);
+it("should extract signal from exit code") {
+    assert(get_signal_from_exit(137) == 9);
+    assert(get_signal_from_exit(143) == 15);
+    assert(get_signal_from_exit(130) == 2);
+    assert(get_signal_from_exit(1) == 0);
 }
 
-// ============================================================================
-// STDIN INPUT
-// ============================================================================
-
-it("should represent stdin input") {
-    let stdin = "input data";
-    assert(stdin == "input data");
-}
-
-it("should represent empty stdin") {
-    let stdin = "";
-    assert(stdin.is_empty() == true);
+it("should categorize exit codes") {
+    assert(get_exit_category(0) == "success");
+    assert(get_exit_category(1) == "general_error");
+    assert(get_exit_category(127) == "command_not_found");
+    assert(get_exit_category(126) == "not_executable");
+    assert(get_exit_category(137) == "signal_terminated");
 }
 
 // ============================================================================
-// PROCESS STATE
+// SIGNAL HANDLING
 // ============================================================================
 
-it("should represent running state") {
-    let state = "running";
-    assert(state == "running");
+fn get_signal_name(signal: i32): string {
+    if (signal == 1) { return "SIGHUP"; }
+    if (signal == 2) { return "SIGINT"; }
+    if (signal == 3) { return "SIGQUIT"; }
+    if (signal == 9) { return "SIGKILL"; }
+    if (signal == 15) { return "SIGTERM"; }
+    if (signal == 17) { return "SIGCHLD"; }
+    if (signal == 18) { return "SIGCONT"; }
+    if (signal == 19) { return "SIGSTOP"; }
+    return "UNKNOWN";
 }
 
-it("should represent terminated state") {
-    let state = "terminated";
-    let is_finished = state == "terminated" or state == "exited";
-    assert(is_finished == true);
+fn is_catchable_signal(signal: i32): bool {
+    // SIGKILL (9) and SIGSTOP (19) cannot be caught
+    return signal != 9 and signal != 19;
 }
 
-it("should represent suspended state") {
-    let state = "suspended";
-    assert(state == "suspended");
+fn is_termination_signal(signal: i32): bool {
+    return signal == 2 or signal == 3 or signal == 9 or signal == 15;
 }
 
-// ============================================================================
-// SIGNAL CONCEPTS
-// ============================================================================
-
-it("should represent SIGTERM") {
-    let signal = 15;  // SIGTERM
-    assert(signal == 15);
+fn is_job_control_signal(signal: i32): bool {
+    return signal == 17 or signal == 18 or signal == 19 or signal == 20;
 }
 
-it("should represent SIGKILL") {
-    let signal = 9;  // SIGKILL
-    assert(signal == 9);
+fn get_default_action(signal: i32): string {
+    if (signal == 9 or signal == 15 or signal == 2) { return "terminate"; }
+    if (signal == 19 or signal == 20) { return "stop"; }
+    if (signal == 18) { return "continue"; }
+    if (signal == 17) { return "ignore"; }
+    return "terminate";
 }
 
-it("should represent SIGINT") {
-    let signal = 2;  // SIGINT
-    assert(signal == 2);
+it("should get signal names") {
+    assert(get_signal_name(9) == "SIGKILL");
+    assert(get_signal_name(15) == "SIGTERM");
+    assert(get_signal_name(2) == "SIGINT");
+    assert(get_signal_name(1) == "SIGHUP");
+    assert(get_signal_name(99) == "UNKNOWN");
 }
 
-it("should detect signal name") {
-    let signal = 9;
-    let name = if (signal == 9) { "SIGKILL" } else if (signal == 15) { "SIGTERM" } else { "UNKNOWN" };
-    assert(name == "SIGKILL");
+it("should identify catchable signals") {
+    assert(is_catchable_signal(15) == true);
+    assert(is_catchable_signal(2) == true);
+    assert(is_catchable_signal(9) == false);
+    assert(is_catchable_signal(19) == false);
 }
 
-// ============================================================================
-// TIMEOUT CONCEPT
-// ============================================================================
-
-it("should represent timeout in milliseconds") {
-    let timeout_ms = 5000;
-    assert(timeout_ms == 5000);
+it("should identify termination signals") {
+    assert(is_termination_signal(9) == true);
+    assert(is_termination_signal(15) == true);
+    assert(is_termination_signal(2) == true);
+    assert(is_termination_signal(18) == false);
 }
 
-it("should detect timeout exceeded") {
-    let start_time = 1000;
-    let current_time = 7000;
-    let timeout_ms = 5000;
-    let elapsed = current_time - start_time;
-    let timed_out = elapsed > timeout_ms;
-    assert(timed_out == true);
+it("should identify job control signals") {
+    assert(is_job_control_signal(17) == true);
+    assert(is_job_control_signal(18) == true);
+    assert(is_job_control_signal(19) == true);
+    assert(is_job_control_signal(9) == false);
 }
 
-it("should detect completed before timeout") {
-    let start_time = 1000;
-    let current_time = 2000;
-    let timeout_ms = 5000;
-    let elapsed = current_time - start_time;
-    let timed_out = elapsed > timeout_ms;
-    assert(timed_out == false);
-}
-
-// ============================================================================
-// PIPE CONCEPT
-// ============================================================================
-
-it("should chain commands conceptually") {
-    let cmd1_output = "hello world";
-    let cmd2_input = cmd1_output;
-    // cmd2 processes input
-    let cmd2_output = cmd2_input.upper();
-    assert(cmd2_output == "HELLO WORLD");
-}
-
-it("should represent pipeline") {
-    let pipeline = ["grep", "sort", "uniq"];
-    assert(pipeline.len() == 3);
+it("should get default signal actions") {
+    assert(get_default_action(9) == "terminate");
+    assert(get_default_action(15) == "terminate");
+    assert(get_default_action(19) == "stop");
+    assert(get_default_action(18) == "continue");
 }
 
 // ============================================================================
-// SHELL COMMAND
+// COMMAND BUILDING AND PARSING
 // ============================================================================
 
-it("should detect shell command") {
-    let cmd = "echo hello && echo world";
-    let is_shell = cmd.contains("&&") or cmd.contains("|") or cmd.contains(";");
-    assert(is_shell == true);
+fn build_command(cmd: string, arg1: string, arg2: string): string {
+    if (arg1 == "" and arg2 == "") {
+        return cmd;
+    }
+    if (arg2 == "") {
+        return cmd + " " + arg1;
+    }
+    return cmd + " " + arg1 + " " + arg2;
 }
 
-it("should represent shell path") {
-    let shell = "/bin/sh";
-    assert(shell.ends_with("sh"));
+fn is_absolute_path(path: string): bool {
+    return path.starts_with("/");
+}
+
+fn is_shell_command(cmd: string): bool {
+    return cmd.contains("&&") or cmd.contains("||") or
+           cmd.contains("|") or cmd.contains(";") or
+           cmd.contains(">") or cmd.contains("<");
+}
+
+fn needs_shell_execution(cmd: string): bool {
+    return is_shell_command(cmd) or cmd.contains("*") or
+           cmd.contains("?") or cmd.contains("$");
+}
+
+fn get_command_base(cmdline: string): string {
+    let parts = cmdline.split(" ");
+    return parts[0];
+}
+
+fn count_arguments(cmdline: string): i32 {
+    let parts = cmdline.split(" ");
+    if (parts.len() > 1) {
+        return parts.len() - 1;
+    }
+    return 0;
+}
+
+it("should build commands") {
+    assert(build_command("echo", "hello", "world") == "echo hello world");
+    assert(build_command("ls", "-la", "") == "ls -la");
+    assert(build_command("pwd", "", "") == "pwd");
+}
+
+it("should detect absolute paths") {
+    assert(is_absolute_path("/usr/bin/ls") == true);
+    assert(is_absolute_path("/bin/sh") == true);
+    assert(is_absolute_path("ls") == false);
+    assert(is_absolute_path("./script.sh") == false);
+}
+
+it("should detect shell commands") {
+    assert(is_shell_command("echo hello && echo world") == true);
+    assert(is_shell_command("cat file | grep pattern") == true);
+    assert(is_shell_command("echo hello > file.txt") == true);
+    assert(is_shell_command("echo hello") == false);
+}
+
+it("should detect commands needing shell") {
+    assert(needs_shell_execution("ls *.txt") == true);
+    assert(needs_shell_execution("echo $HOME") == true);
+    assert(needs_shell_execution("cat a && cat b") == true);
+    assert(needs_shell_execution("ls -la") == false);
+}
+
+it("should extract command base") {
+    assert(get_command_base("echo hello world") == "echo");
+    assert(get_command_base("ls -la /tmp") == "ls");
+    assert(get_command_base("python3") == "python3");
+}
+
+it("should count arguments") {
+    assert(count_arguments("echo hello world") == 2);
+    assert(count_arguments("ls -la") == 1);
+    assert(count_arguments("pwd") == 0);
+    assert(count_arguments("grep -r -n pattern dir") == 4);
 }
 
 // ============================================================================
-// PROCESS GROUP
+// ENVIRONMENT VARIABLE HANDLING
 // ============================================================================
 
-it("should represent process group ID") {
-    let pgid = 1000;
-    assert(pgid > 0);
-}
-
-it("should have process in group") {
-    let group_members = [1001, 1002, 1003];
-    let target = 1002;
-    let mut in_group = false;
-    for (pid in group_members) {
-        if (pid == target) {
-            in_group = true;
+fn is_valid_env_name(name: string): bool {
+    if (name == "" or name.len() == 0) { return false; }
+    // Must start with letter or underscore
+    let first = name.char_at(0);
+    if (first != "_") {
+        // Check if it's a letter (simplified check)
+        if (first == "0" or first == "1" or first == "2" or
+            first == "3" or first == "4" or first == "5" or
+            first == "6" or first == "7" or first == "8" or first == "9") {
+            return false;
         }
     }
-    assert(in_group == true);
+    // Cannot contain = or null
+    return !name.contains("=");
+}
+
+fn parse_env_entry(entry: string): (string, string) {
+    let parts = entry.split("=");
+    if (parts.len() >= 2) {
+        return (parts[0], parts[1]);
+    }
+    return (entry, "");
+}
+
+fn is_path_variable(name: string): bool {
+    return name == "PATH" or name == "LD_LIBRARY_PATH" or
+           name == "PYTHONPATH" or name == "MANPATH";
+}
+
+fn count_path_entries(path_value: string): i32 {
+    if (path_value == "") { return 0; }
+    let entries = path_value.split(":");
+    return entries.len();
+}
+
+it("should validate environment variable names") {
+    assert(is_valid_env_name("HOME") == true);
+    assert(is_valid_env_name("MY_VAR") == true);
+    assert(is_valid_env_name("_private") == true);
+    assert(is_valid_env_name("1invalid") == false);
+    assert(is_valid_env_name("") == false);
+    assert(is_valid_env_name("HAS=EQUALS") == false);
+}
+
+it("should parse environment entries") {
+    let (name1, value1) = parse_env_entry("HOME=/home/user");
+    assert(name1 == "HOME");
+    assert(value1 == "/home/user");
+
+    let (name2, value2) = parse_env_entry("EMPTY=");
+    assert(name2 == "EMPTY");
+}
+
+it("should identify path variables") {
+    assert(is_path_variable("PATH") == true);
+    assert(is_path_variable("LD_LIBRARY_PATH") == true);
+    assert(is_path_variable("HOME") == false);
+    assert(is_path_variable("USER") == false);
+}
+
+it("should count path entries") {
+    assert(count_path_entries("/usr/bin:/bin:/usr/local/bin") == 3);
+    assert(count_path_entries("/usr/bin") == 1);
+    assert(count_path_entries("") == 0);
+}
+
+// ============================================================================
+// PROCESS STATE MANAGEMENT
+// ============================================================================
+
+fn is_active_state(state: string): bool {
+    return state == "running" or state == "sleeping" or state == "waiting";
+}
+
+fn is_terminated_state(state: string): bool {
+    return state == "terminated" or state == "zombie" or state == "exited";
+}
+
+fn can_receive_signals(state: string): bool {
+    return state == "running" or state == "sleeping" or state == "stopped";
+}
+
+fn get_state_priority(state: string): i32 {
+    if (state == "running") { return 4; }
+    if (state == "sleeping") { return 3; }
+    if (state == "waiting") { return 2; }
+    if (state == "stopped") { return 1; }
+    return 0;
+}
+
+fn state_transition_valid(from: string, to: string): bool {
+    // Running can go to sleeping, stopped, or terminated
+    if (from == "running") {
+        return to == "sleeping" or to == "stopped" or to == "terminated";
+    }
+    // Sleeping can go to running or terminated
+    if (from == "sleeping") {
+        return to == "running" or to == "terminated";
+    }
+    // Stopped can go to running or terminated
+    if (from == "stopped") {
+        return to == "running" or to == "terminated";
+    }
+    return false;
+}
+
+it("should identify active states") {
+    assert(is_active_state("running") == true);
+    assert(is_active_state("sleeping") == true);
+    assert(is_active_state("terminated") == false);
+    assert(is_active_state("zombie") == false);
+}
+
+it("should identify terminated states") {
+    assert(is_terminated_state("terminated") == true);
+    assert(is_terminated_state("zombie") == true);
+    assert(is_terminated_state("exited") == true);
+    assert(is_terminated_state("running") == false);
+}
+
+it("should check signal reception capability") {
+    assert(can_receive_signals("running") == true);
+    assert(can_receive_signals("sleeping") == true);
+    assert(can_receive_signals("stopped") == true);
+    assert(can_receive_signals("zombie") == false);
+}
+
+it("should get state priorities") {
+    assert(get_state_priority("running") == 4);
+    assert(get_state_priority("sleeping") == 3);
+    assert(get_state_priority("stopped") == 1);
+    assert(get_state_priority("zombie") == 0);
+}
+
+it("should validate state transitions") {
+    assert(state_transition_valid("running", "sleeping") == true);
+    assert(state_transition_valid("running", "terminated") == true);
+    assert(state_transition_valid("stopped", "running") == true);
+    assert(state_transition_valid("terminated", "running") == false);
+}
+
+// ============================================================================
+// TIMEOUT AND DEADLINE HANDLING
+// ============================================================================
+
+fn is_timed_out(elapsed_ms: i32, timeout_ms: i32): bool {
+    return elapsed_ms >= timeout_ms;
+}
+
+fn remaining_time(elapsed_ms: i32, timeout_ms: i32): i32 {
+    let remaining = timeout_ms - elapsed_ms;
+    if (remaining < 0) { return 0; }
+    return remaining;
+}
+
+fn timeout_percentage(elapsed_ms: i32, timeout_ms: i32): i32 {
+    if (timeout_ms == 0) { return 100; }
+    return (elapsed_ms * 100) / timeout_ms;
+}
+
+fn should_extend_timeout(attempts: i32, max_attempts: i32): bool {
+    return attempts < max_attempts;
+}
+
+fn calculate_grace_period(timeout_ms: i32): i32 {
+    // Grace period is 10% of timeout, minimum 100ms, maximum 5000ms
+    let grace = timeout_ms / 10;
+    if (grace < 100) { return 100; }
+    if (grace > 5000) { return 5000; }
+    return grace;
+}
+
+it("should detect timeout") {
+    assert(is_timed_out(5000, 3000) == true);
+    assert(is_timed_out(2000, 3000) == false);
+    assert(is_timed_out(3000, 3000) == true);
+}
+
+it("should calculate remaining time") {
+    assert(remaining_time(2000, 5000) == 3000);
+    assert(remaining_time(5000, 5000) == 0);
+    assert(remaining_time(6000, 5000) == 0);
+}
+
+it("should calculate timeout percentage") {
+    assert(timeout_percentage(2500, 5000) == 50);
+    assert(timeout_percentage(5000, 5000) == 100);
+    assert(timeout_percentage(1000, 5000) == 20);
+}
+
+it("should determine timeout extension eligibility") {
+    assert(should_extend_timeout(1, 3) == true);
+    assert(should_extend_timeout(3, 3) == false);
+    assert(should_extend_timeout(5, 3) == false);
+}
+
+it("should calculate grace periods") {
+    assert(calculate_grace_period(10000) == 1000);
+    assert(calculate_grace_period(500) == 100);
+    assert(calculate_grace_period(100000) == 5000);
 }
 
 // ============================================================================
 // RESOURCE LIMITS
 // ============================================================================
 
-it("should represent memory limit") {
-    let limit_mb = 100;
-    let limit_bytes = limit_mb * 1024 * 1024;
-    assert(limit_bytes == 104857600);
+fn bytes_to_mb(bytes: i32): i32 {
+    return bytes / (1024 * 1024);
 }
 
-it("should represent CPU time limit") {
-    let limit_seconds = 60;
-    assert(limit_seconds == 60);
+fn mb_to_bytes(mb: i32): i32 {
+    return mb * 1024 * 1024;
 }
 
-it("should detect limit exceeded") {
-    let usage = 150;
-    let limit = 100;
-    let exceeded = usage > limit;
-    assert(exceeded == true);
+fn is_within_limit(usage: i32, limit: i32): bool {
+    return usage <= limit;
 }
 
-// ============================================================================
-// PROCESS INFO
-// ============================================================================
-
-it("should represent process name") {
-    let name = "my_process";
-    assert(name == "my_process");
+fn limit_percentage_used(usage: i32, limit: i32): i32 {
+    if (limit == 0) { return 100; }
+    return (usage * 100) / limit;
 }
 
-it("should represent process start time") {
-    let start_time = 1703462400;
-    assert(start_time > 0);
+fn should_warn_limit(usage: i32, limit: i32, threshold: i32): bool {
+    let percentage = limit_percentage_used(usage, limit);
+    return percentage >= threshold;
 }
 
-it("should represent memory usage") {
-    let memory_kb = 50000;
-    assert(memory_kb > 0);
+fn get_limit_status(usage: i32, limit: i32): string {
+    let percentage = limit_percentage_used(usage, limit);
+    if (percentage >= 100) { return "exceeded"; }
+    if (percentage >= 90) { return "critical"; }
+    if (percentage >= 75) { return "warning"; }
+    return "ok";
 }
 
-// ============================================================================
-// DAEMON CONCEPT
-// ============================================================================
-
-it("should represent daemon flag") {
-    let is_daemon = true;
-    assert(is_daemon == true);
+it("should convert bytes to megabytes") {
+    assert(bytes_to_mb(1048576) == 1);
+    assert(bytes_to_mb(104857600) == 100);
+    assert(bytes_to_mb(524288) == 0);
 }
 
-it("should have no controlling terminal") {
-    let has_tty = false;
-    let is_daemon = !has_tty;
-    assert(is_daemon == true);
+it("should convert megabytes to bytes") {
+    assert(mb_to_bytes(1) == 1048576);
+    assert(mb_to_bytes(100) == 104857600);
+    assert(mb_to_bytes(0) == 0);
 }
 
-// ============================================================================
-// EXIT HANDLER
-// ============================================================================
-
-it("should track exit handlers") {
-    let mut handlers = [];
-    handlers = handlers.push("handler1");
-    handlers = handlers.push("handler2");
-    assert(handlers.len() == 2);
+it("should check resource limits") {
+    assert(is_within_limit(50, 100) == true);
+    assert(is_within_limit(100, 100) == true);
+    assert(is_within_limit(150, 100) == false);
 }
 
-// ============================================================================
-// PROCESS LISTING
-// ============================================================================
-
-it("should list processes") {
-    let processes = [
-        ["1", "init"],
-        ["1234", "bash"],
-        ["5678", "vim"]
-    ];
-    assert(processes.len() == 3);
+it("should calculate limit usage percentage") {
+    assert(limit_percentage_used(50, 100) == 50);
+    assert(limit_percentage_used(75, 100) == 75);
+    assert(limit_percentage_used(100, 100) == 100);
 }
 
-it("should find process by name") {
-    let processes = ["init", "bash", "vim", "firefox"];
-    let target = "vim";
-    let mut found = false;
-    for (p in processes) {
-        if (p == target) {
-            found = true;
-        }
-    }
-    assert(found == true);
+it("should detect limit warnings") {
+    assert(should_warn_limit(80, 100, 75) == true);
+    assert(should_warn_limit(50, 100, 75) == false);
+    assert(should_warn_limit(90, 100, 90) == true);
+}
+
+it("should get limit status") {
+    assert(get_limit_status(50, 100) == "ok");
+    assert(get_limit_status(80, 100) == "warning");
+    assert(get_limit_status(95, 100) == "critical");
+    assert(get_limit_status(110, 100) == "exceeded");
 }
 
 // ============================================================================
-// DETACH CONCEPT
+// PROCESS PRIORITY
 // ============================================================================
 
-it("should mark as detached") {
-    let is_detached = true;
-    assert(is_detached == true);
+fn is_valid_nice_value(nice: i32): bool {
+    return nice >= -20 and nice <= 19;
 }
 
-it("should run independently") {
-    let attached = false;
-    let independent = !attached;
-    assert(independent == true);
+fn is_high_priority(nice: i32): bool {
+    return nice < 0;
 }
 
+fn is_low_priority(nice: i32): bool {
+    return nice > 0;
+}
+
+fn compare_priority(nice1: i32, nice2: i32): i32 {
+    // Lower nice value means higher priority
+    if (nice1 < nice2) { return 1; }
+    if (nice1 > nice2) { return -1; }
+    return 0;
+}
+
+fn get_priority_class(nice: i32): string {
+    if (nice <= -15) { return "realtime"; }
+    if (nice <= -5) { return "high"; }
+    if (nice <= 5) { return "normal"; }
+    if (nice <= 15) { return "low"; }
+    return "idle";
+}
+
+it("should validate nice values") {
+    assert(is_valid_nice_value(0) == true);
+    assert(is_valid_nice_value(-20) == true);
+    assert(is_valid_nice_value(19) == true);
+    assert(is_valid_nice_value(-21) == false);
+    assert(is_valid_nice_value(20) == false);
+}
+
+it("should identify priority levels") {
+    assert(is_high_priority(-10) == true);
+    assert(is_high_priority(-1) == true);
+    assert(is_high_priority(0) == false);
+    assert(is_low_priority(10) == true);
+    assert(is_low_priority(0) == false);
+}
+
+it("should compare priorities") {
+    assert(compare_priority(-10, 0) == 1);
+    assert(compare_priority(10, 0) == -1);
+    assert(compare_priority(0, 0) == 0);
+}
+
+it("should get priority class") {
+    assert(get_priority_class(-20) == "realtime");
+    assert(get_priority_class(-10) == "high");
+    assert(get_priority_class(0) == "normal");
+    assert(get_priority_class(10) == "low");
+    assert(get_priority_class(19) == "idle");
+}
+
+// ============================================================================
+// PIPE AND REDIRECTION
+// ============================================================================
+
+fn count_pipe_stages(cmdline: string): i32 {
+    if (!cmdline.contains("|")) { return 1; }
+    let parts = cmdline.split("|");
+    return parts.len();
+}
+
+fn has_stdout_redirect(cmdline: string): bool {
+    return cmdline.contains(">") and !cmdline.contains("2>");
+}
+
+fn has_stderr_redirect(cmdline: string): bool {
+    return cmdline.contains("2>");
+}
+
+fn has_stdin_redirect(cmdline: string): bool {
+    return cmdline.contains("<");
+}
+
+fn get_redirect_type(cmdline: string): string {
+    if (cmdline.contains(">>")) { return "append"; }
+    if (cmdline.contains(">")) { return "overwrite"; }
+    if (cmdline.contains("<")) { return "input"; }
+    return "none";
+}
+
+it("should count pipe stages") {
+    assert(count_pipe_stages("ls | grep foo") == 2);
+    assert(count_pipe_stages("cat | grep | sort | uniq") == 4);
+    assert(count_pipe_stages("echo hello") == 1);
+}
+
+it("should detect stdout redirect") {
+    assert(has_stdout_redirect("echo hello > file.txt") == true);
+    assert(has_stdout_redirect("echo hello >> file.txt") == true);
+    assert(has_stdout_redirect("echo hello") == false);
+}
+
+it("should detect stderr redirect") {
+    assert(has_stderr_redirect("cmd 2> errors.txt") == true);
+    assert(has_stderr_redirect("cmd 2>&1") == true);
+    assert(has_stderr_redirect("cmd > output.txt") == false);
+}
+
+it("should detect stdin redirect") {
+    assert(has_stdin_redirect("cat < input.txt") == true);
+    assert(has_stdin_redirect("grep pattern < file") == true);
+    assert(has_stdin_redirect("echo hello") == false);
+}
+
+it("should get redirect type") {
+    assert(get_redirect_type("echo hello > file") == "overwrite");
+    assert(get_redirect_type("echo hello >> file") == "append");
+    assert(get_redirect_type("cat < file") == "input");
+    assert(get_redirect_type("echo hello") == "none");
+}
+
+// ============================================================================
+// DAEMON DETECTION
+// ============================================================================
+
+fn is_daemon_process(ppid: i32, has_tty: bool): bool {
+    // Daemon typically has init (1) as parent and no controlling terminal
+    return ppid == 1 and !has_tty;
+}
+
+fn is_orphan_process(ppid: i32): bool {
+    // Orphan process has been adopted by init
+    return ppid == 1;
+}
+
+fn is_session_leader(pid: i32, sid: i32): bool {
+    return pid == sid;
+}
+
+fn is_process_group_leader(pid: i32, pgid: i32): bool {
+    return pid == pgid;
+}
+
+it("should identify daemon processes") {
+    assert(is_daemon_process(1, false) == true);
+    assert(is_daemon_process(1, true) == false);
+    assert(is_daemon_process(1234, false) == false);
+}
+
+it("should identify orphan processes") {
+    assert(is_orphan_process(1) == true);
+    assert(is_orphan_process(1234) == false);
+}
+
+it("should identify session leaders") {
+    assert(is_session_leader(1000, 1000) == true);
+    assert(is_session_leader(1001, 1000) == false);
+}
+
+it("should identify process group leaders") {
+    assert(is_process_group_leader(1000, 1000) == true);
+    assert(is_process_group_leader(1001, 1000) == false);
+}

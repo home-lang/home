@@ -1,289 +1,686 @@
 // Signal Handling Concepts Test Suite
-// Testing signal concepts using basic operations
+// Testing signal concepts with actual logic
 
 // ============================================================================
-// SIGNAL CONSTANTS
+// SIGNAL NUMBER TO NAME MAPPING
 // ============================================================================
 
-it("should represent SIGINT") {
-    let sigint = 2;
-    assert(sigint == 2);
+fn get_signal_name(signal: i32): string {
+    if (signal == 1) { return "SIGHUP"; }
+    if (signal == 2) { return "SIGINT"; }
+    if (signal == 3) { return "SIGQUIT"; }
+    if (signal == 4) { return "SIGILL"; }
+    if (signal == 5) { return "SIGTRAP"; }
+    if (signal == 6) { return "SIGABRT"; }
+    if (signal == 8) { return "SIGFPE"; }
+    if (signal == 9) { return "SIGKILL"; }
+    if (signal == 10) { return "SIGUSR1"; }
+    if (signal == 11) { return "SIGSEGV"; }
+    if (signal == 12) { return "SIGUSR2"; }
+    if (signal == 13) { return "SIGPIPE"; }
+    if (signal == 14) { return "SIGALRM"; }
+    if (signal == 15) { return "SIGTERM"; }
+    if (signal == 17) { return "SIGCHLD"; }
+    if (signal == 18) { return "SIGCONT"; }
+    if (signal == 19) { return "SIGSTOP"; }
+    if (signal == 20) { return "SIGTSTP"; }
+    if (signal == 21) { return "SIGTTIN"; }
+    if (signal == 22) { return "SIGTTOU"; }
+    return "UNKNOWN";
 }
 
-it("should represent SIGTERM") {
-    let sigterm = 15;
-    assert(sigterm == 15);
+fn get_signal_number(name: string): i32 {
+    if (name == "SIGHUP") { return 1; }
+    if (name == "SIGINT") { return 2; }
+    if (name == "SIGQUIT") { return 3; }
+    if (name == "SIGILL") { return 4; }
+    if (name == "SIGTRAP") { return 5; }
+    if (name == "SIGABRT") { return 6; }
+    if (name == "SIGFPE") { return 8; }
+    if (name == "SIGKILL") { return 9; }
+    if (name == "SIGUSR1") { return 10; }
+    if (name == "SIGSEGV") { return 11; }
+    if (name == "SIGUSR2") { return 12; }
+    if (name == "SIGPIPE") { return 13; }
+    if (name == "SIGALRM") { return 14; }
+    if (name == "SIGTERM") { return 15; }
+    if (name == "SIGCHLD") { return 17; }
+    if (name == "SIGCONT") { return 18; }
+    if (name == "SIGSTOP") { return 19; }
+    if (name == "SIGTSTP") { return 20; }
+    return 0;
 }
 
-it("should represent SIGKILL") {
-    let sigkill = 9;
-    assert(sigkill == 9);
+fn is_valid_signal(signal: i32): bool {
+    return signal >= 1 and signal <= 31;
 }
 
-it("should represent SIGHUP") {
-    let sighup = 1;
-    assert(sighup == 1);
+it("should map signal numbers to names") {
+    assert(get_signal_name(1) == "SIGHUP");
+    assert(get_signal_name(2) == "SIGINT");
+    assert(get_signal_name(9) == "SIGKILL");
+    assert(get_signal_name(15) == "SIGTERM");
+    assert(get_signal_name(99) == "UNKNOWN");
 }
 
-it("should represent SIGUSR1") {
-    let sigusr1 = 10;  // Linux value
-    assert(sigusr1 > 0);
+it("should map signal names to numbers") {
+    assert(get_signal_number("SIGHUP") == 1);
+    assert(get_signal_number("SIGINT") == 2);
+    assert(get_signal_number("SIGKILL") == 9);
+    assert(get_signal_number("SIGTERM") == 15);
+    assert(get_signal_number("INVALID") == 0);
 }
 
-it("should represent SIGUSR2") {
-    let sigusr2 = 12;  // Linux value
-    assert(sigusr2 > 0);
-}
-
-it("should represent SIGCHLD") {
-    let sigchld = 17;
-    assert(sigchld > 0);
-}
-
-it("should represent SIGALRM") {
-    let sigalrm = 14;
-    assert(sigalrm == 14);
-}
-
-it("should represent SIGPIPE") {
-    let sigpipe = 13;
-    assert(sigpipe == 13);
-}
-
-// ============================================================================
-// SIGNAL NAMES
-// ============================================================================
-
-it("should map signal number to name") {
-    let signal_num = 2;
-    let name = if (signal_num == 2) { "SIGINT" } else if (signal_num == 9) { "SIGKILL" } else if (signal_num == 15) { "SIGTERM" } else { "UNKNOWN" };
-    assert(name == "SIGINT");
-}
-
-it("should map SIGKILL name") {
-    let signal_num = 9;
-    let name = if (signal_num == 9) { "SIGKILL" } else { "OTHER" };
-    assert(name == "SIGKILL");
-}
-
-it("should map SIGTERM name") {
-    let signal_num = 15;
-    let name = if (signal_num == 15) { "SIGTERM" } else { "OTHER" };
-    assert(name == "SIGTERM");
-}
-
-// ============================================================================
-// HANDLER STATE
-// ============================================================================
-
-it("should represent handler registered state") {
-    let handlers_registered = ["SIGINT", "SIGTERM"];
-    assert(handlers_registered.len() == 2);
-}
-
-it("should detect handler for signal") {
-    let handled_signals = [2, 15];
-    let signal = 2;
-    let mut has_handler = false;
-    for (s in handled_signals) {
-        if (s == signal) {
-            has_handler = true;
-        }
-    }
-    assert(has_handler == true);
-}
-
-it("should detect no handler") {
-    let handled_signals = [2, 15];
-    let signal = 9;  // SIGKILL typically can't have handler
-    let mut has_handler = false;
-    for (s in handled_signals) {
-        if (s == signal) {
-            has_handler = true;
-        }
-    }
-    assert(has_handler == false);
+it("should validate signal numbers") {
+    assert(is_valid_signal(1) == true);
+    assert(is_valid_signal(15) == true);
+    assert(is_valid_signal(31) == true);
+    assert(is_valid_signal(0) == false);
+    assert(is_valid_signal(32) == false);
 }
 
 // ============================================================================
-// SIGNAL RECEIVED STATE
+// SIGNAL CLASSIFICATION
 // ============================================================================
 
-it("should track received signal") {
-    let mut received_signal = 0;
-    // Simulate receiving SIGINT
-    received_signal = 2;
-    assert(received_signal == 2);
+fn is_termination_signal(signal: i32): bool {
+    return signal == 2 or signal == 3 or signal == 6 or
+           signal == 9 or signal == 15;
 }
 
-it("should track signal count") {
-    let mut signal_count = 0;
-    // Simulate receiving signals
-    signal_count = signal_count + 1;
-    signal_count = signal_count + 1;
-    assert(signal_count == 2);
+fn is_job_control_signal(signal: i32): bool {
+    return signal == 17 or signal == 18 or signal == 19 or
+           signal == 20 or signal == 21 or signal == 22;
 }
 
-// ============================================================================
-// SIGNAL ACTIONS
-// ============================================================================
-
-it("should represent default action") {
-    let action = "default";
-    assert(action == "default");
+fn is_fatal_signal(signal: i32): bool {
+    return signal == 4 or signal == 6 or signal == 8 or
+           signal == 9 or signal == 11;
 }
 
-it("should represent ignore action") {
-    let action = "ignore";
-    assert(action == "ignore");
+fn is_user_signal(signal: i32): bool {
+    return signal == 10 or signal == 12;
 }
 
-it("should represent handler action") {
-    let action = "handler";
-    assert(action == "handler");
+fn is_timer_signal(signal: i32): bool {
+    return signal == 14 or signal == 26 or signal == 27;
 }
 
-// ============================================================================
-// BLOCKING SIGNALS
-// ============================================================================
-
-it("should represent blocked signals") {
-    let blocked = [2, 15];
-    assert(blocked.len() == 2);
+fn is_io_signal(signal: i32): bool {
+    return signal == 13 or signal == 29;
 }
-
-it("should add signal to blocked set") {
-    let mut blocked = [2];
-    blocked = blocked.push(15);
-    assert(blocked.len() == 2);
-}
-
-it("should check if signal is blocked") {
-    let blocked = [2, 15];
-    let signal = 15;
-    let mut is_blocked = false;
-    for (s in blocked) {
-        if (s == signal) {
-            is_blocked = true;
-        }
-    }
-    assert(is_blocked == true);
-}
-
-// ============================================================================
-// PENDING SIGNALS
-// ============================================================================
-
-it("should track pending signals") {
-    let mut pending = [];
-    pending = pending.push(2);
-    pending = pending.push(15);
-    assert(pending.len() == 2);
-}
-
-it("should clear pending signal") {
-    let pending = [2, 15];
-    let to_clear = 2;
-    let mut remaining = [];
-    for (s in pending) {
-        if (s != to_clear) {
-            remaining = remaining.push(s);
-        }
-    }
-    assert(remaining.len() == 1);
-}
-
-// ============================================================================
-// SIGNAL MASK
-// ============================================================================
-
-it("should represent signal mask") {
-    let mask = [1, 2, 15];  // SIGHUP, SIGINT, SIGTERM
-    assert(mask.len() == 3);
-}
-
-it("should test if signal in mask") {
-    let mask = [2, 15];
-    let signal = 2;
-    let mut in_mask = false;
-    for (s in mask) {
-        if (s == signal) {
-            in_mask = true;
-        }
-    }
-    assert(in_mask == true);
-}
-
-// ============================================================================
-// TERMINATION SIGNALS
-// ============================================================================
 
 it("should identify termination signals") {
-    let signal = 15;  // SIGTERM
-    let is_termination = signal == 2 or signal == 15 or signal == 9;
-    assert(is_termination == true);
+    assert(is_termination_signal(2) == true);
+    assert(is_termination_signal(9) == true);
+    assert(is_termination_signal(15) == true);
+    assert(is_termination_signal(10) == false);
+    assert(is_termination_signal(17) == false);
 }
 
-it("should identify non-termination signal") {
-    let signal = 10;  // SIGUSR1
-    let is_termination = signal == 2 or signal == 15 or signal == 9;
-    assert(is_termination == false);
+it("should identify job control signals") {
+    assert(is_job_control_signal(17) == true);
+    assert(is_job_control_signal(18) == true);
+    assert(is_job_control_signal(19) == true);
+    assert(is_job_control_signal(20) == true);
+    assert(is_job_control_signal(2) == false);
+}
+
+it("should identify fatal signals") {
+    assert(is_fatal_signal(4) == true);
+    assert(is_fatal_signal(6) == true);
+    assert(is_fatal_signal(9) == true);
+    assert(is_fatal_signal(11) == true);
+    assert(is_fatal_signal(2) == false);
+}
+
+it("should identify user signals") {
+    assert(is_user_signal(10) == true);
+    assert(is_user_signal(12) == true);
+    assert(is_user_signal(2) == false);
+    assert(is_user_signal(15) == false);
+}
+
+it("should identify timer signals") {
+    assert(is_timer_signal(14) == true);
+    assert(is_timer_signal(2) == false);
+}
+
+it("should identify IO signals") {
+    assert(is_io_signal(13) == true);
+    assert(is_io_signal(2) == false);
 }
 
 // ============================================================================
 // CATCHABLE SIGNALS
 // ============================================================================
 
-it("should identify SIGKILL as uncatchable") {
-    let signal = 9;
-    let catchable = signal != 9 and signal != 19;  // SIGKILL and SIGSTOP
-    assert(catchable == false);
+fn is_catchable(signal: i32): bool {
+    // SIGKILL (9) and SIGSTOP (19) cannot be caught
+    return signal != 9 and signal != 19;
 }
 
-it("should identify SIGINT as catchable") {
-    let signal = 2;
-    let catchable = signal != 9 and signal != 19;
-    assert(catchable == true);
+fn is_ignorable(signal: i32): bool {
+    // SIGKILL (9) and SIGSTOP (19) cannot be ignored
+    return signal != 9 and signal != 19;
+}
+
+fn can_set_handler(signal: i32): bool {
+    return is_catchable(signal);
+}
+
+fn can_block(signal: i32): bool {
+    return signal != 9 and signal != 19;
+}
+
+it("should identify catchable signals") {
+    assert(is_catchable(2) == true);
+    assert(is_catchable(15) == true);
+    assert(is_catchable(10) == true);
+    assert(is_catchable(9) == false);
+    assert(is_catchable(19) == false);
+}
+
+it("should identify ignorable signals") {
+    assert(is_ignorable(2) == true);
+    assert(is_ignorable(13) == true);
+    assert(is_ignorable(9) == false);
+    assert(is_ignorable(19) == false);
+}
+
+it("should check handler capability") {
+    assert(can_set_handler(2) == true);
+    assert(can_set_handler(15) == true);
+    assert(can_set_handler(9) == false);
+}
+
+it("should check blocking capability") {
+    assert(can_block(2) == true);
+    assert(can_block(15) == true);
+    assert(can_block(9) == false);
+    assert(can_block(19) == false);
 }
 
 // ============================================================================
-// EXIT CODE FROM SIGNAL
+// DEFAULT ACTIONS
 // ============================================================================
 
-it("should calculate exit code from signal") {
-    let signal = 9;  // SIGKILL
-    let exit_code = 128 + signal;
-    assert(exit_code == 137);
+fn get_default_action(signal: i32): string {
+    // Terminate
+    if (signal == 2 or signal == 3 or signal == 6 or signal == 9 or
+        signal == 13 or signal == 14 or signal == 15) {
+        return "terminate";
+    }
+    // Terminate with core dump
+    if (signal == 4 or signal == 5 or signal == 8 or signal == 11) {
+        return "core";
+    }
+    // Stop
+    if (signal == 19 or signal == 20 or signal == 21 or signal == 22) {
+        return "stop";
+    }
+    // Continue
+    if (signal == 18) {
+        return "continue";
+    }
+    // Ignore
+    if (signal == 17) {
+        return "ignore";
+    }
+    return "terminate";
 }
 
-it("should detect signaled exit") {
-    let exit_code = 137;
-    let was_signaled = exit_code > 128;
-    assert(was_signaled == true);
+fn should_dump_core(signal: i32): bool {
+    return get_default_action(signal) == "core";
+}
+
+fn causes_stop(signal: i32): bool {
+    return signal == 19 or signal == 20 or signal == 21 or signal == 22;
+}
+
+fn causes_continue(signal: i32): bool {
+    return signal == 18;
+}
+
+it("should get default actions") {
+    assert(get_default_action(2) == "terminate");
+    assert(get_default_action(9) == "terminate");
+    assert(get_default_action(15) == "terminate");
+    assert(get_default_action(11) == "core");
+    assert(get_default_action(19) == "stop");
+    assert(get_default_action(18) == "continue");
+    assert(get_default_action(17) == "ignore");
+}
+
+it("should identify core dump signals") {
+    assert(should_dump_core(4) == true);
+    assert(should_dump_core(8) == true);
+    assert(should_dump_core(11) == true);
+    assert(should_dump_core(2) == false);
+    assert(should_dump_core(9) == false);
+}
+
+it("should identify stop signals") {
+    assert(causes_stop(19) == true);
+    assert(causes_stop(20) == true);
+    assert(causes_stop(2) == false);
+    assert(causes_stop(18) == false);
+}
+
+it("should identify continue signal") {
+    assert(causes_continue(18) == true);
+    assert(causes_continue(19) == false);
+    assert(causes_continue(2) == false);
+}
+
+// ============================================================================
+// EXIT CODE SIGNAL EXTRACTION
+// ============================================================================
+
+fn was_killed_by_signal(exit_code: i32): bool {
+    return exit_code >= 128;
+}
+
+fn get_signal_from_exit(exit_code: i32): i32 {
+    if (exit_code >= 128) {
+        return exit_code - 128;
+    }
+    return 0;
+}
+
+fn exit_code_from_signal(signal: i32): i32 {
+    return 128 + signal;
+}
+
+fn get_exit_description(exit_code: i32): string {
+    if (exit_code == 0) { return "success"; }
+    if (exit_code < 128) { return "error"; }
+    let signal = exit_code - 128;
+    if (signal == 9) { return "killed"; }
+    if (signal == 15) { return "terminated"; }
+    if (signal == 2) { return "interrupted"; }
+    if (signal == 11) { return "segfault"; }
+    return "signaled";
+}
+
+it("should detect signal termination from exit code") {
+    assert(was_killed_by_signal(137) == true);
+    assert(was_killed_by_signal(143) == true);
+    assert(was_killed_by_signal(130) == true);
+    assert(was_killed_by_signal(0) == false);
+    assert(was_killed_by_signal(1) == false);
+    assert(was_killed_by_signal(127) == false);
 }
 
 it("should extract signal from exit code") {
-    let exit_code = 137;
-    let signal = exit_code - 128;
-    assert(signal == 9);
+    assert(get_signal_from_exit(137) == 9);
+    assert(get_signal_from_exit(143) == 15);
+    assert(get_signal_from_exit(130) == 2);
+    assert(get_signal_from_exit(139) == 11);
+    assert(get_signal_from_exit(1) == 0);
+}
+
+it("should calculate exit code from signal") {
+    assert(exit_code_from_signal(9) == 137);
+    assert(exit_code_from_signal(15) == 143);
+    assert(exit_code_from_signal(2) == 130);
+    assert(exit_code_from_signal(11) == 139);
+}
+
+it("should describe exit codes") {
+    assert(get_exit_description(0) == "success");
+    assert(get_exit_description(1) == "error");
+    assert(get_exit_description(137) == "killed");
+    assert(get_exit_description(143) == "terminated");
+    assert(get_exit_description(130) == "interrupted");
+    assert(get_exit_description(139) == "segfault");
 }
 
 // ============================================================================
 // SIGNAL DESCRIPTIONS
 // ============================================================================
 
-it("should describe SIGINT") {
-    let description = "Interrupt from keyboard";
-    assert(description.len() > 0);
+fn get_signal_description(signal: i32): string {
+    if (signal == 1) { return "Hangup"; }
+    if (signal == 2) { return "Interrupt from keyboard"; }
+    if (signal == 3) { return "Quit from keyboard"; }
+    if (signal == 4) { return "Illegal instruction"; }
+    if (signal == 6) { return "Abort signal"; }
+    if (signal == 8) { return "Floating point exception"; }
+    if (signal == 9) { return "Kill signal"; }
+    if (signal == 10) { return "User-defined signal 1"; }
+    if (signal == 11) { return "Segmentation fault"; }
+    if (signal == 12) { return "User-defined signal 2"; }
+    if (signal == 13) { return "Broken pipe"; }
+    if (signal == 14) { return "Alarm clock"; }
+    if (signal == 15) { return "Termination signal"; }
+    if (signal == 17) { return "Child stopped or terminated"; }
+    if (signal == 18) { return "Continue if stopped"; }
+    if (signal == 19) { return "Stop process"; }
+    if (signal == 20) { return "Stop typed at terminal"; }
+    return "Unknown signal";
 }
 
-it("should describe SIGTERM") {
-    let description = "Termination signal";
-    assert(description.len() > 0);
+fn is_keyboard_signal(signal: i32): bool {
+    return signal == 2 or signal == 3 or signal == 20;
 }
 
-it("should describe SIGKILL") {
-    let description = "Kill signal";
-    assert(description.len() > 0);
+fn is_hardware_fault_signal(signal: i32): bool {
+    return signal == 4 or signal == 8 or signal == 11;
 }
 
+it("should get signal descriptions") {
+    assert(get_signal_description(2) == "Interrupt from keyboard");
+    assert(get_signal_description(9) == "Kill signal");
+    assert(get_signal_description(11) == "Segmentation fault");
+    assert(get_signal_description(15) == "Termination signal");
+    assert(get_signal_description(99) == "Unknown signal");
+}
+
+it("should identify keyboard signals") {
+    assert(is_keyboard_signal(2) == true);
+    assert(is_keyboard_signal(3) == true);
+    assert(is_keyboard_signal(20) == true);
+    assert(is_keyboard_signal(9) == false);
+}
+
+it("should identify hardware fault signals") {
+    assert(is_hardware_fault_signal(4) == true);
+    assert(is_hardware_fault_signal(8) == true);
+    assert(is_hardware_fault_signal(11) == true);
+    assert(is_hardware_fault_signal(2) == false);
+}
+
+// ============================================================================
+// SIGNAL PRIORITY AND ORDERING
+// ============================================================================
+
+fn get_signal_priority(signal: i32): i32 {
+    // SIGKILL has highest priority
+    if (signal == 9) { return 100; }
+    // SIGSTOP next
+    if (signal == 19) { return 90; }
+    // Termination signals
+    if (signal == 15) { return 80; }
+    if (signal == 2) { return 70; }
+    // Fatal signals
+    if (signal == 11 or signal == 6) { return 60; }
+    // Job control
+    if (signal >= 17 and signal <= 22) { return 40; }
+    // User signals
+    if (signal == 10 or signal == 12) { return 20; }
+    return 10;
+}
+
+fn compare_signal_priority(sig1: i32, sig2: i32): i32 {
+    let p1 = get_signal_priority(sig1);
+    let p2 = get_signal_priority(sig2);
+    if (p1 > p2) { return 1; }
+    if (p1 < p2) { return -1; }
+    return 0;
+}
+
+fn should_handle_first(sig1: i32, sig2: i32): bool {
+    return compare_signal_priority(sig1, sig2) >= 0;
+}
+
+it("should get signal priorities") {
+    assert(get_signal_priority(9) == 100);
+    assert(get_signal_priority(19) == 90);
+    assert(get_signal_priority(15) == 80);
+    assert(get_signal_priority(2) == 70);
+    assert(get_signal_priority(10) == 20);
+}
+
+it("should compare signal priorities") {
+    assert(compare_signal_priority(9, 15) == 1);
+    assert(compare_signal_priority(15, 9) == -1);
+    assert(compare_signal_priority(2, 2) == 0);
+}
+
+it("should determine handling order") {
+    assert(should_handle_first(9, 15) == true);
+    assert(should_handle_first(15, 2) == true);
+    assert(should_handle_first(2, 9) == false);
+}
+
+// ============================================================================
+// SIGNAL MASK OPERATIONS
+// ============================================================================
+
+fn is_in_mask(signal: i32, mask: i32): bool {
+    // Simplified: mask is a bitmask where bit position = signal number
+    let bit = 1;
+    let mut shift = 0;
+    let mut shifted_bit = bit;
+    while (shift < signal) {
+        shifted_bit = shifted_bit * 2;
+        shift = shift + 1;
+    }
+    return (mask / shifted_bit) % 2 == 1;
+}
+
+fn add_to_mask(mask: i32, signal: i32): i32 {
+    let mut shifted_bit = 1;
+    let mut shift = 0;
+    while (shift < signal) {
+        shifted_bit = shifted_bit * 2;
+        shift = shift + 1;
+    }
+    return mask + shifted_bit;
+}
+
+fn count_signals_in_mask(mask: i32): i32 {
+    let mut count = 0;
+    let mut remaining = mask;
+    while (remaining > 0) {
+        if (remaining % 2 == 1) {
+            count = count + 1;
+        }
+        remaining = remaining / 2;
+    }
+    return count;
+}
+
+fn is_empty_mask(mask: i32): bool {
+    return mask == 0;
+}
+
+it("should check signal in mask") {
+    // Mask with signal 2 set: 2^2 = 4
+    assert(is_in_mask(2, 4) == true);
+    assert(is_in_mask(1, 4) == false);
+    // Mask with signals 1 and 2: 2^1 + 2^2 = 2 + 4 = 6
+    assert(is_in_mask(1, 6) == true);
+    assert(is_in_mask(2, 6) == true);
+}
+
+it("should add signal to mask") {
+    // Start with empty mask, add signal 2
+    assert(add_to_mask(0, 2) == 4);
+    // Add signal 1 to mask with signal 2
+    assert(add_to_mask(4, 1) == 6);
+}
+
+it("should count signals in mask") {
+    assert(count_signals_in_mask(0) == 0);
+    assert(count_signals_in_mask(4) == 1);
+    assert(count_signals_in_mask(6) == 2);
+    assert(count_signals_in_mask(7) == 3);
+}
+
+it("should check empty mask") {
+    assert(is_empty_mask(0) == true);
+    assert(is_empty_mask(1) == false);
+    assert(is_empty_mask(4) == false);
+}
+
+// ============================================================================
+// SIGNAL DELIVERY
+// ============================================================================
+
+fn should_deliver_immediately(signal: i32): bool {
+    // SIGKILL and SIGSTOP are delivered immediately
+    return signal == 9 or signal == 19;
+}
+
+fn can_be_queued(signal: i32): bool {
+    // Standard signals are not queued (only realtime signals are)
+    return signal >= 34 and signal <= 64;
+}
+
+fn is_synchronous_signal(signal: i32): bool {
+    // Signals caused by program actions (not external events)
+    return signal == 4 or signal == 8 or signal == 11 or signal == 5 or signal == 6;
+}
+
+fn is_asynchronous_signal(signal: i32): bool {
+    return !is_synchronous_signal(signal);
+}
+
+it("should identify immediate delivery signals") {
+    assert(should_deliver_immediately(9) == true);
+    assert(should_deliver_immediately(19) == true);
+    assert(should_deliver_immediately(15) == false);
+    assert(should_deliver_immediately(2) == false);
+}
+
+it("should identify queueable signals") {
+    assert(can_be_queued(34) == true);
+    assert(can_be_queued(64) == true);
+    assert(can_be_queued(2) == false);
+    assert(can_be_queued(15) == false);
+}
+
+it("should identify synchronous signals") {
+    assert(is_synchronous_signal(4) == true);
+    assert(is_synchronous_signal(8) == true);
+    assert(is_synchronous_signal(11) == true);
+    assert(is_synchronous_signal(2) == false);
+    assert(is_synchronous_signal(15) == false);
+}
+
+it("should identify asynchronous signals") {
+    assert(is_asynchronous_signal(2) == true);
+    assert(is_asynchronous_signal(15) == true);
+    assert(is_asynchronous_signal(9) == true);
+    assert(is_asynchronous_signal(11) == false);
+}
+
+// ============================================================================
+// SIGNAL HANDLER STATE
+// ============================================================================
+
+fn get_handler_state(action: string): i32 {
+    if (action == "default") { return 0; }
+    if (action == "ignore") { return 1; }
+    if (action == "handler") { return 2; }
+    return -1;
+}
+
+fn is_custom_handler(action: string): bool {
+    return action == "handler";
+}
+
+fn is_default_handler(action: string): bool {
+    return action == "default";
+}
+
+fn is_ignored(action: string): bool {
+    return action == "ignore";
+}
+
+fn can_reset_handler(signal: i32): bool {
+    // Can only reset handlers for catchable signals
+    return is_catchable(signal);
+}
+
+it("should get handler state values") {
+    assert(get_handler_state("default") == 0);
+    assert(get_handler_state("ignore") == 1);
+    assert(get_handler_state("handler") == 2);
+    assert(get_handler_state("invalid") == -1);
+}
+
+it("should identify custom handlers") {
+    assert(is_custom_handler("handler") == true);
+    assert(is_custom_handler("default") == false);
+    assert(is_custom_handler("ignore") == false);
+}
+
+it("should identify default handlers") {
+    assert(is_default_handler("default") == true);
+    assert(is_default_handler("handler") == false);
+}
+
+it("should identify ignored signals") {
+    assert(is_ignored("ignore") == true);
+    assert(is_ignored("default") == false);
+    assert(is_ignored("handler") == false);
+}
+
+it("should check handler reset capability") {
+    assert(can_reset_handler(2) == true);
+    assert(can_reset_handler(15) == true);
+    assert(can_reset_handler(9) == false);
+    assert(can_reset_handler(19) == false);
+}
+
+// ============================================================================
+// GRACEFUL SHUTDOWN SEQUENCE
+// ============================================================================
+
+fn get_shutdown_signal_order(): (i32, i32, i32) {
+    // SIGTERM first, then SIGINT, then SIGKILL
+    return (15, 2, 9);
+}
+
+fn is_graceful_signal(signal: i32): bool {
+    return signal == 15 or signal == 2;
+}
+
+fn is_forceful_signal(signal: i32): bool {
+    return signal == 9;
+}
+
+fn should_escalate(signal: i32, elapsed_ms: i32, timeout_ms: i32): bool {
+    if (signal == 9) { return false; }  // Can't escalate from SIGKILL
+    return elapsed_ms >= timeout_ms;
+}
+
+fn get_next_signal(current: i32): i32 {
+    if (current == 15) { return 2; }
+    if (current == 2) { return 9; }
+    return 0;  // No next signal from SIGKILL
+}
+
+it("should get shutdown signal order") {
+    let (first, second, third) = get_shutdown_signal_order();
+    assert(first == 15);
+    assert(second == 2);
+    assert(third == 9);
+}
+
+it("should identify graceful signals") {
+    assert(is_graceful_signal(15) == true);
+    assert(is_graceful_signal(2) == true);
+    assert(is_graceful_signal(9) == false);
+}
+
+it("should identify forceful signals") {
+    assert(is_forceful_signal(9) == true);
+    assert(is_forceful_signal(15) == false);
+    assert(is_forceful_signal(2) == false);
+}
+
+it("should determine signal escalation") {
+    assert(should_escalate(15, 5000, 3000) == true);
+    assert(should_escalate(15, 1000, 3000) == false);
+    assert(should_escalate(9, 5000, 3000) == false);
+}
+
+it("should get next escalation signal") {
+    assert(get_next_signal(15) == 2);
+    assert(get_next_signal(2) == 9);
+    assert(get_next_signal(9) == 0);
+}

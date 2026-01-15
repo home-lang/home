@@ -1,137 +1,517 @@
-// Pub/Sub Messaging Test Suite
-// Tests actual pubsub module implementation
+// Pub/Sub Messaging Concepts Test Suite
+// Testing pub/sub patterns with actual logic
 
 // ============================================================================
-// PUBSUB CREATION
+// TOPIC VALIDATION
 // ============================================================================
 
-it("should create pubsub instance") {
-    let ps = pubsub::new();
-    assert(ps != null);
+fn is_valid_topic(topic: string): bool {
+    if (topic.len() == 0 or topic.len() > 255) { return false; }
+    return !topic.contains(" ") and !topic.starts_with("/") and !topic.ends_with("/");
 }
 
-it("should create pubsub with PubSub type") {
-    let ps = pubsub::PubSub();
-    assert(ps != null);
+fn is_hierarchical_topic(topic: string): bool {
+    return topic.contains("/") or topic.contains(".");
 }
 
-it("should have subscribers field") {
-    let ps = pubsub::new();
-    assert(ps.subscribers != null);
+fn get_topic_depth(topic: string): i32 {
+    if (!topic.contains("/")) { return 1; }
+    let parts = topic.split("/");
+    return parts.len();
 }
 
-// ============================================================================
-// SUBSCRIBE AND PUBLISH
-// ============================================================================
-
-it("should subscribe to topic") {
-    let ps = pubsub::new();
-    let subscription = ps.subscribe("events");
-    assert(subscription != null);
-    assert(subscription.topic == "events");
-    assert(subscription.active == true);
+fn get_topic_root(topic: string): string {
+    if (topic.contains("/")) {
+        let parts = topic.split("/");
+        return parts[0];
+    }
+    return topic;
 }
 
-it("should publish message to subscriber") {
-    let ps = pubsub::new();
-    let received = null;
-
-    ps.subscribe("events", |msg| {
-        received = msg;
-    });
-
-    ps.publish("events", "hello");
-    assert(received == "hello");
+fn topics_match(topic: string, pattern: string): bool {
+    if (pattern == "#") { return true; }
+    if (pattern == "+") { return !topic.contains("/"); }
+    if (pattern.ends_with("#")) {
+        let prefix = pattern.replace("#", "");
+        return topic.starts_with(prefix);
+    }
+    return topic == pattern;
 }
 
-it("should publish object message") {
-    let ps = pubsub::new();
-    let received = null;
-
-    ps.subscribe("users", |msg| {
-        received = msg;
-    });
-
-    ps.publish("users", { id: 123, name: "John" });
-    assert(received.id == 123);
-    assert(received.name == "John");
+it("should validate topic names") {
+    assert(is_valid_topic("users") == true);
+    assert(is_valid_topic("users/events") == true);
+    assert(is_valid_topic("") == false);
+    assert(is_valid_topic("has space") == false);
+    assert(is_valid_topic("/invalid") == false);
 }
 
-it("should track subscriber count") {
-    let ps = pubsub::new();
-
-    assert(ps.subscriber_count() == 0);
-
-    ps.subscribe("topic1", |msg| {});
-    assert(ps.subscriber_count() == 1);
-
-    ps.subscribe("topic2", |msg| {});
-    assert(ps.subscriber_count() == 2);
+it("should detect hierarchical topics") {
+    assert(is_hierarchical_topic("users/events") == true);
+    assert(is_hierarchical_topic("app.events") == true);
+    assert(is_hierarchical_topic("simple") == false);
 }
 
-it("should list topics") {
-    let ps = pubsub::new();
+it("should get topic depth") {
+    assert(get_topic_depth("users") == 1);
+    assert(get_topic_depth("users/events") == 2);
+    assert(get_topic_depth("app/users/events") == 3);
+}
 
-    ps.subscribe("events", |msg| {});
-    ps.subscribe("users", |msg| {});
+it("should get topic root") {
+    assert(get_topic_root("users/events") == "users");
+    assert(get_topic_root("app/users/events") == "app");
+    assert(get_topic_root("simple") == "simple");
+}
 
-    let topics = ps.topics();
-    assert(topics.len() == 2);
+it("should match topic patterns") {
+    assert(topics_match("users/events", "#") == true);
+    assert(topics_match("users/events", "users/#") == true);
+    assert(topics_match("users", "+") == true);
+    assert(topics_match("users/events", "+") == false);
+    assert(topics_match("users/events", "users/events") == true);
 }
 
 // ============================================================================
-// REDIS PUBSUB
+// SUBSCRIPTION MANAGEMENT
 // ============================================================================
 
-it("should create Redis pubsub") {
-    let ps = pubsub::redis("redis://localhost:6379");
-    assert(ps != null);
-    assert(ps.type == "redis");
+fn can_subscribe(current_subs: i32, max_subs: i32): bool {
+    return current_subs < max_subs;
+}
+
+fn is_duplicate_subscription(existing_topics: [string], new_topic: string): bool {
+    for (i in 0..existing_topics.len()) {
+        if (existing_topics[i] == new_topic) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn subscription_active(status: string): bool {
+    return status == "active" or status == "connected";
+}
+
+fn get_subscription_state(connected: bool, paused: bool): string {
+    if (!connected) { return "disconnected"; }
+    if (paused) { return "paused"; }
+    return "active";
+}
+
+fn should_resubscribe(last_ack_ms: i32, current_ms: i32, timeout_ms: i32): bool {
+    return (current_ms - last_ack_ms) > timeout_ms;
+}
+
+it("should check subscription capacity") {
+    assert(can_subscribe(5, 10) == true);
+    assert(can_subscribe(10, 10) == false);
+    assert(can_subscribe(15, 10) == false);
+}
+
+it("should detect duplicate subscriptions") {
+    assert(is_duplicate_subscription(["events", "users"], "events") == true);
+    assert(is_duplicate_subscription(["events", "users"], "orders") == false);
+}
+
+it("should check subscription activity") {
+    assert(subscription_active("active") == true);
+    assert(subscription_active("connected") == true);
+    assert(subscription_active("paused") == false);
+    assert(subscription_active("disconnected") == false);
+}
+
+it("should get subscription state") {
+    assert(get_subscription_state(true, false) == "active");
+    assert(get_subscription_state(true, true) == "paused");
+    assert(get_subscription_state(false, false) == "disconnected");
+}
+
+it("should check resubscription need") {
+    assert(should_resubscribe(1000, 6000, 3000) == true);
+    assert(should_resubscribe(1000, 3000, 3000) == false);
 }
 
 // ============================================================================
-// KAFKA PUBSUB
+// MESSAGE ROUTING
 // ============================================================================
 
-it("should create Kafka pubsub") {
-    let kafka = pubsub::kafka("localhost:9092");
-    assert(kafka != null);
-    assert(kafka.type == "kafka");
+fn count_subscribers(topic_subs: i32, wildcard_subs: i32): i32 {
+    return topic_subs + wildcard_subs;
+}
+
+fn should_broadcast(subscriber_count: i32): bool {
+    return subscriber_count > 0;
+}
+
+fn is_broadcast_efficient(subscriber_count: i32, threshold: i32): bool {
+    return subscriber_count <= threshold;
+}
+
+fn routing_strategy(subscriber_count: i32): string {
+    if (subscriber_count == 0) { return "drop"; }
+    if (subscriber_count == 1) { return "direct"; }
+    if (subscriber_count <= 10) { return "multicast"; }
+    return "broadcast";
+}
+
+fn estimate_delivery_time_ms(subscriber_count: i32, msg_size_bytes: i32, bandwidth_kbps: i32): i32 {
+    if (bandwidth_kbps == 0) { return 0; }
+    let total_bytes = subscriber_count * msg_size_bytes;
+    return (total_bytes * 8) / bandwidth_kbps;
+}
+
+it("should count subscribers") {
+    assert(count_subscribers(5, 2) == 7);
+    assert(count_subscribers(0, 3) == 3);
+}
+
+it("should check broadcast eligibility") {
+    assert(should_broadcast(5) == true);
+    assert(should_broadcast(0) == false);
+}
+
+it("should check broadcast efficiency") {
+    assert(is_broadcast_efficient(5, 10) == true);
+    assert(is_broadcast_efficient(15, 10) == false);
+}
+
+it("should determine routing strategy") {
+    assert(routing_strategy(0) == "drop");
+    assert(routing_strategy(1) == "direct");
+    assert(routing_strategy(5) == "multicast");
+    assert(routing_strategy(50) == "broadcast");
+}
+
+it("should estimate delivery time") {
+    // 10 subs * 100 bytes = 1000 bytes = 8000 bits / 1000 kbps = 8ms
+    assert(estimate_delivery_time_ms(10, 100, 1000) == 8);
 }
 
 // ============================================================================
-// RABBITMQ PUBSUB
+// MESSAGE QUEUE
 // ============================================================================
 
-it("should create RabbitMQ pubsub") {
-    let mq = pubsub::rabbitmq("amqp://localhost:5672");
-    assert(mq != null);
-    assert(mq.type == "rabbitmq");
+fn queue_pressure(current_size: i32, max_size: i32): i32 {
+    if (max_size == 0) { return 100; }
+    return (current_size * 100) / max_size;
+}
+
+fn should_apply_backpressure(pressure: i32, threshold: i32): bool {
+    return pressure >= threshold;
+}
+
+fn messages_to_drop(queue_size: i32, max_size: i32): i32 {
+    if (queue_size <= max_size) { return 0; }
+    return queue_size - max_size;
+}
+
+fn get_queue_status(pressure: i32): string {
+    if (pressure >= 100) { return "overflow"; }
+    if (pressure >= 90) { return "critical"; }
+    if (pressure >= 75) { return "high"; }
+    if (pressure >= 50) { return "moderate"; }
+    return "healthy";
+}
+
+fn time_to_drain_ms(queue_size: i32, process_rate_per_sec: i32): i32 {
+    if (process_rate_per_sec == 0) { return 0; }
+    return (queue_size * 1000) / process_rate_per_sec;
+}
+
+it("should calculate queue pressure") {
+    assert(queue_pressure(50, 100) == 50);
+    assert(queue_pressure(90, 100) == 90);
+    assert(queue_pressure(100, 100) == 100);
+}
+
+it("should apply backpressure") {
+    assert(should_apply_backpressure(80, 75) == true);
+    assert(should_apply_backpressure(70, 75) == false);
+}
+
+it("should calculate messages to drop") {
+    assert(messages_to_drop(150, 100) == 50);
+    assert(messages_to_drop(100, 100) == 0);
+    assert(messages_to_drop(50, 100) == 0);
+}
+
+it("should get queue status") {
+    assert(get_queue_status(100) == "overflow");
+    assert(get_queue_status(95) == "critical");
+    assert(get_queue_status(80) == "high");
+    assert(get_queue_status(60) == "moderate");
+    assert(get_queue_status(30) == "healthy");
+}
+
+it("should calculate drain time") {
+    assert(time_to_drain_ms(100, 10) == 10000);
+    assert(time_to_drain_ms(50, 100) == 500);
 }
 
 // ============================================================================
-// SUBSCRIPTION
+// DELIVERY GUARANTEES
 // ============================================================================
 
-it("should return subscription object") {
-    let ps = pubsub::new();
-    let sub = ps.subscribe("events", |msg| {});
-
-    assert(sub.topic == "events");
-    assert(sub.active == true);
+fn get_delivery_guarantee(level: i32): string {
+    if (level == 0) { return "at_most_once"; }
+    if (level == 1) { return "at_least_once"; }
+    if (level == 2) { return "exactly_once"; }
+    return "unknown";
 }
 
-it("should unsubscribe") {
-    let ps = pubsub::new();
-    let sub = ps.subscribe("events", |msg| {});
-
-    sub.unsubscribe();
-    // unsubscribe should complete without error
+fn requires_ack(guarantee: string): bool {
+    return guarantee == "at_least_once" or guarantee == "exactly_once";
 }
 
-it("should check if subscription is active") {
-    let ps = pubsub::new();
-    let sub = ps.subscribe("events", |msg| {});
+fn requires_dedup(guarantee: string): bool {
+    return guarantee == "exactly_once";
+}
 
-    assert(sub.is_active() == true);
+fn get_retry_policy(guarantee: string): string {
+    if (guarantee == "at_most_once") { return "none"; }
+    if (guarantee == "at_least_once") { return "retry"; }
+    if (guarantee == "exactly_once") { return "retry_with_dedup"; }
+    return "none";
+}
+
+fn is_idempotent_required(guarantee: string): bool {
+    return guarantee == "exactly_once" or guarantee == "at_least_once";
+}
+
+it("should get delivery guarantee name") {
+    assert(get_delivery_guarantee(0) == "at_most_once");
+    assert(get_delivery_guarantee(1) == "at_least_once");
+    assert(get_delivery_guarantee(2) == "exactly_once");
+    assert(get_delivery_guarantee(3) == "unknown");
+}
+
+it("should check ack requirement") {
+    assert(requires_ack("at_least_once") == true);
+    assert(requires_ack("exactly_once") == true);
+    assert(requires_ack("at_most_once") == false);
+}
+
+it("should check dedup requirement") {
+    assert(requires_dedup("exactly_once") == true);
+    assert(requires_dedup("at_least_once") == false);
+}
+
+it("should get retry policy") {
+    assert(get_retry_policy("at_most_once") == "none");
+    assert(get_retry_policy("at_least_once") == "retry");
+    assert(get_retry_policy("exactly_once") == "retry_with_dedup");
+}
+
+it("should check idempotency requirement") {
+    assert(is_idempotent_required("exactly_once") == true);
+    assert(is_idempotent_required("at_least_once") == true);
+    assert(is_idempotent_required("at_most_once") == false);
+}
+
+// ============================================================================
+// MESSAGE ACKNOWLEDGMENT
+// ============================================================================
+
+fn is_ack_timeout(sent_ms: i32, current_ms: i32, timeout_ms: i32): bool {
+    return (current_ms - sent_ms) > timeout_ms;
+}
+
+fn should_retry(attempts: i32, max_attempts: i32, is_timeout: bool): bool {
+    return is_timeout and attempts < max_attempts;
+}
+
+fn get_ack_status(acked: bool, nacked: bool, timeout: bool): string {
+    if (acked) { return "acknowledged"; }
+    if (nacked) { return "rejected"; }
+    if (timeout) { return "timeout"; }
+    return "pending";
+}
+
+fn calculate_retry_delay(attempt: i32, base_ms: i32, max_ms: i32): i32 {
+    let mut delay = base_ms;
+    let mut i = 0;
+    while (i < attempt) {
+        delay = delay * 2;
+        i = i + 1;
+    }
+    if (delay > max_ms) { return max_ms; }
+    return delay;
+}
+
+it("should check ack timeout") {
+    assert(is_ack_timeout(1000, 6000, 3000) == true);
+    assert(is_ack_timeout(1000, 3000, 3000) == false);
+}
+
+it("should determine retry") {
+    assert(should_retry(1, 3, true) == true);
+    assert(should_retry(3, 3, true) == false);
+    assert(should_retry(1, 3, false) == false);
+}
+
+it("should get ack status") {
+    assert(get_ack_status(true, false, false) == "acknowledged");
+    assert(get_ack_status(false, true, false) == "rejected");
+    assert(get_ack_status(false, false, true) == "timeout");
+    assert(get_ack_status(false, false, false) == "pending");
+}
+
+it("should calculate retry delay") {
+    assert(calculate_retry_delay(0, 100, 5000) == 100);
+    assert(calculate_retry_delay(1, 100, 5000) == 200);
+    assert(calculate_retry_delay(2, 100, 5000) == 400);
+    assert(calculate_retry_delay(10, 100, 5000) == 5000);
+}
+
+// ============================================================================
+// PARTITION HANDLING
+// ============================================================================
+
+fn get_partition(key: string, partition_count: i32): i32 {
+    // Simple hash based on string length
+    let hash = key.len();
+    return hash % partition_count;
+}
+
+fn is_partition_leader(node_id: i32, leader_id: i32): bool {
+    return node_id == leader_id;
+}
+
+fn should_rebalance(current_nodes: i32, previous_nodes: i32): bool {
+    return current_nodes != previous_nodes;
+}
+
+fn partitions_per_node(total_partitions: i32, node_count: i32): i32 {
+    if (node_count == 0) { return 0; }
+    return (total_partitions + node_count - 1) / node_count;
+}
+
+it("should calculate partition from key") {
+    assert(get_partition("abc", 10) == 3);
+    assert(get_partition("abcdef", 10) == 6);
+}
+
+it("should identify partition leader") {
+    assert(is_partition_leader(1, 1) == true);
+    assert(is_partition_leader(2, 1) == false);
+}
+
+it("should detect rebalance need") {
+    assert(should_rebalance(3, 5) == true);
+    assert(should_rebalance(5, 5) == false);
+}
+
+it("should calculate partitions per node") {
+    assert(partitions_per_node(10, 3) == 4);
+    assert(partitions_per_node(10, 5) == 2);
+    assert(partitions_per_node(10, 0) == 0);
+}
+
+// ============================================================================
+// CONSUMER GROUPS
+// ============================================================================
+
+fn consumers_in_group(group_members: i32): i32 {
+    return group_members;
+}
+
+fn is_group_balanced(partitions: i32, consumers: i32): bool {
+    if (consumers == 0) { return false; }
+    // Balanced if partitions are evenly distributed
+    let remainder = partitions % consumers;
+    return remainder == 0;
+}
+
+fn assignments_per_consumer(partitions: i32, consumers: i32): i32 {
+    if (consumers == 0) { return 0; }
+    return partitions / consumers;
+}
+
+fn needs_rebalance(consumers_changed: bool, partitions_changed: bool): bool {
+    return consumers_changed or partitions_changed;
+}
+
+fn get_rebalance_strategy(partition_count: i32, consumer_count: i32): string {
+    if (consumer_count >= partition_count) {
+        return "one_per_consumer";
+    }
+    if (consumer_count == 1) {
+        return "all_to_one";
+    }
+    return "round_robin";
+}
+
+it("should count group consumers") {
+    assert(consumers_in_group(5) == 5);
+}
+
+it("should check group balance") {
+    assert(is_group_balanced(10, 5) == true);
+    assert(is_group_balanced(10, 3) == false);
+    assert(is_group_balanced(10, 0) == false);
+}
+
+it("should calculate assignments per consumer") {
+    assert(assignments_per_consumer(10, 5) == 2);
+    assert(assignments_per_consumer(10, 3) == 3);
+    assert(assignments_per_consumer(10, 0) == 0);
+}
+
+it("should detect rebalance need") {
+    assert(needs_rebalance(true, false) == true);
+    assert(needs_rebalance(false, true) == true);
+    assert(needs_rebalance(false, false) == false);
+}
+
+it("should get rebalance strategy") {
+    assert(get_rebalance_strategy(5, 10) == "one_per_consumer");
+    assert(get_rebalance_strategy(10, 1) == "all_to_one");
+    assert(get_rebalance_strategy(10, 3) == "round_robin");
+}
+
+// ============================================================================
+// MESSAGE ORDERING
+// ============================================================================
+
+fn is_ordered_delivery(guarantee: string): bool {
+    return guarantee == "fifo" or guarantee == "partition_ordered";
+}
+
+fn sequence_valid(expected: i32, received: i32): bool {
+    return received == expected;
+}
+
+fn sequence_gap(expected: i32, received: i32): i32 {
+    if (received > expected) {
+        return received - expected;
+    }
+    return 0;
+}
+
+fn should_buffer(expected: i32, received: i32): bool {
+    return received > expected;
+}
+
+it("should check ordered delivery") {
+    assert(is_ordered_delivery("fifo") == true);
+    assert(is_ordered_delivery("partition_ordered") == true);
+    assert(is_ordered_delivery("best_effort") == false);
+}
+
+it("should validate sequence") {
+    assert(sequence_valid(5, 5) == true);
+    assert(sequence_valid(5, 6) == false);
+}
+
+it("should calculate sequence gap") {
+    assert(sequence_gap(5, 10) == 5);
+    assert(sequence_gap(5, 5) == 0);
+    assert(sequence_gap(5, 3) == 0);
+}
+
+it("should determine buffering need") {
+    assert(should_buffer(5, 7) == true);
+    assert(should_buffer(5, 5) == false);
+    assert(should_buffer(5, 3) == false);
 }

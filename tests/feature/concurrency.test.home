@@ -1,414 +1,622 @@
 // Concurrency Concepts Test Suite
-// Testing concurrent programming patterns using basic operations
+// Testing concurrent programming concepts with actual logic
 
 // ============================================================================
-// TASK STATE SIMULATION
+// TASK STATE MANAGEMENT
 // ============================================================================
 
-it("should represent pending task") {
-    let status = "pending";
-    let is_pending = status == "pending";
-    assert(is_pending == true);
+fn get_state_value(state: string): i32 {
+    if (state == "pending") { return 0; }
+    if (state == "running") { return 1; }
+    if (state == "completed") { return 2; }
+    if (state == "failed") { return 3; }
+    if (state == "cancelled") { return 4; }
+    return -1;
 }
 
-it("should represent running task") {
-    let status = "running";
-    let is_running = status == "running";
-    assert(is_running == true);
+fn is_terminal_state(state: string): bool {
+    return state == "completed" or state == "failed" or state == "cancelled";
 }
 
-it("should represent completed task") {
-    let status = "completed";
-    let is_completed = status == "completed";
-    assert(is_completed == true);
-}
-
-// ============================================================================
-// QUEUE SIMULATION (CHANNEL CONCEPT)
-// ============================================================================
-
-it("should add to queue") {
-    let mut queue = [];
-    queue = queue.push(1);
-    queue = queue.push(2);
-    queue = queue.push(3);
-    assert(queue.len() == 3);
-}
-
-it("should process queue in order") {
-    let mut queue = [1, 2, 3];
-    let first = queue[0];
-    assert(first == 1);
-}
-
-it("should track queue size") {
-    let queue = [1, 2, 3, 4, 5];
-    assert(queue.len() == 5);
-    assert(queue.is_empty() == false);
-}
-
-it("should handle empty queue") {
-    let queue = [];
-    assert(queue.is_empty() == true);
-}
-
-// ============================================================================
-// COUNTER WITH ATOMIC CONCEPT
-// ============================================================================
-
-it("should increment counter") {
-    let mut counter = 0;
-    counter = counter + 1;
-    counter = counter + 1;
-    counter = counter + 1;
-    assert(counter == 3);
-}
-
-it("should simulate atomic add") {
-    let mut value = 10;
-    let old_value = value;
-    value = value + 5;
-    assert(old_value == 10);
-    assert(value == 15);
-}
-
-it("should simulate compare and swap") {
-    let mut value = 10;
-    let expected = 10;
-    let new_value = 20;
-
-    // CAS: if value == expected, set to new_value
-    let matches = value == expected;
-    if (matches) {
-        value = new_value;
+fn can_transition(from: string, to: string): bool {
+    if (from == "pending") {
+        return to == "running" or to == "cancelled";
     }
-
-    assert(matches == true);
-    assert(value == 20);
-}
-
-it("should fail compare and swap on mismatch") {
-    let mut value = 10;
-    let expected = 15;  // Wrong expected value
-    let new_value = 20;
-
-    let matches = value == expected;
-    if (matches) {
-        value = new_value;
+    if (from == "running") {
+        return to == "completed" or to == "failed" or to == "cancelled";
     }
+    return false;
+}
 
-    assert(matches == false);
-    assert(value == 10);  // Unchanged
+fn get_state_priority(state: string): i32 {
+    if (state == "running") { return 3; }
+    if (state == "pending") { return 2; }
+    if (state == "completed") { return 1; }
+    if (state == "failed") { return 1; }
+    return 0;
+}
+
+it("should get task state values") {
+    assert(get_state_value("pending") == 0);
+    assert(get_state_value("running") == 1);
+    assert(get_state_value("completed") == 2);
+    assert(get_state_value("failed") == 3);
+    assert(get_state_value("invalid") == -1);
+}
+
+it("should identify terminal states") {
+    assert(is_terminal_state("completed") == true);
+    assert(is_terminal_state("failed") == true);
+    assert(is_terminal_state("cancelled") == true);
+    assert(is_terminal_state("running") == false);
+    assert(is_terminal_state("pending") == false);
+}
+
+it("should validate state transitions") {
+    assert(can_transition("pending", "running") == true);
+    assert(can_transition("pending", "cancelled") == true);
+    assert(can_transition("running", "completed") == true);
+    assert(can_transition("running", "failed") == true);
+    assert(can_transition("completed", "running") == false);
+}
+
+it("should get state priorities") {
+    assert(get_state_priority("running") == 3);
+    assert(get_state_priority("pending") == 2);
+    assert(get_state_priority("completed") == 1);
 }
 
 // ============================================================================
-// MUTEX CONCEPT
+// ATOMIC OPERATIONS SIMULATION
 // ============================================================================
 
-it("should represent locked state") {
-    let is_locked = true;
-    assert(is_locked == true);
-}
-
-it("should represent unlocked state") {
-    let is_locked = false;
-    assert(is_locked == false);
-}
-
-it("should protect shared data") {
-    let mut is_locked = false;
-    let mut data = 0;
-
-    // Lock
-    is_locked = true;
-
-    // Critical section
-    data = data + 10;
-
-    // Unlock
-    is_locked = false;
-
-    assert(data == 10);
-    assert(is_locked == false);
-}
-
-// ============================================================================
-// SEMAPHORE CONCEPT
-// ============================================================================
-
-it("should track available permits") {
-    let mut permits = 3;
-
-    // Acquire
-    permits = permits - 1;
-    assert(permits == 2);
-
-    // Acquire again
-    permits = permits - 1;
-    assert(permits == 1);
-
-    // Release
-    permits = permits + 1;
-    assert(permits == 2);
-}
-
-it("should check if permits available") {
-    let permits = 0;
-    let can_acquire = permits > 0;
-    assert(can_acquire == false);
-}
-
-// ============================================================================
-// PARALLEL PROCESSING CONCEPT
-// ============================================================================
-
-it("should partition work") {
-    let items = [1, 2, 3, 4, 5, 6, 7, 8];
-    let num_workers = 4;
-    let chunk_size = items.len() / num_workers;
-    assert(chunk_size == 2);
-}
-
-it("should collect results from partitions") {
-    let results = [10, 20, 30, 40];
-    let mut total = 0;
-    for (r in results) {
-        total = total + r;
+fn compare_and_swap(current: i32, expected: i32, new_value: i32): (bool, i32) {
+    if (current == expected) {
+        return (true, new_value);
     }
-    assert(total == 100);
+    return (false, current);
 }
 
-it("should simulate map-reduce") {
-    // Map phase: transform each element
-    let data = [1, 2, 3, 4];
-    let mut mapped = [];
-    for (x in data) {
-        mapped = mapped.push(x * x);
+fn fetch_and_add(value: i32, delta: i32): (i32, i32) {
+    let old = value;
+    let new = value + delta;
+    return (old, new);
+}
+
+fn fetch_and_sub(value: i32, delta: i32): (i32, i32) {
+    let old = value;
+    let new = value - delta;
+    return (old, new);
+}
+
+fn atomic_max(current: i32, value: i32): i32 {
+    if (value > current) { return value; }
+    return current;
+}
+
+fn atomic_min(current: i32, value: i32): i32 {
+    if (value < current) { return value; }
+    return current;
+}
+
+it("should perform compare and swap") {
+    let (success1, result1) = compare_and_swap(10, 10, 20);
+    assert(success1 == true);
+    assert(result1 == 20);
+
+    let (success2, result2) = compare_and_swap(10, 15, 20);
+    assert(success2 == false);
+    assert(result2 == 10);
+}
+
+it("should perform fetch and add") {
+    let (old, new) = fetch_and_add(10, 5);
+    assert(old == 10);
+    assert(new == 15);
+}
+
+it("should perform fetch and sub") {
+    let (old, new) = fetch_and_sub(10, 3);
+    assert(old == 10);
+    assert(new == 7);
+}
+
+it("should perform atomic max") {
+    assert(atomic_max(10, 15) == 15);
+    assert(atomic_max(10, 5) == 10);
+    assert(atomic_max(10, 10) == 10);
+}
+
+it("should perform atomic min") {
+    assert(atomic_min(10, 5) == 5);
+    assert(atomic_min(10, 15) == 10);
+    assert(atomic_min(10, 10) == 10);
+}
+
+// ============================================================================
+// MUTEX SIMULATION
+// ============================================================================
+
+fn try_acquire(is_locked: bool): (bool, bool) {
+    if (!is_locked) {
+        return (true, true);  // (success, new_state)
     }
+    return (false, true);  // (failed, unchanged)
+}
 
-    // Reduce phase: combine results
-    let mut sum = 0;
-    for (x in mapped) {
-        sum = sum + x;
+fn release(is_locked: bool): bool {
+    if (is_locked) {
+        return false;  // Unlocked
     }
+    return false;  // Already unlocked
+}
 
-    assert(sum == 30);  // 1 + 4 + 9 + 16
+fn is_contended(waiters: i32): bool {
+    return waiters > 0;
+}
+
+fn should_spin(attempt: i32, max_spins: i32): bool {
+    return attempt < max_spins;
+}
+
+it("should try to acquire lock") {
+    let (success1, state1) = try_acquire(false);
+    assert(success1 == true);
+    assert(state1 == true);
+
+    let (success2, state2) = try_acquire(true);
+    assert(success2 == false);
+}
+
+it("should release lock") {
+    assert(release(true) == false);
+    assert(release(false) == false);
+}
+
+it("should detect contention") {
+    assert(is_contended(5) == true);
+    assert(is_contended(0) == false);
+}
+
+it("should determine spin count") {
+    assert(should_spin(5, 10) == true);
+    assert(should_spin(10, 10) == false);
+    assert(should_spin(15, 10) == false);
 }
 
 // ============================================================================
-// TIMEOUT CONCEPT
+// SEMAPHORE SIMULATION
 // ============================================================================
 
-it("should represent timeout value") {
-    let timeout_ms = 5000;
-    assert(timeout_ms == 5000);
-}
-
-it("should detect timeout exceeded") {
-    let start_time = 1000;
-    let current_time = 7000;
-    let timeout_ms = 5000;
-    let elapsed = current_time - start_time;
-    let timed_out = elapsed > timeout_ms;
-    assert(timed_out == true);
-}
-
-it("should detect within timeout") {
-    let start_time = 1000;
-    let current_time = 3000;
-    let timeout_ms = 5000;
-    let elapsed = current_time - start_time;
-    let timed_out = elapsed > timeout_ms;
-    assert(timed_out == false);
-}
-
-// ============================================================================
-// BARRIER CONCEPT
-// ============================================================================
-
-it("should count waiting threads") {
-    let num_threads = 4;
-    let mut arrived = 0;
-
-    // Threads arrive
-    arrived = arrived + 1;
-    arrived = arrived + 1;
-    arrived = arrived + 1;
-    arrived = arrived + 1;
-
-    let all_arrived = arrived == num_threads;
-    assert(all_arrived == true);
-}
-
-// ============================================================================
-// ONCE CONCEPT
-// ============================================================================
-
-it("should execute only once") {
-    let mut executed = false;
-    let mut count = 0;
-
-    // First call
-    if (!executed) {
-        count = count + 1;
-        executed = true;
+fn acquire_permit(permits: i32): (bool, i32) {
+    if (permits > 0) {
+        return (true, permits - 1);
     }
+    return (false, permits);
+}
 
-    // Second call (should not increment)
-    if (!executed) {
-        count = count + 1;
-        executed = true;
+fn release_permit(permits: i32, max_permits: i32): i32 {
+    if (permits < max_permits) {
+        return permits + 1;
     }
+    return permits;
+}
 
-    assert(count == 1);
+fn available_permits(current: i32): i32 {
+    if (current < 0) { return 0; }
+    return current;
+}
+
+fn can_acquire_n(permits: i32, n: i32): bool {
+    return permits >= n;
+}
+
+it("should acquire permit") {
+    let (success1, remaining1) = acquire_permit(3);
+    assert(success1 == true);
+    assert(remaining1 == 2);
+
+    let (success2, remaining2) = acquire_permit(0);
+    assert(success2 == false);
+    assert(remaining2 == 0);
+}
+
+it("should release permit") {
+    assert(release_permit(2, 5) == 3);
+    assert(release_permit(5, 5) == 5);
+}
+
+it("should get available permits") {
+    assert(available_permits(3) == 3);
+    assert(available_permits(-1) == 0);
+}
+
+it("should check bulk acquisition") {
+    assert(can_acquire_n(5, 3) == true);
+    assert(can_acquire_n(2, 3) == false);
+    assert(can_acquire_n(3, 3) == true);
 }
 
 // ============================================================================
-// CANCELLATION CONCEPT
+// BARRIER SIMULATION
 // ============================================================================
 
-it("should check cancellation flag") {
-    let is_cancelled = true;
-    if (is_cancelled) {
-        // Would exit early
-        assert(true);
+fn barrier_arrive(arrived: i32, total: i32): (i32, bool) {
+    let new_arrived = arrived + 1;
+    let all_arrived = new_arrived >= total;
+    return (new_arrived, all_arrived);
+}
+
+fn barrier_reset(generation: i32): i32 {
+    return generation + 1;
+}
+
+fn is_barrier_broken(arrived: i32, total: i32, timeout: bool): bool {
+    return timeout and arrived < total;
+}
+
+it("should track barrier arrivals") {
+    let (arrived1, ready1) = barrier_arrive(2, 4);
+    assert(arrived1 == 3);
+    assert(ready1 == false);
+
+    let (arrived2, ready2) = barrier_arrive(3, 4);
+    assert(arrived2 == 4);
+    assert(ready2 == true);
+}
+
+it("should reset barrier") {
+    assert(barrier_reset(0) == 1);
+    assert(barrier_reset(5) == 6);
+}
+
+it("should detect broken barrier") {
+    assert(is_barrier_broken(2, 4, true) == true);
+    assert(is_barrier_broken(4, 4, true) == false);
+    assert(is_barrier_broken(2, 4, false) == false);
+}
+
+// ============================================================================
+// WORK PARTITIONING
+// ============================================================================
+
+fn calculate_chunk_size(total_items: i32, num_workers: i32): i32 {
+    if (num_workers == 0) { return total_items; }
+    return (total_items + num_workers - 1) / num_workers;
+}
+
+fn get_chunk_start(chunk_index: i32, chunk_size: i32): i32 {
+    return chunk_index * chunk_size;
+}
+
+fn get_chunk_end(chunk_index: i32, chunk_size: i32, total_items: i32): i32 {
+    let end = (chunk_index + 1) * chunk_size;
+    if (end > total_items) { return total_items; }
+    return end;
+}
+
+fn get_worker_load(worker_index: i32, total_items: i32, num_workers: i32): i32 {
+    let base = total_items / num_workers;
+    let remainder = total_items % num_workers;
+    if (worker_index < remainder) {
+        return base + 1;
     }
+    return base;
 }
 
-it("should continue when not cancelled") {
-    let is_cancelled = false;
-    let mut completed = false;
+it("should calculate chunk size") {
+    assert(calculate_chunk_size(100, 4) == 25);
+    assert(calculate_chunk_size(10, 3) == 4);
+    assert(calculate_chunk_size(7, 2) == 4);
+}
 
-    if (!is_cancelled) {
-        completed = true;
+it("should get chunk boundaries") {
+    assert(get_chunk_start(0, 25) == 0);
+    assert(get_chunk_start(1, 25) == 25);
+    assert(get_chunk_end(0, 25, 100) == 25);
+    assert(get_chunk_end(3, 25, 100) == 100);
+    assert(get_chunk_end(3, 25, 90) == 90);
+}
+
+it("should balance worker load") {
+    // 10 items across 3 workers: 4, 3, 3
+    assert(get_worker_load(0, 10, 3) == 4);
+    assert(get_worker_load(1, 10, 3) == 3);
+    assert(get_worker_load(2, 10, 3) == 3);
+}
+
+// ============================================================================
+// TIMEOUT HANDLING
+// ============================================================================
+
+fn is_timed_out(elapsed_ms: i32, timeout_ms: i32): bool {
+    return elapsed_ms >= timeout_ms;
+}
+
+fn remaining_timeout(elapsed_ms: i32, timeout_ms: i32): i32 {
+    let remaining = timeout_ms - elapsed_ms;
+    if (remaining < 0) { return 0; }
+    return remaining;
+}
+
+fn should_retry_with_timeout(attempts: i32, max_attempts: i32, elapsed_ms: i32, timeout_ms: i32): bool {
+    return attempts < max_attempts and elapsed_ms < timeout_ms;
+}
+
+fn calculate_backoff(attempt: i32, base_ms: i32, max_ms: i32): i32 {
+    let mut delay = base_ms;
+    let mut i = 0;
+    while (i < attempt) {
+        delay = delay * 2;
+        i = i + 1;
     }
+    if (delay > max_ms) { return max_ms; }
+    return delay;
+}
 
-    assert(completed == true);
+it("should detect timeout") {
+    assert(is_timed_out(5000, 3000) == true);
+    assert(is_timed_out(2000, 3000) == false);
+    assert(is_timed_out(3000, 3000) == true);
+}
+
+it("should calculate remaining timeout") {
+    assert(remaining_timeout(2000, 5000) == 3000);
+    assert(remaining_timeout(5000, 5000) == 0);
+    assert(remaining_timeout(6000, 5000) == 0);
+}
+
+it("should determine retry eligibility") {
+    assert(should_retry_with_timeout(1, 3, 1000, 5000) == true);
+    assert(should_retry_with_timeout(3, 3, 1000, 5000) == false);
+    assert(should_retry_with_timeout(1, 3, 6000, 5000) == false);
+}
+
+it("should calculate exponential backoff") {
+    assert(calculate_backoff(0, 100, 10000) == 100);
+    assert(calculate_backoff(1, 100, 10000) == 200);
+    assert(calculate_backoff(2, 100, 10000) == 400);
+    assert(calculate_backoff(10, 100, 1000) == 1000);
 }
 
 // ============================================================================
-// RATE LIMITING CONCEPT
+// RATE LIMITING
 // ============================================================================
 
-it("should track request count") {
-    let mut request_count = 0;
-    let limit = 10;
-
-    request_count = request_count + 1;
-    request_count = request_count + 1;
-    request_count = request_count + 1;
-
-    let under_limit = request_count < limit;
-    assert(under_limit == true);
+fn tokens_available(tokens: i32, last_update_ms: i32, current_ms: i32, rate_per_second: i32, max_tokens: i32): i32 {
+    let elapsed_seconds = (current_ms - last_update_ms) / 1000;
+    let new_tokens = tokens + (elapsed_seconds * rate_per_second);
+    if (new_tokens > max_tokens) { return max_tokens; }
+    return new_tokens;
 }
 
-it("should detect rate limit exceeded") {
-    let request_count = 15;
-    let limit = 10;
-    let exceeded = request_count >= limit;
-    assert(exceeded == true);
-}
-
-// ============================================================================
-// WORK QUEUE CONCEPT
-// ============================================================================
-
-it("should process work items in order") {
-    let work_items = ["task1", "task2", "task3"];
-    let mut processed = [];
-
-    for (item in work_items) {
-        processed = processed.push(item);
+fn try_consume(tokens: i32, amount: i32): (bool, i32) {
+    if (tokens >= amount) {
+        return (true, tokens - amount);
     }
+    return (false, tokens);
+}
 
-    assert(processed.len() == 3);
-    assert(processed[0] == "task1");
+fn wait_time_for_tokens(tokens: i32, needed: i32, rate_per_second: i32): i32 {
+    if (tokens >= needed) { return 0; }
+    let deficit = needed - tokens;
+    if (rate_per_second == 0) { return 0; }
+    return (deficit * 1000) / rate_per_second;
+}
+
+it("should calculate available tokens") {
+    // 5 tokens + 2 seconds * 10/sec = 25, but max is 20
+    assert(tokens_available(5, 0, 2000, 10, 20) == 20);
+    // 5 tokens + 1 second * 10/sec = 15
+    assert(tokens_available(5, 0, 1000, 10, 20) == 15);
+}
+
+it("should try to consume tokens") {
+    let (success1, remaining1) = try_consume(10, 5);
+    assert(success1 == true);
+    assert(remaining1 == 5);
+
+    let (success2, remaining2) = try_consume(3, 5);
+    assert(success2 == false);
+    assert(remaining2 == 3);
+}
+
+it("should calculate wait time") {
+    // Need 10 tokens, have 5, rate is 10/sec = 500ms
+    assert(wait_time_for_tokens(5, 10, 10) == 500);
+    assert(wait_time_for_tokens(10, 10, 10) == 0);
+    assert(wait_time_for_tokens(0, 20, 10) == 2000);
 }
 
 // ============================================================================
-// FUTURE/PROMISE CONCEPT
+// FUTURE/PROMISE STATE
 // ============================================================================
 
-it("should represent pending future") {
-    let status = "pending";
-    let value = 0;
-    let is_ready = status != "pending";
-    assert(is_ready == false);
+fn get_future_state(value_set: bool, error_set: bool): string {
+    if (error_set) { return "rejected"; }
+    if (value_set) { return "resolved"; }
+    return "pending";
 }
 
-it("should represent resolved future") {
-    let status = "resolved";
-    let value = 42;
-    let is_ready = status == "resolved";
-    assert(is_ready == true);
-    assert(value == 42);
+fn is_future_ready(state: string): bool {
+    return state == "resolved" or state == "rejected";
 }
 
-it("should represent rejected future") {
-    let status = "rejected";
-    let error = "operation failed";
-    let has_error = status == "rejected";
-    assert(has_error == true);
+fn can_complete_future(state: string): bool {
+    return state == "pending";
 }
 
-// ============================================================================
-// JOIN ALL CONCEPT
-// ============================================================================
-
-it("should collect all results") {
-    let results = [1, 2, 3, 4, 5];
-    let mut sum = 0;
-    for (r in results) {
-        sum = sum + r;
-    }
-    assert(sum == 15);
-}
-
-it("should check all completed") {
-    let statuses = ["done", "done", "done"];
-    let mut all_done = true;
-    for (s in statuses) {
-        if (s != "done") {
-            all_done = false;
+fn combine_futures(states: [string]): string {
+    let mut any_rejected = false;
+    let mut all_resolved = true;
+    for (i in 0..states.len()) {
+        if (states[i] == "rejected") {
+            any_rejected = true;
+        }
+        if (states[i] != "resolved") {
+            all_resolved = false;
         }
     }
-    assert(all_done == true);
+    if (any_rejected) { return "rejected"; }
+    if (all_resolved) { return "resolved"; }
+    return "pending";
+}
+
+it("should get future state") {
+    assert(get_future_state(false, false) == "pending");
+    assert(get_future_state(true, false) == "resolved");
+    assert(get_future_state(false, true) == "rejected");
+    assert(get_future_state(true, true) == "rejected");
+}
+
+it("should check future readiness") {
+    assert(is_future_ready("resolved") == true);
+    assert(is_future_ready("rejected") == true);
+    assert(is_future_ready("pending") == false);
+}
+
+it("should check future completion capability") {
+    assert(can_complete_future("pending") == true);
+    assert(can_complete_future("resolved") == false);
+    assert(can_complete_future("rejected") == false);
+}
+
+it("should combine future states") {
+    assert(combine_futures(["resolved", "resolved", "resolved"]) == "resolved");
+    assert(combine_futures(["resolved", "pending", "resolved"]) == "pending");
+    assert(combine_futures(["resolved", "rejected", "resolved"]) == "rejected");
 }
 
 // ============================================================================
-// SELECT FIRST CONCEPT
+// THREAD POOL SIZING
 // ============================================================================
 
-it("should get first completed") {
-    let results = [0, 42, 0];  // 0 means not ready
-    let mut first = -1;
-    for (r in results) {
-        if (r != 0 and first == -1) {
-            first = r;
-        }
+fn calculate_pool_size(cpu_count: i32, io_bound: bool): i32 {
+    if (io_bound) {
+        return cpu_count * 2;
     }
-    assert(first == 42);
+    return cpu_count;
+}
+
+fn should_grow_pool(active: i32, max_size: i32, pending_tasks: i32): bool {
+    return active < max_size and pending_tasks > active;
+}
+
+fn should_shrink_pool(active: i32, min_size: i32, idle_threads: i32): bool {
+    return active > min_size and idle_threads > 0;
+}
+
+fn optimal_batch_size(queue_size: i32, num_workers: i32): i32 {
+    if (num_workers == 0) { return queue_size; }
+    let batch = queue_size / num_workers;
+    if (batch == 0) { return 1; }
+    return batch;
+}
+
+it("should calculate pool size") {
+    assert(calculate_pool_size(4, false) == 4);
+    assert(calculate_pool_size(4, true) == 8);
+}
+
+it("should determine pool growth") {
+    assert(should_grow_pool(4, 8, 10) == true);
+    assert(should_grow_pool(8, 8, 10) == false);
+    assert(should_grow_pool(4, 8, 2) == false);
+}
+
+it("should determine pool shrinkage") {
+    assert(should_shrink_pool(8, 4, 2) == true);
+    assert(should_shrink_pool(4, 4, 2) == false);
+    assert(should_shrink_pool(8, 4, 0) == false);
+}
+
+it("should calculate optimal batch size") {
+    assert(optimal_batch_size(100, 4) == 25);
+    assert(optimal_batch_size(3, 4) == 1);
+    assert(optimal_batch_size(10, 3) == 3);
 }
 
 // ============================================================================
-// THREAD LOCAL CONCEPT
+// CANCELLATION HANDLING
 // ============================================================================
 
-it("should have independent values") {
-    let thread1_value = 100;
-    let thread2_value = 200;
-    assert(thread1_value != thread2_value);
+fn is_cancelled(cancel_flag: bool): bool {
+    return cancel_flag;
+}
+
+fn should_check_cancellation(iterations: i32, check_interval: i32): bool {
+    return iterations % check_interval == 0;
+}
+
+fn propagate_cancellation(parent_cancelled: bool, child_cancelled: bool): bool {
+    return parent_cancelled or child_cancelled;
+}
+
+fn cancellation_reason(flag: i32): string {
+    if (flag == 1) { return "user_requested"; }
+    if (flag == 2) { return "timeout"; }
+    if (flag == 3) { return "error"; }
+    if (flag == 4) { return "shutdown"; }
+    return "unknown";
+}
+
+it("should check cancellation") {
+    assert(is_cancelled(true) == true);
+    assert(is_cancelled(false) == false);
+}
+
+it("should determine cancellation check timing") {
+    assert(should_check_cancellation(100, 10) == true);
+    assert(should_check_cancellation(15, 10) == false);
+    assert(should_check_cancellation(0, 10) == true);
+}
+
+it("should propagate cancellation") {
+    assert(propagate_cancellation(true, false) == true);
+    assert(propagate_cancellation(false, true) == true);
+    assert(propagate_cancellation(false, false) == false);
+}
+
+it("should get cancellation reason") {
+    assert(cancellation_reason(1) == "user_requested");
+    assert(cancellation_reason(2) == "timeout");
+    assert(cancellation_reason(3) == "error");
+    assert(cancellation_reason(4) == "shutdown");
+    assert(cancellation_reason(99) == "unknown");
 }
 
 // ============================================================================
-// CONDITION VARIABLE CONCEPT
+// QUEUE PRESSURE
 // ============================================================================
 
-it("should track condition state") {
-    let mut condition_met = false;
+fn queue_pressure(current_size: i32, max_size: i32): i32 {
+    if (max_size == 0) { return 100; }
+    return (current_size * 100) / max_size;
+}
 
-    // Wait for condition
-    condition_met = true;  // Someone signaled
+fn should_apply_backpressure(pressure: i32, threshold: i32): bool {
+    return pressure >= threshold;
+}
 
-    assert(condition_met == true);
+fn drop_policy(pressure: i32): string {
+    if (pressure >= 100) { return "drop_oldest"; }
+    if (pressure >= 90) { return "drop_newest"; }
+    return "accept";
+}
+
+it("should calculate queue pressure") {
+    assert(queue_pressure(50, 100) == 50);
+    assert(queue_pressure(75, 100) == 75);
+    assert(queue_pressure(100, 100) == 100);
+}
+
+it("should determine backpressure application") {
+    assert(should_apply_backpressure(80, 75) == true);
+    assert(should_apply_backpressure(70, 75) == false);
+}
+
+it("should get drop policy") {
+    assert(drop_policy(100) == "drop_oldest");
+    assert(drop_policy(95) == "drop_newest");
+    assert(drop_policy(50) == "accept");
 }

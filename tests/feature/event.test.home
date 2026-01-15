@@ -1,327 +1,611 @@
 // Event Concepts Test Suite
-// Tests event-driven patterns using basic Home syntax
+// Testing event-driven patterns with actual logic
 
 // ============================================================================
-// EVENT REGISTRATION
+// EVENT TYPE VALIDATION
 // ============================================================================
 
-it("should track registered events") {
-    let events = ["click", "hover", "submit"];
-    assert(events.len() == 3);
-    assert(events[0] == "click");
+fn is_valid_event_name(name: string): bool {
+    if (name.len() == 0) { return false; }
+    // Cannot start with number or contain spaces
+    return !name.contains(" ") and !name.starts_with("0") and !name.starts_with("1") and
+           !name.starts_with("2") and !name.starts_with("3") and !name.starts_with("4") and
+           !name.starts_with("5") and !name.starts_with("6") and !name.starts_with("7") and
+           !name.starts_with("8") and !name.starts_with("9");
 }
 
-it("should check if event registered") {
-    let events = ["click", "hover", "submit"];
-    assert(events.contains("click") == true);
-    assert(events.contains("keypress") == false);
+fn is_namespaced_event(name: string): bool {
+    return name.contains(":");
 }
 
-it("should add new event type") {
-    let mut events = ["click"];
-    events = events.push("hover");
-    assert(events.len() == 2);
-    assert(events[1] == "hover");
+fn get_event_namespace(name: string): string {
+    if (name.contains(":")) {
+        let parts = name.split(":");
+        return parts[0];
+    }
+    return "";
 }
 
-// ============================================================================
-// LISTENER COUNT
-// ============================================================================
-
-it("should track listener count") {
-    let mut listener_count = 0;
-
-    // Simulate adding listeners
-    listener_count = listener_count + 1;
-    listener_count = listener_count + 1;
-    listener_count = listener_count + 1;
-
-    assert(listener_count == 3);
+fn get_event_base_name(name: string): string {
+    if (name.contains(":")) {
+        let parts = name.split(":");
+        if (parts.len() >= 2) {
+            return parts[1];
+        }
+    }
+    return name;
 }
 
-it("should decrement on remove") {
-    let mut listener_count = 5;
-    listener_count = listener_count - 1;
-    assert(listener_count == 4);
+fn matches_event_pattern(event: string, pattern: string): bool {
+    if (pattern == "*") { return true; }
+    if (pattern.ends_with("*")) {
+        let prefix = pattern.replace("*", "");
+        return event.starts_with(prefix);
+    }
+    return event == pattern;
 }
 
-// ============================================================================
-// EVENT DATA
-// ============================================================================
-
-it("should store event name") {
-    let event_name = "user_login";
-    assert(event_name == "user_login");
+it("should validate event names") {
+    assert(is_valid_event_name("click") == true);
+    assert(is_valid_event_name("user:login") == true);
+    assert(is_valid_event_name("") == false);
+    assert(is_valid_event_name("has space") == false);
+    assert(is_valid_event_name("123event") == false);
 }
 
-it("should store event timestamp") {
-    let timestamp = 1704067200;
-    assert(timestamp > 0);
+it("should detect namespaced events") {
+    assert(is_namespaced_event("user:login") == true);
+    assert(is_namespaced_event("user:logout") == true);
+    assert(is_namespaced_event("click") == false);
 }
 
-it("should store event payload") {
-    let user_id = 123;
-    let action = "click";
-    let target = "button";
-
-    assert(user_id == 123);
-    assert(action == "click");
-    assert(target == "button");
+it("should extract namespace") {
+    assert(get_event_namespace("user:login") == "user");
+    assert(get_event_namespace("system:error") == "system");
+    assert(get_event_namespace("click") == "");
 }
 
-// ============================================================================
-// EVENT QUEUE
-// ============================================================================
-
-it("should simulate event queue") {
-    let mut queue = ["event1", "event2", "event3"];
-    assert(queue.len() == 3);
-
-    // Process first event
-    let first = queue[0];
-    assert(first == "event1");
+it("should extract base name") {
+    assert(get_event_base_name("user:login") == "login");
+    assert(get_event_base_name("click") == "click");
 }
 
-it("should track queue size") {
-    let max_size = 100;
-    let current_size = 50;
-    let space_available = max_size - current_size;
-
-    assert(space_available == 50);
-}
-
-it("should check queue empty") {
-    let queue_size = 0;
-    let is_empty = queue_size == 0;
-    assert(is_empty == true);
+it("should match event patterns") {
+    assert(matches_event_pattern("user:login", "*") == true);
+    assert(matches_event_pattern("user:login", "user:*") == true);
+    assert(matches_event_pattern("user:login", "user:login") == true);
+    assert(matches_event_pattern("user:login", "system:*") == false);
 }
 
 // ============================================================================
 // EVENT PRIORITY
 // ============================================================================
 
-it("should assign priority levels") {
-    let high_priority = 1;
-    let normal_priority = 5;
-    let low_priority = 10;
+fn get_priority_value(priority: string): i32 {
+    if (priority == "critical") { return 0; }
+    if (priority == "high") { return 1; }
+    if (priority == "normal") { return 2; }
+    if (priority == "low") { return 3; }
+    return 2;  // Default to normal
+}
 
-    assert(high_priority < normal_priority);
-    assert(normal_priority < low_priority);
+fn compare_event_priority(p1: string, p2: string): i32 {
+    let v1 = get_priority_value(p1);
+    let v2 = get_priority_value(p2);
+    if (v1 < v2) { return -1; }
+    if (v1 > v2) { return 1; }
+    return 0;
+}
+
+fn should_process_before(event1_priority: string, event2_priority: string): bool {
+    return compare_event_priority(event1_priority, event2_priority) <= 0;
+}
+
+fn is_high_priority(priority: string): bool {
+    return priority == "critical" or priority == "high";
+}
+
+it("should get priority values") {
+    assert(get_priority_value("critical") == 0);
+    assert(get_priority_value("high") == 1);
+    assert(get_priority_value("normal") == 2);
+    assert(get_priority_value("low") == 3);
+    assert(get_priority_value("unknown") == 2);
 }
 
 it("should compare priorities") {
-    let event_a_priority = 3;
-    let event_b_priority = 7;
+    assert(compare_event_priority("critical", "normal") == -1);
+    assert(compare_event_priority("low", "high") == 1);
+    assert(compare_event_priority("normal", "normal") == 0);
+}
 
-    let a_first = event_a_priority < event_b_priority;
-    assert(a_first == true);
+it("should determine processing order") {
+    assert(should_process_before("critical", "normal") == true);
+    assert(should_process_before("low", "high") == false);
+    assert(should_process_before("normal", "normal") == true);
+}
+
+it("should identify high priority") {
+    assert(is_high_priority("critical") == true);
+    assert(is_high_priority("high") == true);
+    assert(is_high_priority("normal") == false);
+    assert(is_high_priority("low") == false);
 }
 
 // ============================================================================
-// EVENT HANDLERS
+// LISTENER MANAGEMENT
 // ============================================================================
 
-it("should track handler execution") {
-    let mut executed = false;
-    executed = true;  // Simulate handler call
-    assert(executed == true);
+fn can_add_listener(current_count: i32, max_listeners: i32): bool {
+    return current_count < max_listeners;
 }
 
-it("should count handler calls") {
-    let mut call_count = 0;
+fn should_warn_listener_count(current_count: i32, warning_threshold: i32): bool {
+    return current_count >= warning_threshold;
+}
 
-    // Simulate multiple calls
-    for (_ in 0..5) {
-        call_count = call_count + 1;
+fn get_listener_warning(count: i32): string {
+    if (count >= 100) { return "critical"; }
+    if (count >= 50) { return "high"; }
+    if (count >= 25) { return "moderate"; }
+    return "none";
+}
+
+fn is_once_listener(mode: string): bool {
+    return mode == "once";
+}
+
+fn listener_priority(is_capture: bool, order: i32): i32 {
+    // Capture listeners run first, then bubble
+    if (is_capture) {
+        return order;
     }
-
-    assert(call_count == 5);
+    return order + 1000;
 }
 
-// ============================================================================
-// EVENT FILTERING
-// ============================================================================
-
-it("should filter by event type") {
-    let event_types = ["click", "hover", "scroll", "click", "submit"];
-    let target = "click";
-    let mut count = 0;
-
-    for (e in event_types) {
-        if (e == target) {
-            count = count + 1;
-        }
-    }
-
-    assert(count == 2);
+it("should check listener capacity") {
+    assert(can_add_listener(5, 10) == true);
+    assert(can_add_listener(10, 10) == false);
+    assert(can_add_listener(15, 10) == false);
 }
 
-it("should filter by prefix") {
-    let event = "user:login";
-    let has_prefix = event.starts_with("user:");
-    assert(has_prefix == true);
+it("should warn on listener count") {
+    assert(should_warn_listener_count(30, 25) == true);
+    assert(should_warn_listener_count(20, 25) == false);
+}
+
+it("should get listener warning level") {
+    assert(get_listener_warning(100) == "critical");
+    assert(get_listener_warning(60) == "high");
+    assert(get_listener_warning(30) == "moderate");
+    assert(get_listener_warning(10) == "none");
+}
+
+it("should identify once listeners") {
+    assert(is_once_listener("once") == true);
+    assert(is_once_listener("persistent") == false);
+}
+
+it("should calculate listener priority") {
+    assert(listener_priority(true, 5) == 5);
+    assert(listener_priority(false, 5) == 1005);
 }
 
 // ============================================================================
 // EVENT PROPAGATION
 // ============================================================================
 
-it("should track propagation stopped") {
-    let mut propagation_stopped = false;
-
-    // Simulate stopping propagation
-    propagation_stopped = true;
-
-    assert(propagation_stopped == true);
+fn get_propagation_phase(phase: i32): string {
+    if (phase == 1) { return "capture"; }
+    if (phase == 2) { return "target"; }
+    if (phase == 3) { return "bubble"; }
+    return "unknown";
 }
 
-it("should track bubble phase") {
-    let phase = "bubble";
-    let is_bubble = phase == "bubble";
-    assert(is_bubble == true);
+fn is_propagation_stopped(stopped: bool, immediate_stopped: bool): bool {
+    return stopped or immediate_stopped;
 }
 
-it("should track capture phase") {
-    let phase = "capture";
-    let is_capture = phase == "capture";
-    assert(is_capture == true);
+fn should_continue_to_next_listener(immediate_stopped: bool): bool {
+    return !immediate_stopped;
 }
 
-// ============================================================================
-// EVENT TIMING
-// ============================================================================
-
-it("should track event delay") {
-    let delay_ms = 1000;
-    let has_delay = delay_ms > 0;
-    assert(has_delay == true);
+fn should_propagate_to_parent(stopped: bool, phase: string): bool {
+    return !stopped and phase == "bubble";
 }
 
-it("should track debounce time") {
-    let debounce_ms = 300;
-    let last_call = 100;
-    let now = 500;
-    let can_call = (now - last_call) >= debounce_ms;
-    assert(can_call == true);
+fn get_next_phase(current_phase: i32): i32 {
+    if (current_phase < 3) {
+        return current_phase + 1;
+    }
+    return 0;  // No more phases
 }
 
-it("should track throttle") {
-    let throttle_ms = 100;
-    let last_call = 50;
-    let now = 120;
-    let can_call = (now - last_call) >= throttle_ms;
-    assert(can_call == false);
+it("should get propagation phase name") {
+    assert(get_propagation_phase(1) == "capture");
+    assert(get_propagation_phase(2) == "target");
+    assert(get_propagation_phase(3) == "bubble");
+    assert(get_propagation_phase(0) == "unknown");
 }
 
-// ============================================================================
-// ONCE LISTENERS
-// ============================================================================
-
-it("should track once flag") {
-    let once = true;
-    assert(once == true);
+it("should check propagation stopped") {
+    assert(is_propagation_stopped(true, false) == true);
+    assert(is_propagation_stopped(false, true) == true);
+    assert(is_propagation_stopped(false, false) == false);
 }
 
-it("should track remaining calls") {
-    let once = true;
-    let mut calls_remaining = if (once) { 1 } else { 999 };
+it("should check listener continuation") {
+    assert(should_continue_to_next_listener(false) == true);
+    assert(should_continue_to_next_listener(true) == false);
+}
 
-    // After one call
-    calls_remaining = calls_remaining - 1;
+it("should check parent propagation") {
+    assert(should_propagate_to_parent(false, "bubble") == true);
+    assert(should_propagate_to_parent(true, "bubble") == false);
+    assert(should_propagate_to_parent(false, "capture") == false);
+}
 
-    let should_remove = calls_remaining == 0;
-    assert(should_remove == true);
+it("should get next phase") {
+    assert(get_next_phase(1) == 2);
+    assert(get_next_phase(2) == 3);
+    assert(get_next_phase(3) == 0);
 }
 
 // ============================================================================
-// EVENT NAMESPACING
+// DEBOUNCE AND THROTTLE
 // ============================================================================
 
-it("should parse namespaced event") {
-    let event = "click.modal";
-    let parts = event.split(".");
-    assert(parts[0] == "click");
-    assert(parts[1] == "modal");
+fn should_debounce(last_call_ms: i32, current_ms: i32, debounce_ms: i32): bool {
+    return (current_ms - last_call_ms) < debounce_ms;
 }
 
-it("should match namespace") {
-    let event = "click.modal.close";
-    let namespace = "modal";
-    let matches = event.contains(namespace);
-    assert(matches == true);
+fn should_throttle(last_call_ms: i32, current_ms: i32, throttle_ms: i32): bool {
+    return (current_ms - last_call_ms) < throttle_ms;
+}
+
+fn time_until_next_allowed(last_call_ms: i32, current_ms: i32, interval_ms: i32): i32 {
+    let elapsed = current_ms - last_call_ms;
+    if (elapsed >= interval_ms) { return 0; }
+    return interval_ms - elapsed;
+}
+
+fn debounce_reset_time(current_ms: i32): i32 {
+    return current_ms;
+}
+
+it("should check debounce") {
+    assert(should_debounce(1000, 1200, 300) == true);
+    assert(should_debounce(1000, 1500, 300) == false);
+}
+
+it("should check throttle") {
+    assert(should_throttle(1000, 1050, 100) == true);
+    assert(should_throttle(1000, 1200, 100) == false);
+}
+
+it("should calculate time until next allowed") {
+    assert(time_until_next_allowed(1000, 1050, 100) == 50);
+    assert(time_until_next_allowed(1000, 1100, 100) == 0);
+    assert(time_until_next_allowed(1000, 1200, 100) == 0);
+}
+
+it("should reset debounce time") {
+    assert(debounce_reset_time(5000) == 5000);
 }
 
 // ============================================================================
-// EVENT WILDCARDS
+// EVENT QUEUE MANAGEMENT
 // ============================================================================
 
-it("should check wildcard pattern") {
-    let pattern = "*";
-    let is_wildcard = pattern == "*";
-    assert(is_wildcard == true);
+fn queue_size_status(current: i32, max: i32): string {
+    let percentage = (current * 100) / max;
+    if (percentage >= 100) { return "full"; }
+    if (percentage >= 90) { return "critical"; }
+    if (percentage >= 75) { return "high"; }
+    if (percentage >= 50) { return "moderate"; }
+    return "normal";
 }
 
-it("should match prefix wildcard") {
-    let event = "user:login";
-    let pattern_prefix = "user:";
-    let matches = event.starts_with(pattern_prefix);
-    assert(matches == true);
+fn should_reject_event(queue_size: i32, max_size: i32, priority: string): bool {
+    if (queue_size >= max_size) {
+        // Only critical events can be accepted when full
+        return priority != "critical";
+    }
+    return false;
+}
+
+fn events_to_process(queue_size: i32, batch_size: i32): i32 {
+    if (queue_size < batch_size) { return queue_size; }
+    return batch_size;
+}
+
+fn estimated_drain_time_ms(queue_size: i32, processing_rate_per_sec: i32): i32 {
+    if (processing_rate_per_sec == 0) { return 0; }
+    return (queue_size * 1000) / processing_rate_per_sec;
+}
+
+it("should get queue size status") {
+    assert(queue_size_status(100, 100) == "full");
+    assert(queue_size_status(95, 100) == "critical");
+    assert(queue_size_status(80, 100) == "high");
+    assert(queue_size_status(60, 100) == "moderate");
+    assert(queue_size_status(30, 100) == "normal");
+}
+
+it("should check event rejection") {
+    assert(should_reject_event(100, 100, "normal") == true);
+    assert(should_reject_event(100, 100, "critical") == false);
+    assert(should_reject_event(50, 100, "normal") == false);
+}
+
+it("should calculate events to process") {
+    assert(events_to_process(100, 10) == 10);
+    assert(events_to_process(5, 10) == 5);
+    assert(events_to_process(10, 10) == 10);
+}
+
+it("should estimate drain time") {
+    assert(estimated_drain_time_ms(100, 10) == 10000);
+    assert(estimated_drain_time_ms(50, 100) == 500);
 }
 
 // ============================================================================
 // ERROR HANDLING
 // ============================================================================
 
-it("should track handler errors") {
-    let mut error_count = 0;
-    let handler_failed = true;
-
-    if (handler_failed) {
-        error_count = error_count + 1;
-    }
-
-    assert(error_count == 1);
+fn should_retry_failed_handler(error_type: string): bool {
+    return error_type == "timeout" or error_type == "temporary";
 }
 
-it("should track error messages") {
-    let error_msg = "Handler threw exception";
-    let has_error = error_msg != "";
-    assert(has_error == true);
+fn is_fatal_error(error_type: string): bool {
+    return error_type == "type_error" or error_type == "null_reference" or
+           error_type == "configuration_error";
+}
+
+fn get_error_recovery_action(error_type: string): string {
+    if (error_type == "timeout") { return "retry"; }
+    if (error_type == "temporary") { return "retry"; }
+    if (error_type == "type_error") { return "skip"; }
+    if (error_type == "null_reference") { return "skip"; }
+    if (error_type == "configuration_error") { return "disable"; }
+    return "log";
+}
+
+fn calculate_retry_delay(attempt: i32, base_ms: i32): i32 {
+    let mut delay = base_ms;
+    let mut i = 0;
+    while (i < attempt) {
+        delay = delay * 2;
+        i = i + 1;
+    }
+    return delay;
+}
+
+it("should check retry eligibility") {
+    assert(should_retry_failed_handler("timeout") == true);
+    assert(should_retry_failed_handler("temporary") == true);
+    assert(should_retry_failed_handler("type_error") == false);
+}
+
+it("should identify fatal errors") {
+    assert(is_fatal_error("type_error") == true);
+    assert(is_fatal_error("null_reference") == true);
+    assert(is_fatal_error("timeout") == false);
+}
+
+it("should get recovery action") {
+    assert(get_error_recovery_action("timeout") == "retry");
+    assert(get_error_recovery_action("type_error") == "skip");
+    assert(get_error_recovery_action("configuration_error") == "disable");
+    assert(get_error_recovery_action("unknown") == "log");
+}
+
+it("should calculate retry delay") {
+    assert(calculate_retry_delay(0, 100) == 100);
+    assert(calculate_retry_delay(1, 100) == 200);
+    assert(calculate_retry_delay(2, 100) == 400);
 }
 
 // ============================================================================
 // EVENT HISTORY
 // ============================================================================
 
-it("should track event history") {
-    let mut history = ["event1"];
-    history = history.push("event2");
-    history = history.push("event3");
-
-    assert(history.len() == 3);
-    assert(history[2] == "event3");
+fn should_log_event(event_type: string, log_level: string): bool {
+    if (log_level == "all") { return true; }
+    if (log_level == "errors" and event_type == "error") { return true; }
+    if (log_level == "important") {
+        return event_type == "error" or event_type == "warning" or event_type == "critical";
+    }
+    return false;
 }
 
-it("should limit history size") {
-    let max_history = 100;
-    let current_size = 95;
-    let can_add = current_size < max_history;
-    assert(can_add == true);
+fn should_trim_history(current_size: i32, max_size: i32): bool {
+    return current_size > max_size;
+}
+
+fn entries_to_trim(current_size: i32, max_size: i32, trim_batch: i32): i32 {
+    if (current_size <= max_size) { return 0; }
+    let excess = current_size - max_size;
+    if (excess < trim_batch) { return excess; }
+    return trim_batch;
+}
+
+fn is_event_expired(event_time_ms: i32, current_ms: i32, ttl_ms: i32): bool {
+    return (current_ms - event_time_ms) > ttl_ms;
+}
+
+it("should check event logging") {
+    assert(should_log_event("click", "all") == true);
+    assert(should_log_event("error", "errors") == true);
+    assert(should_log_event("click", "errors") == false);
+    assert(should_log_event("warning", "important") == true);
+}
+
+it("should check history trimming") {
+    assert(should_trim_history(150, 100) == true);
+    assert(should_trim_history(100, 100) == false);
+    assert(should_trim_history(50, 100) == false);
+}
+
+it("should calculate entries to trim") {
+    assert(entries_to_trim(150, 100, 20) == 20);
+    assert(entries_to_trim(105, 100, 20) == 5);
+    assert(entries_to_trim(100, 100, 20) == 0);
+}
+
+it("should check event expiration") {
+    assert(is_event_expired(1000, 6000, 3000) == true);
+    assert(is_event_expired(1000, 3000, 3000) == false);
 }
 
 // ============================================================================
-// ASYNC EVENT PATTERNS
+// ASYNC EVENT HANDLING
 // ============================================================================
 
-it("should track pending events") {
-    let mut pending = 3;
-    pending = pending - 1;  // One resolved
-    assert(pending == 2);
+fn calculate_pending_count(total: i32, completed: i32, failed: i32): i32 {
+    let pending = total - completed - failed;
+    if (pending < 0) { return 0; }
+    return pending;
 }
 
-it("should track completed events") {
-    let total = 10;
-    let completed = 7;
-    let pending = total - completed;
-    assert(pending == 3);
+fn all_events_complete(total: i32, completed: i32, failed: i32): bool {
+    return (completed + failed) >= total;
+}
+
+fn any_event_failed(failed: i32): bool {
+    return failed > 0;
+}
+
+fn completion_percentage(total: i32, completed: i32): i32 {
+    if (total == 0) { return 100; }
+    return (completed * 100) / total;
+}
+
+fn estimated_completion_time_ms(pending: i32, avg_processing_ms: i32): i32 {
+    return pending * avg_processing_ms;
+}
+
+it("should calculate pending count") {
+    assert(calculate_pending_count(10, 5, 2) == 3);
+    assert(calculate_pending_count(10, 10, 0) == 0);
+    assert(calculate_pending_count(10, 7, 5) == 0);
+}
+
+it("should check all events complete") {
+    assert(all_events_complete(10, 10, 0) == true);
+    assert(all_events_complete(10, 8, 2) == true);
+    assert(all_events_complete(10, 5, 2) == false);
+}
+
+it("should check any event failed") {
+    assert(any_event_failed(1) == true);
+    assert(any_event_failed(0) == false);
+}
+
+it("should calculate completion percentage") {
+    assert(completion_percentage(10, 5) == 50);
+    assert(completion_percentage(10, 10) == 100);
+    assert(completion_percentage(0, 0) == 100);
+}
+
+it("should estimate completion time") {
+    assert(estimated_completion_time_ms(5, 100) == 500);
+    assert(estimated_completion_time_ms(10, 50) == 500);
+}
+
+// ============================================================================
+// EVENT FILTERING
+// ============================================================================
+
+fn matches_prefix_filter(event: string, prefix: string): bool {
+    return event.starts_with(prefix);
+}
+
+fn matches_suffix_filter(event: string, suffix: string): bool {
+    return event.ends_with(suffix);
+}
+
+fn matches_contains_filter(event: string, substring: string): bool {
+    return event.contains(substring);
+}
+
+fn passes_all_filters(prefix_match: bool, suffix_match: bool, contains_match: bool): bool {
+    return prefix_match and suffix_match and contains_match;
+}
+
+fn passes_any_filter(prefix_match: bool, suffix_match: bool, contains_match: bool): bool {
+    return prefix_match or suffix_match or contains_match;
+}
+
+it("should match prefix filter") {
+    assert(matches_prefix_filter("user:login", "user:") == true);
+    assert(matches_prefix_filter("user:login", "system:") == false);
+}
+
+it("should match suffix filter") {
+    assert(matches_suffix_filter("user:login", ":login") == true);
+    assert(matches_suffix_filter("user:login", ":logout") == false);
+}
+
+it("should match contains filter") {
+    assert(matches_contains_filter("user:login:success", "login") == true);
+    assert(matches_contains_filter("user:logout", "login") == false);
+}
+
+it("should check all filters pass") {
+    assert(passes_all_filters(true, true, true) == true);
+    assert(passes_all_filters(true, false, true) == false);
+}
+
+it("should check any filter passes") {
+    assert(passes_any_filter(true, false, false) == true);
+    assert(passes_any_filter(false, false, false) == false);
+}
+
+// ============================================================================
+// EVENT TIMING
+// ============================================================================
+
+fn calculate_elapsed(start_ms: i32, end_ms: i32): i32 {
+    return end_ms - start_ms;
+}
+
+fn is_slow_event(elapsed_ms: i32, threshold_ms: i32): bool {
+    return elapsed_ms > threshold_ms;
+}
+
+fn get_performance_rating(elapsed_ms: i32): string {
+    if (elapsed_ms < 10) { return "excellent"; }
+    if (elapsed_ms < 50) { return "good"; }
+    if (elapsed_ms < 100) { return "acceptable"; }
+    if (elapsed_ms < 500) { return "slow"; }
+    return "critical";
+}
+
+fn should_optimize(avg_elapsed_ms: i32, threshold_ms: i32, call_count: i32): bool {
+    return avg_elapsed_ms > threshold_ms and call_count > 100;
+}
+
+it("should calculate elapsed time") {
+    assert(calculate_elapsed(1000, 1500) == 500);
+    assert(calculate_elapsed(0, 100) == 100);
+}
+
+it("should identify slow events") {
+    assert(is_slow_event(150, 100) == true);
+    assert(is_slow_event(50, 100) == false);
+}
+
+it("should rate performance") {
+    assert(get_performance_rating(5) == "excellent");
+    assert(get_performance_rating(30) == "good");
+    assert(get_performance_rating(75) == "acceptable");
+    assert(get_performance_rating(200) == "slow");
+    assert(get_performance_rating(1000) == "critical");
+}
+
+it("should recommend optimization") {
+    assert(should_optimize(200, 100, 500) == true);
+    assert(should_optimize(50, 100, 500) == false);
+    assert(should_optimize(200, 100, 50) == false);
 }

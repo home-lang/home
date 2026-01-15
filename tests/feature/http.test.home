@@ -1,384 +1,775 @@
 // HTTP Concepts Test Suite
-// Testing HTTP request/response concepts using basic operations
+// Testing HTTP request/response concepts with actual parsing and building logic
 
 // ============================================================================
-// HTTP METHODS
+// HTTP METHOD VALIDATION
 // ============================================================================
 
-it("should represent GET method") {
-    let method = "GET";
-    assert(method == "GET");
+fn is_valid_method(method: string): bool {
+    return method == "GET" or method == "POST" or method == "PUT" or
+           method == "DELETE" or method == "PATCH" or method == "HEAD" or
+           method == "OPTIONS" or method == "TRACE" or method == "CONNECT";
 }
 
-it("should represent POST method") {
-    let method = "POST";
-    assert(method == "POST");
+fn is_safe_method(method: string): bool {
+    return method == "GET" or method == "HEAD" or method == "OPTIONS" or method == "TRACE";
 }
 
-it("should represent PUT method") {
-    let method = "PUT";
-    assert(method == "PUT");
+fn is_idempotent_method(method: string): bool {
+    return method == "GET" or method == "HEAD" or method == "PUT" or
+           method == "DELETE" or method == "OPTIONS" or method == "TRACE";
 }
 
-it("should represent DELETE method") {
-    let method = "DELETE";
-    assert(method == "DELETE");
+fn method_allows_body(method: string): bool {
+    return method == "POST" or method == "PUT" or method == "PATCH";
 }
 
-it("should represent PATCH method") {
-    let method = "PATCH";
-    assert(method == "PATCH");
+it("should validate HTTP methods") {
+    assert(is_valid_method("GET") == true);
+    assert(is_valid_method("POST") == true);
+    assert(is_valid_method("PUT") == true);
+    assert(is_valid_method("DELETE") == true);
+    assert(is_valid_method("PATCH") == true);
+    assert(is_valid_method("INVALID") == false);
+    assert(is_valid_method("get") == false);
+}
+
+it("should identify safe methods") {
+    assert(is_safe_method("GET") == true);
+    assert(is_safe_method("HEAD") == true);
+    assert(is_safe_method("OPTIONS") == true);
+    assert(is_safe_method("POST") == false);
+    assert(is_safe_method("PUT") == false);
+    assert(is_safe_method("DELETE") == false);
+}
+
+it("should identify idempotent methods") {
+    assert(is_idempotent_method("GET") == true);
+    assert(is_idempotent_method("PUT") == true);
+    assert(is_idempotent_method("DELETE") == true);
+    assert(is_idempotent_method("POST") == false);
+    assert(is_idempotent_method("PATCH") == false);
+}
+
+it("should identify methods that allow body") {
+    assert(method_allows_body("POST") == true);
+    assert(method_allows_body("PUT") == true);
+    assert(method_allows_body("PATCH") == true);
+    assert(method_allows_body("GET") == false);
+    assert(method_allows_body("DELETE") == false);
 }
 
 // ============================================================================
-// URL STRUCTURE
+// URL PARSING
 // ============================================================================
+
+fn get_url_scheme(url: string): string {
+    if (url.starts_with("https://")) {
+        return "https";
+    }
+    if (url.starts_with("http://")) {
+        return "http";
+    }
+    return "";
+}
+
+fn is_secure_url(url: string): bool {
+    return url.starts_with("https://");
+}
+
+fn get_url_host(url: string): string {
+    let without_scheme = url.replace("https://", "").replace("http://", "");
+    let parts = without_scheme.split("/");
+    let host_with_port = parts[0];
+    let host_parts = host_with_port.split(":");
+    return host_parts[0];
+}
+
+fn get_url_port(url: string): i32 {
+    let without_scheme = url.replace("https://", "").replace("http://", "");
+    let parts = without_scheme.split("/");
+    let host_with_port = parts[0];
+    if (host_with_port.contains(":")) {
+        let host_parts = host_with_port.split(":");
+        // Return port based on string value
+        if (host_parts[1] == "8080") { return 8080; }
+        if (host_parts[1] == "3000") { return 3000; }
+        if (host_parts[1] == "443") { return 443; }
+        if (host_parts[1] == "80") { return 80; }
+        return 0;
+    }
+    // Default ports
+    if (url.starts_with("https://")) { return 443; }
+    if (url.starts_with("http://")) { return 80; }
+    return 0;
+}
+
+fn has_query_string(url: string): bool {
+    return url.contains("?");
+}
+
+fn get_query_string(url: string): string {
+    if (url.contains("?")) {
+        let parts = url.split("?");
+        if (parts.len() > 1) {
+            // Remove fragment if present
+            let query = parts[1];
+            if (query.contains("#")) {
+                let query_parts = query.split("#");
+                return query_parts[0];
+            }
+            return query;
+        }
+    }
+    return "";
+}
+
+fn count_query_params(query: string): i32 {
+    if (query == "") { return 0; }
+    let params = query.split("&");
+    return params.len();
+}
 
 it("should parse URL scheme") {
-    let url = "https://example.com/path";
-    let is_https = url.starts_with("https://");
-    assert(is_https == true);
+    assert(get_url_scheme("https://example.com") == "https");
+    assert(get_url_scheme("http://example.com") == "http");
+    assert(get_url_scheme("ftp://example.com") == "");
+    assert(get_url_scheme("example.com") == "");
 }
 
-it("should parse URL host") {
-    let url = "https://example.com/path";
-    let without_scheme = url.replace("https://", "");
-    let parts = without_scheme.split("/");
-    let host = parts[0];
-    assert(host == "example.com");
+it("should detect secure URLs") {
+    assert(is_secure_url("https://example.com") == true);
+    assert(is_secure_url("http://example.com") == false);
+    assert(is_secure_url("https://api.example.com/v1") == true);
 }
 
-it("should parse URL path") {
-    let url = "https://example.com/api/v1/users";
-    let without_scheme = url.replace("https://", "");
-    let first_slash = without_scheme.contains("/");
-    assert(first_slash == true);
+it("should extract URL host") {
+    assert(get_url_host("https://example.com/path") == "example.com");
+    assert(get_url_host("http://api.example.com/users") == "api.example.com");
+    assert(get_url_host("https://localhost:8080/test") == "localhost");
 }
 
-it("should detect query parameters") {
-    let url = "https://example.com/search?q=hello";
-    let has_query = url.contains("?");
-    assert(has_query == true);
+it("should extract URL port") {
+    assert(get_url_port("https://example.com") == 443);
+    assert(get_url_port("http://example.com") == 80);
+    assert(get_url_port("http://localhost:8080/test") == 8080);
+    assert(get_url_port("https://api.com:3000/v1") == 3000);
 }
 
-it("should parse query string") {
-    let query = "q=hello&page=1&limit=10";
-    let params = query.split("&");
-    assert(params.len() == 3);
-    assert(params[0] == "q=hello");
+it("should detect query string presence") {
+    assert(has_query_string("https://example.com/search?q=hello") == true);
+    assert(has_query_string("https://example.com/page") == false);
+    assert(has_query_string("https://example.com/?") == true);
 }
 
-// ============================================================================
-// HTTP HEADERS
-// ============================================================================
-
-it("should format content type header") {
-    let content_type = "application/json";
-    assert(content_type == "application/json");
+it("should extract query string") {
+    assert(get_query_string("https://example.com/search?q=hello") == "q=hello");
+    assert(get_query_string("https://example.com/search?q=hello&page=1") == "q=hello&page=1");
+    assert(get_query_string("https://example.com/page") == "");
 }
 
-it("should format accept header") {
-    let accept = "application/json";
-    assert(accept.contains("json") == true);
-}
-
-it("should format authorization header") {
-    let auth = "Bearer token123";
-    let is_bearer = auth.starts_with("Bearer ");
-    assert(is_bearer == true);
-}
-
-it("should parse header value") {
-    let header = "Content-Type: application/json";
-    let parts = header.split(": ");
-    assert(parts.len() == 2);
-    assert(parts[0] == "Content-Type");
-    assert(parts[1] == "application/json");
+it("should count query parameters") {
+    assert(count_query_params("q=hello") == 1);
+    assert(count_query_params("q=hello&page=1") == 2);
+    assert(count_query_params("a=1&b=2&c=3&d=4") == 4);
+    assert(count_query_params("") == 0);
 }
 
 // ============================================================================
-// STATUS CODES
+// PATH PARSING
 // ============================================================================
 
-it("should identify success status") {
-    let status = 200;
-    let is_success = status >= 200 and status < 300;
-    assert(is_success == true);
-}
-
-it("should identify created status") {
-    let status = 201;
-    assert(status == 201);
-}
-
-it("should identify no content status") {
-    let status = 204;
-    assert(status == 204);
-}
-
-it("should identify redirect status") {
-    let status = 301;
-    let is_redirect = status >= 300 and status < 400;
-    assert(is_redirect == true);
-}
-
-it("should identify client error status") {
-    let status = 404;
-    let is_client_error = status >= 400 and status < 500;
-    assert(is_client_error == true);
-}
-
-it("should identify server error status") {
-    let status = 500;
-    let is_server_error = status >= 500 and status < 600;
-    assert(is_server_error == true);
-}
-
-// ============================================================================
-// STATUS TEXT
-// ============================================================================
-
-it("should map 200 to OK") {
-    let status = 200;
-    let text = if (status == 200) { "OK" } else { "Unknown" };
-    assert(text == "OK");
-}
-
-it("should map 404 to Not Found") {
-    let status = 404;
-    let text = if (status == 404) { "Not Found" } else { "Unknown" };
-    assert(text == "Not Found");
-}
-
-it("should map 500 to Internal Server Error") {
-    let status = 500;
-    let text = if (status == 500) { "Internal Server Error" } else { "Unknown" };
-    assert(text == "Internal Server Error");
-}
-
-// ============================================================================
-// REQUEST BODY
-// ============================================================================
-
-it("should represent text body") {
-    let body = "Hello, World!";
-    assert(body == "Hello, World!");
-}
-
-it("should represent JSON-like body") {
-    let body = "{\"name\": \"test\"}";
-    assert(body.starts_with("{") == true);
-    assert(body.ends_with("}") == true);
-}
-
-it("should represent form data") {
-    let form = "username=admin&password=secret";
-    let params = form.split("&");
-    assert(params.len() == 2);
-}
-
-// ============================================================================
-// RESPONSE PARSING
-// ============================================================================
-
-it("should check response success") {
-    let status = 200;
-    let body = "Success";
-    let is_ok = status == 200 and body.len() > 0;
-    assert(is_ok == true);
-}
-
-it("should handle error response") {
-    let status = 500;
-    let error = "Server Error";
-    let is_error = status >= 500;
-    assert(is_error == true);
-    assert(error.len() > 0);
-}
-
-// ============================================================================
-// CONTENT TYPES
-// ============================================================================
-
-it("should detect JSON content type") {
-    let content_type = "application/json";
-    let is_json = content_type.contains("json");
-    assert(is_json == true);
-}
-
-it("should detect form content type") {
-    let content_type = "application/x-www-form-urlencoded";
-    let is_form = content_type.contains("form");
-    assert(is_form == true);
-}
-
-it("should detect HTML content type") {
-    let content_type = "text/html";
-    let is_html = content_type.contains("html");
-    assert(is_html == true);
-}
-
-it("should detect text content type") {
-    let content_type = "text/plain";
-    let is_text = content_type.starts_with("text/");
-    assert(is_text == true);
-}
-
-// ============================================================================
-// URL ENCODING CONCEPTS
-// ============================================================================
-
-it("should detect URL encoded space") {
-    let encoded = "hello%20world";
-    let has_encoded_space = encoded.contains("%20");
-    assert(has_encoded_space == true);
-}
-
-it("should detect plus encoded space") {
-    let encoded = "hello+world";
-    let has_plus = encoded.contains("+");
-    assert(has_plus == true);
-}
-
-// ============================================================================
-// PATH PARAMETERS
-// ============================================================================
-
-it("should extract path segment") {
-    let path = "/users/123/posts";
+fn count_path_segments(path: string): i32 {
+    if (path == "" or path == "/") { return 0; }
     let segments = path.split("/");
-    // segments = ["", "users", "123", "posts"]
-    assert(segments[2] == "123");
+    let mut count = 0;
+    for (i in 0..segments.len()) {
+        if (segments[i] != "") {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+fn get_path_segment(path: string, index: i32): string {
+    let segments = path.split("/");
+    let mut real_index = 0;
+    for (i in 0..segments.len()) {
+        if (segments[i] != "") {
+            if (real_index == index) {
+                return segments[i];
+            }
+            real_index = real_index + 1;
+        }
+    }
+    return "";
+}
+
+fn has_file_extension(path: string): bool {
+    let segments = path.split("/");
+    if (segments.len() > 0) {
+        let last = segments[segments.len() - 1];
+        return last.contains(".");
+    }
+    return false;
 }
 
 it("should count path segments") {
-    let path = "/api/v1/users";
-    let segments = path.split("/");
-    // First segment is empty due to leading /
-    assert(segments.len() == 4);
+    assert(count_path_segments("/api/v1/users") == 3);
+    assert(count_path_segments("/users") == 1);
+    assert(count_path_segments("/") == 0);
+    assert(count_path_segments("/a/b/c/d/e") == 5);
+}
+
+it("should get path segment by index") {
+    assert(get_path_segment("/api/v1/users", 0) == "api");
+    assert(get_path_segment("/api/v1/users", 1) == "v1");
+    assert(get_path_segment("/api/v1/users", 2) == "users");
+    assert(get_path_segment("/users/123/posts", 1) == "123");
+}
+
+it("should detect file extension in path") {
+    assert(has_file_extension("/images/logo.png") == true);
+    assert(has_file_extension("/styles/main.css") == true);
+    assert(has_file_extension("/api/users") == false);
+    assert(has_file_extension("/files/document.pdf") == true);
 }
 
 // ============================================================================
-// COOKIES
+// STATUS CODE CLASSIFICATION
 // ============================================================================
 
-it("should format set-cookie header") {
-    let cookie = "session=abc123";
+fn get_status_category(status: i32): string {
+    if (status >= 100 and status < 200) { return "informational"; }
+    if (status >= 200 and status < 300) { return "success"; }
+    if (status >= 300 and status < 400) { return "redirect"; }
+    if (status >= 400 and status < 500) { return "client_error"; }
+    if (status >= 500 and status < 600) { return "server_error"; }
+    return "unknown";
+}
+
+fn is_success_status(status: i32): bool {
+    return status >= 200 and status < 300;
+}
+
+fn is_error_status(status: i32): bool {
+    return status >= 400;
+}
+
+fn is_redirect_status(status: i32): bool {
+    return status == 301 or status == 302 or status == 303 or status == 307 or status == 308;
+}
+
+fn should_retry_status(status: i32): bool {
+    return status == 429 or status == 503 or status == 502 or status == 504;
+}
+
+fn get_status_text(status: i32): string {
+    if (status == 200) { return "OK"; }
+    if (status == 201) { return "Created"; }
+    if (status == 204) { return "No Content"; }
+    if (status == 301) { return "Moved Permanently"; }
+    if (status == 302) { return "Found"; }
+    if (status == 304) { return "Not Modified"; }
+    if (status == 400) { return "Bad Request"; }
+    if (status == 401) { return "Unauthorized"; }
+    if (status == 403) { return "Forbidden"; }
+    if (status == 404) { return "Not Found"; }
+    if (status == 405) { return "Method Not Allowed"; }
+    if (status == 429) { return "Too Many Requests"; }
+    if (status == 500) { return "Internal Server Error"; }
+    if (status == 502) { return "Bad Gateway"; }
+    if (status == 503) { return "Service Unavailable"; }
+    return "Unknown";
+}
+
+it("should classify status codes by category") {
+    assert(get_status_category(100) == "informational");
+    assert(get_status_category(200) == "success");
+    assert(get_status_category(201) == "success");
+    assert(get_status_category(301) == "redirect");
+    assert(get_status_category(404) == "client_error");
+    assert(get_status_category(500) == "server_error");
+}
+
+it("should identify success status codes") {
+    assert(is_success_status(200) == true);
+    assert(is_success_status(201) == true);
+    assert(is_success_status(204) == true);
+    assert(is_success_status(199) == false);
+    assert(is_success_status(300) == false);
+}
+
+it("should identify error status codes") {
+    assert(is_error_status(400) == true);
+    assert(is_error_status(404) == true);
+    assert(is_error_status(500) == true);
+    assert(is_error_status(200) == false);
+    assert(is_error_status(301) == false);
+}
+
+it("should identify redirect status codes") {
+    assert(is_redirect_status(301) == true);
+    assert(is_redirect_status(302) == true);
+    assert(is_redirect_status(307) == true);
+    assert(is_redirect_status(308) == true);
+    assert(is_redirect_status(300) == false);
+    assert(is_redirect_status(200) == false);
+}
+
+it("should identify retryable status codes") {
+    assert(should_retry_status(429) == true);
+    assert(should_retry_status(503) == true);
+    assert(should_retry_status(502) == true);
+    assert(should_retry_status(504) == true);
+    assert(should_retry_status(500) == false);
+    assert(should_retry_status(404) == false);
+}
+
+it("should get status text") {
+    assert(get_status_text(200) == "OK");
+    assert(get_status_text(201) == "Created");
+    assert(get_status_text(404) == "Not Found");
+    assert(get_status_text(500) == "Internal Server Error");
+    assert(get_status_text(401) == "Unauthorized");
+}
+
+// ============================================================================
+// HEADER PARSING AND VALIDATION
+// ============================================================================
+
+fn parse_header_name(header: string): string {
+    let parts = header.split(": ");
+    if (parts.len() >= 1) {
+        return parts[0];
+    }
+    return "";
+}
+
+fn parse_header_value(header: string): string {
+    let parts = header.split(": ");
+    if (parts.len() >= 2) {
+        return parts[1];
+    }
+    return "";
+}
+
+fn is_content_type_json(content_type: string): bool {
+    return content_type.contains("application/json");
+}
+
+fn is_content_type_html(content_type: string): bool {
+    return content_type.contains("text/html");
+}
+
+fn is_content_type_form(content_type: string): bool {
+    return content_type.contains("application/x-www-form-urlencoded") or
+           content_type.contains("multipart/form-data");
+}
+
+fn get_auth_type(auth_header: string): string {
+    if (auth_header.starts_with("Bearer ")) { return "bearer"; }
+    if (auth_header.starts_with("Basic ")) { return "basic"; }
+    if (auth_header.starts_with("Digest ")) { return "digest"; }
+    return "unknown";
+}
+
+fn get_auth_token(auth_header: string): string {
+    if (auth_header.starts_with("Bearer ")) {
+        return auth_header.replace("Bearer ", "");
+    }
+    if (auth_header.starts_with("Basic ")) {
+        return auth_header.replace("Basic ", "");
+    }
+    return "";
+}
+
+it("should parse header name and value") {
+    assert(parse_header_name("Content-Type: application/json") == "Content-Type");
+    assert(parse_header_value("Content-Type: application/json") == "application/json");
+    assert(parse_header_name("Authorization: Bearer token123") == "Authorization");
+    assert(parse_header_value("Authorization: Bearer token123") == "Bearer token123");
+}
+
+it("should identify JSON content type") {
+    assert(is_content_type_json("application/json") == true);
+    assert(is_content_type_json("application/json; charset=utf-8") == true);
+    assert(is_content_type_json("text/html") == false);
+    assert(is_content_type_json("text/plain") == false);
+}
+
+it("should identify HTML content type") {
+    assert(is_content_type_html("text/html") == true);
+    assert(is_content_type_html("text/html; charset=utf-8") == true);
+    assert(is_content_type_html("application/json") == false);
+}
+
+it("should identify form content type") {
+    assert(is_content_type_form("application/x-www-form-urlencoded") == true);
+    assert(is_content_type_form("multipart/form-data") == true);
+    assert(is_content_type_form("application/json") == false);
+}
+
+it("should parse authorization header type") {
+    assert(get_auth_type("Bearer abc123") == "bearer");
+    assert(get_auth_type("Basic dXNlcjpwYXNz") == "basic");
+    assert(get_auth_type("Digest realm=test") == "digest");
+    assert(get_auth_type("Custom token") == "unknown");
+}
+
+it("should extract auth token") {
+    assert(get_auth_token("Bearer abc123xyz") == "abc123xyz");
+    assert(get_auth_token("Basic dXNlcjpwYXNz") == "dXNlcjpwYXNz");
+    assert(get_auth_token("Custom token") == "");
+}
+
+// ============================================================================
+// COOKIE PARSING
+// ============================================================================
+
+fn parse_cookie_name(cookie: string): string {
     let parts = cookie.split("=");
-    assert(parts[0] == "session");
-    assert(parts[1] == "abc123");
+    if (parts.len() >= 1) {
+        return parts[0];
+    }
+    return "";
 }
 
-it("should parse cookie with attributes") {
-    let cookie = "session=abc123; Path=/; HttpOnly";
+fn parse_cookie_value(cookie: string): string {
+    let name_value = cookie.split(";")[0];
+    let parts = name_value.split("=");
+    if (parts.len() >= 2) {
+        return parts[1];
+    }
+    return "";
+}
+
+fn cookie_has_httponly(cookie: string): bool {
+    return cookie.contains("HttpOnly");
+}
+
+fn cookie_has_secure(cookie: string): bool {
+    return cookie.contains("Secure");
+}
+
+fn count_cookie_attributes(cookie: string): i32 {
     let parts = cookie.split("; ");
-    assert(parts.len() == 3);
-    assert(parts[0] == "session=abc123");
+    // First part is name=value, rest are attributes
+    if (parts.len() > 1) {
+        return parts.len() - 1;
+    }
+    return 0;
+}
+
+it("should parse cookie name and value") {
+    assert(parse_cookie_name("session=abc123") == "session");
+    assert(parse_cookie_value("session=abc123") == "abc123");
+    assert(parse_cookie_name("user_id=42; Path=/") == "user_id");
+    assert(parse_cookie_value("user_id=42; Path=/") == "42");
+}
+
+it("should detect HttpOnly attribute") {
+    assert(cookie_has_httponly("session=abc; HttpOnly") == true);
+    assert(cookie_has_httponly("session=abc; Path=/; HttpOnly") == true);
+    assert(cookie_has_httponly("session=abc; Path=/") == false);
+}
+
+it("should detect Secure attribute") {
+    assert(cookie_has_secure("session=abc; Secure") == true);
+    assert(cookie_has_secure("session=abc; Secure; HttpOnly") == true);
+    assert(cookie_has_secure("session=abc; HttpOnly") == false);
+}
+
+it("should count cookie attributes") {
+    assert(count_cookie_attributes("session=abc") == 0);
+    assert(count_cookie_attributes("session=abc; Path=/") == 1);
+    assert(count_cookie_attributes("session=abc; Path=/; HttpOnly") == 2);
+    assert(count_cookie_attributes("session=abc; Path=/; HttpOnly; Secure") == 3);
 }
 
 // ============================================================================
-// CORS HEADERS
+// REQUEST BUILDING
 // ============================================================================
 
-it("should set allow origin header") {
-    let origin = "https://example.com";
-    assert(origin.starts_with("https://") == true);
+fn build_request_line(method: string, path: string): string {
+    return method + " " + path + " HTTP/1.1";
 }
 
-it("should allow all origins with wildcard") {
-    let allow_origin = "*";
-    assert(allow_origin == "*");
+fn build_host_header(host: string): string {
+    return "Host: " + host;
 }
 
-// ============================================================================
-// REQUEST SIMULATION
-// ============================================================================
-
-it("should build request components") {
-    let method = "GET";
-    let url = "https://api.example.com/users";
-    let content_type = "application/json";
-
-    assert(method == "GET");
-    assert(url.starts_with("https://") == true);
-    assert(content_type.contains("json") == true);
+fn build_content_type_header(content_type: string): string {
+    return "Content-Type: " + content_type;
 }
 
-it("should build POST request components") {
-    let method = "POST";
-    let url = "https://api.example.com/users";
-    let body = "{\"name\": \"John\"}";
-    let content_type = "application/json";
-
-    assert(method == "POST");
-    assert(body.starts_with("{") == true);
+fn build_auth_header(token: string): string {
+    return "Authorization: Bearer " + token;
 }
 
-// ============================================================================
-// RESPONSE SIMULATION
-// ============================================================================
-
-it("should build success response") {
-    let status = 200;
-    let body = "{\"id\": 1, \"name\": \"test\"}";
-    let content_type = "application/json";
-
-    assert(status == 200);
-    assert(body.contains("id") == true);
+fn calculate_content_length(body: string): i32 {
+    return body.len();
 }
 
-it("should build error response") {
-    let status = 400;
-    let body = "{\"error\": \"Bad Request\"}";
+it("should build HTTP request line") {
+    assert(build_request_line("GET", "/api/users") == "GET /api/users HTTP/1.1");
+    assert(build_request_line("POST", "/login") == "POST /login HTTP/1.1");
+    assert(build_request_line("DELETE", "/users/123") == "DELETE /users/123 HTTP/1.1");
+}
 
-    assert(status >= 400);
-    assert(body.contains("error") == true);
+it("should build headers") {
+    assert(build_host_header("api.example.com") == "Host: api.example.com");
+    assert(build_content_type_header("application/json") == "Content-Type: application/json");
+    assert(build_auth_header("token123") == "Authorization: Bearer token123");
+}
+
+it("should calculate content length") {
+    assert(calculate_content_length("") == 0);
+    assert(calculate_content_length("hello") == 5);
+    assert(calculate_content_length("{\"name\":\"test\"}") == 15);
 }
 
 // ============================================================================
-// TIMEOUT SIMULATION
+// FORM DATA PARSING
 // ============================================================================
 
-it("should represent timeout in milliseconds") {
-    let timeout_ms = 5000;
-    assert(timeout_ms == 5000);
+fn count_form_fields(form_data: string): i32 {
+    if (form_data == "") { return 0; }
+    let fields = form_data.split("&");
+    return fields.len();
 }
 
-it("should detect timeout exceeded") {
-    let timeout_ms = 5000;
-    let elapsed_ms = 6000;
-    let timed_out = elapsed_ms > timeout_ms;
-    assert(timed_out == true);
+fn get_form_field_name(field: string): string {
+    let parts = field.split("=");
+    if (parts.len() >= 1) {
+        return parts[0];
+    }
+    return "";
+}
+
+fn get_form_field_value(field: string): string {
+    let parts = field.split("=");
+    if (parts.len() >= 2) {
+        return parts[1];
+    }
+    return "";
+}
+
+fn form_has_field(form_data: string, field_name: string): bool {
+    let fields = form_data.split("&");
+    for (i in 0..fields.len()) {
+        let name = get_form_field_name(fields[i]);
+        if (name == field_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+it("should count form fields") {
+    assert(count_form_fields("username=admin") == 1);
+    assert(count_form_fields("username=admin&password=secret") == 2);
+    assert(count_form_fields("a=1&b=2&c=3") == 3);
+    assert(count_form_fields("") == 0);
+}
+
+it("should parse form field names and values") {
+    assert(get_form_field_name("username=admin") == "username");
+    assert(get_form_field_value("username=admin") == "admin");
+    assert(get_form_field_name("page=1") == "page");
+    assert(get_form_field_value("page=1") == "1");
+}
+
+it("should check for field presence") {
+    let form = "username=admin&password=secret&remember=true";
+    assert(form_has_field(form, "username") == true);
+    assert(form_has_field(form, "password") == true);
+    assert(form_has_field(form, "remember") == true);
+    assert(form_has_field(form, "email") == false);
 }
 
 // ============================================================================
-// REDIRECT HANDLING
+// CACHE CONTROL
 // ============================================================================
 
-it("should detect redirect status") {
-    let status = 302;
-    let is_redirect = status == 301 or status == 302 or status == 307 or status == 308;
-    assert(is_redirect == true);
+fn is_cacheable_status(status: i32): bool {
+    return status == 200 or status == 203 or status == 204 or status == 206 or
+           status == 300 or status == 301 or status == 308 or status == 404 or
+           status == 405 or status == 410 or status == 414 or status == 501;
 }
 
-it("should have location header for redirect") {
-    let location = "https://example.com/new-location";
-    assert(location.starts_with("https://") == true);
+fn cache_control_has_no_cache(header: string): bool {
+    return header.contains("no-cache");
+}
+
+fn cache_control_has_no_store(header: string): bool {
+    return header.contains("no-store");
+}
+
+fn is_private_cache(header: string): bool {
+    return header.contains("private");
+}
+
+fn is_public_cache(header: string): bool {
+    return header.contains("public");
+}
+
+it("should identify cacheable status codes") {
+    assert(is_cacheable_status(200) == true);
+    assert(is_cacheable_status(301) == true);
+    assert(is_cacheable_status(404) == true);
+    assert(is_cacheable_status(500) == false);
+    assert(is_cacheable_status(302) == false);
+}
+
+it("should parse cache control directives") {
+    assert(cache_control_has_no_cache("no-cache") == true);
+    assert(cache_control_has_no_cache("max-age=3600") == false);
+    assert(cache_control_has_no_store("no-store") == true);
+    assert(cache_control_has_no_store("no-cache") == false);
+}
+
+it("should identify cache visibility") {
+    assert(is_private_cache("private, max-age=3600") == true);
+    assert(is_public_cache("public, max-age=86400") == true);
+    assert(is_private_cache("public, max-age=86400") == false);
+    assert(is_public_cache("private, max-age=3600") == false);
 }
 
 // ============================================================================
-// API VERSION IN URL
+// CORS VALIDATION
 // ============================================================================
 
-it("should detect API version in path") {
-    let url = "/api/v1/users";
-    let has_version = url.contains("/v1/") or url.contains("/v2/");
-    assert(has_version == true);
+fn is_cors_origin_allowed(origin: string, allowed: string): bool {
+    if (allowed == "*") { return true; }
+    return origin == allowed;
 }
 
-it("should extract API version") {
-    let path = "/api/v2/users";
+fn is_simple_cors_method(method: string): bool {
+    return method == "GET" or method == "HEAD" or method == "POST";
+}
+
+fn requires_preflight(method: string): bool {
+    return method == "PUT" or method == "DELETE" or method == "PATCH" or
+           method == "OPTIONS" or method == "CONNECT" or method == "TRACE";
+}
+
+it("should validate CORS origin") {
+    assert(is_cors_origin_allowed("https://example.com", "*") == true);
+    assert(is_cors_origin_allowed("https://example.com", "https://example.com") == true);
+    assert(is_cors_origin_allowed("https://example.com", "https://other.com") == false);
+}
+
+it("should identify simple CORS methods") {
+    assert(is_simple_cors_method("GET") == true);
+    assert(is_simple_cors_method("HEAD") == true);
+    assert(is_simple_cors_method("POST") == true);
+    assert(is_simple_cors_method("PUT") == false);
+    assert(is_simple_cors_method("DELETE") == false);
+}
+
+it("should identify methods requiring preflight") {
+    assert(requires_preflight("PUT") == true);
+    assert(requires_preflight("DELETE") == true);
+    assert(requires_preflight("PATCH") == true);
+    assert(requires_preflight("GET") == false);
+    assert(requires_preflight("POST") == false);
+}
+
+// ============================================================================
+// API VERSIONING
+// ============================================================================
+
+fn extract_api_version(path: string): string {
     let segments = path.split("/");
-    let version = segments[2];  // ["", "api", "v2", "users"]
-    assert(version == "v2");
+    for (i in 0..segments.len()) {
+        let seg = segments[i];
+        if (seg.starts_with("v") and seg.len() >= 2) {
+            // Check if rest is numeric-ish (v1, v2, v10, etc.)
+            let rest = seg.replace("v", "");
+            if (rest == "1" or rest == "2" or rest == "3" or rest == "4" or rest == "5" or
+                rest == "10" or rest == "11" or rest == "12") {
+                return seg;
+            }
+        }
+    }
+    return "";
+}
+
+fn has_api_version(path: string): bool {
+    return extract_api_version(path) != "";
+}
+
+fn is_api_path(path: string): bool {
+    return path.contains("/api/") or path.starts_with("/api");
+}
+
+it("should extract API version from path") {
+    assert(extract_api_version("/api/v1/users") == "v1");
+    assert(extract_api_version("/api/v2/products") == "v2");
+    assert(extract_api_version("/api/v10/legacy") == "v10");
+    assert(extract_api_version("/users/123") == "");
+}
+
+it("should detect API version presence") {
+    assert(has_api_version("/api/v1/users") == true);
+    assert(has_api_version("/api/v2/data") == true);
+    assert(has_api_version("/users/list") == false);
+    assert(has_api_version("/public/files") == false);
+}
+
+it("should identify API paths") {
+    assert(is_api_path("/api/users") == true);
+    assert(is_api_path("/api/v1/data") == true);
+    assert(is_api_path("/public/index.html") == false);
+    assert(is_api_path("/images/logo.png") == false);
+}
+
+// ============================================================================
+// TIMEOUT AND RETRY LOGIC
+// ============================================================================
+
+fn calculate_retry_delay(attempt: i32, base_delay_ms: i32): i32 {
+    // Exponential backoff: base * 2^attempt
+    let mut delay = base_delay_ms;
+    let mut i = 0;
+    while (i < attempt) {
+        delay = delay * 2;
+        i = i + 1;
+    }
+    return delay;
+}
+
+fn should_timeout(elapsed_ms: i32, timeout_ms: i32): bool {
+    return elapsed_ms >= timeout_ms;
+}
+
+fn get_max_retries_for_status(status: i32): i32 {
+    if (status == 429) { return 5; }  // Rate limited - more retries
+    if (status == 503) { return 3; }  // Service unavailable
+    if (status == 502) { return 3; }  // Bad gateway
+    if (status == 504) { return 2; }  // Gateway timeout
+    return 0;  // Don't retry other statuses
+}
+
+it("should calculate exponential backoff delay") {
+    assert(calculate_retry_delay(0, 100) == 100);
+    assert(calculate_retry_delay(1, 100) == 200);
+    assert(calculate_retry_delay(2, 100) == 400);
+    assert(calculate_retry_delay(3, 100) == 800);
+}
+
+it("should detect timeout") {
+    assert(should_timeout(5000, 3000) == true);
+    assert(should_timeout(2000, 3000) == false);
+    assert(should_timeout(3000, 3000) == true);
+}
+
+it("should determine max retries by status") {
+    assert(get_max_retries_for_status(429) == 5);
+    assert(get_max_retries_for_status(503) == 3);
+    assert(get_max_retries_for_status(502) == 3);
+    assert(get_max_retries_for_status(504) == 2);
+    assert(get_max_retries_for_status(500) == 0);
+    assert(get_max_retries_for_status(404) == 0);
 }

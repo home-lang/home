@@ -1,385 +1,767 @@
 // WebSocket Concepts Test Suite
-// Testing WebSocket concepts using basic operations
+// Testing WebSocket protocol concepts with actual logic
 
 // ============================================================================
-// MESSAGE TYPES
+// OPCODE HANDLING
 // ============================================================================
 
-it("should identify text message") {
-    let msg_type = "text";
-    assert(msg_type == "text");
+fn get_opcode_name(opcode: i32): string {
+    if (opcode == 0) { return "continuation"; }
+    if (opcode == 1) { return "text"; }
+    if (opcode == 2) { return "binary"; }
+    if (opcode == 8) { return "close"; }
+    if (opcode == 9) { return "ping"; }
+    if (opcode == 10) { return "pong"; }
+    return "unknown";
 }
 
-it("should identify binary message") {
-    let msg_type = "binary";
-    assert(msg_type == "binary");
+fn is_valid_opcode(opcode: i32): bool {
+    return opcode == 0 or opcode == 1 or opcode == 2 or
+           opcode == 8 or opcode == 9 or opcode == 10;
 }
 
-it("should identify ping message") {
-    let msg_type = "ping";
-    assert(msg_type == "ping");
+fn is_control_frame(opcode: i32): bool {
+    return opcode == 8 or opcode == 9 or opcode == 10;
 }
 
-it("should identify pong message") {
-    let msg_type = "pong";
-    assert(msg_type == "pong");
+fn is_data_frame(opcode: i32): bool {
+    return opcode == 0 or opcode == 1 or opcode == 2;
 }
 
-it("should identify close message") {
-    let msg_type = "close";
-    assert(msg_type == "close");
+fn control_frame_max_size(): i32 {
+    return 125;
 }
 
-// ============================================================================
-// FRAME STRUCTURE
-// ============================================================================
-
-it("should represent frame opcode") {
-    let opcode_text = 1;
-    let opcode_binary = 2;
-    let opcode_close = 8;
-    let opcode_ping = 9;
-    let opcode_pong = 10;
-
-    assert(opcode_text == 1);
-    assert(opcode_binary == 2);
+it("should get opcode names") {
+    assert(get_opcode_name(0) == "continuation");
+    assert(get_opcode_name(1) == "text");
+    assert(get_opcode_name(2) == "binary");
+    assert(get_opcode_name(8) == "close");
+    assert(get_opcode_name(9) == "ping");
+    assert(get_opcode_name(10) == "pong");
+    assert(get_opcode_name(15) == "unknown");
 }
 
-it("should represent final flag") {
-    let is_final = true;
-    assert(is_final == true);
+it("should validate opcodes") {
+    assert(is_valid_opcode(0) == true);
+    assert(is_valid_opcode(1) == true);
+    assert(is_valid_opcode(2) == true);
+    assert(is_valid_opcode(8) == true);
+    assert(is_valid_opcode(3) == false);
+    assert(is_valid_opcode(15) == false);
 }
 
-it("should represent continuation frame") {
-    let is_final = false;
-    let opcode = 0;  // Continuation
-    assert(is_final == false);
-    assert(opcode == 0);
+it("should identify control frames") {
+    assert(is_control_frame(8) == true);
+    assert(is_control_frame(9) == true);
+    assert(is_control_frame(10) == true);
+    assert(is_control_frame(1) == false);
+    assert(is_control_frame(2) == false);
 }
 
-// ============================================================================
-// MASKING
-// ============================================================================
-
-it("should mask client frames") {
-    let is_client = true;
-    let should_mask = is_client;
-    assert(should_mask == true);
-}
-
-it("should not mask server frames") {
-    let is_client = false;
-    let should_mask = is_client;
-    assert(should_mask == false);
+it("should identify data frames") {
+    assert(is_data_frame(0) == true);
+    assert(is_data_frame(1) == true);
+    assert(is_data_frame(2) == true);
+    assert(is_data_frame(8) == false);
+    assert(is_data_frame(9) == false);
 }
 
 // ============================================================================
-// PAYLOAD LENGTH
+// CLOSE CODE INTERPRETATION
 // ============================================================================
 
-it("should encode small payload") {
-    let payload_len = 50;
-    let needs_extended = payload_len >= 126;
-    assert(needs_extended == false);
+fn get_close_reason(code: i32): string {
+    if (code == 1000) { return "normal"; }
+    if (code == 1001) { return "going_away"; }
+    if (code == 1002) { return "protocol_error"; }
+    if (code == 1003) { return "unsupported_data"; }
+    if (code == 1007) { return "invalid_payload"; }
+    if (code == 1008) { return "policy_violation"; }
+    if (code == 1009) { return "message_too_big"; }
+    if (code == 1010) { return "extension_required"; }
+    if (code == 1011) { return "internal_error"; }
+    return "unknown";
 }
 
-it("should encode medium payload with 16-bit length") {
-    let payload_len = 200;
-    let use_16bit = payload_len >= 126 and payload_len < 65536;
-    assert(use_16bit == true);
+fn is_valid_close_code(code: i32): bool {
+    // Valid codes: 1000-1003, 1007-1011, 3000-3999, 4000-4999
+    if (code >= 1000 and code <= 1003) { return true; }
+    if (code >= 1007 and code <= 1011) { return true; }
+    if (code >= 3000 and code <= 3999) { return true; }
+    if (code >= 4000 and code <= 4999) { return true; }
+    return false;
 }
 
-it("should encode large payload with 64-bit length") {
-    let payload_len = 70000;
-    let use_64bit = payload_len >= 65536;
-    assert(use_64bit == true);
+fn is_reserved_close_code(code: i32): bool {
+    return code == 1004 or code == 1005 or code == 1006 or code == 1015;
+}
+
+fn is_application_close_code(code: i32): bool {
+    return code >= 4000 and code <= 4999;
+}
+
+fn should_reconnect(code: i32): bool {
+    // Normal closure and going away don't warrant reconnection
+    return code != 1000 and code != 1001 and code != 1008;
+}
+
+it("should interpret close codes") {
+    assert(get_close_reason(1000) == "normal");
+    assert(get_close_reason(1001) == "going_away");
+    assert(get_close_reason(1002) == "protocol_error");
+    assert(get_close_reason(1009) == "message_too_big");
+    assert(get_close_reason(9999) == "unknown");
+}
+
+it("should validate close codes") {
+    assert(is_valid_close_code(1000) == true);
+    assert(is_valid_close_code(1001) == true);
+    assert(is_valid_close_code(1007) == true);
+    assert(is_valid_close_code(3000) == true);
+    assert(is_valid_close_code(4000) == true);
+    assert(is_valid_close_code(1004) == false);
+    assert(is_valid_close_code(1005) == false);
+}
+
+it("should identify reserved close codes") {
+    assert(is_reserved_close_code(1004) == true);
+    assert(is_reserved_close_code(1005) == true);
+    assert(is_reserved_close_code(1006) == true);
+    assert(is_reserved_close_code(1015) == true);
+    assert(is_reserved_close_code(1000) == false);
+}
+
+it("should identify application close codes") {
+    assert(is_application_close_code(4000) == true);
+    assert(is_application_close_code(4500) == true);
+    assert(is_application_close_code(4999) == true);
+    assert(is_application_close_code(3000) == false);
+    assert(is_application_close_code(1000) == false);
+}
+
+it("should determine reconnection eligibility") {
+    assert(should_reconnect(1000) == false);
+    assert(should_reconnect(1001) == false);
+    assert(should_reconnect(1008) == false);
+    assert(should_reconnect(1002) == true);
+    assert(should_reconnect(1011) == true);
 }
 
 // ============================================================================
-// CLOSE CODES
+// PAYLOAD LENGTH ENCODING
 // ============================================================================
 
-it("should represent normal closure") {
-    let close_code = 1000;
-    assert(close_code == 1000);
+fn get_length_encoding_type(length: i32): string {
+    if (length <= 125) { return "7bit"; }
+    if (length <= 65535) { return "16bit"; }
+    return "64bit";
 }
 
-it("should represent going away") {
-    let close_code = 1001;
-    assert(close_code == 1001);
+fn get_header_size(length: i32, masked: bool): i32 {
+    let mut size = 2;  // Base header: FIN/opcode + mask/length
+    if (length > 125 and length <= 65535) {
+        size = size + 2;  // 16-bit extended length
+    }
+    if (length > 65535) {
+        size = size + 8;  // 64-bit extended length
+    }
+    if (masked) {
+        size = size + 4;  // Masking key
+    }
+    return size;
 }
 
-it("should represent protocol error") {
-    let close_code = 1002;
-    assert(close_code == 1002);
+fn get_frame_size(payload_length: i32, masked: bool): i32 {
+    return get_header_size(payload_length, masked) + payload_length;
 }
 
-it("should include close reason") {
-    let reason = "goodbye";
-    assert(reason.len() > 0);
+fn needs_fragmentation(length: i32, max_frame_size: i32): bool {
+    return length > max_frame_size;
 }
 
-// ============================================================================
-// MESSAGE FRAGMENTATION
-// ============================================================================
+fn calculate_fragment_count(length: i32, max_frame_size: i32): i32 {
+    if (length <= max_frame_size) { return 1; }
+    return (length + max_frame_size - 1) / max_frame_size;
+}
+
+it("should determine length encoding type") {
+    assert(get_length_encoding_type(50) == "7bit");
+    assert(get_length_encoding_type(125) == "7bit");
+    assert(get_length_encoding_type(126) == "16bit");
+    assert(get_length_encoding_type(65535) == "16bit");
+    assert(get_length_encoding_type(65536) == "64bit");
+}
+
+it("should calculate header size") {
+    assert(get_header_size(50, false) == 2);
+    assert(get_header_size(50, true) == 6);
+    assert(get_header_size(200, false) == 4);
+    assert(get_header_size(200, true) == 8);
+    assert(get_header_size(70000, false) == 10);
+    assert(get_header_size(70000, true) == 14);
+}
+
+it("should calculate total frame size") {
+    assert(get_frame_size(50, false) == 52);
+    assert(get_frame_size(50, true) == 56);
+    assert(get_frame_size(200, false) == 204);
+}
+
+it("should detect need for fragmentation") {
+    assert(needs_fragmentation(100, 1000) == false);
+    assert(needs_fragmentation(1000, 1000) == false);
+    assert(needs_fragmentation(1001, 1000) == true);
+    assert(needs_fragmentation(5000, 1000) == true);
+}
 
 it("should calculate fragment count") {
-    let message_len = 100000;
-    let max_frame_size = 16384;
-    let fragment_count = (message_len + max_frame_size - 1) / max_frame_size;
-    assert(fragment_count > 1);
-}
-
-it("should track fragment order") {
-    let fragments = ["frag1", "frag2", "frag3"];
-    assert(fragments.len() == 3);
-    assert(fragments[0] == "frag1");
+    assert(calculate_fragment_count(100, 1000) == 1);
+    assert(calculate_fragment_count(1000, 1000) == 1);
+    assert(calculate_fragment_count(1500, 1000) == 2);
+    assert(calculate_fragment_count(5000, 1000) == 5);
 }
 
 // ============================================================================
 // URL PARSING
 // ============================================================================
 
-it("should detect ws scheme") {
-    let url = "ws://example.com/chat";
-    let is_ws = url.starts_with("ws://");
-    assert(is_ws == true);
+fn get_ws_scheme(url: string): string {
+    if (url.starts_with("wss://")) { return "wss"; }
+    if (url.starts_with("ws://")) { return "ws"; }
+    return "";
 }
 
-it("should detect wss scheme") {
-    let url = "wss://example.com/chat";
-    let is_wss = url.starts_with("wss://");
-    assert(is_wss == true);
+fn is_secure_ws(url: string): bool {
+    return url.starts_with("wss://");
+}
+
+fn get_ws_default_port(scheme: string): i32 {
+    if (scheme == "wss") { return 443; }
+    if (scheme == "ws") { return 80; }
+    return 0;
+}
+
+fn get_ws_host(url: string): string {
+    let without_scheme = url.replace("wss://", "").replace("ws://", "");
+    let parts = without_scheme.split("/");
+    let host_port = parts[0];
+    let host_parts = host_port.split(":");
+    return host_parts[0];
+}
+
+fn get_ws_path(url: string): string {
+    let without_scheme = url.replace("wss://", "").replace("ws://", "");
+    let slash_idx = without_scheme.contains("/");
+    if (slash_idx) {
+        let parts = without_scheme.split("/");
+        if (parts.len() > 1) {
+            return "/" + parts[1];
+        }
+    }
+    return "/";
+}
+
+it("should parse WebSocket scheme") {
+    assert(get_ws_scheme("wss://example.com/chat") == "wss");
+    assert(get_ws_scheme("ws://example.com/chat") == "ws");
+    assert(get_ws_scheme("http://example.com") == "");
+}
+
+it("should identify secure WebSocket") {
+    assert(is_secure_ws("wss://example.com") == true);
+    assert(is_secure_ws("ws://example.com") == false);
+}
+
+it("should get default ports") {
+    assert(get_ws_default_port("wss") == 443);
+    assert(get_ws_default_port("ws") == 80);
+    assert(get_ws_default_port("http") == 0);
 }
 
 it("should extract host from URL") {
-    let url = "ws://example.com:8080/chat";
-    let without_scheme = url.replace("ws://", "");
-    let parts = without_scheme.split("/");
-    let host_port = parts[0];
-    assert(host_port == "example.com:8080");
+    assert(get_ws_host("ws://example.com/chat") == "example.com");
+    assert(get_ws_host("wss://api.example.com:8080/ws") == "api.example.com");
+    assert(get_ws_host("ws://localhost/test") == "localhost");
+}
+
+it("should extract path from URL") {
+    assert(get_ws_path("ws://example.com/chat") == "/chat");
+    assert(get_ws_path("wss://example.com/api/ws") == "/api");
+    assert(get_ws_path("ws://example.com") == "/");
 }
 
 // ============================================================================
-// DEFAULT PORTS
+// CONNECTION STATE MANAGEMENT
 // ============================================================================
 
-it("should use default ws port") {
-    let scheme = "ws";
-    let default_port = if (scheme == "ws") { 80 } else { 443 };
-    assert(default_port == 80);
+fn get_state_value(state: string): i32 {
+    if (state == "connecting") { return 0; }
+    if (state == "open") { return 1; }
+    if (state == "closing") { return 2; }
+    if (state == "closed") { return 3; }
+    return -1;
 }
 
-it("should use default wss port") {
-    let scheme = "wss";
-    let default_port = if (scheme == "wss") { 443 } else { 80 };
-    assert(default_port == 443);
+fn is_connectable_state(state: string): bool {
+    return state == "closed";
 }
 
-// ============================================================================
-// HANDSHAKE
-// ============================================================================
-
-it("should generate random key") {
-    let key_length = 24;  // Base64 encoded 16 bytes
-    assert(key_length == 24);
+fn can_send_message(state: string): bool {
+    return state == "open";
 }
 
-it("should build handshake request") {
-    let method = "GET";
-    let upgrade = "websocket";
-    let connection = "Upgrade";
-
-    assert(method == "GET");
-    assert(upgrade == "websocket");
-    assert(connection == "Upgrade");
+fn can_receive_message(state: string): bool {
+    return state == "open" or state == "closing";
 }
 
-it("should validate response status") {
-    let status = 101;
-    let is_switching = status == 101;
-    assert(is_switching == true);
-}
-
-// ============================================================================
-// CONNECTION STATE
-// ============================================================================
-
-it("should track connecting state") {
-    let state = "connecting";
-    assert(state == "connecting");
-}
-
-it("should track open state") {
-    let state = "open";
-    let is_open = state == "open";
-    assert(is_open == true);
-}
-
-it("should track closing state") {
-    let state = "closing";
-    let is_closing = state == "closing";
-    assert(is_closing == true);
-}
-
-it("should track closed state") {
-    let state = "closed";
-    let is_closed = state == "closed";
-    assert(is_closed == true);
-}
-
-// ============================================================================
-// ROOM/CHANNEL MANAGEMENT
-// ============================================================================
-
-it("should create room") {
-    let room_name = "chat-room-1";
-    assert(room_name == "chat-room-1");
-}
-
-it("should track room members") {
-    let members = ["client-1", "client-2", "client-3"];
-    assert(members.len() == 3);
-}
-
-it("should add member to room") {
-    let mut members = ["client-1", "client-2"];
-    members = members.push("client-3");
-    assert(members.len() == 3);
-}
-
-it("should check member in room") {
-    let members = ["client-1", "client-2"];
-    let target = "client-1";
-    let mut found = false;
-    for (m in members) {
-        if (m == target) {
-            found = true;
-        }
+fn state_transition_valid(from: string, to: string): bool {
+    // connecting -> open or closed
+    if (from == "connecting") {
+        return to == "open" or to == "closed";
     }
-    assert(found == true);
-}
-
-// ============================================================================
-// BROADCAST
-// ============================================================================
-
-it("should broadcast to all") {
-    let members = ["client-1", "client-2", "client-3"];
-    let recipient_count = members.len();
-    assert(recipient_count == 3);
-}
-
-it("should broadcast excluding sender") {
-    let members = ["client-1", "client-2", "client-3"];
-    let sender = "client-1";
-    let mut recipients = [];
-    for (m in members) {
-        if (m != sender) {
-            recipients = recipients.push(m);
-        }
+    // open -> closing or closed
+    if (from == "open") {
+        return to == "closing" or to == "closed";
     }
-    assert(recipients.len() == 2);
+    // closing -> closed
+    if (from == "closing") {
+        return to == "closed";
+    }
+    // closed cannot transition
+    return false;
+}
+
+it("should get state values") {
+    assert(get_state_value("connecting") == 0);
+    assert(get_state_value("open") == 1);
+    assert(get_state_value("closing") == 2);
+    assert(get_state_value("closed") == 3);
+    assert(get_state_value("invalid") == -1);
+}
+
+it("should check connectable state") {
+    assert(is_connectable_state("closed") == true);
+    assert(is_connectable_state("connecting") == false);
+    assert(is_connectable_state("open") == false);
+}
+
+it("should check message sending capability") {
+    assert(can_send_message("open") == true);
+    assert(can_send_message("connecting") == false);
+    assert(can_send_message("closing") == false);
+    assert(can_send_message("closed") == false);
+}
+
+it("should check message receiving capability") {
+    assert(can_receive_message("open") == true);
+    assert(can_receive_message("closing") == true);
+    assert(can_receive_message("connecting") == false);
+    assert(can_receive_message("closed") == false);
+}
+
+it("should validate state transitions") {
+    assert(state_transition_valid("connecting", "open") == true);
+    assert(state_transition_valid("connecting", "closed") == true);
+    assert(state_transition_valid("open", "closing") == true);
+    assert(state_transition_valid("closing", "closed") == true);
+    assert(state_transition_valid("closed", "open") == false);
+    assert(state_transition_valid("open", "connecting") == false);
+}
+
+// ============================================================================
+// HANDSHAKE VALIDATION
+// ============================================================================
+
+fn is_valid_handshake_method(method: string): bool {
+    return method == "GET";
+}
+
+fn is_valid_upgrade_header(value: string): bool {
+    return value == "websocket" or value == "WebSocket";
+}
+
+fn is_valid_connection_header(value: string): bool {
+    return value.contains("Upgrade") or value.contains("upgrade");
+}
+
+fn is_valid_ws_version(version: i32): i32 {
+    if (version == 13) { return 1; }
+    return 0;
+}
+
+fn is_valid_accept_key_length(key: string): bool {
+    // Accept key should be 28 characters (base64 encoded SHA-1)
+    return key.len() == 28;
+}
+
+fn is_switching_status(status: i32): bool {
+    return status == 101;
+}
+
+it("should validate handshake method") {
+    assert(is_valid_handshake_method("GET") == true);
+    assert(is_valid_handshake_method("POST") == false);
+    assert(is_valid_handshake_method("PUT") == false);
+}
+
+it("should validate upgrade header") {
+    assert(is_valid_upgrade_header("websocket") == true);
+    assert(is_valid_upgrade_header("WebSocket") == true);
+    assert(is_valid_upgrade_header("http") == false);
+}
+
+it("should validate connection header") {
+    assert(is_valid_connection_header("Upgrade") == true);
+    assert(is_valid_connection_header("keep-alive, Upgrade") == true);
+    assert(is_valid_connection_header("close") == false);
+}
+
+it("should validate WebSocket version") {
+    assert(is_valid_ws_version(13) == 1);
+    assert(is_valid_ws_version(8) == 0);
+    assert(is_valid_ws_version(0) == 0);
+}
+
+it("should validate accept key length") {
+    assert(is_valid_accept_key_length("HSmrc0sMlYUkAGmm5OPpG2Haa=") == false);
+    assert(is_valid_accept_key_length("HSmrc0sMlYUkAGmm5OPpG2Ha") == false);
+}
+
+it("should identify switching status") {
+    assert(is_switching_status(101) == true);
+    assert(is_switching_status(200) == false);
+    assert(is_switching_status(400) == false);
 }
 
 // ============================================================================
 // PING/PONG KEEPALIVE
 // ============================================================================
 
-it("should track ping sent") {
-    let ping_sent = true;
-    assert(ping_sent == true);
+fn is_ping_timeout(last_pong_ms: i32, current_ms: i32, timeout_ms: i32): bool {
+    return (current_ms - last_pong_ms) > timeout_ms;
 }
 
-it("should respond with pong") {
-    let received_ping = true;
-    let send_pong = received_ping;
-    assert(send_pong == true);
+fn should_send_ping(last_ping_ms: i32, current_ms: i32, interval_ms: i32): bool {
+    return (current_ms - last_ping_ms) >= interval_ms;
 }
 
-it("should detect stale connection") {
-    let last_pong_time = 1000;
-    let current_time = 61000;
-    let timeout_ms = 30000;
-    let is_stale = (current_time - last_pong_time) > timeout_ms;
-    assert(is_stale == true);
+fn calculate_latency(ping_sent_ms: i32, pong_received_ms: i32): i32 {
+    return pong_received_ms - ping_sent_ms;
+}
+
+fn is_healthy_latency(latency_ms: i32, threshold_ms: i32): bool {
+    return latency_ms <= threshold_ms;
+}
+
+fn get_connection_health(latency_ms: i32): string {
+    if (latency_ms < 50) { return "excellent"; }
+    if (latency_ms < 100) { return "good"; }
+    if (latency_ms < 300) { return "fair"; }
+    if (latency_ms < 1000) { return "poor"; }
+    return "critical";
+}
+
+it("should detect ping timeout") {
+    assert(is_ping_timeout(1000, 32000, 30000) == true);
+    assert(is_ping_timeout(1000, 20000, 30000) == false);
+    assert(is_ping_timeout(1000, 31001, 30000) == true);
+}
+
+it("should determine ping scheduling") {
+    assert(should_send_ping(0, 30000, 30000) == true);
+    assert(should_send_ping(0, 29999, 30000) == false);
+    assert(should_send_ping(10000, 40000, 30000) == true);
+}
+
+it("should calculate latency") {
+    assert(calculate_latency(1000, 1050) == 50);
+    assert(calculate_latency(1000, 1100) == 100);
+    assert(calculate_latency(5000, 5250) == 250);
+}
+
+it("should check latency health") {
+    assert(is_healthy_latency(50, 100) == true);
+    assert(is_healthy_latency(100, 100) == true);
+    assert(is_healthy_latency(150, 100) == false);
+}
+
+it("should categorize connection health") {
+    assert(get_connection_health(25) == "excellent");
+    assert(get_connection_health(75) == "good");
+    assert(get_connection_health(200) == "fair");
+    assert(get_connection_health(500) == "poor");
+    assert(get_connection_health(2000) == "critical");
 }
 
 // ============================================================================
-// ERROR HANDLING
+// MASKING
 // ============================================================================
 
-it("should detect invalid frame") {
-    let opcode = 15;  // Invalid opcode
-    let is_valid = opcode <= 10;
-    assert(is_valid == false);
+fn should_mask_frame(is_client: bool): bool {
+    // Clients must mask, servers must not
+    return is_client;
 }
 
-it("should reject oversized message") {
-    let message_size = 200;
-    let max_size = 100;
-    let is_oversized = message_size > max_size;
-    assert(is_oversized == true);
+fn validate_mask_bit(is_client: bool, mask_bit: bool): bool {
+    if (is_client) {
+        return mask_bit == true;  // Client frames must be masked
+    }
+    return mask_bit == false;  // Server frames must not be masked
 }
 
-it("should reject invalid close code") {
-    let close_code = 1004;  // Reserved
-    let is_reserved = close_code == 1004 or close_code == 1005 or close_code == 1006;
-    assert(is_reserved == true);
+it("should determine masking requirement") {
+    assert(should_mask_frame(true) == true);
+    assert(should_mask_frame(false) == false);
+}
+
+it("should validate mask bit") {
+    assert(validate_mask_bit(true, true) == true);
+    assert(validate_mask_bit(true, false) == false);
+    assert(validate_mask_bit(false, false) == true);
+    assert(validate_mask_bit(false, true) == false);
 }
 
 // ============================================================================
 // SUBPROTOCOL NEGOTIATION
 // ============================================================================
 
+fn protocols_match(requested: string, supported: string): bool {
+    let req_list = requested.split(",");
+    let sup_list = supported.split(",");
+    for (i in 0..req_list.len()) {
+        for (j in 0..sup_list.len()) {
+            if (req_list[i] == sup_list[j]) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn select_protocol(requested: string, supported: string): string {
+    let req_list = requested.split(",");
+    let sup_list = supported.split(",");
+    for (i in 0..req_list.len()) {
+        for (j in 0..sup_list.len()) {
+            if (req_list[i] == sup_list[j]) {
+                return req_list[i];
+            }
+        }
+    }
+    return "";
+}
+
+fn is_valid_protocol_name(name: string): bool {
+    // Protocol names should be non-empty and not contain spaces
+    return name.len() > 0 and !name.contains(" ");
+}
+
+it("should check protocol matching") {
+    assert(protocols_match("graphql-ws,chat", "chat,echo") == true);
+    assert(protocols_match("proto-a", "proto-b") == false);
+    assert(protocols_match("ws,graphql-ws", "graphql-ws") == true);
+}
+
 it("should select matching protocol") {
-    let client_protocols = ["graphql-ws", "chat"];
-    let server_protocols = ["chat", "echo"];
-
-    let mut selected = "";
-    for (cp in client_protocols) {
-        for (sp in server_protocols) {
-            if (cp == sp and selected == "") {
-                selected = cp;
-            }
-        }
-    }
-    assert(selected == "chat");
+    assert(select_protocol("graphql-ws,chat", "chat,echo") == "chat");
+    assert(select_protocol("proto-a,proto-b", "proto-b,proto-c") == "proto-b");
+    assert(select_protocol("proto-a", "proto-b") == "");
 }
 
-it("should return empty when no match") {
-    let client_protocols = ["protocol-a"];
-    let server_protocols = ["protocol-b"];
-
-    let mut selected = "";
-    for (cp in client_protocols) {
-        for (sp in server_protocols) {
-            if (cp == sp) {
-                selected = cp;
-            }
-        }
-    }
-    assert(selected == "");
+it("should validate protocol names") {
+    assert(is_valid_protocol_name("graphql-ws") == true);
+    assert(is_valid_protocol_name("chat") == true);
+    assert(is_valid_protocol_name("") == false);
+    assert(is_valid_protocol_name("has space") == false);
 }
 
 // ============================================================================
-// MESSAGE QUEUE
+// MESSAGE QUEUE MANAGEMENT
 // ============================================================================
 
-it("should queue messages") {
-    let mut queue = [];
-    queue = queue.push("first");
-    queue = queue.push("second");
-    assert(queue.len() == 2);
+fn calculate_queue_pressure(queue_size: i32, max_size: i32): i32 {
+    if (max_size == 0) { return 100; }
+    return (queue_size * 100) / max_size;
 }
 
-it("should process queue in order") {
-    let queue = ["first", "second", "third"];
-    assert(queue[0] == "first");
-    assert(queue[1] == "second");
+fn should_drop_message(queue_pressure: i32, priority: i32): bool {
+    // High priority (1) only drops at 100%, low priority (3) drops at 80%
+    if (priority == 1) { return queue_pressure >= 100; }
+    if (priority == 2) { return queue_pressure >= 90; }
+    return queue_pressure >= 80;
 }
 
-it("should check if queue is empty") {
-    let queue = [];
-    assert(queue.is_empty() == true);
+fn get_queue_status(pressure: i32): string {
+    if (pressure < 50) { return "healthy"; }
+    if (pressure < 75) { return "elevated"; }
+    if (pressure < 90) { return "high"; }
+    return "critical";
+}
+
+it("should calculate queue pressure") {
+    assert(calculate_queue_pressure(50, 100) == 50);
+    assert(calculate_queue_pressure(75, 100) == 75);
+    assert(calculate_queue_pressure(100, 100) == 100);
+    assert(calculate_queue_pressure(0, 100) == 0);
+}
+
+it("should determine message dropping") {
+    assert(should_drop_message(100, 1) == true);
+    assert(should_drop_message(90, 1) == false);
+    assert(should_drop_message(90, 2) == true);
+    assert(should_drop_message(80, 3) == true);
+    assert(should_drop_message(79, 3) == false);
+}
+
+it("should get queue status") {
+    assert(get_queue_status(25) == "healthy");
+    assert(get_queue_status(60) == "elevated");
+    assert(get_queue_status(80) == "high");
+    assert(get_queue_status(95) == "critical");
+}
+
+// ============================================================================
+// ROOM/CHANNEL MANAGEMENT
+// ============================================================================
+
+fn is_valid_room_name(name: string): bool {
+    if (name.len() == 0 or name.len() > 100) { return false; }
+    return !name.contains(" ") and !name.starts_with("/");
+}
+
+fn is_private_room(name: string): bool {
+    return name.starts_with("private-") or name.starts_with("dm-");
+}
+
+fn is_system_room(name: string): bool {
+    return name.starts_with("system-") or name == "broadcast";
+}
+
+fn can_join_room(room_type: string, is_authenticated: bool): bool {
+    if (room_type == "public") { return true; }
+    if (room_type == "private") { return is_authenticated; }
+    if (room_type == "system") { return false; }
+    return false;
+}
+
+it("should validate room names") {
+    assert(is_valid_room_name("chat-room-1") == true);
+    assert(is_valid_room_name("general") == true);
+    assert(is_valid_room_name("") == false);
+    assert(is_valid_room_name("has space") == false);
+    assert(is_valid_room_name("/invalid") == false);
+}
+
+it("should identify private rooms") {
+    assert(is_private_room("private-123") == true);
+    assert(is_private_room("dm-user1-user2") == true);
+    assert(is_private_room("general") == false);
+    assert(is_private_room("public-chat") == false);
+}
+
+it("should identify system rooms") {
+    assert(is_system_room("system-alerts") == true);
+    assert(is_system_room("broadcast") == true);
+    assert(is_system_room("general") == false);
+}
+
+it("should check room join permissions") {
+    assert(can_join_room("public", false) == true);
+    assert(can_join_room("public", true) == true);
+    assert(can_join_room("private", false) == false);
+    assert(can_join_room("private", true) == true);
+    assert(can_join_room("system", true) == false);
+}
+
+// ============================================================================
+// BROADCAST CALCULATIONS
+// ============================================================================
+
+fn calculate_broadcast_count(total_members: i32, exclude_sender: bool): i32 {
+    if (exclude_sender) {
+        return total_members - 1;
+    }
+    return total_members;
+}
+
+fn estimate_broadcast_time_ms(message_size: i32, member_count: i32, bandwidth_kbps: i32): i32 {
+    let total_bytes = message_size * member_count;
+    let bandwidth_bps = bandwidth_kbps * 1000;
+    if (bandwidth_bps == 0) { return 0; }
+    return (total_bytes * 8 * 1000) / bandwidth_bps;
+}
+
+fn should_batch_broadcast(member_count: i32, threshold: i32): bool {
+    return member_count >= threshold;
+}
+
+it("should calculate broadcast count") {
+    assert(calculate_broadcast_count(10, false) == 10);
+    assert(calculate_broadcast_count(10, true) == 9);
+    assert(calculate_broadcast_count(1, true) == 0);
+}
+
+it("should estimate broadcast time") {
+    // 1000 bytes to 10 members at 1000 kbps
+    // 10000 bytes = 80000 bits, at 1000000 bps = 80ms
+    assert(estimate_broadcast_time_ms(1000, 10, 1000) == 80);
+}
+
+it("should determine broadcast batching") {
+    assert(should_batch_broadcast(100, 50) == true);
+    assert(should_batch_broadcast(25, 50) == false);
+    assert(should_batch_broadcast(50, 50) == true);
+}
+
+// ============================================================================
+// ERROR CLASSIFICATION
+// ============================================================================
+
+fn is_protocol_error(code: i32): bool {
+    return code == 1002 or code == 1003 or code == 1007;
+}
+
+fn is_policy_error(code: i32): bool {
+    return code == 1008 or code == 1009 or code == 1010;
+}
+
+fn should_log_error(code: i32): bool {
+    // Log all errors except normal closure and going away
+    return code != 1000 and code != 1001;
+}
+
+fn get_error_severity(code: i32): string {
+    if (code == 1000 or code == 1001) { return "info"; }
+    if (code == 1002 or code == 1003) { return "warning"; }
+    if (code == 1011) { return "error"; }
+    return "warning";
+}
+
+it("should identify protocol errors") {
+    assert(is_protocol_error(1002) == true);
+    assert(is_protocol_error(1003) == true);
+    assert(is_protocol_error(1007) == true);
+    assert(is_protocol_error(1000) == false);
+}
+
+it("should identify policy errors") {
+    assert(is_policy_error(1008) == true);
+    assert(is_policy_error(1009) == true);
+    assert(is_policy_error(1010) == true);
+    assert(is_policy_error(1002) == false);
+}
+
+it("should determine error logging") {
+    assert(should_log_error(1000) == false);
+    assert(should_log_error(1001) == false);
+    assert(should_log_error(1002) == true);
+    assert(should_log_error(1011) == true);
+}
+
+it("should classify error severity") {
+    assert(get_error_severity(1000) == "info");
+    assert(get_error_severity(1001) == "info");
+    assert(get_error_severity(1002) == "warning");
+    assert(get_error_severity(1011) == "error");
 }
