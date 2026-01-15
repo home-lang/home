@@ -226,7 +226,7 @@ it("should get struct field offset") {
 // ============================================================================
 
 it("should create callback") {
-    let callback = ffi::callback(ffi::fn([ffi::int, ffi::int], ffi::int), fn(a, b) {
+    let callback = ffi::callback(ffi::fn([ffi::int, ffi::int], ffi::int), |a, b| {
         return a + b
     })
     assert(callback != null)
@@ -236,7 +236,7 @@ it("should pass callback to C") {
     let lib = ffi::load("libc")
     let qsort = lib.bind("qsort", ffi::fn([ffi::ptr, ffi::size_t, ffi::size_t, ffi::ptr], ffi::void))
 
-    let compare = ffi::callback(ffi::fn([ffi::ptr, ffi::ptr], ffi::int), fn(a, b) {
+    let compare = ffi::callback(ffi::fn([ffi::ptr, ffi::ptr], ffi::int), |a, b| {
         let va = ffi::deref(a, ffi::int)
         let vb = ffi::deref(b, ffi::int)
         return va - vb

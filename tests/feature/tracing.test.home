@@ -111,11 +111,9 @@ it("should set error status") {
 
 it("should record exception") {
     let span = tracing::span("operation")
-    try {
-        throw Error("Test error")
-    } catch (e) {
-        span.record_exception(e)
-    }
+    // Record an exception-like object
+    let err = { "type": "Error", "message": "Test error" }
+    span.record_exception(err)
     span.end()
 }
 
@@ -168,9 +166,7 @@ it("should extract trace context from headers") {
 
 it("should inject trace context into headers") {
     let span = tracing::span("operation")
-    let headers = {}
-
-    tracing::inject(headers, span)
+    let headers = tracing::inject({}, span)
 
     assert(headers["traceparent"] != null)
     span.end()
@@ -178,18 +174,16 @@ it("should inject trace context into headers") {
 
 it("should propagate W3C trace context") {
     let span = tracing::span("operation")
-    let headers = {}
+    let headers = tracing::inject_w3c({}, span)
 
-    tracing::inject_w3c(headers, span)
     assert(headers["traceparent"].starts_with("00-"))
     span.end()
 }
 
 it("should propagate B3 headers") {
     let span = tracing::span("operation")
-    let headers = {}
+    let headers = tracing::inject_b3({}, span)
 
-    tracing::inject_b3(headers, span)
     assert(headers["X-B3-TraceId"] != null)
     span.end()
 }
@@ -357,6 +351,8 @@ it("should export to console") {
 // ============================================================================
 
 it("should create HTTP tracing middleware") {
+    let tracer_config = { "service_name": "my-service" }
+    let tracer = tracing::Tracer::new(tracer_config)
     let config = {
         "tracer": tracer,
         "propagators": ["w3c", "b3"]
@@ -365,6 +361,8 @@ it("should create HTTP tracing middleware") {
 }
 
 it("should trace incoming requests") {
+    let tracer_config = { "service_name": "my-service" }
+    let tracer = tracing::Tracer::new(tracer_config)
     // Middleware with custom operation name format
     let config = {
         "tracer": tracer,
@@ -393,8 +391,7 @@ it("should get baggage") {
 it("should propagate baggage") {
     tracing::set_baggage("session_id", "abc123")
 
-    let headers = {}
-    tracing::inject_baggage(headers)
+    let headers = tracing::inject_baggage({})
 
     assert(headers["baggage"] != null)
 }
@@ -466,7 +463,7 @@ it("should trace async-style operations") {
     let span = tracing::span("async_operation")
 
     // Simulating work that would be async
-    let result = do_work()
+    let result = 1 + 2
 
     span.end()
 }
