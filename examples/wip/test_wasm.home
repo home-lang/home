@@ -11,7 +11,7 @@ use std::testing::{TestFramework, assert, assertEqual};
 fn test_simple_function_codegen() {
     println("Testing simple function code generation...");
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     // Simple function that adds two numbers
@@ -44,7 +44,7 @@ fn test_simple_function_codegen() {
 fn test_arithmetic_codegen() {
     println("Testing arithmetic code generation...");
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -64,7 +64,7 @@ fn test_arithmetic_codegen() {
 fn test_control_flow_codegen() {
     println("Testing control flow code generation...");
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -88,7 +88,7 @@ fn test_control_flow_codegen() {
 fn test_loop_codegen() {
     println("Testing loop code generation...");
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -112,7 +112,7 @@ fn test_loop_codegen() {
 fn test_recursive_function_codegen() {
     println("Testing recursive function code generation...");
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -140,11 +140,11 @@ fn test_recursive_function_codegen() {
 fn test_module_loading() {
     println("Testing module loading...");
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
     // Generate simple module
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -168,11 +168,11 @@ fn test_module_loading() {
 fn test_function_execution() {
     println("Testing function execution...");
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
     // Generate and load module
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -201,10 +201,10 @@ fn test_function_execution() {
 fn test_memory_operations() {
     println("Testing memory operations...");
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -241,10 +241,10 @@ fn test_memory_operations() {
 fn test_memory_growth() {
     println("Testing memory growth...");
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -307,7 +307,7 @@ fn test_js_value_creation() {
 fn test_js_object() {
     println("Testing JS object...");
 
-    let mut obj = JSObject::init(allocator);
+    let mut obj = JSObject.init(allocator);
     defer obj.deinit();
 
     // Set properties
@@ -339,7 +339,7 @@ fn test_js_object() {
 fn test_js_array() {
     println("Testing JS array...");
 
-    let mut arr = JSArray::init(allocator);
+    let mut arr = JSArray.init(allocator);
     defer arr.deinit();
 
     // Push elements
@@ -376,7 +376,7 @@ fn test_js_function() {
         return JSValue { .number = a + b };
     }
 
-    let func = JSFunction::init(allocator, "add", my_callback)?;
+    let func = JSFunction.init(allocator, "add", my_callback)?;
     defer func.deinit();
 
     let args = [
@@ -393,7 +393,7 @@ fn test_js_function() {
 fn test_js_interop() {
     println("Testing JS interop...");
 
-    let mut interop = JSInterop::init(allocator);
+    let mut interop = JSInterop.init(allocator);
     defer interop.deinit();
 
     // Import function
@@ -429,7 +429,7 @@ fn test_js_interop() {
 fn test_js_bindings_generation() {
     println("Testing JS bindings generation...");
 
-    let mut generator = JSBindingsGenerator::init(allocator);
+    let mut generator = JSBindingsGenerator.init(allocator);
 
     let exports = [
         JSBindingsGenerator.Export { .name = "add", .kind = .function },
@@ -471,14 +471,14 @@ fn test_full_pipeline() {
     let program = parse(source)?;
 
     // 2. Generate WASM
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let wasm_bytes = codegen.generate(&program)?;
     defer allocator.free(wasm_bytes);
 
     // 3. Load and run
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
     runtime.loadModule("fib", wasm_bytes)?;
@@ -494,11 +494,11 @@ fn test_full_pipeline() {
 fn test_multiple_modules() {
     println("Testing multiple modules...");
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
     // Load math module
-    let mut codegen1 = WasmCodeGen::init(allocator);
+    let mut codegen1 = WasmCodeGen.init(allocator);
     defer codegen1.deinit();
 
     let math_program = parse("
@@ -513,7 +513,7 @@ fn test_multiple_modules() {
     runtime.loadModule("math", math_bytes)?;
 
     // Load string module
-    let mut codegen2 = WasmCodeGen::init(allocator);
+    let mut codegen2 = WasmCodeGen.init(allocator);
     defer codegen2.deinit();
 
     let string_program = parse("
@@ -557,16 +557,16 @@ fn benchmark_codegen() {
     let program = parse(source)?;
 
     let iterations = 1000;
-    let start = std::time::now();
+    let start = Std.Time.now();
 
     for _ in 0..iterations {
-        let mut codegen = WasmCodeGen::init(allocator);
+        let mut codegen = WasmCodeGen.init(allocator);
         let wasm_bytes = codegen.generate(&program)?;
         allocator.free(wasm_bytes);
         codegen.deinit();
     }
 
-    let elapsed = std::time::now() - start;
+    let elapsed = Std.Time.now() - start;
     let avg_time = elapsed / iterations;
 
     println("Iterations: {}", iterations);
@@ -578,7 +578,7 @@ fn benchmark_execution() {
     println("\n=== Execution Benchmark ===\n");
 
     // Setup
-    let mut codegen = WasmCodeGen::init(allocator);
+    let mut codegen = WasmCodeGen.init(allocator);
     defer codegen.deinit();
 
     let program = parse("
@@ -594,21 +594,21 @@ fn benchmark_execution() {
     let wasm_bytes = codegen.generate(&program)?;
     defer allocator.free(wasm_bytes);
 
-    let mut runtime = WasmRuntime::init(allocator);
+    let mut runtime = WasmRuntime.init(allocator);
     defer runtime.deinit();
 
     runtime.loadModule("bench", wasm_bytes)?;
 
     // Benchmark
     let iterations = 10000;
-    let start = std::time::now();
+    let start = Std.Time.now();
 
     for _ in 0..iterations {
         let args = [Value { .i32 = 100 }];
         _ = runtime.callFunction("bench", "sum", &args)?;
     }
 
-    let elapsed = std::time::now() - start;
+    let elapsed = Std.Time.now() - start;
     let avg_time = elapsed as f64 / iterations as f64;
     let ops_per_sec = iterations * 1000 / elapsed;
 

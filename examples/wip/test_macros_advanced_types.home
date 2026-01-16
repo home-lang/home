@@ -21,12 +21,12 @@
 macro_rules! vec {
     // Empty vector
     () => {
-        Vec::new()
+        Vec.new()
     };
     // Single element
     ($elem:expr) => {
         {
-            let mut v = Vec::new();
+            let mut v = Vec.new();
             v.push($elem);
             v
         }
@@ -34,7 +34,7 @@ macro_rules! vec {
     // Multiple elements
     ($($elem:expr),+) => {
         {
-            let mut v = Vec::new();
+            let mut v = Vec.new();
             $(v.push($elem);)+
             v
         }
@@ -127,7 +127,7 @@ fn test_matches_macro() {
 macro_rules! hash_map {
     ($($key:expr => $value:expr),*) => {
         {
-            let mut map = HashMap::new();
+            let mut map = HashMap.new();
             $(map.insert($key, $value);)*
             map
         }
@@ -231,7 +231,7 @@ impl<A> Functor<Option> for Option<A> {
 // Implement Functor for Vec
 impl<A> Functor<Vec> for Vec<A> {
     fn map<A, B>(self: Vec<A>, f: fn(A) -> B) -> Vec<B> {
-        let mut result = Vec::new();
+        let mut result = Vec.new();
         for item in self {
             result.push(f(item));
         }
@@ -473,8 +473,8 @@ fn get_post(id: PostId) -> Post {
 fn test_phantom_types() {
     print("=== Phantom Types ===");
     
-    let user_id: UserId = TypedId { id: 1, _phantom: PhantomData::new() };
-    let post_id: PostId = TypedId { id: 1, _phantom: PhantomData::new() };
+    let user_id: UserId = TypedId { id: 1, _phantom: PhantomData.new() };
+    let post_id: PostId = TypedId { id: 1, _phantom: PhantomData.new() };
     
     let user = get_user(user_id);  // OK
     // let error = get_user(post_id);  // Compile error! PostId != UserId

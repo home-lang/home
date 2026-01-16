@@ -205,22 +205,22 @@ enum Format {
     Binary,
 }
 
-fn serialize(data: User, format: Format::JSON): string {
+fn serialize(data: User, format: Format.JSON): string {
     format!("{{\"name\":\"{}\",\"age\":{},\"email\":\"{}\"}}", 
             data.name, data.age, data.email)
 }
 
-fn serialize(data: User, format: Format::XML): string {
+fn serialize(data: User, format: Format.XML): string {
     format!("<user><name>{}</name><age>{}</age><email>{}</email></user>",
             data.name, data.age, data.email)
 }
 
-fn serialize(data: Post, format: Format::JSON): string {
+fn serialize(data: Post, format: Format.JSON): string {
     format!("{{\"title\":\"{}\",\"content\":\"{}\",\"author\":\"{}\"}}",
             data.title, data.content, data.author)
 }
 
-fn serialize(data: Post, format: Format::XML): string {
+fn serialize(data: Post, format: Format.XML): string {
     format!("<post><title>{}</title><content>{}</content><author>{}</author></post>",
             data.title, data.content, data.author)
 }
@@ -240,10 +240,10 @@ fn test_serialization(): void {
         author: "Alice",
     }
     
-    println("User as JSON: {}", serialize(user, Format::JSON))
-    println("User as XML: {}", serialize(user, Format::XML))
-    println("Post as JSON: {}", serialize(post, Format::JSON))
-    println("Post as XML: {}", serialize(post, Format::XML))
+    println("User as JSON: {}", serialize(user, Format.JSON))
+    println("User as XML: {}", serialize(user, Format.XML))
+    println("Post as JSON: {}", serialize(post, Format.JSON))
+    println("Post as XML: {}", serialize(post, Format.XML))
 }
 
 // ============================================================================
@@ -269,24 +269,24 @@ struct Canvas {
     height: i32,
 }
 
-fn handle(event: Event::MouseClick, target: Button): void {
+fn handle(event: Event.MouseClick, target: Button): void {
     println("Button '{}' clicked at ({}, {})", 
             target.label, event.x, event.y)
 }
 
-fn handle(event: Event::MouseClick, target: TextInput): void {
+fn handle(event: Event.MouseClick, target: TextInput): void {
     println("TextInput focused at ({}, {})", event.x, event.y)
 }
 
-fn handle(event: Event::KeyPress, target: TextInput): void {
+fn handle(event: Event.KeyPress, target: TextInput): void {
     println("TextInput received key: {}", event.key)
 }
 
-fn handle(event: Event::KeyPress, target: Canvas): void {
+fn handle(event: Event.KeyPress, target: Canvas): void {
     println("Canvas shortcut: {}", event.key)
 }
 
-fn handle(event: Event::Scroll, target: Canvas): void {
+fn handle(event: Event.Scroll, target: Canvas): void {
     println("Canvas scrolled by: {}", event.delta)
 }
 
@@ -297,11 +297,11 @@ fn test_event_handling(): void {
     let input = TextInput { text: "" }
     let canvas = Canvas { width: 800, height: 600 }
     
-    handle(Event::MouseClick { x: 100, y: 200 }, button)
-    handle(Event::MouseClick { x: 50, y: 75 }, input)
-    handle(Event::KeyPress { key: "a" }, input)
-    handle(Event::KeyPress { key: "Ctrl+S" }, canvas)
-    handle(Event::Scroll { delta: 10 }, canvas)
+    handle(Event.MouseClick { x: 100, y: 200 }, button)
+    handle(Event.MouseClick { x: 50, y: 75 }, input)
+    handle(Event.KeyPress { key: "a" }, input)
+    handle(Event.KeyPress { key: "Ctrl+S" }, canvas)
+    handle(Event.Scroll { delta: 10 }, canvas)
 }
 
 // ============================================================================
@@ -320,22 +320,22 @@ enum Connection {
 
 fn connect(client: HTTP1Client, server: HTTP1Server): Connection {
     println("HTTP/1.1 connection established")
-    Connection::HTTP1
+    Connection.HTTP1
 }
 
 fn connect(client: HTTP2Client, server: HTTP2Server): Connection {
     println("HTTP/2 connection established")
-    Connection::HTTP2
+    Connection.HTTP2
 }
 
 fn connect(client: HTTP2Client, server: HTTP1Server): Connection {
     println("Downgrading to HTTP/1.1")
-    Connection::HTTP1
+    Connection.HTTP1
 }
 
 fn connect(client: HTTP1Client, server: HTTP2Server): Connection {
     println("Upgrading to HTTP/2")
-    Connection::HTTP2
+    Connection.HTTP2
 }
 
 fn test_protocol_negotiation(): void {
@@ -356,27 +356,27 @@ fn test_protocol_negotiation(): void {
 // Example 8: Type Conversion
 // ============================================================================
 
-fn convert(from: string, to: Type::Int): i32 {
+fn convert(from: string, to: Type.Int): i32 {
     from.parse().unwrap_or(0)
 }
 
-fn convert(from: string, to: Type::Float): f64 {
+fn convert(from: string, to: Type.Float): f64 {
     from.parse().unwrap_or(0.0)
 }
 
-fn convert(from: i32, to: Type::String): string {
+fn convert(from: i32, to: Type.String): string {
     from.to_string()
 }
 
-fn convert(from: f64, to: Type::String): string {
+fn convert(from: f64, to: Type.String): string {
     from.to_string()
 }
 
-fn convert(from: i32, to: Type::Float): f64 {
+fn convert(from: i32, to: Type.Float): f64 {
     from as f64
 }
 
-fn convert(from: f64, to: Type::Int): i32 {
+fn convert(from: f64, to: Type.Int): i32 {
     from as i32
 }
 
@@ -389,12 +389,12 @@ enum Type {
 fn test_type_conversion(): void {
     println("\n=== Type Conversion ===")
     
-    println("'42' to int: {}", convert("42", Type::Int))
-    println("'3.14' to float: {}", convert("3.14", Type::Float))
-    println("42 to string: {}", convert(42, Type::String))
-    println("3.14 to string: {}", convert(3.14, Type::String))
-    println("42 to float: {}", convert(42, Type::Float))
-    println("3.14 to int: {}", convert(3.14, Type::Int))
+    println("'42' to int: {}", convert("42", Type.Int))
+    println("'3.14' to float: {}", convert("3.14", Type.Float))
+    println("42 to string: {}", convert(42, Type.String))
+    println("3.14 to string: {}", convert(3.14, Type.String))
+    println("42 to float: {}", convert(42, Type.Float))
+    println("3.14 to int: {}", convert(3.14, Type.Int))
 }
 
 // ============================================================================
@@ -445,22 +445,22 @@ enum RenderTarget {
     SVG,
 }
 
-fn render(shape: Circle, target: RenderTarget::Screen): void {
+fn render(shape: Circle, target: RenderTarget.Screen): void {
     println("Drawing circle on screen at ({}, {}) radius {}",
             shape.x, shape.y, shape.radius)
 }
 
-fn render(shape: Circle, target: RenderTarget::SVG): void {
+fn render(shape: Circle, target: RenderTarget.SVG): void {
     println("<circle cx=\"{}\" cy=\"{}\" r=\"{}\" />",
             shape.x, shape.y, shape.radius)
 }
 
-fn render(shape: Rectangle, target: RenderTarget::Screen): void {
+fn render(shape: Rectangle, target: RenderTarget.Screen): void {
     println("Drawing rectangle on screen at ({}, {}) size {}x{}",
             shape.x, shape.y, shape.width, shape.height)
 }
 
-fn render(shape: Rectangle, target: RenderTarget::SVG): void {
+fn render(shape: Rectangle, target: RenderTarget.SVG): void {
     println("<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" />",
             shape.x, shape.y, shape.width, shape.height)
 }
@@ -471,10 +471,10 @@ fn test_rendering(): void {
     let circle = Circle { x: 50.0, y: 50.0, radius: 25.0 }
     let rect = Rectangle { x: 100.0, y: 100.0, width: 50.0, height: 30.0 }
     
-    render(circle, RenderTarget::Screen)
-    render(circle, RenderTarget::SVG)
-    render(rect, RenderTarget::Screen)
-    render(rect, RenderTarget::SVG)
+    render(circle, RenderTarget.Screen)
+    render(circle, RenderTarget.SVG)
+    render(rect, RenderTarget.Screen)
+    render(rect, RenderTarget.SVG)
 }
 
 // ============================================================================

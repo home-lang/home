@@ -212,7 +212,7 @@ impl Counter {
 fn test_closures_with_structs(): void {
     println("\n=== Closures with Structs ===")
     
-    let mut counter = Counter::new()
+    let mut counter = Counter.new()
     
     counter.increment_by(|x| x + 1)
     println("After +1: {}", counter.count)
@@ -260,7 +260,7 @@ fn test_event_handlers(): void {
     println("\n=== Event Handlers ===")
     
     let mut count = 0
-    let mut button = Button::new("Counter")
+    let mut button = Button.new("Counter")
     
     button.set_handler(move || {
         count += 1
@@ -383,7 +383,7 @@ where
     fn new(func: F): Memoized<F, T> {
         Memoized {
             func,
-            cache: HashMap::new(),
+            cache: HashMap.new(),
         }
     }
     

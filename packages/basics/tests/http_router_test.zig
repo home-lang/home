@@ -1,6 +1,5 @@
 const std = @import("std");
 const http_router = @import("http_router");
-const test_framework = @import("zig-test-framework");
 
 test "HTTP Method from string" {
     try std.testing.expectEqual(http_router.Method.GET, http_router.Method.fromString("GET").?);
@@ -36,10 +35,6 @@ test "Router creation" {
 }
 
 test "coverage - http router basics" {
-    const coverage_opts = test_framework.CoverageOptions{
-        .enabled = true,
-        .output_dir = "coverage/http_router",
-    };
-
-    try std.testing.expect(coverage_opts.enabled);
+    // Coverage tracking placeholder
+    try std.testing.expect(true);
 }

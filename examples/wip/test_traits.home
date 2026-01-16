@@ -258,10 +258,10 @@ fn main() -> void {
 
     // Test 2: Dynamic dispatch with trait objects
     println("\n--- Test 2: Dynamic Dispatch ---");
-    let mut shapes: Vec<Box<dyn Drawable>> = Vec::new();
-    shapes.push(Box::new(circle));
-    shapes.push(Box::new(rect));
-    shapes.push(Box::new(tri));
+    let mut shapes: Vec<Box<dyn Drawable>> = Vec.new();
+    shapes.push(Box.new(circle));
+    shapes.push(Box.new(rect));
+    shapes.push(Box.new(tri));
 
     draw_all_shapes(&shapes);
 

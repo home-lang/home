@@ -1037,7 +1037,7 @@ pub const Lexer = struct {
                     self.makeToken(.DotDot))
             else self.makeToken(.Dot),
             ';' => self.makeToken(.Semicolon),
-            ':' => if (self.match(':')) self.makeToken(.ColonColon) else self.makeToken(.Colon),
+            ':' => self.makeToken(.Colon),
             '?' => if (self.match('.'))
                 self.makeToken(.QuestionDot)
             else if (self.match('?'))
@@ -1273,16 +1273,6 @@ test "lexer: && and || operators" {
     try testing.expectEqual(@as(usize, 3), tokens.items.len);
     try testing.expectEqual(TokenType.AmpersandAmpersand, tokens.items[0].type);
     try testing.expectEqual(TokenType.PipePipe, tokens.items[1].type);
-}
-
-test "lexer: :: token" {
-    const testing = std.testing;
-    var lexer = Lexer.init(testing.allocator, "::");
-    var tokens = try lexer.tokenize();
-    defer tokens.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 2), tokens.items.len);
-    try testing.expectEqual(TokenType.ColonColon, tokens.items[0].type);
 }
 
 test "lexer: range operators" {

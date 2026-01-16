@@ -5,25 +5,25 @@
 // ============================================================================
 
 it("should create migration with name") {
-    let migration = migrate::Migration::new("create_users_table")
+    let migration = Migrate.Migration.new("create_users_table")
     assert(migration != null)
     assert(migration.name.contains("create_users_table"))
 }
 
 it("should generate timestamp prefix for migration name") {
-    let migration = migrate::Migration::new("add_email_column")
+    let migration = Migrate.Migration.new("add_email_column")
     // Migration name should include timestamp prefix (at least 14 chars for YYYYMMDDHHMMSS)
     assert(migration.name.len() > 14)
     assert(migration.name.contains("add_email_column"))
 }
 
 it("should initialize migration with version 1") {
-    let migration = migrate::Migration::new("initial")
+    let migration = Migrate.Migration.new("initial")
     assert(migration.version == 1)
 }
 
 it("should initialize migration as not applied") {
-    let migration = migrate::Migration::new("pending_migration")
+    let migration = Migrate.Migration.new("pending_migration")
     assert(migration.applied == false)
 }
 
@@ -32,19 +32,19 @@ it("should initialize migration as not applied") {
 // ============================================================================
 
 it("should create migrator instance") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     assert(migrator != null)
 }
 
 it("should create migrator with custom directory") {
     let config = { directory: "db/migrations" }
-    let migrator = migrate::Migrator::new(config)
+    let migrator = Migrate.Migrator.new(config)
     assert(migrator != null)
 }
 
 it("should add migration to migrator") {
-    let migrator = migrate::Migrator::new()
-    let migration = migrate::Migration::new("users")
+    let migrator = Migrate.Migrator.new()
+    let migration = Migrate.Migration.new("users")
     migrator.add(migration)
     // Should not throw
     assert(migrator != null)
@@ -55,19 +55,19 @@ it("should add migration to migrator") {
 // ============================================================================
 
 it("should get migration status as struct") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     let status = migrator.status()
     assert(status != null)
 }
 
 it("should get pending migrations as array") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     let pending = migrator.pending()
     assert(pending != null)
 }
 
 it("should get applied migrations as array") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     let applied = migrator.applied()
     assert(applied != null)
 }
@@ -77,26 +77,26 @@ it("should get applied migrations as array") {
 // ============================================================================
 
 it("should run migrations without error") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.run()
     // Should complete without throwing
     assert(migrator != null)
 }
 
 it("should rollback migrations without error") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.rollback()
     assert(migrator != null)
 }
 
 it("should reset all migrations") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.reset()
     assert(migrator != null)
 }
 
 it("should refresh migrations (reset + run)") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.refresh()
     assert(migrator != null)
 }
@@ -106,12 +106,12 @@ it("should refresh migrations (reset + run)") {
 // ============================================================================
 
 it("should execute raw SQL") {
-    migrate::sql("CREATE TABLE test_table (id INTEGER PRIMARY KEY)")
+    Migrate.sql("CREATE TABLE test_table (id INTEGER PRIMARY KEY)")
     // Should not throw
 }
 
 it("should execute SQL with parameters") {
-    migrate::sql("INSERT INTO test_table (id) VALUES (1)")
+    Migrate.sql("INSERT INTO test_table (id) VALUES (1)")
 }
 
 // ============================================================================
@@ -119,23 +119,23 @@ it("should execute SQL with parameters") {
 // ============================================================================
 
 it("should create table") {
-    migrate::create_table("users")
+    Migrate.createTable("users")
 }
 
 it("should drop table") {
-    migrate::drop_table("old_table")
+    Migrate.dropTable("old_table")
 }
 
 it("should drop table if exists without error") {
-    migrate::drop_table_if_exists("maybe_exists")
+    Migrate.dropTableIfExists("maybe_exists")
 }
 
 it("should rename table") {
-    migrate::rename_table("old_name", "new_name")
+    Migrate.renameTable("old_name", "new_name")
 }
 
 it("should alter table") {
-    migrate::alter_table("users")
+    Migrate.alterTable("users")
 }
 
 // ============================================================================
@@ -143,15 +143,15 @@ it("should alter table") {
 // ============================================================================
 
 it("should create index on column") {
-    migrate::create_index("users", "email")
+    Migrate.createIndex("users", "email")
 }
 
 it("should create unique index") {
-    migrate::create_unique_index("users", "username")
+    Migrate.createUniqueIndex("users", "username")
 }
 
 it("should drop index") {
-    migrate::drop_index("users", "users_email_idx")
+    Migrate.dropIndex("users", "users_email_idx")
 }
 
 // ============================================================================
@@ -159,90 +159,90 @@ it("should drop index") {
 // ============================================================================
 
 it("should create table builder") {
-    let builder = migrate::table("products")
+    let builder = Migrate.table("products")
     assert(builder != null)
 }
 
 it("should add auto-incrementing primary key") {
-    let builder = migrate::table("items")
+    let builder = Migrate.table("items")
     builder.increments("id")
     assert(builder != null)
 }
 
 it("should add string column with max length") {
-    let builder = migrate::table("users")
+    let builder = Migrate.table("users")
     builder.string("name")
     assert(builder != null)
 }
 
 it("should add integer column") {
-    let builder = migrate::table("orders")
+    let builder = Migrate.table("orders")
     builder.integer("quantity")
     assert(builder != null)
 }
 
 it("should add text column for large content") {
-    let builder = migrate::table("posts")
+    let builder = Migrate.table("posts")
     builder.text("content")
     assert(builder != null)
 }
 
 it("should add boolean column") {
-    let builder = migrate::table("users")
+    let builder = Migrate.table("users")
     builder.boolean("is_active")
     assert(builder != null)
 }
 
 it("should add timestamp columns (created_at, updated_at)") {
-    let builder = migrate::table("records")
+    let builder = Migrate.table("records")
     builder.timestamps()
     assert(builder != null)
 }
 
 it("should add date column") {
-    let builder = migrate::table("events")
+    let builder = Migrate.table("events")
     builder.date("event_date")
     assert(builder != null)
 }
 
 it("should add datetime column") {
-    let builder = migrate::table("logs")
+    let builder = Migrate.table("logs")
     builder.datetime("logged_at")
     assert(builder != null)
 }
 
 it("should add json column") {
-    let builder = migrate::table("settings")
+    let builder = Migrate.table("settings")
     builder.json("preferences")
     assert(builder != null)
 }
 
 it("should add binary column") {
-    let builder = migrate::table("files")
+    let builder = Migrate.table("files")
     builder.binary("data")
     assert(builder != null)
 }
 
 it("should add uuid column") {
-    let builder = migrate::table("entities")
+    let builder = Migrate.table("entities")
     builder.uuid("guid")
     assert(builder != null)
 }
 
 it("should add enum column") {
-    let builder = migrate::table("tickets")
+    let builder = Migrate.table("tickets")
     builder.enum("status")
     assert(builder != null)
 }
 
 it("should add float column") {
-    let builder = migrate::table("products")
+    let builder = Migrate.table("products")
     builder.float("rating")
     assert(builder != null)
 }
 
 it("should add decimal column for money") {
-    let builder = migrate::table("invoices")
+    let builder = Migrate.table("invoices")
     builder.decimal("total")
     assert(builder != null)
 }
@@ -252,42 +252,42 @@ it("should add decimal column for money") {
 // ============================================================================
 
 it("should make column nullable") {
-    let builder = migrate::table("profiles")
+    let builder = Migrate.table("profiles")
     let col = builder.string("bio")
     col.nullable()
     assert(builder != null)
 }
 
 it("should make column unique") {
-    let builder = migrate::table("accounts")
+    let builder = Migrate.table("accounts")
     let col = builder.string("email")
     col.unique()
     assert(builder != null)
 }
 
 it("should set column as primary key") {
-    let builder = migrate::table("custom")
+    let builder = Migrate.table("custom")
     let col = builder.uuid("id")
     col.primary()
     assert(builder != null)
 }
 
 it("should set default value for column") {
-    let builder = migrate::table("counters")
+    let builder = Migrate.table("counters")
     let col = builder.integer("count")
     col.default(0)
     assert(builder != null)
 }
 
 it("should add index to column") {
-    let builder = migrate::table("searches")
+    let builder = Migrate.table("searches")
     let col = builder.string("query")
     col.index()
     assert(builder != null)
 }
 
 it("should add comment to column") {
-    let builder = migrate::table("documented")
+    let builder = Migrate.table("documented")
     let col = builder.string("code")
     col.comment("Unique identifier code")
     assert(builder != null)
@@ -298,18 +298,18 @@ it("should add comment to column") {
 // ============================================================================
 
 it("should create seeder") {
-    let seeder = migrate::Seeder::new("UsersSeeder")
+    let seeder = Migrate.Seeder.new("UsersSeeder")
     assert(seeder != null)
 }
 
 it("should run all seeders") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.seed()
     assert(migrator != null)
 }
 
 it("should run specific seeder by name") {
-    let migrator = migrate::Migrator::new()
+    let migrator = Migrate.Migrator.new()
     migrator.seed("AdminSeeder")
     assert(migrator != null)
 }
@@ -319,14 +319,14 @@ it("should run specific seeder by name") {
 // ============================================================================
 
 it("should get current migration version") {
-    let migrator = migrate::Migrator::new()
-    let version = migrator.current_version()
+    let migrator = Migrate.Migrator.new()
+    let version = migrator.currentVersion()
     // Version should be a string (timestamp)
 }
 
 it("should migrate to specific version") {
-    let migrator = migrate::Migrator::new()
-    migrator.migrate_to("20240115120000")
+    let migrator = Migrate.Migrator.new()
+    migrator.migrateTo("20240115120000")
     assert(migrator != null)
 }
 
@@ -335,11 +335,11 @@ it("should migrate to specific version") {
 // ============================================================================
 
 it("should support transaction wrapper") {
-    migrate::transaction()
+    Migrate.transaction()
 }
 
 it("should execute SQL from file") {
-    migrate::sql_file("seed_data.sql")
+    Migrate.sqlFile("seed_data.sql")
 }
 
 // ============================================================================
@@ -348,7 +348,7 @@ it("should execute SQL from file") {
 
 it("should insert data into table") {
     let data = { name: "Admin", email: "admin@example.com", role: "admin" }
-    migrate::insert("users", data)
+    Migrate.insert("users", data)
 }
 
 it("should insert multiple records") {
@@ -357,7 +357,7 @@ it("should insert multiple records") {
         { name: "User2", email: "user2@example.com" }
     ]
     for user in users {
-        migrate::insert("users", user)
+        Migrate.insert("users", user)
     }
 }
 

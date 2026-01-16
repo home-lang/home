@@ -105,7 +105,7 @@ fn test_loop_unrolling() {
 // Test escape analysis and stack allocation
 fn test_escape_analysis() {
     // This allocation does not escape - should be stack-allocated
-    let local_data = Box::new(Point { x: 10, y: 20 });
+    let local_data = Box.new(Point { x: 10, y: 20 });
     let value = local_data.x + local_data.y;
 
     println("Escape analysis result: " + value.to_string());
@@ -119,7 +119,7 @@ struct Point {
 
 fn escaping_allocation() -> Box<Point> {
     // This allocation DOES escape - must be heap-allocated
-    return Box::new(Point { x: 5, y: 10 });
+    return Box.new(Point { x: 5, y: 10 });
 }
 
 // Test common subexpression elimination
@@ -144,15 +144,15 @@ fn test_c_standard_library() {
     use std::ffi::CStdLib;
 
     // Test math functions
-    let sqrt_result = CStdLib::sqrt(16.0);
+    let sqrt_result = CStdLib.sqrt(16.0);
     println("sqrt(16) = " + sqrt_result.to_string());
     assert(sqrt_result == 4.0, "sqrt(16) should be 4.0");
 
-    let sin_result = CStdLib::sin(0.0);
+    let sin_result = CStdLib.sin(0.0);
     println("sin(0) = " + sin_result.to_string());
     assert(sin_result == 0.0, "sin(0) should be 0.0");
 
-    let pow_result = CStdLib::pow(2.0, 10.0);
+    let pow_result = CStdLib.pow(2.0, 10.0);
     println("pow(2, 10) = " + pow_result.to_string());
     assert(pow_result == 1024.0, "pow(2, 10) should be 1024.0");
 }
@@ -162,16 +162,16 @@ fn test_c_strings() {
     let home_string = "Hello, World!";
 
     // Convert to C string
-    let c_string = CString::from_home(home_string);
+    let c_string = CString.fromHome(home_string);
     defer c_string.free();
 
     // Use C string functions
-    let length = CStdLib::strlen(c_string);
+    let length = CStdLib.strlen(c_string);
     println("String length: " + length.to_string());
     assert(length == 13, "length should be 13");
 
     // Convert back to Home string
-    let back = CString::to_home(c_string);
+    let back = CString.toHome(c_string);
     assert(back == home_string, "conversion roundtrip failed");
 }
 
@@ -200,7 +200,7 @@ extern "c" fn free(ptr: ?*anyopaque) -> void;
 fn test_extern_functions() {
     // Use extern functions directly
     let test_str = "test";
-    let c_str = CString::from_home(test_str);
+    let c_str = CString.fromHome(test_str);
     defer c_str.free();
 
     let len = strlen(c_str.as_ptr());
@@ -210,7 +210,7 @@ fn test_extern_functions() {
 
 // Dynamic library loading
 fn test_dynamic_loading() {
-    let lib_path = match std::env::os() {
+    let lib_path = match Std.Env.os() {
         "linux" => "libc.so.6",
         "macos" => "libSystem.B.dylib",
         "windows" => "msvcrt.dll",
@@ -218,7 +218,7 @@ fn test_dynamic_loading() {
     };
 
     // Open library
-    let lib = DynLib::open(lib_path)?;
+    let lib = DynLib.open(lib_path)?;
     defer lib.close();
 
     // Look up function
@@ -226,7 +226,7 @@ fn test_dynamic_loading() {
 
     // Call dynamically loaded function
     let test = "dynamic";
-    let c_test = CString::from_home(test);
+    let c_test = CString.fromHome(test);
     defer c_test.free();
 
     let result = strlen_fn(c_test.as_ptr());
@@ -276,7 +276,7 @@ fn test_bindings_generator() {
         },
     ];
 
-    let bindings = BindingsGenerator::generate_quick(
+    let bindings = BindingsGenerator.generateQuick(
         "mylib",
         functions,
     );
@@ -291,7 +291,7 @@ fn test_bindings_generator() {
 
 fn test_optimization_pipeline() {
     // Configure optimizer
-    let mut pass_manager = PassManager::new(OptimizationLevel::O3);
+    let mut pass_manager = PassManager.new(OptimizationLevel.O3);
 
     // Add passes
     pass_manager.add_pass("constant-folding");
@@ -320,24 +320,24 @@ fn benchmark_optimizations() {
     println("\n=== Optimization Performance Comparison ===\n");
 
     // Unoptimized version
-    let start = std::time::now();
+    let start = Std.Time.now();
     let mut sum1 = 0;
     for i in 0..10000 {
         sum1 += i * 2 + i * 2;  // Redundant computation
     }
-    let unopt_time = std::time::now() - start;
+    let unopt_time = Std.Time.now() - start;
 
     println("Unoptimized: {}ms", unopt_time);
     println("Sum: {}", sum1);
 
     // Optimized version (CSE applied)
-    let start = std::time::now();
+    let start = Std.Time.now();
     let mut sum2 = 0;
     for i in 0..10000 {
         let temp = i * 2;      // CSE: computed once
         sum2 += temp + temp;
     }
-    let opt_time = std::time::now() - start;
+    let opt_time = Std.Time.now() - start;
 
     println("Optimized: {}ms", opt_time);
     println("Sum: {}", sum2);
@@ -362,18 +362,18 @@ fn benchmark_ffi_overhead() {
     let iterations = 100000;
 
     // Benchmark native
-    let start = std::time::now();
+    let start = Std.Time.now();
     for _ in 0..iterations {
         let _ = native_sqrt(2.0);
     }
-    let native_time = std::time::now() - start;
+    let native_time = Std.Time.now() - start;
 
     // Benchmark C FFI
-    let start = std::time::now();
+    let start = Std.Time.now();
     for _ in 0..iterations {
-        let _ = CStdLib::sqrt(2.0);
+        let _ = CStdLib.sqrt(2.0);
     }
-    let ffi_time = std::time::now() - start;
+    let ffi_time = Std.Time.now() - start;
 
     println("Native:  {}ms ({} ops/sec)", native_time, iterations * 1000 / native_time);
     println("C FFI:   {}ms ({} ops/sec)", ffi_time, iterations * 1000 / ffi_time);

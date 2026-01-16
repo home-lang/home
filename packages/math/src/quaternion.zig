@@ -307,23 +307,23 @@ pub fn Quat(comptime T: type) type {
         /// Convert to Euler angles (XYZ rotation order)
         /// Returns (pitch, yaw, roll) in radians
         pub fn toEuler(self: Self) struct { pitch: T, yaw: T, roll: T } {
-            // Roll (x-axis rotation)
-            const sinr_cosp = 2.0 * (self.w * self.x + self.y * self.z);
-            const cosr_cosp = 1.0 - 2.0 * (self.x * self.x + self.y * self.y);
-            const roll = std.math.atan2(sinr_cosp, cosr_cosp);
+            // Pitch (x-axis rotation) - matches fromEuler convention
+            const sinp_cosy = 2.0 * (self.w * self.x + self.y * self.z);
+            const cosp_cosy = 1.0 - 2.0 * (self.x * self.x + self.y * self.y);
+            const pitch = std.math.atan2(sinp_cosy, cosp_cosy);
 
-            // Pitch (y-axis rotation)
-            const sinp = 2.0 * (self.w * self.y - self.z * self.x);
+            // Yaw (y-axis rotation)
+            const siny = 2.0 * (self.w * self.y - self.z * self.x);
             const half_pi: T = std.math.pi / 2.0;
-            const pitch = if (@abs(sinp) >= 1.0)
-                std.math.copysign(half_pi, sinp)
+            const yaw = if (@abs(siny) >= 1.0)
+                std.math.copysign(half_pi, siny)
             else
-                std.math.asin(sinp);
+                std.math.asin(siny);
 
-            // Yaw (z-axis rotation)
-            const siny_cosp = 2.0 * (self.w * self.z + self.x * self.y);
-            const cosy_cosp = 1.0 - 2.0 * (self.y * self.y + self.z * self.z);
-            const yaw = std.math.atan2(siny_cosp, cosy_cosp);
+            // Roll (z-axis rotation)
+            const sinr_cosy = 2.0 * (self.w * self.z + self.x * self.y);
+            const cosr_cosy = 1.0 - 2.0 * (self.y * self.y + self.z * self.z);
+            const roll = std.math.atan2(sinr_cosy, cosr_cosy);
 
             return .{ .pitch = pitch, .yaw = yaw, .roll = roll };
         }

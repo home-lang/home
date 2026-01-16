@@ -25,21 +25,21 @@ it("should assert with message") {
 // ============================================================================
 
 it("should assert equal") {
-    assert::equal(42, 42)
+    Assert.equal(42, 42)
 }
 
 it("should assert not equal") {
-    assert::not_equal(1, 2)
+    Assert.notEqual(1, 2)
 }
 
 it("should assert deep equal for objects") {
     let a = { x: 1 }
     let b = { x: 1 }
-    assert::deep_equal(a, b)
+    Assert.deepEqual(a, b)
 }
 
 it("should assert deep equal for arrays") {
-    assert::deep_equal([1, 2, 3], [1, 2, 3])
+    Assert.deepEqual([1, 2, 3], [1, 2, 3])
 }
 
 // ============================================================================
@@ -47,21 +47,21 @@ it("should assert deep equal for arrays") {
 // ============================================================================
 
 it("should assert greater than") {
-    assert::greater(5, 3)
+    Assert.greater(5, 3)
 }
 
 it("should assert greater or equal") {
-    assert::greater_or_equal(5, 5)
-    assert::greater_or_equal(5, 3)
+    Assert.greaterOrEqual(5, 5)
+    Assert.greaterOrEqual(5, 3)
 }
 
 it("should assert less than") {
-    assert::less(3, 5)
+    Assert.less(3, 5)
 }
 
 it("should assert less or equal") {
-    assert::less_or_equal(3, 3)
-    assert::less_or_equal(3, 5)
+    Assert.lessOrEqual(3, 3)
+    Assert.lessOrEqual(3, 5)
 }
 
 // ============================================================================
@@ -69,17 +69,17 @@ it("should assert less or equal") {
 // ============================================================================
 
 it("should assert type") {
-    assert::is_type(42, "int")
-    assert::is_type("hello", "string")
-    assert::is_type(true, "bool")
+    Assert.isType(42, "int")
+    Assert.isType("hello", "string")
+    Assert.isType(true, "bool")
 }
 
 it("should assert null") {
-    assert::is_null(null)
+    Assert.isNull(null)
 }
 
 it("should assert not null") {
-    assert::is_not_null(42)
+    Assert.isNotNull(42)
 }
 
 // ============================================================================
@@ -87,26 +87,26 @@ it("should assert not null") {
 // ============================================================================
 
 it("should assert contains") {
-    assert::contains([1, 2, 3], 2)
+    Assert.contains([1, 2, 3], 2)
 }
 
 it("should assert does not contain") {
-    assert::not_contains([1, 2, 3], 4)
+    Assert.notContains([1, 2, 3], 4)
 }
 
 it("should assert empty") {
-    assert::is_empty([])
-    assert::is_empty("")
+    Assert.isEmpty([])
+    Assert.isEmpty("")
 }
 
 it("should assert not empty") {
-    assert::is_not_empty([1, 2, 3])
-    assert::is_not_empty("hello")
+    Assert.isNotEmpty([1, 2, 3])
+    Assert.isNotEmpty("hello")
 }
 
 it("should assert length") {
-    assert::length([1, 2, 3], 3)
-    assert::length("hello", 5)
+    Assert.length([1, 2, 3], 3)
+    Assert.length("hello", 5)
 }
 
 // ============================================================================
@@ -114,19 +114,19 @@ it("should assert length") {
 // ============================================================================
 
 it("should assert string contains") {
-    assert::str_contains("hello world", "world")
+    Assert.strContains("hello world", "world")
 }
 
 it("should assert string starts with") {
-    assert::starts_with("hello world", "hello")
+    Assert.startsWith("hello world", "hello")
 }
 
 it("should assert string ends with") {
-    assert::ends_with("hello world", "world")
+    Assert.endsWith("hello world", "world")
 }
 
 it("should assert string matches regex") {
-    assert::matches("hello123", "^[a-z]+[0-9]+$")
+    Assert.matches("hello123", "^[a-z]+[0-9]+$")
 }
 
 // ============================================================================
@@ -134,13 +134,13 @@ it("should assert string matches regex") {
 // ============================================================================
 
 it("should assert true") {
-    assert::is_true(true)
-    assert::is_true(1 == 1)
+    Assert.isTrue(true)
+    Assert.isTrue(1 == 1)
 }
 
 it("should assert false") {
-    assert::is_false(false)
-    assert::is_false(1 == 2)
+    Assert.isFalse(false)
+    Assert.isFalse(1 == 2)
 }
 
 // ============================================================================
@@ -148,11 +148,11 @@ it("should assert false") {
 // ============================================================================
 
 it("should assert approximately equal") {
-    assert::approx(3.14159, 3.14, 0.01)
+    Assert.approx(3.14159, 3.14, 0.01)
 }
 
 it("should assert float within delta") {
-    assert::within_delta(10.0, 10.5, 1.0)
+    Assert.withinDelta(10.0, 10.5, 1.0)
 }
 
 // ============================================================================
@@ -160,27 +160,27 @@ it("should assert float within delta") {
 // ============================================================================
 
 it("should create mock function") {
-    let mock = testing::mock()
+    let mock = Testing.mock()
     assert(mock != null)
 }
 
 it("should create mock with name") {
-    let mock = testing::mock("myFunc")
+    let mock = Testing.mock("myFunc")
     assert(mock != null)
 }
 
 it("should track mock call count") {
-    let mock = testing::mock()
+    let mock = Testing.mock()
     assert(mock.call_count() >= 0)
 }
 
 it("should verify mock") {
-    let mock = testing::mock()
+    let mock = Testing.mock()
     assert(mock.verify())
 }
 
 it("should reset mock") {
-    let mock = testing::mock()
+    let mock = Testing.mock()
     mock.reset()
     assert(mock != null)
 }
@@ -190,12 +190,12 @@ it("should reset mock") {
 // ============================================================================
 
 it("should create spy") {
-    let spy = testing::spy()
+    let spy = Testing.spy()
     assert(spy != null)
 }
 
 it("should track spy calls") {
-    let spy = testing::spy()
+    let spy = Testing.spy()
     assert(spy.call_count() >= 0)
 }
 
@@ -204,24 +204,24 @@ it("should track spy calls") {
 // ============================================================================
 
 it("should create test suite") {
-    let suite = testing::Suite::new("My Suite")
+    let suite = Testing.Suite.new("My Suite")
     assert(suite != null)
 }
 
 it("should add test to suite") {
-    let suite = testing::Suite::new("My Suite")
+    let suite = Testing.Suite.new("My Suite")
     suite.add("test name")
     assert(suite != null)
 }
 
 it("should run test suite") {
-    let suite = testing::Suite::new("My Suite")
+    let suite = Testing.Suite.new("My Suite")
     suite.run()
     assert(suite != null)
 }
 
 it("should get suite results") {
-    let suite = testing::Suite::new("My Suite")
+    let suite = Testing.Suite.new("My Suite")
     let results = suite.results()
     assert(results != null)
 }
@@ -231,12 +231,12 @@ it("should get suite results") {
 // ============================================================================
 
 it("should create fixture") {
-    let fixture = testing::Fixture::new("user")
+    let fixture = Testing.Fixture.new("user")
     assert(fixture != null)
 }
 
 it("should get fixture value") {
-    let fixture = testing::Fixture::new("user")
+    let fixture = Testing.Fixture.new("user")
     fixture.set("name", "Alice")
     assert(fixture != null)
 }
@@ -247,16 +247,16 @@ it("should get fixture value") {
 
 it("should assert same") {
     let x = 42
-    assert::same(x, x)
+    Assert.same(x, x)
 }
 
 it("should assert not same") {
-    assert::not_same(1, 2)
+    Assert.notSame(1, 2)
 }
 
 it("should assert instance of") {
     let obj = { object_type: "User" }
-    assert::instance_of(obj, "User")
+    Assert.instanceOf(obj, "User")
 }
 
 // ============================================================================
@@ -264,17 +264,17 @@ it("should assert instance of") {
 // ============================================================================
 
 it("should generate test data") {
-    let data = testing::generate("int")
+    let data = Testing.generate("int")
     assert(data != null)
 }
 
 it("should generate random string") {
-    let s = testing::random_string(10)
+    let s = Testing.randomString(10)
     assert(s.len() == 10)
 }
 
 it("should generate random int") {
-    let n = testing::random_int(1, 100)
+    let n = Testing.randomInt(1, 100)
     assert(n >= 1)
     assert(n <= 100)
 }
@@ -284,12 +284,12 @@ it("should generate random int") {
 // ============================================================================
 
 it("should access test context") {
-    let ctx = testing::context()
+    let ctx = Testing.context()
     assert(ctx != null)
 }
 
 it("should get test name") {
-    let ctx = testing::context()
+    let ctx = Testing.context()
     let name = ctx.name()
     assert(name != null)
 }
@@ -299,11 +299,11 @@ it("should get test name") {
 // ============================================================================
 
 it("should set test timeout") {
-    testing::set_timeout(5000)
+    Testing.setTimeout(5000)
 }
 
 it("should get remaining time") {
-    let remaining = testing::remaining_time()
+    let remaining = Testing.remainingTime()
     assert(remaining >= 0)
 }
 
@@ -312,17 +312,17 @@ it("should get remaining time") {
 // ============================================================================
 
 it("should create JSON reporter") {
-    let reporter = testing::Reporter::json()
+    let reporter = Testing.Reporter.json()
     assert(reporter != null)
 }
 
 it("should create TAP reporter") {
-    let reporter = testing::Reporter::tap()
+    let reporter = Testing.Reporter.tap()
     assert(reporter != null)
 }
 
 it("should create JUnit reporter") {
-    let reporter = testing::Reporter::junit()
+    let reporter = Testing.Reporter.junit()
     assert(reporter != null)
 }
 
@@ -331,12 +331,12 @@ it("should create JUnit reporter") {
 // ============================================================================
 
 it("should create snapshot") {
-    let snap = testing::Snapshot::new("test-snap")
+    let snap = Testing.Snapshot.new("test-snap")
     assert(snap != null)
 }
 
 it("should match snapshot") {
-    let snap = testing::Snapshot::new("test-snap")
+    let snap = Testing.Snapshot.new("test-snap")
     snap.match("data")
 }
 
@@ -345,18 +345,18 @@ it("should match snapshot") {
 // ============================================================================
 
 it("should get coverage stats") {
-    let coverage = testing::coverage()
+    let coverage = Testing.coverage()
     assert(coverage != null)
 }
 
 it("should get line coverage") {
-    let coverage = testing::coverage()
+    let coverage = Testing.coverage()
     let lines = coverage.lines()
     assert(lines >= 0)
 }
 
 it("should get branch coverage") {
-    let coverage = testing::coverage()
+    let coverage = Testing.coverage()
     let branches = coverage.branches()
     assert(branches >= 0)
 }

@@ -33,8 +33,8 @@ fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
 fn example_basic_enum() {
     print("=== Basic Enum Pattern Matching ===");
     
-    let some_value = Option::Some(42);
-    let none_value = Option::None;
+    let some_value = Option.Some(42);
+    let none_value = Option.None;
     
     let result1 = unwrap_or(some_value, 0);
     let result2 = unwrap_or(none_value, 0);
@@ -54,9 +54,9 @@ enum Result<T, E> {
 
 fn divide(a: i32, b: i32) -> Result<i32, string> {
     if b == 0 {
-        return Result::Err("Division by zero");
+        return Result.Err("Division by zero");
     }
-    return Result::Ok(a / b);
+    return Result.Ok(a / b);
 }
 
 fn example_result_matching() {
@@ -167,9 +167,9 @@ fn area(shape: Shape) -> i32 {
 fn example_nested_patterns() {
     print("=== Nested Patterns ===");
     
-    let circle = Shape::Circle(5);
-    let rect = Shape::Rectangle(4, 6);
-    let composite = Shape::Composite(circle, rect);
+    let circle = Shape.Circle(5);
+    let rect = Shape.Rectangle(4, 6);
+    let composite = Shape.Composite(circle, rect);
     
     print("Circle area: ", area(circle));
     print("Rectangle area: ", area(rect));
@@ -254,7 +254,7 @@ enum Color {
 fn example_exhaustiveness() {
     print("=== Exhaustiveness Checking ===");
     
-    let color = Color::Red;
+    let color = Color.Red;
     
     // This is exhaustive - all variants covered
     match color {
@@ -323,10 +323,10 @@ enum JsonValue {
 fn example_complex_matching() {
     print("=== Complex Nested Matching ===");
     
-    let json = JsonValue::Object([
-        ("name", JsonValue::String("John")),
-        ("age", JsonValue::Number(30)),
-        ("active", JsonValue::Bool(true)),
+    let json = JsonValue.Object([
+        ("name", JsonValue.String("John")),
+        ("age", JsonValue.Number(30)),
+        ("active", JsonValue.Bool(true)),
     ]);
     
     match json {

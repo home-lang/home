@@ -10,14 +10,14 @@ it("should create JWT with default algorithm") {
         name: "John Doe",
         iat: 1516239022,
     };
-    let token = jwt::sign(payload, "your-256-bit-secret");
+    let token = JWT.sign(payload, "your-256-bit-secret");
     assert(token.split(".").len() == 3);
 }
 
 it("should decode JWT header") {
     let payload = { sub: "user123" };
-    let token = jwt::sign(payload, "secret");
-    let header = jwt::decode_header(token);
+    let token = JWT.sign(payload, "secret");
+    let header = JWT.decodeHeader(token);
     assert(header["alg"] == "HS256");
 }
 
@@ -27,25 +27,25 @@ it("should decode JWT header") {
 
 it("should verify valid JWT") {
     let payload = { sub: "123" };
-    let token = jwt::sign(payload, "secret");
-    let decoded = jwt::verify(token, "secret");
+    let token = JWT.sign(payload, "secret");
+    let decoded = JWT.verify(token, "secret");
     assert(decoded["sub"] == "123");
 }
 
 it("should reject invalid signature") {
     let payload = { sub: "123" };
-    let token = jwt::sign(payload, "secret1");
-    let result = jwt::verify_safe(token, "secret2");
+    let token = JWT.sign(payload, "secret1");
+    let result = JWT.verifySafe(token, "secret2");
     assert(result.is_err() == true);
 }
 
 it("should reject tampered token") {
     let payload = { sub: "123" };
-    let token = jwt::sign(payload, "secret");
+    let token = JWT.sign(payload, "secret");
     // Tamper with payload
     let parts = token.split(".");
     let tampered = parts[0] + "." + "invalid" + "." + parts[2];
-    let result = jwt::verify_safe(tampered, "secret");
+    let result = JWT.verifySafe(tampered, "secret");
     assert(result.is_err() == true);
 }
 
@@ -54,7 +54,7 @@ it("should reject tampered token") {
 // ============================================================================
 
 it("should include standard claims") {
-    let now = time::now();
+    let now = Time.now();
     let payload = {
         sub: "123",
         iss: "auth-server",
@@ -62,10 +62,10 @@ it("should include standard claims") {
         exp: now + 3600,
         nbf: now,
         iat: now,
-        jti: uuid::v4(),
+        jti: UUID.v4(),
     };
-    let token = jwt::sign(payload, "secret");
-    let decoded = jwt::verify(token, "secret");
+    let token = JWT.sign(payload, "secret");
+    let decoded = JWT.verify(token, "secret");
     assert(decoded["sub"] == "123");
     assert(decoded["iss"] == "auth-server");
 }
@@ -73,20 +73,20 @@ it("should include standard claims") {
 it("should validate expiration") {
     let payload = {
         sub: "123",
-        exp: time::now() - 3600,  // Expired
+        exp: Time.now() - 3600,  // Expired
     };
-    let token = jwt::sign(payload, "secret");
-    let result = jwt::verify_safe(token, "secret");
+    let token = JWT.sign(payload, "secret");
+    let result = JWT.verifySafe(token, "secret");
     assert(result.is_err() == true);
 }
 
 it("should validate not before") {
     let payload = {
         sub: "123",
-        nbf: time::now() + 3600,  // Not valid yet
+        nbf: Time.now() + 3600,  // Not valid yet
     };
-    let token = jwt::sign(payload, "secret");
-    let result = jwt::verify_safe(token, "secret");
+    let token = JWT.sign(payload, "secret");
+    let result = JWT.verifySafe(token, "secret");
     assert(result.is_err() == true);
 }
 
@@ -96,16 +96,16 @@ it("should validate not before") {
 
 it("should decode header") {
     let payload = { sub: "123" };
-    let token = jwt::sign(payload, "secret");
-    let header = jwt::decode_header(token);
+    let token = JWT.sign(payload, "secret");
+    let header = JWT.decodeHeader(token);
     assert(header["typ"] == "JWT");
     assert(header["alg"] == "HS256");
 }
 
 it("should decode payload without verification") {
     let payload = { sub: "123", name: "John" };
-    let token = jwt::sign(payload, "secret");
-    let decoded = jwt::decode(token);  // No verification
+    let token = JWT.sign(payload, "secret");
+    let decoded = JWT.decode(token);  // No verification
     assert(decoded["sub"] == "123");
     assert(decoded["name"] == "John");
 }
@@ -117,12 +117,12 @@ it("should decode payload without verification") {
 it("should refresh token") {
     let payload = {
         sub: "123",
-        exp: time::now() + 60,
+        exp: Time.now() + 60,
     };
-    let original = jwt::sign(payload, "secret");
-    let refreshed = jwt::refresh(original, "secret", 3600);
-    let decoded = jwt::verify(refreshed, "secret");
-    assert(decoded["exp"] > time::now() + 3500);
+    let original = JWT.sign(payload, "secret");
+    let refreshed = JWT.refresh(original, "secret", 3600);
+    let decoded = JWT.verify(refreshed, "secret");
+    assert(decoded["exp"] > Time.now() + 3500);
 }
 
 // ============================================================================
@@ -131,8 +131,8 @@ it("should refresh token") {
 
 it("should support HS256 by default") {
     let payload = { sub: "123" };
-    let token = jwt::sign(payload, "secret");
-    let header = jwt::decode_header(token);
+    let token = JWT.sign(payload, "secret");
+    let header = JWT.decodeHeader(token);
     assert(header["alg"] == "HS256");
 }
 
@@ -141,21 +141,21 @@ it("should support HS256 by default") {
 // ============================================================================
 
 it("should generate RSA key pair") {
-    let keys = jwt::generate_rsa_keys(2048);
+    let keys = JWT.generateRsaKeys(2048);
     assert(keys.public_key.starts_with("-----BEGIN"));
     assert(keys.private_key.starts_with("-----BEGIN"));
 }
 
 it("should sign and verify with RSA") {
-    let keys = jwt::generate_rsa_keys(2048);
+    let keys = JWT.generateRsaKeys(2048);
     let payload = { sub: "123" };
-    let token = jwt::sign_rsa(payload, keys.private_key);
-    let decoded = jwt::verify_rsa(token, keys.public_key);
+    let token = JWT.signRsa(payload, keys.private_key);
+    let decoded = JWT.verifyRsa(token, keys.public_key);
     assert(decoded["sub"] == "123");
 }
 
 it("should generate EC key pair") {
-    let keys = jwt::generate_ec_keys();
+    let keys = JWT.generateEcKeys();
     assert(keys.public_key.len() > 0);
     assert(keys.private_key.len() > 0);
 }
@@ -165,8 +165,8 @@ it("should generate EC key pair") {
 // ============================================================================
 
 it("should convert to JWK") {
-    let keys = jwt::generate_rsa_keys(2048);
-    let jwk = jwt::to_jwk(keys.public_key);
+    let keys = JWT.generateRsaKeys(2048);
+    let jwk = JWT.toJwk(keys.public_key);
     assert(jwk["kty"] == "RSA");
     assert(jwk["n"] != null);
     assert(jwk["e"] != null);
@@ -178,13 +178,13 @@ it("should convert from JWK") {
         n: "0vx7agoebGcQSuu...",
         e: "AQAB",
     };
-    let key = jwt::from_jwk(jwk);
+    let key = JWT.fromJwk(jwk);
     assert(key.len() > 0);
 }
 
 it("should fetch JWKS") {
     // Mock JWKS endpoint
-    let jwks = jwt::fetch_jwks("https://example.com/.well-known/jwks.json");
+    let jwks = JWT.fetchJwks("https://example.com/.well-known/jwks.json");
     assert(jwks["keys"].len() >= 0);
 }
 
@@ -195,8 +195,8 @@ it("should fetch JWKS") {
 it("should add custom header") {
     let payload = { sub: "123" };
     let headers = { kid: "key-id-1" };
-    let token = jwt::sign_with_headers(payload, "secret", headers);
-    let header = jwt::decode_header(token);
+    let token = JWT.signWithHeaders(payload, "secret", headers);
+    let header = JWT.decodeHeader(token);
     assert(header["kid"] == "key-id-1");
 }
 
@@ -207,11 +207,11 @@ it("should add custom header") {
 it("should allow clock skew") {
     let payload = {
         sub: "123",
-        exp: time::now() - 30,  // Expired 30 seconds ago
+        exp: Time.now() - 30,  // Expired 30 seconds ago
     };
-    let token = jwt::sign(payload, "secret");
+    let token = JWT.sign(payload, "secret");
     // Allow 60 seconds of clock skew
-    let decoded = jwt::verify_with_tolerance(token, "secret", 60);
+    let decoded = JWT.verifyWithTolerance(token, "secret", 60);
     assert(decoded["sub"] == "123");
 }
 
@@ -220,12 +220,12 @@ it("should allow clock skew") {
 // ============================================================================
 
 it("should handle malformed token") {
-    let result = jwt::verify_safe("not.a.valid.token", "secret");
+    let result = JWT.verifySafe("not.a.valid.token", "secret");
     assert(result.is_err() == true);
 }
 
 it("should handle missing algorithm") {
-    let result = jwt::verify_safe("eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjMifQ.", "secret");
+    let result = JWT.verifySafe("eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjMifQ.", "secret");
     assert(result.is_err() == true);
 }
 
@@ -235,9 +235,9 @@ it("should handle missing algorithm") {
 
 it("should check token blacklist") {
     let payload = { sub: "123", jti: "token-id-1" };
-    let token = jwt::sign(payload, "secret");
-    jwt::blacklist_add("token-id-1");
-    let is_blacklisted = jwt::blacklist_contains("token-id-1");
+    let token = JWT.sign(payload, "secret");
+    JWT.blacklistAdd("token-id-1");
+    let is_blacklisted = JWT.blacklistContains("token-id-1");
     assert(is_blacklisted == true);
 }
 
@@ -248,10 +248,10 @@ it("should check token blacklist") {
 it("should introspect token") {
     let payload = {
         sub: "123",
-        exp: time::now() + 3600,
+        exp: Time.now() + 3600,
     };
-    let token = jwt::sign(payload, "secret");
-    let info = jwt::introspect(token);
+    let token = JWT.sign(payload, "secret");
+    let info = JWT.introspect(token);
     assert(info.is_expired == false);
     assert(info.expires_in > 3500);
     assert(info.subject == "123");

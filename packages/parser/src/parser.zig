@@ -110,7 +110,7 @@ const Precedence = enum(u8) {
             .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion, .PlusPipe, .MinusPipe => .Term,
             .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion, .StarPipe => .Factor,
             .StarStar => .Power,
-            .LeftParen, .LeftBracket, .Dot, .ColonColon, .QuestionDot => .Call,
+            .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
             else => .None,
         };
     }
@@ -1756,11 +1756,10 @@ pub const Parser = struct {
         const type_token = try self.expect(.Identifier, "Expected type name");
         var result = try self.allocator.dupe(u8, type_token.lexeme);
 
-        // Handle module path: foo.bar.Type or foo::bar::Type
-        while (self.match(&.{.Dot}) or self.match(&.{.ColonColon})) {
-            const separator = self.previous().lexeme;
-            const next = try self.expect(.Identifier, "Expected type name after path separator");
-            const new_result = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ result, separator, next.lexeme });
+        // Handle module path: foo.bar.Type
+        while (self.match(&.{.Dot})) {
+            const next = try self.expect(.Identifier, "Expected type name after '.'");
+            const new_result = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ result, next.lexeme });
             self.allocator.free(result);
             result = new_result;
         }
@@ -2783,16 +2782,11 @@ pub const Parser = struct {
             const name_token = self.previous();
             var name = name_token.lexeme;
 
-            // Check for qualified name: Type::Variant or Type.Variant
-            if (self.match(&.{.ColonColon})) {
-                const variant_token = try self.expect(.Identifier, "Expected variant name after '::'");
-                // Combine into qualified name
-                const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ name, variant_token.lexeme });
-                name = qualified;
-            } else if (self.match(&.{.Dot})) {
+            // Check for qualified name: Type.Variant
+            if (self.match(&.{.Dot})) {
                 const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
-                // Combine into qualified name (use :: internally for consistency)
-                const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ name, variant_token.lexeme });
+                // Combine into qualified name
+                const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, variant_token.lexeme });
                 name = qualified;
             }
 
@@ -3119,8 +3113,6 @@ pub const Parser = struct {
                 expr = try self.indexExpr(expr);
             } else if (self.match(&.{.Dot})) {
                 expr = try self.memberExpr(expr);
-            } else if (self.match(&.{.ColonColon})) {
-                expr = try self.scopeAccessExpr(expr);
             } else if (self.match(&.{.QuestionDot})) {
                 expr = try self.safeNavExpr(expr);
             } else if (self.match(&.{.Question})) {
@@ -3696,44 +3688,6 @@ pub const Parser = struct {
             object,
             member_token.lexeme,
             ast.SourceLocation.fromToken(dot_token),
-        );
-
-        const result = try self.allocator.create(ast.Expr);
-        result.* = ast.Expr{ .MemberExpr = member_expr };
-        return result;
-    }
-
-    /// Parse a scope access expression (Type::variant or Type::method or turbofish ::<Type>)
-    fn scopeAccessExpr(self: *Parser, object: *ast.Expr) !*ast.Expr {
-        const colon_colon_token = self.previous();
-
-        // Check for turbofish syntax: ::<Type>
-        // For now, just parse and discard the type args - type checker will infer
-        if (self.check(.Less)) {
-            _ = self.advance(); // consume '<'
-
-            // Parse the type argument(s) and discard
-            while (!self.check(.Greater) and !self.isAtEnd()) {
-                // Skip type name
-                _ = try self.expect(.Identifier, "Expected type name in turbofish");
-                if (!self.match(&.{.Comma})) break;
-            }
-
-            _ = try self.expect(.Greater, "Expected '>' after turbofish type arguments");
-
-            // Return the object unchanged - the call following will handle it
-            return object;
-        }
-
-        // The next token must be an identifier
-        const member_token = try self.expect(.Identifier, "Expected identifier after '::'");
-
-        // Create a MemberExpr - codegen will handle :: as static/enum access
-        const member_expr = try ast.MemberExpr.init(
-            self.allocator,
-            object,
-            member_token.lexeme,
-            ast.SourceLocation.fromToken(colon_colon_token),
         );
 
         const result = try self.allocator.create(ast.Expr);
@@ -4684,246 +4638,6 @@ pub const Parser = struct {
         // Identifiers (and macro invocations)
         if (self.match(&.{.Identifier})) {
             const token = self.previous();
-
-            // Check for static method call or module path (Type::method() or module::Type::method())
-            if (self.match(&.{.ColonColon})) {
-                // Build full path: a::b::c::method() where last segment might be a method call
-                var path_parts = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
-                defer path_parts.deinit(self.allocator);
-                try path_parts.append(self.allocator, token.lexeme);
-
-                // Keep consuming identifier::identifier until we see ( or end of path
-                while (true) {
-                    // Accept Identifier or certain keywords as next segment
-                    // Keywords like fn, struct, union, enum, type can be valid path segments (e.g., ffi::fn, ffi::struct)
-                    const next_token = if (self.match(&.{.Identifier}))
-                        self.previous()
-                    else if (self.match(&.{.Default}))
-                        self.previous()
-                    else if (self.match(&.{.Fn}))
-                        self.previous()
-                    else if (self.match(&.{.Struct}))
-                        self.previous()
-                    else if (self.match(&.{.Enum}))
-                        self.previous()
-                    else if (self.match(&.{.Union}))
-                        self.previous()
-                    else if (self.match(&.{.Type}))
-                        self.previous()
-                    else {
-                        try self.reportError("Expected identifier after '::'");
-                        return error.UnexpectedToken;
-                    };
-
-                    try path_parts.append(self.allocator, next_token.lexeme);
-
-                    // Check if there's another ::
-                    if (!self.match(&.{.ColonColon})) {
-                        break;
-                    }
-                }
-
-                // Build type_name from all but last part
-                const parts = path_parts.items;
-                const method_name = parts[parts.len - 1];
-
-                // Build full type path from all parts except the last one
-                var type_name: []const u8 = undefined;
-                if (parts.len == 2) {
-                    type_name = parts[0];
-                } else {
-                    var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
-                    defer full_type.deinit(self.allocator);
-                    for (parts[0 .. parts.len - 1], 0..) |part, i| {
-                        if (i > 0) try full_type.appendSlice(self.allocator, "::");
-                        try full_type.appendSlice(self.allocator, part);
-                    }
-                    type_name = try full_type.toOwnedSlice(self.allocator);
-                }
-
-                // Parse arguments if followed by parentheses
-                if (self.match(&.{.LeftParen})) {
-                    var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
-                    defer args.deinit(self.allocator);
-                    var named_args = std.ArrayList(ast.NamedArg){ .items = &.{}, .capacity = 0 };
-                    defer named_args.deinit(self.allocator);
-
-                    var seen_named = false;
-
-                    if (!self.check(.RightParen)) {
-                        while (true) {
-                            // Check if this is a named argument: identifier followed by colon
-                            if (self.check(.Identifier)) {
-                                const saved_pos = self.current;
-                                const name_token = self.advance();
-
-                                if (self.check(.Colon)) {
-                                    // This is a named argument
-                                    _ = self.advance(); // consume the colon
-                                    const value = try self.expression();
-                                    try named_args.append(self.allocator, .{
-                                        .name = name_token.lexeme,
-                                        .value = value,
-                                    });
-                                    seen_named = true;
-                                } else {
-                                    // Not a named argument, backtrack and parse as expression
-                                    self.current = saved_pos;
-
-                                    if (seen_named) {
-                                        try self.reportError("Positional arguments cannot follow named arguments");
-                                        return error.UnexpectedToken;
-                                    }
-
-                                    const arg = try self.expression();
-                                    try args.append(self.allocator, arg);
-                                }
-                            } else {
-                                // Not starting with identifier, must be positional
-                                if (seen_named) {
-                                    try self.reportError("Positional arguments cannot follow named arguments");
-                                    return error.UnexpectedToken;
-                                }
-
-                                const arg = try self.expression();
-                                try args.append(self.allocator, arg);
-                            }
-
-                            if (!self.match(&.{.Comma})) break;
-                        }
-                    }
-
-                    _ = try self.expect(.RightParen, "Expected ')' after arguments");
-
-                    const static_call = if (named_args.items.len > 0)
-                        try ast.StaticCallExpr.initWithNamedArgs(
-                            self.allocator,
-                            type_name,
-                            method_name,
-                            try args.toOwnedSlice(self.allocator),
-                            try named_args.toOwnedSlice(self.allocator),
-                            ast.SourceLocation.fromToken(token),
-                        )
-                    else
-                        try ast.StaticCallExpr.init(
-                            self.allocator,
-                            type_name,
-                            method_name,
-                            try args.toOwnedSlice(self.allocator),
-                            ast.SourceLocation.fromToken(token),
-                        );
-
-                    const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{ .StaticCallExpr = static_call };
-                    return expr;
-                } else if (self.check(.LeftBrace)) {
-                    // Check for struct literal with path: module::Type { field: value }
-                    const checkpoint = self.current;
-                    _ = self.advance(); // consume '{'
-
-                    const is_struct_literal = blk: {
-                        // Empty braces {} is a struct literal
-                        if (self.check(.RightBrace)) break :blk true;
-
-                        // If next token is an identifier followed by :, it's a struct literal
-                        if (self.check(.Identifier)) {
-                            const after_ident_pos = self.current + 1;
-                            if (after_ident_pos < self.tokens.len) {
-                                if (self.tokens[after_ident_pos].type == .Colon) {
-                                    break :blk true;
-                                }
-                            }
-                        }
-                        break :blk false;
-                    };
-
-                    if (is_struct_literal) {
-                        // Build full type name including path (e.g., "oauth::Tokens")
-                        var full_type_name: []const u8 = undefined;
-                        if (parts.len == 1) {
-                            full_type_name = parts[0];
-                        } else {
-                            var full_name = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
-                            for (parts, 0..) |part, i| {
-                                if (i > 0) try full_name.appendSlice(self.allocator, "::");
-                                try full_name.appendSlice(self.allocator, part);
-                            }
-                            full_type_name = try full_name.toOwnedSlice(self.allocator);
-                        }
-
-                        // Parse struct fields
-                        var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
-
-                        while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                            const field_name_token = try self.expect(.Identifier, "Expected field name");
-                            _ = try self.expect(.Colon, "Expected ':' after field name");
-                            const field_value = try self.expression();
-
-                            try fields.append(self.allocator, .{
-                                .name = field_name_token.lexeme,
-                                .value = field_value,
-                                .is_shorthand = false,
-                                .loc = ast.SourceLocation.fromToken(field_name_token),
-                            });
-
-                            if (!self.match(&.{.Comma})) break;
-                            if (self.check(.RightBrace)) break;
-                        }
-
-                        _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
-
-                        const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
-                        struct_lit.* = ast.StructLiteralExpr.init(
-                            full_type_name,
-                            try fields.toOwnedSlice(self.allocator),
-                            false,
-                            ast.SourceLocation.fromToken(token),
-                        );
-
-                        const expr = try self.allocator.create(ast.Expr);
-                        expr.* = ast.Expr{ .StructLiteral = struct_lit };
-                        return expr;
-                    } else {
-                        // Not a struct literal, restore position
-                        self.current = checkpoint;
-                    }
-
-                    // Fall through to member expression handling
-                    const type_id = try self.allocator.create(ast.Expr);
-                    type_id.* = ast.Expr{
-                        .Identifier = ast.Identifier.init(type_name, ast.SourceLocation.fromToken(token)),
-                    };
-
-                    const member_expr = try ast.MemberExpr.init(
-                        self.allocator,
-                        type_id,
-                        method_name,
-                        ast.SourceLocation.fromToken(token),
-                    );
-
-                    const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{ .MemberExpr = member_expr };
-                    return expr;
-                } else {
-                    // Static method reference without call (e.g., for passing as callback)
-                    // Treat as member expression on type
-                    const type_id = try self.allocator.create(ast.Expr);
-                    type_id.* = ast.Expr{
-                        .Identifier = ast.Identifier.init(type_name, ast.SourceLocation.fromToken(token)),
-                    };
-
-                    const member_expr = try ast.MemberExpr.init(
-                        self.allocator,
-                        type_id,
-                        method_name,
-                        ast.SourceLocation.fromToken(token),
-                    );
-
-                    const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{ .MemberExpr = member_expr };
-                    return expr;
-                }
-            }
 
             // Check for macro invocation (identifier!)
             if (self.match(&.{.Bang})) {

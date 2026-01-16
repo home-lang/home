@@ -57,7 +57,13 @@ test "create s3 bucket" {
     try std.testing.expectEqualStrings("AWS::S3::Bucket", result.bucket.type);
     try std.testing.expect(result.bucket_policy == null);
 
+    // Clean up nested CfValue structures
     var props = result.bucket.properties;
+    var iter = props.iterator();
+    while (iter.next()) |entry| {
+        var val = entry.value_ptr.*;
+        val.deinit(allocator);
+    }
     props.deinit();
 }
 
@@ -73,7 +79,13 @@ test "create lambda function" {
 
     try std.testing.expectEqualStrings("AWS::Lambda::Function", lambda.type);
 
+    // Clean up nested CfValue structures
     var props = lambda.properties;
+    var iter = props.iterator();
+    while (iter.next()) |entry| {
+        var val = entry.value_ptr.*;
+        val.deinit(allocator);
+    }
     props.deinit();
 }
 
@@ -90,7 +102,13 @@ test "create dynamodb table" {
 
     try std.testing.expectEqualStrings("AWS::DynamoDB::Table", table.type);
 
+    // Clean up nested CfValue structures
     var props = table.properties;
+    var iter = props.iterator();
+    while (iter.next()) |entry| {
+        var val = entry.value_ptr.*;
+        val.deinit(allocator);
+    }
     props.deinit();
 }
 
@@ -103,7 +121,13 @@ test "create vpc" {
 
     try std.testing.expectEqualStrings("AWS::EC2::VPC", vpc.type);
 
+    // Clean up nested CfValue structures
     var props = vpc.properties;
+    var iter = props.iterator();
+    while (iter.next()) |entry| {
+        var val = entry.value_ptr.*;
+        val.deinit(allocator);
+    }
     props.deinit();
 }
 
@@ -121,7 +145,13 @@ test "create security group" {
 
     try std.testing.expectEqualStrings("AWS::EC2::SecurityGroup", sg.type);
 
+    // Clean up nested CfValue structures
     var props = sg.properties;
+    var iter = props.iterator();
+    while (iter.next()) |entry| {
+        var val = entry.value_ptr.*;
+        val.deinit(allocator);
+    }
     props.deinit();
 }
 

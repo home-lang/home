@@ -27,7 +27,6 @@ pub const TokenType = enum {
     DotDotDot, // ...
     Semicolon, // ;
     Colon, // :
-    ColonColon, // ::
     Question, // ?
     QuestionDot, // ?.
     QuestionQuestion, // ??
@@ -179,7 +178,6 @@ pub const TokenType = enum {
             .DotDotDot => "...",
             .Semicolon => ";",
             .Colon => ":",
-            .ColonColon => "::",
             .Question => "?",
             .QuestionDot => "?.",
             .QuestionQuestion => "??",

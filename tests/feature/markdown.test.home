@@ -5,40 +5,40 @@
 // ============================================================================
 
 it("should parse h1 with correct HTML output") {
-    let html = markdown::to_html("# Hello World")
+    let html = Markdown.toHtml("# Hello World")
     assert(html.contains("<h1>"))
     assert(html.contains("Hello World"))
     assert(html.contains("</h1>"))
 }
 
 it("should parse h2 with correct HTML output") {
-    let html = markdown::to_html("## Section Title")
+    let html = Markdown.toHtml("## Section Title")
     assert(html.contains("<h2>Section Title</h2>"))
 }
 
 it("should parse h3") {
-    let html = markdown::to_html("### Subsection")
+    let html = Markdown.toHtml("### Subsection")
     assert(html.contains("<h3>"))
     assert(html.contains("Subsection"))
 }
 
 it("should parse h4") {
-    let html = markdown::to_html("#### Deep Section")
+    let html = Markdown.toHtml("#### Deep Section")
     assert(html.contains("<h4>"))
 }
 
 it("should parse h5") {
-    let html = markdown::to_html("##### Very Deep")
+    let html = Markdown.toHtml("##### Very Deep")
     assert(html.contains("<h5>"))
 }
 
 it("should parse h6") {
-    let html = markdown::to_html("###### Deepest")
+    let html = Markdown.toHtml("###### Deepest")
     assert(html.contains("<h6>"))
 }
 
 it("should not parse h7 as heading") {
-    let html = markdown::to_html("####### Too Many")
+    let html = Markdown.toHtml("####### Too Many")
     // Should not be a heading, just text with hashes
     assert(html.contains("#"))
 }
@@ -48,23 +48,23 @@ it("should not parse h7 as heading") {
 // ============================================================================
 
 it("should parse bold text with double asterisks") {
-    let html = markdown::to_html("This is **bold** text")
+    let html = Markdown.toHtml("This is **bold** text")
     assert(html.contains("<strong>bold</strong>"))
 }
 
 it("should parse multiple bold sections") {
-    let html = markdown::to_html("**one** and **two**")
+    let html = Markdown.toHtml("**one** and **two**")
     assert(html.contains("<strong>one</strong>"))
     assert(html.contains("<strong>two</strong>"))
 }
 
 it("should parse bold at start of line") {
-    let html = markdown::to_html("**Start** of line")
+    let html = Markdown.toHtml("**Start** of line")
     assert(html.contains("<strong>Start</strong>"))
 }
 
 it("should parse bold at end of line") {
-    let html = markdown::to_html("End of **line**")
+    let html = Markdown.toHtml("End of **line**")
     assert(html.contains("<strong>line</strong>"))
 }
 
@@ -73,12 +73,12 @@ it("should parse bold at end of line") {
 // ============================================================================
 
 it("should parse italic text with single asterisk") {
-    let html = markdown::to_html("This is *italic* text")
+    let html = Markdown.toHtml("This is *italic* text")
     assert(html.contains("<em>italic</em>"))
 }
 
 it("should parse multiple italic sections") {
-    let html = markdown::to_html("*one* and *two*")
+    let html = Markdown.toHtml("*one* and *two*")
     assert(html.contains("<em>one</em>"))
     assert(html.contains("<em>two</em>"))
 }
@@ -88,7 +88,7 @@ it("should parse multiple italic sections") {
 // ============================================================================
 
 it("should parse bold and italic in same line") {
-    let html = markdown::to_html("**bold** and *italic*")
+    let html = Markdown.toHtml("**bold** and *italic*")
     assert(html.contains("<strong>bold</strong>"))
     assert(html.contains("<em>italic</em>"))
 }
@@ -98,13 +98,13 @@ it("should parse bold and italic in same line") {
 // ============================================================================
 
 it("should wrap text in paragraph tags") {
-    let html = markdown::to_html("Simple paragraph text")
+    let html = Markdown.toHtml("Simple paragraph text")
     assert(html.contains("<p>"))
     assert(html.contains("Simple paragraph text"))
 }
 
 it("should create separate paragraphs for double newlines") {
-    let html = markdown::to_html("First para\n\nSecond para")
+    let html = Markdown.toHtml("First para\n\nSecond para")
     assert(html.contains("<p>"))
 }
 
@@ -113,12 +113,12 @@ it("should create separate paragraphs for double newlines") {
 // ============================================================================
 
 it("should parse inline code with backticks") {
-    let html = markdown::to_html("Use `code` here")
+    let html = Markdown.toHtml("Use `code` here")
     assert(html.contains("code"))
 }
 
 it("should parse code blocks") {
-    let html = markdown::to_html("```\nlet x = 1\n```")
+    let html = Markdown.toHtml("```\nlet x = 1\n```")
     assert(html.contains("let x = 1") or html.contains("code"))
 }
 
@@ -127,18 +127,18 @@ it("should parse code blocks") {
 // ============================================================================
 
 it("should preserve plain text content") {
-    let html = markdown::to_html("Plain text without formatting")
+    let html = Markdown.toHtml("Plain text without formatting")
     assert(html.contains("Plain text without formatting"))
 }
 
 it("should preserve special characters") {
-    let html = markdown::to_html("Price: $100 & tax")
+    let html = Markdown.toHtml("Price: $100 & tax")
     assert(html.contains("Price"))
     assert(html.contains("100"))
 }
 
 it("should preserve numbers") {
-    let html = markdown::to_html("The answer is 42")
+    let html = Markdown.toHtml("The answer is 42")
     assert(html.contains("42"))
 }
 
@@ -147,7 +147,7 @@ it("should preserve numbers") {
 // ============================================================================
 
 it("should parse markdown to AST") {
-    let ast = markdown::parse("# Title\n\nParagraph")
+    let ast = Markdown.parse("# Title\n\nParagraph")
     assert(ast != null)
     assert(ast.type == "document")
 }
@@ -158,7 +158,7 @@ it("should parse markdown to AST") {
 
 it("should generate TOC from headings") {
     let md = "# First\n## Second\n### Third"
-    let toc = markdown::toc(md)
+    let toc = Markdown.toc(md)
     assert(toc.len() >= 1)
 }
 
@@ -168,12 +168,12 @@ it("should generate TOC from headings") {
 
 it("should support footnotes extension") {
     let md = "Text with reference[^1]\n\n[^1]: Footnote content"
-    let html = markdown::to_html_with_footnotes(md)
+    let html = Markdown.toHtmlWithFootnotes(md)
     assert(html.contains("Text"))
 }
 
 it("should support autolink extension") {
-    let html = markdown::to_html_with_autolink("Visit https://example.com today")
+    let html = Markdown.toHtmlWithAutolink("Visit https://example.com today")
     assert(html.contains("Visit"))
 }
 
@@ -183,7 +183,7 @@ it("should support autolink extension") {
 
 it("should sanitize dangerous HTML in markdown") {
     let md = "Safe text <script>evil()</script>"
-    let html = markdown::to_html_sanitized(md)
+    let html = Markdown.toHtmlSanitized(md)
     assert(html.contains("Safe text"))
 }
 
@@ -193,7 +193,7 @@ it("should sanitize dangerous HTML in markdown") {
 
 it("should parse YAML front matter") {
     let md = "---\ntitle: Test\n---\n# Content"
-    let result = markdown::parse_with_front_matter(md)
+    let result = Markdown.parseWithFrontMatter(md)
     assert(result != null)
 }
 
@@ -203,7 +203,7 @@ it("should parse YAML front matter") {
 
 it("should support custom renderer") {
     let md = "# Custom"
-    let html = markdown::to_html_with_renderer(md, null)
+    let html = Markdown.toHtmlWithRenderer(md, null)
     assert(html.contains("Custom"))
 }
 
@@ -213,7 +213,7 @@ it("should support custom renderer") {
 
 it("should highlight code syntax") {
     let md = "```python\ndef hello():\n    print('hi')\n```"
-    let html = markdown::to_html_highlighted(md)
+    let html = Markdown.toHtmlHighlighted(md)
     assert(html.contains("hello") or html.contains("def"))
 }
 
@@ -222,28 +222,28 @@ it("should highlight code syntax") {
 // ============================================================================
 
 it("should handle empty input") {
-    let html = markdown::to_html("")
+    let html = Markdown.toHtml("")
     assert(html != null)
 }
 
 it("should handle whitespace only") {
-    let html = markdown::to_html("   \n\n   ")
+    let html = Markdown.toHtml("   \n\n   ")
     assert(html != null)
 }
 
 it("should handle very long lines") {
     let long_text = "word word word word word word word word word word word word word word word word word word word word"
-    let html = markdown::to_html(long_text)
+    let html = Markdown.toHtml(long_text)
     assert(html.contains("word"))
 }
 
 it("should not crash on unclosed formatting") {
-    let html = markdown::to_html("**unclosed bold")
+    let html = Markdown.toHtml("**unclosed bold")
     assert(html.contains("unclosed"))
 }
 
 it("should not crash on nested formatting") {
-    let html = markdown::to_html("**bold *and italic* text**")
+    let html = Markdown.toHtml("**bold *and italic* text**")
     assert(html.contains("bold"))
 }
 

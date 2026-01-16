@@ -69,7 +69,7 @@ fn draw_text(
     x: i32 = 0,
     y: i32 = 0,
     size: i32 = 12,
-    color: Color = Color::Black,
+    color: Color = Color.Black,
     bold: bool = false,
     italic: bool = false
 ): void {
@@ -231,7 +231,7 @@ fn http_get(
     url: string,
     *,
     timeout: i32 = 30,
-    headers: HashMap<string, string> = HashMap::new(),
+    headers: HashMap<string, string> = HashMap.new(),
     follow_redirects: bool = true,
     verify_ssl: bool = true
 ): Result<Response> {
@@ -258,7 +258,7 @@ fn test_http_requests(): void {
     )
     
     // With custom headers
-    let mut headers = HashMap::new()
+    let mut headers = HashMap.new()
     headers.insert("Authorization", "Bearer token123")
     headers.insert("Accept", "application/json")
     
@@ -412,16 +412,16 @@ fn test_window_creation(): void {
 fn log(
     message: string,
     *,
-    level: LogLevel = LogLevel::Info,
+    level: LogLevel = LogLevel.Info,
     timestamp: bool = true,
     color: bool = true,
     file: string = "app.log"
 ): void {
     let prefix = match level {
-        LogLevel::Debug => "[DEBUG]",
-        LogLevel::Info => "[INFO]",
-        LogLevel::Warn => "[WARN]",
-        LogLevel::Error => "[ERROR]",
+        LogLevel.Debug => "[DEBUG]",
+        LogLevel.Info => "[INFO]",
+        LogLevel.Warn => "[WARN]",
+        LogLevel.Error => "[ERROR]",
     }
     
     if (timestamp) {
@@ -435,9 +435,9 @@ fn test_logging(): void {
     println("\n=== Logging Function ===")
     
     log("Application started")
-    log("Debug information", level: LogLevel::Debug, color: false)
-    log("Warning message", level: LogLevel::Warn)
-    log("Error occurred", level: LogLevel::Error, file: "errors.log")
+    log("Debug information", level: LogLevel.Debug, color: false)
+    log("Warning message", level: LogLevel.Warn)
+    log("Error occurred", level: LogLevel.Error, file: "errors.log")
 }
 
 // ============================================================================

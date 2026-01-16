@@ -5,34 +5,34 @@
 // ============================================================================
 
 it("should create span") {
-    let span = tracing::span("operation_name")
+    let span = Tracing.span("operation_name")
     assert(span != null)
     span.end()
 }
 
 it("should auto-end span with scope") {
     {
-        let span = tracing::span("scoped_operation")
+        let span = Tracing.span("scoped_operation")
         // span automatically ends when scope exits
     }
 }
 
 it("should set span name") {
-    let span = tracing::span("my_operation")
+    let span = Tracing.span("my_operation")
     assert(span.name() == "my_operation")
 }
 
 it("should generate trace ID") {
-    let span = tracing::span("operation")
-    assert(span.trace_id() != null)
-    assert(span.trace_id().len() == 32)  // 128-bit hex
+    let span = Tracing.span("operation")
+    assert(span.traceId() != null)
+    assert(span.traceId().len() == 32)  // 128-bit hex
     span.end()
 }
 
 it("should generate span ID") {
-    let span = tracing::span("operation")
-    assert(span.span_id() != null)
-    assert(span.span_id().len() == 16)  // 64-bit hex
+    let span = Tracing.span("operation")
+    assert(span.spanId() != null)
+    assert(span.spanId().len() == 16)  // 64-bit hex
     span.end()
 }
 
@@ -41,28 +41,28 @@ it("should generate span ID") {
 // ============================================================================
 
 it("should set attributes") {
-    let span = tracing::span("operation")
-    span.set_attribute("user_id", "123")
-    span.set_attribute("request_size", 1024)
-    span.set_attribute("is_premium", true)
+    let span = Tracing.span("operation")
+    span.setAttribute("user_id", "123")
+    span.setAttribute("request_size", 1024)
+    span.setAttribute("is_premium", true)
     span.end()
 }
 
 it("should set multiple attributes") {
-    let span = tracing::span("operation")
+    let span = Tracing.span("operation")
     let attrs = {
         "http.method": "GET",
         "http.url": "/api/users",
         "http.status_code": 200
     }
-    span.set_attributes(attrs)
+    span.setAttributes(attrs)
     span.end()
 }
 
 it("should get attribute") {
-    let span = tracing::span("operation")
-    span.set_attribute("key", "value")
-    assert(span.get_attribute("key") == "value")
+    let span = Tracing.span("operation")
+    span.setAttribute("key", "value")
+    assert(span.getAttribute("key") == "value")
     span.end()
 }
 
@@ -71,25 +71,25 @@ it("should get attribute") {
 // ============================================================================
 
 it("should add event") {
-    let span = tracing::span("operation")
-    span.add_event("cache_miss")
+    let span = Tracing.span("operation")
+    span.addEvent("cache_miss")
     span.end()
 }
 
 it("should add event with attributes") {
-    let span = tracing::span("operation")
+    let span = Tracing.span("operation")
     let event_attrs = {
         "exception.type": "ValueError",
         "exception.message": "Invalid input"
     }
-    span.add_event("exception", event_attrs)
+    span.addEvent("exception", event_attrs)
     span.end()
 }
 
 it("should add event with timestamp") {
-    let span = tracing::span("operation")
-    let ts = time::now()
-    span.add_event_at("checkpoint", ts)
+    let span = Tracing.span("operation")
+    let ts = Time.now()
+    span.addEventAt("checkpoint", ts)
     span.end()
 }
 
@@ -98,22 +98,22 @@ it("should add event with timestamp") {
 // ============================================================================
 
 it("should set ok status") {
-    let span = tracing::span("operation")
-    span.set_status(tracing::Status::OK)
+    let span = Tracing.span("operation")
+    span.setStatus(Tracing.Status.OK)
     span.end()
 }
 
 it("should set error status") {
-    let span = tracing::span("operation")
-    span.set_status(tracing::Status::ERROR, "Something went wrong")
+    let span = Tracing.span("operation")
+    span.setStatus(Tracing.Status.ERROR, "Something went wrong")
     span.end()
 }
 
 it("should record exception") {
-    let span = tracing::span("operation")
+    let span = Tracing.span("operation")
     // Record an exception-like object
     let err = { "type": "Error", "message": "Test error" }
-    span.record_exception(err)
+    span.recordException(err)
     span.end()
 }
 
@@ -122,31 +122,31 @@ it("should record exception") {
 // ============================================================================
 
 it("should create child span") {
-    let parent = tracing::span("parent")
-    let child = tracing::child_span("child", parent)
+    let parent = Tracing.span("parent")
+    let child = Tracing.childSpan("child", parent)
 
-    assert(child.parent_span_id() == parent.span_id())
-    assert(child.trace_id() == parent.trace_id())
+    assert(child.parentSpanId() == parent.spanId())
+    assert(child.traceId() == parent.traceId())
 
     child.end()
     parent.end()
 }
 
 it("should use current span as parent") {
-    let parent = tracing::span("parent")
-    tracing::set_current(parent)
+    let parent = Tracing.span("parent")
+    Tracing.setCurrent(parent)
 
-    let child = tracing::span("child")
+    let child = Tracing.span("child")
     // Automatically uses current span as parent
     child.end()
     parent.end()
 }
 
 it("should get current span") {
-    let span = tracing::span("outer")
-    tracing::set_current(span)
+    let span = Tracing.span("outer")
+    Tracing.setCurrent(span)
 
-    let current = tracing::current_span()
+    let current = Tracing.currentSpan()
     assert(current.name() == "outer")
     span.end()
 }
@@ -160,29 +160,29 @@ it("should extract trace context from headers") {
         "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
     }
 
-    let context = tracing::extract(headers)
-    assert(context.trace_id() == "0af7651916cd43dd8448eb211c80319c")
+    let context = Tracing.extract(headers)
+    assert(context.traceId() == "0af7651916cd43dd8448eb211c80319c")
 }
 
 it("should inject trace context into headers") {
-    let span = tracing::span("operation")
-    let headers = tracing::inject({}, span)
+    let span = Tracing.span("operation")
+    let headers = Tracing.inject({}, span)
 
     assert(headers["traceparent"] != null)
     span.end()
 }
 
 it("should propagate W3C trace context") {
-    let span = tracing::span("operation")
-    let headers = tracing::inject_w3c({}, span)
+    let span = Tracing.span("operation")
+    let headers = Tracing.injectW3c({}, span)
 
-    assert(headers["traceparent"].starts_with("00-"))
+    assert(headers["traceparent"].startsWith("00-"))
     span.end()
 }
 
 it("should propagate B3 headers") {
-    let span = tracing::span("operation")
-    let headers = tracing::inject_b3({}, span)
+    let span = Tracing.span("operation")
+    let headers = Tracing.injectB3({}, span)
 
     assert(headers["X-B3-TraceId"] != null)
     span.end()
@@ -193,27 +193,27 @@ it("should propagate B3 headers") {
 // ============================================================================
 
 it("should create server span") {
-    let span = tracing::server_span("handle_request")
+    let span = Tracing.serverSpan("handle_request")
     span.end()
 }
 
 it("should create client span") {
-    let span = tracing::client_span("http_call")
+    let span = Tracing.clientSpan("http_call")
     span.end()
 }
 
 it("should create producer span") {
-    let span = tracing::producer_span("send_message")
+    let span = Tracing.producerSpan("send_message")
     span.end()
 }
 
 it("should create consumer span") {
-    let span = tracing::consumer_span("receive_message")
+    let span = Tracing.consumerSpan("receive_message")
     span.end()
 }
 
 it("should create internal span") {
-    let span = tracing::internal_span("internal_op")
+    let span = Tracing.internalSpan("internal_op")
     span.end()
 }
 
@@ -222,7 +222,7 @@ it("should create internal span") {
 // ============================================================================
 
 it("should use HTTP semantic conventions") {
-    let span = tracing::span("http_request")
+    let span = Tracing.span("http_request")
     let attrs = {
         "http.method": "POST",
         "http.url": "https://api.example.com/users",
@@ -230,30 +230,30 @@ it("should use HTTP semantic conventions") {
         "http.request_content_length": 256,
         "http.response_content_length": 128
     }
-    span.set_attributes(attrs)
+    span.setAttributes(attrs)
     span.end()
 }
 
 it("should use database semantic conventions") {
-    let span = tracing::span("db_query")
+    let span = Tracing.span("db_query")
     let attrs = {
         "db.system": "postgresql",
         "db.name": "users",
         "db.operation": "SELECT",
         "db.statement": "SELECT * FROM users WHERE id = ?"
     }
-    span.set_attributes(attrs)
+    span.setAttributes(attrs)
     span.end()
 }
 
 it("should use messaging semantic conventions") {
-    let span = tracing::span("message_send")
+    let span = Tracing.span("message_send")
     let attrs = {
         "messaging.system": "rabbitmq",
         "messaging.destination": "orders",
         "messaging.operation": "send"
     }
-    span.set_attributes(attrs)
+    span.setAttributes(attrs)
     span.end()
 }
 
@@ -266,35 +266,35 @@ it("should create tracer") {
         "service_name": "my-service",
         "version": "1.0.0"
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
     assert(tracer != null)
 }
 
 it("should configure sampling") {
-    let sampler = tracing::AlwaysSample()
+    let sampler = Tracing.AlwaysSample()
     let config = {
         "service_name": "my-service",
         "sampler": sampler
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should use probability sampler") {
-    let sampler = tracing::ProbabilitySampler(0.1)  // 10% sampling
+    let sampler = Tracing.ProbabilitySampler(0.1)  // 10% sampling
     let config = {
         "service_name": "my-service",
         "sampler": sampler
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should use rate limiting sampler") {
-    let sampler = tracing::RateLimitingSampler(10)  // 10 traces/second
+    let sampler = Tracing.RateLimitingSampler(10)  // 10 traces/second
     let config = {
         "service_name": "my-service",
         "sampler": sampler
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 // ============================================================================
@@ -305,45 +305,45 @@ it("should export to Jaeger") {
     let exporter_config = {
         "endpoint": "http://localhost:14268/api/traces"
     }
-    let exporter = tracing::exporters::jaeger(exporter_config)
+    let exporter = Tracing.exporters.jaeger(exporter_config)
     let config = {
         "service_name": "my-service",
         "exporter": exporter
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should export to Zipkin") {
     let exporter_config = {
         "endpoint": "http://localhost:9411/api/v2/spans"
     }
-    let exporter = tracing::exporters::zipkin(exporter_config)
+    let exporter = Tracing.exporters.zipkin(exporter_config)
     let config = {
         "service_name": "my-service",
         "exporter": exporter
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should export to OTLP") {
     let exporter_config = {
         "endpoint": "http://localhost:4317"
     }
-    let exporter = tracing::exporters::otlp(exporter_config)
+    let exporter = Tracing.exporters.otlp(exporter_config)
     let config = {
         "service_name": "my-service",
         "exporter": exporter
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should export to console") {
-    let exporter = tracing::exporters::console()
+    let exporter = Tracing.exporters.console()
     let config = {
         "service_name": "my-service",
         "exporter": exporter
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 // ============================================================================
@@ -352,23 +352,23 @@ it("should export to console") {
 
 it("should create HTTP tracing middleware") {
     let tracer_config = { "service_name": "my-service" }
-    let tracer = tracing::Tracer::new(tracer_config)
+    let tracer = Tracing.Tracer.new(tracer_config)
     let config = {
         "tracer": tracer,
         "propagators": ["w3c", "b3"]
     }
-    let middleware = tracing::http_middleware(config)
+    let middleware = Tracing.httpMiddleware(config)
 }
 
 it("should trace incoming requests") {
     let tracer_config = { "service_name": "my-service" }
-    let tracer = tracing::Tracer::new(tracer_config)
+    let tracer = Tracing.Tracer.new(tracer_config)
     // Middleware with custom operation name format
     let config = {
         "tracer": tracer,
         "operation_name_format": "HTTP {method} {path}"
     }
-    let middleware = tracing::http_middleware(config)
+    let middleware = Tracing.httpMiddleware(config)
 }
 
 // ============================================================================
@@ -376,22 +376,22 @@ it("should trace incoming requests") {
 // ============================================================================
 
 it("should set baggage") {
-    let span = tracing::span("operation")
-    tracing::set_baggage("user_id", "123")
-    tracing::set_baggage("tenant", "acme")
+    let span = Tracing.span("operation")
+    Tracing.setBaggage("user_id", "123")
+    Tracing.setBaggage("tenant", "acme")
     span.end()
 }
 
 it("should get baggage") {
-    tracing::set_baggage("key", "value")
-    let value = tracing::get_baggage("key")
+    Tracing.setBaggage("key", "value")
+    let value = Tracing.getBaggage("key")
     assert(value == "value")
 }
 
 it("should propagate baggage") {
-    tracing::set_baggage("session_id", "abc123")
+    Tracing.setBaggage("session_id", "abc123")
 
-    let headers = tracing::inject_baggage({})
+    let headers = Tracing.injectBaggage({})
 
     assert(headers["baggage"] != null)
 }
@@ -401,14 +401,14 @@ it("should propagate baggage") {
 // ============================================================================
 
 it("should add span link") {
-    let span1 = tracing::span("operation1")
+    let span1 = Tracing.span("operation1")
     span1.end()
 
-    let span2 = tracing::span("operation2")
+    let span2 = Tracing.span("operation2")
     let link_attrs = {
         "relationship": "caused_by"
     }
-    span2.add_link(span1.context(), link_attrs)
+    span2.addLink(span1.context(), link_attrs)
     span2.end()
 }
 
@@ -426,7 +426,7 @@ it("should set resource attributes") {
         "service_name": "my-service",
         "resource": resource
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 // ============================================================================
@@ -442,12 +442,12 @@ it("should batch span exports") {
         "service_name": "my-service",
         "batch_processor": batch_config
     }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 }
 
 it("should flush spans") {
     let config = { "service_name": "my-service" }
-    let tracer = tracing::Tracer::new(config)
+    let tracer = Tracing.Tracer.new(config)
 
     // ... create spans ...
 
@@ -460,7 +460,7 @@ it("should flush spans") {
 
 it("should trace async-style operations") {
     // Simulate async tracing with synchronous code
-    let span = tracing::span("async_operation")
+    let span = Tracing.span("async_operation")
 
     // Simulating work that would be async
     let result = 1 + 2
@@ -469,12 +469,12 @@ it("should trace async-style operations") {
 }
 
 it("should preserve context across operations") {
-    let parent_span = tracing::span("parent")
-    tracing::set_current(parent_span)
+    let parent_span = Tracing.span("parent")
+    Tracing.setCurrent(parent_span)
 
     // Create child in different scope
-    let child = tracing::span("async_child")
-    assert(child.parent_span_id() == parent_span.span_id())
+    let child = Tracing.span("async_child")
+    assert(child.parentSpanId() == parent_span.spanId())
     child.end()
 
     parent_span.end()

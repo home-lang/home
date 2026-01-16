@@ -264,7 +264,7 @@ impl HttpRequest {
         HttpRequest {
             method: "GET",
             url: "",
-            headers: HashMap::new(),
+            headers: HashMap.new(),
             body: None,
             timeout: 30,
         }
@@ -281,7 +281,7 @@ fn test_builder_alternative(): void {
         method,
         url,
         body: Some("{\"name\": \"Alice\"}"),
-        ..HttpRequest::default()
+        ..HttpRequest.default()
     }
     
     println("Request: {} {}", request.method, request.url)
@@ -405,8 +405,8 @@ fn handle_click(x: i32, y: i32, button: MouseButton): void {
 fn test_event_handling(): void {
     println("\n=== Event Handling ===")
     
-    handle_click(100, 200, MouseButton::Left)
-    handle_click(50, 75, MouseButton::Right)
+    handle_click(100, 200, MouseButton.Left)
+    handle_click(50, 75, MouseButton.Right)
 }
 
 // ============================================================================

@@ -1042,9 +1042,36 @@ pub const Interpreter = struct {
                     return Value{ .Bool = false };
                 }
 
+                // First check if there's a variable with this name in the environment
                 if (env.get(id.name)) |value| {
                     return value;
                 }
+
+                // Handle module references for TypeScript-style API (HTML.parse(), JWT.sign(), etc.)
+                // Only check module names if no variable was found
+                const module_names = [_][]const u8{
+                    "HTML", "JWT", "Time", "UUID", "Assert", "Testing", "Tracing",
+                    "RateLimit", "OAuth", "Workers", "Migrate", "Health", "Markdown",
+                    "JSON", "Crypto", "FS", "HTTP", "Regex", "Path", "URL", "Base64",
+                    "FFI", "Env", "Net", "Metrics", "Reflect",
+                    // Metrics-specific types
+                    "Counter", "Gauge", "Histogram", "Summary", "Registry", "Collector", "MetricGroup",
+                    // Also support lowercase for backwards compatibility
+                    "html", "jwt", "time", "uuid", "assert", "testing", "tracing",
+                    "ratelimit", "oauth", "workers", "migrate", "health", "markdown",
+                    "json", "crypto", "fs", "http", "regex", "path", "url", "base64",
+                    "ffi", "env", "net", "metrics", "reflect",
+                    "counter", "gauge", "histogram", "summary", "registry", "collector", "metricgroup",
+                };
+                for (module_names) |module_name| {
+                    if (std.mem.eql(u8, id.name, module_name)) {
+                        // Return a module reference as a struct with a special type name prefix
+                        const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                        const module_type_name = try std.fmt.allocPrint(self.arena.allocator(), "__module__{s}", .{id.name});
+                        return Value{ .Struct = .{ .type_name = module_type_name, .fields = fields } };
+                    }
+                }
+
                 std.debug.print("Undefined variable: {s}\n", .{id.name});
                 return error.UndefinedVariable;
             },
@@ -1210,7 +1237,7 @@ pub const Interpreter = struct {
                 return Value{ .Array = sliced_array };
             },
             .MemberExpr => |member| {
-                // Check if this is a module member access (e.g., ffi::ptr)
+                // Check if this is a module member access (e.g., ffi.ptr)
                 if (member.object.* == .Identifier) {
                     const module_name = member.object.Identifier.name;
                     // Known modules that support member access
@@ -1261,6 +1288,36 @@ pub const Interpreter = struct {
 
                 // Handle struct field access
                 if (object_value == .Struct) {
+                    // Check if this is a module reference - if so, create a nested module path
+                    if (std.mem.startsWith(u8, object_value.Struct.type_name, "__module__")) {
+                        const module_name = object_value.Struct.type_name[10..]; // Skip "__module__" prefix
+                        const member_name = member.member;
+
+                        // FFI module type properties should be evaluated immediately (no args needed)
+                        if (std.mem.eql(u8, module_name, "FFI")) {
+                            const ffi_type_props = [_][]const u8{
+                                "char", "int8", "uint8", "short", "int16", "uint16",
+                                "int", "int32", "uint32", "long", "int64", "uint64",
+                                "float", "double", "ptr", "void", "size_t", "sizeT",
+                            };
+                            for (ffi_type_props) |prop| {
+                                if (std.mem.eql(u8, member_name, prop)) {
+                                    // Evaluate the FFI type property directly
+                                    var empty_args = [_]Value{};
+                                    return try self.evalFfiModule(member_name, &empty_args, env);
+                                }
+                            }
+                        }
+
+                        // Create a nested module reference (e.g., __module__Testing.Suite)
+                        const nested_type_name = try std.fmt.allocPrint(
+                            self.arena.allocator(),
+                            "{s}.{s}",
+                            .{ object_value.Struct.type_name, member.member },
+                        );
+                        const fields = std.StringHashMap(Value).init(self.arena.allocator());
+                        return Value{ .Struct = .{ .type_name = nested_type_name, .fields = fields } };
+                    }
                     if (object_value.Struct.fields.get(member.member)) |field_value| {
                         return field_value;
                     }
@@ -2363,6 +2420,121 @@ pub const Interpreter = struct {
                 return error.RuntimeError;
             }
 
+            // Handle module method calls (e.g., HTML.parse(), JWT.sign(), Testing.Suite.new())
+            if (obj_value == .Struct and std.mem.startsWith(u8, obj_value.Struct.type_name, "__module__")) {
+                const full_path = obj_value.Struct.type_name[10..]; // Skip "__module__" prefix
+
+                // Extract base module name (before first dot) and build full method path
+                const base_module = blk: {
+                    if (std.mem.indexOf(u8, full_path, ".")) |dot_idx| {
+                        break :blk full_path[0..dot_idx];
+                    }
+                    break :blk full_path;
+                };
+
+                // Build the full method name including submodule path
+                // e.g., for Testing.Suite.new(), full_path="Testing.Suite", member="new"
+                // We want method_name = "Suite.new"
+                const method_name = blk: {
+                    if (std.mem.indexOf(u8, full_path, ".")) |dot_idx| {
+                        const subpath = full_path[dot_idx + 1..];
+                        break :blk try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ subpath, member.member });
+                    }
+                    break :blk member.member;
+                };
+
+                // Evaluate arguments
+                var args = try self.arena.allocator().alloc(Value, call.args.len);
+                for (call.args, 0..) |arg, i| {
+                    args[i] = try self.evaluateExpression(arg, env);
+                }
+
+                // Evaluate named arguments
+                var named_args = std.StringHashMap(Value).init(self.arena.allocator());
+                for (call.named_args) |named_arg| {
+                    const value = try self.evaluateExpression(named_arg.value, env);
+                    try named_args.put(named_arg.name, value);
+                }
+
+                // Dispatch to the appropriate module handler (case-insensitive comparison)
+                const lower_module = blk: {
+                    var buf: [32]u8 = undefined;
+                    var i: usize = 0;
+                    for (base_module) |c| {
+                        if (i >= buf.len) break;
+                        buf[i] = std.ascii.toLower(c);
+                        i += 1;
+                    }
+                    break :blk buf[0..i];
+                };
+
+                if (std.mem.eql(u8, lower_module, "html")) {
+                    return try self.evalHtmlModule(method_name, args, named_args, env);
+                } else if (std.mem.eql(u8, lower_module, "health")) {
+                    return try self.evalHealthModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "jwt")) {
+                    return try self.evalJwtModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "markdown")) {
+                    return try self.evalMarkdownModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "json")) {
+                    return try self.evalJsonModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "crypto")) {
+                    return try self.evalCryptoModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "fs")) {
+                    return try self.evalFsModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "http")) {
+                    return try self.evalHttpModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "regex")) {
+                    return try self.evalRegexModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "time")) {
+                    return try self.evalTimeModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "path")) {
+                    return try self.evalPathModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "url")) {
+                    return try self.evalUrlModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "base64")) {
+                    return try self.evalBase64Module(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "uuid")) {
+                    return try self.evalUuidModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "assert")) {
+                    return try self.evalAssertModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "testing")) {
+                    return try self.evalTestModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "tracing")) {
+                    return try self.evalTracingModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "ratelimit")) {
+                    return try self.evalRateLimitModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "oauth")) {
+                    return try self.evalOAuthModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "workers")) {
+                    return try self.evalWorkerModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "migrate")) {
+                    return try self.evalMigrateModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "ffi")) {
+                    return try self.evalFfiModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "reflect")) {
+                    return try self.evalReflectModule(method_name, args, env);
+                } else if (std.mem.eql(u8, lower_module, "metrics") or
+                    std.mem.eql(u8, lower_module, "counter") or
+                    std.mem.eql(u8, lower_module, "gauge") or
+                    std.mem.eql(u8, lower_module, "histogram") or
+                    std.mem.eql(u8, lower_module, "summary") or
+                    std.mem.eql(u8, lower_module, "registry") or
+                    std.mem.eql(u8, lower_module, "collector") or
+                    std.mem.eql(u8, lower_module, "metricgroup"))
+                {
+                    // For direct type calls like Counter.new(), prefix the method with the type
+                    const full_method = if (std.mem.eql(u8, lower_module, "metrics"))
+                        method_name
+                    else
+                        try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ base_module, method_name });
+                    return try self.evalMetricsModule(full_method, args, env);
+                } else {
+                    std.debug.print("Unknown module: {s}\n", .{base_module});
+                    return error.RuntimeError;
+                }
+            }
+
             // Handle string methods
             if (obj_value == .String) {
                 return try self.evaluateStringMethod(obj_value.String, member.member, call.args, env);
@@ -3261,7 +3433,7 @@ pub const Interpreter = struct {
         return error.RuntimeError;
     }
 
-    /// Evaluate a static call expression like html::parse() or Vec::new()
+    /// Evaluate a static call expression like HTML.parse() or Vec.new()
     fn evaluateStaticCallExpression(self: *Interpreter, static_call: *ast.StaticCallExpr, env: *Environment) InterpreterError!Value {
         const type_name = static_call.type_name;
         const method_name = static_call.method_name;
@@ -3282,7 +3454,7 @@ pub const Interpreter = struct {
         // Handle standard library modules
         if (std.mem.eql(u8, type_name, "html")) {
             return try self.evalHtmlModule(method_name, args, named_args, env);
-        } else if (std.mem.eql(u8, type_name, "health") or std.mem.startsWith(u8, type_name, "health::")) {
+        } else if (std.mem.eql(u8, type_name, "health") or std.mem.eql(u8, type_name, "Health") or std.mem.startsWith(u8, type_name, "Health.")) {
             return try self.evalHealthModule(method_name, args, env);
         } else if (std.mem.eql(u8, type_name, "jwt")) {
             return try self.evalJwtModule(method_name, args, env);
@@ -3310,10 +3482,10 @@ pub const Interpreter = struct {
             return try self.evalUuidModule(method_name, args, env);
         } else if (std.mem.eql(u8, type_name, "assert")) {
             return try self.evalAssertModule(method_name, args, env);
-        } else if (std.mem.eql(u8, type_name, "testing") or std.mem.startsWith(u8, type_name, "testing::")) {
-            // Handle testing::mock, testing::spy, testing::Suite::new, testing::Fixture::new, etc.
-            const full_method = if (std.mem.startsWith(u8, type_name, "testing::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[9..], method_name })
+        } else if (std.mem.eql(u8, type_name, "testing") or std.mem.eql(u8, type_name, "Testing") or std.mem.startsWith(u8, type_name, "Testing.")) {
+            // Handle Testing.mock, Testing.spy, Testing.Suite.new, Testing.Fixture.new, etc.
+            const full_method = if (std.mem.startsWith(u8, type_name, "Testing."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[8..], method_name })
             else
                 method_name;
             return try self.evalTestModule(full_method, args, env);
@@ -3325,49 +3497,49 @@ pub const Interpreter = struct {
             return try self.evalPubsubModule(method_name, args, env);
         } else if (std.mem.eql(u8, type_name, "metrics")) {
             return try self.evalMetricsModule(method_name, args, env);
-        } else if (std.mem.eql(u8, type_name, "tracing") or std.mem.startsWith(u8, type_name, "tracing::")) {
-            // For nested paths like tracing::Tracer::new, combine submodule with method
-            const full_method = if (std.mem.startsWith(u8, type_name, "tracing::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[9..], method_name })
+        } else if (std.mem.eql(u8, type_name, "tracing") or std.mem.eql(u8, type_name, "Tracing") or std.mem.startsWith(u8, type_name, "Tracing.")) {
+            // For nested paths like Tracing.Tracer.new, combine submodule with method
+            const full_method = if (std.mem.startsWith(u8, type_name, "Tracing."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[8..], method_name })
             else
                 method_name;
             return try self.evalTracingModule(full_method, args, env);
         } else if (std.mem.eql(u8, type_name, "rate_limit") or std.mem.eql(u8, type_name, "RateLimiter") or
-            std.mem.eql(u8, type_name, "ratelimit") or std.mem.startsWith(u8, type_name, "ratelimit::"))
+            std.mem.eql(u8, type_name, "ratelimit") or std.mem.eql(u8, type_name, "RateLimit") or std.mem.startsWith(u8, type_name, "RateLimit."))
         {
-            // For nested paths like ratelimit::Limiter::new, combine submodule with method
-            // "ratelimit::" is 11 characters
-            const full_method = if (std.mem.startsWith(u8, type_name, "ratelimit::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[11..], method_name })
+            // For nested paths like RateLimit.Limiter.new, combine submodule with method
+            // "RateLimit." is 10 characters
+            const full_method = if (std.mem.startsWith(u8, type_name, "RateLimit."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[10..], method_name })
             else
                 method_name;
             return try self.evalRateLimitModule(full_method, args, env);
-        } else if (std.mem.eql(u8, type_name, "oauth") or std.mem.eql(u8, type_name, "OAuth") or std.mem.startsWith(u8, type_name, "oauth::")) {
-            // For nested paths like oauth::oidc::discover, combine submodule with method
-            const full_method = if (std.mem.startsWith(u8, type_name, "oauth::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[7..], method_name })
+        } else if (std.mem.eql(u8, type_name, "oauth") or std.mem.eql(u8, type_name, "OAuth") or std.mem.startsWith(u8, type_name, "OAuth.")) {
+            // For nested paths like OAuth.oidc.discover, combine submodule with method
+            const full_method = if (std.mem.startsWith(u8, type_name, "OAuth."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[6..], method_name })
             else
                 method_name;
             return try self.evalOAuthModule(full_method, args, env);
         } else if (std.mem.eql(u8, type_name, "worker") or std.mem.eql(u8, type_name, "workers") or
-            std.mem.eql(u8, type_name, "WorkerPool") or std.mem.startsWith(u8, type_name, "workers::"))
+            std.mem.eql(u8, type_name, "WorkerPool") or std.mem.eql(u8, type_name, "Workers") or std.mem.startsWith(u8, type_name, "Workers."))
         {
-            // For nested paths like workers::Pool::new, combine submodule with method
-            const full_method = if (std.mem.startsWith(u8, type_name, "workers::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[9..], method_name })
+            // For nested paths like Workers.Pool.new, combine submodule with method
+            const full_method = if (std.mem.startsWith(u8, type_name, "Workers."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[8..], method_name })
             else
                 method_name;
             return try self.evalWorkerModule(full_method, args, env);
-        } else if (std.mem.eql(u8, type_name, "migrate") or std.mem.startsWith(u8, type_name, "migrate::")) {
-            // Handle migrate::Migration::new, migrate::Migrator::new, etc.
-            const full_method = if (std.mem.startsWith(u8, type_name, "migrate::"))
-                try std.fmt.allocPrint(self.arena.allocator(), "{s}::{s}", .{ type_name[9..], method_name })
+        } else if (std.mem.eql(u8, type_name, "migrate") or std.mem.eql(u8, type_name, "Migrate") or std.mem.startsWith(u8, type_name, "Migrate.")) {
+            // Handle Migrate.Migration.new, Migrate.Migrator.new, etc.
+            const full_method = if (std.mem.startsWith(u8, type_name, "Migrate."))
+                try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ type_name[8..], method_name })
             else
                 method_name;
             return try self.evalMigrateModule(full_method, args, env);
         }
 
-        // Handle type static methods (like Vec::new(), String::new())
+        // Handle type static methods (like Vec.new(), String.new())
         if (std.mem.eql(u8, type_name, "Vec") or std.mem.eql(u8, type_name, "Array")) {
             if (std.mem.eql(u8, method_name, "new")) {
                 return Value{ .Array = &.{} };
@@ -3481,7 +3653,7 @@ pub const Interpreter = struct {
         // Try looking up the type in the environment (could be an enum)
         if (env.get(type_name)) |type_value| {
             if (type_value == .EnumType) {
-                // Enum variant constructor (like Option::Some)
+                // Enum variant constructor (like Option.Some)
                 const enum_type = type_value.EnumType;
                 for (enum_type.variants) |variant| {
                     if (std.mem.eql(u8, variant.name, method_name)) {
@@ -3499,7 +3671,7 @@ pub const Interpreter = struct {
             }
         }
 
-        std.debug.print("Unknown static call: {s}::{s}\n", .{ type_name, method_name });
+        std.debug.print("Unknown static call: {s}.{s}\n", .{ type_name, method_name });
         return error.UndefinedFunction;
     }
 
@@ -3507,7 +3679,7 @@ pub const Interpreter = struct {
     fn evalHtmlModule(self: *Interpreter, method: []const u8, args: []const Value, named_args: std.StringHashMap(Value), env: *Environment) InterpreterError!Value {
         _ = env;
         _ = named_args; // Named args available for methods that need them
-        if (std.mem.eql(u8, method, "parse") or std.mem.eql(u8, method, "parse_fragment")) {
+        if (std.mem.eql(u8, method, "parse") or std.mem.eql(u8, method, "parse_fragment") or std.mem.eql(u8, method, "parseFragment")) {
             if (args.len >= 1 and args[0] == .String) {
                 // Return a struct representing parsed HTML document
                 var fields = std.StringHashMap(Value).init(self.arena.allocator());
@@ -3515,17 +3687,17 @@ pub const Interpreter = struct {
                 try fields.put("tag_name", Value{ .String = "document" });
                 return Value{ .Struct = .{ .type_name = "HtmlDocument", .fields = fields } };
             }
-            std.debug.print("html::{s}() requires a string argument\n", .{method});
+            std.debug.print("HTML.{s}() requires a string argument\n", .{method});
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "sanitize")) {
-            // html::sanitize(input, allowed_tags: [...], allowed_attrs: {...})
+            // HTML.sanitize(input, allowed_tags: [...], allowed_attrs: {...})
             if (args.len >= 1 and args[0] == .String) {
                 // Simple sanitization: just return the input text (mock implementation)
                 // Real implementation would strip dangerous tags/attributes
                 return args[0];
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "strip_tags")) {
+        } else if (std.mem.eql(u8, method, "strip_tags") or std.mem.eql(u8, method, "stripTags")) {
             if (args.len >= 1 and args[0] == .String) {
                 // Simple strip tags - remove anything between < and >
                 const input = args[0].String;
@@ -3615,13 +3787,13 @@ pub const Interpreter = struct {
 
     fn evalHealthModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
         _ = env;
-        if (std.mem.eql(u8, method, "Checker") or std.mem.eql(u8, method, "new")) {
+        if (std.mem.eql(u8, method, "Checker") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Checker.new")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("checks", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             try fields.put("_shutdown", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "HealthChecker", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "healthy")) {
-            // health::Result::healthy() or health::Result::healthy(details)
+        } else if (std.mem.eql(u8, method, "healthy") or std.mem.eql(u8, method, "Result.healthy")) {
+            // Health.Result.healthy() or Health.Result.healthy(details)
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("status", Value{ .String = "healthy" });
             try fields.put("message", Value{ .String = "" });
@@ -3631,8 +3803,8 @@ pub const Interpreter = struct {
                 try fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             }
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "unhealthy")) {
-            // health::Result::unhealthy(message)
+        } else if (std.mem.eql(u8, method, "unhealthy") or std.mem.eql(u8, method, "Result.unhealthy")) {
+            // Health.Result.unhealthy(message)
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("status", Value{ .String = "unhealthy" });
             if (args.len >= 1 and args[0] == .String) {
@@ -3642,8 +3814,8 @@ pub const Interpreter = struct {
             }
             try fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "degraded")) {
-            // health::Result::degraded(message)
+        } else if (std.mem.eql(u8, method, "degraded") or std.mem.eql(u8, method, "Result.degraded")) {
+            // Health.Result.degraded(message)
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("status", Value{ .String = "degraded" });
             if (args.len >= 1 and args[0] == .String) {
@@ -3655,12 +3827,66 @@ pub const Interpreter = struct {
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
         } else if (std.mem.eql(u8, method, "postgres") or std.mem.eql(u8, method, "redis") or
             std.mem.eql(u8, method, "http") or std.mem.eql(u8, method, "disk") or
-            std.mem.eql(u8, method, "memory") or std.mem.eql(u8, method, "cpu"))
+            std.mem.eql(u8, method, "memory") or std.mem.eql(u8, method, "cpu") or
+            std.mem.eql(u8, method, "checks.postgres") or std.mem.eql(u8, method, "checks.redis") or
+            std.mem.eql(u8, method, "checks.http") or std.mem.eql(u8, method, "checks.disk") or
+            std.mem.eql(u8, method, "checks.memory") or std.mem.eql(u8, method, "checks.cpu"))
         {
-            // health::checks::postgres/redis/http/disk/memory/cpu - return a check function placeholder
+            // Health.checks.postgres/redis/http/disk/memory/cpu - return a check function placeholder
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("type", Value{ .String = method });
             return Value{ .Struct = .{ .type_name = "HealthCheck", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "register")) {
+            // health.register(name, check_fn) - registers a health check
+            // Returns the HealthChecker for chaining
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("checks", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            try fields.put("_shutdown", Value{ .Bool = false });
+            return Value{ .Struct = .{ .type_name = "HealthChecker", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "checkAll") or std.mem.eql(u8, method, "check_all")) {
+            // health.checkAll() - runs all health checks and returns results
+            var results = std.StringHashMap(Value).init(self.arena.allocator());
+            var healthy_fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try healthy_fields.put("status", Value{ .String = "healthy" });
+            try healthy_fields.put("message", Value{ .String = "" });
+            try healthy_fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            try results.put("overall", Value{ .Struct = .{ .type_name = "HealthResult", .fields = healthy_fields } });
+            return Value{ .Map = .{ .entries = results } };
+        } else if (std.mem.eql(u8, method, "livenessCheck") or std.mem.eql(u8, method, "liveness_check")) {
+            // health.livenessCheck() - returns liveness status
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("status", Value{ .String = "healthy" });
+            try fields.put("message", Value{ .String = "" });
+            try fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "readinessCheck") or std.mem.eql(u8, method, "readiness_check")) {
+            // health.readinessCheck() - returns readiness status
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("status", Value{ .String = "healthy" });
+            try fields.put("message", Value{ .String = "" });
+            try fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "len")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .Int = @intCast(args[0].String.len) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "contains")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.indexOf(u8, args[0].String, args[1].String) != null };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "replace")) {
+            if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                return Value{ .String = result };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "trim")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .String = std.mem.trim(u8, args[0].String, " \t\n\r") };
+            }
+            return error.InvalidArguments;
         }
         std.debug.print("Unknown health method: {s}\n", .{method});
         return error.UndefinedFunction;
@@ -3684,7 +3910,7 @@ pub const Interpreter = struct {
                 return Value{ .Map = .{ .entries = fields } };
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "decode_header")) {
+        } else if (std.mem.eql(u8, method, "decode_header") or std.mem.eql(u8, method, "decodeHeader")) {
             // Return a mock JWT header as a Map for bracket access
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("alg", Value{ .String = "HS256" });
@@ -3704,7 +3930,7 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "Verifier") or std.mem.eql(u8, method, "verifier")) {
             const fields = std.StringHashMap(Value).init(self.arena.allocator());
             return Value{ .Struct = .{ .type_name = "JwtVerifier", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "verify_safe")) {
+        } else if (std.mem.eql(u8, method, "verify_safe") or std.mem.eql(u8, method, "verifySafe")) {
             // Returns a Result-like type. For mock purposes, check if token looks valid
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (args.len >= 1 and args[0] == .String) {
@@ -3724,23 +3950,23 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "refresh")) {
             // Return a new mock JWT token with refreshed expiration
             return Value{ .String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMiLCJuYW1lIjoiSm9obiIsImlhdCI6MTUxNjIzOTAyMn0.refreshed_signature" };
-        } else if (std.mem.eql(u8, method, "generate_rsa_keys")) {
+        } else if (std.mem.eql(u8, method, "generate_rsa_keys") or std.mem.eql(u8, method, "generateRsaKeys")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("public_key", Value{ .String = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----" });
             try fields.put("private_key", Value{ .String = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKC...\n-----END RSA PRIVATE KEY-----" });
             return Value{ .Struct = .{ .type_name = "RsaKeyPair", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "generate_ec_keys")) {
+        } else if (std.mem.eql(u8, method, "generate_ec_keys") or std.mem.eql(u8, method, "generateEcKeys")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("public_key", Value{ .String = "-----BEGIN EC PUBLIC KEY-----\nMFkwEwYHKoZI...\n-----END EC PUBLIC KEY-----" });
             try fields.put("private_key", Value{ .String = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIDkZ...\n-----END EC PRIVATE KEY-----" });
             return Value{ .Struct = .{ .type_name = "EcKeyPair", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "sign_rsa") or std.mem.eql(u8, method, "sign_with_rsa")) {
+        } else if (std.mem.eql(u8, method, "sign_rsa") or std.mem.eql(u8, method, "signRsa") or std.mem.eql(u8, method, "sign_with_rsa")) {
             return Value{ .String = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.rsa_signature" };
-        } else if (std.mem.eql(u8, method, "verify_rsa") or std.mem.eql(u8, method, "verify_with_rsa")) {
+        } else if (std.mem.eql(u8, method, "verify_rsa") or std.mem.eql(u8, method, "verifyRsa") or std.mem.eql(u8, method, "verify_with_rsa")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("sub", Value{ .String = "123" });
             return Value{ .Map = .{ .entries = fields } };
-        } else if (std.mem.eql(u8, method, "to_jwk")) {
+        } else if (std.mem.eql(u8, method, "to_jwk") or std.mem.eql(u8, method, "toJwk")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("kty", Value{ .String = "RSA" });
             try fields.put("n", Value{ .String = "0vx7agoebG..." });
@@ -3748,15 +3974,15 @@ pub const Interpreter = struct {
             try fields.put("use", Value{ .String = "sig" });
             try fields.put("kid", Value{ .String = "key-1" });
             return Value{ .Map = .{ .entries = fields } };
-        } else if (std.mem.eql(u8, method, "from_jwk")) {
+        } else if (std.mem.eql(u8, method, "from_jwk") or std.mem.eql(u8, method, "fromJwk")) {
             return Value{ .String = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----" };
-        } else if (std.mem.eql(u8, method, "fetch_jwks")) {
+        } else if (std.mem.eql(u8, method, "fetch_jwks") or std.mem.eql(u8, method, "fetchJwks")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("keys", Value{ .Array = &.{} });
             return Value{ .Map = .{ .entries = fields } };
-        } else if (std.mem.eql(u8, method, "sign_with_headers")) {
+        } else if (std.mem.eql(u8, method, "sign_with_headers") or std.mem.eql(u8, method, "signWithHeaders")) {
             return Value{ .String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0xIn0.eyJzdWIiOiIxMjMifQ.custom_headers_signature" };
-        } else if (std.mem.eql(u8, method, "verify_with_tolerance")) {
+        } else if (std.mem.eql(u8, method, "verify_with_tolerance") or std.mem.eql(u8, method, "verifyWithTolerance")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("sub", Value{ .String = "123" });
             return Value{ .Map = .{ .entries = fields } };
@@ -3769,14 +3995,14 @@ pub const Interpreter = struct {
             try fields.put("is_expired", Value{ .Bool = false });
             try fields.put("expires_in", Value{ .Int = 3600 }); // 1 hour
             return Value{ .Struct = .{ .type_name = "TokenInfo", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "blacklist_add")) {
+        } else if (std.mem.eql(u8, method, "blacklist_add") or std.mem.eql(u8, method, "blacklistAdd")) {
             // Add token to blacklist - mock implementation always succeeds
             return Value{ .Bool = true };
-        } else if (std.mem.eql(u8, method, "blacklist_contains")) {
+        } else if (std.mem.eql(u8, method, "blacklist_contains") or std.mem.eql(u8, method, "blacklistContains")) {
             // Check if token is blacklisted - mock always returns true after add
             return Value{ .Bool = true };
         } else if (std.mem.eql(u8, method, "blacklist") or std.mem.startsWith(u8, method, "blacklist.")) {
-            // Handle jwt::blacklist.add and jwt::blacklist.contains
+            // Handle JWT.blacklist.add and JWT.blacklist.contains
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("type", Value{ .String = "jwt_blacklist" });
             return Value{ .Struct = .{ .type_name = "JwtBlacklist", .fields = fields } };
@@ -3787,10 +4013,13 @@ pub const Interpreter = struct {
 
     fn evalMarkdownModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
         _ = env;
-        if (std.mem.eql(u8, method, "to_html") or std.mem.eql(u8, method, "to_html_sanitized") or
-            std.mem.eql(u8, method, "to_html_with_footnotes") or std.mem.eql(u8, method, "to_html_extended") or
-            std.mem.eql(u8, method, "to_html_with_autolink") or std.mem.eql(u8, method, "to_html_highlighted") or
-            std.mem.eql(u8, method, "to_html_with_renderer"))
+        if (std.mem.eql(u8, method, "to_html") or std.mem.eql(u8, method, "toHtml") or
+            std.mem.eql(u8, method, "to_html_sanitized") or std.mem.eql(u8, method, "toHtmlSanitized") or
+            std.mem.eql(u8, method, "to_html_with_footnotes") or std.mem.eql(u8, method, "toHtmlWithFootnotes") or
+            std.mem.eql(u8, method, "to_html_extended") or std.mem.eql(u8, method, "toHtmlExtended") or
+            std.mem.eql(u8, method, "to_html_with_autolink") or std.mem.eql(u8, method, "toHtmlWithAutolink") or
+            std.mem.eql(u8, method, "to_html_highlighted") or std.mem.eql(u8, method, "toHtmlHighlighted") or
+            std.mem.eql(u8, method, "to_html_with_renderer") or std.mem.eql(u8, method, "toHtmlWithRenderer"))
         {
             // to_html and variants return a String
             if (args.len >= 1 and args[0] == .String) {
@@ -3887,7 +4116,7 @@ pub const Interpreter = struct {
             try item3.put("text", Value{ .String = "H3" });
             try toc.append(self.arena.allocator(), Value{ .Struct = .{ .type_name = "TocItem", .fields = item3 } });
             return Value{ .Array = try toc.toOwnedSlice(self.arena.allocator()) };
-        } else if (std.mem.eql(u8, method, "parse_with_front_matter")) {
+        } else if (std.mem.eql(u8, method, "parse_with_front_matter") or std.mem.eql(u8, method, "parseWithFrontMatter")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             var front_matter = std.StringHashMap(Value).init(self.arena.allocator());
             try front_matter.put("title", Value{ .String = "Hello" });
@@ -3916,6 +4145,16 @@ pub const Interpreter = struct {
             if (args.len >= 1) {
                 const str = try self.valueToString(args[0]);
                 return Value{ .String = str };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "starts_with") or std.mem.eql(u8, method, "startsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.startsWith(u8, args[0].String, args[1].String) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "ends_with") or std.mem.eql(u8, method, "endsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.endsWith(u8, args[0].String, args[1].String) };
             }
             return error.InvalidArguments;
         }
@@ -4008,6 +4247,47 @@ pub const Interpreter = struct {
                 return args[0]; // Simplified
             }
             return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "starts_with") or std.mem.eql(u8, method, "startsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.startsWith(u8, args[0].String, args[1].String) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "ends_with") or std.mem.eql(u8, method, "endsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.endsWith(u8, args[0].String, args[1].String) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "split")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
+                while (iter.next()) |part| {
+                    try result.append(self.arena.allocator(), Value{ .String = part });
+                }
+                return Value{ .Array = try result.toOwnedSlice(self.arena.allocator()) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "len")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .Int = @intCast(args[0].String.len) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "contains")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.indexOf(u8, args[0].String, args[1].String) != null };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "replace")) {
+            if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                return Value{ .String = result };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "trim")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .String = std.mem.trim(u8, args[0].String, " \t\n\r") };
+            }
+            return error.InvalidArguments;
         }
         std.debug.print("Unknown path method: {s}\n", .{method});
         return error.UndefinedFunction;
@@ -4022,6 +4302,47 @@ pub const Interpreter = struct {
                 try fields.put("protocol", Value{ .String = "https:" });
                 try fields.put("host", Value{ .String = "example.com" });
                 return Value{ .Struct = .{ .type_name = "Url", .fields = fields } };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "starts_with") or std.mem.eql(u8, method, "startsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.startsWith(u8, args[0].String, args[1].String) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "ends_with") or std.mem.eql(u8, method, "endsWith")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.endsWith(u8, args[0].String, args[1].String) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "split")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
+                while (iter.next()) |part| {
+                    try result.append(self.arena.allocator(), Value{ .String = part });
+                }
+                return Value{ .Array = try result.toOwnedSlice(self.arena.allocator()) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "contains")) {
+            if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                return Value{ .Bool = std.mem.indexOf(u8, args[0].String, args[1].String) != null };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "len")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .Int = @intCast(args[0].String.len) };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "replace")) {
+            if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                return Value{ .String = result };
+            }
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, method, "trim")) {
+            if (args.len >= 1 and args[0] == .String) {
+                return Value{ .String = std.mem.trim(u8, args[0].String, " \t\n\r") };
             }
             return error.InvalidArguments;
         }
@@ -4062,6 +4383,9 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "v4") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "random")) {
             // Return a mock UUID
             return Value{ .String = "550e8400-e29b-41d4-a716-446655440000" };
+        } else if (std.mem.eql(u8, method, "len")) {
+            // UUID length is always 36 (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+            return Value{ .Int = 36 };
         }
         std.debug.print("Unknown uuid method: {s}\n", .{method});
         return error.UndefinedFunction;
@@ -4079,7 +4403,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "not_equal") or std.mem.eql(u8, method, "ne")) {
+        } else if (std.mem.eql(u8, method, "not_equal") or std.mem.eql(u8, method, "notEqual") or std.mem.eql(u8, method, "ne")) {
             if (args.len >= 2) {
                 const equal = try self.areEqual(args[0], args[1]);
                 if (equal) {
@@ -4089,7 +4413,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_true")) {
+        } else if (std.mem.eql(u8, method, "is_true") or std.mem.eql(u8, method, "isTrue")) {
             if (args.len >= 1) {
                 if (!args[0].isTrue()) {
                     std.debug.print("Assertion failed: expected true\n", .{});
@@ -4098,7 +4422,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_false")) {
+        } else if (std.mem.eql(u8, method, "is_false") or std.mem.eql(u8, method, "isFalse")) {
             if (args.len >= 1) {
                 if (args[0].isTrue()) {
                     std.debug.print("Assertion failed: expected false\n", .{});
@@ -4107,7 +4431,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_null") or std.mem.eql(u8, method, "is_none")) {
+        } else if (std.mem.eql(u8, method, "is_null") or std.mem.eql(u8, method, "isNull") or std.mem.eql(u8, method, "is_none")) {
             if (args.len >= 1) {
                 const is_null = args[0] == .Void or (args[0] == .Struct and std.mem.eql(u8, args[0].Struct.type_name, "None"));
                 if (!is_null) {
@@ -4117,7 +4441,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_not_null") or std.mem.eql(u8, method, "is_some")) {
+        } else if (std.mem.eql(u8, method, "is_not_null") or std.mem.eql(u8, method, "isNotNull") or std.mem.eql(u8, method, "is_some")) {
             if (args.len >= 1) {
                 const is_null = args[0] == .Void or (args[0] == .Struct and std.mem.eql(u8, args[0].Struct.type_name, "None"));
                 if (is_null) {
@@ -4184,7 +4508,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "deep_equal")) {
+        } else if (std.mem.eql(u8, method, "deep_equal") or std.mem.eql(u8, method, "deepEqual")) {
             if (args.len >= 2) {
                 const equal = try self.deepEqual(args[0], args[1]);
                 if (!equal) {
@@ -4194,7 +4518,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "greater_or_equal") or std.mem.eql(u8, method, "gte")) {
+        } else if (std.mem.eql(u8, method, "greater_or_equal") or std.mem.eql(u8, method, "greaterOrEqual") or std.mem.eql(u8, method, "gte")) {
             if (args.len >= 2) {
                 const cmp_gt = try self.compare(args[0], args[1], .Greater);
                 const cmp_eq = try self.areEqual(args[0], args[1]);
@@ -4205,7 +4529,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "less_or_equal") or std.mem.eql(u8, method, "lte")) {
+        } else if (std.mem.eql(u8, method, "less_or_equal") or std.mem.eql(u8, method, "lessOrEqual") or std.mem.eql(u8, method, "lte")) {
             if (args.len >= 2) {
                 const cmp_lt = try self.compare(args[0], args[1], .Less);
                 const cmp_eq = try self.areEqual(args[0], args[1]);
@@ -4216,10 +4540,10 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_type")) {
+        } else if (std.mem.eql(u8, method, "is_type") or std.mem.eql(u8, method, "isType")) {
             // Always passes in mock
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "not_contains")) {
+        } else if (std.mem.eql(u8, method, "not_contains") or std.mem.eql(u8, method, "notContains")) {
             if (args.len >= 2) {
                 if (args[0] == .Array) {
                     for (args[0].Array) |elem| {
@@ -4232,7 +4556,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "is_empty")) {
+        } else if (std.mem.eql(u8, method, "is_empty") or std.mem.eql(u8, method, "isEmpty")) {
             if (args.len >= 1) {
                 var is_empty = false;
                 if (args[0] == .Array) {
@@ -4247,7 +4571,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "is_not_empty")) {
+        } else if (std.mem.eql(u8, method, "is_not_empty") or std.mem.eql(u8, method, "isNotEmpty")) {
             if (args.len >= 1) {
                 var is_empty = true;
                 if (args[0] == .Array) {
@@ -4262,7 +4586,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "str_contains")) {
+        } else if (std.mem.eql(u8, method, "str_contains") or std.mem.eql(u8, method, "strContains")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
                 if (std.mem.indexOf(u8, args[0].String, args[1].String) == null) {
                     std.debug.print("Assertion failed: string does not contain substring\n", .{});
@@ -4271,7 +4595,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "starts_with")) {
+        } else if (std.mem.eql(u8, method, "starts_with") or std.mem.eql(u8, method, "startsWith")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
                 if (!std.mem.startsWith(u8, args[0].String, args[1].String)) {
                     std.debug.print("Assertion failed: string does not start with prefix\n", .{});
@@ -4280,7 +4604,7 @@ pub const Interpreter = struct {
                 return Value.Void;
             }
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, method, "ends_with")) {
+        } else if (std.mem.eql(u8, method, "ends_with") or std.mem.eql(u8, method, "endsWith")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
                 if (!std.mem.endsWith(u8, args[0].String, args[1].String)) {
                     std.debug.print("Assertion failed: string does not end with suffix\n", .{});
@@ -4292,10 +4616,10 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "matches")) {
             // Regex match - mock always passes
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "approx") or std.mem.eql(u8, method, "within_delta")) {
+        } else if (std.mem.eql(u8, method, "approx") or std.mem.eql(u8, method, "within_delta") or std.mem.eql(u8, method, "withinDelta")) {
             // Approximate equality - mock always passes
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "same") or std.mem.eql(u8, method, "not_same") or std.mem.eql(u8, method, "instance_of")) {
+        } else if (std.mem.eql(u8, method, "same") or std.mem.eql(u8, method, "not_same") or std.mem.eql(u8, method, "notSame") or std.mem.eql(u8, method, "instance_of") or std.mem.eql(u8, method, "instanceOf")) {
             // Identity/type checks - mock always passes
             return Value.Void;
         }
@@ -4307,7 +4631,7 @@ pub const Interpreter = struct {
         _ = env;
         const allocator = self.arena.allocator();
 
-        // test::mock()
+        // Testing.mock()
         if (std.mem.eql(u8, method, "mock")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
@@ -4318,15 +4642,15 @@ pub const Interpreter = struct {
             try fields.put("calls", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "Mock", .fields = fields } };
         }
-        // test::spy()
+        // Testing.spy()
         else if (std.mem.eql(u8, method, "spy")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("name", Value{ .String = "spy" });
             try fields.put("calls", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "Spy", .fields = fields } };
         }
-        // test::Suite::new()
-        else if (std.mem.eql(u8, method, "Suite::new")) {
+        // Testing.Suite.new()
+        else if (std.mem.eql(u8, method, "Suite.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
                 try fields.put("name", args[0]);
@@ -4336,8 +4660,8 @@ pub const Interpreter = struct {
             try fields.put("tests", Value{ .Array = &.{} });
             return Value{ .Struct = .{ .type_name = "TestSuite", .fields = fields } };
         }
-        // test::Fixture::new()
-        else if (std.mem.eql(u8, method, "Fixture::new")) {
+        // Testing.Fixture.new()
+        else if (std.mem.eql(u8, method, "Fixture.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
                 try fields.put("name", args[0]);
@@ -4346,15 +4670,15 @@ pub const Interpreter = struct {
             }
             return Value{ .Struct = .{ .type_name = "Fixture", .fields = fields } };
         }
-        // test::Reporter::json/tap/junit
-        else if (std.mem.eql(u8, method, "Reporter::json") or std.mem.eql(u8, method, "Reporter::tap") or std.mem.eql(u8, method, "Reporter::junit")) {
+        // Testing.Reporter.json/tap/junit
+        else if (std.mem.eql(u8, method, "Reporter.json") or std.mem.eql(u8, method, "Reporter.tap") or std.mem.eql(u8, method, "Reporter.junit")) {
             var fields = std.StringHashMap(Value).init(allocator);
             const fmt = if (std.mem.endsWith(u8, method, "json")) "json" else if (std.mem.endsWith(u8, method, "tap")) "tap" else "junit";
             try fields.put("format", Value{ .String = fmt });
             return Value{ .Struct = .{ .type_name = "Reporter", .fields = fields } };
         }
-        // test::Snapshot::new()
-        else if (std.mem.eql(u8, method, "Snapshot::new")) {
+        // Testing.Snapshot.new()
+        else if (std.mem.eql(u8, method, "Snapshot.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
                 try fields.put("name", args[0]);
@@ -4363,25 +4687,25 @@ pub const Interpreter = struct {
             }
             return Value{ .Struct = .{ .type_name = "Snapshot", .fields = fields } };
         }
-        // test::context()
+        // Testing.context()
         else if (std.mem.eql(u8, method, "context")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("name", Value{ .String = "test_context" });
             return Value{ .Struct = .{ .type_name = "TestContext", .fields = fields } };
         }
-        // test::coverage()
+        // Testing.coverage()
         else if (std.mem.eql(u8, method, "coverage")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("lines", Value{ .Int = 100 });
             try fields.put("branches", Value{ .Int = 100 });
             return Value{ .Struct = .{ .type_name = "Coverage", .fields = fields } };
         }
-        // test::generate()
+        // Testing.generate()
         else if (std.mem.eql(u8, method, "generate")) {
             return Value{ .Int = 42 };
         }
-        // test::random_string()
-        else if (std.mem.eql(u8, method, "random_string")) {
+        // Testing.random_string()
+        else if (std.mem.eql(u8, method, "random_string") or std.mem.eql(u8, method, "randomString")) {
             var len: usize = 10;
             if (args.len > 0 and args[0] == .Int) {
                 len = @intCast(args[0].Int);
@@ -4392,20 +4716,20 @@ pub const Interpreter = struct {
             }
             return Value{ .String = result };
         }
-        // test::random_int()
-        else if (std.mem.eql(u8, method, "random_int")) {
+        // Testing.random_int()
+        else if (std.mem.eql(u8, method, "random_int") or std.mem.eql(u8, method, "randomInt")) {
             var min: i64 = 0;
             var max: i64 = 100;
             if (args.len >= 1 and args[0] == .Int) min = args[0].Int;
             if (args.len >= 2 and args[1] == .Int) max = args[1].Int;
             return Value{ .Int = min + @divTrunc(max - min, 2) };
         }
-        // test::set_timeout()
-        else if (std.mem.eql(u8, method, "set_timeout")) {
+        // Testing.set_timeout()
+        else if (std.mem.eql(u8, method, "set_timeout") or std.mem.eql(u8, method, "setTimeout")) {
             return Value.Void;
         }
-        // test::remaining_time()
-        else if (std.mem.eql(u8, method, "remaining_time")) {
+        // Testing.remaining_time()
+        else if (std.mem.eql(u8, method, "remaining_time") or std.mem.eql(u8, method, "remainingTime")) {
             return Value{ .Int = 5000 };
         }
         std.debug.print("Unknown test method: {s}\n", .{method});
@@ -4552,7 +4876,7 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "int") or std.mem.eql(u8, method, "int32") or std.mem.eql(u8, method, "uint32")) {
             return self.createFfiType("int", 4);
         }
-        if (std.mem.eql(u8, method, "long") or std.mem.eql(u8, method, "int64") or std.mem.eql(u8, method, "uint64") or std.mem.eql(u8, method, "size_t")) {
+        if (std.mem.eql(u8, method, "long") or std.mem.eql(u8, method, "int64") or std.mem.eql(u8, method, "uint64") or std.mem.eql(u8, method, "size_t") or std.mem.eql(u8, method, "sizeT")) {
             return self.createFfiType("long", 8);
         }
         if (std.mem.eql(u8, method, "float")) {
@@ -4588,7 +4912,7 @@ pub const Interpreter = struct {
         }
 
         // Pointer operations
-        if (std.mem.eql(u8, method, "ptr_to")) {
+        if (std.mem.eql(u8, method, "ptr_to") or std.mem.eql(u8, method, "ptrTo")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("address", Value{ .Int = 0x3000 });
             if (args.len > 0) try fields.put("value", args[0]);
@@ -4604,13 +4928,13 @@ pub const Interpreter = struct {
             }
             return Value{ .Int = 42 }; // Default mock value
         }
-        if (std.mem.eql(u8, method, "null_ptr")) {
+        if (std.mem.eql(u8, method, "null_ptr") or std.mem.eql(u8, method, "nullPtr")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("address", Value{ .Int = 0 });
             try fields.put("is_null", Value{ .Bool = true });
             return Value{ .Struct = .{ .type_name = "FfiPointer", .fields = fields } };
         }
-        if (std.mem.eql(u8, method, "is_null")) {
+        if (std.mem.eql(u8, method, "is_null") or std.mem.eql(u8, method, "isNull")) {
             if (args.len >= 1 and args[0] == .Struct) {
                 if (args[0].Struct.fields.get("is_null")) |n| return n;
                 if (args[0].Struct.fields.get("address")) |a| {
@@ -4619,7 +4943,7 @@ pub const Interpreter = struct {
             }
             return Value{ .Bool = false };
         }
-        if (std.mem.eql(u8, method, "ptr_offset")) {
+        if (std.mem.eql(u8, method, "ptr_offset") or std.mem.eql(u8, method, "ptrOffset")) {
             var fields = std.StringHashMap(Value).init(allocator);
             // For array access simulation
             if (args.len >= 1 and args[0] == .Struct) {
@@ -4637,7 +4961,7 @@ pub const Interpreter = struct {
         }
 
         // String conversion
-        if (std.mem.eql(u8, method, "to_c_string")) {
+        if (std.mem.eql(u8, method, "to_c_string") or std.mem.eql(u8, method, "toCString")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len >= 1 and args[0] == .String) {
                 // Truncate at null byte if present
@@ -4653,7 +4977,7 @@ pub const Interpreter = struct {
             try fields.put("address", Value{ .Int = 0x4000 });
             return Value{ .Struct = .{ .type_name = "FfiCString", .fields = fields } };
         }
-        if (std.mem.eql(u8, method, "from_c_string")) {
+        if (std.mem.eql(u8, method, "from_c_string") or std.mem.eql(u8, method, "fromCString")) {
             if (args.len >= 1 and args[0] == .Struct) {
                 if (args[0].Struct.fields.get("string")) |s| return s;
             }
@@ -4664,7 +4988,7 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "errno")) {
             return Value{ .Int = 0 };
         }
-        if (std.mem.eql(u8, method, "set_errno")) {
+        if (std.mem.eql(u8, method, "set_errno") or std.mem.eql(u8, method, "setErrno")) {
             return Value.Void;
         }
         if (std.mem.eql(u8, method, "strerror")) {
@@ -4691,7 +5015,7 @@ pub const Interpreter = struct {
         }
 
         // Data conversion
-        if (std.mem.eql(u8, method, "from_bytes")) {
+        if (std.mem.eql(u8, method, "from_bytes") or std.mem.eql(u8, method, "fromBytes")) {
             // Convert bytes array to struct - mock implementation
             if (args.len >= 2 and args[0] == .Array and args[1] == .Struct) {
                 var fields = std.StringHashMap(Value).init(allocator);
@@ -4719,7 +5043,7 @@ pub const Interpreter = struct {
             }
             return Value.Void;
         }
-        if (std.mem.eql(u8, method, "to_bytes")) {
+        if (std.mem.eql(u8, method, "to_bytes") or std.mem.eql(u8, method, "toBytes")) {
             // Convert struct to bytes array - mock implementation
             var bytes = try allocator.alloc(Value, 8);
             for (0..8) |i| {
@@ -4745,7 +5069,7 @@ pub const Interpreter = struct {
         }
 
         // Get field from struct
-        if (std.mem.eql(u8, method, "get_field")) {
+        if (std.mem.eql(u8, method, "get_field") or std.mem.eql(u8, method, "getField")) {
             if (args.len >= 2 and args[0] == .Struct and args[1] == .String) {
                 if (args[0].Struct.fields.get(args[1].String)) |field_val| {
                     return field_val;
@@ -4755,7 +5079,7 @@ pub const Interpreter = struct {
         }
 
         // Set field on struct (mutates in place)
-        if (std.mem.eql(u8, method, "set_field")) {
+        if (std.mem.eql(u8, method, "set_field") or std.mem.eql(u8, method, "setField")) {
             if (args.len >= 3 and args[0] == .Struct and args[1] == .String) {
                 const field_name = args[1].String;
                 const new_value = args[2];
@@ -4785,7 +5109,7 @@ pub const Interpreter = struct {
         _ = env;
 
         // type_of: returns the type name of a value
-        if (std.mem.eql(u8, method, "type_of")) {
+        if (std.mem.eql(u8, method, "type_of") or std.mem.eql(u8, method, "typeOf")) {
             if (args.len < 1) return Value{ .String = "unknown" };
             const type_name = switch (args[0]) {
                 .Int => "int",
@@ -4806,7 +5130,7 @@ pub const Interpreter = struct {
         }
 
         // element_type: returns the type of array elements
-        if (std.mem.eql(u8, method, "element_type")) {
+        if (std.mem.eql(u8, method, "element_type") or std.mem.eql(u8, method, "elementType")) {
             if (args.len < 1) return Value{ .String = "unknown" };
             if (args[0] == .Array) {
                 const arr = args[0].Array;
@@ -4825,39 +5149,39 @@ pub const Interpreter = struct {
         }
 
         // Type checking functions
-        if (std.mem.eql(u8, method, "is_int")) {
+        if (std.mem.eql(u8, method, "is_int") or std.mem.eql(u8, method, "isInt")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Int };
         }
-        if (std.mem.eql(u8, method, "is_float")) {
+        if (std.mem.eql(u8, method, "is_float") or std.mem.eql(u8, method, "isFloat")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Float };
         }
-        if (std.mem.eql(u8, method, "is_numeric")) {
+        if (std.mem.eql(u8, method, "is_numeric") or std.mem.eql(u8, method, "isNumeric")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Int or args[0] == .Float };
         }
-        if (std.mem.eql(u8, method, "is_string")) {
+        if (std.mem.eql(u8, method, "is_string") or std.mem.eql(u8, method, "isString")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .String };
         }
-        if (std.mem.eql(u8, method, "is_bool")) {
+        if (std.mem.eql(u8, method, "is_bool") or std.mem.eql(u8, method, "isBool")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Bool };
         }
-        if (std.mem.eql(u8, method, "is_null")) {
+        if (std.mem.eql(u8, method, "is_null") or std.mem.eql(u8, method, "isNull")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Void };
         }
-        if (std.mem.eql(u8, method, "is_array")) {
+        if (std.mem.eql(u8, method, "is_array") or std.mem.eql(u8, method, "isArray")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Array };
         }
-        if (std.mem.eql(u8, method, "is_map")) {
+        if (std.mem.eql(u8, method, "is_map") or std.mem.eql(u8, method, "isMap")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Map };
         }
-        if (std.mem.eql(u8, method, "is_callable")) {
+        if (std.mem.eql(u8, method, "is_callable") or std.mem.eql(u8, method, "isCallable")) {
             if (args.len < 1) return Value{ .Bool = false };
             return Value{ .Bool = args[0] == .Function or args[0] == .Closure };
         }
@@ -4879,7 +5203,7 @@ pub const Interpreter = struct {
         }
 
         // get_field: gets field value from a struct by name
-        if (std.mem.eql(u8, method, "get_field")) {
+        if (std.mem.eql(u8, method, "get_field") or std.mem.eql(u8, method, "getField")) {
             if (args.len < 2) return Value.Void;
             if (args[0] == .Struct and args[1] == .String) {
                 const s = args[0].Struct;
@@ -4891,7 +5215,7 @@ pub const Interpreter = struct {
         }
 
         // has_field: checks if a struct has a field
-        if (std.mem.eql(u8, method, "has_field")) {
+        if (std.mem.eql(u8, method, "has_field") or std.mem.eql(u8, method, "hasField")) {
             if (args.len < 2) return Value{ .Bool = false };
             if (args[0] == .Struct and args[1] == .String) {
                 return Value{ .Bool = args[0].Struct.fields.contains(args[1].String) };
@@ -4955,7 +5279,7 @@ pub const Interpreter = struct {
         }
 
         // same_type: checks if two values have the same type
-        if (std.mem.eql(u8, method, "same_type")) {
+        if (std.mem.eql(u8, method, "same_type") or std.mem.eql(u8, method, "sameType")) {
             if (args.len < 2) return Value{ .Bool = false };
             const tag_a = @intFromEnum(std.meta.activeTag(args[0]));
             const tag_b = @intFromEnum(std.meta.activeTag(args[1]));
@@ -4963,7 +5287,7 @@ pub const Interpreter = struct {
         }
 
         // deep_equal: checks if two values are deeply equal
-        if (std.mem.eql(u8, method, "deep_equal")) {
+        if (std.mem.eql(u8, method, "deep_equal") or std.mem.eql(u8, method, "deepEqual")) {
             if (args.len < 2) return Value{ .Bool = false };
             return Value{ .Bool = try self.deepEqual(args[0], args[1]) };
         }
@@ -4980,7 +5304,7 @@ pub const Interpreter = struct {
         }
 
         // field_types: returns a map from field names to their types
-        if (std.mem.eql(u8, method, "field_types")) {
+        if (std.mem.eql(u8, method, "field_types") or std.mem.eql(u8, method, "fieldTypes")) {
             if (args.len < 1) return Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } };
             if (args[0] == .Struct) {
                 // Return the struct's fields map directly - it already maps names to type strings
@@ -4991,31 +5315,31 @@ pub const Interpreter = struct {
 
         // Stub implementations for advanced reflection features
         if (std.mem.eql(u8, method, "methods") or
-            std.mem.eql(u8, method, "method_signature") or
+            std.mem.eql(u8, method, "method_signature") or std.mem.eql(u8, method, "methodSignature") or
             std.mem.eql(u8, method, "invoke") or
-            std.mem.eql(u8, method, "function_name") or
+            std.mem.eql(u8, method, "function_name") or std.mem.eql(u8, method, "functionName") or
             std.mem.eql(u8, method, "parameters") or
             std.mem.eql(u8, method, "variants") or
-            std.mem.eql(u8, method, "variant_value") or
-            std.mem.eql(u8, method, "variant_name") or
+            std.mem.eql(u8, method, "variant_value") or std.mem.eql(u8, method, "variantValue") or
+            std.mem.eql(u8, method, "variant_name") or std.mem.eql(u8, method, "variantName") or
             std.mem.eql(u8, method, "convert") or
-            std.mem.eql(u8, method, "is_convertible") or
-            std.mem.eql(u8, method, "shallow_copy") or
-            std.mem.eql(u8, method, "deep_copy") or
+            std.mem.eql(u8, method, "is_convertible") or std.mem.eql(u8, method, "isConvertible") or
+            std.mem.eql(u8, method, "shallow_copy") or std.mem.eql(u8, method, "shallowCopy") or
+            std.mem.eql(u8, method, "deep_copy") or std.mem.eql(u8, method, "deepCopy") or
             std.mem.eql(u8, method, "attributes") or
             std.mem.eql(u8, method, "attribute") or
-            std.mem.eql(u8, method, "size_of") or
-            std.mem.eql(u8, method, "align_of") or
-            std.mem.eql(u8, method, "module_exports") or
-            std.mem.eql(u8, method, "is_module_loaded") or
+            std.mem.eql(u8, method, "size_of") or std.mem.eql(u8, method, "sizeOf") or
+            std.mem.eql(u8, method, "align_of") or std.mem.eql(u8, method, "alignOf") or
+            std.mem.eql(u8, method, "module_exports") or std.mem.eql(u8, method, "moduleExports") or
+            std.mem.eql(u8, method, "is_module_loaded") or std.mem.eql(u8, method, "isModuleLoaded") or
             std.mem.eql(u8, method, "call") or
             std.mem.eql(u8, method, "apply") or
             std.mem.eql(u8, method, "create") or
-            std.mem.eql(u8, method, "create_array") or
+            std.mem.eql(u8, method, "create_array") or std.mem.eql(u8, method, "createArray") or
             std.mem.eql(u8, method, "proxy") or
-            std.mem.eql(u8, method, "call_stack") or
+            std.mem.eql(u8, method, "call_stack") or std.mem.eql(u8, method, "callStack") or
             std.mem.eql(u8, method, "caller") or
-            std.mem.eql(u8, method, "set_field"))
+            std.mem.eql(u8, method, "set_field") or std.mem.eql(u8, method, "setField"))
         {
             // Return empty array or null for unimplemented features
             return Value{ .Array = &.{} };
@@ -5053,23 +5377,59 @@ pub const Interpreter = struct {
     // Metrics module implementation
     fn evalMetricsModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
         _ = env;
-        _ = args;
-        if (std.mem.eql(u8, method, "Counter") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "counter")) {
+        if (std.mem.eql(u8, method, "Counter") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "counter") or std.mem.eql(u8, method, "Counter.new")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("value", Value{ .Int = 0 });
+            try fields.put("_count", Value{ .Int = 0 });
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
             return Value{ .Struct = .{ .type_name = "Counter", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Gauge") or std.mem.eql(u8, method, "gauge")) {
+        } else if (std.mem.eql(u8, method, "Gauge") or std.mem.eql(u8, method, "gauge") or std.mem.eql(u8, method, "Gauge.new")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("value", Value{ .Float = 0.0 });
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
             return Value{ .Struct = .{ .type_name = "Gauge", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Histogram") or std.mem.eql(u8, method, "histogram")) {
+        } else if (std.mem.eql(u8, method, "Histogram") or std.mem.eql(u8, method, "histogram") or std.mem.eql(u8, method, "Histogram.new")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("values", Value{ .Array = &.{} });
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
             return Value{ .Struct = .{ .type_name = "Histogram", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Registry") or std.mem.eql(u8, method, "registry")) {
+        } else if (std.mem.eql(u8, method, "Registry") or std.mem.eql(u8, method, "registry") or std.mem.eql(u8, method, "Registry.new") or std.mem.eql(u8, method, "Registry.newWithConfig")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
-            try fields.put("metrics", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
-            return Value{ .Struct = .{ .type_name = "MetricsRegistry", .fields = fields } };
+            try fields.put("_metrics", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            return Value{ .Struct = .{ .type_name = "Registry", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "Summary") or std.mem.eql(u8, method, "summary") or std.mem.eql(u8, method, "Summary.new")) {
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            try fields.put("count", Value{ .Int = 0 });
+            try fields.put("sum", Value{ .Float = 0.0 });
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
+            return Value{ .Struct = .{ .type_name = "Summary", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "Collector") or std.mem.eql(u8, method, "collector") or std.mem.eql(u8, method, "Collector.new")) {
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
+            if (args.len > 1) {
+                try fields.put("collect_fn", args[1]);
+            }
+            return Value{ .Struct = .{ .type_name = "Collector", .fields = fields } };
+        } else if (std.mem.eql(u8, method, "MetricGroup") or std.mem.eql(u8, method, "metricGroup") or std.mem.eql(u8, method, "MetricGroup.new")) {
+            var fields = std.StringHashMap(Value).init(self.arena.allocator());
+            if (args.len > 0 and args[0] == .String) {
+                try fields.put("name", args[0]);
+            }
+            if (args.len > 1) {
+                try fields.put("config", args[1]);
+            }
+            try fields.put("_metrics", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
+            return Value{ .Struct = .{ .type_name = "MetricGroup", .fields = fields } };
         }
         std.debug.print("Unknown metrics method: {s}\n", .{method});
         return error.UndefinedFunction;
@@ -5080,7 +5440,7 @@ pub const Interpreter = struct {
         _ = env;
         const allocator = self.arena.allocator();
 
-        if (std.mem.eql(u8, method, "Tracer") or std.mem.eql(u8, method, "tracer") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Tracer::new")) {
+        if (std.mem.eql(u8, method, "Tracer") or std.mem.eql(u8, method, "tracer") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Tracer.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             // Extract service name from config if provided
             var service_name: []const u8 = "default";
@@ -5093,9 +5453,11 @@ pub const Interpreter = struct {
             try fields.put("service_name", Value{ .String = service_name });
             return Value{ .Struct = .{ .type_name = "Tracer", .fields = fields } };
         } else if (std.mem.eql(u8, method, "Span") or std.mem.eql(u8, method, "span") or
-            std.mem.eql(u8, method, "server_span") or std.mem.eql(u8, method, "client_span") or
-            std.mem.eql(u8, method, "producer_span") or std.mem.eql(u8, method, "consumer_span") or
-            std.mem.eql(u8, method, "internal_span"))
+            std.mem.eql(u8, method, "server_span") or std.mem.eql(u8, method, "serverSpan") or
+            std.mem.eql(u8, method, "client_span") or std.mem.eql(u8, method, "clientSpan") or
+            std.mem.eql(u8, method, "producer_span") or std.mem.eql(u8, method, "producerSpan") or
+            std.mem.eql(u8, method, "consumer_span") or std.mem.eql(u8, method, "consumerSpan") or
+            std.mem.eql(u8, method, "internal_span") or std.mem.eql(u8, method, "internalSpan"))
         {
             var fields = std.StringHashMap(Value).init(allocator);
             // Extract span name from first argument
@@ -5130,7 +5492,7 @@ pub const Interpreter = struct {
             const attrs = std.StringHashMap(Value).init(allocator);
             try fields.put("attributes", Value{ .Map = .{ .entries = attrs } });
             return Value{ .Struct = .{ .type_name = "Span", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "child_span")) {
+        } else if (std.mem.eql(u8, method, "child_span") or std.mem.eql(u8, method, "childSpan")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var span_name: []const u8 = "child";
             if (args.len > 0 and args[0] == .String) {
@@ -5170,7 +5532,7 @@ pub const Interpreter = struct {
             }
             try fields.put("trace_id", Value{ .String = trace_id });
             return Value{ .Struct = .{ .type_name = "TraceContext", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "inject") or std.mem.eql(u8, method, "inject_w3c")) {
+        } else if (std.mem.eql(u8, method, "inject") or std.mem.eql(u8, method, "inject_w3c") or std.mem.eql(u8, method, "injectW3c")) {
             // Inject trace context into headers map - returns new map with headers
             var new_map = std.StringHashMap(Value).init(allocator);
             // Copy existing entries if provided
@@ -5195,7 +5557,7 @@ pub const Interpreter = struct {
                 try new_map.put("traceparent", Value{ .String = traceparent });
             }
             return Value{ .Map = .{ .entries = new_map } };
-        } else if (std.mem.eql(u8, method, "inject_b3")) {
+        } else if (std.mem.eql(u8, method, "inject_b3") or std.mem.eql(u8, method, "injectB3")) {
             // Inject B3 headers - returns new map with headers
             var new_map = std.StringHashMap(Value).init(allocator);
             // Copy existing entries if provided
@@ -5215,13 +5577,13 @@ pub const Interpreter = struct {
                 try new_map.put("X-B3-TraceId", Value{ .String = trace_id });
             }
             return Value{ .Map = .{ .entries = new_map } };
-        } else if (std.mem.eql(u8, method, "set_current")) {
+        } else if (std.mem.eql(u8, method, "set_current") or std.mem.eql(u8, method, "setCurrent")) {
             // Store the current span
             if (args.len > 0 and args[0] == .Struct) {
                 self.current_span = args[0];
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "current_span")) {
+        } else if (std.mem.eql(u8, method, "current_span") or std.mem.eql(u8, method, "currentSpan")) {
             // Return the stored current span
             if (self.current_span) |span| {
                 return span;
@@ -5234,13 +5596,13 @@ pub const Interpreter = struct {
             try fields.put("trace_id", Value{ .String = trace_id });
             try fields.put("span_id", Value{ .String = span_id });
             return Value{ .Struct = .{ .type_name = "Span", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "set_baggage")) {
+        } else if (std.mem.eql(u8, method, "set_baggage") or std.mem.eql(u8, method, "setBaggage")) {
             // Store baggage key-value pair
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
                 try self.tracing_baggage.put(args[0].String, args[1].String);
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "get_baggage")) {
+        } else if (std.mem.eql(u8, method, "get_baggage") or std.mem.eql(u8, method, "getBaggage")) {
             // Return the baggage value
             if (args.len > 0 and args[0] == .String) {
                 if (self.tracing_baggage.get(args[0].String)) |val| {
@@ -5248,7 +5610,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "inject_baggage")) {
+        } else if (std.mem.eql(u8, method, "inject_baggage") or std.mem.eql(u8, method, "injectBaggage")) {
             // Return new map with baggage header
             var new_map = std.StringHashMap(Value).init(allocator);
             // Copy existing entries if provided
@@ -5275,7 +5637,7 @@ pub const Interpreter = struct {
             }
             try new_map.put("baggage", Value{ .String = baggage_str });
             return Value{ .Map = .{ .entries = new_map } };
-        } else if (std.mem.eql(u8, method, "http_middleware")) {
+        } else if (std.mem.eql(u8, method, "http_middleware") or std.mem.eql(u8, method, "httpMiddleware")) {
             // Return a middleware struct
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("type", Value{ .String = "tracing_middleware" });
@@ -5284,11 +5646,11 @@ pub const Interpreter = struct {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("type", Value{ .String = method });
             return Value{ .Struct = .{ .type_name = "Sampler", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Status::OK") or std.mem.eql(u8, method, "Status::ERROR")) {
+        } else if (std.mem.eql(u8, method, "Status.OK") or std.mem.eql(u8, method, "Status.ERROR")) {
             // Return status enum value
             return Value{ .String = method };
-        } else if (std.mem.eql(u8, method, "exporters::jaeger") or std.mem.eql(u8, method, "exporters::zipkin") or
-            std.mem.eql(u8, method, "exporters::otlp") or std.mem.eql(u8, method, "exporters::console"))
+        } else if (std.mem.eql(u8, method, "exporters.jaeger") or std.mem.eql(u8, method, "exporters.zipkin") or
+            std.mem.eql(u8, method, "exporters.otlp") or std.mem.eql(u8, method, "exporters.console"))
         {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("type", Value{ .String = method });
@@ -5303,7 +5665,7 @@ pub const Interpreter = struct {
         _ = env;
         const allocator = self.arena.allocator();
 
-        if (std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Limiter::new")) {
+        if (std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Limiter.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             // Extract limit and window from args
             const limit: i64 = if (args.len > 0 and args[0] == .Int) args[0].Int else 100;
@@ -5312,7 +5674,7 @@ pub const Interpreter = struct {
             try fields.put("window", Value{ .Int = window });
             try fields.put("count", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "RateLimiter", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "TokenBucket::new") or std.mem.eql(u8, method, "token_bucket")) {
+        } else if (std.mem.eql(u8, method, "TokenBucket.new") or std.mem.eql(u8, method, "token_bucket")) {
             var fields = std.StringHashMap(Value).init(allocator);
             const capacity: i64 = if (args.len > 0 and args[0] == .Int) args[0].Int else 100;
             const refill_rate: i64 = if (args.len > 1 and args[1] == .Int) args[1].Int else 10;
@@ -5320,14 +5682,14 @@ pub const Interpreter = struct {
             try fields.put("refill_rate", Value{ .Int = refill_rate });
             try fields.put("tokens", Value{ .Int = capacity });
             return Value{ .Struct = .{ .type_name = "TokenBucket", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "SlidingWindow::new") or std.mem.eql(u8, method, "sliding_window")) {
+        } else if (std.mem.eql(u8, method, "SlidingWindow.new") or std.mem.eql(u8, method, "sliding_window")) {
             var fields = std.StringHashMap(Value).init(allocator);
             const limit: i64 = if (args.len > 0 and args[0] == .Int) args[0].Int else 100;
             const window: i64 = if (args.len > 1 and args[1] == .Int) args[1].Int else 60;
             try fields.put("limit", Value{ .Int = limit });
             try fields.put("window", Value{ .Int = window });
             return Value{ .Struct = .{ .type_name = "SlidingWindow", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "LeakyBucket::new") or std.mem.eql(u8, method, "leaky_bucket")) {
+        } else if (std.mem.eql(u8, method, "LeakyBucket.new") or std.mem.eql(u8, method, "leaky_bucket")) {
             var fields = std.StringHashMap(Value).init(allocator);
             const capacity: i64 = if (args.len > 0 and args[0] == .Int) args[0].Int else 100;
             const leak_rate: i64 = if (args.len > 1 and args[1] == .Int) args[1].Int else 10;
@@ -5342,7 +5704,7 @@ pub const Interpreter = struct {
     // OAuth module implementation
     fn evalOAuthModule(self: *Interpreter, method: []const u8, args: []const Value, env: *Environment) InterpreterError!Value {
         _ = env;
-        if (std.mem.eql(u8, method, "Client") or std.mem.eql(u8, method, "client") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Client::new") or std.mem.eql(u8, method, "client::new")) {
+        if (std.mem.eql(u8, method, "Client") or std.mem.eql(u8, method, "client") or std.mem.eql(u8, method, "new") or std.mem.eql(u8, method, "Client.new") or std.mem.eql(u8, method, "client.new")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             // Extract config from first argument if it's a Map
             if (args.len > 0 and args[0] == .Map) {
@@ -5372,7 +5734,7 @@ pub const Interpreter = struct {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("name", Value{ .String = "generic" });
             return Value{ .Struct = .{ .type_name = "OAuthProvider", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "generate_state")) {
+        } else if (std.mem.eql(u8, method, "generate_state") or std.mem.eql(u8, method, "generateState")) {
             // Generate a random state string for CSRF protection (at least 32 chars)
             var rand_bytes: [16]u8 = undefined;
             std.crypto.random.bytes(&rand_bytes);
@@ -5380,10 +5742,10 @@ pub const Interpreter = struct {
             _ = std.fmt.bufPrint(&hex_buf, "{x:0>32}", .{std.mem.readInt(u128, &rand_bytes, .big)}) catch unreachable;
             const state = try self.arena.allocator().dupe(u8, &hex_buf);
             return Value{ .String = state };
-        } else if (std.mem.eql(u8, method, "generate_verifier") or std.mem.eql(u8, method, "generate_code_verifier")) {
+        } else if (std.mem.eql(u8, method, "generate_verifier") or std.mem.eql(u8, method, "generateVerifier") or std.mem.eql(u8, method, "generate_code_verifier")) {
             // Generate a PKCE code verifier
             return Value{ .String = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" };
-        } else if (std.mem.eql(u8, method, "generate_challenge") or std.mem.eql(u8, method, "code_challenge")) {
+        } else if (std.mem.eql(u8, method, "generate_challenge") or std.mem.eql(u8, method, "generateChallenge") or std.mem.eql(u8, method, "code_challenge")) {
             // Generate a PKCE code challenge from a verifier
             return Value{ .String = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" };
         } else if (std.mem.eql(u8, method, "Tokens") or std.mem.eql(u8, method, "Token")) {
@@ -5400,7 +5762,7 @@ pub const Interpreter = struct {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("success", Value{ .Bool = true });
             return Value{ .Struct = .{ .type_name = "OAuthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "parse_implicit_response")) {
+        } else if (std.mem.eql(u8, method, "parse_implicit_response") or std.mem.eql(u8, method, "parseImplicitResponse")) {
             // Parse fragment into tokens
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (args.len > 0 and args[0] == .String) {
@@ -5411,10 +5773,11 @@ pub const Interpreter = struct {
                     var end = start;
                     while (end < fragment.len and fragment[end] != '&') : (end += 1) {}
                     try fields.put("access_token", Value{ .String = fragment[start..end] });
+                    try fields.put("accessToken", Value{ .String = fragment[start..end] });
                 }
             }
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "parse_error")) {
+        } else if (std.mem.eql(u8, method, "parse_error") or std.mem.eql(u8, method, "parseError")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (args.len > 0 and args[0] == .Map) {
                 const config = args[0].Map;
@@ -5422,7 +5785,7 @@ pub const Interpreter = struct {
                 if (config.entries.get("error_description")) |desc| try fields.put("description", desc);
             }
             return Value{ .Struct = .{ .type_name = "OAuthError", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "parse_callback")) {
+        } else if (std.mem.eql(u8, method, "parse_callback") or std.mem.eql(u8, method, "parseCallback")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (args.len > 0 and args[0] == .String) {
                 const url = args[0].String;
@@ -5434,7 +5797,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Struct = .{ .type_name = "OAuthCallbackResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "decode_jwt")) {
+        } else if (std.mem.eql(u8, method, "decode_jwt") or std.mem.eql(u8, method, "decodeJwt")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             var header_fields = std.StringHashMap(Value).init(self.arena.allocator());
             var payload_fields = std.StringHashMap(Value).init(self.arena.allocator());
@@ -5445,33 +5808,33 @@ pub const Interpreter = struct {
             try fields.put("header", Value{ .Struct = .{ .type_name = "JwtHeader", .fields = header_fields } });
             try fields.put("payload", Value{ .Struct = .{ .type_name = "JwtPayload", .fields = payload_fields } });
             return Value{ .Struct = .{ .type_name = "DecodedJwt", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "verify_state")) {
+        } else if (std.mem.eql(u8, method, "verify_state") or std.mem.eql(u8, method, "verifyState")) {
             // Compare two state strings
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
                 return Value{ .Bool = std.mem.eql(u8, args[0].String, args[1].String) };
             }
             return Value{ .Bool = false };
-        } else if (std.mem.eql(u8, method, "generate_nonce")) {
+        } else if (std.mem.eql(u8, method, "generate_nonce") or std.mem.eql(u8, method, "generateNonce")) {
             return Value{ .String = "nonce_random_xyz789" };
         } else if (std.mem.eql(u8, method, "middleware")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("type", Value{ .String = "oauth_middleware" });
             return Value{ .Struct = .{ .type_name = "OAuthMiddleware", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "require_auth")) {
+        } else if (std.mem.eql(u8, method, "require_auth") or std.mem.eql(u8, method, "requireAuth")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("type", Value{ .String = "auth_guard" });
             return Value{ .Struct = .{ .type_name = "AuthGuard", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "oidc") or std.mem.startsWith(u8, method, "oidc::")) {
-            // Handle oauth::oidc::discover
+        } else if (std.mem.eql(u8, method, "oidc") or std.mem.startsWith(u8, method, "oidc.")) {
+            // Handle OAuth.oidc.discover
             return try self.evalOAuthOidcModule(method, args);
-        } else if (std.mem.eql(u8, method, "providers") or std.mem.startsWith(u8, method, "providers::")) {
-            // Handle oauth::providers::google, etc
+        } else if (std.mem.eql(u8, method, "providers") or std.mem.startsWith(u8, method, "providers.")) {
+            // Handle OAuth.providers.google, etc
             return try self.evalOAuthProvidersModule(method, args);
-        } else if (std.mem.eql(u8, method, "pkce") or std.mem.startsWith(u8, method, "pkce::")) {
-            // Handle oauth::pkce::generate_verifier, etc
+        } else if (std.mem.eql(u8, method, "pkce") or std.mem.startsWith(u8, method, "pkce.")) {
+            // Handle OAuth.pkce.generate_verifier, etc
             return try self.evalOAuthPkceModule(method, args);
-        } else if (std.mem.eql(u8, method, "TokenStorage") or std.mem.startsWith(u8, method, "TokenStorage::")) {
-            // Handle oauth::TokenStorage::new
+        } else if (std.mem.eql(u8, method, "TokenStorage") or std.mem.startsWith(u8, method, "TokenStorage.")) {
+            // Handle OAuth.TokenStorage.new
             return try self.evalOAuthTokenStorageModule(method, args);
         }
         std.debug.print("Unknown oauth method: {s}\n", .{method});
@@ -5480,8 +5843,8 @@ pub const Interpreter = struct {
 
     // OAuth OIDC submodule
     fn evalOAuthOidcModule(self: *Interpreter, method: []const u8, args: []const Value) InterpreterError!Value {
-        const submethod = if (std.mem.startsWith(u8, method, "oidc::"))
-            method[6..]
+        const submethod = if (std.mem.startsWith(u8, method, "oidc."))
+            method[5..]
         else
             "";
 
@@ -5492,8 +5855,11 @@ pub const Interpreter = struct {
             const token_url = try std.fmt.allocPrint(self.arena.allocator(), "{s}/token", .{issuer});
             const userinfo_url = try std.fmt.allocPrint(self.arena.allocator(), "{s}/userinfo", .{issuer});
             try fields.put("authorization_endpoint", Value{ .String = auth_url });
+            try fields.put("authorizationEndpoint", Value{ .String = auth_url });
             try fields.put("token_endpoint", Value{ .String = token_url });
+            try fields.put("tokenEndpoint", Value{ .String = token_url });
             try fields.put("userinfo_endpoint", Value{ .String = userinfo_url });
+            try fields.put("userinfoEndpoint", Value{ .String = userinfo_url });
             try fields.put("issuer", Value{ .String = issuer });
             return Value{ .Struct = .{ .type_name = "OidcDiscovery", .fields = fields } };
         }
@@ -5502,8 +5868,8 @@ pub const Interpreter = struct {
 
     // OAuth providers submodule
     fn evalOAuthProvidersModule(self: *Interpreter, method: []const u8, args: []const Value) InterpreterError!Value {
-        const submethod = if (std.mem.startsWith(u8, method, "providers::"))
-            method[11..]
+        const submethod = if (std.mem.startsWith(u8, method, "providers."))
+            method[10..]
         else
             "";
 
@@ -5541,8 +5907,8 @@ pub const Interpreter = struct {
     // OAuth PKCE submodule
     fn evalOAuthPkceModule(self: *Interpreter, method: []const u8, args: []const Value) InterpreterError!Value {
         _ = args;
-        const submethod = if (std.mem.startsWith(u8, method, "pkce::"))
-            method[6..]
+        const submethod = if (std.mem.startsWith(u8, method, "pkce."))
+            method[5..]
         else
             "";
 
@@ -5561,8 +5927,8 @@ pub const Interpreter = struct {
 
     // OAuth TokenStorage submodule
     fn evalOAuthTokenStorageModule(self: *Interpreter, method: []const u8, args: []const Value) InterpreterError!Value {
-        const submethod = if (std.mem.startsWith(u8, method, "TokenStorage::"))
-            method[14..]
+        const submethod = if (std.mem.startsWith(u8, method, "TokenStorage."))
+            method[13..]
         else
             "";
 
@@ -5573,7 +5939,9 @@ pub const Interpreter = struct {
             }
             try fields.put("tokens", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             return Value{ .Struct = .{ .type_name = "TokenStorage", .fields = fields } };
-        } else if (std.mem.eql(u8, submethod, "new_with_config") or std.mem.eql(u8, method, "new_with_config")) {
+        } else if (std.mem.eql(u8, submethod, "new_with_config") or std.mem.eql(u8, method, "new_with_config") or
+            std.mem.eql(u8, submethod, "newWithConfig") or std.mem.eql(u8, method, "newWithConfig"))
+        {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (args.len > 0 and args[0] == .String) {
                 try fields.put("app_name", args[0]);
@@ -5591,7 +5959,7 @@ pub const Interpreter = struct {
         const allocator = self.arena.allocator();
 
         // Pool creation
-        if (std.mem.eql(u8, method, "Pool::new") or std.mem.eql(u8, method, "pool") or std.mem.eql(u8, method, "new")) {
+        if (std.mem.eql(u8, method, "Pool.new") or std.mem.eql(u8, method, "pool") or std.mem.eql(u8, method, "new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var size: i64 = 4; // Default pool size
             if (args.len > 0 and args[0] == .Int) {
@@ -5601,7 +5969,7 @@ pub const Interpreter = struct {
             try fields.put("workers", Value{ .Array = &.{} });
             try fields.put("is_shutdown", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "WorkerPool", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Pool::new_with_config")) {
+        } else if (std.mem.eql(u8, method, "Pool.new_with_config") or std.mem.eql(u8, method, "Pool.newWithConfig")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var size: i64 = 4;
             if (args.len > 0 and args[0] == .Map) {
@@ -5613,7 +5981,7 @@ pub const Interpreter = struct {
             try fields.put("workers", Value{ .Array = &.{} });
             try fields.put("is_shutdown", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "WorkerPool", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "ScheduledPool::new")) {
+        } else if (std.mem.eql(u8, method, "ScheduledPool.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var size: i64 = 2;
             if (args.len > 0 and args[0] == .Int) {
@@ -5622,7 +5990,7 @@ pub const Interpreter = struct {
             try fields.put("size", Value{ .Int = size });
             try fields.put("is_shutdown", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "ScheduledPool", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "WorkStealingPool::new")) {
+        } else if (std.mem.eql(u8, method, "WorkStealingPool.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var size: i64 = 4;
             if (args.len > 0 and args[0] == .Int) {
@@ -5631,7 +5999,7 @@ pub const Interpreter = struct {
             try fields.put("size", Value{ .Int = size });
             try fields.put("is_shutdown", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "WorkStealingPool", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "ForkJoinPool::new")) {
+        } else if (std.mem.eql(u8, method, "ForkJoinPool.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var size: i64 = 4;
             if (args.len > 0 and args[0] == .Int) {
@@ -5660,8 +6028,8 @@ pub const Interpreter = struct {
         _ = env;
         const allocator = self.arena.allocator();
 
-        // Migration::new
-        if (std.mem.eql(u8, method, "Migration::new") or std.mem.eql(u8, method, "new")) {
+        // Migration.new
+        if (std.mem.eql(u8, method, "Migration.new") or std.mem.eql(u8, method, "new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var name: []const u8 = "migration";
             if (args.len > 0 and args[0] == .String) {
@@ -5673,7 +6041,7 @@ pub const Interpreter = struct {
             try fields.put("version", Value{ .Int = 1 });
             try fields.put("applied", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "Migration", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Migrator::new") or std.mem.eql(u8, method, "migrator")) {
+        } else if (std.mem.eql(u8, method, "Migrator.new") or std.mem.eql(u8, method, "migrator")) {
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("migrations", Value{ .Array = &.{} });
             try fields.put("applied", Value{ .Array = &.{} });
@@ -5681,23 +6049,32 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "sql") or std.mem.eql(u8, method, "execute")) {
             // Execute SQL - return void (mock)
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "create_table") or std.mem.eql(u8, method, "alter_table") or
-            std.mem.eql(u8, method, "drop_table") or std.mem.eql(u8, method, "add_column") or
-            std.mem.eql(u8, method, "drop_column") or std.mem.eql(u8, method, "add_index") or
-            std.mem.eql(u8, method, "drop_index") or std.mem.eql(u8, method, "rename_table") or
-            std.mem.eql(u8, method, "rename_column") or std.mem.eql(u8, method, "change_column") or
-            std.mem.eql(u8, method, "add_foreign_key") or std.mem.eql(u8, method, "drop_foreign_key"))
+        } else if (std.mem.eql(u8, method, "create_table") or std.mem.eql(u8, method, "createTable") or
+            std.mem.eql(u8, method, "alter_table") or std.mem.eql(u8, method, "alterTable") or
+            std.mem.eql(u8, method, "drop_table") or std.mem.eql(u8, method, "dropTable") or
+            std.mem.eql(u8, method, "add_column") or std.mem.eql(u8, method, "addColumn") or
+            std.mem.eql(u8, method, "drop_column") or std.mem.eql(u8, method, "dropColumn") or
+            std.mem.eql(u8, method, "add_index") or std.mem.eql(u8, method, "addIndex") or
+            std.mem.eql(u8, method, "drop_index") or std.mem.eql(u8, method, "dropIndex") or
+            std.mem.eql(u8, method, "rename_table") or std.mem.eql(u8, method, "renameTable") or
+            std.mem.eql(u8, method, "rename_column") or std.mem.eql(u8, method, "renameColumn") or
+            std.mem.eql(u8, method, "change_column") or std.mem.eql(u8, method, "changeColumn") or
+            std.mem.eql(u8, method, "add_foreign_key") or std.mem.eql(u8, method, "addForeignKey") or
+            std.mem.eql(u8, method, "drop_foreign_key") or std.mem.eql(u8, method, "dropForeignKey"))
         {
             // Schema operations - return void (mock)
             return Value.Void;
         } else if (std.mem.eql(u8, method, "seed") or std.mem.eql(u8, method, "truncate") or
             std.mem.eql(u8, method, "raw") or std.mem.eql(u8, method, "transaction") or
-            std.mem.eql(u8, method, "sql_file") or std.mem.eql(u8, method, "insert") or
-            std.mem.eql(u8, method, "drop_table_if_exists") or std.mem.eql(u8, method, "create_index") or
-            std.mem.eql(u8, method, "drop_index") or std.mem.eql(u8, method, "create_unique_index"))
+            std.mem.eql(u8, method, "sql_file") or std.mem.eql(u8, method, "sqlFile") or
+            std.mem.eql(u8, method, "insert") or
+            std.mem.eql(u8, method, "drop_table_if_exists") or std.mem.eql(u8, method, "dropTableIfExists") or
+            std.mem.eql(u8, method, "create_index") or std.mem.eql(u8, method, "createIndex") or
+            std.mem.eql(u8, method, "drop_index") or std.mem.eql(u8, method, "dropIndex") or
+            std.mem.eql(u8, method, "create_unique_index") or std.mem.eql(u8, method, "createUniqueIndex"))
         {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "Seeder::new")) {
+        } else if (std.mem.eql(u8, method, "Seeder.new")) {
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
                 try fields.put("name", args[0]);
@@ -5705,7 +6082,7 @@ pub const Interpreter = struct {
                 try fields.put("name", Value{ .String = "seeder" });
             }
             return Value{ .Struct = .{ .type_name = "Seeder", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "Table::new") or std.mem.eql(u8, method, "table")) {
+        } else if (std.mem.eql(u8, method, "Table.new") or std.mem.eql(u8, method, "table")) {
             // Table builder
             var fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0 and args[0] == .String) {
@@ -5791,9 +6168,14 @@ pub const Interpreter = struct {
 
         // TraceContext methods
         if (std.mem.eql(u8, type_name, "TraceContext")) {
-            if (std.mem.eql(u8, method, "trace_id")) {
+            if (std.mem.eql(u8, method, "trace_id") or std.mem.eql(u8, method, "traceId")) {
                 if (struct_val.fields.get("trace_id")) |tid| {
                     return tid;
+                }
+                return Value{ .String = "" };
+            } else if (std.mem.eql(u8, method, "span_id") or std.mem.eql(u8, method, "spanId")) {
+                if (struct_val.fields.get("span_id")) |sid| {
+                    return sid;
                 }
                 return Value{ .String = "" };
             }
@@ -5831,7 +6213,7 @@ pub const Interpreter = struct {
         }
 
         // OAuthToken/OAuthTokens methods (Result pattern)
-        if (std.mem.eql(u8, type_name, "OAuthToken") or std.mem.eql(u8, type_name, "OAuthTokens") or std.mem.eql(u8, type_name, "oauth::Tokens")) {
+        if (std.mem.eql(u8, type_name, "OAuthToken") or std.mem.eql(u8, type_name, "OAuthTokens") or std.mem.eql(u8, type_name, "OAuth.Tokens")) {
             return try self.evalOAuthTokenMethod(struct_val, method, args, env);
         }
 
@@ -6036,7 +6418,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "register_with_config")) {
+        } else if (std.mem.eql(u8, method, "register_with_config") or std.mem.eql(u8, method, "registerWithConfig")) {
             // register_with_config(name, check_fn, config)
             if (args.len >= 1) {
                 const name_val = try self.evaluateExpression(args[0], env);
@@ -6049,7 +6431,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "register_async")) {
+        } else if (std.mem.eql(u8, method, "register_async") or std.mem.eql(u8, method, "registerAsync")) {
             // register_async(name, check_fn)
             if (args.len >= 1) {
                 const name_val = try self.evaluateExpression(args[0], env);
@@ -6081,24 +6463,27 @@ pub const Interpreter = struct {
             try fields.put("message", Value{ .String = "" });
             try fields.put("details", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "check_all")) {
+        } else if (std.mem.eql(u8, method, "check_all") or std.mem.eql(u8, method, "checkAll")) {
             // check_all() -> AggregateResult
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("overall_status", Value{ .String = "healthy" });
+            try fields.put("overallStatus", Value{ .String = "healthy" });
             try fields.put("healthy_count", Value{ .Int = 1 });
+            try fields.put("healthyCount", Value{ .Int = 1 });
             try fields.put("unhealthy_count", Value{ .Int = 0 });
+            try fields.put("unhealthyCount", Value{ .Int = 0 });
             try fields.put("results", Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } });
             return Value{ .Struct = .{ .type_name = "AggregateHealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "check_force")) {
+        } else if (std.mem.eql(u8, method, "check_force") or std.mem.eql(u8, method, "checkForce")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("status", Value{ .String = "healthy" });
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "liveness_check") or std.mem.eql(u8, method, "startup_check")) {
+        } else if (std.mem.eql(u8, method, "liveness_check") or std.mem.eql(u8, method, "livenessCheck") or std.mem.eql(u8, method, "startup_check") or std.mem.eql(u8, method, "startupCheck")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("status", Value{ .String = "healthy" });
             try fields.put("message", Value{ .String = "" });
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "readiness_check")) {
+        } else if (std.mem.eql(u8, method, "readiness_check") or std.mem.eql(u8, method, "readinessCheck")) {
             // Check if shutdown was initiated
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             if (struct_val.fields.get("_shutdown")) |shutdown| {
@@ -6111,11 +6496,11 @@ pub const Interpreter = struct {
             try fields.put("status", Value{ .String = "healthy" });
             try fields.put("message", Value{ .String = "" });
             return Value{ .Struct = .{ .type_name = "HealthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "http_handler")) {
+        } else if (std.mem.eql(u8, method, "http_handler") or std.mem.eql(u8, method, "httpHandler")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("path", Value{ .String = "/health" });
             return Value{ .Struct = .{ .type_name = "HttpHandler", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "kubernetes_handlers")) {
+        } else if (std.mem.eql(u8, method, "kubernetes_handlers") or std.mem.eql(u8, method, "kubernetesHandlers")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             var liveness = std.StringHashMap(Value).init(self.arena.allocator());
             try liveness.put("path", Value{ .String = "/healthz" });
@@ -6127,22 +6512,25 @@ pub const Interpreter = struct {
             try fields.put("readiness", Value{ .Struct = .{ .type_name = "HttpHandler", .fields = readiness } });
             try fields.put("startup", Value{ .Struct = .{ .type_name = "HttpHandler", .fields = startup } });
             return Value{ .Struct = .{ .type_name = "KubernetesHandlers", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "on_status_change") or std.mem.eql(u8, method, "on_unhealthy") or std.mem.eql(u8, method, "on_recovery")) {
+        } else if (std.mem.eql(u8, method, "on_status_change") or std.mem.eql(u8, method, "onStatusChange") or std.mem.eql(u8, method, "on_unhealthy") or std.mem.eql(u8, method, "onUnhealthy") or std.mem.eql(u8, method, "on_recovery") or std.mem.eql(u8, method, "onRecovery")) {
             // Callback registration
             return Value.Void;
         } else if (std.mem.eql(u8, method, "metrics")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("total_checks", Value{ .Int = 0 });
+            try fields.put("totalChecks", Value{ .Int = 0 });
             try fields.put("healthy_checks", Value{ .Int = 0 });
+            try fields.put("healthyChecks", Value{ .Int = 0 });
             try fields.put("check_duration_ms", Value{ .Int = 0 });
+            try fields.put("checkDurationMs", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "HealthMetrics", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "register_metrics")) {
+        } else if (std.mem.eql(u8, method, "register_metrics") or std.mem.eql(u8, method, "registerMetrics")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "start_shutdown")) {
+        } else if (std.mem.eql(u8, method, "start_shutdown") or std.mem.eql(u8, method, "startShutdown")) {
             // Set shutdown flag
             fields_ptr.put("_shutdown", Value{ .Bool = true }) catch {};
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "to_json")) {
+        } else if (std.mem.eql(u8, method, "to_json") or std.mem.eql(u8, method, "toJson")) {
             return Value{ .String = "{\"status\":\"healthy\"}" };
         } else if (std.mem.eql(u8, method, "format")) {
             // format(formatter_fn)
@@ -6792,24 +7180,24 @@ pub const Interpreter = struct {
                 return name_val;
             }
             return Value{ .String = "span" };
-        } else if (std.mem.eql(u8, method, "trace_id")) {
+        } else if (std.mem.eql(u8, method, "trace_id") or std.mem.eql(u8, method, "traceId")) {
             if (struct_val.fields.get("trace_id")) |tid| {
                 return tid;
             }
             return Value{ .String = "0af7651916cd43dd8448eb211c80319c" };
-        } else if (std.mem.eql(u8, method, "span_id")) {
+        } else if (std.mem.eql(u8, method, "span_id") or std.mem.eql(u8, method, "spanId")) {
             if (struct_val.fields.get("span_id")) |sid| {
                 return sid;
             }
             return Value{ .String = "b7ad6b7169203331" };
-        } else if (std.mem.eql(u8, method, "parent_span_id")) {
+        } else if (std.mem.eql(u8, method, "parent_span_id") or std.mem.eql(u8, method, "parentSpanId")) {
             if (struct_val.fields.get("parent_span_id")) |psid| {
                 return psid;
             }
             return Value{ .String = "" };
         } else if (std.mem.eql(u8, method, "end") or std.mem.eql(u8, method, "finish")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "set_attribute") or std.mem.eql(u8, method, "set_tag")) {
+        } else if (std.mem.eql(u8, method, "set_attribute") or std.mem.eql(u8, method, "setAttribute") or std.mem.eql(u8, method, "set_tag") or std.mem.eql(u8, method, "setTag")) {
             // Store attribute in span's attributes map
             if (args.len >= 2) {
                 const key_val = try self.evaluateExpression(args[0], env);
@@ -6824,7 +7212,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "get_attribute")) {
+        } else if (std.mem.eql(u8, method, "get_attribute") or std.mem.eql(u8, method, "getAttribute")) {
             if (args.len >= 1) {
                 const key_val = try self.evaluateExpression(args[0], env);
                 if (key_val == .String) {
@@ -6838,7 +7226,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "set_attributes")) {
+        } else if (std.mem.eql(u8, method, "set_attributes") or std.mem.eql(u8, method, "setAttributes")) {
             // Set multiple attributes from a map
             if (args.len >= 1) {
                 const attrs_val = try self.evaluateExpression(args[0], env);
@@ -6854,15 +7242,15 @@ pub const Interpreter = struct {
                 }
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "add_event") or std.mem.eql(u8, method, "log") or std.mem.eql(u8, method, "add_event_at")) {
+        } else if (std.mem.eql(u8, method, "add_event") or std.mem.eql(u8, method, "addEvent") or std.mem.eql(u8, method, "log") or std.mem.eql(u8, method, "add_event_at") or std.mem.eql(u8, method, "addEventAt")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "set_status")) {
+        } else if (std.mem.eql(u8, method, "set_status") or std.mem.eql(u8, method, "setStatus")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "record_exception")) {
+        } else if (std.mem.eql(u8, method, "record_exception") or std.mem.eql(u8, method, "recordException")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "add_link")) {
+        } else if (std.mem.eql(u8, method, "add_link") or std.mem.eql(u8, method, "addLink")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "child") or std.mem.eql(u8, method, "child_span")) {
+        } else if (std.mem.eql(u8, method, "child") or std.mem.eql(u8, method, "child_span") or std.mem.eql(u8, method, "childSpan")) {
             var fields = std.StringHashMap(Value).init(allocator);
             var child_name: []const u8 = "child_span";
             if (args.len > 0) {
@@ -6893,7 +7281,7 @@ pub const Interpreter = struct {
                 try ctx.put("span_id", sid);
             }
             return Value{ .Map = .{ .entries = ctx } };
-        } else if (std.mem.eql(u8, method, "on_end")) {
+        } else if (std.mem.eql(u8, method, "on_end") or std.mem.eql(u8, method, "onEnd")) {
             // Register a callback to be called when span ends (mock - just store it)
             return Value.Void;
         }
@@ -7004,34 +7392,44 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "authorization_url") or std.mem.eql(u8, method, "auth_url")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "{s}?client_id={s}&response_type=code", .{ auth_url_base, client_id });
             return Value{ .String = url };
-        } else if (std.mem.eql(u8, method, "authorization_url_with_scope")) {
+        } else if (std.mem.eql(u8, method, "authorization_url_with_scope") or std.mem.eql(u8, method, "authorizationUrlWithScope")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "{s}?client_id={s}&response_type=code&scope=openid+profile+email", .{ auth_url_base, client_id });
             return Value{ .String = url };
-        } else if (std.mem.eql(u8, method, "authorization_url_with_state")) {
+        } else if (std.mem.eql(u8, method, "authorization_url_with_state") or std.mem.eql(u8, method, "authorizationUrlWithState")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "{s}?client_id={s}&response_type=code&state=random_state_abc123", .{ auth_url_base, client_id });
             return Value{ .String = url };
-        } else if (std.mem.eql(u8, method, "exchange_code") or std.mem.eql(u8, method, "get_token")) {
+        } else if (std.mem.eql(u8, method, "exchange_code") or std.mem.eql(u8, method, "exchangeCode") or std.mem.eql(u8, method, "get_token")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "access_token_123" });
+            try fields.put("accessToken", Value{ .String = "access_token_123" });
             try fields.put("refresh_token", Value{ .String = "refresh_token_456" });
+            try fields.put("refreshToken", Value{ .String = "refresh_token_456" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "refresh_token") or std.mem.eql(u8, method, "refresh")) {
+        } else if (std.mem.eql(u8, method, "refresh_token") or std.mem.eql(u8, method, "refreshToken") or std.mem.eql(u8, method, "refresh")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "new_access_token" });
+            try fields.put("accessToken", Value{ .String = "new_access_token" });
             try fields.put("refresh_token", Value{ .String = "new_refresh_token" });
+            try fields.put("refreshToken", Value{ .String = "new_refresh_token" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "refresh_if_needed")) {
+        } else if (std.mem.eql(u8, method, "refresh_if_needed") or std.mem.eql(u8, method, "refreshIfNeeded")) {
             // Returns new tokens if the provided tokens are expired
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "refreshed_access_token" });
+            try fields.put("accessToken", Value{ .String = "refreshed_access_token" });
             try fields.put("refresh_token", Value{ .String = "refreshed_refresh_token" });
+            try fields.put("refreshToken", Value{ .String = "refreshed_refresh_token" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "user_info") or std.mem.eql(u8, method, "get_user")) {
+        } else if (std.mem.eql(u8, method, "user_info") or std.mem.eql(u8, method, "userinfo") or std.mem.eql(u8, method, "get_user")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("id", Value{ .String = "user123" });
+            try fields.put("sub", Value{ .String = "user123" });
             try fields.put("email", Value{ .String = "user@example.com" });
             try fields.put("name", Value{ .String = "John Doe" });
             return Value{ .Struct = .{ .type_name = "OAuthUser", .fields = fields } };
@@ -7044,26 +7442,34 @@ pub const Interpreter = struct {
             try fields.put("active", Value{ .Bool = true });
             try fields.put("scope", Value{ .String = "openid profile email" });
             return Value{ .Struct = .{ .type_name = "TokenIntrospection", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "implicit_token_url") or std.mem.eql(u8, method, "token_url")) {
+        } else if (std.mem.eql(u8, method, "implicit_token_url") or std.mem.eql(u8, method, "implicitUrl") or std.mem.eql(u8, method, "token_url")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "https://auth.example.com/authorize?client_id={s}&response_type=token", .{client_id});
             return Value{ .String = url };
-        } else if (std.mem.eql(u8, method, "client_credentials")) {
+        } else if (std.mem.eql(u8, method, "client_credentials") or std.mem.eql(u8, method, "clientCredentials")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "client_credentials_token" });
+            try fields.put("accessToken", Value{ .String = "client_credentials_token" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "device_code") or std.mem.eql(u8, method, "start_device_flow")) {
+        } else if (std.mem.eql(u8, method, "device_code") or std.mem.eql(u8, method, "requestDeviceCode") or std.mem.eql(u8, method, "start_device_flow")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("device_code", Value{ .String = "device_code_123" });
+            try fields.put("deviceCode", Value{ .String = "device_code_123" });
             try fields.put("user_code", Value{ .String = "USER-CODE" });
+            try fields.put("userCode", Value{ .String = "USER-CODE" });
             try fields.put("verification_uri", Value{ .String = "https://auth.example.com/device" });
+            try fields.put("verificationUri", Value{ .String = "https://auth.example.com/device" });
             try fields.put("expires_in", Value{ .Int = 600 });
+            try fields.put("expiresIn", Value{ .Int = 600 });
             try fields.put("interval", Value{ .Int = 5 });
             return Value{ .Struct = .{ .type_name = "DeviceAuthResponse", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "poll_device_token")) {
+        } else if (std.mem.eql(u8, method, "poll_device_token") or std.mem.eql(u8, method, "pollDeviceToken")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "device_access_token" });
+            try fields.put("accessToken", Value{ .String = "device_access_token" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
         } else if (std.mem.eql(u8, method, "pkce_challenge") or std.mem.eql(u8, method, "generate_pkce")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
@@ -7071,14 +7477,17 @@ pub const Interpreter = struct {
             try fields.put("code_challenge", Value{ .String = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" });
             try fields.put("code_challenge_method", Value{ .String = "S256" });
             return Value{ .Struct = .{ .type_name = "PKCEChallenge", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "authorization_url_with_pkce")) {
+        } else if (std.mem.eql(u8, method, "authorization_url_with_pkce") or std.mem.eql(u8, method, "authorizationUrlWithPkce")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "https://auth.example.com/authorize?client_id={s}&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256", .{client_id});
             return Value{ .String = url };
-        } else if (std.mem.eql(u8, method, "exchange_code_with_pkce") or std.mem.eql(u8, method, "exchange_code_with_verifier")) {
+        } else if (std.mem.eql(u8, method, "exchange_code_with_pkce") or std.mem.eql(u8, method, "exchangeCodeWithVerifier") or std.mem.eql(u8, method, "exchange_code_with_verifier")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "pkce_access_token" });
+            try fields.put("accessToken", Value{ .String = "pkce_access_token" });
             try fields.put("refresh_token", Value{ .String = "pkce_refresh_token" });
+            try fields.put("refreshToken", Value{ .String = "pkce_refresh_token" });
             try fields.put("expires_in", Value{ .Int = 3600 });
+            try fields.put("expiresIn", Value{ .Int = 3600 });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
         } else if (std.mem.eql(u8, method, "is_expired")) {
             return Value{ .Bool = false };
@@ -7095,7 +7504,7 @@ pub const Interpreter = struct {
             try fields.put("expires_in", Value{ .Int = 600 });
             try fields.put("interval", Value{ .Int = 5 });
             return Value{ .Struct = .{ .type_name = "DeviceAuthResponse", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "validate_id_token")) {
+        } else if (std.mem.eql(u8, method, "validate_id_token") or std.mem.eql(u8, method, "validateIdToken")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("sub", Value{ .String = "user123" });
             try fields.put("aud", Value{ .String = client_id });
@@ -7108,15 +7517,15 @@ pub const Interpreter = struct {
             try fields.put("email", Value{ .String = "user@example.com" });
             try fields.put("name", Value{ .String = "John Doe" });
             return Value{ .Struct = .{ .type_name = "OAuthUser", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "verify_nonce")) {
+        } else if (std.mem.eql(u8, method, "verify_nonce") or std.mem.eql(u8, method, "verifyNonce")) {
             return Value{ .Bool = true };
-        } else if (std.mem.eql(u8, method, "verify_signature")) {
+        } else if (std.mem.eql(u8, method, "verify_signature") or std.mem.eql(u8, method, "verifySignature")) {
             return Value{ .Bool = true };
-        } else if (std.mem.eql(u8, method, "revoke_with_hint")) {
+        } else if (std.mem.eql(u8, method, "revoke_with_hint") or std.mem.eql(u8, method, "revokeWithHint")) {
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("success", Value{ .Bool = true });
             return Value{ .Struct = .{ .type_name = "OAuthResult", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "authorization_url_with_options")) {
+        } else if (std.mem.eql(u8, method, "authorization_url_with_options") or std.mem.eql(u8, method, "authorizationUrlWithOptions")) {
             const url = try std.fmt.allocPrint(self.arena.allocator(), "https://auth.example.com/authorize?client_id={s}&response_type=code+id_token&scope=openid+profile", .{client_id});
             return Value{ .String = url };
         }
@@ -7320,6 +7729,7 @@ pub const Interpreter = struct {
             // Return mock tokens (mock implementation returns the last saved value)
             var fields = std.StringHashMap(Value).init(self.arena.allocator());
             try fields.put("access_token", Value{ .String = "token" });
+            try fields.put("accessToken", Value{ .String = "token" });
             return Value{ .Struct = .{ .type_name = "OAuthToken", .fields = fields } };
         } else if (std.mem.eql(u8, method, "delete") or std.mem.eql(u8, method, "remove")) {
             return Value.Void;
@@ -7369,7 +7779,7 @@ pub const Interpreter = struct {
             }
             try future_fields.put("is_cancelled", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "Future", .fields = future_fields } };
-        } else if (std.mem.eql(u8, method, "submit_with_priority")) {
+        } else if (std.mem.eql(u8, method, "submit_with_priority") or std.mem.eql(u8, method, "submitWithPriority")) {
             // Same as submit, ignore priority for now
             var future_fields = std.StringHashMap(Value).init(allocator);
             if (args.len > 0) {
@@ -7390,7 +7800,7 @@ pub const Interpreter = struct {
             try future_fields.put("is_complete", Value{ .Bool = true });
             try future_fields.put("is_cancelled", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "Future", .fields = future_fields } };
-        } else if (std.mem.eql(u8, method, "map") or std.mem.eql(u8, method, "parallel_map")) {
+        } else if (std.mem.eql(u8, method, "map") or std.mem.eql(u8, method, "parallel_map") or std.mem.eql(u8, method, "parallelMap")) {
             // Map a function over items
             if (args.len >= 2) {
                 const items_val = try self.evaluateExpression(args[0], env);
@@ -7417,7 +7827,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Array = &.{} };
-        } else if (std.mem.eql(u8, method, "parallel_filter")) {
+        } else if (std.mem.eql(u8, method, "parallel_filter") or std.mem.eql(u8, method, "parallelFilter")) {
             // Filter items
             if (args.len >= 2) {
                 const items_val = try self.evaluateExpression(args[0], env);
@@ -7446,7 +7856,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Array = &.{} };
-        } else if (std.mem.eql(u8, method, "parallel_reduce")) {
+        } else if (std.mem.eql(u8, method, "parallel_reduce") or std.mem.eql(u8, method, "parallelReduce")) {
             // Reduce items
             if (args.len >= 3) {
                 const items_val = try self.evaluateExpression(args[0], env);
@@ -7476,7 +7886,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Int = 0 };
-        } else if (std.mem.eql(u8, method, "invoke_all")) {
+        } else if (std.mem.eql(u8, method, "invoke_all") or std.mem.eql(u8, method, "invokeAll")) {
             // Execute all tasks and return results
             if (args.len > 0) {
                 const tasks_val = try self.evaluateExpression(args[0], env);
@@ -7500,7 +7910,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Array = &.{} };
-        } else if (std.mem.eql(u8, method, "invoke_any")) {
+        } else if (std.mem.eql(u8, method, "invoke_any") or std.mem.eql(u8, method, "invokeAny")) {
             // Return first completed task result (simplified: just run first task)
             if (args.len > 0) {
                 const tasks_val = try self.evaluateExpression(args[0], env);
@@ -7561,22 +7971,25 @@ pub const Interpreter = struct {
             }
             try future_fields.put("is_complete", Value{ .Bool = true });
             return Value{ .Struct = .{ .type_name = "ScheduledFuture", .fields = future_fields } };
-        } else if (std.mem.eql(u8, method, "schedule_at_fixed_rate") or std.mem.eql(u8, method, "schedule_with_fixed_delay")) {
+        } else if (std.mem.eql(u8, method, "schedule_at_fixed_rate") or std.mem.eql(u8, method, "scheduleAtFixedRate") or std.mem.eql(u8, method, "schedule_with_fixed_delay") or std.mem.eql(u8, method, "scheduleWithFixedDelay")) {
             // Return a handle that can be cancelled
             var handle_fields = std.StringHashMap(Value).init(allocator);
             try handle_fields.put("cancelled", Value{ .Bool = false });
             return Value{ .Struct = .{ .type_name = "ScheduleHandle", .fields = handle_fields } };
-        } else if (std.mem.eql(u8, method, "shutdown") or std.mem.eql(u8, method, "shutdown_now") or std.mem.eql(u8, method, "terminate")) {
+        } else if (std.mem.eql(u8, method, "shutdown") or std.mem.eql(u8, method, "shutdown_now") or std.mem.eql(u8, method, "shutdownNow") or std.mem.eql(u8, method, "terminate")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "await_termination")) {
+        } else if (std.mem.eql(u8, method, "await_termination") or std.mem.eql(u8, method, "awaitTermination")) {
             return Value{ .Bool = true };
-        } else if (std.mem.eql(u8, method, "is_shutdown")) {
+        } else if (std.mem.eql(u8, method, "is_shutdown") or std.mem.eql(u8, method, "isShutdown")) {
             return Value{ .Bool = true };
         } else if (std.mem.eql(u8, method, "stats")) {
             var stats_fields = std.StringHashMap(Value).init(allocator);
             try stats_fields.put("active_count", Value{ .Int = 0 });
+            try stats_fields.put("activeCount", Value{ .Int = 0 });
             try stats_fields.put("completed_count", Value{ .Int = 0 });
+            try stats_fields.put("completedCount", Value{ .Int = 0 });
             try stats_fields.put("queue_size", Value{ .Int = 0 });
+            try stats_fields.put("queueSize", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "PoolStats", .fields = stats_fields } };
         }
         return error.UndefinedFunction;
@@ -7594,7 +8007,7 @@ pub const Interpreter = struct {
                 return result;
             }
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "get_timeout")) {
+        } else if (std.mem.eql(u8, method, "get_timeout") or std.mem.eql(u8, method, "getTimeout")) {
             // Return result or null on timeout (simplified: always return result)
             if (struct_val.fields.get("result")) |result| {
                 return result;
@@ -7603,12 +8016,12 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "wait")) {
             // Wait is a no-op in our synchronous implementation
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "is_complete")) {
+        } else if (std.mem.eql(u8, method, "is_complete") or std.mem.eql(u8, method, "isComplete")) {
             if (struct_val.fields.get("is_complete")) |complete| {
                 return complete;
             }
             return Value{ .Bool = true };
-        } else if (std.mem.eql(u8, method, "is_cancelled")) {
+        } else if (std.mem.eql(u8, method, "is_cancelled") or std.mem.eql(u8, method, "isCancelled")) {
             if (struct_val.fields.get("is_cancelled")) |cancelled| {
                 return cancelled;
             }
@@ -7618,7 +8031,9 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "stats")) {
             var stats_fields = std.StringHashMap(Value).init(allocator);
             try stats_fields.put("execution_time", Value{ .Int = 100 });
+            try stats_fields.put("executionTime", Value{ .Int = 100 });
             try stats_fields.put("wait_time", Value{ .Int = 0 });
+            try stats_fields.put("waitTime", Value{ .Int = 0 });
             return Value{ .Struct = .{ .type_name = "TaskStats", .fields = stats_fields } };
         }
         return error.UndefinedFunction;
@@ -7629,7 +8044,7 @@ pub const Interpreter = struct {
         _ = struct_val;
         const allocator = self.arena.allocator();
 
-        if (std.mem.eql(u8, method, "bind") or std.mem.eql(u8, method, "bind_variadic") or std.mem.eql(u8, method, "get_function")) {
+        if (std.mem.eql(u8, method, "bind") or std.mem.eql(u8, method, "bind_variadic") or std.mem.eql(u8, method, "bindVariadic") or std.mem.eql(u8, method, "get_function")) {
             var fields = std.StringHashMap(Value).init(allocator);
             // Get the function name from the first argument
             if (args.len >= 1) {
@@ -7646,12 +8061,12 @@ pub const Interpreter = struct {
             return Value{ .Struct = .{ .type_name = "FfiFunction", .fields = fields } };
         } else if (std.mem.eql(u8, method, "close") or std.mem.eql(u8, method, "unload")) {
             return Value.Void;
-        } else if (std.mem.eql(u8, method, "symbol") or std.mem.eql(u8, method, "symbol_address") or std.mem.eql(u8, method, "get_symbol")) {
+        } else if (std.mem.eql(u8, method, "symbol") or std.mem.eql(u8, method, "symbol_address") or std.mem.eql(u8, method, "symbolAddress") or std.mem.eql(u8, method, "get_symbol")) {
             // Return a mock address
             var fields = std.StringHashMap(Value).init(allocator);
             try fields.put("address", Value{ .Int = 0x1000 });
             return Value{ .Struct = .{ .type_name = "FfiPointer", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "has_symbol")) {
+        } else if (std.mem.eql(u8, method, "has_symbol") or std.mem.eql(u8, method, "hasSymbol")) {
             // Check if symbol exists - for known functions, return true
             if (args.len >= 1) {
                 const sym_val = try self.evaluateExpression(args[0], env);
@@ -7723,7 +8138,7 @@ pub const Interpreter = struct {
                 }
             }
             return Value{ .Struct = .{ .type_name = "FfiStruct", .fields = fields } };
-        } else if (std.mem.eql(u8, method, "offset_of")) {
+        } else if (std.mem.eql(u8, method, "offset_of") or std.mem.eql(u8, method, "offsetOf")) {
             // Get the byte offset of a field
             if (args.len >= 1) {
                 const field_name_val = try self.evaluateExpression(args[0], env);
@@ -8600,7 +9015,7 @@ pub const Interpreter = struct {
         }
 
         // starts_with(prefix) - check if string starts with prefix
-        if (std.mem.eql(u8, method, "starts_with")) {
+        if (std.mem.eql(u8, method, "starts_with") or std.mem.eql(u8, method, "startsWith")) {
             if (args.len != 1) {
                 std.debug.print("starts_with() expects 1 argument\n", .{});
                 return error.InvalidArguments;
@@ -8615,7 +9030,7 @@ pub const Interpreter = struct {
         }
 
         // ends_with(suffix) - check if string ends with suffix
-        if (std.mem.eql(u8, method, "ends_with")) {
+        if (std.mem.eql(u8, method, "ends_with") or std.mem.eql(u8, method, "endsWith")) {
             if (args.len != 1) {
                 std.debug.print("ends_with() expects 1 argument\n", .{});
                 return error.InvalidArguments;

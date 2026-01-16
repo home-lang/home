@@ -55,7 +55,7 @@ fn test_closures_with_captures() -> void {
     println("Count: {}", increment()); // 3
 
     // Capture by move (FnOnce trait)
-    let name = String::from("Alice");
+    let name = String.from("Alice");
     let greet_once = move || {
         println("Hello, {}!", name);
         // name is moved, cannot be used again
@@ -107,7 +107,7 @@ fn test_closure_traits() -> void {
     }, 3);
 
     // Test FnOnce trait
-    let message = String::from("This closure runs once");
+    let message = String.from("This closure runs once");
     call_once(move || {
         println("{}", message);
     });
@@ -118,7 +118,7 @@ fn test_closure_traits() -> void {
 fn map<T, U, F>(items: Vec<T>, f: F) -> Vec<U>
 where F: Fn(T) -> U
 {
-    let mut result = Vec::new();
+    let mut result = Vec.new();
     for item in items {
         result.push(f(item));
     }
@@ -128,7 +128,7 @@ where F: Fn(T) -> U
 fn filter<T, F>(items: Vec<T>, predicate: F) -> Vec<T>
 where F: Fn(&T) -> bool
 {
-    let mut result = Vec::new();
+    let mut result = Vec.new();
     for item in items {
         if predicate(&item) {
             result.push(item);
@@ -200,9 +200,9 @@ fn test_closures_in_structs() -> void {
 
     let mut click_count = 0;
 
-    let button = Button::new(
-        String::from("Click me!"),
-        Box::new(move || {
+    let button = Button.new(
+        String.from("Click me!"),
+        Box.new(move || {
             click_count = click_count + 1;
             println("Button clicked {} times", click_count);
         })
@@ -228,7 +228,7 @@ fn test_async_closures() -> void {
     };
 
     // Async closure with captures
-    let url = String::from("https://api.example.com");
+    let url = String.from("https://api.example.com");
     let fetch_from_url = async move || {
         println("Fetching from {}...", url);
         await async_sleep(500);
@@ -247,8 +247,8 @@ type Consumer<T> = dyn FnMut(T);
 fn test_closure_type_aliases() -> void {
     println("\n=== Closure Type Aliases ===\n");
 
-    let is_positive: Box<Predicate> = Box::new(|x| x > 0);
-    let to_string: Box<Transformer<i32, String>> = Box::new(|x| format!("{}", x));
+    let is_positive: Box<Predicate> = Box.new(|x| x > 0);
+    let to_string: Box<Transformer<i32, String>> = Box.new(|x| format!("{}", x));
 
     println("5 is positive: {}", is_positive(5));
     println("-3 is positive: {}", is_positive(-3));
@@ -258,12 +258,12 @@ fn test_closure_type_aliases() -> void {
 // ==================== Returning Closures ====================
 
 fn make_adder(n: i32) -> Box<dyn Fn(i32) -> i32> {
-    return Box::new(move |x| x + n);
+    return Box.new(move |x| x + n);
 }
 
 fn make_counter() -> Box<dyn FnMut() -> i32> {
     let mut count = 0;
-    return Box::new(move || {
+    return Box.new(move || {
         count = count + 1;
         return count;
     });
@@ -309,7 +309,7 @@ impl<T> LazyValue<T> {
 fn test_lazy_evaluation() -> void {
     println("\n=== Lazy Evaluation ===\n");
 
-    let mut lazy = LazyValue::new(Box::new(|| {
+    let mut lazy = LazyValue.new(Box.new(|| {
         println("Computing expensive value...");
         return 42;
     }));

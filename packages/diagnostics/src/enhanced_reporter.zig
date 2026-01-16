@@ -257,8 +257,7 @@ pub const EnhancedReporter = struct {
                     std.mem.eql(u8, two_char, ">=") or
                     std.mem.eql(u8, two_char, "&&") or
                     std.mem.eql(u8, two_char, "||") or
-                    std.mem.eql(u8, two_char, "->") or
-                    std.mem.eql(u8, two_char, "::"))
+                    std.mem.eql(u8, two_char, "->"))
                 {
                     span_len = 2;
                 }

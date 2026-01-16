@@ -110,6 +110,28 @@ pub const CfValue = union(enum) {
     pub fn fromGetAtt(resource: []const u8, attribute: []const u8) CfValue {
         return .{ .get_att = GetAtt.init(resource, attribute) };
     }
+
+    /// Recursively free all allocated memory in this CfValue
+    pub fn deinit(self: *CfValue, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .array => |arr| {
+                for (arr) |*item| {
+                    var val = item.*;
+                    val.deinit(allocator);
+                }
+                allocator.free(arr);
+            },
+            .object => |*obj| {
+                var iter = obj.iterator();
+                while (iter.next()) |entry| {
+                    var val = entry.value_ptr.*;
+                    val.deinit(allocator);
+                }
+                obj.deinit();
+            },
+            else => {},
+        }
+    }
 };
 
 /// CloudFormation Parameter definition
@@ -252,8 +274,9 @@ pub const Template = struct {
 
     /// Generate JSON representation of the CloudFormation template
     pub fn toJson(self: *const Template) ![]u8 {
-        var buffer: std.ArrayList(u8) = .empty;
-        const writer = buffer.writer(self.allocator);
+        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer aw.deinit();
+        const writer = &aw.writer;
 
         try writer.writeAll("{\n");
         try writer.writeAll("  \"AWSTemplateFormatVersion\": \"");
@@ -319,7 +342,7 @@ pub const Template = struct {
         }
 
         try writer.writeAll("\n}\n");
-        return buffer.toOwnedSlice(self.allocator);
+        return try aw.toOwnedSlice();
     }
 
     fn writeParameter(self: *const Template, writer: anytype, name: []const u8, param: Parameter) !void {
@@ -599,8 +622,9 @@ pub const Builder = struct {
     /// Generate a logical ID from a resource name
     pub fn logicalId(self: *Builder, suffix: []const u8) ![]const u8 {
         // Convert to PascalCase and remove invalid characters
-        var result: std.ArrayList(u8) = .empty;
-        const writer = result.writer(self.allocator);
+        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer aw.deinit();
+        const writer = &aw.writer;
 
         // Add project name
         var cap_next = true;
@@ -641,15 +665,15 @@ pub const Builder = struct {
             }
         }
 
-        return result.toOwnedSlice(self.allocator);
+        return try aw.toOwnedSlice();
     }
 
     /// Generate a resource name with project/environment prefix
     pub fn resourceName(self: *Builder, suffix: []const u8) ![]const u8 {
-        var result: std.ArrayList(u8) = .empty;
-        const writer = result.writer(self.allocator);
-        try writer.print("{s}-{s}-{s}", .{ self.project_name, self.environment, suffix });
-        return result.toOwnedSlice(self.allocator);
+        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer aw.deinit();
+        try aw.writer.print("{s}-{s}-{s}", .{ self.project_name, self.environment, suffix });
+        return try aw.toOwnedSlice();
     }
 
     /// Add standard environment parameter

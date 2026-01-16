@@ -206,7 +206,7 @@ const DEFAULT_CONFIG: Config = {
 fn create_server(custom_config: Config): Server {
     let config = { ...DEFAULT_CONFIG, ...custom_config }
     println("Server config: {:?}", config)
-    Server::new(config)
+    Server.new(config)
 }
 
 fn test_merging_configs(): void {
@@ -386,7 +386,7 @@ fn logging_middleware(next: Handler): Handler {
 fn auth_middleware(next: Handler): Handler {
     return |req| {
         if (!req.is_authenticated()) {
-            return Response::unauthorized()
+            return Response.unauthorized()
         }
         next(req)
     }
@@ -403,7 +403,7 @@ fn test_middleware(): void {
         auth_middleware
     )
     
-    let response = handler(Request::new())
+    let response = handler(Request.new())
     println("Final response: {:?}", response)
 }
 

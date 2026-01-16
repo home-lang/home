@@ -125,10 +125,12 @@ test "queue: get next job" {
 
     const job1 = q.getNextJob();
     try testing.expect(job1 != null);
+    defer job1.?.deinit();
     try testing.expectEqual(@as(usize, 1), q.pendingCount());
 
     const job2 = q.getNextJob();
     try testing.expect(job2 != null);
+    defer job2.?.deinit();
     try testing.expectEqual(@as(usize, 0), q.pendingCount());
 
     const job3 = q.getNextJob();
@@ -143,6 +145,7 @@ test "queue: process job success" {
     defer q.deinit();
 
     const job = try q.dispatch("default", "test");
+    defer job.deinit(); // Job must be freed after successful processing
 
     const handler = struct {
         fn handle(j: *queue.Job) !void {

@@ -20,7 +20,7 @@ fn test_repl_initialization() {
         show_types: false,
     };
 
-    let mut repl = REPL::init(allocator, config);
+    let mut repl = REPL.init(allocator, config);
     defer repl.deinit();
 
     assert(repl.config.history_size == 100, "history size should be 100");
@@ -32,7 +32,7 @@ fn test_repl_initialization() {
 fn test_expression_evaluation() {
     println("Testing expression evaluation...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Test arithmetic
@@ -51,7 +51,7 @@ fn test_expression_evaluation() {
 fn test_variable_persistence() {
     println("Testing variable persistence...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Define variable
@@ -72,7 +72,7 @@ fn test_variable_persistence() {
 fn test_function_definition() {
     println("Testing function definition...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Define function
@@ -96,7 +96,7 @@ fn test_function_definition() {
 fn test_multi_line_blocks() {
     println("Testing multi-line blocks...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Multi-line if statement
@@ -116,7 +116,7 @@ fn test_multi_line_blocks() {
 fn test_multi_line_function() {
     println("Testing multi-line function...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     let input = "
@@ -144,7 +144,7 @@ fn test_multi_line_function() {
 fn test_history_management() {
     println("Testing history management...");
 
-    let mut history = History::init(allocator, 10);
+    let mut history = History.init(allocator, 10);
     defer history.deinit();
 
     // Add entries
@@ -171,7 +171,7 @@ fn test_history_management() {
 fn test_history_deduplication() {
     println("Testing history deduplication...");
 
-    let mut history = History::init(allocator, 10);
+    let mut history = History.init(allocator, 10);
     defer history.deinit();
 
     history.add("test")?;
@@ -186,7 +186,7 @@ fn test_history_deduplication() {
 fn test_history_size_limit() {
     println("Testing history size limit...");
 
-    let mut history = History::init(allocator, 3);
+    let mut history = History.init(allocator, 3);
     defer history.deinit();
 
     history.add("cmd1")?;
@@ -204,7 +204,7 @@ fn test_history_size_limit() {
 fn test_history_persistence() {
     println("Testing history persistence...");
 
-    let mut history = History::init(allocator, 10);
+    let mut history = History.init(allocator, 10);
     defer history.deinit();
 
     history.add("let x = 1")?;
@@ -214,7 +214,7 @@ fn test_history_persistence() {
     history.save("/tmp/repl_history.txt")?;
 
     // Load into new history
-    let mut history2 = History::init(allocator, 10);
+    let mut history2 = History.init(allocator, 10);
     defer history2.deinit();
 
     history2.load("/tmp/repl_history.txt")?;
@@ -232,7 +232,7 @@ fn test_history_persistence() {
 fn test_keyword_completion() {
     println("Testing keyword completion...");
 
-    let mut completer = Completer::init(allocator);
+    let mut completer = Completer.init(allocator);
     defer completer.deinit();
 
     let completions = completer.complete("f")?;
@@ -253,7 +253,7 @@ fn test_keyword_completion() {
 fn test_builtin_completion() {
     println("Testing builtin completion...");
 
-    let mut completer = Completer::init(allocator);
+    let mut completer = Completer.init(allocator);
     defer completer.deinit();
 
     let completions = completer.complete("pr")?;
@@ -272,7 +272,7 @@ fn test_builtin_completion() {
 fn test_empty_completion() {
     println("Testing empty completion...");
 
-    let mut completer = Completer::init(allocator);
+    let mut completer = Completer.init(allocator);
     defer completer.deinit();
 
     let completions = completer.complete("xyz")?;
@@ -290,7 +290,7 @@ fn test_empty_completion() {
 fn test_help_command() {
     println("Testing :help command...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // :help should print help text
@@ -305,7 +305,7 @@ fn test_help_command() {
 fn test_clear_command() {
     println("Testing :clear command...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     repl.handleCommand(":clear")?;
@@ -317,7 +317,7 @@ fn test_clear_command() {
 fn test_reset_command() {
     println("Testing :reset command...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Define some variables
@@ -338,7 +338,7 @@ fn test_reset_command() {
 fn test_vars_command() {
     println("Testing :vars command...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     repl.evaluate("let x = 42")?;
@@ -353,7 +353,7 @@ fn test_vars_command() {
 fn test_types_command() {
     println("Testing :types command...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     assert(!repl.config.show_types, "types should be off by default");
@@ -374,7 +374,7 @@ fn test_types_command() {
 fn test_parse_error_handling() {
     println("Testing parse error handling...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Invalid syntax should not crash
@@ -391,7 +391,7 @@ fn test_parse_error_handling() {
 fn test_runtime_error_handling() {
     println("Testing runtime error handling...");
 
-    let mut repl = REPL::init(allocator, Config::default());
+    let mut repl = REPL.init(allocator, Config.default());
     defer repl.deinit();
 
     // Division by zero

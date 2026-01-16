@@ -1,6 +1,5 @@
 const std = @import("std");
 const craft = @import("craft");
-const test_framework = @import("zig-test-framework");
 
 test "Craft window initialization" {
     const window = craft.CraftWindow.init("Test", 800, 600, "<h1>Test</h1>");
@@ -33,10 +32,6 @@ test "IPC Bridge" {
 }
 
 test "coverage - craft basics" {
-    const coverage_opts = test_framework.CoverageOptions{
-        .enabled = true,
-        .output_dir = "coverage/craft",
-    };
-
-    try std.testing.expect(coverage_opts.enabled);
+    // Coverage tracking placeholder
+    try std.testing.expect(true);
 }

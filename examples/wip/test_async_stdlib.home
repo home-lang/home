@@ -11,7 +11,7 @@ use std::testing::{TestFramework, TestContext, PropertyTest};
 
 async fn fetch_data(id: i32) -> Result<String, String> {
     // Simulate async I/O
-    await sleep(Duration::from_millis(10));
+    await sleep(Duration.fromMillis(10));
     return Ok("data_" + id.to_string());
 }
 
@@ -73,7 +73,7 @@ async fn test_oneshot_channel() {
     let (sender, receiver) = oneshot::<String>();
 
     spawn(async {
-        await sleep(Duration::from_millis(100));
+        await sleep(Duration.fromMillis(100));
         sender.send("Hello from oneshot!");
     });
 
@@ -101,18 +101,18 @@ impl Actor for Counter {
 
     async fn handle(&mut self, msg: CounterMessage) {
         match msg {
-            CounterMessage::Increment => {
+            CounterMessage.Increment => {
                 self.value += 1;
                 println("Counter incremented to: " + self.value.to_string());
             },
-            CounterMessage::Decrement => {
+            CounterMessage.Decrement => {
                 self.value -= 1;
                 println("Counter decremented to: " + self.value.to_string());
             },
-            CounterMessage::GetValue(reply) => {
+            CounterMessage.GetValue(reply) => {
                 reply.send(self.value);
             },
-            CounterMessage::Reset => {
+            CounterMessage.Reset => {
                 self.value = 0;
                 println("Counter reset");
             },
@@ -121,19 +121,19 @@ impl Actor for Counter {
 }
 
 async fn test_actor_system() {
-    let mut system = ActorSystem::new();
+    let mut system = ActorSystem.new();
 
     // Spawn counter actor
     let counter = system.spawn(Counter { value: 0 });
 
     // Send messages
-    counter.send(CounterMessage::Increment);
-    counter.send(CounterMessage::Increment);
-    counter.send(CounterMessage::Increment);
+    counter.send(CounterMessage.Increment);
+    counter.send(CounterMessage.Increment);
+    counter.send(CounterMessage.Increment);
 
     // Get value
     let (sender, receiver) = oneshot();
-    counter.send(CounterMessage::GetValue(sender));
+    counter.send(CounterMessage.GetValue(sender));
     let value = await receiver.recv();
 
     println("Counter value: " + value.to_string());
@@ -145,21 +145,21 @@ async fn test_actor_system() {
 // =============================================================================
 
 async fn test_task_scope() {
-    let mut scope = TaskScope::new();
+    let mut scope = TaskScope.new();
 
     // Spawn tasks in scope
     scope.spawn(async {
-        await sleep(Duration::from_millis(10));
+        await sleep(Duration.fromMillis(10));
         return 1;
     });
 
     scope.spawn(async {
-        await sleep(Duration::from_millis(20));
+        await sleep(Duration.fromMillis(20));
         return 2;
     });
 
     scope.spawn(async {
-        await sleep(Duration::from_millis(15));
+        await sleep(Duration.fromMillis(15));
         return 3;
     });
 
@@ -175,13 +175,13 @@ async fn test_nursery() {
     await with_nursery(async |nursery| {
         nursery.spawn(async {
             println("Task 1 started");
-            await sleep(Duration::from_millis(10));
+            await sleep(Duration.fromMillis(10));
             println("Task 1 completed");
         });
 
         nursery.spawn(async {
             println("Task 2 started");
-            await sleep(Duration::from_millis(20));
+            await sleep(Duration.fromMillis(20));
             println("Task 2 completed");
         });
 
@@ -211,7 +211,7 @@ async fn test_parallel_operations() {
 // =============================================================================
 
 fn test_bloom_filter() {
-    let mut filter = BloomFilter::<1000>::new();
+    let mut filter = BloomFilter.<1000>.new();
 
     // Insert items
     filter.insert("apple");
@@ -228,7 +228,7 @@ fn test_bloom_filter() {
 }
 
 fn test_skip_list() {
-    let mut list = SkipList::<i32, String>::new();
+    let mut list = SkipList.<i32, String>.new();
 
     list.insert(1, "one");
     list.insert(2, "two");
@@ -242,7 +242,7 @@ fn test_skip_list() {
 }
 
 fn test_trie() {
-    let mut trie = Trie::new();
+    let mut trie = Trie.new();
 
     trie.insert("apple");
     trie.insert("application");
@@ -261,8 +261,8 @@ fn test_trie() {
 }
 
 fn test_rope() {
-    let mut rope1 = Rope::from_string("Hello, ");
-    let mut rope2 = Rope::from_string("World!");
+    let mut rope1 = Rope.fromString("Hello, ");
+    let mut rope2 = Rope.fromString("World!");
 
     let concatenated = rope1.concat(rope2);
     let result = concatenated.to_string();
@@ -274,7 +274,7 @@ fn test_rope() {
 }
 
 fn test_circular_buffer() {
-    let mut buffer = CircularBuffer::<i32>::new(5);
+    let mut buffer = CircularBuffer.<i32>.new(5);
 
     // Fill buffer
     for i in 0..5 {
@@ -302,7 +302,7 @@ fn test_circular_buffer() {
 // =============================================================================
 
 fn test_framework_demo() {
-    let mut framework = TestFramework::new();
+    let mut framework = TestFramework.new();
 
     // Add unit tests
     framework.add_test("arithmetic", |ctx| {
@@ -336,7 +336,7 @@ fn test_framework_demo() {
 }
 
 fn test_property_based() {
-    let mut prop_test = PropertyTest::new(12345);
+    let mut prop_test = PropertyTest.new(12345);
 
     // Property: reversing twice should equal original
     prop_test.for_all(
@@ -353,17 +353,17 @@ fn test_property_based() {
 }
 
 fn test_benchmarks() {
-    let mut framework = TestFramework::new();
+    let mut framework = TestFramework.new();
 
     framework.add_benchmark("vec push", |bench| {
-        let mut v = Vec::<i32>::new();
+        let mut v = Vec.<i32>.new();
         bench.run_n(1000, || {
             v.push(42);
         });
     });
 
     framework.add_benchmark("hashmap insert", |bench| {
-        let mut map = HashMap::<String, i32>::new();
+        let mut map = HashMap.<String, i32>.new();
         let mut counter = 0;
         bench.run_n(1000, || {
             map.insert("key" + counter.to_string(), counter);
@@ -422,7 +422,7 @@ async fn comprehensive_integration_test() {
 // =============================================================================
 
 fn main() {
-    let runtime = Runtime::new(num_cpus());
+    let runtime = Runtime.new(num_cpus());
 
     runtime.block_on(async {
         await comprehensive_integration_test();

@@ -5,26 +5,26 @@
 // ============================================================================
 
 it("should parse simple HTML and return document") {
-    let doc = html::parse("<html><body><p>Hello</p></body></html>")
+    let doc = HTML.parse("<html><body><p>Hello</p></body></html>")
     assert(doc != null)
     assert(doc.text_content().contains("Hello"))
 }
 
 it("should parse HTML fragment with multiple children") {
-    let fragment = html::parse_fragment("<p>Hello</p><p>World</p>")
+    let fragment = HTML.parseFragment("<p>Hello</p><p>World</p>")
     let children = fragment.children()
     assert(children.len() == 2)
 }
 
 it("should handle malformed HTML gracefully") {
-    let doc = html::parse("<p>Unclosed paragraph<div>Mixed</p></div>")
+    let doc = HTML.parse("<p>Unclosed paragraph<div>Mixed</p></div>")
     assert(doc != null)
     // Parser should recover and still contain the text
     assert(doc.text_content().contains("Unclosed"))
 }
 
 it("should preserve text content accurately") {
-    let doc = html::parse("<p>Hello World</p>")
+    let doc = HTML.parse("<p>Hello World</p>")
     let text = doc.text_content()
     assert(text == "Hello World")
 }
@@ -34,13 +34,13 @@ it("should preserve text content accurately") {
 // ============================================================================
 
 it("should select elements by tag name") {
-    let doc = html::parse("<div><p>One</p><p>Two</p><span>Three</span></div>")
+    let doc = HTML.parse("<div><p>One</p><p>Two</p><span>Three</span></div>")
     let paragraphs = doc.select("p")
     assert(paragraphs.len() == 2)
 }
 
 it("should select nested elements by tag") {
-    let doc = html::parse("<div><ul><li>A</li><li>B</li></ul></div>")
+    let doc = HTML.parse("<div><ul><li>A</li><li>B</li></ul></div>")
     let items = doc.select("li")
     assert(items.len() == 2)
 }
@@ -50,14 +50,14 @@ it("should select nested elements by tag") {
 // ============================================================================
 
 it("should select element by id") {
-    let doc = html::parse("<div id=\"main\">Main Content</div><div id=\"sidebar\">Side</div>")
+    let doc = HTML.parse("<div id=\"main\">Main Content</div><div id=\"sidebar\">Side</div>")
     let elem = doc.select_one("#main")
     assert(elem != null)
     assert(elem.text_content().contains("Main Content"))
 }
 
 it("should return null for non-existent id") {
-    let doc = html::parse("<div id=\"exists\">Content</div>")
+    let doc = HTML.parse("<div id=\"exists\">Content</div>")
     let elem = doc.select_one("#nonexistent")
     // Should handle gracefully
 }
@@ -67,13 +67,13 @@ it("should return null for non-existent id") {
 // ============================================================================
 
 it("should select elements by class") {
-    let doc = html::parse("<p class=\"highlight\">Important</p><p>Normal</p><p class=\"highlight\">Also Important</p>")
+    let doc = HTML.parse("<p class=\"highlight\">Important</p><p>Normal</p><p class=\"highlight\">Also Important</p>")
     let highlighted = doc.select(".highlight")
     assert(highlighted.len() == 2)
 }
 
 it("should select element with specific class") {
-    let doc = html::parse("<div class=\"active\">Active Card</div><div class=\"inactive\">Inactive</div>")
+    let doc = HTML.parse("<div class=\"active\">Active Card</div><div class=\"inactive\">Inactive</div>")
     let active = doc.select(".active")
     assert(active.len() == 1)
 }
@@ -83,19 +83,19 @@ it("should select element with specific class") {
 // ============================================================================
 
 it("should select elements with attribute present") {
-    let doc = html::parse("<a href=\"/page1\">Link1</a><a href=\"/page2\">Link2</a><span>Text</span>")
+    let doc = HTML.parse("<a href=\"/page1\">Link1</a><a href=\"/page2\">Link2</a><span>Text</span>")
     let links = doc.select("[href]")
     assert(links.len() == 2)
 }
 
 it("should select elements by attribute value") {
-    let doc = html::parse("<input type=\"text\" name=\"user\"><input type=\"password\" name=\"pass\"><input type=\"text\" name=\"email\">")
+    let doc = HTML.parse("<input type=\"text\" name=\"user\"><input type=\"password\" name=\"pass\"><input type=\"text\" name=\"email\">")
     let text_inputs = doc.select("[type='text']")
     assert(text_inputs.len() == 2)
 }
 
 it("should select disabled inputs") {
-    let doc = html::parse("<input disabled=\"true\" value=\"cant edit\"><input value=\"can edit\">")
+    let doc = HTML.parse("<input disabled=\"true\" value=\"cant edit\"><input value=\"can edit\">")
     let disabled = doc.select("[disabled]")
     assert(disabled.len() == 1)
 }
@@ -105,19 +105,19 @@ it("should select disabled inputs") {
 // ============================================================================
 
 it("should count children correctly") {
-    let doc = html::parse("<ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li></ul>")
+    let doc = HTML.parse("<ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li></ul>")
     let items = doc.select("li")
     assert(items.len() == 5)
 }
 
 it("should find deeply nested elements") {
-    let doc = html::parse("<div><section><article><p>Deep</p></article></section></div>")
+    let doc = HTML.parse("<div><section><article><p>Deep</p></article></section></div>")
     let paragraphs = doc.select("p")
     assert(paragraphs.len() == 1)
 }
 
 it("should handle empty elements") {
-    let doc = html::parse("<div></div><div><p>Content</p></div>")
+    let doc = HTML.parse("<div></div><div><p>Content</p></div>")
     let divs = doc.select("div")
     assert(divs.len() == 2)
 }
@@ -127,14 +127,14 @@ it("should handle empty elements") {
 // ============================================================================
 
 it("should extract text from nested elements") {
-    let doc = html::parse("<div><p>Hello</p><p>World</p></div>")
+    let doc = HTML.parse("<div><p>Hello</p><p>World</p></div>")
     let text = doc.text_content()
     assert(text.contains("Hello"))
     assert(text.contains("World"))
 }
 
 it("should handle whitespace in text content") {
-    let doc = html::parse("<p>   Spaced   Text   </p>")
+    let doc = HTML.parse("<p>   Spaced   Text   </p>")
     let text = doc.text_content()
     assert(text.contains("Spaced"))
     assert(text.contains("Text"))
@@ -146,27 +146,27 @@ it("should handle whitespace in text content") {
 
 it("should sanitize script tags") {
     let dirty = "<p>Safe</p><script>alert('xss')</script>"
-    let clean = html::sanitize(dirty)
+    let clean = HTML.sanitize(dirty)
     assert(clean.contains("Safe"))
     // Script should be removed or escaped
 }
 
 it("should preserve allowed tags during sanitization") {
     let input = "<p><b>Bold</b> and <i>italic</i></p>"
-    let clean = html::sanitize(input, allowed_tags: ["p", "b", "i"])
+    let clean = HTML.sanitize(input, allowed_tags: ["p", "b", "i"])
     assert(clean.contains("Bold"))
     assert(clean.contains("italic"))
 }
 
 it("should strip all HTML tags") {
     let input = "<div><p>Hello <b>World</b></p></div>"
-    let text = html::strip_tags(input)
+    let text = HTML.stripTags(input)
     assert(text == "Hello World")
 }
 
 it("should preserve safe attributes") {
     let input = "<a href=\"/safe\" onclick=\"evil()\">Link</a>"
-    let clean = html::sanitize(input, allowed_attrs: { "a": ["href"] })
+    let clean = HTML.sanitize(input, allowed_attrs: { "a": ["href"] })
     assert(clean.contains("href") or clean.contains("safe"))
 }
 
@@ -175,12 +175,12 @@ it("should preserve safe attributes") {
 // ============================================================================
 
 it("should validate well-formed HTML") {
-    let result = html::validate("<html><body><p>Valid</p></body></html>")
+    let result = HTML.validate("<html><body><p>Valid</p></body></html>")
     assert(result.is_valid == true)
 }
 
 it("should detect unclosed tags") {
-    let result = html::validate("<p>Unclosed")
+    let result = HTML.validate("<p>Unclosed")
     assert(result != null)
 }
 
@@ -189,23 +189,23 @@ it("should detect unclosed tags") {
 // ============================================================================
 
 it("should encode HTML entities") {
-    let encoded = html::encode("<script>alert('xss')</script>")
+    let encoded = HTML.encode("<script>alert('xss')</script>")
     assert(encoded.contains("&lt;") or encoded.contains("&gt;"))
     // Should not contain raw < or > that could execute
 }
 
 it("should decode HTML entities") {
-    let decoded = html::decode("&lt;p&gt;Hello&lt;/p&gt;")
+    let decoded = HTML.decode("&lt;p&gt;Hello&lt;/p&gt;")
     assert(decoded.contains("<p>") or decoded.contains("Hello"))
 }
 
 it("should encode ampersands") {
-    let encoded = html::encode("Tom & Jerry")
+    let encoded = HTML.encode("Tom & Jerry")
     assert(encoded.contains("&amp;") or encoded.contains("&"))
 }
 
 it("should encode quotes") {
-    let encoded = html::encode("He said \"Hello\"")
+    let encoded = HTML.encode("He said \"Hello\"")
     assert(encoded.contains("&quot;") or encoded.contains("Hello"))
 }
 
@@ -214,13 +214,13 @@ it("should encode quotes") {
 // ============================================================================
 
 it("should select by combined class and tag") {
-    let doc = html::parse("<p class=\"intro\">First</p><div class=\"intro\">Second</div><p>Third</p>")
+    let doc = HTML.parse("<p class=\"intro\">First</p><div class=\"intro\">Second</div><p>Third</p>")
     let intro_paragraphs = doc.select(".intro")
     assert(intro_paragraphs.len() == 2)
 }
 
 it("should handle multiple same-level elements") {
-    let doc = html::parse("<span>A</span><span>B</span><span>C</span><span>D</span>")
+    let doc = HTML.parse("<span>A</span><span>B</span><span>C</span><span>D</span>")
     let spans = doc.select("span")
     assert(spans.len() == 4)
 }
@@ -230,23 +230,22 @@ it("should handle multiple same-level elements") {
 // ============================================================================
 
 it("should handle empty document") {
-    let doc = html::parse("")
+    let doc = HTML.parse("")
     assert(doc != null)
 }
 
 it("should handle text-only content") {
-    let doc = html::parse("Just plain text")
+    let doc = HTML.parse("Just plain text")
     assert(doc.text_content().contains("plain text"))
 }
 
 it("should handle self-closing tags") {
-    let doc = html::parse("<div><br/><hr/><img src=\"test.png\"/></div>")
+    let doc = HTML.parse("<div><br/><hr/><img src=\"test.png\"/></div>")
     assert(doc != null)
 }
 
 it("should handle comments") {
-    let doc = html::parse("<p>Before</p><!-- comment --><p>After</p>")
+    let doc = HTML.parse("<p>Before</p><!-- comment --><p>After</p>")
     let paragraphs = doc.select("p")
     assert(paragraphs.len() == 2)
 }
-

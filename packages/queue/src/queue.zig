@@ -675,11 +675,16 @@ pub const MemoryQueueDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.queues.getPtr(queue_name)) |queue_jobs| {
-            for (queue_jobs.items) |j| {
+        // Remove the entire entry from the hash map to avoid dangling key references
+        // (the key points to a job's queue_name which gets freed)
+        if (self.queues.fetchRemove(queue_name)) |entry| {
+            // Copy items and ArrayList since fetchRemove returns const values
+            const jobs = entry.value.items;
+            var list = entry.value;
+            for (jobs) |j| {
                 j.deinit();
             }
-            queue_jobs.clearRetainingCapacity();
+            list.deinit(self.allocator);
         }
     }
 
@@ -1580,6 +1585,10 @@ pub const Worker = struct {
                 if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
                     self.queue_ref.processJob(j, handler) catch {};
+                    // Free completed jobs (failed jobs are managed by the queue)
+                    if (j.status == .completed) {
+                        j.deinit();
+                    }
                 }
             }
 
@@ -1599,6 +1608,10 @@ pub const Worker = struct {
                 if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
                     self.queue_ref.processJob(j, handler) catch {};
+                    // Free completed jobs (failed jobs are managed by the queue)
+                    if (j.status == .completed) {
+                        j.deinit();
+                    }
                     processed += 1;
                     break;
                 }

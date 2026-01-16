@@ -68,7 +68,7 @@ impl<T, U> Pair<T, U> {
     }
 
     fn swap(self: Self) -> Pair<U, T> {
-        return Pair::new(self.second, self.first);
+        return Pair.new(self.second, self.first);
     }
 }
 
@@ -88,7 +88,7 @@ impl<T> Box<T> {
     fn map<U, F>(self: Self, f: F) -> Box<U>
     where F: Fn(T) -> U
     {
-        return Box::new(f(self.value));
+        return Box.new(f(self.value));
     }
 }
 
@@ -96,20 +96,20 @@ fn test_generic_structs() -> void {
     println("\n=== Generic Structs ===\n");
 
     // Pair with different types
-    let int_pair = Pair::new(1, 2);
+    let int_pair = Pair.new(1, 2);
     println("Int pair: ({}, {})", int_pair.first, int_pair.second);
 
-    let mixed_pair = Pair::new(42, "answer");
+    let mixed_pair = Pair.new(42, "answer");
     println("Mixed pair: ({}, {})", mixed_pair.first, mixed_pair.second);
 
     let swapped = mixed_pair.swap();
     println("Swapped pair: ({}, {})", swapped.first, swapped.second);
 
     // Box with different types
-    let num_box = Box::new(100);
+    let num_box = Box.new(100);
     println("Box contains: {}", num_box.get());
 
-    let string_box = Box::new("boxed");
+    let string_box = Box.new("boxed");
     println("Box contains: {}", string_box.get());
 
     // Map over box
@@ -185,17 +185,17 @@ fn test_generic_collections() -> void {
     println("\n=== Generic Collections ===\n");
 
     // Vec<i32>
-    let mut int_vec = Vec::<i32>::new();
+    let mut int_vec = Vec.<i32>.new();
     int_vec.push(1);
     int_vec.push(2);
     int_vec.push(3);
     println("Int vec length: {}", int_vec.len());
 
     // Vec<String>
-    let mut string_vec = Vec::<String>::new();
-    string_vec.push(String::from("one"));
-    string_vec.push(String::from("two"));
-    string_vec.push(String::from("three"));
+    let mut string_vec = Vec.<String>.new();
+    string_vec.push(String.from("one"));
+    string_vec.push(String.from("two"));
+    string_vec.push(String.from("three"));
     println("String vec length: {}", string_vec.len());
 }
 
@@ -209,8 +209,8 @@ enum Option<T> {
 impl<T> Option<T> {
     fn is_some(self: &Self) -> bool {
         return match self {
-            Option::Some(_) => true,
-            Option::None => false,
+            Option.Some(_) => true,
+            Option.None => false,
         };
     }
 
@@ -220,15 +220,15 @@ impl<T> Option<T> {
 
     fn unwrap(self: Self) -> T {
         return match self {
-            Option::Some(value) => value,
-            Option::None => panic("called unwrap on None"),
+            Option.Some(value) => value,
+            Option.None => panic("called unwrap on None"),
         };
     }
 
     fn unwrap_or(self: Self, default: T) -> T {
         return match self {
-            Option::Some(value) => value,
-            Option::None => default,
+            Option.Some(value) => value,
+            Option.None => default,
         };
     }
 
@@ -236,8 +236,8 @@ impl<T> Option<T> {
     where F: Fn(T) -> U
     {
         return match self {
-            Option::Some(value) => Option::Some(f(value)),
-            Option::None => Option::None,
+            Option.Some(value) => Option.Some(f(value)),
+            Option.None => Option.None,
         };
     }
 }
@@ -250,8 +250,8 @@ enum Result<T, E> {
 impl<T, E> Result<T, E> {
     fn is_ok(self: &Self) -> bool {
         return match self {
-            Result::Ok(_) => true,
-            Result::Err(_) => false,
+            Result.Ok(_) => true,
+            Result.Err(_) => false,
         };
     }
 
@@ -261,8 +261,8 @@ impl<T, E> Result<T, E> {
 
     fn unwrap(self: Self) -> T {
         return match self {
-            Result::Ok(value) => value,
-            Result::Err(_) => panic("called unwrap on Err"),
+            Result.Ok(value) => value,
+            Result.Err(_) => panic("called unwrap on Err"),
         };
     }
 
@@ -270,8 +270,8 @@ impl<T, E> Result<T, E> {
     where F: Fn(T) -> U
     {
         return match self {
-            Result::Ok(value) => Result::Ok(f(value)),
-            Result::Err(err) => Result::Err(err),
+            Result.Ok(value) => Result.Ok(f(value)),
+            Result.Err(err) => Result.Err(err),
         };
     }
 }
@@ -280,15 +280,15 @@ fn test_generic_enums() -> void {
     println("\n=== Generic Enums ===\n");
 
     // Option<i32>
-    let some_num = Option::Some(42);
-    let no_num = Option::<i32>::None;
+    let some_num = Option.Some(42);
+    let no_num = Option.<i32>.None;
 
     println("some_num is_some: {}", some_num.is_some());
     println("no_num is_none: {}", no_num.is_none());
 
     // Result<i32, String>
-    let ok_result = Result::Ok(100);
-    let err_result = Result::<i32, String>::Err(String::from("error"));
+    let ok_result = Result.Ok(100);
+    let err_result = Result.<i32, String>.Err(String.from("error"));
 
     println("ok_result is_ok: {}", ok_result.is_ok());
     println("err_result is_err: {}", err_result.is_err());
@@ -346,7 +346,7 @@ fn test_generic_traits() -> void {
     println("10 compared to 20: {}", cmp);
 
     // Container trait
-    let mut container = Vec::<i32>::new();
+    let mut container = Vec.<i32>.new();
     container.add(1);
     container.add(2);
     container.add(3);
@@ -378,7 +378,7 @@ where T: Comparable<T>
 fn sum<T>(items: Vec<T>) -> T
 where T: Add<Output = T> + Default
 {
-    let mut result = T::default();
+    let mut result = T.default();
     for item in items {
         result = result + item;
     }
@@ -398,11 +398,11 @@ fn test_generic_bounds() -> void {
 // ==================== Multiple Generic Parameters ====================
 
 fn zip<T, U>(a: Vec<T>, b: Vec<U>) -> Vec<Pair<T, U>> {
-    let mut result = Vec::new();
+    let mut result = Vec.new();
     let len = min(a.len(), b.len());
 
     for i in 0..len {
-        result.push(Pair::new(a[i], b[i]));
+        result.push(Pair.new(a[i], b[i]));
     }
 
     return result;
@@ -443,11 +443,11 @@ fn test_generic_type_aliases() -> void {
     println("\n=== Generic Type Aliases ===\n");
 
     // Point as alias for Pair
-    let point = Point::new(10, 20);
+    let point = Point.new(10, 20);
     println("Point: ({}, {})", point.first, point.second);
 
     // Stack as alias for Vec
-    let mut stack = Stack::<i32>::new();
+    let mut stack = Stack.<i32>.new();
     stack.push(1);
     stack.push(2);
     stack.push(3);
@@ -485,10 +485,10 @@ fn test_const_generics() -> void {
     println("\n=== Const Generics ===\n");
 
     // Fixed-size array with const generic
-    let arr = Array::<i32, 5>::new(0);
+    let arr = Array.<i32, 5>.new(0);
     println("Array length: {}", arr.len());
 
-    let arr2 = Array::<String, 10>::new(String::from(""));
+    let arr2 = Array.<String, 10>.new(String.from(""));
     println("Array2 length: {}", arr2.len());
 }
 
@@ -511,10 +511,10 @@ fn test_monomorphization() -> void {
     // Each unique instantiation gets its own specialized code
     let _ = identity(42);           // identity_i32
     let _ = identity("text");       // identity_String
-    let _ = Vec::<i32>::new();      // Vec_i32
-    let _ = Vec::<String>::new();   // Vec_String
-    let _ = Pair::new(1, 2);        // Pair_i32_i32
-    let _ = Pair::new(1, "two");    // Pair_i32_String
+    let _ = Vec.<i32>.new();      // Vec_i32
+    let _ = Vec.<String>.new();   // Vec_String
+    let _ = Pair.new(1, 2);        // Pair_i32_i32
+    let _ = Pair.new(1, "two");    // Pair_i32_String
 }
 
 // ==================== Main Test Function ====================

@@ -383,7 +383,7 @@ impl Builder for UserBuilder {
 }
 
 fn test_builder_pattern(): void {
-    let user = UserBuilder::new()
+    let user = UserBuilder.new()
         .name("Alice")
         .email("alice@example.com")
         .age(30)
@@ -412,7 +412,7 @@ struct InMemoryRepository<T> {
 impl<T: Clone> InMemoryRepository<T> {
     fn new(): InMemoryRepository<T> {
         InMemoryRepository {
-            data: HashMap::new(),
+            data: HashMap.new(),
             next_id: 1,
         }
     }
@@ -456,7 +456,7 @@ trait Into<T> {
 // Blanket implementation: Into is automatically implemented for types that implement From
 impl<T, U> Into<U> for T where U: From<T> {
     fn into(self): U {
-        U::from(self)
+        U.from(self)
     }
 }
 
@@ -480,7 +480,7 @@ fn test_conversion_traits(): void {
     let c: Celsius = f.into()  // Uses Into trait
     
     let c2 = Celsius(100.0)
-    let f2 = Fahrenheit::from(c2)  // Uses From trait
+    let f2 = Fahrenheit.from(c2)  // Uses From trait
     
     println("{}°F = {}°C", 98.6, c.0)
     println("{}°C = {}°F", 100.0, f2.0)

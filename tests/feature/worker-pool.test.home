@@ -5,25 +5,25 @@
 // ============================================================================
 
 it("should create worker pool") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     assert(pool != null)
     assert(pool.size() == 4)
 }
 
 it("should create pool with default size") {
-    let pool = workers::Pool::new()
+    let pool = Workers.Pool.new()
     assert(pool.size() >= 1)  // At least 1, usually CPU count
 }
 
 it("should submit task to pool") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || { return 42 }
     let future = pool.submit(task)
     assert(future.get() == 42)
 }
 
 it("should execute multiple tasks") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let results = []
 
     for i in 0..10 {
@@ -43,38 +43,38 @@ it("should execute multiple tasks") {
 // ============================================================================
 
 it("should get task result") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || { return "hello" }
     let future = pool.submit(task)
     assert(future.get() == "hello")
 }
 
 it("should wait for task completion") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || {
-        time::sleep(100)
+        Time.sleep(100)
         return "done"
     }
     let future = pool.submit(task)
 
     future.wait()
-    assert(future.is_complete() == true)
+    assert(future.isComplete() == true)
 }
 
 it("should get result with timeout") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || {
         return "slow"
     }
     let future = pool.submit(task)
 
     // In synchronous execution, get_timeout returns result immediately
-    let result = future.get_timeout(100)
+    let result = future.getTimeout(100)
     assert(result == "slow")
 }
 
 it("should cancel task") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || {
         return "done"
     }
@@ -84,7 +84,7 @@ it("should cancel task") {
     // Test that cancel method exists and returns without error
     future.cancel()
     // Synchronous tasks complete immediately, so is_cancelled remains false
-    assert(future.is_cancelled() == false)
+    assert(future.isCancelled() == false)
 }
 
 // ============================================================================
@@ -92,7 +92,7 @@ it("should cancel task") {
 // ============================================================================
 
 it("should map over items") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let items = [1, 2, 3, 4, 5]
     let mapper = |x| { return x * x }
 
@@ -101,37 +101,37 @@ it("should map over items") {
 }
 
 it("should parallel map") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let items = [1, 2, 3, 4, 5, 6, 7, 8]
     let mapper = |x| {
-        time::sleep(100)  // Simulate work
+        Time.sleep(100)  // Simulate work
         return x * 2
     }
 
-    let results = pool.parallel_map(items, mapper)
+    let results = pool.parallelMap(items, mapper)
     assert(results == [2, 4, 6, 8, 10, 12, 14, 16])
 }
 
 it("should filter in parallel") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let items = [1, 2, 3, 4, 5, 6, 7, 8]
     let predicate = |x| { return x % 2 == 0 }
 
-    let even = pool.parallel_filter(items, predicate)
+    let even = pool.parallelFilter(items, predicate)
     assert(even == [2, 4, 6, 8])
 }
 
 it("should reduce in parallel") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let items = [1, 2, 3, 4, 5]
     let reducer = |acc, x| { return acc + x }
 
-    let sum = pool.parallel_reduce(items, 0, reducer)
+    let sum = pool.parallelReduce(items, 0, reducer)
     assert(sum == 15)
 }
 
 it("should execute all tasks") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
 
     let tasks = [
         || { return 1 },
@@ -139,12 +139,12 @@ it("should execute all tasks") {
         || { return 3 }
     ]
 
-    let results = pool.invoke_all(tasks)
+    let results = pool.invokeAll(tasks)
     assert(results == [1, 2, 3])
 }
 
 it("should execute any task") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
 
     // In synchronous execution, invoke_any executes the first task
     let task1 = || { return 1 }
@@ -152,7 +152,7 @@ it("should execute any task") {
     let task3 = || { return 3 }
     let tasks = [task1, task2, task3]
 
-    let result = pool.invoke_any(tasks)
+    let result = pool.invokeAny(tasks)
     assert(result == 1)  // First task is executed in synchronous mode
 }
 
@@ -165,7 +165,7 @@ it("should configure max queue size") {
         "size": 2,
         "max_queue": 100
     }
-    let pool = workers::Pool::new_with_config(config)
+    let pool = Workers.Pool.newWithConfig(config)
 
     // Queue at most 100 pending tasks
 }
@@ -175,7 +175,7 @@ it("should configure task timeout") {
         "size": 2,
         "task_timeout": 5000  // 5 seconds max per task
     }
-    let pool = workers::Pool::new_with_config(config)
+    let pool = Workers.Pool.newWithConfig(config)
 }
 
 it("should use custom thread names") {
@@ -183,7 +183,7 @@ it("should use custom thread names") {
         "size": 4,
         "name_prefix": "worker-"
     }
-    let pool = workers::Pool::new_with_config(config)
+    let pool = Workers.Pool.newWithConfig(config)
 }
 
 // ============================================================================
@@ -191,34 +191,34 @@ it("should use custom thread names") {
 // ============================================================================
 
 it("should shutdown gracefully") {
-    let pool = workers::Pool::new(4)
-    let task = || { time::sleep(100) }
+    let pool = Workers.Pool.new(4)
+    let task = || { Time.sleep(100) }
 
     pool.submit(task)
     pool.submit(task)
 
     pool.shutdown()  // Wait for tasks to complete
-    assert(pool.is_shutdown() == true)
+    assert(pool.isShutdown() == true)
 }
 
 it("should shutdown now") {
-    let pool = workers::Pool::new(4)
-    let task = || { time::sleep(5000) }
+    let pool = Workers.Pool.new(4)
+    let task = || { Time.sleep(5000) }
 
     pool.submit(task)
 
-    pool.shutdown_now()  // Cancel pending tasks
-    assert(pool.is_shutdown() == true)
+    pool.shutdownNow()  // Cancel pending tasks
+    assert(pool.isShutdown() == true)
 }
 
 it("should await termination") {
-    let pool = workers::Pool::new(4)
-    let task = || { time::sleep(100) }
+    let pool = Workers.Pool.new(4)
+    let task = || { Time.sleep(100) }
 
     pool.submit(task)
     pool.shutdown()
 
-    let terminated = pool.await_termination(1000)
+    let terminated = pool.awaitTermination(1000)
     assert(terminated == true)
 }
 
@@ -227,21 +227,21 @@ it("should await termination") {
 // ============================================================================
 
 it("should schedule delayed task") {
-    let pool = workers::ScheduledPool::new(2)
+    let pool = Workers.ScheduledPool.new(2)
     let task = || { return "delayed" }
 
     let future = pool.schedule(task, 500)
 
-    time::sleep(600)
+    Time.sleep(600)
     assert(future.get() == "delayed")
 }
 
 it("should schedule at fixed rate") {
-    let pool = workers::ScheduledPool::new(2)
+    let pool = Workers.ScheduledPool.new(2)
     let task = || { return 1 }
 
     // In synchronous execution, schedule_at_fixed_rate returns a handle immediately
-    let handle = pool.schedule_at_fixed_rate(task, 0, 100)
+    let handle = pool.scheduleAtFixedRate(task, 0, 100)
 
     // Test that the handle exists and can be cancelled
     handle.cancel()
@@ -249,11 +249,11 @@ it("should schedule at fixed rate") {
 }
 
 it("should schedule with fixed delay") {
-    let pool = workers::ScheduledPool::new(2)
+    let pool = Workers.ScheduledPool.new(2)
     let task = || { return 1 }
 
     // In synchronous execution, schedule_with_fixed_delay returns a handle immediately
-    let handle = pool.schedule_with_fixed_delay(task, 0, 100)
+    let handle = pool.scheduleWithFixedDelay(task, 0, 100)
 
     // Test that the handle exists and can be cancelled
     handle.cancel()
@@ -265,7 +265,7 @@ it("should schedule with fixed delay") {
 // ============================================================================
 
 it("should handle task exceptions") {
-    let pool = workers::Pool::new(2)
+    let pool = Workers.Pool.new(2)
     let task = || {
         // Simulate an error by returning an error value
         return { "error": "task failed" }
@@ -284,11 +284,11 @@ it("should use error handler") {
         "size": 2,
         "on_error": error_handler
     }
-    let pool = workers::Pool::new_with_config(config)
+    let pool = Workers.Pool.newWithConfig(config)
 
     let task = || { return { "error": "oops" } }
     pool.submit(task)
-    time::sleep(100)
+    Time.sleep(100)
 }
 
 it("should retry failed tasks") {
@@ -297,7 +297,7 @@ it("should retry failed tasks") {
         "size": 2,
         "max_retries": 3
     }
-    let pool = workers::Pool::new_with_config(config)
+    let pool = Workers.Pool.newWithConfig(config)
 
     let task = || {
         attempts += 1
@@ -315,15 +315,15 @@ it("should retry failed tasks") {
 // ============================================================================
 
 it("should create work-stealing pool") {
-    let pool = workers::WorkStealingPool::new(4)
+    let pool = Workers.WorkStealingPool.new(4)
     assert(pool != null)
 }
 
 it("should balance work across threads") {
-    let pool = workers::WorkStealingPool::new(4)
+    let pool = Workers.WorkStealingPool.new(4)
     let mapper = |x| {
         // Uneven work distribution
-        time::sleep(x * 10)
+        Time.sleep(x * 10)
         return x
     }
 
@@ -335,14 +335,14 @@ it("should balance work across threads") {
 // ============================================================================
 
 it("should fork and join tasks") {
-    let pool = workers::ForkJoinPool::new(4)
+    let pool = Workers.ForkJoinPool.new(4)
 
     let left_task = || { return 10 }
     let right_task = || { return 20 }
 
     let main_task = || {
-        let left = workers::fork(left_task)
-        let right = workers::fork(right_task)
+        let left = Workers.fork(left_task)
+        let right = Workers.fork(right_task)
         return left.join() + right.join()
     }
 
@@ -350,7 +350,7 @@ it("should fork and join tasks") {
 }
 
 it("should support recursive tasks") {
-    let pool = workers::ForkJoinPool::new(4)
+    let pool = Workers.ForkJoinPool.new(4)
 
     // Simplified non-recursive test
     let task = || { return 55 }
@@ -363,23 +363,23 @@ it("should support recursive tasks") {
 // ============================================================================
 
 it("should get pool stats") {
-    let pool = workers::Pool::new(4)
-    let task = || { time::sleep(50) }
+    let pool = Workers.Pool.new(4)
+    let task = || { Time.sleep(50) }
 
     for i in 0..10 {
         pool.submit(task)
     }
 
     let stats = pool.stats()
-    assert(stats.active_count >= 0)
-    assert(stats.completed_count >= 0)
-    assert(stats.queue_size >= 0)
+    assert(stats.activeCount >= 0)
+    assert(stats.completedCount >= 0)
+    assert(stats.queueSize >= 0)
 }
 
 it("should get task stats") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
     let task = || {
-        time::sleep(100)
+        Time.sleep(100)
         return "done"
     }
 
@@ -387,8 +387,8 @@ it("should get task stats") {
     future.wait()
 
     let stats = future.stats()
-    assert(stats.execution_time >= 100)
-    assert(stats.wait_time >= 0)
+    assert(stats.executionTime >= 100)
+    assert(stats.waitTime >= 0)
 }
 
 // ============================================================================
@@ -396,15 +396,15 @@ it("should get task stats") {
 // ============================================================================
 
 it("should support task priorities") {
-    let pool = workers::Pool::new(1)
+    let pool = Workers.Pool.new(1)
 
     let low_task = || { return "low" }
     let high_task = || { return "high" }
     let normal_task = || { return "normal" }
 
-    pool.submit_with_priority(low_task, workers::LOW)
-    pool.submit_with_priority(high_task, workers::HIGH)
-    pool.submit_with_priority(normal_task, workers::NORMAL)
+    pool.submitWithPriority(low_task, Workers.LOW)
+    pool.submitWithPriority(high_task, Workers.HIGH)
+    pool.submitWithPriority(normal_task, Workers.NORMAL)
 
     // High priority tasks execute first
 }
@@ -414,7 +414,7 @@ it("should support task priorities") {
 // ============================================================================
 
 it("should propagate context to workers") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
 
     // Test that closures can capture values and use them in workers
     let request_id = "12345"
@@ -432,7 +432,7 @@ it("should propagate context to workers") {
 // ============================================================================
 
 it("should cleanup resources") {
-    let pool = workers::Pool::new(4)
+    let pool = Workers.Pool.new(4)
 
     let task = || {
         // Simulate resource handling

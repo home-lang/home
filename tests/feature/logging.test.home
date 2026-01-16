@@ -247,15 +247,15 @@ it("should calculate sampled count") {
 // ============================================================================
 
 it("should match module path") {
-    let module = "myapp::database::connection";
-    let filter = "myapp::database";
+    let module = "myapp.database.connection";
+    let filter = "myapp.database";
     let matches = module.starts_with(filter);
     assert(matches == true);
 }
 
 it("should not match different module") {
-    let module = "myapp::http::handler";
-    let filter = "myapp::database";
+    let module = "myapp.http.handler";
+    let filter = "myapp.database";
     let matches = module.starts_with(filter);
     assert(matches == false);
 }

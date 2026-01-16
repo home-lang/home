@@ -189,10 +189,10 @@ enum LogLevel {
 
 fn log(level: LogLevel, ...messages: any): void {
     let prefix = match level {
-        LogLevel::Debug => "[DEBUG]",
-        LogLevel::Info => "[INFO]",
-        LogLevel::Warn => "[WARN]",
-        LogLevel::Error => "[ERROR]",
+        LogLevel.Debug => "[DEBUG]",
+        LogLevel.Info => "[INFO]",
+        LogLevel.Warn => "[WARN]",
+        LogLevel.Error => "[ERROR]",
     }
     
     print("{} ", prefix)
@@ -208,10 +208,10 @@ fn log(level: LogLevel, ...messages: any): void {
 fn test_logging(): void {
     println("\n=== Logging Utility ===")
     
-    log(LogLevel::Info, "Application started")
-    log(LogLevel::Debug, "Processing", 10, "items")
-    log(LogLevel::Warn, "Memory usage:", 85, "%")
-    log(LogLevel::Error, "Connection failed:", "timeout")
+    log(LogLevel.Info, "Application started")
+    log(LogLevel.Debug, "Processing", 10, "items")
+    log(LogLevel.Warn, "Memory usage:", 85, "%")
+    log(LogLevel.Error, "Connection failed:", "timeout")
 }
 
 // ============================================================================
@@ -319,7 +319,7 @@ fn unique<T>(...items: T): Vec<T>
 where
     T: Clone + Eq + std::hash::Hash
 {
-    let mut seen = HashSet::new()
+    let mut seen = HashSet.new()
     let mut result = vec![]
     
     for (item in items) {
@@ -446,7 +446,7 @@ impl QueryBuilder {
 fn test_builder_pattern(): void {
     println("\n=== Builder Pattern ===")
     
-    let query = QueryBuilder::new("users")
+    let query = QueryBuilder.new("users")
         .select("id", "name", "email")
         .where_in("id", 1, 2, 3, 4, 5)
         .build()

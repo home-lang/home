@@ -19,9 +19,9 @@ enum Result<T, E> {
 // Example 1: Basic ? operator usage
 fn divide(a: i32, b: i32) -> Result<i32, string> {
     if b == 0 {
-        return Result::Err("Division by zero");
+        return Result.Err("Division by zero");
     }
-    return Result::Ok(a / b);
+    return Result.Ok(a / b);
 }
 
 fn calculate() -> Result<i32, string> {
@@ -29,7 +29,7 @@ fn calculate() -> Result<i32, string> {
     let x = divide(10, 2)?;   // Unwraps Ok or returns Err
     let y = divide(x, 3)?;     // Chain multiple operations
     let z = divide(y, 0)?;     // This will propagate the error
-    return Result::Ok(z);
+    return Result.Ok(z);
 }
 
 fn test_error_propagation() {
@@ -44,15 +44,15 @@ fn test_error_propagation() {
 // Example 2: Error type inference
 fn read_file(path: string) -> Result<string, string> {
     if path == "" {
-        return Result::Err("Empty path");
+        return Result.Err("Empty path");
     }
-    return Result::Ok("file contents");
+    return Result.Ok("file contents");
 }
 
 fn process_config() -> Result<(), string> {
     let contents = read_file("config.txt")?;  // Auto-propagate
     print("Loaded: ", contents);
-    return Result::Ok(());
+    return Result.Ok(());
 }
 
 // Example 3: Multiple error types with conversion
@@ -78,9 +78,9 @@ enum AppError {
 fn load_remote_file(url: string) -> Result<string, AppError> {
     // Simulate network request
     if url == "" {
-        return Result::Err(AppError::Network(NetworkError::InvalidResponse));
+        return Result.Err(AppError.Network(NetworkError.InvalidResponse));
     }
-    return Result::Ok("data");
+    return Result.Ok("data");
 }
 
 fn test_error_conversion() {
@@ -88,9 +88,9 @@ fn test_error_conversion() {
     
     match load_remote_file("https://example.com") {
         Ok(data) => print("Loaded: ", data),
-        Err(AppError::Network(net_err)) => print("Network error"),
-        Err(AppError::File(file_err)) => print("File error"),
-        Err(AppError::Other(msg)) => print("Other error: ", msg),
+        Err(AppError.Network(net_err)) => print("Network error"),
+        Err(AppError.File(file_err)) => print("File error"),
+        Err(AppError.Other(msg)) => print("Other error: ", msg),
     }
 }
 
@@ -114,14 +114,14 @@ fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
 fn test_generic_option() {
     print("=== Generic Option Type ===");
     
-    let some_int: Option<i32> = Option::Some(42);
-    let none_int: Option<i32> = Option::None;
+    let some_int: Option<i32> = Option.Some(42);
+    let none_int: Option<i32> = Option.None;
     
     print("Some: ", unwrap_or(some_int, 0));  // 42
     print("None: ", unwrap_or(none_int, 0));  // 0
     
-    let some_str: Option<string> = Option::Some("hello");
-    let none_str: Option<string> = Option::None;
+    let some_str: Option<string> = Option.Some("hello");
+    let none_str: Option<string> = Option.None;
     
     print("Some: ", unwrap_or(some_str, "default"));  // "hello"
     print("None: ", unwrap_or(none_str, "default"));  // "default"
@@ -149,16 +149,16 @@ impl<T> Vec<T> {
     
     fn get(self: &Vec<T>, index: i32) -> Option<T> {
         if index >= self.len {
-            return Option::None;
+            return Option.None;
         }
-        return Option::Some(self.data[index]);
+        return Option.Some(self.data[index]);
     }
 }
 
 fn test_generic_vec() {
     print("=== Generic Vector ===");
     
-    let mut numbers: Vec<i32> = Vec::new();
+    let mut numbers: Vec<i32> = Vec.new();
     numbers.push(1);
     numbers.push(2);
     numbers.push(3);
@@ -226,17 +226,17 @@ fn print_and_clone<T: Display + Clone>(value: T) -> T {
 fn parse_int(s: string) -> Result<i32, string> {
     // Simplified parsing
     if s == "42" {
-        return Result::Ok(42);
+        return Result.Ok(42);
     }
-    return Result::Err("Parse error");
+    return Result.Err("Parse error");
 }
 
 fn parse_float(s: string) -> Result<f64, string> {
     // Simplified parsing
     if s == "3.14" {
-        return Result::Ok(3.14);
+        return Result.Ok(3.14);
     }
-    return Result::Err("Parse error");
+    return Result.Err("Parse error");
 }
 
 fn test_monomorphization() {
@@ -277,14 +277,14 @@ impl<K, V> HashMap<K, V> {
     
     fn get(self: &HashMap<K, V>, key: K) -> Option<V> {
         // Lookup implementation
-        return Option::None;
+        return Option.None;
     }
 }
 
 fn test_complex_generics() {
     print("=== Complex Generic Types ===");
     
-    let mut map: HashMap<string, i32> = HashMap::new();
+    let mut map: HashMap<string, i32> = HashMap.new();
     map.insert("one", 1);
     map.insert("two", 2);
     
@@ -376,7 +376,7 @@ fn load_and_parse<T>(filename: string, parser: fn(string) -> Result<T, string>) 
     let parsed = parser(contents)?;
     
     // Return success
-    return Result::Ok(parsed);
+    return Result.Ok(parsed);
     
     // This will be compiled to optimized native code by LLVM!
 }

@@ -7,12 +7,12 @@
 
 it("should create rate limiter") {
     // Create limiter with 100 requests per 60 seconds
-    let limiter = ratelimit::Limiter::new(100, 60)
+    let limiter = RateLimit.Limiter.new(100, 60)
     assert(limiter != null)
 }
 
 it("should allow requests under limit") {
-    let limiter = ratelimit::Limiter::new(10, 60)
+    let limiter = RateLimit.Limiter.new(10, 60)
 
     // Each check should allow since we're under limit
     let result = limiter.check("client1")
@@ -20,7 +20,7 @@ it("should allow requests under limit") {
 }
 
 it("should have allowed field in result") {
-    let limiter = ratelimit::Limiter::new(5, 60)
+    let limiter = RateLimit.Limiter.new(5, 60)
 
     let result = limiter.check("client1")
     // Result should have allowed field
@@ -28,7 +28,7 @@ it("should have allowed field in result") {
 }
 
 it("should have remaining field in result") {
-    let limiter = ratelimit::Limiter::new(10, 60)
+    let limiter = RateLimit.Limiter.new(10, 60)
 
     let result = limiter.check("client1")
     // Result should have remaining field
@@ -40,8 +40,8 @@ it("should have remaining field in result") {
 // ============================================================================
 
 it("should configure different limits") {
-    let limiter1 = ratelimit::Limiter::new(100, 60)
-    let limiter2 = ratelimit::Limiter::new(1000, 3600)
+    let limiter1 = RateLimit.Limiter.new(100, 60)
+    let limiter2 = RateLimit.Limiter.new(1000, 3600)
 
     assert(limiter1 != null)
     assert(limiter2 != null)
@@ -53,19 +53,19 @@ it("should configure different limits") {
 
 it("should create token bucket") {
     // capacity: 100, refill_rate: 10 tokens per second
-    let bucket = ratelimit::TokenBucket::new(100, 10)
+    let bucket = RateLimit.TokenBucket.new(100, 10)
     assert(bucket != null)
 }
 
 it("should consume tokens") {
-    let bucket = ratelimit::TokenBucket::new(100, 10)
+    let bucket = RateLimit.TokenBucket.new(100, 10)
 
     let result = bucket.consume(1)
     assert(result.allowed == true)
 }
 
 it("should try to consume multiple tokens") {
-    let bucket = ratelimit::TokenBucket::new(100, 10)
+    let bucket = RateLimit.TokenBucket.new(100, 10)
 
     let result = bucket.consume(50)
     assert(result.allowed == true)
@@ -76,12 +76,12 @@ it("should try to consume multiple tokens") {
 // ============================================================================
 
 it("should create sliding window") {
-    let limiter = ratelimit::SlidingWindow::new(100, 60)
+    let limiter = RateLimit.SlidingWindow.new(100, 60)
     assert(limiter != null)
 }
 
 it("should check with sliding window") {
-    let limiter = ratelimit::SlidingWindow::new(100, 60)
+    let limiter = RateLimit.SlidingWindow.new(100, 60)
 
     let result = limiter.check("client1")
     assert(result.allowed == true)
@@ -92,12 +92,12 @@ it("should check with sliding window") {
 // ============================================================================
 
 it("should create leaky bucket") {
-    let bucket = ratelimit::LeakyBucket::new(100, 10)
+    let bucket = RateLimit.LeakyBucket.new(100, 10)
     assert(bucket != null)
 }
 
 it("should add to leaky bucket") {
-    let bucket = ratelimit::LeakyBucket::new(100, 10)
+    let bucket = RateLimit.LeakyBucket.new(100, 10)
 
     let result = bucket.add(1)
     assert(result.allowed == true)
