@@ -23,6 +23,11 @@
     "compiler"
   ],
   "scripts": {
+    "dev": "bunx bunpress dev",
+    "dev:docs": "bunx bunpress dev",
+    "build": "bunx bunpress build",
+    "build:docs": "bunx bunpress build",
+    "preview": "bunx bunpress preview",
     "release": "bunx bumpx -r --all"
   },
   "devDependencies": {
