@@ -1,0 +1,301 @@
+// Home Media Library - Batch Processing Examples
+// Demonstrates batch transcoding and bulk operations
+
+import media
+import std.fs
+
+fn main() -> Result<(), media.MediaError> {
+    println("Home Media Library - Batch Processing Examples")
+    println("==============================================\n")
+
+    // Example 1: Basic batch transcoding
+    example_basic_batch()?
+
+    // Example 2: Parallel batch processing
+    example_parallel_batch()?
+
+    // Example 3: Batch with different codecs
+    example_batch_codecs()?
+
+    // Example 4: Directory conversion
+    example_directory_conversion()?
+
+    // Example 5: Batch thumbnail generation
+    example_batch_thumbnails()?
+
+    println("\nAll batch examples completed!")
+    return Result.Ok(())
+}
+
+fn example_basic_batch() -> Result<(), media.MediaError> {
+    println("=== Basic Batch Transcoding ===")
+
+    let batch = media.BatchProcessor.new()?
+    defer batch.deinit()
+
+    // Add multiple transcoding jobs
+    batch
+        .add("video1.mkv", "video1.mp4")?
+        .add("video2.avi", "video2.mp4")?
+        .add("video3.mov", "video3.mp4")?
+
+    // Run all jobs
+    let results = batch.run()?
+
+    // Check results
+    for result in results {
+        if result.success {
+            let duration_ms = result.stats.duration_ms()
+            let fps = result.stats.avg_fps()
+            println("SUCCESS: {result.input_path} -> {result.output_path}")
+            println("  Time: {duration_ms}ms, Avg FPS: {fps}")
+        } else {
+            println("FAILED: {result.input_path}")
+            if let Some(err) = result.error_code {
+                println("  Error: {err}")
+            }
+        }
+    }
+
+    return Result.Ok(())
+}
+
+fn example_parallel_batch() -> Result<(), media.MediaError> {
+    println("\n=== Parallel Batch Processing ===")
+
+    let batch = media.BatchProcessor.new()?
+    defer batch.deinit()
+
+    // Add jobs
+    batch
+        .add("input1.mp4", "output1.webm")?
+        .add("input2.mp4", "output2.webm")?
+        .add("input3.mp4", "output3.webm")?
+        .add("input4.mp4", "output4.webm")?
+        // Process 4 files in parallel
+        .parallel(4)?
+
+    let results = batch.run()?
+
+    let successful = results.filter(|r| r.success).count()
+    let failed = results.len() - successful
+    println("Completed: {successful} successful, {failed} failed")
+
+    return Result.Ok(())
+}
+
+fn example_batch_codecs() -> Result<(), media.MediaError> {
+    println("\n=== Batch with Different Codecs ===")
+
+    let batch = media.BatchProcessor.new()?
+    defer batch.deinit()
+
+    // Convert same source to different formats
+    batch
+        .add_with_codec("source.mp4", "output_h264.mp4", media.VideoCodec.H264)?
+        .add_with_codec("source.mp4", "output_hevc.mp4", media.VideoCodec.Hevc)?
+        .add_with_codec("source.mp4", "output_vp9.webm", media.VideoCodec.Vp9)?
+        .add_with_codec("source.mp4", "output_av1.mkv", media.VideoCodec.Av1)?
+        .parallel(2)?  // Process 2 at a time
+
+    let results = batch.run()?
+
+    println("Multi-codec batch complete:")
+    for result in results {
+        let status = if result.success { "OK" } else { "FAIL" }
+        println("  [{status}] {result.output_path}")
+    }
+
+    return Result.Ok(())
+}
+
+fn example_directory_conversion() -> Result<(), media.MediaError> {
+    println("\n=== Directory Conversion ===")
+
+    let input_dir = "./raw_videos"
+    let output_dir = "./converted"
+
+    // Create output directory
+    fs.create_dir_all(output_dir)?
+
+    let batch = media.BatchProcessor.new()?
+    defer batch.deinit()
+
+    // Find all video files in directory
+    let video_extensions = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv"]
+    let files = fs.read_dir(input_dir)?
+
+    for file in files {
+        let ext = fs.extension(file.name)
+        if video_extensions.contains(ext) {
+            let input_path = "{input_dir}/{file.name}"
+            let base_name = fs.stem(file.name)
+            let output_path = "{output_dir}/{base_name}.mp4"
+
+            batch.add(input_path, output_path)?
+        }
+    }
+
+    // Process in parallel
+    batch.parallel(4)?
+    let results = batch.run()?
+
+    let total = results.len()
+    let successful = results.filter(|r| r.success).count()
+    println("Converted {successful}/{total} files")
+
+    return Result.Ok(())
+}
+
+fn example_batch_thumbnails() -> Result<(), media.MediaError> {
+    println("\n=== Batch Thumbnail Generation ===")
+
+    let videos = [
+        "movie1.mp4",
+        "movie2.mkv",
+        "movie3.avi",
+        "movie4.mov",
+    ]
+
+    for video in videos {
+        // Generate thumbnail at 10% of video duration
+        let info = media.probe(video)?
+        let time = info.duration.to_seconds() * 0.1
+
+        let base_name = fs.stem(video)
+        let thumb_path = "thumbnails/{base_name}_thumb.jpg"
+
+        media.thumbnail(video, thumb_path, time)?
+        println("Generated: {thumb_path}")
+    }
+
+    return Result.Ok(())
+}
+
+// Example: Batch conversion with quality levels
+fn example_multi_quality() -> Result<(), media.MediaError> {
+    println("\n=== Multi-Quality Batch ===")
+
+    let source = "master.mp4"
+    let qualities = [
+        ("1080p", 1920, 1080, 23),
+        ("720p", 1280, 720, 25),
+        ("480p", 854, 480, 28),
+        ("360p", 640, 360, 30),
+    ]
+
+    for (name, width, height, crf) in qualities {
+        let output = "output_{name}.mp4"
+
+        let pipeline = media.Pipeline.new()?
+        defer pipeline.deinit()
+
+        pipeline
+            .input(source)?
+            .output(output)?
+            .resize(width, height)?
+            .video_codec(media.VideoCodec.H264)?
+            .video_quality(crf)?
+            .audio_codec(media.AudioCodec.Aac)?
+            .audio_bitrate(128)?
+            .run()?
+
+        println("Created {name} version: {output}")
+    }
+
+    return Result.Ok(())
+}
+
+// Example: Batch audio extraction
+fn example_batch_audio_extraction() -> Result<(), media.MediaError> {
+    println("\n=== Batch Audio Extraction ===")
+
+    let videos = fs.glob("videos/*.mp4")?
+
+    for video in videos {
+        let base_name = fs.stem(video)
+        let audio_path = "audio/{base_name}.mp3"
+
+        media.extract_audio(video, audio_path)?
+        println("Extracted: {audio_path}")
+    }
+
+    return Result.Ok(())
+}
+
+// Example: Batch with error handling
+fn example_batch_error_handling() -> Result<(), media.MediaError> {
+    println("\n=== Batch with Error Handling ===")
+
+    let batch = media.BatchProcessor.new()?
+    defer batch.deinit()
+
+    // Some files may not exist or be corrupt
+    batch
+        .add("good_video.mp4", "output1.mp4")?
+        .add("missing_file.mp4", "output2.mp4")?  // Will fail
+        .add("corrupt_video.avi", "output3.mp4")? // May fail
+        .add("another_good.mov", "output4.mp4")?
+        .parallel(2)?
+
+    let results = batch.run()?
+
+    // Process results
+    let mut successful: [str] = []
+    let mut failed: [str] = []
+
+    for result in results {
+        if result.success {
+            successful.push(result.input_path)
+        } else {
+            failed.push(result.input_path)
+        }
+    }
+
+    println("\nSuccessful conversions ({successful.len()}):")
+    for path in successful {
+        println("  - {path}")
+    }
+
+    if failed.len() > 0 {
+        println("\nFailed conversions ({failed.len()}):")
+        for path in failed {
+            println("  - {path}")
+        }
+    }
+
+    return Result.Ok(())
+}
+
+// Example: Batch format detection and routing
+fn example_smart_batch() -> Result<(), media.MediaError> {
+    println("\n=== Smart Batch Processing ===")
+
+    let files = fs.read_dir("./media")?
+
+    for file in files {
+        let path = "./media/{file.name}"
+        let media_type = media.detect_type(path)
+
+        match media_type {
+            media.MediaType.Video -> {
+                let output = "./output/{fs.stem(file.name)}.mp4"
+                media.transcode(path, output)?
+                println("Video: {file.name} -> MP4")
+            },
+            media.MediaType.Audio -> {
+                let output = "./output/{fs.stem(file.name)}.mp3"
+                media.transcode(path, output)?
+                println("Audio: {file.name} -> MP3")
+            },
+            media.MediaType.Image -> {
+                println("Image: {file.name} (skipped)")
+            },
+            _ -> {
+                println("Unknown: {file.name} (skipped)")
+            }
+        }
+    }
+
+    return Result.Ok(())
+}

@@ -1,0 +1,295 @@
+// Home Media Library - Pipeline Examples
+// Demonstrates the fluent/chainable pipeline API
+
+import media
+
+fn main() -> Result<(), media.MediaError> {
+    println("Home Media Library - Pipeline Examples")
+    println("======================================\n")
+
+    // Example 1: Basic pipeline
+    example_basic_pipeline()?
+
+    // Example 2: Video filters pipeline
+    example_video_filters()?
+
+    // Example 3: Audio processing pipeline
+    example_audio_processing()?
+
+    // Example 4: Complex multi-filter pipeline
+    example_complex_pipeline()?
+
+    // Example 5: Time-based operations
+    example_time_operations()?
+
+    // Example 6: Stream selection
+    example_stream_selection()?
+
+    println("\nAll pipeline examples completed!")
+    return Result.Ok(())
+}
+
+fn example_basic_pipeline() -> Result<(), media.MediaError> {
+    println("=== Basic Pipeline ===")
+
+    // Simple video conversion using pipeline
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    pipeline
+        .input("input.mp4")?
+        .output("output.webm")?
+        .video_codec(media.VideoCodec.Vp9)?
+        .audio_codec(media.AudioCodec.Opus)?
+        .run()?
+
+    println("Converted to VP9/Opus WebM")
+    return Result.Ok(())
+}
+
+fn example_video_filters() -> Result<(), media.MediaError> {
+    println("\n=== Video Filters ===")
+
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    // Chain multiple video filters
+    pipeline
+        .input("source.mp4")?
+        .output("filtered.mp4")?
+        // Resolution
+        .resize(1920, 1080)?
+        // Visual adjustments
+        .brightness(1.1)?
+        .contrast(1.05)?
+        .saturation(1.2)?
+        // Filters
+        .sharpen(0.5)?
+        .denoise()?
+        // Codec settings
+        .video_codec(media.VideoCodec.H264)?
+        .video_quality(18)?
+        .run()?
+
+    println("Applied video filters and saved")
+    return Result.Ok(())
+}
+
+fn example_audio_processing() -> Result<(), media.MediaError> {
+    println("\n=== Audio Processing ===")
+
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    // Audio-only processing
+    pipeline
+        .input("podcast.wav")?
+        .output("podcast_processed.mp3")?
+        // Remove video if present
+        .no_video()?
+        // Audio processing
+        .normalize()?
+        .loudnorm()?
+        .volume(1.5)?
+        // Output settings
+        .audio_codec(media.AudioCodec.Mp3)?
+        .audio_bitrate(192)?
+        .sample_rate(44100)?
+        .channels(2)?
+        .run()?
+
+    println("Processed audio and saved as MP3")
+    return Result.Ok(())
+}
+
+fn example_complex_pipeline() -> Result<(), media.MediaError> {
+    println("\n=== Complex Multi-Filter Pipeline ===")
+
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    // Professional video processing pipeline
+    pipeline
+        .input("raw_footage.mov")?
+        .output("final_video.mp4")?
+
+        // Video transforms
+        .resize(3840, 2160)?        // 4K output
+        .crop(100, 50, 3640, 2060)? // Crop edges
+        .deinterlace()?             // Fix interlacing
+
+        // Color grading
+        .brightness(1.05)?
+        .contrast(1.1)?
+        .saturation(1.15)?
+
+        // Filters
+        .denoise()?
+        .sharpen(0.3)?
+
+        // High quality encoding
+        .video_codec(media.VideoCodec.Hevc)?
+        .video_quality(18)?
+        .fps(60.0)?
+
+        // Audio
+        .audio_codec(media.AudioCodec.Aac)?
+        .audio_bitrate(320)?
+        .normalize()?
+
+        .run()?
+
+    println("Created high-quality processed video")
+    return Result.Ok(())
+}
+
+fn example_time_operations() -> Result<(), media.MediaError> {
+    println("\n=== Time Operations ===")
+
+    // Extract a clip from video
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    pipeline
+        .input("movie.mkv")?
+        .output("clip.mp4")?
+        // Start at 1 minute, duration of 30 seconds
+        .start(60.0)?
+        .duration(30.0)?
+        // Copy streams (no re-encoding)
+        .copy_video()?
+        .copy_audio()?
+        .run()?
+
+    println("Extracted 30-second clip starting at 1:00")
+
+    // Create a speed-adjusted version
+    let speed_pipeline = media.Pipeline.new()?
+    defer speed_pipeline.deinit()
+
+    speed_pipeline
+        .input("tutorial.mp4")?
+        .output("tutorial_fast.mp4")?
+        .speed(1.5)?  // 1.5x speed
+        .video_codec(media.VideoCodec.H264)?
+        .audio_codec(media.AudioCodec.Aac)?
+        .run()?
+
+    println("Created 1.5x speed version")
+
+    return Result.Ok(())
+}
+
+fn example_stream_selection() -> Result<(), media.MediaError> {
+    println("\n=== Stream Selection ===")
+
+    // Video only (remove audio)
+    let video_only = media.Pipeline.new()?
+    defer video_only.deinit()
+
+    video_only
+        .input("with_audio.mp4")?
+        .output("video_only.mp4")?
+        .no_audio()?
+        .copy_video()?  // Keep video as-is
+        .run()?
+
+    println("Created video-only file")
+
+    // Audio only (remove video)
+    let audio_only = media.Pipeline.new()?
+    defer audio_only.deinit()
+
+    audio_only
+        .input("music_video.mp4")?
+        .output("audio.aac")?
+        .no_video()?
+        .copy_audio()?  // Keep audio as-is
+        .run()?
+
+    println("Extracted audio only")
+
+    return Result.Ok(())
+}
+
+// Example: Using presets
+fn example_presets() -> Result<(), media.MediaError> {
+    println("\n=== Using Presets ===")
+
+    // Web video preset
+    let web_settings = media.Presets.web_video()
+    println("Web preset: CRF={web_settings.crf}, codec={web_settings.codec}")
+
+    // High quality preset
+    let hq_settings = media.Presets.hq_video()
+    println("HQ preset: CRF={hq_settings.crf}, codec={hq_settings.codec}")
+
+    // Standard audio preset
+    let audio_settings = media.Presets.standard_audio()
+    println("Audio preset: bitrate={audio_settings.bitrate}kbps")
+
+    return Result.Ok(())
+}
+
+// Example: Progress tracking
+fn example_with_progress() -> Result<(), media.MediaError> {
+    println("\n=== Pipeline with Progress ===")
+
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    fn progress_callback(progress: f32) {
+        let percent = (progress * 100.0) as i32
+        println("Progress: {percent}%")
+    }
+
+    pipeline
+        .input("large_video.mp4")?
+        .output("converted.webm")?
+        .video_codec(media.VideoCodec.Vp9)?
+        .video_quality(30)?
+        .run_with_progress(progress_callback)?
+
+    println("Conversion complete!")
+    return Result.Ok(())
+}
+
+// Example: Create social media optimized versions
+fn example_social_media() -> Result<(), media.MediaError> {
+    println("\n=== Social Media Versions ===")
+
+    // Instagram Reel (9:16 aspect, max 60s)
+    let instagram = media.Pipeline.new()?
+    defer instagram.deinit()
+
+    instagram
+        .input("source.mp4")?
+        .output("instagram_reel.mp4")?
+        .resize(1080, 1920)?  // 9:16 portrait
+        .duration(60.0)?     // Max 60 seconds
+        .video_codec(media.VideoCodec.H264)?
+        .video_quality(23)?
+        .audio_codec(media.AudioCodec.Aac)?
+        .audio_bitrate(128)?
+        .run()?
+
+    println("Created Instagram Reel version")
+
+    // YouTube (16:9, high quality)
+    let youtube = media.Pipeline.new()?
+    defer youtube.deinit()
+
+    youtube
+        .input("source.mp4")?
+        .output("youtube_hq.mp4")?
+        .resize(3840, 2160)?  // 4K
+        .video_codec(media.VideoCodec.H264)?
+        .video_quality(18)?
+        .audio_codec(media.AudioCodec.Aac)?
+        .audio_bitrate(320)?
+        .run()?
+
+    println("Created YouTube 4K version")
+
+    return Result.Ok(())
+}

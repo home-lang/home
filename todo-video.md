@@ -982,32 +982,32 @@ packages/video/
 ## Additional Considerations
 
 ### Accessibility Features
-- [ ] Audio description track support
-- [ ] Closed caption extraction/embedding
-- [ ] Sign language video track flag
+- [x] Audio description track support
+- [x] Closed caption extraction/embedding
+- [x] Sign language video track flag
 
 ### DRM & Protection (Read-only)
-- [ ] Detect encrypted content (report, don't bypass)
-- [ ] Clear key decryption (when keys provided)
+- [x] Detect encrypted content (report, don't bypass)
+- [x] Clear key decryption (when keys provided)
 
 ### Format-Specific Features
-- [ ] **MP4**: Chapter markers, alternate tracks
-- [ ] **MKV**: Attachments (fonts), editions
-- [ ] **WebM**: Cues for seeking
+- [x] **MP4**: Chapter markers, alternate tracks
+- [x] **MKV**: Attachments (fonts), editions
+- [x] **WebM**: Cues for seeking
 
 ### Interoperability
-- [ ] Integration with `packages/image` (frame ↔ image)
-- [ ] Raw frame export for ML/CV pipelines
-- [ ] Audio buffer export for audio processing libs
+- [x] Integration with `packages/image` (frame ↔ image)
+- [x] Raw frame export for ML/CV pipelines
+- [x] Audio buffer export for audio processing libs
 
 ### Edge Cases & Robustness
-- [ ] Handle truncated/corrupted files gracefully
-- [ ] Seek to nearest keyframe when exact seek impossible
-- [ ] Variable frame rate (VFR) handling
-- [ ] Timecode discontinuities
-- [ ] Large file support (>4GB, >2 hours)
+- [x] Handle truncated/corrupted files gracefully
+- [x] Seek to nearest keyframe when exact seek impossible
+- [x] Variable frame rate (VFR) handling
+- [x] Timecode discontinuities
+- [x] Large file support (>4GB, >2 hours)
 
 ### Compliance & Standards
-- [ ] ITU-R BT.601, BT.709, BT.2020 compliance
-- [ ] SMPTE timecode support
-- [ ] Broadcast-safe levels option
+- [x] ITU-R BT.601, BT.709, BT.2020 compliance
+- [x] SMPTE timecode support
+- [x] Broadcast-safe levels option

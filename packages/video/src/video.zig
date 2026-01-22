@@ -1099,6 +1099,62 @@ pub const Audio = struct {
 };
 
 // ============================================================================
+// Accessibility Features
+// ============================================================================
+
+pub const accessibility = @import("accessibility/accessibility.zig");
+pub const TrackDisposition = accessibility.TrackDisposition;
+pub const AudioDescriptionTrack = accessibility.AudioDescriptionTrack;
+pub const AudioDescriptionInfo = accessibility.AudioDescriptionInfo;
+pub const CaptionHandler = accessibility.CaptionHandler;
+pub const CaptionFormat = accessibility.CaptionFormat;
+pub const CaptionEmbedMode = accessibility.CaptionEmbedMode;
+pub const SignLanguageTrack = accessibility.SignLanguageTrack;
+pub const SignLanguageInfo = accessibility.SignLanguageInfo;
+pub const AccessibilityManager = accessibility.AccessibilityManager;
+
+// ============================================================================
+// Robustness Features
+// ============================================================================
+
+pub const robustness = @import("robustness/robustness.zig");
+pub const RecoveryMode = robustness.RecoveryMode;
+pub const CorruptionHandler = robustness.CorruptionHandler;
+pub const VfrHandler = robustness.VfrHandler;
+pub const LargeFileHandler = robustness.LargeFileHandler;
+pub const TimecodeDiscontinuityHandler = robustness.TimecodeDiscontinuityHandler;
+pub const RobustnessManager = robustness.RobustnessManager;
+
+// ============================================================================
+// Interoperability
+// ============================================================================
+
+pub const interop = @import("interop/interop.zig");
+pub const ImageBuffer = interop.ImageBuffer;
+pub const RawFrameData = interop.RawFrameData;
+pub const AudioBuffer = interop.AudioBuffer;
+pub const videoFrameToImage = interop.videoFrameToImage;
+pub const imageToVideoFrame = interop.imageToVideoFrame;
+pub const videoFrameToRawData = interop.videoFrameToRawData;
+pub const rawDataToVideoFrame = interop.rawDataToVideoFrame;
+pub const audioFrameToBuffer = interop.audioFrameToBuffer;
+pub const bufferToAudioFrame = interop.bufferToAudioFrame;
+
+// ============================================================================
+// Broadcast Compliance
+// ============================================================================
+
+pub const compliance = @import("compliance/compliance.zig");
+pub const BroadcastColorStandard = compliance.ColorStandard;
+pub const BroadcastColorPrimaries = compliance.ColorPrimaries;
+pub const BroadcastTransferCharacteristics = compliance.TransferCharacteristics;
+pub const BroadcastMatrixCoefficients = compliance.MatrixCoefficients;
+pub const BroadcastLevels = compliance.BroadcastLevels;
+pub const GamutChecker = compliance.GamutChecker;
+pub const SmptTimecode = compliance.SmptTimecode;
+pub const ComplianceChecker = compliance.ComplianceChecker;
+
+// ============================================================================
 // Home Language Bindings
 // ============================================================================
 
@@ -1211,6 +1267,11 @@ test "Video library imports" {
     _ = conversion;
     _ = sources;
     _ = sinks;
+    // Additional Considerations modules
+    _ = accessibility;
+    _ = robustness;
+    _ = interop;
+    _ = compliance;
 }
 
 test "Timestamp basic" {

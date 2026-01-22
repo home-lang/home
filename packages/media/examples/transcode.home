@@ -1,0 +1,183 @@
+// Home Media Library - Transcoding Examples
+// Demonstrates basic transcoding operations
+
+import media
+
+fn main() -> Result<(), media.MediaError> {
+    println("Home Media Library - Transcoding Examples")
+    println("=========================================\n")
+
+    // Example 1: Simple format conversion
+    example_simple_transcode()?
+
+    // Example 2: Transcode with codec options
+    example_transcode_with_options()?
+
+    // Example 3: Extract audio from video
+    example_extract_audio()?
+
+    // Example 4: Generate thumbnails
+    example_thumbnail()?
+
+    // Example 5: Transmux (container change only)
+    example_transmux()?
+
+    println("\nAll examples completed successfully!")
+    return Result.Ok(())
+}
+
+fn example_simple_transcode() -> Result<(), media.MediaError> {
+    println("=== Simple Transcode ===")
+
+    // Convert MKV to MP4 with auto-detected settings
+    media.transcode("input.mkv", "output.mp4")?
+    println("Converted input.mkv to output.mp4")
+
+    // Convert AVI to WebM
+    media.transcode("input.avi", "output.webm")?
+    println("Converted input.avi to output.webm")
+
+    return Result.Ok(())
+}
+
+fn example_transcode_with_options() -> Result<(), media.MediaError> {
+    println("\n=== Transcode with Options ===")
+
+    // Open media file and get info
+    let video = media.Media.open("input.mp4")?
+    defer video.deinit()
+
+    // Display media information
+    if let Some(info) = video.info() {
+        println("Input file information:")
+        println("  Duration: {info.duration.to_seconds()}s")
+        println("  Has video: {info.has_video}")
+        println("  Has audio: {info.has_audio}")
+
+        if info.width > 0 {
+            println("  Resolution: {info.width}x{info.height}")
+        }
+    }
+
+    // Convert with specific codecs using pipeline
+    let pipeline = video.process()?
+    pipeline
+        .output("output_hevc.mp4")?
+        .video_codec(media.VideoCodec.Hevc)?
+        .video_quality(20)?
+        .audio_codec(media.AudioCodec.Aac)?
+        .audio_bitrate(192)?
+        .run()?
+
+    println("Created HEVC output with AAC audio")
+
+    return Result.Ok(())
+}
+
+fn example_extract_audio() -> Result<(), media.MediaError> {
+    println("\n=== Extract Audio ===")
+
+    // Extract audio to MP3
+    media.extract_audio("video.mp4", "audio.mp3")?
+    println("Extracted audio to audio.mp3")
+
+    // Extract audio to FLAC (lossless)
+    media.extract_audio("video.mkv", "audio.flac")?
+    println("Extracted audio to audio.flac")
+
+    return Result.Ok(())
+}
+
+fn example_thumbnail() -> Result<(), media.MediaError> {
+    println("\n=== Generate Thumbnail ===")
+
+    // Generate thumbnail at 5 seconds
+    media.thumbnail("video.mp4", "thumb_5s.jpg", 5.0)?
+    println("Generated thumbnail at 5 seconds")
+
+    // Generate thumbnail at 30 seconds
+    media.thumbnail("video.mp4", "thumb_30s.png", 30.0)?
+    println("Generated thumbnail at 30 seconds")
+
+    // Generate thumbnail from Media object
+    let video = media.Media.open("movie.mkv")?
+    defer video.deinit()
+
+    let duration = video.duration()
+    video.thumbnail("movie_mid.jpg", duration / 2.0)?
+    println("Generated thumbnail at midpoint")
+
+    return Result.Ok(())
+}
+
+fn example_transmux() -> Result<(), media.MediaError> {
+    println("\n=== Transmux (Container Change) ===")
+
+    // Change container without re-encoding (fast!)
+    media.transmux("video.mkv", "video.mp4")?
+    println("Transmuxed MKV to MP4 without re-encoding")
+
+    media.transmux("video.mp4", "video.ts")?
+    println("Transmuxed MP4 to MPEG-TS without re-encoding")
+
+    return Result.Ok(())
+}
+
+// Example: Probe media file without processing
+fn example_probe() -> Result<(), media.MediaError> {
+    println("\n=== Probe Media File ===")
+
+    let info = media.probe("video.mp4")?
+
+    println("Media Information:")
+    println("  Duration: {info.duration.to_seconds()}s")
+    println("  Container: {info.container_format}")
+
+    if info.has_video {
+        println("  Video: {info.width}x{info.height}")
+        if let Some(codec) = info.video_codec {
+            println("  Video Codec: {codec}")
+        }
+        if let Some(fps) = info.frame_rate {
+            println("  Frame Rate: {fps.to_f64()} fps")
+        }
+    }
+
+    if info.has_audio {
+        if let Some(codec) = info.audio_codec {
+            println("  Audio Codec: {codec}")
+        }
+        if let Some(sr) = info.sample_rate {
+            println("  Sample Rate: {sr} Hz")
+        }
+        if let Some(ch) = info.channels {
+            println("  Channels: {ch}")
+        }
+    }
+
+    return Result.Ok(())
+}
+
+// Example: Convert to web-optimized format
+fn example_web_optimized() -> Result<(), media.MediaError> {
+    println("\n=== Web-Optimized Conversion ===")
+
+    let pipeline = media.Pipeline.new()?
+    defer pipeline.deinit()
+
+    pipeline
+        .input("source.mov")?
+        .output("web_video.mp4")?
+        .video_codec(media.VideoCodec.H264)?
+        .video_quality(23)?
+        .resize(1280, 720)?
+        .fps(30.0)?
+        .audio_codec(media.AudioCodec.Aac)?
+        .audio_bitrate(128)?
+        .sample_rate(48000)?
+        .run()?
+
+    println("Created web-optimized MP4")
+
+    return Result.Ok(())
+}
