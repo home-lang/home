@@ -218,7 +218,7 @@ pub const PlainDate = struct {
         // Week 1 is the week containing the first Thursday
         const jan1_offset: i16 = if (jan1_dow <= 4) @as(i16, 1) - @as(i16, jan1_dow) else @as(i16, 8) - @as(i16, jan1_dow);
 
-        const adjusted_day = @as(i16, day_of_year) + jan1_offset;
+        const adjusted_day: i16 = @as(i16, @intCast(day_of_year)) + jan1_offset;
         if (adjusted_day <= 0) {
             // Belongs to last week of previous year
             return 52;
@@ -1288,4 +1288,1120 @@ test "PlainDate toString" {
     defer allocator.free(str);
 
     try std.testing.expectEqualStrings("2024-06-15", str);
+}
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+// --- Instant Edge Cases ---
+
+test "Instant: Unix epoch (zero)" {
+    const epoch = Instant.fromEpochSeconds(0);
+    try std.testing.expectEqual(@as(i128, 0), epoch.epoch_nanoseconds);
+    try std.testing.expectEqual(@as(i64, 0), epoch.epochSeconds());
+    try std.testing.expectEqual(@as(i64, 0), epoch.epochMilliseconds());
+    try std.testing.expectEqual(@as(i64, 0), epoch.epochMicroseconds());
+}
+
+test "Instant: negative timestamps (before 1970)" {
+    // One day before epoch
+    const before_epoch = Instant.fromEpochSeconds(-86400);
+    try std.testing.expectEqual(@as(i64, -86400), before_epoch.epochSeconds());
+
+    // One year before epoch (1969)
+    const year_before = Instant.fromEpochSeconds(-365 * 86400);
+    try std.testing.expectEqual(@as(i64, -365 * 86400), year_before.epochSeconds());
+}
+
+test "Instant: nanosecond precision boundaries" {
+    // 1 nanosecond
+    const one_ns = Instant.fromEpochNanoseconds(1);
+    try std.testing.expectEqual(@as(i128, 1), one_ns.epochNanoseconds());
+    try std.testing.expectEqual(@as(i64, 0), one_ns.epochMicroseconds()); // Truncated
+
+    // 999 nanoseconds (just under 1 microsecond)
+    const under_us = Instant.fromEpochNanoseconds(999);
+    try std.testing.expectEqual(@as(i64, 0), under_us.epochMicroseconds());
+
+    // Exactly 1 microsecond
+    const one_us = Instant.fromEpochMicroseconds(1);
+    try std.testing.expectEqual(@as(i64, 1), one_us.epochMicroseconds());
+
+    // 999,999 nanoseconds (just under 1 millisecond)
+    const under_ms = Instant.fromEpochNanoseconds(999_999);
+    try std.testing.expectEqual(@as(i64, 0), under_ms.epochMilliseconds());
+
+    // Exactly 1 millisecond
+    const one_ms = Instant.fromEpochMilliseconds(1);
+    try std.testing.expectEqual(@as(i64, 1), one_ms.epochMilliseconds());
+}
+
+test "Instant: large timestamps (far future)" {
+    // Year 3000 approximately (in seconds since epoch)
+    const year_3000: i64 = 32503680000;
+    const future = Instant.fromEpochSeconds(year_3000);
+    try std.testing.expectEqual(year_3000, future.epochSeconds());
+}
+
+test "Instant: duration arithmetic" {
+    const start = Instant.fromEpochSeconds(1000);
+    const duration = Duration.fromSeconds(500);
+
+    const later = start.add(duration);
+    try std.testing.expectEqual(@as(i64, 1500), later.epochSeconds());
+
+    const earlier = start.subtract(duration);
+    try std.testing.expectEqual(@as(i64, 500), earlier.epochSeconds());
+}
+
+test "Instant: since and until" {
+    const t1 = Instant.fromEpochSeconds(1000);
+    const t2 = Instant.fromEpochSeconds(2000);
+
+    const since = t2.since(t1);
+    try std.testing.expectEqual(@as(i64, 1000), since.totalSeconds());
+
+    const until = t1.until(t2);
+    try std.testing.expectEqual(@as(i64, 1000), until.totalSeconds());
+}
+
+test "Instant: comparison" {
+    const t1 = Instant.fromEpochSeconds(1000);
+    const t2 = Instant.fromEpochSeconds(2000);
+    const t3 = Instant.fromEpochSeconds(1000);
+
+    try std.testing.expectEqual(std.math.Order.lt, t1.compare(t2));
+    try std.testing.expectEqual(std.math.Order.gt, t2.compare(t1));
+    try std.testing.expectEqual(std.math.Order.eq, t1.compare(t3));
+    try std.testing.expect(t1.equals(t3));
+    try std.testing.expect(!t1.equals(t2));
+}
+
+test "Instant: toString with milliseconds" {
+    const allocator = std.testing.allocator;
+
+    // With fractional seconds
+    const instant_ms = Instant.fromEpochMilliseconds(1500); // 1.5 seconds
+    const str_ms = try instant_ms.toString(allocator);
+    defer allocator.free(str_ms);
+    try std.testing.expectEqualStrings("1970-01-01T00:00:01.500Z", str_ms);
+}
+
+// --- PlainDate Edge Cases ---
+
+test "PlainDate: leap year rules" {
+    // Regular leap year (divisible by 4)
+    const leap_2024 = try PlainDate.from(2024, 1, 1);
+    try std.testing.expect(leap_2024.inLeapYear());
+
+    // Century year not divisible by 400 (NOT a leap year)
+    const not_leap_1900 = try PlainDate.from(1900, 1, 1);
+    try std.testing.expect(!not_leap_1900.inLeapYear());
+
+    // Century year divisible by 400 (IS a leap year)
+    const leap_2000 = try PlainDate.from(2000, 1, 1);
+    try std.testing.expect(leap_2000.inLeapYear());
+
+    // Regular non-leap year
+    const not_leap_2023 = try PlainDate.from(2023, 1, 1);
+    try std.testing.expect(!not_leap_2023.inLeapYear());
+}
+
+test "PlainDate: February edge cases" {
+    // Feb 29 in leap year - valid
+    const feb29_leap = try PlainDate.from(2024, 2, 29);
+    try std.testing.expectEqual(@as(u8, 29), feb29_leap.day);
+
+    // Feb 29 in non-leap year - invalid
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2023, 2, 29));
+
+    // Feb 28 in non-leap year - valid
+    const feb28 = try PlainDate.from(2023, 2, 28);
+    try std.testing.expectEqual(@as(u8, 28), feb28.day);
+
+    // Feb 30 - always invalid
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 2, 30));
+}
+
+test "PlainDate: month day boundaries" {
+    // 31-day months
+    _ = try PlainDate.from(2024, 1, 31); // January
+    _ = try PlainDate.from(2024, 3, 31); // March
+    _ = try PlainDate.from(2024, 5, 31); // May
+    _ = try PlainDate.from(2024, 7, 31); // July
+    _ = try PlainDate.from(2024, 8, 31); // August
+    _ = try PlainDate.from(2024, 10, 31); // October
+    _ = try PlainDate.from(2024, 12, 31); // December
+
+    // 30-day months - day 31 invalid
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 4, 31)); // April
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 6, 31)); // June
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 9, 31)); // September
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 11, 31)); // November
+
+    // 30-day months - day 30 valid
+    _ = try PlainDate.from(2024, 4, 30);
+    _ = try PlainDate.from(2024, 6, 30);
+    _ = try PlainDate.from(2024, 9, 30);
+    _ = try PlainDate.from(2024, 11, 30);
+}
+
+test "PlainDate: invalid month values" {
+    try std.testing.expectError(error.InvalidMonth, PlainDate.from(2024, 0, 1));
+    try std.testing.expectError(error.InvalidMonth, PlainDate.from(2024, 13, 1));
+    try std.testing.expectError(error.InvalidMonth, PlainDate.from(2024, 255, 1));
+}
+
+test "PlainDate: invalid day values" {
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 1, 0));
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, 1, 32));
+}
+
+test "PlainDate: day of week calculation" {
+    // Known dates for verification
+    // January 1, 2024 is Monday (1)
+    const jan1_2024 = try PlainDate.from(2024, 1, 1);
+    try std.testing.expectEqual(@as(u8, 1), jan1_2024.dayOfWeek());
+
+    // June 15, 2024 is Saturday (6)
+    const jun15_2024 = try PlainDate.from(2024, 6, 15);
+    try std.testing.expectEqual(@as(u8, 6), jun15_2024.dayOfWeek());
+
+    // December 25, 2024 is Wednesday (3)
+    const dec25_2024 = try PlainDate.from(2024, 12, 25);
+    try std.testing.expectEqual(@as(u8, 3), dec25_2024.dayOfWeek());
+
+    // January 1, 1970 (Unix epoch) is Thursday (4)
+    const epoch = try PlainDate.from(1970, 1, 1);
+    try std.testing.expectEqual(@as(u8, 4), epoch.dayOfWeek());
+
+    // Sunday should be 7
+    const sunday = try PlainDate.from(2024, 1, 7);
+    try std.testing.expectEqual(@as(u8, 7), sunday.dayOfWeek());
+}
+
+test "PlainDate: day of year calculation" {
+    // January 1 is day 1
+    const jan1 = try PlainDate.from(2024, 1, 1);
+    try std.testing.expectEqual(@as(u16, 1), jan1.dayOfYear());
+
+    // December 31 in leap year is day 366
+    const dec31_leap = try PlainDate.from(2024, 12, 31);
+    try std.testing.expectEqual(@as(u16, 366), dec31_leap.dayOfYear());
+
+    // December 31 in non-leap year is day 365
+    const dec31_non_leap = try PlainDate.from(2023, 12, 31);
+    try std.testing.expectEqual(@as(u16, 365), dec31_non_leap.dayOfYear());
+
+    // March 1 in leap year (after Feb 29) is day 61
+    const mar1_leap = try PlainDate.from(2024, 3, 1);
+    try std.testing.expectEqual(@as(u16, 61), mar1_leap.dayOfYear());
+
+    // March 1 in non-leap year is day 60
+    const mar1_non_leap = try PlainDate.from(2023, 3, 1);
+    try std.testing.expectEqual(@as(u16, 60), mar1_non_leap.dayOfYear());
+}
+
+test "PlainDate: daysInMonth" {
+    const jan = try PlainDate.from(2024, 1, 15);
+    try std.testing.expectEqual(@as(u8, 31), jan.daysInMonth());
+
+    const feb_leap = try PlainDate.from(2024, 2, 15);
+    try std.testing.expectEqual(@as(u8, 29), feb_leap.daysInMonth());
+
+    const feb_non_leap = try PlainDate.from(2023, 2, 15);
+    try std.testing.expectEqual(@as(u8, 28), feb_non_leap.daysInMonth());
+
+    const apr = try PlainDate.from(2024, 4, 15);
+    try std.testing.expectEqual(@as(u8, 30), apr.daysInMonth());
+}
+
+test "PlainDate: daysInYear" {
+    const leap = try PlainDate.from(2024, 6, 15);
+    try std.testing.expectEqual(@as(u16, 366), leap.daysInYear());
+
+    const non_leap = try PlainDate.from(2023, 6, 15);
+    try std.testing.expectEqual(@as(u16, 365), non_leap.daysInYear());
+}
+
+test "PlainDate: addDays crossing month boundary" {
+    // Jan 31 + 1 day = Feb 1
+    const jan31 = try PlainDate.from(2024, 1, 31);
+    const feb1 = try jan31.addDays(1);
+    try std.testing.expectEqual(@as(u8, 2), feb1.month);
+    try std.testing.expectEqual(@as(u8, 1), feb1.day);
+
+    // Feb 28 + 1 day in leap year = Feb 29
+    const feb28_leap = try PlainDate.from(2024, 2, 28);
+    const feb29 = try feb28_leap.addDays(1);
+    try std.testing.expectEqual(@as(u8, 2), feb29.month);
+    try std.testing.expectEqual(@as(u8, 29), feb29.day);
+
+    // Feb 28 + 1 day in non-leap year = Mar 1
+    const feb28_non_leap = try PlainDate.from(2023, 2, 28);
+    const mar1 = try feb28_non_leap.addDays(1);
+    try std.testing.expectEqual(@as(u8, 3), mar1.month);
+    try std.testing.expectEqual(@as(u8, 1), mar1.day);
+}
+
+test "PlainDate: addDays crossing year boundary" {
+    // Dec 31 + 1 day = Jan 1 next year
+    const dec31 = try PlainDate.from(2024, 12, 31);
+    const jan1_next = try dec31.addDays(1);
+    try std.testing.expectEqual(@as(i32, 2025), jan1_next.year);
+    try std.testing.expectEqual(@as(u8, 1), jan1_next.month);
+    try std.testing.expectEqual(@as(u8, 1), jan1_next.day);
+}
+
+test "PlainDate: addDays negative (going backwards)" {
+    // Jan 1 - 1 day = Dec 31 previous year
+    const jan1 = try PlainDate.from(2024, 1, 1);
+    const dec31_prev = try jan1.addDays(-1);
+    try std.testing.expectEqual(@as(i32, 2023), dec31_prev.year);
+    try std.testing.expectEqual(@as(u8, 12), dec31_prev.month);
+    try std.testing.expectEqual(@as(u8, 31), dec31_prev.day);
+
+    // Mar 1 - 1 day in leap year = Feb 29
+    const mar1_leap = try PlainDate.from(2024, 3, 1);
+    const feb29_result = try mar1_leap.addDays(-1);
+    try std.testing.expectEqual(@as(u8, 2), feb29_result.month);
+    try std.testing.expectEqual(@as(u8, 29), feb29_result.day);
+}
+
+test "PlainDate: addMonths edge cases" {
+    // Jan 31 + 1 month = Feb 29 (leap year, clamped)
+    const jan31 = try PlainDate.from(2024, 1, 31);
+    const feb_result = try jan31.addMonths(1);
+    try std.testing.expectEqual(@as(u8, 2), feb_result.month);
+    try std.testing.expectEqual(@as(u8, 29), feb_result.day); // Clamped to Feb 29
+
+    // Jan 31 + 1 month in non-leap year = Feb 28 (clamped)
+    const jan31_2023 = try PlainDate.from(2023, 1, 31);
+    const feb_result_2023 = try jan31_2023.addMonths(1);
+    try std.testing.expectEqual(@as(u8, 2), feb_result_2023.month);
+    try std.testing.expectEqual(@as(u8, 28), feb_result_2023.day); // Clamped to Feb 28
+
+    // Adding 12 months = same date next year
+    const jun15 = try PlainDate.from(2024, 6, 15);
+    const jun15_next = try jun15.addMonths(12);
+    try std.testing.expectEqual(@as(i32, 2025), jun15_next.year);
+    try std.testing.expectEqual(@as(u8, 6), jun15_next.month);
+    try std.testing.expectEqual(@as(u8, 15), jun15_next.day);
+
+    // Negative months
+    const mar15 = try PlainDate.from(2024, 3, 15);
+    const jan15 = try mar15.addMonths(-2);
+    try std.testing.expectEqual(@as(u8, 1), jan15.month);
+}
+
+test "PlainDate: addYears edge cases" {
+    // Feb 29 + 1 year = Feb 28 (non-leap year, clamped)
+    const feb29 = try PlainDate.from(2024, 2, 29);
+    const next_year = try feb29.addYears(1);
+    try std.testing.expectEqual(@as(i32, 2025), next_year.year);
+    try std.testing.expectEqual(@as(u8, 2), next_year.month);
+    try std.testing.expectEqual(@as(u8, 28), next_year.day); // Clamped
+
+    // Feb 29 + 4 years = Feb 29 (still leap year)
+    const four_years = try feb29.addYears(4);
+    try std.testing.expectEqual(@as(i32, 2028), four_years.year);
+    try std.testing.expectEqual(@as(u8, 29), four_years.day);
+}
+
+test "PlainDate: comparison" {
+    const d1 = try PlainDate.from(2024, 1, 1);
+    const d2 = try PlainDate.from(2024, 1, 2);
+    const d3 = try PlainDate.from(2024, 1, 1);
+
+    try std.testing.expectEqual(std.math.Order.lt, d1.compare(d2));
+    try std.testing.expectEqual(std.math.Order.gt, d2.compare(d1));
+    try std.testing.expectEqual(std.math.Order.eq, d1.compare(d3));
+    try std.testing.expect(d1.equals(d3));
+    try std.testing.expect(!d1.equals(d2));
+}
+
+// --- PlainTime Edge Cases ---
+
+test "PlainTime: midnight" {
+    const midnight = try PlainTime.fromHMS(0, 0, 0);
+    try std.testing.expectEqual(@as(u8, 0), midnight.hour);
+    try std.testing.expectEqual(@as(u8, 0), midnight.minute);
+    try std.testing.expectEqual(@as(u8, 0), midnight.second);
+    try std.testing.expectEqual(@as(u64, 0), midnight.toNanoseconds());
+}
+
+test "PlainTime: just before midnight" {
+    const before_midnight = try PlainTime.from(23, 59, 59, 999, 999, 999);
+    try std.testing.expectEqual(@as(u8, 23), before_midnight.hour);
+    try std.testing.expectEqual(@as(u8, 59), before_midnight.minute);
+    try std.testing.expectEqual(@as(u8, 59), before_midnight.second);
+    try std.testing.expectEqual(@as(u16, 999), before_midnight.millisecond);
+    try std.testing.expectEqual(@as(u16, 999), before_midnight.microsecond);
+    try std.testing.expectEqual(@as(u16, 999), before_midnight.nanosecond);
+}
+
+test "PlainTime: noon" {
+    const noon = try PlainTime.fromHMS(12, 0, 0);
+    try std.testing.expectEqual(@as(u8, 12), noon.hour);
+    const expected_ns: u64 = 12 * 3600 * std.time.ns_per_s;
+    try std.testing.expectEqual(expected_ns, noon.toNanoseconds());
+}
+
+test "PlainTime: invalid values" {
+    try std.testing.expectError(error.InvalidHour, PlainTime.from(24, 0, 0, 0, 0, 0));
+    try std.testing.expectError(error.InvalidMinute, PlainTime.from(0, 60, 0, 0, 0, 0));
+    try std.testing.expectError(error.InvalidSecond, PlainTime.from(0, 0, 60, 0, 0, 0));
+    try std.testing.expectError(error.InvalidMillisecond, PlainTime.from(0, 0, 0, 1000, 0, 0));
+    try std.testing.expectError(error.InvalidMicrosecond, PlainTime.from(0, 0, 0, 0, 1000, 0));
+    try std.testing.expectError(error.InvalidNanosecond, PlainTime.from(0, 0, 0, 0, 0, 1000));
+}
+
+test "PlainTime: subsecond precision" {
+    // 1 millisecond
+    const one_ms = try PlainTime.from(0, 0, 0, 1, 0, 0);
+    try std.testing.expectEqual(@as(u64, std.time.ns_per_ms), one_ms.toNanoseconds());
+
+    // 1 microsecond
+    const one_us = try PlainTime.from(0, 0, 0, 0, 1, 0);
+    try std.testing.expectEqual(@as(u64, std.time.ns_per_us), one_us.toNanoseconds());
+
+    // 1 nanosecond
+    const one_ns = try PlainTime.from(0, 0, 0, 0, 0, 1);
+    try std.testing.expectEqual(@as(u64, 1), one_ns.toNanoseconds());
+}
+
+test "PlainTime: fromNanoseconds and toNanoseconds roundtrip" {
+    const original = try PlainTime.from(14, 30, 45, 123, 456, 789);
+    const ns = original.toNanoseconds();
+    const reconstructed = PlainTime.fromNanoseconds(ns);
+
+    try std.testing.expectEqual(original.hour, reconstructed.hour);
+    try std.testing.expectEqual(original.minute, reconstructed.minute);
+    try std.testing.expectEqual(original.second, reconstructed.second);
+    try std.testing.expectEqual(original.millisecond, reconstructed.millisecond);
+    try std.testing.expectEqual(original.microsecond, reconstructed.microsecond);
+    try std.testing.expectEqual(original.nanosecond, reconstructed.nanosecond);
+}
+
+test "PlainTime: add wrapping at midnight" {
+    const before_midnight = try PlainTime.fromHMS(23, 59, 59);
+    const after_add = before_midnight.add(Duration.fromSeconds(2));
+
+    // Should wrap to 00:00:01
+    try std.testing.expectEqual(@as(u8, 0), after_add.hour);
+    try std.testing.expectEqual(@as(u8, 0), after_add.minute);
+    try std.testing.expectEqual(@as(u8, 1), after_add.second);
+}
+
+test "PlainTime: comparison" {
+    const t1 = try PlainTime.fromHMS(10, 30, 0);
+    const t2 = try PlainTime.fromHMS(10, 30, 1);
+    const t3 = try PlainTime.fromHMS(10, 30, 0);
+
+    try std.testing.expectEqual(std.math.Order.lt, t1.compare(t2));
+    try std.testing.expectEqual(std.math.Order.gt, t2.compare(t1));
+    try std.testing.expectEqual(std.math.Order.eq, t1.compare(t3));
+    try std.testing.expect(t1.equals(t3));
+}
+
+test "PlainTime: toString formats" {
+    const allocator = std.testing.allocator;
+
+    // Without subseconds
+    const time1 = try PlainTime.fromHMS(14, 30, 45);
+    const str1 = try time1.toString(allocator);
+    defer allocator.free(str1);
+    try std.testing.expectEqualStrings("14:30:45", str1);
+
+    // With milliseconds
+    const time2 = try PlainTime.from(14, 30, 45, 123, 0, 0);
+    const str2 = try time2.toString(allocator);
+    defer allocator.free(str2);
+    try std.testing.expectEqualStrings("14:30:45.123", str2);
+}
+
+// --- PlainDateTime Edge Cases ---
+
+test "PlainDateTime: validation combines date and time" {
+    // Valid combination
+    const dt = try PlainDateTime.from(2024, 2, 29, 23, 59, 59, 999, 999, 999);
+    try std.testing.expectEqual(@as(i32, 2024), dt.year);
+    try std.testing.expectEqual(@as(u8, 23), dt.hour);
+
+    // Invalid date
+    try std.testing.expectError(error.InvalidDay, PlainDateTime.from(2023, 2, 29, 0, 0, 0, 0, 0, 0));
+
+    // Invalid time
+    try std.testing.expectError(error.InvalidHour, PlainDateTime.from(2024, 1, 1, 24, 0, 0, 0, 0, 0));
+}
+
+test "PlainDateTime: toPlainDate and toPlainTime" {
+    const dt = try PlainDateTime.from(2024, 6, 15, 14, 30, 45, 123, 456, 789);
+
+    const date = dt.toPlainDate();
+    try std.testing.expectEqual(@as(i32, 2024), date.year);
+    try std.testing.expectEqual(@as(u8, 6), date.month);
+    try std.testing.expectEqual(@as(u8, 15), date.day);
+
+    const time = dt.toPlainTime();
+    try std.testing.expectEqual(@as(u8, 14), time.hour);
+    try std.testing.expectEqual(@as(u8, 30), time.minute);
+    try std.testing.expectEqual(@as(u8, 45), time.second);
+}
+
+test "PlainDateTime: fromDateAndTime" {
+    const date = try PlainDate.from(2024, 6, 15);
+    const time = try PlainTime.from(14, 30, 45, 123, 456, 789);
+    const dt = PlainDateTime.fromDateAndTime(date, time);
+
+    try std.testing.expectEqual(@as(i32, 2024), dt.year);
+    try std.testing.expectEqual(@as(u8, 6), dt.month);
+    try std.testing.expectEqual(@as(u8, 15), dt.day);
+    try std.testing.expectEqual(@as(u8, 14), dt.hour);
+    try std.testing.expectEqual(@as(u16, 123), dt.millisecond);
+}
+
+test "PlainDateTime: add crossing day boundary" {
+    // 23:00 + 2 hours = next day 01:00
+    const dt = try PlainDateTime.from(2024, 6, 15, 23, 0, 0, 0, 0, 0);
+    const after = try dt.add(Duration.fromHours(2));
+
+    try std.testing.expectEqual(@as(u8, 16), after.day);
+    try std.testing.expectEqual(@as(u8, 1), after.hour);
+}
+
+test "PlainDateTime: add crossing month boundary" {
+    // June 30 23:00 + 2 hours = July 1 01:00
+    const dt = try PlainDateTime.from(2024, 6, 30, 23, 0, 0, 0, 0, 0);
+    const after = try dt.add(Duration.fromHours(2));
+
+    try std.testing.expectEqual(@as(u8, 7), after.month);
+    try std.testing.expectEqual(@as(u8, 1), after.day);
+    try std.testing.expectEqual(@as(u8, 1), after.hour);
+}
+
+test "PlainDateTime: add crossing year boundary" {
+    // Dec 31 23:00 + 2 hours = Jan 1 next year 01:00
+    const dt = try PlainDateTime.from(2024, 12, 31, 23, 0, 0, 0, 0, 0);
+    const after = try dt.add(Duration.fromHours(2));
+
+    try std.testing.expectEqual(@as(i32, 2025), after.year);
+    try std.testing.expectEqual(@as(u8, 1), after.month);
+    try std.testing.expectEqual(@as(u8, 1), after.day);
+    try std.testing.expectEqual(@as(u8, 1), after.hour);
+}
+
+test "PlainDateTime: comparison" {
+    const dt1 = try PlainDateTime.from(2024, 6, 15, 10, 0, 0, 0, 0, 0);
+    const dt2 = try PlainDateTime.from(2024, 6, 15, 10, 0, 1, 0, 0, 0);
+    const dt3 = try PlainDateTime.from(2024, 6, 16, 10, 0, 0, 0, 0, 0);
+
+    try std.testing.expectEqual(std.math.Order.lt, dt1.compare(dt2));
+    try std.testing.expectEqual(std.math.Order.lt, dt1.compare(dt3));
+    try std.testing.expect(dt1.equals(dt1));
+}
+
+// --- ZonedDateTime Edge Cases ---
+
+test "ZonedDateTime: different timezone offsets" {
+    const instant = Instant.fromEpochSeconds(1718444400); // 2024-06-15 10:00:00 UTC
+
+    const utc = instant.toZonedDateTimeISO("UTC");
+    try std.testing.expectEqual(@as(i32, 0), utc.offset_seconds);
+
+    const est = instant.toZonedDateTimeISO("America/New_York");
+    try std.testing.expectEqual(TimeZone.EST, est.offset_seconds);
+
+    const jst = instant.toZonedDateTimeISO("Asia/Tokyo");
+    try std.testing.expectEqual(TimeZone.JST, jst.offset_seconds);
+}
+
+test "ZonedDateTime: half-hour timezone offset" {
+    const instant = Instant.fromEpochSeconds(1718444400);
+    const ist = instant.toZonedDateTimeISO("Asia/Kolkata");
+    try std.testing.expectEqual(TimeZone.IST, ist.offset_seconds);
+    try std.testing.expectEqual(@as(i32, 5 * 3600 + 30 * 60), ist.offset_seconds);
+}
+
+test "ZonedDateTime: unknown timezone defaults to UTC" {
+    const instant = Instant.fromEpochSeconds(1718444400);
+    const unknown = instant.toZonedDateTimeISO("Unknown/Timezone");
+    try std.testing.expectEqual(@as(i32, 0), unknown.offset_seconds);
+}
+
+test "ZonedDateTime: timezone crossing date boundary" {
+    // 2024-06-15 02:00:00 UTC
+    const instant = Instant.fromEpochSeconds(1718416800);
+
+    // In UTC, it's June 15
+    const utc = instant.toZonedDateTimeISO("UTC");
+    try std.testing.expectEqual(@as(u8, 15), utc.day);
+
+    // In EST (UTC-5), it's still June 14 (21:00)
+    const est = instant.toZonedDateTimeISO("America/New_York");
+    try std.testing.expectEqual(@as(u8, 14), est.day);
+    try std.testing.expectEqual(@as(u8, 21), est.hour);
+}
+
+test "ZonedDateTime: withTimeZone conversion" {
+    const instant = Instant.fromEpochSeconds(1718444400);
+    const utc = instant.toZonedDateTimeISO("UTC");
+
+    // Convert to Tokyo time
+    const tokyo = utc.withTimeZone("Asia/Tokyo");
+    try std.testing.expectEqual(TimeZone.JST, tokyo.offset_seconds);
+
+    // The instant should be the same
+    const utc_instant = utc.toInstant();
+    const tokyo_instant = tokyo.toInstant();
+    try std.testing.expect(utc_instant.equals(tokyo_instant));
+}
+
+test "ZonedDateTime: toInstant roundtrip" {
+    const original = Instant.fromEpochSeconds(1718444400);
+    const zdt = original.toZonedDateTimeISO("America/New_York");
+    const recovered = zdt.toInstant();
+
+    try std.testing.expect(original.equals(recovered));
+}
+
+test "ZonedDateTime: offsetString format" {
+    const allocator = std.testing.allocator;
+
+    const instant = Instant.fromEpochSeconds(1718444400);
+
+    // Positive offset
+    const tokyo = instant.toZonedDateTimeISO("Asia/Tokyo");
+    const tokyo_offset = try tokyo.offsetString(allocator);
+    defer allocator.free(tokyo_offset);
+    try std.testing.expectEqualStrings("+09:00", tokyo_offset);
+
+    // Negative offset
+    const ny = instant.toZonedDateTimeISO("America/New_York");
+    const ny_offset = try ny.offsetString(allocator);
+    defer allocator.free(ny_offset);
+    try std.testing.expectEqualStrings("-05:00", ny_offset);
+
+    // Half-hour offset
+    const india = instant.toZonedDateTimeISO("Asia/Kolkata");
+    const india_offset = try india.offsetString(allocator);
+    defer allocator.free(india_offset);
+    try std.testing.expectEqualStrings("+05:30", india_offset);
+
+    // UTC (zero offset)
+    const utc = instant.toZonedDateTimeISO("UTC");
+    const utc_offset = try utc.offsetString(allocator);
+    defer allocator.free(utc_offset);
+    try std.testing.expectEqualStrings("+00:00", utc_offset);
+}
+
+// --- Duration Edge Cases ---
+
+test "Duration: zero duration" {
+    const zero = Duration.fromSeconds(0);
+    try std.testing.expect(zero.isZero());
+    try std.testing.expect(!zero.isNegative());
+    try std.testing.expectEqual(@as(i64, 0), zero.totalSeconds());
+}
+
+test "Duration: negative duration" {
+    const neg = Duration.fromSeconds(-100);
+    try std.testing.expect(!neg.isZero());
+    try std.testing.expect(neg.isNegative());
+    try std.testing.expectEqual(@as(i64, -100), neg.totalSeconds());
+}
+
+test "Duration: negated" {
+    const pos = Duration.fromSeconds(100);
+    const neg = pos.negated();
+    try std.testing.expectEqual(@as(i64, -100), neg.totalSeconds());
+
+    const pos_again = neg.negated();
+    try std.testing.expectEqual(@as(i64, 100), pos_again.totalSeconds());
+}
+
+test "Duration: abs" {
+    const neg = Duration.fromSeconds(-100);
+    const absolute = neg.abs();
+    try std.testing.expectEqual(@as(i64, 100), absolute.totalSeconds());
+
+    const pos = Duration.fromSeconds(100);
+    const absolute_pos = pos.abs();
+    try std.testing.expectEqual(@as(i64, 100), absolute_pos.totalSeconds());
+}
+
+test "Duration: unit conversions" {
+    const one_week = Duration.fromWeeks(1);
+    try std.testing.expectEqual(@as(i32, 7), one_week.totalDays());
+    try std.testing.expectEqual(@as(i64, 168), one_week.totalHours());
+    try std.testing.expectEqual(@as(i64, 10080), one_week.totalMinutes());
+    try std.testing.expectEqual(@as(i64, 604800), one_week.totalSeconds());
+}
+
+test "Duration: add and subtract" {
+    const d1 = Duration.fromHours(1);
+    const d2 = Duration.fromMinutes(30);
+
+    const sum = d1.add(d2);
+    try std.testing.expectEqual(@as(i64, 90), sum.totalMinutes());
+
+    const diff = d1.subtract(d2);
+    try std.testing.expectEqual(@as(i64, 30), diff.totalMinutes());
+}
+
+test "Duration: comparison" {
+    const d1 = Duration.fromSeconds(100);
+    const d2 = Duration.fromSeconds(200);
+    const d3 = Duration.fromSeconds(100);
+
+    try std.testing.expectEqual(std.math.Order.lt, d1.compare(d2));
+    try std.testing.expectEqual(std.math.Order.gt, d2.compare(d1));
+    try std.testing.expectEqual(std.math.Order.eq, d1.compare(d3));
+}
+
+test "Duration: large values" {
+    // 100 years in seconds
+    const century: i64 = 100 * 365 * 24 * 3600;
+    const d = Duration.fromSeconds(century);
+    try std.testing.expectEqual(century, d.totalSeconds());
+}
+
+// --- TimeZone Edge Cases ---
+
+test "TimeZone: all common timezone offsets" {
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.UTC);
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.GMT);
+    try std.testing.expectEqual(@as(i32, -5 * 3600), TimeZone.EST);
+    try std.testing.expectEqual(@as(i32, -4 * 3600), TimeZone.EDT);
+    try std.testing.expectEqual(@as(i32, -8 * 3600), TimeZone.PST);
+    try std.testing.expectEqual(@as(i32, -7 * 3600), TimeZone.PDT);
+    try std.testing.expectEqual(@as(i32, 1 * 3600), TimeZone.CET);
+    try std.testing.expectEqual(@as(i32, 2 * 3600), TimeZone.CEST);
+    try std.testing.expectEqual(@as(i32, 9 * 3600), TimeZone.JST);
+    try std.testing.expectEqual(@as(i32, 5 * 3600 + 30 * 60), TimeZone.IST);
+    try std.testing.expectEqual(@as(i32, 10 * 3600), TimeZone.AEST);
+    try std.testing.expectEqual(@as(i32, 11 * 3600), TimeZone.AEDT);
+}
+
+test "TimeZone: getOffset IANA names" {
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("UTC"));
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("Etc/UTC"));
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("GMT"));
+    try std.testing.expectEqual(TimeZone.EST, TimeZone.getOffset("America/New_York"));
+    try std.testing.expectEqual(TimeZone.PST, TimeZone.getOffset("America/Los_Angeles"));
+    try std.testing.expectEqual(TimeZone.CST, TimeZone.getOffset("America/Chicago"));
+    try std.testing.expectEqual(TimeZone.MST, TimeZone.getOffset("America/Denver"));
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("Europe/London"));
+    try std.testing.expectEqual(TimeZone.CET, TimeZone.getOffset("Europe/Paris"));
+    try std.testing.expectEqual(TimeZone.CET, TimeZone.getOffset("Europe/Berlin"));
+    try std.testing.expectEqual(TimeZone.JST, TimeZone.getOffset("Asia/Tokyo"));
+    try std.testing.expectEqual(TimeZone.IST, TimeZone.getOffset("Asia/Kolkata"));
+    try std.testing.expectEqual(TimeZone.IST, TimeZone.getOffset("Asia/Calcutta"));
+    try std.testing.expectEqual(@as(i32, 8 * 3600), TimeZone.getOffset("Asia/Shanghai"));
+    try std.testing.expectEqual(@as(i32, 8 * 3600), TimeZone.getOffset("Asia/Hong_Kong"));
+    try std.testing.expectEqual(@as(i32, 8 * 3600), TimeZone.getOffset("Asia/Singapore"));
+    try std.testing.expectEqual(TimeZone.AEST, TimeZone.getOffset("Australia/Sydney"));
+    try std.testing.expectEqual(TimeZone.AEST, TimeZone.getOffset("Australia/Melbourne"));
+}
+
+test "TimeZone: unknown timezone returns UTC" {
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("Unknown/Place"));
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset(""));
+    try std.testing.expectEqual(@as(i32, 0), TimeZone.getOffset("NotATimezone"));
+}
+
+// --- Now Edge Cases ---
+
+test "Now: instant is monotonically increasing" {
+    const t1 = Now.instant();
+    const t2 = Now.instant();
+    const t3 = Now.instant();
+
+    // Each subsequent call should return equal or greater time
+    try std.testing.expect(t2.compare(t1) != .lt);
+    try std.testing.expect(t3.compare(t2) != .lt);
+}
+
+test "Now: timeZoneId returns non-empty string" {
+    const tz = Now.timeZoneId();
+    try std.testing.expect(tz.len > 0);
+}
+
+test "Now: all methods with explicit timezone" {
+    const tz = "America/New_York";
+
+    const zdt = Now.zonedDateTimeISO(tz);
+    try std.testing.expectEqual(TimeZone.EST, zdt.offset_seconds);
+
+    const date = Now.plainDateISO(tz);
+    try std.testing.expect(date.year >= 2024);
+
+    const time = Now.plainTimeISO(tz);
+    try std.testing.expect(time.hour <= 23);
+
+    const dt = Now.plainDateTimeISO(tz);
+    try std.testing.expect(dt.year >= 2024);
+}
+
+test "Now: methods with null timezone use system default" {
+    const zdt = Now.zonedDateTimeISO(null);
+    const date = Now.plainDateISO(null);
+    const time = Now.plainTimeISO(null);
+    const dt = Now.plainDateTimeISO(null);
+
+    // Just verify they don't crash and return valid data
+    try std.testing.expect(date.year >= 2024);
+    try std.testing.expect(time.hour <= 23);
+    try std.testing.expect(dt.year >= 2024);
+    try std.testing.expect(zdt.year >= 2024);
+}
+
+// --- toString Edge Cases ---
+
+test "PlainDate toString: single digit padding" {
+    const allocator = std.testing.allocator;
+
+    const date = try PlainDate.from(2024, 1, 5);
+    const str = try date.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("2024-01-05", str);
+}
+
+test "PlainDate toString: year padding" {
+    const allocator = std.testing.allocator;
+
+    // Year less than 1000
+    const date = try PlainDate.from(500, 6, 15);
+    const str = try date.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("0500-06-15", str);
+}
+
+test "PlainTime toString: single digit padding" {
+    const allocator = std.testing.allocator;
+
+    const time = try PlainTime.fromHMS(5, 3, 9);
+    const str = try time.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("05:03:09", str);
+}
+
+test "PlainDateTime toString: full format" {
+    const allocator = std.testing.allocator;
+
+    const dt = try PlainDateTime.from(2024, 6, 15, 14, 30, 45, 0, 0, 0);
+    const str = try dt.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("2024-06-15T14:30:45", str);
+}
+
+test "PlainDateTime toString: with milliseconds" {
+    const allocator = std.testing.allocator;
+
+    const dt = try PlainDateTime.from(2024, 6, 15, 14, 30, 45, 123, 0, 0);
+    const str = try dt.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("2024-06-15T14:30:45.123", str);
+}
+
+test "ZonedDateTime toString: full format with timezone" {
+    const allocator = std.testing.allocator;
+
+    const instant = Instant.fromEpochSeconds(1718444400);
+    const zdt = instant.toZonedDateTimeISO("America/New_York");
+    const str = try zdt.toString(allocator);
+    defer allocator.free(str);
+
+    // Should contain the timezone in brackets
+    try std.testing.expect(std.mem.indexOf(u8, str, "[America/New_York]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, str, "-05:00") != null);
+}
+
+// --- Epoch Conversion Edge Cases ---
+
+test "epochToComponents: Unix epoch" {
+    const components = epochToComponents(0);
+    try std.testing.expectEqual(@as(u32, 1970), components.year);
+    try std.testing.expectEqual(@as(u8, 1), components.month);
+    try std.testing.expectEqual(@as(u8, 1), components.day);
+    try std.testing.expectEqual(@as(u8, 0), components.hour);
+    try std.testing.expectEqual(@as(u8, 0), components.minute);
+    try std.testing.expectEqual(@as(u8, 0), components.second);
+}
+
+test "epochToComponents: known date" {
+    // 2024-06-15 14:30:45 UTC
+    const seconds: i64 = 1718461845;
+    const components = epochToComponents(seconds);
+    try std.testing.expectEqual(@as(u32, 2024), components.year);
+    try std.testing.expectEqual(@as(u8, 6), components.month);
+    try std.testing.expectEqual(@as(u8, 15), components.day);
+    try std.testing.expectEqual(@as(u8, 14), components.hour);
+    try std.testing.expectEqual(@as(u8, 30), components.minute);
+    try std.testing.expectEqual(@as(u8, 45), components.second);
+}
+
+test "dateToDays and daysToDate roundtrip" {
+    // Test various dates
+    const test_dates = [_]struct { year: i32, month: u8, day: u8 }{
+        .{ .year = 1970, .month = 1, .day = 1 },
+        .{ .year = 2000, .month = 2, .day = 29 },
+        .{ .year = 2024, .month = 12, .day = 31 },
+        .{ .year = 1999, .month = 12, .day = 31 },
+        .{ .year = 2100, .month = 6, .day = 15 },
+    };
+
+    for (test_dates) |td| {
+        const days = dateToDays(td.year, td.month, td.day);
+        const result = try daysToDate(days);
+        try std.testing.expectEqual(td.year, result.year);
+        try std.testing.expectEqual(td.month, result.month);
+        try std.testing.expectEqual(td.day, result.day);
+    }
+}
+
+// --- Additional Critical Edge Cases ---
+
+test "PlainDate: first and last day of each month in leap year" {
+    const allocator = std.testing.allocator;
+
+    const months_days = [_]struct { month: u8, last_day: u8 }{
+        .{ .month = 1, .last_day = 31 },
+        .{ .month = 2, .last_day = 29 }, // Leap year
+        .{ .month = 3, .last_day = 31 },
+        .{ .month = 4, .last_day = 30 },
+        .{ .month = 5, .last_day = 31 },
+        .{ .month = 6, .last_day = 30 },
+        .{ .month = 7, .last_day = 31 },
+        .{ .month = 8, .last_day = 31 },
+        .{ .month = 9, .last_day = 30 },
+        .{ .month = 10, .last_day = 31 },
+        .{ .month = 11, .last_day = 30 },
+        .{ .month = 12, .last_day = 31 },
+    };
+
+    for (months_days) |md| {
+        // First day should work
+        const first = try PlainDate.from(2024, md.month, 1);
+        try std.testing.expectEqual(@as(u8, 1), first.day);
+
+        // Last day should work
+        const last = try PlainDate.from(2024, md.month, md.last_day);
+        try std.testing.expectEqual(md.last_day, last.day);
+
+        // Day after last should fail
+        if (md.last_day < 31) {
+            try std.testing.expectError(error.InvalidDay, PlainDate.from(2024, md.month, md.last_day + 1));
+        }
+    }
+    _ = allocator;
+}
+
+test "PlainDate: century leap year edge cases" {
+    // 1900 is NOT a leap year (divisible by 100 but not 400)
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(1900, 2, 29));
+    const feb28_1900 = try PlainDate.from(1900, 2, 28);
+    try std.testing.expect(!feb28_1900.inLeapYear());
+
+    // 2000 IS a leap year (divisible by 400)
+    const feb29_2000 = try PlainDate.from(2000, 2, 29);
+    try std.testing.expect(feb29_2000.inLeapYear());
+
+    // 2100 will NOT be a leap year
+    try std.testing.expectError(error.InvalidDay, PlainDate.from(2100, 2, 29));
+
+    // 2400 WILL be a leap year
+    const feb29_2400 = try PlainDate.from(2400, 2, 29);
+    try std.testing.expect(feb29_2400.inLeapYear());
+}
+
+test "PlainDate: week of year edge cases" {
+    // First week of year edge cases
+    // Jan 1, 2024 is Monday - should be week 1
+    const jan1_2024 = try PlainDate.from(2024, 1, 1);
+    try std.testing.expectEqual(@as(u8, 1), jan1_2024.weekOfYear());
+
+    // Jan 7, 2024 is Sunday - should still be week 1
+    const jan7_2024 = try PlainDate.from(2024, 1, 7);
+    try std.testing.expectEqual(@as(u8, 1), jan7_2024.weekOfYear());
+
+    // Jan 8, 2024 is Monday - should be week 2
+    const jan8_2024 = try PlainDate.from(2024, 1, 8);
+    try std.testing.expectEqual(@as(u8, 2), jan8_2024.weekOfYear());
+}
+
+test "Instant: subsecond extraction in toString" {
+    const allocator = std.testing.allocator;
+
+    // Exactly on second boundary
+    const on_second = Instant.fromEpochSeconds(1000);
+    const str1 = try on_second.toString(allocator);
+    defer allocator.free(str1);
+    try std.testing.expect(std.mem.indexOf(u8, str1, ".") == null); // No decimal
+
+    // With 1 millisecond
+    const with_ms = Instant.fromEpochNanoseconds(1000 * std.time.ns_per_s + std.time.ns_per_ms);
+    const str2 = try with_ms.toString(allocator);
+    defer allocator.free(str2);
+    try std.testing.expect(std.mem.indexOf(u8, str2, ".001") != null);
+
+    // With 999 milliseconds
+    const with_999ms = Instant.fromEpochNanoseconds(1000 * std.time.ns_per_s + 999 * std.time.ns_per_ms);
+    const str3 = try with_999ms.toString(allocator);
+    defer allocator.free(str3);
+    try std.testing.expect(std.mem.indexOf(u8, str3, ".999") != null);
+}
+
+test "PlainDateTime: add with nanoseconds precision" {
+    const dt = try PlainDateTime.from(2024, 6, 15, 12, 0, 0, 0, 0, 0);
+
+    // Add exactly 1 nanosecond
+    const after_1ns = try dt.add(Duration.fromNanoseconds(1));
+    try std.testing.expectEqual(@as(u16, 0), after_1ns.millisecond);
+    try std.testing.expectEqual(@as(u16, 0), after_1ns.microsecond);
+    try std.testing.expectEqual(@as(u16, 1), after_1ns.nanosecond);
+
+    // Add 1ms + 1us + 1ns
+    const complex_add = try dt.add(Duration.fromNanoseconds(1_001_001));
+    try std.testing.expectEqual(@as(u16, 1), complex_add.millisecond);
+    try std.testing.expectEqual(@as(u16, 1), complex_add.microsecond);
+    try std.testing.expectEqual(@as(u16, 1), complex_add.nanosecond);
+}
+
+test "Duration: mixed unit creation equivalence" {
+    // 1 day = 24 hours = 1440 minutes = 86400 seconds
+    const from_days = Duration.fromDays(1);
+    const from_hours = Duration.fromHours(24);
+    const from_minutes = Duration.fromMinutes(1440);
+    const from_seconds = Duration.fromSeconds(86400);
+
+    try std.testing.expectEqual(from_days.total_nanoseconds, from_hours.total_nanoseconds);
+    try std.testing.expectEqual(from_days.total_nanoseconds, from_minutes.total_nanoseconds);
+    try std.testing.expectEqual(from_days.total_nanoseconds, from_seconds.total_nanoseconds);
+}
+
+test "Instant: equality with different creation methods" {
+    // Same moment created different ways
+    const from_seconds = Instant.fromEpochSeconds(1000);
+    const from_ms = Instant.fromEpochMilliseconds(1000000);
+    const from_us = Instant.fromEpochMicroseconds(1000000000);
+    const from_ns = Instant.fromEpochNanoseconds(1000000000000);
+
+    try std.testing.expect(from_seconds.equals(from_ms));
+    try std.testing.expect(from_seconds.equals(from_us));
+    try std.testing.expect(from_seconds.equals(from_ns));
+}
+
+test "ZonedDateTime: extreme timezone offsets" {
+    const instant = Instant.fromEpochSeconds(1718444400);
+
+    // Test positive extreme (AEST +10:00)
+    const aest = instant.toZonedDateTimeISO("Australia/Sydney");
+    try std.testing.expectEqual(@as(i32, 10 * 3600), aest.offset_seconds);
+
+    // Test negative extreme (PST -8:00)
+    const pst = instant.toZonedDateTimeISO("America/Los_Angeles");
+    try std.testing.expectEqual(@as(i32, -8 * 3600), pst.offset_seconds);
+}
+
+test "PlainDate: addMonths wrapping across year boundary" {
+    // November + 3 months = February next year
+    const nov = try PlainDate.from(2024, 11, 15);
+    const feb = try nov.addMonths(3);
+    try std.testing.expectEqual(@as(i32, 2025), feb.year);
+    try std.testing.expectEqual(@as(u8, 2), feb.month);
+    try std.testing.expectEqual(@as(u8, 15), feb.day);
+
+    // March - 5 months = October previous year
+    const mar = try PlainDate.from(2024, 3, 15);
+    const oct = try mar.addMonths(-5);
+    try std.testing.expectEqual(@as(i32, 2023), oct.year);
+    try std.testing.expectEqual(@as(u8, 10), oct.month);
+}
+
+test "PlainTime: edge case at exactly midnight wrap" {
+    // 23:59:59.999999999 + 1 nanosecond = 00:00:00.000000000
+    const just_before = try PlainTime.from(23, 59, 59, 999, 999, 999);
+    const just_after = just_before.add(Duration.fromNanoseconds(1));
+
+    try std.testing.expectEqual(@as(u8, 0), just_after.hour);
+    try std.testing.expectEqual(@as(u8, 0), just_after.minute);
+    try std.testing.expectEqual(@as(u8, 0), just_after.second);
+    try std.testing.expectEqual(@as(u16, 0), just_after.millisecond);
+    try std.testing.expectEqual(@as(u16, 0), just_after.microsecond);
+    try std.testing.expectEqual(@as(u16, 0), just_after.nanosecond);
+}
+
+test "Duration: nanosecond precision in conversion" {
+    // 1 second + 1 nanosecond
+    const d = Duration.fromNanoseconds(std.time.ns_per_s + 1);
+
+    // totalSeconds should truncate
+    try std.testing.expectEqual(@as(i64, 1), d.totalSeconds());
+
+    // totalNanoseconds should preserve
+    try std.testing.expectEqual(@as(i128, std.time.ns_per_s + 1), d.totalNanoseconds());
+}
+
+test "PlainDate: stress test with many consecutive days" {
+    // Add 365 days one at a time and verify we end up at the right place
+    var date = try PlainDate.from(2024, 1, 1);
+
+    var i: u32 = 0;
+    while (i < 365) : (i += 1) {
+        date = try date.addDays(1);
+    }
+
+    // Should be Jan 1, 2025 (2024 is a leap year, so 366 days)
+    try std.testing.expectEqual(@as(i32, 2024), date.year);
+    try std.testing.expectEqual(@as(u8, 12), date.month);
+    try std.testing.expectEqual(@as(u8, 31), date.day);
+
+    // One more day gets us to 2025
+    date = try date.addDays(1);
+    try std.testing.expectEqual(@as(i32, 2025), date.year);
+    try std.testing.expectEqual(@as(u8, 1), date.month);
+    try std.testing.expectEqual(@as(u8, 1), date.day);
+}
+
+test "Now: instant epoch is reasonable" {
+    const now = Now.instant();
+
+    // Should be after 2024-01-01 (timestamp 1704067200)
+    try std.testing.expect(now.epochSeconds() > 1704067200);
+
+    // Should be before 2100-01-01 (timestamp 4102444800)
+    try std.testing.expect(now.epochSeconds() < 4102444800);
+}
+
+test "PlainDateTime: millisecond precision preserved through conversions" {
+    const original = try PlainDateTime.from(2024, 6, 15, 14, 30, 45, 123, 456, 789);
+
+    // Convert to ZonedDateTime and back
+    const zdt = original.toZonedDateTime("UTC");
+    const back = zdt.toPlainDateTime();
+
+    try std.testing.expectEqual(original.millisecond, back.millisecond);
+    try std.testing.expectEqual(original.microsecond, back.microsecond);
+    try std.testing.expectEqual(original.nanosecond, back.nanosecond);
+}
+
+test "ZonedDateTime: time component extraction with offset" {
+    // Create a ZonedDateTime in a non-UTC timezone
+    // Use a clean timestamp: 2024-06-15 10:00:00 UTC = 1718445600
+    const instant = Instant.fromEpochSeconds(1718445600);
+
+    // Verify UTC time is 10:00
+    const utc = instant.toZonedDateTimeISO("UTC");
+    try std.testing.expectEqual(@as(u8, 10), utc.hour);
+
+    // In Tokyo (UTC+9), it should be 19:00 (10 + 9)
+    const tokyo = instant.toZonedDateTimeISO("Asia/Tokyo");
+    const time = tokyo.toPlainTime();
+    try std.testing.expectEqual(@as(u8, 19), time.hour);
+
+    // But the instant should convert back to same epoch
+    const back_instant = tokyo.toInstant();
+    try std.testing.expect(instant.equals(back_instant));
 }
