@@ -390,6 +390,38 @@ pub const cli = @import("cli.zig");
 /// Datetime utilities
 pub const datetime = @import("datetime.zig");
 
+/// Temporal API - JavaScript-compatible date/time handling
+/// Implements the TC39 Temporal proposal for modern date/time operations
+pub const Temporal = struct {
+    const temporal = @import("temporal.zig");
+
+    /// A point on the timeline (nanoseconds since Unix epoch)
+    pub const Instant = temporal.Instant;
+
+    /// A calendar date without time or timezone
+    pub const PlainDate = temporal.PlainDate;
+
+    /// A wall-clock time without date or timezone
+    pub const PlainTime = temporal.PlainTime;
+
+    /// A date and time without timezone
+    pub const PlainDateTime = temporal.PlainDateTime;
+
+    /// A date, time, and time zone
+    pub const ZonedDateTime = temporal.ZonedDateTime;
+
+    /// A length of time
+    pub const Duration = temporal.Duration;
+
+    /// Time zone utilities
+    pub const TimeZone = temporal.TimeZone;
+
+    /// Static methods for getting current time in various formats
+    /// Unlike most global objects, Now is not a constructor.
+    /// All properties and methods of Now are static.
+    pub const Now = temporal.Now;
+};
+
 /// Regex utilities
 pub const regex = @import("regex.zig");
 
@@ -531,4 +563,79 @@ test "Collection builder functions" {
     var empty_col = empty(i32, allocator);
     defer empty_col.deinit();
     try testing.expect(empty_col.isEmpty());
+}
+
+test "Temporal.Now integration" {
+    // Test that Temporal.Now returns sensible values
+    const instant = Temporal.Now.instant();
+    try testing.expect(instant.epochSeconds() > 0);
+
+    // Test plainDateISO
+    const date = Temporal.Now.plainDateISO(null);
+    try testing.expect(date.year >= 2024);
+    try testing.expect(date.month >= 1 and date.month <= 12);
+    try testing.expect(date.day >= 1 and date.day <= 31);
+
+    // Test plainTimeISO
+    const time = Temporal.Now.plainTimeISO(null);
+    try testing.expect(time.hour <= 23);
+    try testing.expect(time.minute <= 59);
+
+    // Test zonedDateTimeISO
+    const zdt = Temporal.Now.zonedDateTimeISO("UTC");
+    try testing.expect(zdt.offset_seconds == 0);
+
+    // Test timeZoneId
+    const tz = Temporal.Now.timeZoneId();
+    try testing.expect(tz.len > 0);
+}
+
+test "Temporal.Instant operations" {
+    const allocator = testing.allocator;
+
+    // Create instant from epoch
+    const epoch = Temporal.Instant.fromEpochSeconds(0);
+    try testing.expectEqual(@as(i64, 0), epoch.epochSeconds());
+
+    // Test toString
+    const str = try epoch.toString(allocator);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("1970-01-01T00:00:00Z", str);
+
+    // Test duration arithmetic
+    const later = epoch.add(Temporal.Duration.fromHours(1));
+    try testing.expectEqual(@as(i64, 3600), later.epochSeconds());
+}
+
+test "Temporal.PlainDate operations" {
+    const allocator = testing.allocator;
+
+    // Create a date
+    const date = try Temporal.PlainDate.from(2024, 6, 15);
+    try testing.expectEqual(@as(i32, 2024), date.year);
+
+    // Check leap year
+    try testing.expect(!date.inLeapYear() or date.inLeapYear()); // 2024 is a leap year
+
+    // Test toString
+    const str = try date.toString(allocator);
+    defer allocator.free(str);
+    try testing.expectEqualStrings("2024-06-15", str);
+
+    // Test day of week (June 15, 2024 is a Saturday)
+    try testing.expectEqual(@as(u8, 6), date.dayOfWeek());
+}
+
+test "Temporal.Duration operations" {
+    // Create durations in different units
+    const hours = Temporal.Duration.fromHours(2);
+    const minutes = Temporal.Duration.fromMinutes(120);
+
+    // They should be equal
+    try testing.expectEqual(hours.totalSeconds(), minutes.totalSeconds());
+    try testing.expectEqual(@as(i64, 7200), hours.totalSeconds());
+
+    // Test addition
+    const sum = hours.add(Temporal.Duration.fromMinutes(30));
+    try testing.expectEqual(@as(i64, 9000), sum.totalSeconds());
 }
