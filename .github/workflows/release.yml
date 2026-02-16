@@ -149,7 +149,7 @@ jobs:
           path: home-binaries
 
       - name: Create GitHub Release
-        uses: stacksjs/action-releaser@v1.2.6
+        uses: stacksjs/action-releaser@v1.2.9
         with:
           files: |
             home-binaries/ion-linux-x64/*.tar.gz
