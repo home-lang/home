@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-home-binaries:
     name: Build Home Compiler Binaries
@@ -50,7 +53,7 @@ jobs:
             ext: '.exe'
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -113,7 +116,7 @@ jobs:
     needs: [build-home-binaries]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -125,7 +128,7 @@ jobs:
           bun-version: latest
 
       - name: Use cached node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: node-modules-${{ hashFiles('**/bun.lock') }}
@@ -146,7 +149,7 @@ jobs:
           path: home-binaries
 
       - name: Create GitHub Release
-        uses: stacksjs/action-releaser@v1.2.7
+        uses: stacksjs/action-releaser@v1.2.6
         with:
           files: |
             home-binaries/ion-linux-x64/*.tar.gz
