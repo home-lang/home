@@ -28,7 +28,7 @@
     "build": "bunx bunpress build",
     "build:docs": "bunx bunpress build",
     "preview": "bunx bunpress preview",
-    "release": "bunx bumpx -r --all"
+    "release": "bunx --bun bumpx -r --all"
   },
   "devDependencies": {
     "@stacksjs/bunpress": "link:@stacksjs/bunpress",
