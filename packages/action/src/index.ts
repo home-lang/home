@@ -16,8 +16,8 @@ interface HomeVersion {
 async function run(): Promise<void> {
   try {
     // Get input version or read from version file
-    let ionVersion = core.getInput('ion-version') || 'latest';
-    const ionVersionFile = core.getInput('ion-version-file');
+    let ionVersion = core.getInput('home-version') || 'latest';
+    const ionVersionFile = core.getInput('home-version-file');
 
     if (ionVersionFile && fs.existsSync(ionVersionFile)) {
       ionVersion = fs.readFileSync(ionVersionFile, 'utf-8').trim();

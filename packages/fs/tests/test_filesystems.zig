@@ -1,9 +1,6 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
-const vfs = @import("../src/vfs.zig");
-const ext2 = @import("../src/ext2.zig");
-const fat32 = @import("../src/fat32.zig");
 
 /// Comprehensive tests for filesystems (VFS, ext2, FAT32)
 pub fn main() !void {

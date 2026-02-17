@@ -1,7 +1,6 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
-const net = @import("../src/network.zig");
 
 /// Comprehensive tests for network stack (ARP, IPv4, TCP, UDP)
 pub fn main() !void {

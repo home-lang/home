@@ -6,13 +6,13 @@ branding:
   color: 'purple'
 
 inputs:
-  ion-version:
+  home-version:
     description: 'Version of Home to install (e.g., "latest", "0.1.0", or "canary")'
     required: false
     default: 'latest'
 
-  ion-version-file:
-    description: 'Path to a file containing the Home version (e.g., ".ion-version")'
+  home-version-file:
+    description: 'Path to a file containing the Home version (e.g., ".home-version")'
     required: false
 
   cache:

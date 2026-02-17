@@ -115,9 +115,9 @@ jobs:
           cache: 'true'
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
-          version: '0.15.1'
+          version: '0.14.1'
 
       - name: Verify Zig Installation
         run: zig version
@@ -188,32 +188,37 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
-          version: '0.15.1'
+          version: '0.14.1'
 
       - name: Run kernel memory tests
         run: |
-          cd packages/kernel/tests
-          zig build-exe test_memory.zig --main-pkg-path ../..
+          zig build-exe --name test_memory --dep testing --dep memory \
+            -Mroot=packages/kernel/tests/test_memory.zig \
+            -Mtesting=packages/testing/src/modern_test.zig \
+            -Mmemory=packages/kernel/src/memory.zig
           ./test_memory
 
       - name: Run kernel paging tests
         run: |
-          cd packages/kernel/tests
-          zig build-exe test_paging.zig --main-pkg-path ../..
+          zig build-exe --name test_paging --dep testing \
+            -Mroot=packages/kernel/tests/test_paging.zig \
+            -Mtesting=packages/testing/src/modern_test.zig
           ./test_paging
 
       - name: Run scheduler tests
         run: |
-          cd packages/kernel/tests
-          zig build-exe test_scheduler.zig --main-pkg-path ../..
+          zig build-exe --name test_scheduler --dep testing \
+            -Mroot=packages/kernel/tests/test_scheduler.zig \
+            -Mtesting=packages/testing/src/modern_test.zig
           ./test_scheduler
 
       - name: Run integration tests
         run: |
-          cd packages/kernel/tests
-          zig build-exe test_integration.zig --main-pkg-path ../..
+          zig build-exe --name test_integration --dep testing \
+            -Mroot=packages/kernel/tests/test_integration.zig \
+            -Mtesting=packages/testing/src/modern_test.zig
           ./test_integration
 
   test-filesystem:
@@ -223,14 +228,15 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
-          version: '0.15.1'
+          version: '0.14.1'
 
       - name: Run filesystem tests
         run: |
-          cd packages/fs/tests
-          zig build-exe test_filesystems.zig --main-pkg-path ../..
+          zig build-exe --name test_filesystems --dep testing \
+            -Mroot=packages/fs/tests/test_filesystems.zig \
+            -Mtesting=packages/testing/src/modern_test.zig
           ./test_filesystems
 
   test-network:
@@ -240,12 +246,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
-          version: '0.15.1'
+          version: '0.14.1'
 
       - name: Run network stack tests
         run: |
-          cd packages/net/tests
-          zig build-exe test_network.zig --main-pkg-path ../..
+          zig build-exe --name test_network --dep testing \
+            -Mroot=packages/net/tests/test_network.zig \
+            -Mtesting=packages/testing/src/modern_test.zig
           ./test_network

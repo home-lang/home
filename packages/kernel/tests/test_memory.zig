@@ -1,7 +1,7 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
-const memory = @import("../src/memory.zig");
+const memory = @import("memory");
 
 /// Comprehensive tests for kernel memory allocators
 pub fn main() !void {

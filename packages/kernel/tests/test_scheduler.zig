@@ -1,8 +1,6 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
-const scheduler = @import("../src/scheduler.zig");
-const process = @import("../src/process.zig");
 
 /// Comprehensive tests for task scheduler
 pub fn main() !void {

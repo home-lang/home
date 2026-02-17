@@ -1,5 +1,5 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
 
 /// Integration tests for end-to-end OS functionality

@@ -1,8 +1,6 @@
 const std = @import("std");
-const testing = @import("../../testing/src/modern_test.zig");
+const testing = @import("testing");
 const t = testing.t;
-const paging = @import("../src/paging.zig");
-const memory = @import("../src/memory.zig");
 
 /// Comprehensive tests for page table operations
 pub fn main() !void {

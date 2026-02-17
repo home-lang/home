@@ -31,7 +31,7 @@
     "release": "bunx --bun bumpx -r --all"
   },
   "devDependencies": {
-    "@stacksjs/bunpress": "link:@stacksjs/bunpress",
+    "@stacksjs/bunpress": "^0.1.1",
     "better-dx": "^0.2.0"
   },
   "workspaces": [
