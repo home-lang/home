@@ -269,7 +269,7 @@ pub fn build(b: *std.Build) void {
             },
             .linux => {
                 exe.root_module.linkSystemLibrary("gtk-3", .{});
-                exe.root_module.linkSystemLibrary("webkit2gtk-4.0", .{});
+                exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
             },
             .windows => {
                 exe.root_module.linkSystemLibrary("webview2", .{});
