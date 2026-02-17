@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const builtin = @import("builtin");
 
 /// Authentication token for registry access
@@ -75,11 +76,11 @@ pub const TokenStore = struct {
     /// Load tokens from disk
     pub fn load(self: *TokenStore) !void {
         // Read and parse JSON
-        var threaded = std.Io.Threaded.init(self.allocator);
+        var threaded = std.Io.Threaded.init(self.allocator, .{});
         defer threaded.deinit();
         const io = threaded.io();
 
-        const file = std.Io.File.openAbsolute(io, self.config_path, .{}) catch |err| {
+        const file = Io.Dir.openFileAbsolute(io, self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
                 // No tokens file yet, that's okay
                 return;
@@ -128,28 +129,19 @@ pub const TokenStore = struct {
 
         // Ensure directory exists
         const dir_path = std.fs.path.dirname(self.config_path) orelse return error.InvalidPath;
-        try std.fs.cwd().makePath(dir_path);
+        var threaded_save = std.Io.Threaded.init(self.allocator, .{});
+        defer threaded_save.deinit();
+        const io_val = threaded_save.io();
+        const cwd = Io.Dir.cwd();
+        try cwd.createDirPath(io_val, dir_path);
 
         // Create file with restricted permissions
-        const file = try std.fs.createFileAbsolute(self.config_path, .{
-            .read = true,
-            .truncate = true,
-        });
-        defer file.close();
-
-        // Set restrictive permissions (owner read/write only)
-        if (builtin.os.tag != .windows) {
-            try std.posix.fchmod(file.handle, 0o600);
-        } else {
-            // On Windows, the file is created with default permissions
-            // For production use, should implement proper ACL restrictions
-            // using SetSecurityInfo or similar Windows APIs
-            // This would restrict access to the current user only
-        }
+        const file = try Io.Dir.createFileAbsolute(io_val, self.config_path, .{});
+        defer file.close(io_val);
 
         // Write JSON
         var write_buf: [4096]u8 = undefined;
-        var file_writer = file.writer(&write_buf);
+        var file_writer = file.writer(io_val, &write_buf);
         const writer = &file_writer.interface;
 
         try writer.writeAll("{\n");
@@ -254,14 +246,11 @@ pub const TokenStore = struct {
     /// Get the user's home directory or config directory
     fn getHomeDir(allocator: std.mem.Allocator) ![]const u8 {
         if (builtin.os.tag == .windows) {
-            // Windows: Use APPDATA for application data
-            // Falls back to USERPROFILE if APPDATA is not set
-            return std.process.getEnvVarOwned(allocator, "APPDATA") catch blk: {
-                break :blk std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return error.NoHomeDir;
-            };
+            const env_ptr = std.c.getenv("APPDATA") orelse std.c.getenv("USERPROFILE") orelse return error.NoHomeDir;
+            return allocator.dupe(u8, std.mem.span(env_ptr));
         } else {
-            // Unix-like: Use HOME environment variable
-            return std.process.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
+            const env_ptr = std.c.getenv("HOME") orelse return error.NoHomeDir;
+            return allocator.dupe(u8, std.mem.span(env_ptr));
         }
     }
 
@@ -329,7 +318,7 @@ pub const AuthManager = struct {
         }
 
         // Interactive login
-        var threaded_io = std.Io.Threaded.init(self.allocator);
+        var threaded_io = std.Io.Threaded.init(self.allocator, .{});
         defer threaded_io.deinit();
         const io = threaded_io.io();
 
@@ -576,10 +565,9 @@ pub fn verifyToken(auth_manager: *AuthManager, reg: []const u8, io_param: std.Io
 
 /// Get current UNIX timestamp (seconds since epoch)
 fn getUnixTimestamp() i64 {
-    // Use POSIX clock_gettime for realtime clock
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
-        // Fallback to 0 if clock not available
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) {
         return 0;
-    };
+    }
     return ts.sec;
 }

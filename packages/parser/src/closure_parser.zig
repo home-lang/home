@@ -285,12 +285,12 @@ pub const ClosureAnalyzer = struct {
         // - Method calls on mutable references
 
         switch (body) {
-            .Expression => |_| {
+            .Expression => {
                 // Simple expressions are typically pure
                 // (arithmetic, comparisons, pure function calls)
                 return false;
             },
-            .Block => |_| {
+            .Block => {
                 // Blocks with statements might have side effects
                 // For now, conservatively assume blocks might be impure
                 // A full implementation would check each statement

@@ -196,25 +196,16 @@ pub fn World(comptime component_types: anytype) type {
         storages: StorageStruct(),
 
         fn StorageStruct() type {
-            var fields: []const std.builtin.Type.StructField = &[_]std.builtin.Type.StructField{};
+            var field_names: []const []const u8 = &.{};
+            var field_types: []const type = &.{};
+            var field_attrs: []const std.builtin.Type.StructField.Attributes = &.{};
             inline for (std.meta.fields(ComponentTuple)) |field| {
                 const T = @field(ComponentTuple, field.name);
-                fields = fields ++ &[_]std.builtin.Type.StructField{.{
-                    .name = field.name,
-                    .type = ComponentStorage(T),
-                    .default_value = null,
-                    .is_comptime = false,
-                    .alignment = @alignOf(ComponentStorage(T)),
-                }};
+                field_names = field_names ++ &[_][]const u8{field.name};
+                field_types = field_types ++ &[_]type{ComponentStorage(T)};
+                field_attrs = field_attrs ++ &[_]std.builtin.Type.StructField.Attributes{.{}};
             }
-            return @Type(.{
-                .@"struct" = .{
-                    .layout = .auto,
-                    .fields = fields,
-                    .decls = &[_]std.builtin.Type.Declaration{},
-                    .is_tuple = false,
-                },
-            });
+            return @Struct(.auto, null, field_names, field_types, field_attrs);
         }
 
         pub fn init(allocator: std.mem.Allocator) Self {

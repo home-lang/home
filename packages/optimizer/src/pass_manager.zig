@@ -175,7 +175,8 @@ pub const PassManager = struct {
 
     /// Run all passes on a program
     pub fn runOnProgram(self: *PassManager, program: *ast.Program) !void {
-        const start_time = try std.time.Instant.now();
+        var start_ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &start_ts);
 
         var changed = true;
         var iteration: usize = 0;
@@ -191,8 +192,10 @@ pub const PassManager = struct {
             }
         }
 
-        const end_time = try std.time.Instant.now();
-        self.stats.total_time_ms = @intCast(@divFloor(end_time.since(start_time), std.time.ns_per_ms));
+        var end_ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &end_ts);
+        const elapsed_ns: i64 = (end_ts.sec - start_ts.sec) * std.time.ns_per_s + (end_ts.nsec - start_ts.nsec);
+        self.stats.total_time_ms = @intCast(@divFloor(elapsed_ns, std.time.ns_per_ms));
     }
 
     /// Print optimization statistics

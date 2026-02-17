@@ -4,11 +4,13 @@
 const std = @import("std");
 const crypto = std.crypto;
 const fs = std.fs;
+const Io = std.Io;
 
-// Zig 0.16 compatibility: std.time.timestamp() was removed
+// Zig 0.16 compatibility: std.time.Instant was removed
 fn getTimestamp() i64 {
-    const instant = std.time.Instant.now() catch return 0;
-    return @as(i64, @intCast(instant.timestamp.sec));
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i64, @intCast(ts.sec));
 }
 
 // ============================================================================
@@ -162,6 +164,7 @@ pub const IRCache = struct {
     stats: CacheStats,
     max_cache_size_mb: usize,
     aggressive_mode: bool,
+    io: ?Io,
 
     const METADATA_FILE = "cache_metadata.json";
     const DEFAULT_MAX_SIZE_MB = 1024; // 1GB
@@ -170,9 +173,10 @@ pub const IRCache = struct {
         allocator: std.mem.Allocator,
         cache_dir: []const u8,
         aggressive: bool,
+        io: ?Io,
     ) !IRCache {
         // Create cache directory
-        fs.cwd().makePath(cache_dir) catch {};
+        if (io) |io_val| Io.Dir.cwd().createDirPath(io_val, cache_dir) catch {} else {};
 
         const metadata_path = try fs.path.join(allocator, &[_][]const u8{ cache_dir, METADATA_FILE });
 
@@ -184,6 +188,7 @@ pub const IRCache = struct {
             .stats = CacheStats{},
             .max_cache_size_mb = DEFAULT_MAX_SIZE_MB,
             .aggressive_mode = aggressive,
+            .io = io,
         };
 
         // Load existing metadata
@@ -293,11 +298,12 @@ pub const IRCache = struct {
     }
 
     /// Check if source file has been modified
-    pub fn isSourceModified(_: *IRCache, source_path: []const u8, cached_mtime: i128) !bool {
-        const file = try fs.cwd().openFile(source_path, .{});
-        defer file.close();
+    pub fn isSourceModified(self: *IRCache, source_path: []const u8, cached_mtime: i128) !bool {
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const file = try Io.Dir.cwd().openFile(io_val, source_path, .{});
+        defer file.close(io_val);
 
-        const stat = try file.stat();
+        const stat = try file.stat(io_val);
         return stat.mtime != cached_mtime;
     }
 
@@ -305,8 +311,10 @@ pub const IRCache = struct {
     pub fn invalidate(self: *IRCache, key: CacheHash) !void {
         if (self.entries.fetchRemove(key)) |entry| {
             // Delete cached files
-            fs.cwd().deleteFile(entry.value.ir_path) catch {};
-            fs.cwd().deleteFile(entry.value.object_path) catch {};
+            if (self.io) |io_val| {
+                Io.Dir.cwd().deleteFile(io_val, entry.value.ir_path) catch {};
+                Io.Dir.cwd().deleteFile(io_val, entry.value.object_path) catch {};
+            }
 
             // Free memory
             self.allocator.free(entry.value.module_name);
@@ -323,8 +331,10 @@ pub const IRCache = struct {
     pub fn clear(self: *IRCache) !void {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            fs.cwd().deleteFile(entry.value_ptr.ir_path) catch {};
-            fs.cwd().deleteFile(entry.value_ptr.object_path) catch {};
+            if (self.io) |io_val| {
+                Io.Dir.cwd().deleteFile(io_val, entry.value_ptr.ir_path) catch {};
+                Io.Dir.cwd().deleteFile(io_val, entry.value_ptr.object_path) catch {};
+            }
 
             self.allocator.free(entry.value_ptr.module_name);
             self.allocator.free(entry.value_ptr.source_path);
@@ -393,28 +403,29 @@ pub const IRCache = struct {
     }
 
     fn getFileSize(self: *IRCache, path: []const u8) !usize {
-        _ = self;
-        const file = try fs.cwd().openFile(path, .{});
-        defer file.close();
-        const stat = try file.stat();
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const file = try Io.Dir.cwd().openFile(io_val, path, .{});
+        defer file.close(io_val);
+        const stat = try file.stat(io_val);
         return stat.size;
     }
 
     fn fileExists(self: *IRCache, path: []const u8) bool {
-        _ = self;
-        fs.cwd().access(path, .{}) catch return false;
+        const io_val = self.io orelse return false;
+        Io.Dir.cwd().access(io_val, path, .{}) catch return false;
         return true;
     }
 
     fn writeFile(self: *IRCache, path: []const u8, content: []const u8) !void {
-        _ = self;
-        const file = try fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(content);
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const file = try Io.Dir.cwd().createFile(io_val, path, .{});
+        defer file.close(io_val);
+        try file.writeStreamingAll(io_val, content);
     }
 
     fn loadMetadata(self: *IRCache) !void {
-        const data = fs.cwd().readFileAlloc(self.metadata_file, self.allocator, .limited(100 * 1024 * 1024)) catch |err| {
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const data = Io.Dir.cwd().readFileAlloc(io_val, self.metadata_file, self.allocator, .limited(100 * 1024 * 1024)) catch |err| {
             // If file doesn't exist, start with empty cache
             if (err == error.FileNotFound) return;
             return err;
@@ -481,8 +492,9 @@ pub const IRCache = struct {
     }
 
     fn saveMetadata(self: *IRCache) !void {
-        const file = try fs.cwd().createFile(self.metadata_file, .{});
-        defer file.close();
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const file = try Io.Dir.cwd().createFile(io_val, self.metadata_file, .{});
+        defer file.close(io_val);
 
         // Serialize entries to JSON
         const entry_count = self.entries.count();
@@ -524,90 +536,90 @@ pub const IRCache = struct {
         // Write JSON to file using simple manual JSON serialization
         // Format: { "version": 1, "entries": [...], "stats": {...} }
 
-        try file.writeAll("{");
-        try file.writeAll("\n  \"version\": 1,\n  \"entries\": [\n");
+        try file.writeStreamingAll(io_val,"{");
+        try file.writeStreamingAll(io_val,"\n  \"version\": 1,\n  \"entries\": [\n");
 
         // Write entries
         for (entries_json_array, 0..) |entry, i| {
-            try file.writeAll("    {\n");
+            try file.writeStreamingAll(io_val,"    {\n");
 
             const key_line = try std.fmt.allocPrint(self.allocator, "      \"key\": \"{s}\",\n", .{entry.key});
             defer self.allocator.free(key_line);
-            try file.writeAll(key_line);
+            try file.writeStreamingAll(io_val,key_line);
 
             const module_line = try std.fmt.allocPrint(self.allocator, "      \"module_name\": \"{s}\",\n", .{entry.module_name});
             defer self.allocator.free(module_line);
-            try file.writeAll(module_line);
+            try file.writeStreamingAll(io_val,module_line);
 
             const source_line = try std.fmt.allocPrint(self.allocator, "      \"source_path\": \"{s}\",\n", .{entry.source_path});
             defer self.allocator.free(source_line);
-            try file.writeAll(source_line);
+            try file.writeStreamingAll(io_val,source_line);
 
             const mtime_line = try std.fmt.allocPrint(self.allocator, "      \"source_mtime\": {},\n", .{entry.source_mtime});
             defer self.allocator.free(mtime_line);
-            try file.writeAll(mtime_line);
+            try file.writeStreamingAll(io_val,mtime_line);
 
-            try file.writeAll("      \"dependencies\": [");
+            try file.writeStreamingAll(io_val,"      \"dependencies\": [");
             for (entry.dependencies, 0..) |dep, j| {
                 const dep_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{dep});
                 defer self.allocator.free(dep_str);
-                try file.writeAll(dep_str);
-                if (j < entry.dependencies.len - 1) try file.writeAll(", ");
+                try file.writeStreamingAll(io_val,dep_str);
+                if (j < entry.dependencies.len - 1) try file.writeStreamingAll(io_val,", ");
             }
-            try file.writeAll("],\n");
+            try file.writeStreamingAll(io_val,"],\n");
 
             const ir_line = try std.fmt.allocPrint(self.allocator, "      \"ir_path\": \"{s}\",\n", .{entry.ir_path});
             defer self.allocator.free(ir_line);
-            try file.writeAll(ir_line);
+            try file.writeStreamingAll(io_val,ir_line);
 
             const obj_line = try std.fmt.allocPrint(self.allocator, "      \"object_path\": \"{s}\",\n", .{entry.object_path});
             defer self.allocator.free(obj_line);
-            try file.writeAll(obj_line);
+            try file.writeStreamingAll(io_val,obj_line);
 
             const created_line = try std.fmt.allocPrint(self.allocator, "      \"created_at\": {},\n", .{entry.created_at});
             defer self.allocator.free(created_line);
-            try file.writeAll(created_line);
+            try file.writeStreamingAll(io_val,created_line);
 
             const accessed_line = try std.fmt.allocPrint(self.allocator, "      \"last_accessed\": {},\n", .{entry.last_accessed});
             defer self.allocator.free(accessed_line);
-            try file.writeAll(accessed_line);
+            try file.writeStreamingAll(io_val,accessed_line);
 
             const hits_line = try std.fmt.allocPrint(self.allocator, "      \"hit_count\": {},\n", .{entry.hit_count});
             defer self.allocator.free(hits_line);
-            try file.writeAll(hits_line);
+            try file.writeStreamingAll(io_val,hits_line);
 
             const compile_line = try std.fmt.allocPrint(self.allocator, "      \"compile_time_ms\": {}\n", .{entry.compile_time_ms});
             defer self.allocator.free(compile_line);
-            try file.writeAll(compile_line);
+            try file.writeStreamingAll(io_val,compile_line);
 
-            try file.writeAll("    }");
-            if (i < entries_json_array.len - 1) try file.writeAll(",");
-            try file.writeAll("\n");
+            try file.writeStreamingAll(io_val,"    }");
+            if (i < entries_json_array.len - 1) try file.writeStreamingAll(io_val,",");
+            try file.writeStreamingAll(io_val,"\n");
         }
 
-        try file.writeAll("  ],\n  \"stats\": {\n");
+        try file.writeStreamingAll(io_val,"  ],\n  \"stats\": {\n");
 
         const hits_line = try std.fmt.allocPrint(self.allocator, "    \"cache_hits\": {},\n", .{self.stats.cache_hits});
         defer self.allocator.free(hits_line);
-        try file.writeAll(hits_line);
+        try file.writeStreamingAll(io_val,hits_line);
 
         const misses_line = try std.fmt.allocPrint(self.allocator, "    \"cache_misses\": {},\n", .{self.stats.cache_misses});
         defer self.allocator.free(misses_line);
-        try file.writeAll(misses_line);
+        try file.writeStreamingAll(io_val,misses_line);
 
         const stores_line = try std.fmt.allocPrint(self.allocator, "    \"cache_stores\": {},\n", .{self.stats.cache_stores});
         defer self.allocator.free(stores_line);
-        try file.writeAll(stores_line);
+        try file.writeStreamingAll(io_val,stores_line);
 
         const inval_line = try std.fmt.allocPrint(self.allocator, "    \"cache_invalidations\": {},\n", .{self.stats.cache_invalidations});
         defer self.allocator.free(inval_line);
-        try file.writeAll(inval_line);
+        try file.writeStreamingAll(io_val,inval_line);
 
         const evict_line = try std.fmt.allocPrint(self.allocator, "    \"cache_evictions\": {}\n", .{self.stats.cache_evictions});
         defer self.allocator.free(evict_line);
-        try file.writeAll(evict_line);
+        try file.writeStreamingAll(io_val,evict_line);
 
-        try file.writeAll("  }\n}\n");
+        try file.writeStreamingAll(io_val,"  }\n}\n");
     }
 };
 
@@ -678,10 +690,13 @@ test "hash to hex conversion" {
 
 test "cache operations" {
     const allocator = std.testing.allocator;
+    var threaded = Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var cache = try IRCache.init(allocator, ".test_cache", true);
+    var cache = try IRCache.init(allocator, ".test_cache", true, io);
     defer cache.deinit();
-    defer std.fs.cwd().deleteTree(".test_cache") catch {};
+    defer Io.Dir.cwd().deleteTree(io, ".test_cache") catch {};
 
     const source = "test source";
     const deps = [_]CacheHash{};

@@ -2,12 +2,10 @@ const std = @import("std");
 const home = @import("home");
 const Lexer = home.lexer.Lexer;
 const Parser = home.parser.Parser;
+const Io = std.Io;
 
-const Timer = std.time.Timer;
-
-fn benchmark(comptime name: []const u8, source: []const u8, iterations: usize, allocator: std.mem.Allocator) !void {
-    var timer = try Timer.start();
-    const start = timer.read();
+fn benchmark(comptime name: []const u8, source: []const u8, iterations: usize, allocator: std.mem.Allocator, io: Io) !void {
+    const start = Io.Clock.awake.now(io);
 
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
@@ -20,9 +18,9 @@ fn benchmark(comptime name: []const u8, source: []const u8, iterations: usize, a
         defer program.deinit(allocator);
     }
 
-    const end = timer.read();
-    const elapsed = end - start;
-    const elapsed_ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
+    const end = Io.Clock.awake.now(io);
+    const elapsed_ns: u64 = @intCast(start.durationTo(end).nanoseconds);
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     const per_iteration = elapsed_ms / @as(f64, @floatFromInt(iterations));
 
     std.debug.print("{s:<30} {d:>8} iterations in {d:>8.3}ms ({d:>8.6}ms per iteration)\n", .{
@@ -33,10 +31,9 @@ fn benchmark(comptime name: []const u8, source: []const u8, iterations: usize, a
     });
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     std.debug.print("\n=== Parser Benchmarks ===\n\n", .{});
 
@@ -46,6 +43,7 @@ pub fn main() !void {
         "1 + 2 * 3",
         10000,
         allocator,
+        io,
     );
 
     // Complex expression
@@ -54,6 +52,7 @@ pub fn main() !void {
         "(x + y) * z >= 100 && a < b || c == d",
         10000,
         allocator,
+        io,
     );
 
     // Function call
@@ -62,6 +61,7 @@ pub fn main() !void {
         "add(1, 2, 3)",
         10000,
         allocator,
+        io,
     );
 
     // Let declaration
@@ -70,6 +70,7 @@ pub fn main() !void {
         "let mut x: int = 42",
         10000,
         allocator,
+        io,
     );
 
     // If statement
@@ -78,6 +79,7 @@ pub fn main() !void {
         "if (x > 0) { return x } else { return 0 }",
         10000,
         allocator,
+        io,
     );
 
     // Function declaration (simple)
@@ -86,6 +88,7 @@ pub fn main() !void {
         "fn main() { print(\"Hello\") }",
         10000,
         allocator,
+        io,
     );
 
     // Function declaration (with params)
@@ -94,6 +97,7 @@ pub fn main() !void {
         "fn add(a: int, b: int) -> int { return a + b }",
         10000,
         allocator,
+        io,
     );
 
     // Fibonacci function
@@ -108,6 +112,7 @@ pub fn main() !void {
     ,
         5000,
         allocator,
+        io,
     );
 
     // Multiple statements
@@ -120,6 +125,7 @@ pub fn main() !void {
     ,
         10000,
         allocator,
+        io,
     );
 
     // Larger program
@@ -139,6 +145,7 @@ pub fn main() !void {
     ,
         5000,
         allocator,
+        io,
     );
 
     std.debug.print("\n", .{});

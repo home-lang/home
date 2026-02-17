@@ -259,20 +259,20 @@ pub fn build(b: *std.Build) void {
 
         // Add Craft include path
         const craft_src_path = b.fmt("{s}/src", .{craft_path});
-        exe.addIncludePath(b.path(craft_src_path));
+        exe.root_module.addIncludePath(b.path(craft_src_path));
 
         // Link system libraries based on platform
         switch (target.result.os.tag) {
             .macos => {
-                exe.linkFramework("Cocoa");
-                exe.linkFramework("WebKit");
+                exe.root_module.linkFramework("Cocoa", .{});
+                exe.root_module.linkFramework("WebKit", .{});
             },
             .linux => {
-                exe.linkSystemLibrary("gtk-3");
-                exe.linkSystemLibrary("webkit2gtk-4.0");
+                exe.root_module.linkSystemLibrary("gtk-3", .{});
+                exe.root_module.linkSystemLibrary("webkit2gtk-4.0", .{});
             },
             .windows => {
-                exe.linkSystemLibrary("webview2");
+                exe.root_module.linkSystemLibrary("webview2", .{});
             },
             else => {},
         }
@@ -485,8 +485,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     database_tests.root_module.addImport("database", database_pkg);
-    database_tests.linkSystemLibrary("sqlite3");
-    database_tests.linkLibC();
+    database_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    database_tests.root_module.link_libc = true;
 
     const run_database_tests = b.addRunArtifact(database_tests);
 
@@ -515,7 +515,7 @@ pub fn build(b: *std.Build) void {
     const ffi_tests = b.addTest(.{
         .root_module = ffi_pkg,
     });
-    ffi_tests.linkLibC();
+    ffi_tests.root_module.link_libc = true;
 
     const run_ffi_tests = b.addRunArtifact(ffi_tests);
 
@@ -876,8 +876,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     database_example.root_module.addImport("database", database_pkg);
-    database_example.linkSystemLibrary("sqlite3");
-    database_example.linkLibC();
+    database_example.root_module.linkSystemLibrary("sqlite3", .{});
+    database_example.root_module.link_libc = true;
     b.installArtifact(database_example);
 
     const run_database_example = b.addRunArtifact(database_example);
@@ -915,11 +915,11 @@ pub fn build(b: *std.Build) void {
     const w3d_loader_pkg = createPackage(b, "packages/game/src/w3d_loader.zig", target, optimize, zig_test_framework);
     generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
     // Link macOS frameworks
-    generals_example.linkFramework("Cocoa");
-    generals_example.linkFramework("OpenGL");
-    generals_example.linkFramework("OpenAL");
-    generals_example.linkFramework("AudioToolbox");
-    generals_example.linkLibC();
+    generals_example.root_module.linkFramework("Cocoa", .{});
+    generals_example.root_module.linkFramework("OpenGL", .{});
+    generals_example.root_module.linkFramework("OpenAL", .{});
+    generals_example.root_module.linkFramework("AudioToolbox", .{});
+    generals_example.root_module.link_libc = true;
     b.installArtifact(generals_example);
 
     const run_generals_example = b.addRunArtifact(generals_example);
@@ -954,6 +954,8 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("types", types_pkg);
     debug_exe.root_module.addImport("interpreter", interpreter_pkg);
     debug_exe.root_module.addImport("codegen", codegen_pkg);
+    debug_exe.root_module.addImport("compiler", compiler_pkg);
+    debug_exe.root_module.addImport("optimizer", optimizer_pkg);
     debug_exe.root_module.addImport("formatter", formatter_pkg);
     debug_exe.root_module.addImport("linter", linter_pkg);
     debug_exe.root_module.addImport("macros", macros_pkg);
@@ -969,6 +971,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("file", file_pkg);
     debug_exe.root_module.addImport("network", network_pkg);
     debug_exe.root_module.addImport("http", http_pkg);
+    debug_exe.root_module.addImport("cloud", cloud_pkg);
     debug_exe.root_module.addImport("build_options", build_options.createModule());
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});

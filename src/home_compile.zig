@@ -2,13 +2,14 @@
 // Usage: home compile <input.home> -o <output.o>
 
 const std = @import("std");
+const Io = std.Io;
 const Lexer = @import("lexer").Lexer;
 const Parser = @import("parser").Parser;
 const ast = @import("ast");
 const codegen = @import("codegen");
 const HomeKernelCodegen = codegen.home_kernel_codegen.HomeKernelCodegen;
 
-pub fn main() !void {
+pub fn main(io: Io) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -30,7 +31,7 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        try compileFile(allocator, args[2..]);
+        try compileFile(allocator, args[2..], io);
     } else if (std.mem.eql(u8, command, "build")) {
         try buildProject(allocator, args[2..]);
     } else {
@@ -63,7 +64,7 @@ fn printUsage(program_name: []const u8) !void {
     , .{program_name, program_name, program_name, program_name, program_name});
 }
 
-fn compileFile(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn compileFile(allocator: std.mem.Allocator, args: []const []const u8, io: Io) !void {
     if (args.len == 0) {
         std.debug.print("Error: No input file specified\n", .{});
         std.process.exit(1);
@@ -113,7 +114,8 @@ fn compileFile(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Read input file
-    const source = try std.fs.cwd().readFileAlloc(allocator, input_path, 1024 * 1024);
+    const cwd = Io.Dir.cwd();
+    const source = try cwd.readFileAlloc(io, allocator, input_path, 1024 * 1024);
     defer allocator.free(source);
 
     // Lex
@@ -160,7 +162,7 @@ fn compileFile(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Write output
     if (asm_mode) {
         // Write assembly file directly
-        try std.fs.cwd().writeFile(.{
+        try cwd.writeFile(io, .{
             .sub_path = output_path.?,
             .data = output_code,
         });
@@ -173,7 +175,7 @@ fn compileFile(allocator: std.mem.Allocator, args: []const []const u8) !void {
         const asm_temp = try std.fmt.allocPrint(allocator, "{s}.s", .{output_path.?});
         defer allocator.free(asm_temp);
 
-        try std.fs.cwd().writeFile(.{
+        try cwd.writeFile(io, .{
             .sub_path = asm_temp,
             .data = output_code,
         });
@@ -195,13 +197,13 @@ fn compileFile(allocator: std.mem.Allocator, args: []const []const u8) !void {
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
 
-        if (result.term.Exited != 0) {
+        if (result.term.exited != 0) {
             std.debug.print("Assembler failed:\n{s}\n", .{result.stderr});
             std.process.exit(1);
         }
 
         // Clean up temp file
-        try std.fs.cwd().deleteFile(asm_temp);
+        try cwd.deleteFile(io, asm_temp);
 
         if (verbose) {
             std.debug.print("Wrote object file to: {s}\n", .{output_path.?});

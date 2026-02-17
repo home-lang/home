@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("ast");
 pub const x64 = @import("x64.zig");
 const elf = @import("elf.zig");
@@ -47,7 +48,7 @@ pub const CodegenError = error{
     LabelNotFound,
     /// Stack offset calculation overflowed i32 bounds
     StackOffsetOverflow,
-} || std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError;
+} || std.mem.Allocator.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError;
 
 /// Maximum number of local variables per function.
 ///
@@ -671,6 +672,10 @@ pub const NativeCodegen = struct {
     // Global type registry for cross-module type resolution
     /// Global type registry shared across all compilation units
     type_registry: ?*TypeRegistry,
+
+    // I/O handle for Zig 0.16 Dir/File operations
+    /// Optional I/O handle for filesystem operations (imports, etc.)
+    io: ?Io = null,
 
     /// Create a new native code generator for the given program.
     ///
@@ -2944,7 +2949,10 @@ pub const NativeCodegen = struct {
         var module_path = path_list.items;
 
         // Try to read from src/ first
-        const module_source = std.fs.cwd().readFileAlloc(
+        const io_val = self.io orelse return;
+        const cwd = Io.Dir.cwd();
+        const module_source = cwd.readFileAlloc(
+            io_val,
             module_path,
             self.allocator,
             std.Io.Limit.limited(10 * 1024 * 1024),
@@ -2958,7 +2966,8 @@ pub const NativeCodegen = struct {
             path_list.appendSlice(self.allocator, ".home") catch return;
             module_path = path_list.items;
 
-            break :blk std.fs.cwd().readFileAlloc(
+            break :blk cwd.readFileAlloc(
+                io_val,
                 module_path,
                 self.allocator,
                 std.Io.Limit.limited(10 * 1024 * 1024),
@@ -4087,7 +4096,10 @@ pub const NativeCodegen = struct {
         var module_path = path_list.items;
 
         // Try to read from src/ first
-        const module_source = std.fs.cwd().readFileAlloc(
+        const io_val2 = self.io orelse return;
+        const cwd2 = Io.Dir.cwd();
+        const module_source = cwd2.readFileAlloc(
+            io_val2,
             module_path,
             self.allocator,
             std.Io.Limit.limited(10 * 1024 * 1024), // 10MB max
@@ -4101,7 +4113,8 @@ pub const NativeCodegen = struct {
             try path_list.appendSlice(self.allocator, ".home");
             module_path = path_list.items;
 
-            break :blk std.fs.cwd().readFileAlloc(
+            break :blk cwd2.readFileAlloc(
+                io_val2,
                 module_path,
                 self.allocator,
                 std.Io.Limit.limited(10 * 1024 * 1024),

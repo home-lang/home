@@ -1,10 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// ELF64 file format writer
 pub const ElfWriter = struct {
     allocator: std.mem.Allocator,
     code: []const u8,
     entry_point: u64,
+    io: ?Io = null,
 
     pub fn init(allocator: std.mem.Allocator, code: []const u8) ElfWriter {
         return .{
@@ -15,24 +17,25 @@ pub const ElfWriter = struct {
     }
 
     pub fn write(self: *ElfWriter, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const io_val = self.io orelse return error.FileSystemAccessDenied;
+
+        const file = try Io.Dir.cwd().createFile(io_val, path, .{});
+        defer file.close(io_val);
 
         // Write ELF header
-        try self.writeElfHeader(file);
+        try self.writeElfHeader(io_val, file);
 
         // Write program header
-        try self.writeProgramHeader(file);
+        try self.writeProgramHeader(io_val, file);
 
-        // Write code
-        try file.seekTo(0x1000); // Align to page boundary
-        try file.writeAll(self.code);
+        // Write code at page boundary using positional write
+        try file.writePositionalAll(io_val, self.code, 0x1000);
 
-        // Make executable - use chmod on the file directly
-        try file.chmod(0o755);
+        // Make executable - use setPermissions
+        try file.setPermissions(io_val, Io.File.Permissions.fromMode(0o755));
     }
 
-    fn writeElfHeader(self: *ElfWriter, file: std.fs.File) !void {
+    fn writeElfHeader(self: *ElfWriter, io_val: Io, file: Io.File) !void {
         var header: [64]u8 = undefined;
         @memset(&header, 0);
 
@@ -87,10 +90,10 @@ pub const ElfWriter = struct {
         // e_shstrndx: section header string table index
         std.mem.writeInt(u16, header[62..64], 0, .little);
 
-        try file.writeAll(&header);
+        try file.writeStreamingAll(io_val, &header);
     }
 
-    fn writeProgramHeader(self: *ElfWriter, file: std.fs.File) !void {
+    fn writeProgramHeader(self: *ElfWriter, io_val: Io, file: Io.File) !void {
         _ = self;
         var header: [56]u8 = undefined;
         @memset(&header, 0);
@@ -119,6 +122,6 @@ pub const ElfWriter = struct {
         // p_align: segment alignment
         std.mem.writeInt(u64, header[48..56], 0x1000, .little); // Page alignment
 
-        try file.writeAll(&header);
+        try file.writeStreamingAll(io_val, &header);
     }
 };

@@ -1,6 +1,21 @@
 const std = @import("std");
 const posix = std.posix;
 
+/// Thread-safe mutex (Zig 0.16 compatible - uses atomic spinlock)
+const Mutex = struct {
+    state: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(self: *Mutex) void {
+        while (!self.state.tryLock()) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *Mutex) void {
+        self.state.unlock();
+    }
+};
+
 /// Get current unix timestamp in seconds
 fn getTimestamp() i64 {
     const ts = posix.clock_gettime(.REALTIME) catch return 0;
@@ -594,7 +609,7 @@ pub const QueueDriver = struct {
 pub const MemoryQueueDriver = struct {
     allocator: std.mem.Allocator,
     queues: std.StringHashMap(std.ArrayList(*Job)),
-    mutex: std.Thread.Mutex,
+    mutex: Mutex,
 
     const Self = @This();
 
@@ -708,7 +723,7 @@ pub const RedisQueueDriver = struct {
     allocator: std.mem.Allocator,
     redis: Redis,
     config: QueueConfig,
-    mutex: std.Thread.Mutex,
+    mutex: Mutex,
     // In-memory job tracking (Redis stores serialized payloads)
     job_map: std.StringHashMap(*Job),
 
@@ -1066,7 +1081,7 @@ pub const RedisQueueDriver = struct {
 pub const DatabaseQueueDriver = struct {
     allocator: std.mem.Allocator,
     config: QueueConfig,
-    mutex: std.Thread.Mutex,
+    mutex: Mutex,
     db_path: []const u8,
     job_map: std.StringHashMap(*Job),
     // Simple file-based storage (SQLite-like persistence)
@@ -1293,7 +1308,7 @@ pub const Queue = struct {
     failed_jobs: std.ArrayList(*Job),
     unique_keys: std.StringHashMap(void),
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    mutex: Mutex,
 
     const Self = @This();
 

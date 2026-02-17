@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("ast");
 
 /// Symbol kinds that can be imported from modules
@@ -65,6 +66,8 @@ pub const SymbolTable = struct {
     global_symbols: std.StringHashMap(Symbol),
     /// Selective imports: maps symbol name to (module_path, original_name)
     selective_imports: std.StringHashMap(SelectiveImportInfo),
+    /// Optional I/O handle for filesystem operations
+    io: ?Io = null,
 
     pub fn init(allocator: std.mem.Allocator) SymbolTable {
         return .{
@@ -241,8 +244,10 @@ pub const SymbolTable = struct {
     /// Populate symbols for Home modules by scanning the source file
     pub fn populateHomeModuleSymbols(self: *SymbolTable, module_path: []const u8, file_path: []const u8) !void {
         // Read the file
-        const file = std.fs.cwd().openFile(file_path, .{}) catch return;
-        defer file.close();
+        const io_val = self.io orelse return;
+        const cwd = Io.Dir.cwd();
+        const file = cwd.openFile(io_val, file_path, .{}) catch return;
+        defer file.close(io_val);
 
         // Get file size
         const stat = file.stat() catch return;

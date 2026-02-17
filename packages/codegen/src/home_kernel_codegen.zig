@@ -408,7 +408,7 @@ test "home kernel codegen basics" {
     var symbol_table = SymbolTable.init(allocator);
     defer symbol_table.deinit();
 
-    var module_resolver = try ModuleResolver.init(allocator);
+    var module_resolver = try ModuleResolver.init(allocator, null);
     defer module_resolver.deinit();
 
     var codegen = HomeKernelCodegen.init(allocator, &symbol_table, &module_resolver);

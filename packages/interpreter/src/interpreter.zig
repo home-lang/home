@@ -11,6 +11,9 @@ const MapValue = value_mod.MapValue;
 const Environment = @import("environment.zig").Environment;
 pub const Debugger = @import("debugger.zig").Debugger;
 
+// Module-level PRNG for random number generation (Zig 0.16: std.crypto.random removed)
+var g_prng = std.Random.DefaultPrng.init(0x853c49e6748fea9b);
+
 pub const InterpreterError = error{
     RuntimeError,
     UndefinedVariable,
@@ -571,7 +574,7 @@ pub const Interpreter = struct {
                 };
                 try env.define(enum_decl.name, enum_value);
             },
-            .TypeAliasDecl => |_| {
+            .TypeAliasDecl => {
                 // Type aliases are type-level constructs
                 // No runtime action needed
             },
@@ -874,7 +877,7 @@ pub const Interpreter = struct {
                     }
                 }
             },
-            .UnionDecl => |_| {
+            .UnionDecl => {
                 // Union declarations are type-level constructs
                 // They don't execute any runtime code
                 // Type checking handles this
@@ -3271,11 +3274,11 @@ pub const Interpreter = struct {
                 const min: i64 = min_val.Int;
                 const max: i64 = max_val.Int;
                 const range_size: u64 = @intCast(max - min + 1);
-                const random_value: i64 = @intCast(std.crypto.random.int(u64) % range_size);
+                const random_value: i64 = @intCast(g_prng.random().int(u64) % range_size);
                 return Value{ .Int = min + random_value };
             } else if (std.mem.eql(u8, func_name, "random_float")) {
                 // random_float() - random float between 0 and 1
-                const rand_int = std.crypto.random.int(u64);
+                const rand_int = g_prng.random().int(u64);
                 const max_val: f64 = @floatFromInt(std.math.maxInt(u64));
                 return Value{ .Float = @as(f64, @floatFromInt(rand_int)) / max_val };
             } else if (std.mem.eql(u8, func_name, "export_prometheus")) {
@@ -5737,7 +5740,7 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, method, "generate_state") or std.mem.eql(u8, method, "generateState")) {
             // Generate a random state string for CSRF protection (at least 32 chars)
             var rand_bytes: [16]u8 = undefined;
-            std.crypto.random.bytes(&rand_bytes);
+            g_prng.random().bytes(&rand_bytes);
             var hex_buf: [32]u8 = undefined;
             _ = std.fmt.bufPrint(&hex_buf, "{x:0>32}", .{std.mem.readInt(u128, &rand_bytes, .big)}) catch unreachable;
             const state = try self.arena.allocator().dupe(u8, &hex_buf);
@@ -8987,14 +8990,14 @@ pub const Interpreter = struct {
 
         // trim_start() / trim_left() - remove leading whitespace
         if (std.mem.eql(u8, method, "trim_start") or std.mem.eql(u8, method, "trim_left")) {
-            const trimmed = std.mem.trimLeft(u8, str, " \t\n\r");
+            const trimmed = std.mem.trimStart(u8, str, " \t\n\r");
             const result = try allocator.dupe(u8, trimmed);
             return Value{ .String = result };
         }
 
         // trim_end() / trim_right() - remove trailing whitespace
         if (std.mem.eql(u8, method, "trim_end") or std.mem.eql(u8, method, "trim_right")) {
-            const trimmed = std.mem.trimRight(u8, str, " \t\n\r");
+            const trimmed = std.mem.trimEnd(u8, str, " \t\n\r");
             const result = try allocator.dupe(u8, trimmed);
             return Value{ .String = result };
         }
@@ -9942,7 +9945,7 @@ pub const Interpreter = struct {
             var result = try allocator.alloc(Value, n);
             // Simple reservoir sampling
             for (0..n) |i| {
-                const idx = std.crypto.random.int(usize) % arr.len;
+                const idx = g_prng.random().int(usize) % arr.len;
                 result[i] = arr[idx];
             }
             return Value{ .Array = result };
@@ -9957,7 +9960,7 @@ pub const Interpreter = struct {
             var i: usize = arr.len;
             while (i > 1) {
                 i -= 1;
-                const j = std.crypto.random.int(usize) % (i + 1);
+                const j = g_prng.random().int(usize) % (i + 1);
                 const tmp = result[i];
                 result[i] = result[j];
                 result[j] = tmp;
@@ -10919,8 +10922,9 @@ pub const Interpreter = struct {
                 std.debug.print("env! expects string argument\n", .{});
                 return error.TypeMismatch;
             }
-            if (std.posix.getenv(name_val.String)) |val| {
-                return Value{ .String = val };
+            const name_z = try self.arena.allocator().dupeZ(u8, name_val.String);
+            if (std.c.getenv(name_z)) |val_ptr| {
+                return Value{ .String = std.mem.span(val_ptr) };
             }
             return Value.Void;
         } else {

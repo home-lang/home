@@ -46,3 +46,9 @@ packages/.DS_Store
 /packages/app/.zig-cache
 /packages/compression/.zig-cache
 /dist
+test_reify
+test_reify2
+test_timer
+test_type
+test_type2
+test_typeinfo

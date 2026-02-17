@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("ast");
 const types = @import("types");
 const Type = types.Type;
@@ -373,6 +374,7 @@ pub const OptimizationPass = enum {
 pub const Compiler = struct {
     allocator: std.mem.Allocator,
     optimization_level: OptimizationPass,
+    io: ?Io = null,
 
     pub fn init(allocator: std.mem.Allocator, optimization_level: OptimizationPass) Compiler {
         return .{
@@ -383,13 +385,15 @@ pub const Compiler = struct {
 
     /// Compile LLVM IR to an object file
     pub fn compileToObject(self: *Compiler, ir_code: []const u8, output_path: []const u8) !void {
+        const io_val = self.io orelse return error.FileSystemAccessDenied;
+
         // Write IR to temporary file
         const ir_file = try std.fmt.allocPrint(self.allocator, "{s}.ll", .{output_path});
         defer self.allocator.free(ir_file);
 
-        var file = try std.fs.cwd().createFile(ir_file, .{});
-        defer file.close();
-        try file.writeAll(ir_code);
+        const file = try Io.Dir.cwd().createFile(io_val, ir_file, .{});
+        defer file.close(io_val);
+        try file.writeStreamingAll(io_val, ir_code);
 
         // Run LLVM tools (llc for compilation)
         // In a real implementation, we would:

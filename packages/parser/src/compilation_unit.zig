@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("ast");
 const Lexer = @import("lexer").Lexer;
 const ModuleResolver = @import("module_resolver.zig").ModuleResolver;
@@ -35,12 +36,14 @@ pub const CompilationUnit = struct {
     resolver: ModuleResolver,
     /// Stack to detect circular dependencies
     parsing_stack: std.ArrayList([]const u8),
+    /// Optional I/O handle for filesystem operations
+    io: ?Io = null,
 
     pub fn init(allocator: std.mem.Allocator) !CompilationUnit {
         return .{
             .allocator = allocator,
             .modules = std.StringHashMap(*CompiledModule).init(allocator),
-            .resolver = try ModuleResolver.init(allocator),
+            .resolver = try ModuleResolver.init(allocator, null),
             .parsing_stack = std.ArrayList([]const u8){},
         };
     }
@@ -66,7 +69,9 @@ pub const CompilationUnit = struct {
     /// Compile a file and all its dependencies
     pub fn compileFile(self: *CompilationUnit, file_path: []const u8) !*CompiledModule {
         // Read the file
-        const source = try std.fs.cwd().readFileAlloc(self.allocator, file_path, 10 * 1024 * 1024);
+        const io_val = self.io orelse return error.ParseFailed;
+        const cwd = Io.Dir.cwd();
+        const source = try cwd.readFileAlloc(io_val, self.allocator, file_path, 10 * 1024 * 1024);
         defer self.allocator.free(source);
 
         // Lex

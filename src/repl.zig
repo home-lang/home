@@ -37,7 +37,7 @@ pub const Repl = struct {
     }
 
     pub fn run(self: *Repl) !void {
-        var threaded = std.Io.Threaded.init(self.allocator);
+        var threaded = std.Io.Threaded.init(self.allocator, .{});
         defer threaded.deinit();
         const io = threaded.io();
         const stdin_file = std.Io.File.stdin();

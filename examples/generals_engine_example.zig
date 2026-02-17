@@ -11,6 +11,8 @@
 // - macOS Cocoa windowing
 
 const std = @import("std");
+const Io = std.Io;
+var g_io: Io = undefined;
 
 // Graphics packages
 const gl = @import("opengl");
@@ -387,7 +389,7 @@ const GameState = struct {
             resources_path ++ "ABBarracks_D.W3D",
         };
         for (barracks_paths) |path| {
-            if (try self.w3d.load(path)) |model| {
+            if (try self.w3d.load(g_io, path)) |model| {
                 if (model.meshes.len > 0) {
                     self.model_cache.ranger = .{ .model = model, .scale = 0.02 };
                     std.debug.print("  Loaded: {s} ({d} meshes)\n", .{ path, model.meshes.len });
@@ -403,7 +405,7 @@ const GameState = struct {
             resources_path ++ "ABPwrPlant_D.W3D",
         };
         for (power_paths) |path| {
-            if (try self.w3d.load(path)) |model| {
+            if (try self.w3d.load(g_io, path)) |model| {
                 if (model.meshes.len > 0) {
                     self.model_cache.crusader_tank = .{ .model = model, .scale = 0.02 };
                     self.model_cache.paladin_tank = .{ .model = model, .scale = 0.025 };
@@ -421,7 +423,7 @@ const GameState = struct {
             patch_w3d_path ++ "NVHelix_D.W3D",
         };
         for (helix_paths) |path| {
-            if (try self.w3d.load(path)) |model| {
+            if (try self.w3d.load(g_io, path)) |model| {
                 if (model.meshes.len > 0) {
                     self.model_cache.technical = .{ .model = model, .scale = 0.015 };
                     self.model_cache.scorpion = .{ .model = model, .scale = 0.012 };
@@ -1852,7 +1854,8 @@ fn processEvents(game_state: *GameState) void {
 // Main
 // ============================================================================
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    g_io = init.io;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();

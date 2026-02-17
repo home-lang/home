@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast");
+const Io = std.Io;
 
 /// Module resolution error types
 pub const ModuleError = error{
@@ -33,21 +34,28 @@ pub const ModuleResolver = struct {
     packages_root: []const u8,
     /// Source file root directory (for resolving relative imports)
     source_root: ?[]const u8,
+    /// I/O context for file system operations (null when io is not available)
+    io: ?Io,
 
-    pub fn init(allocator: std.mem.Allocator) !ModuleResolver {
+    pub fn init(allocator: std.mem.Allocator, io: ?Io) !ModuleResolver {
         // Auto-detect Home packages directory
-        const home_root = try getHomeRoot(allocator);
-        defer allocator.free(home_root);
-
-        var packages_path = std.ArrayList(u8){};
-        try packages_path.appendSlice(allocator, home_root);
-        try packages_path.appendSlice(allocator, "/packages");
+        const packages_root = if (io) |io_val| blk: {
+            const home_root = getHomeRoot(allocator, io_val) catch {
+                break :blk try allocator.dupe(u8, "packages");
+            };
+            defer allocator.free(home_root);
+            var packages_path = std.ArrayList(u8){};
+            try packages_path.appendSlice(allocator, home_root);
+            try packages_path.appendSlice(allocator, "/packages");
+            break :blk try packages_path.toOwnedSlice(allocator);
+        } else try allocator.dupe(u8, "packages");
 
         return .{
             .allocator = allocator,
             .module_cache = std.StringHashMap(ResolvedModule).init(allocator),
-            .packages_root = try packages_path.toOwnedSlice(allocator),
+            .packages_root = packages_root,
             .source_root = null,
+            .io = io,
         };
     }
 
@@ -293,8 +301,8 @@ pub const ModuleResolver = struct {
 
     /// Check if file exists
     fn fileExists(self: *ModuleResolver, path: []const u8) !bool {
-        _ = self;
-        std.fs.cwd().access(path, .{}) catch |err| {
+        const io = self.io orelse return false;
+        Io.Dir.cwd().access(io, path, .{}) catch |err| {
             if (err == error.FileNotFound) return false;
             return err;
         };
@@ -312,14 +320,14 @@ pub const ModuleResolver = struct {
     }
 
     /// Auto-detect Home root directory
-    fn getHomeRoot(allocator: std.mem.Allocator) ![]const u8 {
+    fn getHomeRoot(allocator: std.mem.Allocator, io: Io) ![]const u8 {
         // Try environment variable first
-        if (std.process.getEnvVarOwned(allocator, "HOME_ROOT")) |home_root| {
-            return home_root;
-        } else |_| {}
+        if (std.c.getenv("HOME_ROOT")) |home_root_c| {
+            return try allocator.dupe(u8, std.mem.span(home_root_c));
+        }
 
         // Try to find it relative to the current executable
-        const self_exe_path = try std.fs.selfExeDirPathAlloc(allocator);
+        const self_exe_path = try std.process.executableDirPathAlloc(io, allocator);
         defer allocator.free(self_exe_path);
 
         // Assume Home executable is in ~/Code/home/zig-out/bin/home
@@ -328,10 +336,12 @@ pub const ModuleResolver = struct {
         try path_buf.appendSlice(allocator, self_exe_path);
         try path_buf.appendSlice(allocator, "/../..");
 
-        const normalized = try std.fs.realpathAlloc(allocator, path_buf.items);
+        // Resolve to absolute path
+        var real_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const n = try Io.Dir.realPathFileAbsolute(io, path_buf.items, &real_buf);
         path_buf.deinit(allocator);
 
-        return normalized;
+        return try allocator.dupe(u8, real_buf[0..n]);
     }
 };
 

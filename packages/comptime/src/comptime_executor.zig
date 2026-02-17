@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("../ast/ast.zig");
 const interpreter = @import("../interpreter/interpreter.zig");
 const types = @import("../types/type_system.zig");
@@ -79,6 +80,7 @@ pub const ComptimeExecutor = struct {
     allocator: std.mem.Allocator,
     context: *ComptimeContext,
     interpreter_instance: ?*interpreter.Interpreter,
+    io: ?Io = null,
 
     pub fn init(allocator: std.mem.Allocator, context: *ComptimeContext) ComptimeExecutor {
         return .{
@@ -238,10 +240,12 @@ pub const ComptimeExecutor = struct {
         }
 
         // Read file contents
-        const file = try std.fs.cwd().openFile(path_value.String, .{});
-        defer file.close();
+        const io_val = self.io orelse return error.FileSystemAccessDenied;
+        const cwd = std.Io.Dir.cwd();
+        const file = try cwd.openFile(io_val, path_value.String, .{});
+        defer file.close(io_val);
 
-        const contents = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024); // 10MB limit
+        const contents = try file.readToEndAlloc(io_val, self.allocator, 10 * 1024 * 1024); // 10MB limit
         return ComptimeValue{ .String = contents };
     }
 

@@ -108,7 +108,7 @@ pub const StringManipulationType = union(enum) {
             },
             .trim_start => |ty| {
                 if (std.meta.activeTag(ty.*) == .Literal and ty.Literal == .string) {
-                    const trimmed = std.mem.trimLeft(u8, ty.Literal.string, " \t\n\r");
+                    const trimmed = std.mem.trimStart(u8, ty.Literal.string, " \t\n\r");
                     result.* = Type{ .Literal = .{ .string = trimmed } };
                     return result;
                 }
@@ -116,7 +116,7 @@ pub const StringManipulationType = union(enum) {
             },
             .trim_end => |ty| {
                 if (std.meta.activeTag(ty.*) == .Literal and ty.Literal == .string) {
-                    const trimmed = std.mem.trimRight(u8, ty.Literal.string, " \t\n\r");
+                    const trimmed = std.mem.trimEnd(u8, ty.Literal.string, " \t\n\r");
                     result.* = Type{ .Literal = .{ .string = trimmed } };
                     return result;
                 }

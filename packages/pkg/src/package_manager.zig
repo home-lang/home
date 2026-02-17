@@ -1,6 +1,18 @@
 const std = @import("std");
 const auth_mod = @import("auth.zig");
 const lockfile_mod = @import("lockfile.zig");
+const Io = std.Io;
+
+/// Simple spinlock mutex (SpinMutex removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+    }
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
 
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
@@ -14,13 +26,14 @@ pub const PackageManager = struct {
     cache_dir: []const u8,
     registry_url: []const u8,
     auth_manager: ?*AuthManager,
+    io: ?Io = null,
 
     pub const DEFAULT_REGISTRY = "https://packages.home-lang.org";
     pub const DEFAULT_CACHE_DIR = ".home/cache";
     pub const PACKAGES_DIR = "pantry"; // Where dependencies are installed
     pub const LOCKFILE_NAME = ".freezer"; // Lockfile for reproducible builds
 
-    pub fn init(allocator: std.mem.Allocator) !*PackageManager {
+    pub fn init(allocator: std.mem.Allocator, io: ?Io) !*PackageManager {
         const pm = try allocator.create(PackageManager);
 
         // Try config files in priority order:
@@ -44,7 +57,7 @@ pub const PackageManager = struct {
         var last_err: ?anyerror = null;
 
         for (config_files) |config_file| {
-            config = PackageConfig.load(allocator, config_file) catch |err| {
+            config = PackageConfig.load(allocator, config_file, io) catch |err| {
                 last_err = err;
                 continue;
             };
@@ -74,10 +87,11 @@ pub const PackageManager = struct {
             .cache_dir = DEFAULT_CACHE_DIR,
             .registry_url = DEFAULT_REGISTRY,
             .auth_manager = auth_manager,
+            .io = io,
         };
 
         // Try to load lockfile
-        pm.lockfile = LockFile.load(allocator, "home.lock") catch null;
+        pm.lockfile = LockFile.load(allocator, "home.lock", io) catch null;
 
         return pm;
     }
@@ -135,7 +149,7 @@ pub const PackageManager = struct {
         };
 
         try self.config.dependencies.append(self.allocator, dep);
-        try self.config.save(self.config.config_file);
+        try self.config.save(self.config.config_file, self.io);
 
         // Resolve and download
         try self.resolve();
@@ -154,7 +168,7 @@ pub const PackageManager = struct {
         };
 
         try self.config.dependencies.append(self.allocator, dep);
-        try self.config.save(self.config.config_file);
+        try self.config.save(self.config.config_file, self.io);
 
         try self.resolve();
     }
@@ -168,7 +182,7 @@ pub const PackageManager = struct {
         };
 
         try self.config.dependencies.append(self.allocator, dep);
-        try self.config.save(self.config.config_file);
+        try self.config.save(self.config.config_file, self.io);
 
         try self.resolve();
     }
@@ -209,7 +223,7 @@ pub const PackageManager = struct {
             i += 1;
         }
 
-        try self.config.save("home.toml");
+        try self.config.save("home.toml", self.io);
         try self.resolve();
     }
 
@@ -235,7 +249,7 @@ pub const PackageManager = struct {
         }
 
         self.lockfile = try LockFile.create(self.allocator, resolved);
-        try self.lockfile.?.save("home.lock");
+        try self.lockfile.?.save("home.lock", self.io);
 
         // Download packages
         try self.downloadAll();
@@ -276,7 +290,7 @@ pub const PackageManager = struct {
                 .packages = lock.packages.items,
                 .pm = self,
                 .current_index = 0,
-                .mutex = std.Thread.Mutex{},
+                .mutex = .{},
                 .errors = &errors,
             };
 
@@ -336,6 +350,8 @@ pub const PackageManager = struct {
 
     /// Download a single package
     fn downloadPackage(self: *PackageManager, pkg: LockedPackage) !void {
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         const pkg_dir = try std.fs.path.join(self.allocator, &[_][]const u8{
             self.cache_dir,
             pkg.name,
@@ -344,7 +360,7 @@ pub const PackageManager = struct {
         defer self.allocator.free(pkg_dir);
 
         // Check if already cached
-        std.fs.cwd().access(pkg_dir, .{}) catch {
+        cwd.access(io_val, pkg_dir, .{}) catch {
             std.debug.print("  → Downloading {s}@{s}...\n", .{ pkg.name, pkg.version });
 
             switch (pkg.source) {
@@ -362,16 +378,19 @@ pub const PackageManager = struct {
     }
 
     fn downloadFromRegistry(self: *PackageManager, pkg: LockedPackage, dest: []const u8) !void {
-        _ = self;
         _ = pkg;
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         // Would use HTTP client to download from registry
         // For now, simulate download
-        try std.fs.cwd().makePath(dest);
+        try cwd.createDirPath(io_val, dest);
     }
 
     fn downloadFromGit(self: *PackageManager, url: []const u8, rev: ?[]const u8, dest: []const u8) !void {
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         // Ensure destination directory doesn't exist
-        std.fs.cwd().deleteTree(dest) catch {};
+        cwd.deleteTree(io_val, dest) catch {};
 
         // Build git clone command
         const rev_args = if (rev) |r| &[_][]const u8{ "--branch", r } else &[_][]const u8{};
@@ -392,13 +411,10 @@ pub const PackageManager = struct {
         try args.append(self.allocator, dest);
 
         // Execute git clone
-        var child = std.process.Child.init(args.items, self.allocator);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-
-        const term = try child.spawnAndWait();
+        var child = try std.process.spawn(io_val, .{ .argv = args.items, .stdout = .ignore, .stderr = .ignore });
+        const term = try child.wait(io_val);
         switch (term) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code != 0) {
                     return error.GitCloneFailed;
                 }
@@ -409,48 +425,51 @@ pub const PackageManager = struct {
         // Remove .git directory to save space
         const git_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ dest, ".git" });
         defer self.allocator.free(git_dir);
-        std.fs.cwd().deleteTree(git_dir) catch {};
+        cwd.deleteTree(io_val, git_dir) catch {};
     }
 
     fn downloadFromUrl(self: *PackageManager, url: []const u8, dest: []const u8) !void {
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         // Create destination directory
-        try std.fs.cwd().makePath(dest);
+        try cwd.createDirPath(io_val, dest);
 
         // Download using curl or wget
         // Try curl first
-        var child = std.process.Child.init(
-            &[_][]const u8{ "curl", "-fsSL", "-o", try std.fs.path.join(self.allocator, &[_][]const u8{ dest, "package.tar.gz" }), url },
-            self.allocator,
-        );
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
+        const curl_archive = try std.fs.path.join(self.allocator, &[_][]const u8{ dest, "package.tar.gz" });
+        defer self.allocator.free(curl_archive);
 
-        const term = child.spawnAndWait() catch |err| {
-            // Curl not available, try wget
-            if (err == error.FileNotFound) {
-                var wget_child = std.process.Child.init(
-                    &[_][]const u8{ "wget", "-q", "-O", try std.fs.path.join(self.allocator, &[_][]const u8{ dest, "package.tar.gz" }), url },
-                    self.allocator,
-                );
-                wget_child.stdout_behavior = .Ignore;
-                wget_child.stderr_behavior = .Ignore;
-
-                const wget_term = try wget_child.spawnAndWait();
-                switch (wget_term) {
-                    .Exited => |code| {
-                        if (code != 0) {
-                            return error.DownloadFailed;
-                        }
-                    },
-                    else => return error.DownloadFailed,
+        const term = blk: {
+            var child = std.process.spawn(io_val, .{
+                .argv = &[_][]const u8{ "curl", "-fsSL", "-o", curl_archive, url },
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch |err| {
+                // Curl not available, try wget
+                if (err == error.FileNotFound) {
+                    var wget_child = try std.process.spawn(io_val, .{
+                        .argv = &[_][]const u8{ "wget", "-q", "-O", curl_archive, url },
+                        .stdout = .ignore,
+                        .stderr = .ignore,
+                    });
+                    const wget_term = try wget_child.wait(io_val);
+                    switch (wget_term) {
+                        .exited => |code| {
+                            if (code != 0) {
+                                return error.DownloadFailed;
+                            }
+                        },
+                        else => return error.DownloadFailed,
+                    }
+                    return;
                 }
-                return;
-            }
-            return err;
+                return err;
+            };
+            break :blk try child.wait(io_val);
         };
 
         switch (term) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code != 0) {
                     return error.DownloadFailed;
                 }
@@ -467,25 +486,23 @@ pub const PackageManager = struct {
 
     /// Extract an archive (.tar.gz, .zip, etc.)
     fn extractArchive(self: *PackageManager, archive_path: []const u8, dest_dir: []const u8) !void {
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         // Detect archive type from extension
         const is_tar_gz = std.mem.endsWith(u8, archive_path, ".tar.gz") or std.mem.endsWith(u8, archive_path, ".tgz");
         const is_zip = std.mem.endsWith(u8, archive_path, ".zip");
 
         if (is_tar_gz) {
             // Extract using tar
-            var child = std.process.Child.init(
-                &[_][]const u8{ "tar", "-xzf", archive_path, "-C", dest_dir },
-                self.allocator,
-            );
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-
-            const term = child.spawnAndWait() catch |err| {
-                return err;
-            };
+            var child = try std.process.spawn(io_val, .{
+                .argv = &[_][]const u8{ "tar", "-xzf", archive_path, "-C", dest_dir },
+                .stdout = .ignore,
+                .stderr = .ignore,
+            });
+            const term = try child.wait(io_val);
 
             switch (term) {
-                .Exited => |code| {
+                .exited => |code| {
                     if (code != 0) {
                         return error.ExtractionFailed;
                     }
@@ -494,22 +511,18 @@ pub const PackageManager = struct {
             }
 
             // Remove the archive file to save space
-            std.fs.cwd().deleteFile(archive_path) catch {};
+            cwd.deleteFile(io_val, archive_path) catch {};
         } else if (is_zip) {
             // Extract using unzip
-            var child = std.process.Child.init(
-                &[_][]const u8{ "unzip", "-q", "-o", archive_path, "-d", dest_dir },
-                self.allocator,
-            );
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-
-            const term = child.spawnAndWait() catch |err| {
-                return err;
-            };
+            var child = try std.process.spawn(io_val, .{
+                .argv = &[_][]const u8{ "unzip", "-q", "-o", archive_path, "-d", dest_dir },
+                .stdout = .ignore,
+                .stderr = .ignore,
+            });
+            const term = try child.wait(io_val);
 
             switch (term) {
-                .Exited => |code| {
+                .exited => |code| {
                     if (code != 0) {
                         return error.ExtractionFailed;
                     }
@@ -518,17 +531,18 @@ pub const PackageManager = struct {
             }
 
             // Remove the archive file to save space
-            std.fs.cwd().deleteFile(archive_path) catch {};
+            cwd.deleteFile(io_val, archive_path) catch {};
         } else {
             // Unknown archive format, leave as-is
         }
     }
 
     fn copyLocal(self: *PackageManager, src: []const u8, dest: []const u8) !void {
-        _ = self;
         _ = src;
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
         // Copy local directory
-        try std.fs.cwd().makePath(dest);
+        try cwd.createDirPath(io_val, dest);
     }
 
     fn parseVersion(self: *PackageManager, version_str: []const u8) !Version {
@@ -669,8 +683,10 @@ pub const PackageConfig = struct {
     scripts: ?std.StringHashMap([]const u8), // Bun-style scripts
     config_file: []const u8, // Track which file was used
 
-    pub fn load(allocator: std.mem.Allocator, path: []const u8) !*PackageConfig {
-        const content = try std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.limited(1024 * 1024));
+    pub fn load(allocator: std.mem.Allocator, path: []const u8, io: ?Io) !*PackageConfig {
+        const io_val = io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
+        const content = try cwd.readFileAlloc(io_val, path, allocator, Io.Limit.limited(1024 * 1024));
         defer allocator.free(content);
 
         const config = try allocator.create(PackageConfig);
@@ -880,9 +896,11 @@ pub const PackageConfig = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn save(self: *PackageConfig, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+    pub fn save(self: *PackageConfig, path: []const u8, io: ?Io) !void {
+        const io_val = io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
+        const file = try cwd.createFile(io_val, path, .{});
+        defer file.close(io_val);
 
         const is_json = std.mem.endsWith(u8, path, ".json");
 
@@ -951,7 +969,7 @@ pub const PackageConfig = struct {
 
             try buf.appendSlice(self.allocator, "}\n");
 
-            try file.writeAll(buf.items);
+            try file.writeStreamingAll(io_val, buf.items);
         } else {
             // Save as TOML
             var content = std.ArrayList(u8){};
@@ -994,7 +1012,7 @@ pub const PackageConfig = struct {
                 try content.appendSlice(self.allocator, dep_line);
             }
 
-            try file.writeAll(content.items);
+            try file.writeStreamingAll(io_val, content.items);
         }
     }
 };
@@ -1054,8 +1072,10 @@ pub const LockFile = struct {
         return lock;
     }
 
-    pub fn load(allocator: std.mem.Allocator, path: []const u8) !*LockFile {
-        const content = try std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
+    pub fn load(allocator: std.mem.Allocator, path: []const u8, io: ?Io) !*LockFile {
+        const io_val = io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
+        const content = try cwd.readFileAlloc(io_val, path, allocator, Io.Limit.limited(10 * 1024 * 1024));
         defer allocator.free(content);
 
         // Parse lockfile (simplified)
@@ -1074,9 +1094,11 @@ pub const LockFile = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn save(self: *LockFile, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+    pub fn save(self: *LockFile, path: []const u8, io: ?Io) !void {
+        const io_val = io orelse return error.IoNotInitialized;
+        const cwd = Io.Dir.cwd();
+        const file = try cwd.createFile(io_val, path, .{});
+        defer file.close(io_val);
 
         var content = std.ArrayList(u8){};
         defer content.deinit(self.allocator);
@@ -1092,7 +1114,7 @@ pub const LockFile = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
-        try file.writeAll(content.items);
+        try file.writeStreamingAll(io_val, content.items);
     }
 };
 
@@ -1171,7 +1193,7 @@ const DownloadContext = struct {
     packages: []LockedPackage,
     pm: *PackageManager,
     current_index: usize,
-    mutex: std.Thread.Mutex,
+    mutex: SpinMutex,
     errors: *std.ArrayList(DownloadError),
 };
 

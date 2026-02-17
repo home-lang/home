@@ -467,11 +467,17 @@ pub fn cors() Middleware {
 /// Logger middleware
 pub fn logger() Middleware {
     return struct {
+        fn getNanoTimestamp() u64 {
+            var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+            return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+        }
+
         fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {
-            const start = std.time.Instant.now() catch @panic("Timer unsupported");
+            const start = getNanoTimestamp();
             try next();
-            const end = std.time.Instant.now() catch @panic("Timer unsupported");
-            const duration_ms = end.since(start) / std.time.ns_per_ms;
+            const end = getNanoTimestamp();
+            const duration_ms = (end - start) / std.time.ns_per_ms;
 
             std.debug.print("{s} {s} - {d} ({d}ms)\n", .{
                 req.method.toString(),

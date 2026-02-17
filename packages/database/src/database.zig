@@ -1,6 +1,17 @@
 const std = @import("std");
 pub const sqlite = @import("sqlite.zig");
 
+/// Simple spinlock mutex (SpinMutex removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+    }
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
+
 // Re-export main SQLite types for convenience
 /// Database connection handle
 pub const Connection = sqlite.Connection;
@@ -344,7 +355,7 @@ pub const ConnectionPool = struct {
     allocator: std.mem.Allocator,
     connections: std.ArrayList(*Connection),
     available: std.ArrayList(*Connection),
-    mutex: std.Thread.Mutex,
+    mutex: SpinMutex,
     max_connections: usize,
     db_path: []const u8,
 
@@ -356,7 +367,7 @@ pub const ConnectionPool = struct {
             .allocator = allocator,
             .connections = std.ArrayList(*Connection){},
             .available = std.ArrayList(*Connection){},
-            .mutex = std.Thread.Mutex{},
+            .mutex = .{},
             .max_connections = max_connections,
             .db_path = db_path_copy,
         };

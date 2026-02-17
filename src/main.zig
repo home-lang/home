@@ -34,6 +34,16 @@ const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
 
+const Io = std.Io;
+var g_io: Io = undefined;
+
+/// Get monotonic timestamp in nanoseconds (Zig 0.16 compatible)
+fn getMonotonicNs() u64 {
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
 const Color = enum {
     Reset,
     Red,
@@ -179,7 +189,7 @@ fn printUsage() void {
 
 fn parseCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -379,7 +389,7 @@ fn printStmt(stmt: ast.Stmt, indent: usize) void {
 
 fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -416,7 +426,7 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -585,10 +595,10 @@ fn getSuggestion(error_message: []const u8) ?[]const u8 {
     return null;
 }
 
-fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     // fmt is an alias for lint --fix
     // Build new args array with --fix flag
-    var new_args = std.ArrayList([:0]u8){};
+    var new_args = std.ArrayList([:0]const u8){};
     defer new_args.deinit(allocator);
 
     try new_args.append(allocator, try allocator.dupeZ(u8, "--fix"));
@@ -596,12 +606,12 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
         try new_args.append(allocator, arg);
     }
 
-    try lint_cmd.lintCommand(allocator, new_args.items);
+    try lint_cmd.lintCommand(allocator, new_args.items, g_io);
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -645,7 +655,7 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path: ?[]const u8, kernel_mode: bool) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -663,7 +673,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
     if (build_options.enable_ir_cache and !kernel_mode) {
         // Use new incremental compiler
-        inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache", true);
+        inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache", true, g_io);
         std.debug.print("{s}Incremental compilation:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
         // Check if module needs recompilation
@@ -689,7 +699,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         }
 
         // Also init old cache for backward compatibility
-        cache = try IRCache.init(allocator, ".home-cache");
+        cache = try IRCache.init(allocator, ".home-cache", g_io);
     }
 
     defer {
@@ -837,7 +847,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         const asm_code = try codegen.generate(program);
 
         // Write assembly to file
-        try std.fs.cwd().writeFile(.{
+        try Io.Dir.cwd().writeFile(g_io, .{
             .sub_path = out_path,
             .data = asm_code,
         });
@@ -887,7 +897,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
 fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
         return err;
     };
@@ -905,24 +915,24 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const arena_allocator = arena.allocator();
 
     // Tokenize
-    const start_lex = try std.time.Instant.now();
+    const start_lex = getMonotonicNs();
     var lexer = Lexer.init(arena_allocator, source);
     const tokens = try lexer.tokenize();
-    const end_lex = try std.time.Instant.now();
-    const lex_time = @divFloor(end_lex.since(start_lex), std.time.ns_per_ms);
+    const end_lex = getMonotonicNs();
+    const lex_time = (end_lex - start_lex) / std.time.ns_per_ms;
 
     try prof.trackAllocation(tokens.items.len * @sizeOf(Token));
 
     // Parse
-    const start_parse = try std.time.Instant.now();
+    const start_parse = getMonotonicNs();
     var parser = try Parser.init(arena_allocator, tokens.items);
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
 
     const program = try parser.parse();
-    const end_parse = try std.time.Instant.now();
-    const parse_time = @divFloor(end_parse.since(start_parse), std.time.ns_per_ms);
+    const end_parse = getMonotonicNs();
+    const parse_time = (end_parse - start_parse) / std.time.ns_per_ms;
 
     // Estimate AST size
     const ast_size = program.statements.len * 1000; // Rough estimate
@@ -1021,7 +1031,7 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Get initial modification time
     var last_mtime: std.Io.Timestamp = blk: {
-        const stat = std.fs.cwd().statFile(file_path) catch |err| {
+        const stat = Io.Dir.cwd().statFile(g_io, file_path, .{}) catch |err| {
             std.debug.print("{s}Error:{s} Cannot watch file: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
             return err;
         };
@@ -1032,9 +1042,9 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var iteration: u32 = 0;
     while (true) {
         // Sleep for 500ms
-        std.posix.nanosleep(0, 500_000_000);
+        _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);
 
-        const stat = std.fs.cwd().statFile(file_path) catch continue;
+        const stat = Io.Dir.cwd().statFile(g_io, file_path, .{}) catch continue;
 
         // Compare timestamps
         const mtime_changed = stat.mtime.nanoseconds != last_mtime.nanoseconds;
@@ -1055,7 +1065,7 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
 fn runAndReportError(allocator: std.mem.Allocator, file_path: []const u8) void {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
         return;
     };
@@ -1146,7 +1156,7 @@ fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !v
 }
 
 fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_files: *std.ArrayList([]const u8)) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = Io.Dir.cwd().openDir(g_io, dir_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
             std.debug.print("{s}Error:{s} Directory not found: {s}\n", .{
                 Color.Red.code(),
@@ -1156,11 +1166,11 @@ fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_fi
         }
         return err;
     };
-    defer dir.close();
+    defer dir.close(g_io);
 
     var iter = dir.iterate();
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(g_io)) |entry| {
         switch (entry.kind) {
             .file => {
                 if (isTestFile(entry.name)) {
@@ -1188,35 +1198,35 @@ fn discoverTestFiles(allocator: std.mem.Allocator, dir_path: []const u8, test_fi
 /// Returns paths to: tests/, packages/*/tests/, and any .test.home files
 fn discoverMonorepoTests(allocator: std.mem.Allocator, test_files: *std.ArrayList([]const u8), zig_test_dirs: *std.ArrayList([]const u8)) !void {
     // 1. Check for tests/ directory (Home integration tests)
-    if (std.fs.cwd().statFile("tests")) |stat| {
+    if (Io.Dir.cwd().statFile(g_io, "tests", .{})) |stat| {
         if (stat.kind == .directory) {
             discoverTestFiles(allocator, "tests", test_files) catch {};
         }
     } else |_| {}
 
     // 2. Check for packages/ directory (monorepo packages)
-    var packages_dir = std.fs.cwd().openDir("packages", .{ .iterate = true }) catch {
+    var packages_dir = Io.Dir.cwd().openDir(g_io, "packages", .{ .iterate = true }) catch {
         return; // No packages directory
     };
-    defer packages_dir.close();
+    defer packages_dir.close(g_io);
 
     var pkg_iter = packages_dir.iterate();
-    while (try pkg_iter.next()) |pkg_entry| {
+    while (try pkg_iter.next(g_io)) |pkg_entry| {
         if (pkg_entry.kind == .directory) {
             // Check for tests/ subdirectory in each package
             const pkg_tests_path = try std.fs.path.join(allocator, &.{ "packages", pkg_entry.name, "tests" });
 
-            if (std.fs.cwd().statFile(pkg_tests_path)) |stat| {
+            if (Io.Dir.cwd().statFile(g_io, pkg_tests_path, .{})) |stat| {
                 if (stat.kind == .directory) {
                     // Check if it has Zig tests or Home tests
-                    var tests_dir = std.fs.cwd().openDir(pkg_tests_path, .{ .iterate = true }) catch continue;
-                    defer tests_dir.close();
+                    var tests_dir = Io.Dir.cwd().openDir(g_io, pkg_tests_path, .{ .iterate = true }) catch continue;
+                    defer tests_dir.close(g_io);
 
                     var has_zig_tests = false;
                     var has_home_tests = false;
 
                     var test_iter = tests_dir.iterate();
-                    while (try test_iter.next()) |test_entry| {
+                    while (try test_iter.next(g_io)) |test_entry| {
                         if (test_entry.kind == .file) {
                             if (std.mem.endsWith(u8, test_entry.name, "_test.zig") or
                                 std.mem.endsWith(u8, test_entry.name, "_tests.zig"))
@@ -1245,7 +1255,7 @@ fn discoverMonorepoTests(allocator: std.mem.Allocator, test_files: *std.ArrayLis
     }
 
     // 3. Also check src/ directory for inline tests
-    if (std.fs.cwd().statFile("src")) |stat| {
+    if (Io.Dir.cwd().statFile(g_io, "src", .{})) |stat| {
         if (stat.kind == .directory) {
             discoverTestFiles(allocator, "src", test_files) catch {};
         }
@@ -1273,7 +1283,7 @@ fn shouldSkipDirectory(dirname: []const u8) bool {
 
 /// Runs tests across the entire monorepo
 fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
-    const start_time = std.time.Instant.now() catch null;
+    const start_time = getMonotonicNs();
 
     std.debug.print("\n{s}Home Monorepo Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
@@ -1414,12 +1424,10 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
     }
 
     // Print elapsed time
-    if (start_time) |start| {
-        if (std.time.Instant.now() catch null) |end| {
-            const elapsed_ns = end.since(start);
-            const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
-            std.debug.print("\n  Time:   {d:.2}s\n", .{elapsed_s});
-        }
+    {
+        const elapsed_ns = getMonotonicNs() - start_time;
+        const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+        std.debug.print("\n  Time:   {d:.2}s\n", .{elapsed_s});
     }
     std.debug.print("\n", .{});
 
@@ -1447,20 +1455,27 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
     defer allocator.free(build_file_path);
 
     // Check if package has its own build.zig
-    if (std.fs.cwd().statFile(build_file_path)) |_| {
+    if (Io.Dir.cwd().statFile(g_io, build_file_path, .{})) |_| {
         // Run zig build test from package directory
         const pkg_dir = try std.fs.path.join(allocator, &.{ "packages", pkg_name });
         defer allocator.free(pkg_dir);
 
-        var child = std.process.Child.init(&.{ "zig", "build", "test" }, allocator);
-        child.cwd = pkg_dir;
+        var child = std.process.spawn(g_io, .{
+            .argv = &.{ "zig", "build", "test" },
+            .cwd = .{ .path = pkg_dir },
+            .stdout = if (!verbose) .ignore else .inherit,
+            .stderr = if (!verbose) .ignore else .inherit,
+        }) catch |err| {
+            std.debug.print("{s}FAIL{s} {s} (spawn failed: {})\n", .{
+                Color.Red.code(),
+                Color.Reset.code(),
+                pkg_name,
+                err,
+            });
+            return err;
+        };
 
-        if (!verbose) {
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-        }
-
-        const term = child.spawnAndWait() catch |err| {
+        const term = child.wait(g_io) catch |err| {
             std.debug.print("{s}FAIL{s} {s} (zig build test failed: {})\n", .{
                 Color.Red.code(),
                 Color.Reset.code(),
@@ -1470,7 +1485,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
             return err;
         };
 
-        if (term.Exited == 0) {
+        if (term.exited == 0) {
             std.debug.print("{s}PASS{s} {s}\n", .{
                 Color.Green.code(),
                 Color.Reset.code(),
@@ -1486,7 +1501,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
         }
     } else |_| {
         // No build.zig, try running zig test directly on test files
-        var tests_dir = std.fs.cwd().openDir(test_dir, .{ .iterate = true }) catch {
+        var tests_dir = Io.Dir.cwd().openDir(g_io, test_dir, .{ .iterate = true }) catch {
             std.debug.print("{s}SKIP{s} {s} (no tests directory)\n", .{
                 Color.Yellow.code(),
                 Color.Reset.code(),
@@ -1494,11 +1509,11 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
             });
             return;
         };
-        defer tests_dir.close();
+        defer tests_dir.close(g_io);
 
         var any_failed = false;
         var iter = tests_dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(g_io)) |entry| {
             if (entry.kind == .file and
                 (std.mem.endsWith(u8, entry.name, "_test.zig") or
                 std.mem.endsWith(u8, entry.name, "_tests.zig")))
@@ -1506,18 +1521,21 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
                 const test_file = try std.fs.path.join(allocator, &.{ test_dir, entry.name });
                 defer allocator.free(test_file);
 
-                var child = std.process.Child.init(&.{ "zig", "test", test_file }, allocator);
-                if (!verbose) {
-                    child.stdout_behavior = .Ignore;
-                    child.stderr_behavior = .Ignore;
-                }
-
-                const term = child.spawnAndWait() catch {
+                var child = std.process.spawn(g_io, .{
+                    .argv = &.{ "zig", "test", test_file },
+                    .stdout = if (!verbose) .ignore else .inherit,
+                    .stderr = if (!verbose) .ignore else .inherit,
+                }) catch {
                     any_failed = true;
                     continue;
                 };
 
-                if (term.Exited != 0) {
+                const term = child.wait(g_io) catch {
+                    any_failed = true;
+                    continue;
+                };
+
+                if (term.exited != 0) {
                     any_failed = true;
                 }
             }
@@ -1541,7 +1559,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
 }
 
 fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: TestOptions) !void {
-    const start_time = std.time.Instant.now() catch null;
+    const start_time = getMonotonicNs();
 
     std.debug.print("\n{s}Home Test Suite{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
     std.debug.print("{s}━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
@@ -1634,13 +1652,11 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: Tes
     std.debug.print(" ({d} total)\n", .{test_files.items.len});
     std.debug.print("  Tests:  {d} total\n", .{total_tests});
 
-    // Print elapsed time if timing is available
-    if (start_time) |start| {
-        if (std.time.Instant.now() catch null) |end| {
-            const elapsed_ns = end.since(start);
-            const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
-            std.debug.print("  Time:   {d:.2}s\n", .{elapsed_s});
-        }
+    // Print elapsed time
+    {
+        const elapsed_ns = getMonotonicNs() - start_time;
+        const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+        std.debug.print("  Time:   {d:.2}s\n", .{elapsed_s});
     }
     std.debug.print("\n", .{});
 
@@ -1656,7 +1672,7 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: Tes
 
 fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8, verbose: bool) !usize {
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}FAIL{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
         std.debug.print("  Error: Failed to read file: {}\n", .{err});
         return err;
@@ -1753,7 +1769,7 @@ const TestOptions = struct {
     package: ?[]const u8 = null,
 };
 
-fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     // Parse arguments
     var options = TestOptions{};
     var path_arg: ?[]const u8 = null;
@@ -1801,7 +1817,7 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     const file_path = path_arg.?;
 
     // Check if the path is a directory
-    const stat = std.fs.cwd().statFile(file_path) catch |err| {
+    const stat = Io.Dir.cwd().statFile(g_io, file_path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             std.debug.print("{s}Error:{s} Path not found: {s}\n", .{
                 Color.Red.code(),
@@ -1836,7 +1852,8 @@ fn testCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
 /// Test options struct
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    g_io = init.io;
     // Enable memory tracking in debug builds if configured
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .enable_memory_limit = build_options.memory_tracking,
@@ -1850,14 +1867,15 @@ pub fn main() !void {
     }
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer args_arena.deinit();
+    const args = try init.minimal.args.toSlice(args_arena.allocator());
 
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
-        var test_args = std.ArrayList([:0]u8){};
+        var test_args = std.ArrayList([:0]const u8){};
         defer test_args.deinit(allocator);
 
         try test_args.append(allocator, args[0]); // Program name
@@ -1952,7 +1970,7 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        try lint_cmd.lintCommand(allocator, args[2..]);
+        try lint_cmd.lintCommand(allocator, args[2..], g_io);
         return;
     }
 
@@ -2053,7 +2071,7 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, command, "package")) {
-        try package_cmd.packageCommand(allocator, args[2..]);
+        try package_cmd.packageCommand(allocator, args[2..], g_io);
         return;
     }
 
@@ -2073,7 +2091,7 @@ pub fn main() !void {
     std.process.exit(1);
 }
 
-fn pkgCommand(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     const subcmd = args[0];
 
     if (std.mem.eql(u8, subcmd, "init")) {
@@ -2155,7 +2173,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
 
     // Create project directory if name was provided
     if (project_name != null) {
-        std.fs.cwd().makeDir(name) catch |err| {
+        Io.Dir.cwd().createDir(g_io, name, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) {
                 std.debug.print("{s}Error:{s} Failed to create directory '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), name, err });
                 return err;
@@ -2163,14 +2181,13 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
             std.debug.print("{s}Warning:{s} Directory '{s}' already exists, initializing in place\n", .{ Color.Yellow.code(), Color.Reset.code(), name });
         };
 
-        const dir = try std.fs.cwd().openDir(name, .{});
-        try dir.setAsCwd();
+        try std.Io.Threaded.chdir(name);
     }
 
     // Create directories
     const dirs = [_][]const u8{ "src", "tests", ".home" };
     for (dirs) |dir| {
-        std.fs.cwd().makeDir(dir) catch |err| {
+        Io.Dir.cwd().createDir(g_io, dir, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) {
                 std.debug.print("{s}Error:{s} Failed to create {s}/: {}\n", .{ Color.Red.code(), Color.Reset.code(), dir, err });
                 return err;
@@ -2212,9 +2229,9 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     defer allocator.free(package_content);
 
     {
-        const file = try std.fs.cwd().createFile("package.jsonc", .{});
-        defer file.close();
-        try file.writeAll(package_content);
+        const file = try Io.Dir.cwd().createFile(g_io, "package.jsonc", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io,package_content);
         std.debug.print("{s}✓{s} Created package.jsonc\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2233,9 +2250,9 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     ;
 
     {
-        const file = try std.fs.cwd().createFile("src/main.home", .{});
-        defer file.close();
-        try file.writeAll(main_home);
+        const file = try Io.Dir.cwd().createFile(g_io, "src/main.home", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io,main_home);
         std.debug.print("{s}✓{s} Created src/main.home\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2268,9 +2285,9 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     ;
 
     {
-        const file = try std.fs.cwd().createFile("tests/example.home", .{});
-        defer file.close();
-        try file.writeAll(test_file);
+        const file = try Io.Dir.cwd().createFile(g_io, "tests/example.home", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io,test_file);
         std.debug.print("{s}✓{s} Created tests/example.home\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2323,9 +2340,9 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     defer allocator.free(readme_content);
 
     {
-        const file = try std.fs.cwd().createFile("README.md", .{});
-        defer file.close();
-        try file.writeAll(readme_content);
+        const file = try Io.Dir.cwd().createFile(g_io, "README.md", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io,readme_content);
         std.debug.print("{s}✓{s} Created README.md\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2357,9 +2374,9 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     ;
 
     {
-        const file = try std.fs.cwd().createFile(".gitignore", .{});
-        defer file.close();
-        try file.writeAll(gitignore);
+        const file = try Io.Dir.cwd().createFile(g_io, ".gitignore", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io,gitignore);
         std.debug.print("{s}✓{s} Created .gitignore\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2400,9 +2417,9 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\
     ;
 
-    const file = try std.fs.cwd().createFile("home.toml", .{});
-    defer file.close();
-    try file.writeAll(content);
+    const file = try Io.Dir.cwd().createFile(g_io, "home.toml", .{});
+    defer file.close(g_io);
+    try file.writeStreamingAll(g_io,content);
 
     std.debug.print("{s}✓{s} Created home.toml\n", .{ Color.Green.code(), Color.Reset.code() });
     std.debug.print("Edit home.toml to configure your project\n", .{});
@@ -2411,7 +2428,7 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
 fn pkgAdd(allocator: std.mem.Allocator, spec: []const u8) !void {
     std.debug.print("{s}Adding package:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), spec });
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         std.debug.print("{s}Error:{s} No home.toml found. Run 'home pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
@@ -2447,7 +2464,7 @@ fn pkgAdd(allocator: std.mem.Allocator, spec: []const u8) !void {
 fn pkgRemove(allocator: std.mem.Allocator, name: []const u8) !void {
     std.debug.print("{s}Removing package:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), name });
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         std.debug.print("{s}Error:{s} No home.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
@@ -2460,7 +2477,7 @@ fn pkgRemove(allocator: std.mem.Allocator, name: []const u8) !void {
 fn pkgUpdate(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Updating dependencies...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         std.debug.print("{s}Error:{s} No home.toml found.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
@@ -2473,7 +2490,7 @@ fn pkgUpdate(allocator: std.mem.Allocator) !void {
 fn pkgInstall(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}Installing dependencies...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         std.debug.print("{s}Error:{s} No home.toml found. Run 'home pkg init' first.\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     };
@@ -2526,7 +2543,7 @@ fn pkgTree(allocator: std.mem.Allocator) !void {
 
     // Check for home.lock
     const lock_exists = blk: {
-        std.fs.cwd().access("home.lock", .{}) catch {
+        Io.Dir.cwd().access(g_io, "home.lock", .{}) catch {
             break :blk false;
         };
         break :blk true;
@@ -2551,7 +2568,7 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
 
     // Check for home.toml
     const toml_exists = blk: {
-        std.fs.cwd().access("home.toml", .{}) catch {
+        Io.Dir.cwd().access(g_io, "home.toml", .{}) catch {
             break :blk false;
         };
         break :blk true;
@@ -2563,7 +2580,7 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
     }
 
     // Parse home.toml and look for [scripts] section
-    const toml_content = try std.fs.cwd().readFileAlloc("home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
+    const toml_content = try Io.Dir.cwd().readFileAlloc(g_io, "home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(toml_content);
 
     var scripts = try parseTomlScripts(allocator, toml_content);
@@ -2580,10 +2597,10 @@ fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {
         if (std.mem.eql(u8, script.name, script_name)) {
             std.debug.print("🚀 {s}\n", .{script.command});
             // Execute the command
-            var child = std.process.Child.init(&[_][]const u8{ "sh", "-c", script.command }, allocator);
-            const term = try child.spawnAndWait();
+            var child = try std.process.spawn(g_io, .{ .argv = &[_][]const u8{ "sh", "-c", script.command } });
+            const term = try child.wait(g_io);
             switch (term) {
-                .Exited => |code| {
+                .exited => |code| {
                     if (code != 0) {
                         std.process.exit(code);
                     }
@@ -2606,7 +2623,7 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
 
     // Check for home.toml
     const toml_exists = blk: {
-        std.fs.cwd().access("home.toml", .{}) catch {
+        Io.Dir.cwd().access(g_io, "home.toml", .{}) catch {
             break :blk false;
         };
         break :blk true;
@@ -2619,7 +2636,7 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
     }
 
     // Parse home.toml for actual scripts
-    const toml_content = try std.fs.cwd().readFileAlloc("home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
+    const toml_content = try Io.Dir.cwd().readFileAlloc(g_io, "home.toml", allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(toml_content);
 
     var scripts = try parseTomlScripts(allocator, toml_content);
@@ -2643,7 +2660,7 @@ fn pkgScripts(allocator: std.mem.Allocator) !void {
 }
 
 /// Login to package registry
-fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+fn pkgLogin(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     std.debug.print("{s}Login to Home Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     // Parse optional arguments
@@ -2666,18 +2683,15 @@ fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
     }
 
     // Check for token in environment variable
-    var env_token_allocated: ?[]const u8 = null;
-    defer if (env_token_allocated) |t| allocator.free(t);
-
     if (token == null) {
-        if (std.process.getEnvVarOwned(allocator, "ION_TOKEN")) |env_token| {
-            env_token_allocated = env_token;
+        if (std.c.getenv("ION_TOKEN")) |env_ptr| {
+            const env_token = std.mem.span(env_ptr);
             token = env_token;
             std.debug.print("{s}Using token from ION_TOKEN environment variable{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-        } else |_| {}
+        }
     }
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         // If no project, still allow login (global auth)
         var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);
@@ -2694,7 +2708,7 @@ fn pkgLogin(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 }
 
 /// Logout from package registry
-fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+fn pkgLogout(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     std.debug.print("{s}Logout from Home Package Registry{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     var registry: ?[]const u8 = null;
@@ -2703,7 +2717,7 @@ fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
         registry = args[1];
     }
 
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         // If no project, still allow logout (global auth)
         var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);
@@ -2721,7 +2735,7 @@ fn pkgLogout(allocator: std.mem.Allocator, args: [][:0]u8) !void {
 
 /// Show authenticated user
 fn pkgWhoami(allocator: std.mem.Allocator) !void {
-    var pm = PackageManager.init(allocator) catch {
+    var pm = PackageManager.init(allocator, g_io) catch {
         // If no project, check global auth
         var auth_manager = try allocator.create(AuthManager);
         defer allocator.destroy(auth_manager);

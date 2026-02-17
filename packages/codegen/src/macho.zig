@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// Mach-O 64-bit file format writer for macOS
 pub const MachOWriter = struct {
@@ -6,6 +7,7 @@ pub const MachOWriter = struct {
     code: []const u8,
     data: []const u8, // Data section (for string literals, etc.)
     entry_point: u64,
+    io: ?Io = null,
 
     // Mach-O constants
     const MH_MAGIC_64: u32 = 0xfeedfacf;
@@ -37,10 +39,12 @@ pub const MachOWriter = struct {
     }
 
     pub fn writeWithEntryPoint(self: *MachOWriter, path: []const u8, entry_offset: u64) !void {
+        const io_val = self.io orelse return error.FileSystemAccessDenied;
+
         self.entry_point = 0x100000000 + 0x1000 + entry_offset;
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().createFile(io_val, path, .{});
+        defer file.close(io_val);
 
         // Calculate sizes
         const page_size: u64 = 0x1000;
@@ -56,54 +60,54 @@ pub const MachOWriter = struct {
         const linkedit_offset: u64 = data_file_offset + data_size_aligned; // __LINKEDIT after __DATA
 
         // Write Mach-O header
-        try self.writeMachHeader(file, self.data.len > 0);
+        try self.writeMachHeader(io_val, file, self.data.len > 0);
 
         // Write __PAGEZERO segment (required by modern macOS)
-        try self.writePageZeroSegment(file);
+        try self.writePageZeroSegment(io_val, file);
 
         // Write segment command for __TEXT segment
-        try self.writeTextSegment(file, code_size_aligned);
+        try self.writeTextSegment(io_val, file, code_size_aligned);
 
         // Write __DATA segment (if we have data)
         if (self.data.len > 0) {
-            try self.writeDataSegment(file, data_file_offset, data_size_aligned);
+            try self.writeDataSegment(io_val, file, data_file_offset, data_size_aligned);
         }
 
         // Write __LINKEDIT segment (for symbol tables)
-        try self.writeLinkedItSegment(file, linkedit_offset);
+        try self.writeLinkedItSegment(io_val, file, linkedit_offset);
 
         // Write LC_LOAD_DYLINKER command (required to specify dyld)
-        try self.writeLoadDylinker(file);
+        try self.writeLoadDylinker(io_val, file);
 
         // Write LC_MAIN command (entry point)
-        try self.writeMainCommand(file, entry_offset);
+        try self.writeMainCommand(io_val, file, entry_offset);
 
         // Write LC_LOAD_DYLIB for libSystem
-        try self.writeLoadDylib(file);
+        try self.writeLoadDylib(io_val, file);
 
         // Write symbol table command
-        try self.writeSymtabCommand(file, linkedit_offset);
+        try self.writeSymtabCommand(io_val, file, linkedit_offset);
 
         // Write dynamic symbol table command
-        try self.writeDysymtabCommand(file);
+        try self.writeDysymtabCommand(io_val, file);
 
         // Write code at page boundary
-        try file.seekTo(text_file_offset);
-        try file.writeAll(self.code);
+        try file.writePositionalAll(io_val, self.code, text_file_offset);
 
         // Pad __TEXT to page boundary
+        var current_offset = text_file_offset + self.code.len;
         const text_padding_size = code_size_aligned - self.code.len;
         if (text_padding_size > 0) {
             const padding = try self.allocator.alloc(u8, text_padding_size);
             defer self.allocator.free(padding);
             @memset(padding, 0);
-            try file.writeAll(padding);
+            try file.writePositionalAll(io_val, padding, current_offset);
+            current_offset += text_padding_size;
         }
 
         // Write data section (if we have data)
         if (self.data.len > 0) {
-            try file.seekTo(data_file_offset);
-            try file.writeAll(self.data);
+            try file.writePositionalAll(io_val, self.data, data_file_offset);
 
             // Pad __DATA to page boundary
             const data_padding_size = data_size_aligned - self.data.len;
@@ -111,20 +115,19 @@ pub const MachOWriter = struct {
                 const padding = try self.allocator.alloc(u8, data_padding_size);
                 defer self.allocator.free(padding);
                 @memset(padding, 0);
-                try file.writeAll(padding);
+                try file.writePositionalAll(io_val, padding, data_file_offset + self.data.len);
             }
         }
 
         // Write LINKEDIT data (minimal symbol table)
-        try file.seekTo(linkedit_offset);
         const null_byte: [1]u8 = .{0};
-        try file.writeAll(&null_byte);
+        try file.writePositionalAll(io_val, &null_byte, linkedit_offset);
 
         // Make executable
-        try file.chmod(0o755);
+        try file.setPermissions(io_val, Io.File.Permissions.fromMode(0o755));
     }
 
-    fn writeMachHeader(self: *MachOWriter, file: std.fs.File, has_data: bool) !void {
+    fn writeMachHeader(self: *MachOWriter, io_val: Io, file: Io.File, has_data: bool) !void {
         _ = self;
         var header: [32]u8 = undefined;
         @memset(&header, 0);
@@ -169,10 +172,10 @@ pub const MachOWriter = struct {
         // reserved
         std.mem.writeInt(u32, header[28..32], 0, .little);
 
-        try file.writeAll(&header);
+        try file.writeStreamingAll(io_val, &header);
     }
 
-    fn writePageZeroSegment(self: *MachOWriter, file: std.fs.File) !void {
+    fn writePageZeroSegment(self: *MachOWriter, io_val: Io, file: Io.File) !void {
         _ = self;
         var cmd: [72]u8 = undefined;
         @memset(&cmd, 0);
@@ -187,10 +190,10 @@ pub const MachOWriter = struct {
         std.mem.writeInt(i32, cmd[56..60], 0, .little); // maxprot
         std.mem.writeInt(i32, cmd[60..64], 0, .little); // initprot
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeTextSegment(self: *MachOWriter, file: std.fs.File, code_size: u64) !void {
+    fn writeTextSegment(self: *MachOWriter, io_val: Io, file: Io.File, code_size: u64) !void {
         _ = self;
         // Segment command (72 bytes) + section header (80 bytes) = 152 bytes
         var cmd: [152]u8 = undefined;
@@ -223,10 +226,10 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[144..148], 0, .little); // reserved2 (72-75)
         std.mem.writeInt(u32, cmd[148..152], 0, .little); // reserved3 (76-79)
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeDataSegment(self: *MachOWriter, file: std.fs.File, file_offset: u64, data_size: u64) !void {
+    fn writeDataSegment(self: *MachOWriter, io_val: Io, file: Io.File, file_offset: u64, data_size: u64) !void {
         _ = self;
         // Segment command (72 bytes) + section header (80 bytes) = 152 bytes
         var cmd: [152]u8 = undefined;
@@ -265,10 +268,10 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[144..148], 0, .little); // reserved2 (72-75)
         std.mem.writeInt(u32, cmd[148..152], 0, .little); // reserved3 (76-79)
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeLinkedItSegment(self: *MachOWriter, file: std.fs.File, linkedit_offset: u64) !void {
+    fn writeLinkedItSegment(self: *MachOWriter, io_val: Io, file: Io.File, linkedit_offset: u64) !void {
         _ = self;
         var cmd: [72]u8 = undefined;
         @memset(&cmd, 0);
@@ -283,10 +286,10 @@ pub const MachOWriter = struct {
         std.mem.writeInt(i32, cmd[56..60], @as(i32, @intCast(VM_PROT_READ)), .little); // maxprot
         std.mem.writeInt(i32, cmd[60..64], @as(i32, @intCast(VM_PROT_READ)), .little); // initprot
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeLoadDylinker(self: *MachOWriter, file: std.fs.File) !void {
+    fn writeLoadDylinker(self: *MachOWriter, io_val: Io, file: Io.File) !void {
         _ = self;
         var cmd: [32]u8 = undefined;
         @memset(&cmd, 0);
@@ -303,10 +306,10 @@ pub const MachOWriter = struct {
         @memcpy(cmd[12..12 + dylinker_path.len], dylinker_path);
         // Null terminator and padding already set by @memset
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeMainCommand(self: *MachOWriter, file: std.fs.File, entry_offset: u64) !void {
+    fn writeMainCommand(self: *MachOWriter, io_val: Io, file: Io.File, entry_offset: u64) !void {
         _ = self;
         var cmd: [24]u8 = undefined;
         @memset(&cmd, 0);
@@ -323,10 +326,10 @@ pub const MachOWriter = struct {
         // stacksize - initial stack size (0 = use default)
         std.mem.writeInt(u64, cmd[16..24], 0, .little);
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeLoadDylib(self: *MachOWriter, file: std.fs.File) !void {
+    fn writeLoadDylib(self: *MachOWriter, io_val: Io, file: Io.File) !void {
         _ = self;
         var cmd: [56]u8 = undefined;
         @memset(&cmd, 0);
@@ -345,10 +348,10 @@ pub const MachOWriter = struct {
         const dylib_path = "/usr/lib/libSystem.B.dylib";
         @memcpy(cmd[24..24 + dylib_path.len], dylib_path);
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeSymtabCommand(self: *MachOWriter, file: std.fs.File, linkedit_offset: u64) !void {
+    fn writeSymtabCommand(self: *MachOWriter, io_val: Io, file: Io.File, linkedit_offset: u64) !void {
         _ = self;
         var cmd: [24]u8 = undefined;
         @memset(&cmd, 0);
@@ -360,10 +363,10 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[16..20], @intCast(linkedit_offset), .little); // stroff
         std.mem.writeInt(u32, cmd[20..24], 1, .little); // strsize - just null byte
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 
-    fn writeDysymtabCommand(self: *MachOWriter, file: std.fs.File) !void {
+    fn writeDysymtabCommand(self: *MachOWriter, io_val: Io, file: Io.File) !void {
         _ = self;
         var cmd: [80]u8 = undefined;
         @memset(&cmd, 0);
@@ -372,6 +375,6 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[4..8], 80, .little); // cmdsize
         // Rest of fields are 0 for minimal binary
 
-        try file.writeAll(&cmd);
+        try file.writeStreamingAll(io_val, &cmd);
     }
 };

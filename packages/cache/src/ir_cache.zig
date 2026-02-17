@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// Intermediate Representation for caching
 pub const IR = struct {
@@ -21,10 +22,12 @@ pub const IRCache = struct {
     allocator: std.mem.Allocator,
     cache_dir: []const u8,
     cache: std.StringHashMap(*IR),
+    io: ?Io = null,
 
-    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8) !IRCache {
+    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, io: ?Io) !IRCache {
         // Ensure cache directory exists
-        std.fs.cwd().makePath(cache_dir) catch |err| {
+        const io_val = io orelse return error.IoNotAvailable;
+        Io.Dir.cwd().createDirPath(io_val, cache_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
 
@@ -32,6 +35,7 @@ pub const IRCache = struct {
             .allocator = allocator,
             .cache_dir = try allocator.dupe(u8, cache_dir),
             .cache = std.StringHashMap(*IR).init(allocator),
+            .io = io,
         };
     }
 
@@ -154,11 +158,12 @@ pub const IRCache = struct {
     }
 
     fn saveToDisk(self: *IRCache, cache_key: []const u8, ir: *IR) !void {
+        const io_val = self.io orelse return error.IoNotAvailable;
         const cache_path = try self.getCachePath(cache_key);
         defer self.allocator.free(cache_path);
 
-        const file = try std.fs.cwd().createFile(cache_path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().createFile(io_val, cache_path, .{});
+        defer file.close(io_val);
 
         // Write cache file format:
         // [source_hash: u64][timestamp: i64][ast_len: u64][type_len: u64][ast_data][type_data]
@@ -166,20 +171,21 @@ pub const IRCache = struct {
         try file.writeInt(i64, ir.timestamp, .little);
         try file.writeInt(u64, ir.ast_data.len, .little);
         try file.writeInt(u64, ir.type_info.len, .little);
-        try file.writeAll(ir.ast_data);
-        try file.writeAll(ir.type_info);
+        try file.writeStreamingAll(io_val, ir.ast_data);
+        try file.writeStreamingAll(io_val, ir.type_info);
     }
 
     fn loadFromDisk(self: *IRCache, cache_key: []const u8) !*IR {
+        const io_val = self.io orelse return error.IoNotAvailable;
         const cache_path = try self.getCachePath(cache_key);
         defer self.allocator.free(cache_path);
 
-        const file = try std.fs.cwd().openFile(cache_path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().openFile(io_val, cache_path, .{});
+        defer file.close(io_val);
 
         // Read metadata (4 x u64/i64 = 32 bytes)
         var metadata: [32]u8 = undefined;
-        const metadata_read = try file.pread(&metadata, 0);
+        const metadata_read = try file.readPositionalAll(io_val, &metadata, 0);
         if (metadata_read < metadata.len) return error.UnexpectedEndOfFile;
 
         const source_hash = std.mem.readInt(u64, metadata[0..8], .little);
@@ -189,12 +195,12 @@ pub const IRCache = struct {
 
         const ast_data = try self.allocator.alloc(u8, ast_len);
         errdefer self.allocator.free(ast_data);
-        const ast_read = try file.pread(ast_data, 32);
+        const ast_read = try file.readPositionalAll(io_val, ast_data, 32);
         if (ast_read < ast_data.len) return error.UnexpectedEndOfFile;
 
         const type_info = try self.allocator.alloc(u8, type_len);
         errdefer self.allocator.free(type_info);
-        const type_read = try file.pread(type_info, 32 + ast_len);
+        const type_read = try file.readPositionalAll(io_val, type_info, 32 + ast_len);
         if (type_read < type_info.len) return error.UnexpectedEndOfFile;
 
         const ir = try self.allocator.create(IR);
@@ -217,11 +223,12 @@ pub const IRCache = struct {
 
     /// Clear all cached data
     pub fn clear(self: *IRCache) !void {
-        var dir = try std.fs.cwd().openDir(self.cache_dir, .{ .iterate = true });
-        defer dir.close();
+        const io_val = self.io orelse return error.IoNotAvailable;
+        var dir = try Io.Dir.cwd().openDir(io_val, self.cache_dir, .{ .iterate = true });
+        defer dir.close(io_val);
 
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(io_val)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".irc")) {
                 try dir.deleteFile(entry.name);
             }
@@ -251,10 +258,12 @@ pub const CompiledCache = struct {
     cache_dir: []const u8,
     dependency_graph: std.StringHashMap([]const []const u8),
     modified_times: std.StringHashMap(i128),
+    io: ?Io = null,
 
-    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8) !CompiledCache {
+    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, io: ?Io) !CompiledCache {
         // Ensure cache directory exists
-        std.fs.cwd().makePath(cache_dir) catch |err| {
+        const io_val = io orelse return error.IoNotAvailable;
+        Io.Dir.cwd().createDirPath(io_val, cache_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
 
@@ -263,6 +272,7 @@ pub const CompiledCache = struct {
             .cache_dir = try allocator.dupe(u8, cache_dir),
             .dependency_graph = std.StringHashMap([]const []const u8).init(allocator),
             .modified_times = std.StringHashMap(i128).init(allocator),
+            .io = io,
         };
     }
 
@@ -288,14 +298,15 @@ pub const CompiledCache = struct {
 
     /// Check if a file needs recompilation
     pub fn needsRecompile(self: *CompiledCache, file_path: []const u8) !bool {
+        const io_val = self.io orelse return error.IoNotAvailable;
         const obj_path = try self.getObjectPath(file_path);
         defer self.allocator.free(obj_path);
 
         // Check if object file exists
-        const obj_stat = std.fs.cwd().statFile(obj_path) catch return true;
+        const obj_stat = Io.Dir.cwd().statFile(io_val, obj_path, .{}) catch return true;
 
         // Check if source file is newer than object file
-        const source_stat = std.fs.cwd().statFile(file_path) catch return true;
+        const source_stat = Io.Dir.cwd().statFile(io_val, file_path, .{}) catch return true;
 
         // Use mtime for comparison (simple approach)
         const obj_mtime = obj_stat.mtime.nanoseconds;
@@ -309,7 +320,7 @@ pub const CompiledCache = struct {
         // Check dependencies
         if (self.dependency_graph.get(file_path)) |deps| {
             for (deps) |dep| {
-                const dep_stat = std.fs.cwd().statFile(dep) catch continue;
+                const dep_stat = Io.Dir.cwd().statFile(io_val, dep, .{}) catch continue;
                 if (dep_stat.mtime.nanoseconds > obj_mtime) {
                     return true;
                 }
@@ -321,10 +332,11 @@ pub const CompiledCache = struct {
 
     /// Store compiled object file
     pub fn storeObject(self: *CompiledCache, file_path: []const u8, object_data: []const u8) !void {
+        const io_val = self.io orelse return error.IoNotAvailable;
         const obj_path = try self.getObjectPath(file_path);
         defer self.allocator.free(obj_path);
 
-        try std.fs.cwd().writeFile(.{
+        try Io.Dir.cwd().writeFile(io_val, .{
             .sub_path = obj_path,
             .data = object_data,
         });
@@ -332,10 +344,11 @@ pub const CompiledCache = struct {
 
     /// Load cached object file
     pub fn loadObject(self: *CompiledCache, file_path: []const u8) ![]const u8 {
+        const io_val = self.io orelse return error.IoNotAvailable;
         const obj_path = try self.getObjectPath(file_path);
         defer self.allocator.free(obj_path);
 
-        return try std.fs.cwd().readFileAlloc(obj_path, self.allocator, std.Io.Limit.unlimited);
+        return try Io.Dir.cwd().readFileAlloc(io_val, obj_path, self.allocator, Io.Limit.unlimited);
     }
 
     /// Register file dependencies for incremental tracking
@@ -394,14 +407,16 @@ pub const FileWatcher = struct {
     callback: ?*const fn (path: []const u8) void,
     poll_interval_ms: u64,
     running: bool,
+    io: ?Io = null,
 
-    pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64) FileWatcher {
+    pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64, io: ?Io) FileWatcher {
         return .{
             .allocator = allocator,
             .watch_paths = std.StringHashMap(i96).init(allocator),
             .callback = null,
             .poll_interval_ms = poll_interval_ms,
             .running = false,
+            .io = io,
         };
     }
 
@@ -455,8 +470,8 @@ pub const FileWatcher = struct {
     }
 
     fn getModTime(self: *FileWatcher, path: []const u8) !i96 {
-        _ = self;
-        const stat = try std.fs.cwd().statFile(path);
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const stat = try Io.Dir.cwd().statFile(io_val, path, .{});
         return stat.mtime.nanoseconds;
     }
 };
@@ -468,14 +483,16 @@ pub const IncrementalCompiler = struct {
     compiled_cache: CompiledCache,
     file_watcher: ?FileWatcher,
     verbose: bool,
+    io: ?Io = null,
 
-    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, enable_watch: bool) !IncrementalCompiler {
+    pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, enable_watch: bool, io: ?Io) !IncrementalCompiler {
         return .{
             .allocator = allocator,
-            .ir_cache = try IRCache.init(allocator, cache_dir),
-            .compiled_cache = try CompiledCache.init(allocator, cache_dir),
-            .file_watcher = if (enable_watch) FileWatcher.init(allocator, 100) else null,
+            .ir_cache = try IRCache.init(allocator, cache_dir, io),
+            .compiled_cache = try CompiledCache.init(allocator, cache_dir, io),
+            .file_watcher = if (enable_watch) FileWatcher.init(allocator, 100, io) else null,
             .verbose = false,
+            .io = io,
         };
     }
 
@@ -540,13 +557,14 @@ pub const IncrementalCompiler = struct {
 
     /// Clear all caches
     pub fn clearAll(self: *IncrementalCompiler) !void {
+        const io_val = self.io orelse return error.IoNotAvailable;
         try self.ir_cache.clear();
         // Also clear compiled objects
-        var dir = std.fs.cwd().openDir(self.compiled_cache.cache_dir, .{ .iterate = true }) catch return;
-        defer dir.close();
+        var dir = Io.Dir.cwd().openDir(io_val, self.compiled_cache.cache_dir, .{ .iterate = true }) catch return;
+        defer dir.close(io_val);
 
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(io_val)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".o")) {
                 dir.deleteFile(entry.name) catch {};
             }

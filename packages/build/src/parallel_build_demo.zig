@@ -1,13 +1,14 @@
 const std = @import("std");
 const parallel_build = @import("parallel_build.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer args_arena.deinit();
+    const args = try init.args.toSlice(args_arena.allocator());
 
     var verbose = false;
     var benchmark = false;

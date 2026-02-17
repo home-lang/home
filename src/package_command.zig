@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const builtin = @import("builtin");
 
 const Color = enum {
@@ -173,7 +174,8 @@ fn parseConfig(allocator: std.mem.Allocator, content: []const u8) !PackageConfig
 }
 
 /// Build a tarball package
-fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
+    const cwd = Io.Dir.cwd();
     const pkg_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ config.name, config.version });
     defer allocator.free(pkg_name);
 
@@ -183,7 +185,7 @@ fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, outp
     const staging_dir = try std.fmt.allocPrint(allocator, "{s}/.staging-{s}", .{ output_dir, pkg_name });
     defer allocator.free(staging_dir);
 
-    std.fs.cwd().makeDir(staging_dir) catch |err| {
+    cwd.createDir(io, staging_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -191,7 +193,7 @@ fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, outp
     const pkg_subdir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ staging_dir, pkg_name });
     defer allocator.free(pkg_subdir);
 
-    std.fs.cwd().makeDir(pkg_subdir) catch |err| {
+    cwd.createDir(io, pkg_subdir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -199,20 +201,19 @@ fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, outp
     if (config.binary) |binary| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_subdir, std.fs.path.basename(binary) });
         defer allocator.free(dest);
-        try std.fs.cwd().copyFile(binary, std.fs.cwd(), dest, .{});
+        try cwd.copyFile(binary, cwd, dest, io, .{});
     }
 
     for (config.files.items) |file| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_subdir, file.destination });
         defer allocator.free(dest);
-        std.fs.cwd().copyFile(file.source, std.fs.cwd(), dest, .{}) catch |err| {
+        cwd.copyFile(file.source, cwd, dest, io, .{}) catch |err| {
             std.debug.print("{s}Warning:{s} Could not copy {s}: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), file.source, err });
         };
     }
 
     // Create tarball using system tar
-    const tar_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const tar_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "tar",    "-czf", output_path,
             "-C",     staging_dir,
@@ -222,19 +223,20 @@ fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, outp
     defer allocator.free(tar_result.stdout);
     defer allocator.free(tar_result.stderr);
 
-    if (tar_result.term.Exited != 0) {
+    if (tar_result.term.exited != 0) {
         std.debug.print("{s}Error:{s} tar failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), tar_result.stderr });
         return error.TarFailed;
     }
 
     // Clean up staging
-    std.fs.cwd().deleteTree(staging_dir) catch {};
+    cwd.deleteTree(io, staging_dir) catch {};
 
     return output_path;
 }
 
 /// Build a zip package
-fn buildZip(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildZip(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
+    const cwd = Io.Dir.cwd();
     const pkg_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ config.name, config.version });
     defer allocator.free(pkg_name);
 
@@ -244,7 +246,7 @@ fn buildZip(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     const staging_dir = try std.fmt.allocPrint(allocator, "{s}/.staging-{s}", .{ output_dir, pkg_name });
     defer allocator.free(staging_dir);
 
-    std.fs.cwd().makeDir(staging_dir) catch |err| {
+    cwd.createDir(io, staging_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -252,41 +254,41 @@ fn buildZip(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     if (config.binary) |binary| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ staging_dir, std.fs.path.basename(binary) });
         defer allocator.free(dest);
-        try std.fs.cwd().copyFile(binary, std.fs.cwd(), dest, .{});
+        try cwd.copyFile(binary, cwd, dest, io, .{});
     }
 
     for (config.files.items) |file| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ staging_dir, file.destination });
         defer allocator.free(dest);
-        std.fs.cwd().copyFile(file.source, std.fs.cwd(), dest, .{}) catch |err| {
+        cwd.copyFile(file.source, cwd, dest, io, .{}) catch |err| {
             std.debug.print("{s}Warning:{s} Could not copy {s}: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), file.source, err });
         };
     }
 
     // Create zip using system zip
-    const zip_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const zip_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "zip", "-r", output_path, ".",
         },
-        .cwd = staging_dir,
+        .cwd = .{ .path = staging_dir },
     });
     defer allocator.free(zip_result.stdout);
     defer allocator.free(zip_result.stderr);
 
-    if (zip_result.term.Exited != 0) {
+    if (zip_result.term.exited != 0) {
         std.debug.print("{s}Error:{s} zip failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), zip_result.stderr });
         return error.ZipFailed;
     }
 
     // Clean up staging
-    std.fs.cwd().deleteTree(staging_dir) catch {};
+    cwd.deleteTree(io, staging_dir) catch {};
 
     return output_path;
 }
 
 /// Build a Debian package
-fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
+    const cwd = Io.Dir.cwd();
     const pkg_name = try std.fmt.allocPrint(allocator, "{s}_{s}_amd64", .{ config.name, config.version });
     defer allocator.free(pkg_name);
 
@@ -297,17 +299,17 @@ fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     defer allocator.free(pkg_dir);
 
     // Clean up any existing directory
-    std.fs.cwd().deleteTree(pkg_dir) catch {};
+    cwd.deleteTree(io, pkg_dir) catch {};
 
     // Create DEBIAN directory
     const debian_dir = try std.fmt.allocPrint(allocator, "{s}/DEBIAN", .{pkg_dir});
     defer allocator.free(debian_dir);
-    try std.fs.cwd().makePath(debian_dir);
+    try cwd.createDirPath(io, debian_dir);
 
     // Create usr/local/bin directory
     const bin_dir = try std.fmt.allocPrint(allocator, "{s}/usr/local/bin", .{pkg_dir});
     defer allocator.free(bin_dir);
-    try std.fs.cwd().makePath(bin_dir);
+    try cwd.createDirPath(io, bin_dir);
 
     // Create control file
     const control_path = try std.fmt.allocPrint(allocator, "{s}/control", .{debian_dir});
@@ -343,18 +345,17 @@ fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     });
     defer allocator.free(control_content);
 
-    const control_file = try std.fs.cwd().createFile(control_path, .{});
-    defer control_file.close();
-    try control_file.writeAll(control_content);
+    const control_file = try cwd.createFile(io, control_path, .{});
+    defer control_file.close(io);
+    try control_file.writeStreamingAll(io, control_content);
 
     // Copy binary
     if (config.binary) |binary| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ bin_dir, std.fs.path.basename(binary) });
         defer allocator.free(dest);
-        try std.fs.cwd().copyFile(binary, std.fs.cwd(), dest, .{});
+        try cwd.copyFile(binary, cwd, dest, io, .{});
         // Make executable
-        const chmod_result = try std.process.Child.run(.{
-            .allocator = allocator,
+        const chmod_result = try std.process.run(allocator, io, .{
             .argv = &[_][]const u8{ "chmod", "+x", dest },
         });
         defer allocator.free(chmod_result.stdout);
@@ -362,28 +363,28 @@ fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     }
 
     // Build deb package
-    const dpkg_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const dpkg_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "dpkg-deb", "--build", pkg_dir, output_path },
     });
     defer allocator.free(dpkg_result.stdout);
     defer allocator.free(dpkg_result.stderr);
 
-    if (dpkg_result.term.Exited != 0) {
+    if (dpkg_result.term.exited != 0) {
         std.debug.print("{s}Warning:{s} dpkg-deb not available, falling back to tarball\n", .{ Color.Yellow.code(), Color.Reset.code() });
         // Clean up and fall back
-        std.fs.cwd().deleteTree(pkg_dir) catch {};
-        return buildTarball(allocator, config, output_dir);
+        cwd.deleteTree(io, pkg_dir) catch {};
+        return buildTarball(allocator, config, output_dir, io);
     }
 
     // Clean up
-    std.fs.cwd().deleteTree(pkg_dir) catch {};
+    cwd.deleteTree(io, pkg_dir) catch {};
 
     return output_path;
 }
 
 /// Build a macOS DMG
-fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
+    const cwd = Io.Dir.cwd();
     const output_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.dmg", .{ output_dir, config.name, config.version });
 
     // Create staging directory
@@ -391,8 +392,8 @@ fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     defer allocator.free(staging_dir);
 
     // Clean up any existing directory
-    std.fs.cwd().deleteTree(staging_dir) catch {};
-    try std.fs.cwd().makePath(staging_dir);
+    cwd.deleteTree(io, staging_dir) catch {};
+    try cwd.createDirPath(io, staging_dir);
 
     // Create .app bundle structure
     const app_name = try std.fmt.allocPrint(allocator, "{s}.app", .{config.name});
@@ -403,24 +404,23 @@ fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
 
     const contents_dir = try std.fmt.allocPrint(allocator, "{s}/Contents", .{app_dir});
     defer allocator.free(contents_dir);
-    try std.fs.cwd().makePath(contents_dir);
+    try cwd.createDirPath(io, contents_dir);
 
     const macos_dir = try std.fmt.allocPrint(allocator, "{s}/MacOS", .{contents_dir});
     defer allocator.free(macos_dir);
-    try std.fs.cwd().makePath(macos_dir);
+    try cwd.createDirPath(io, macos_dir);
 
     const resources_dir = try std.fmt.allocPrint(allocator, "{s}/Resources", .{contents_dir});
     defer allocator.free(resources_dir);
-    try std.fs.cwd().makePath(resources_dir);
+    try cwd.createDirPath(io, resources_dir);
 
     // Copy binary
     if (config.binary) |binary| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ macos_dir, config.name });
         defer allocator.free(dest);
-        try std.fs.cwd().copyFile(binary, std.fs.cwd(), dest, .{});
+        try cwd.copyFile(binary, cwd, dest, io, .{});
         // Make executable
-        const chmod_result = try std.process.Child.run(.{
-            .allocator = allocator,
+        const chmod_result = try std.process.run(allocator, io, .{
             .argv = &[_][]const u8{ "chmod", "+x", dest },
         });
         defer allocator.free(chmod_result.stdout);
@@ -463,24 +463,22 @@ fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     , .{ config.name, bundle_id, config.name, config.version, config.version });
     defer allocator.free(plist_content);
 
-    const plist_file = try std.fs.cwd().createFile(plist_path, .{});
-    defer plist_file.close();
-    try plist_file.writeAll(plist_content);
+    const plist_file = try cwd.createFile(io, plist_path, .{});
+    defer plist_file.close(io);
+    try plist_file.writeStreamingAll(io, plist_content);
 
     // Create Applications symlink
     const apps_link = try std.fmt.allocPrint(allocator, "{s}/Applications", .{staging_dir});
     defer allocator.free(apps_link);
 
-    const symlink_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const symlink_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "ln", "-s", "/Applications", apps_link },
     });
     defer allocator.free(symlink_result.stdout);
     defer allocator.free(symlink_result.stderr);
 
     // Create DMG
-    const hdiutil_result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const hdiutil_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "hdiutil",
             "create",
@@ -497,44 +495,44 @@ fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
     defer allocator.free(hdiutil_result.stdout);
     defer allocator.free(hdiutil_result.stderr);
 
-    if (hdiutil_result.term.Exited != 0) {
+    if (hdiutil_result.term.exited != 0) {
         std.debug.print("{s}Warning:{s} hdiutil failed, falling back to tarball\n", .{ Color.Yellow.code(), Color.Reset.code() });
-        std.fs.cwd().deleteTree(staging_dir) catch {};
-        return buildTarball(allocator, config, output_dir);
+        cwd.deleteTree(io, staging_dir) catch {};
+        return buildTarball(allocator, config, output_dir, io);
     }
 
     // Clean up
-    std.fs.cwd().deleteTree(staging_dir) catch {};
+    cwd.deleteTree(io, staging_dir) catch {};
 
     return output_path;
 }
 
 /// Build an AppImage
-fn buildAppImage(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildAppImage(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
+    const cwd = Io.Dir.cwd();
     const output_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.AppImage", .{ output_dir, config.name, config.version });
 
     // Create AppDir structure
     const app_dir = try std.fmt.allocPrint(allocator, "{s}/.AppDir-{s}", .{ output_dir, config.name });
     defer allocator.free(app_dir);
 
-    std.fs.cwd().deleteTree(app_dir) catch {};
-    try std.fs.cwd().makePath(app_dir);
+    cwd.deleteTree(io, app_dir) catch {};
+    try cwd.createDirPath(io, app_dir);
 
     const usr_bin = try std.fmt.allocPrint(allocator, "{s}/usr/bin", .{app_dir});
     defer allocator.free(usr_bin);
-    try std.fs.cwd().makePath(usr_bin);
+    try cwd.createDirPath(io, usr_bin);
 
     const usr_share = try std.fmt.allocPrint(allocator, "{s}/usr/share/applications", .{app_dir});
     defer allocator.free(usr_share);
-    try std.fs.cwd().makePath(usr_share);
+    try cwd.createDirPath(io, usr_share);
 
     // Copy binary
     if (config.binary) |binary| {
         const dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ usr_bin, config.name });
         defer allocator.free(dest);
-        try std.fs.cwd().copyFile(binary, std.fs.cwd(), dest, .{});
-        const chmod_result = try std.process.Child.run(.{
-            .allocator = allocator,
+        try cwd.copyFile(binary, cwd, dest, io, .{});
+        const chmod_result = try std.process.run(allocator, io, .{
             .argv = &[_][]const u8{ "chmod", "+x", dest },
         });
         defer allocator.free(chmod_result.stdout);
@@ -557,9 +555,9 @@ fn buildAppImage(allocator: std.mem.Allocator, config: *const PackageConfig, out
     , .{ config.name, config.name, config.name, config.description });
     defer allocator.free(desktop_content);
 
-    const desktop_file = try std.fs.cwd().createFile(desktop_path, .{});
-    defer desktop_file.close();
-    try desktop_file.writeAll(desktop_content);
+    const desktop_file = try cwd.createFile(io, desktop_path, .{});
+    defer desktop_file.close(io);
+    try desktop_file.writeStreamingAll(io, desktop_content);
 
     // Create AppRun script
     const apprun_path = try std.fmt.allocPrint(allocator, "{s}/AppRun", .{app_dir});
@@ -573,53 +571,51 @@ fn buildAppImage(allocator: std.mem.Allocator, config: *const PackageConfig, out
     , .{config.name});
     defer allocator.free(apprun_content);
 
-    const apprun_file = try std.fs.cwd().createFile(apprun_path, .{});
-    defer apprun_file.close();
-    try apprun_file.writeAll(apprun_content);
+    const apprun_file = try cwd.createFile(io, apprun_path, .{});
+    defer apprun_file.close(io);
+    try apprun_file.writeStreamingAll(io, apprun_content);
 
-    const chmod_apprun = try std.process.Child.run(.{
-        .allocator = allocator,
+    const chmod_apprun = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "chmod", "+x", apprun_path },
     });
     defer allocator.free(chmod_apprun.stdout);
     defer allocator.free(chmod_apprun.stderr);
 
     // Try to use appimagetool
-    const appimage_result = std.process.Child.run(.{
-        .allocator = allocator,
+    const appimage_result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "appimagetool", app_dir, output_path },
     }) catch {
         std.debug.print("{s}Warning:{s} appimagetool not available, falling back to tarball\n", .{ Color.Yellow.code(), Color.Reset.code() });
-        std.fs.cwd().deleteTree(app_dir) catch {};
-        return buildTarball(allocator, config, output_dir);
+        cwd.deleteTree(io, app_dir) catch {};
+        return buildTarball(allocator, config, output_dir, io);
     };
     defer allocator.free(appimage_result.stdout);
     defer allocator.free(appimage_result.stderr);
 
-    if (appimage_result.term.Exited != 0) {
+    if (appimage_result.term.exited != 0) {
         std.debug.print("{s}Warning:{s} appimagetool failed, falling back to tarball\n", .{ Color.Yellow.code(), Color.Reset.code() });
-        std.fs.cwd().deleteTree(app_dir) catch {};
-        return buildTarball(allocator, config, output_dir);
+        cwd.deleteTree(io, app_dir) catch {};
+        return buildTarball(allocator, config, output_dir, io);
     }
 
     // Clean up
-    std.fs.cwd().deleteTree(app_dir) catch {};
+    cwd.deleteTree(io, app_dir) catch {};
 
     return output_path;
 }
 
 /// Build an RPM package (stub - requires rpmbuild)
-fn buildRpm(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildRpm(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
     // For now, fall back to tarball since rpmbuild requires complex setup
     std.debug.print("{s}Info:{s} RPM build not fully implemented, creating tarball instead\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    return buildTarball(allocator, config, output_dir);
+    return buildTarball(allocator, config, output_dir, io);
 }
 
 /// Build an MSI package (stub - requires WiX on Windows)
-fn buildMsi(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8) ![]const u8 {
+fn buildMsi(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, io: Io) ![]const u8 {
     // For now, fall back to zip since MSI requires WiX toolset
     std.debug.print("{s}Info:{s} MSI build not fully implemented, creating zip instead\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    return buildZip(allocator, config, output_dir);
+    return buildZip(allocator, config, output_dir, io);
 }
 
 /// Print package command usage
@@ -674,7 +670,7 @@ fn printPackageUsage() void {
 }
 
 /// Main package command handler
-pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]const u8, io: Io) !void {
     var config_path: ?[]const u8 = null;
     var format: ?PackageFormat = null;
     var output_dir: []const u8 = "dist";
@@ -719,12 +715,13 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void 
     }
 
     // Try to find config file
+    const cwd = Io.Dir.cwd();
     const config_files = [_][]const u8{ "package.toml", "home.toml", "Cargo.toml" };
     var found_config: ?[]const u8 = config_path;
 
     if (found_config == null) {
         for (config_files) |cf| {
-            if (std.fs.cwd().access(cf, .{})) |_| {
+            if (cwd.access(io, cf, .{})) |_| {
                 found_config = cf;
                 break;
             } else |_| {}
@@ -735,7 +732,7 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void 
     var config: PackageConfig = undefined;
     if (found_config) |path| {
         std.debug.print("{s}Loading config:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), path });
-        const content = try std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.unlimited);
+        const content = try cwd.readFileAlloc(io, path, allocator, std.Io.Limit.unlimited);
         defer allocator.free(content);
         config = try parseConfig(allocator, content);
     } else {
@@ -763,7 +760,7 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void 
     }
 
     // Create output directory
-    std.fs.cwd().makeDir(output_dir) catch |err| {
+    cwd.createDir(io, output_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
             std.debug.print("{s}Error:{s} Failed to create output directory: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
             return err;
@@ -789,7 +786,7 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void 
 
         for (formats) |fmt| {
             std.debug.print("{s}Building:{s} {s}\n", .{ Color.Cyan.code(), Color.Reset.code(), @tagName(fmt) });
-            const output_path = try buildFormat(allocator, &config, output_dir, fmt);
+            const output_path = try buildFormat(allocator, &config, output_dir, fmt, io);
             std.debug.print("{s}✓{s} Created: {s}\n\n", .{ Color.Green.code(), Color.Reset.code(), output_path });
             allocator.free(output_path);
         }
@@ -798,20 +795,20 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void 
         const pkg_format = format orelse PackageFormat.defaultForCurrentOS();
         std.debug.print("{s}Building:{s} {s} package\n", .{ Color.Cyan.code(), Color.Reset.code(), @tagName(pkg_format) });
 
-        const output_path = try buildFormat(allocator, &config, output_dir, pkg_format);
+        const output_path = try buildFormat(allocator, &config, output_dir, pkg_format, io);
         std.debug.print("\n{s}✓{s} Package created: {s}\n", .{ Color.Green.code(), Color.Reset.code(), output_path });
         allocator.free(output_path);
     }
 }
 
-fn buildFormat(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, fmt: PackageFormat) ![]const u8 {
+fn buildFormat(allocator: std.mem.Allocator, config: *const PackageConfig, output_dir: []const u8, fmt: PackageFormat, io: Io) ![]const u8 {
     return switch (fmt) {
-        .tarball => buildTarball(allocator, config, output_dir),
-        .zip => buildZip(allocator, config, output_dir),
-        .deb => buildDeb(allocator, config, output_dir),
-        .rpm => buildRpm(allocator, config, output_dir),
-        .dmg => buildDmg(allocator, config, output_dir),
-        .msi => buildMsi(allocator, config, output_dir),
-        .appimage => buildAppImage(allocator, config, output_dir),
+        .tarball => buildTarball(allocator, config, output_dir, io),
+        .zip => buildZip(allocator, config, output_dir, io),
+        .deb => buildDeb(allocator, config, output_dir, io),
+        .rpm => buildRpm(allocator, config, output_dir, io),
+        .dmg => buildDmg(allocator, config, output_dir, io),
+        .msi => buildMsi(allocator, config, output_dir, io),
+        .appimage => buildAppImage(allocator, config, output_dir, io),
     };
 }

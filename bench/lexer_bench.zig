@@ -1,8 +1,9 @@
 const std = @import("std");
 const Lexer = @import("lexer").Lexer;
+const Io = std.Io;
 
-fn benchmark(allocator: std.mem.Allocator, name: []const u8, source: []const u8, iterations: usize) !void {
-    var timer = try std.time.Timer.start();
+fn benchmark(io: Io, allocator: std.mem.Allocator, name: []const u8, source: []const u8, iterations: usize) !void {
+    const start = Io.Clock.awake.now(io);
 
     var total_tokens: usize = 0;
     var i: usize = 0;
@@ -13,8 +14,9 @@ fn benchmark(allocator: std.mem.Allocator, name: []const u8, source: []const u8,
         tokens.deinit(allocator);
     }
 
-    const elapsed = timer.read();
-    const avg_ns = elapsed / iterations;
+    const end = Io.Clock.awake.now(io);
+    const elapsed_ns: u64 = @intCast(start.durationTo(end).nanoseconds);
+    const avg_ns = elapsed_ns / iterations;
     const avg_ms = @as(f64, @floatFromInt(avg_ns)) / 1_000_000.0;
 
     std.debug.print("{s:<30} {d:>10} iterations | {d:>8.3} ms avg | {d:>6} tokens\n", .{
@@ -25,10 +27,9 @@ fn benchmark(allocator: std.mem.Allocator, name: []const u8, source: []const u8,
     });
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     std.debug.print("\n{s}\n", .{"=" ** 80});
     std.debug.print("Home Lexer Benchmarks\n", .{});
@@ -40,7 +41,7 @@ pub fn main() !void {
         \\  print("Hello, Home!")
         \\}
     ;
-    try benchmark(allocator, "Hello World (4 LOC)", hello_world, 10000);
+    try benchmark(io, allocator, "Hello World (4 LOC)", hello_world, 10000);
 
     // Benchmark 2: Fibonacci
     const fibonacci =
@@ -56,7 +57,7 @@ pub fn main() !void {
         \\  print("Fibonacci(10) = {result}")
         \\}
     ;
-    try benchmark(allocator, "Fibonacci (11 LOC)", fibonacci, 5000);
+    try benchmark(io, allocator, "Fibonacci (11 LOC)", fibonacci, 5000);
 
     // Benchmark 3: Struct definition
     const struct_def =
@@ -75,7 +76,7 @@ pub fn main() !void {
         \\  print("User: {user.name}")
         \\}
     ;
-    try benchmark(allocator, "Struct (13 LOC)", struct_def, 5000);
+    try benchmark(io, allocator, "Struct (13 LOC)", struct_def, 5000);
 
     // Benchmark 4: Large program (100 lines)
     var large_program = std.ArrayList(u8){};
@@ -83,12 +84,12 @@ pub fn main() !void {
 
     var line_num: usize = 0;
     while (line_num < 100) : (line_num += 1) {
-        const line_str = try std.fmt.allocPrint(allocator, "let x{d} = {d} + {d}\n", .{line_num, line_num, line_num + 1});
+        const line_str = try std.fmt.allocPrint(allocator, "let x{d} = {d} + {d}\n", .{ line_num, line_num, line_num + 1 });
         defer allocator.free(line_str);
         try large_program.appendSlice(allocator, line_str);
     }
 
-    try benchmark(allocator, "Large Program (100 LOC)", large_program.items, 1000);
+    try benchmark(io, allocator, "Large Program (100 LOC)", large_program.items, 1000);
 
     // Benchmark 5: Large program (1000 lines)
     var very_large_program = std.ArrayList(u8){};
@@ -96,12 +97,12 @@ pub fn main() !void {
 
     line_num = 0;
     while (line_num < 1000) : (line_num += 1) {
-        const line_str = try std.fmt.allocPrint(allocator, "let variable{d} = calculate_value({d})\n", .{line_num, line_num});
+        const line_str = try std.fmt.allocPrint(allocator, "let variable{d} = calculate_value({d})\n", .{ line_num, line_num });
         defer allocator.free(line_str);
         try very_large_program.appendSlice(allocator, line_str);
     }
 
-    try benchmark(allocator, "Very Large Program (1000 LOC)", very_large_program.items, 100);
+    try benchmark(io, allocator, "Very Large Program (1000 LOC)", very_large_program.items, 100);
 
     // Benchmark 6: Complex expressions
     const complex =
@@ -111,7 +112,7 @@ pub fn main() !void {
         \\  do_something()
         \\}
     ;
-    try benchmark(allocator, "Complex Expressions (4 LOC)", complex, 10000);
+    try benchmark(io, allocator, "Complex Expressions (4 LOC)", complex, 10000);
 
     std.debug.print("\n{s}\n", .{"=" ** 80});
     std.debug.print("Benchmark complete!\n", .{});

@@ -3,6 +3,21 @@
 
 const std = @import("std");
 
+/// Simple spinlock mutex (std.Thread.Mutex removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
+
 // Forward declare the types - they are actually defined in native_codegen.zig
 // and we import them to avoid duplication
 const native_codegen = @import("native_codegen.zig");
@@ -20,7 +35,7 @@ pub const TypeRegistry = struct {
     /// Map of struct names to their layouts
     struct_layouts: std.StringHashMap(StructLayout),
     /// Mutex for thread-safe access (future-proofing for parallel compilation)
-    mutex: std.Thread.Mutex,
+    mutex: SpinMutex,
 
     pub fn init(allocator: std.mem.Allocator) TypeRegistry {
         return .{

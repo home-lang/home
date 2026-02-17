@@ -1,6 +1,9 @@
 const std = @import("std");
 const Cookie = @import("cookies.zig").Cookie;
 
+// Module-level PRNG (Zig 0.16: std.crypto.random removed)
+var g_prng = std.Random.DefaultPrng.init(0xa1b2c3d4e5f67890);
+
 /// HTTP Session management for stateful web applications
 pub const SessionManager = struct {
     allocator: std.mem.Allocator,
@@ -221,7 +224,7 @@ pub const Session = struct {
 /// Generate cryptographically secure session ID
 fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
     var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
+    g_prng.random().bytes(&random_bytes);
 
     // Convert to hex string
     var session_id = try allocator.alloc(u8, 64);

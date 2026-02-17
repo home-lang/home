@@ -5,6 +5,7 @@
 // GPU-ready mesh data for OpenGL/Metal rendering.
 
 const std = @import("std");
+const Io = std.Io;
 
 // W3D Chunk Types (from Westwood/EA W3D format specification)
 // Top-level container chunks
@@ -141,7 +142,7 @@ pub const W3DLoader = struct {
         self.model_paths.deinit(self.allocator);
     }
 
-    pub fn load(self: *W3DLoader, file_path: []const u8) !?*W3DModel {
+    pub fn load(self: *W3DLoader, io: Io, file_path: []const u8) !?*W3DModel {
         // Check if already loaded
         for (self.model_paths.items, 0..) |path, i| {
             if (std.mem.eql(u8, path, file_path)) {
@@ -151,13 +152,13 @@ pub const W3DLoader = struct {
 
         // Read file
         std.debug.print("  Opening: {s}...", .{file_path});
-        const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| {
+        const file = Io.Dir.openFileAbsolute(io, file_path, .{}) catch |err| {
             std.debug.print(" FAILED ({any})\n", .{err});
             return null;
         };
-        defer file.close();
+        defer file.close(io);
 
-        const file_size = try file.getEndPos();
+        const file_size = try file.length(io);
         std.debug.print(" ({d} bytes)...", .{file_size});
         if (file_size == 0) {
             std.debug.print(" empty file\n", .{});
@@ -167,8 +168,8 @@ pub const W3DLoader = struct {
         const data = try self.allocator.alloc(u8, file_size);
         defer self.allocator.free(data);
 
-        // Read entire file into buffer using preadAll
-        const bytes_read = try file.preadAll(data, 0);
+        // Read entire file into buffer
+        const bytes_read = try file.readPositionalAll(io, data, 0);
         if (bytes_read != file_size) {
             std.debug.print(" read error\n", .{});
             return null;

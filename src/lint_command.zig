@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const linter_mod = @import("linter");
 const Linter = linter_mod.Linter;
 const LinterConfig = linter_mod.LinterConfig;
@@ -29,7 +30,7 @@ const Color = enum {
     }
 };
 
-pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]const u8, io: Io) !void {
     var fix_mode = false;
     var file_path: ?[]const u8 = null;
 
@@ -50,7 +51,7 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
     const path = file_path.?;
 
     // Read the file
-    const source = std.fs.cwd().readFileAlloc(path, allocator, std.Io.Limit.unlimited) catch |err| {
+    const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), path, err });
         return err;
     };
@@ -162,9 +163,9 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
         defer allocator.free(formatted);
 
         // Write back to file
-        const out_file = try std.fs.cwd().createFile(path, .{});
-        defer out_file.close();
-        try out_file.writeAll(formatted);
+        const out_file = try Io.Dir.cwd().createFile(io, path, .{});
+        defer out_file.close(io);
+        try out_file.writeStreamingAll(io, formatted);
 
         std.debug.print("{s}✓{s} Fixed and formatted\n", .{ Color.Green.code(), Color.Reset.code() });
     } else if (errors > 0 or warnings > 0) {

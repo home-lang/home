@@ -1,6 +1,17 @@
 const std = @import("std");
 const network = @import("network.zig");
 const dns = @import("dns.zig");
+
+/// Simple spinlock mutex (SpinMutex removed in Zig 0.16)
+const SpinMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+    pub fn lock(self: *SpinMutex) void {
+        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+    }
+    pub fn unlock(self: *SpinMutex) void {
+        self.inner.unlock();
+    }
+};
 const TcpStream = network.TcpStream;
 const Address = network.Address;
 const Allocator = std.mem.Allocator;
@@ -12,7 +23,7 @@ pub const ConnectionPool = struct {
     connections: std.StringHashMap(std.ArrayList(PooledConnection)),
     config: Config,
     resolver: dns.DnsResolver,
-    mutex: std.Thread.Mutex,
+    mutex: SpinMutex,
 
     pub const Config = struct {
         max_connections_per_host: usize = 10,
@@ -41,7 +52,7 @@ pub const ConnectionPool = struct {
             .connections = std.StringHashMap(std.ArrayList(PooledConnection)).init(allocator),
             .config = config,
             .resolver = dns.DnsResolver.init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .mutex = .{},
         };
     }
 

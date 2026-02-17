@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const ast = @import("ast");
 const parser_mod = @import("parser");
 const Parser = parser_mod.Parser;
@@ -858,6 +859,8 @@ pub const TypeChecker = struct {
     source_path: ?[]const u8,
     /// Loaded module cache to avoid re-parsing
     loaded_modules: std.StringHashMap(bool),
+    /// Optional I/O context for file operations
+    io: ?Io = null,
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -1144,7 +1147,8 @@ pub const TypeChecker = struct {
         try self.loaded_modules.put(key_copy, true);
 
         // Read the module source file
-        const source = std.fs.cwd().readFileAlloc(file_path, self.allocator, std.Io.Limit.unlimited) catch |err| {
+        const io_val = self.io orelse return;
+        const source = Io.Dir.cwd().readFileAlloc(io_val, file_path, self.allocator, .unlimited) catch |err| {
             // File read error - register imported names as placeholder types
             if (import_decl.imports) |imports| {
                 for (imports) |import_name| {
@@ -1341,7 +1345,8 @@ pub const TypeChecker = struct {
         try path_buf.appendSlice(self.allocator, ".home");
 
         // Check if file exists
-        if (std.fs.cwd().access(path_buf.items, .{})) |_| {
+        const io_check = self.io orelse return error.FileNotFound;
+        if (Io.Dir.cwd().access(io_check, path_buf.items, .{})) |_| {
             return try self.allocator.dupe(u8, path_buf.items);
         } else |_| {}
 
@@ -1355,7 +1360,7 @@ pub const TypeChecker = struct {
         }
         try path_buf.appendSlice(self.allocator, ".home");
 
-        if (std.fs.cwd().access(path_buf.items, .{})) |_| {
+        if (Io.Dir.cwd().access(io_check, path_buf.items, .{})) |_| {
             return try self.allocator.dupe(u8, path_buf.items);
         } else |_| {}
 

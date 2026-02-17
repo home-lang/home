@@ -2,18 +2,33 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ir_cache = @import("ir_cache.zig");
 
-/// Get current timestamp in milliseconds (Zig 0.16 compatible)
+/// Thread-safe mutex (Zig 0.16 compatible - uses atomic spinlock)
+const Mutex = struct {
+    state: std.atomic.Mutex = .unlocked,
+
+    pub fn lock(self: *Mutex) void {
+        while (!self.state.tryLock()) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *Mutex) void {
+        self.state.unlock();
+    }
+};
+
+/// Get current timestamp in milliseconds
 fn getMilliTimestamp() i64 {
-    const instant = std.time.Instant.now() catch return 0;
-    // Use since() relative to an arbitrary epoch for profiling purposes
-    // We just need relative timestamps for build timing
-    return @as(i64, @intCast(@divFloor(instant.timestamp.sec * 1000 + @divFloor(instant.timestamp.nsec, 1_000_000), 1)));
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divFloor(ts.nsec, 1_000_000)));
 }
 
-/// Get current timestamp in nanoseconds (Zig 0.16 compatible)
+/// Get current timestamp in nanoseconds
 fn getNanoTimestamp() i128 {
-    const instant = std.time.Instant.now() catch return 0;
-    return @as(i128, instant.timestamp.sec) * 1_000_000_000 + @as(i128, instant.timestamp.nsec);
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
 }
 
 /// Build task representing a single compilation unit
@@ -77,7 +92,7 @@ pub const BuildStats = struct {
 /// Work-stealing deque for load balancing
 pub const WorkDeque = struct {
     tasks: std.ArrayList(*BuildTask),
-    mutex: std.Thread.Mutex,
+    mutex: Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !WorkDeque {

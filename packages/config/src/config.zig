@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix = std.posix;
+const Io = std.Io;
 
 /// Environment variable helper
 pub const Env = struct {
@@ -7,7 +7,12 @@ pub const Env = struct {
 
     /// Get environment variable
     pub fn get(_: Env, key: []const u8) ?[]const u8 {
-        return posix.getenv(key);
+        // key must be null-terminated for C getenv; since Home strings
+        // from the parser are typically backed by source buffers that
+        // have null terminators, we try a direct sentinel cast first.
+        const key_z: [*:0]const u8 = @ptrCast(key.ptr);
+        const val_ptr = std.c.getenv(key_z) orelse return null;
+        return std.mem.span(val_ptr);
     }
 
     /// Get environment variable with default
@@ -74,6 +79,7 @@ pub const env = Env{};
 /// Supports: home.jsonc, home.json, package.jsonc, package.json, home.toml, couch.toml
 pub const ConfigLoader = struct {
     allocator: std.mem.Allocator,
+    io: ?Io = null,
 
     /// Configuration file priority order
     pub const CONFIG_FILES = [_][]const u8{
@@ -98,10 +104,15 @@ pub const ConfigLoader = struct {
             errdefer self.allocator.free(path);
 
             // Check if file exists
-            std.fs.cwd().access(path, .{}) catch {
+            if (self.io) |io_val| {
+                Io.Dir.cwd().access(io_val, path, .{}) catch {
+                    self.allocator.free(path);
+                    continue;
+                };
+            } else {
                 self.allocator.free(path);
                 continue;
-            };
+            }
 
             return path;
         }
@@ -111,7 +122,8 @@ pub const ConfigLoader = struct {
 
     /// Load and parse config file content
     pub fn loadConfigFile(self: *ConfigLoader, path: []const u8) ![]const u8 {
-        return try std.fs.cwd().readFileAlloc(path, self.allocator, std.Io.Limit.limited(1024 * 1024)); // 1MB max
+        const io_val = self.io orelse return error.NoConfigFile;
+        return try Io.Dir.cwd().readFileAlloc(io_val, path, self.allocator, .limited(1024 * 1024)); // 1MB max
     }
 
     /// Parse JSON or JSONC content
