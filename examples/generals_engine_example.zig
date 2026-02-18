@@ -454,13 +454,13 @@ const GameState = struct {
         const menu_texture_path = "/Users/chrisbreuer/Code/generals/assets/ui/MainMenuBackground.bmp";
 
         // Load BMP file
-        const file = std.fs.cwd().openFile(menu_texture_path, .{}) catch |err| {
+        const file = Io.Dir.cwd().openFile(g_io, menu_texture_path, .{}) catch |err| {
             std.debug.print("  Failed to open menu texture: {any}\n", .{err});
             return;
         };
-        defer file.close();
+        defer file.close(g_io);
 
-        const stat = file.stat() catch |err| {
+        const stat = file.stat(g_io) catch |err| {
             std.debug.print("  Failed to stat menu texture: {any}\n", .{err});
             return;
         };
@@ -475,7 +475,8 @@ const GameState = struct {
         // Read the file in chunks
         var total_read: usize = 0;
         while (total_read < file_size) {
-            const bytes_read = file.read(data[total_read..]) catch |err| {
+            var bufs = [_][]u8{data[total_read..]};
+            const bytes_read = file.readStreaming(g_io, &bufs) catch |err| {
                 std.debug.print("  Failed to read menu texture: {any}\n", .{err});
                 return;
             };
@@ -595,12 +596,12 @@ const GameState = struct {
 
         for (music_paths) |path| {
             // Check if file exists and has content (not a 0-byte placeholder)
-            const file = std.fs.openFileAbsolute(path, .{}) catch continue;
-            const stat = file.stat() catch {
-                file.close();
+            const file = Io.Dir.openFileAbsolute(g_io, path, .{}) catch continue;
+            const stat = file.stat(g_io) catch {
+                file.close(g_io);
                 continue;
             };
-            file.close();
+            file.close(g_io);
 
             if (stat.size == 0) continue; // Skip empty placeholder files
 
@@ -2051,7 +2052,11 @@ pub fn main(init: std.process.Init) !void {
         const frame_time = @as(f64, @floatFromInt(game_loop.getNanoTimestamp() - current_time)) / 1_000_000_000.0;
         if (frame_time < target_dt) {
             const sleep_ns: u64 = @intFromFloat((target_dt - frame_time) * 1_000_000_000.0);
-            std.posix.nanosleep(0, sleep_ns);
+            var sleep_ts: std.c.timespec = .{
+                .sec = 0,
+                .nsec = @intCast(sleep_ns),
+            };
+            _ = std.c.nanosleep(&sleep_ts, null);
         }
     }
 

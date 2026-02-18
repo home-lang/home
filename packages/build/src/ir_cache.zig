@@ -176,7 +176,9 @@ pub const IRCache = struct {
         io: ?Io,
     ) !IRCache {
         // Create cache directory
-        if (io) |io_val| Io.Dir.cwd().createDirPath(io_val, cache_dir) catch {} else {};
+        if (io) |io_val| {
+            Io.Dir.cwd().createDirPath(io_val, cache_dir) catch {};
+        }
 
         const metadata_path = try fs.path.join(allocator, &[_][]const u8{ cache_dir, METADATA_FILE });
 

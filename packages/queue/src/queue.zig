@@ -1,5 +1,7 @@
 const std = @import("std");
+const Io = std.Io;
 const posix = std.posix;
+const c = std.c;
 
 /// Thread-safe mutex (Zig 0.16 compatible - uses atomic spinlock)
 const Mutex = struct {
@@ -18,13 +20,15 @@ const Mutex = struct {
 
 /// Get current unix timestamp in seconds
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
+    var ts: c.timespec = undefined;
+    if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
     return ts.sec;
 }
 
 /// Get nanosecond timestamp for jitter
 fn getNanoTimestamp() i128 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
+    var ts: c.timespec = undefined;
+    if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
@@ -776,7 +780,9 @@ pub const RedisQueueDriver = struct {
             if (self.socket != null) return;
 
             // Create socket
-            self.socket = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch return error.ConnectionFailed;
+            const sock_fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+            if (sock_fd == -1) return error.ConnectionFailed;
+            self.socket = sock_fd;
 
             // Connect
             var addr: posix.sockaddr.in = .{
@@ -799,11 +805,11 @@ pub const RedisQueueDriver = struct {
                 addr.addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
             }
 
-            posix.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) catch {
+            if (c.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) == -1) {
                 posix.close(self.socket.?);
                 self.socket = null;
                 return error.ConnectionFailed;
-            };
+            }
         }
 
         pub fn disconnect(self: *Redis) void {
@@ -833,7 +839,7 @@ pub const RedisQueueDriver = struct {
                 pos += 2;
             }
 
-            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            if (c.send(sock, cmd_buf[0..pos].ptr, pos, 0) == -1) return error.ConnectionClosed;
             return self.readResponse();
         }
 
@@ -855,7 +861,7 @@ pub const RedisQueueDriver = struct {
                 pos += 2;
             }
 
-            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            if (c.send(sock, cmd_buf[0..pos].ptr, pos, 0) == -1) return error.ConnectionClosed;
             return self.readIntResponse();
         }
 
@@ -919,7 +925,9 @@ pub const RedisQueueDriver = struct {
 
         fn fillBuffer(self: *Redis) !void {
             const sock = self.socket orelse return error.ConnectionClosed;
-            const n = posix.recv(sock, &self.read_buffer, 0) catch return error.ConnectionClosed;
+            const raw_n = c.recv(sock, &self.read_buffer, self.read_buffer.len, 0);
+            if (raw_n == -1) return error.ConnectionClosed;
+            const n: usize = @intCast(raw_n);
             self.read_len = n;
             self.read_pos = 0;
             if (self.read_len == 0) return error.ConnectionClosed;
@@ -1104,7 +1112,10 @@ pub const DatabaseQueueDriver = struct {
         }
 
         pub fn ensureDir(self: *Storage) void {
-            std.fs.cwd().makePath(self.path) catch {};
+            var threaded = Io.Threaded.init(self.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            Io.Dir.cwd().createDirPath(io, self.path) catch {};
         }
 
         pub fn push(self: *Storage, queue_name: []const u8, job_id: []const u8, priority: u8) !void {
@@ -1113,31 +1124,40 @@ pub const DatabaseQueueDriver = struct {
             var path_buf: [512]u8 = undefined;
             const file_path = self.getFilePath(queue_name, &path_buf);
 
-            const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch |err| blk: {
+            var threaded = Io.Threaded.init(self.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            const cwd = Io.Dir.cwd();
+            const file = cwd.openFile(io, file_path, .{ .mode = .read_write }) catch |err| blk: {
                 if (err == error.FileNotFound) {
-                    break :blk try std.fs.cwd().createFile(file_path, .{ .read = true });
+                    break :blk try cwd.createFile(io, file_path, .{ .read = true });
                 }
                 return err;
             };
-            defer file.close();
+            defer file.close(io);
 
             // Append job entry: priority:job_id\n
-            try file.seekFromEnd(0);
+            const file_len = try file.length(io);
             var entry_buf: [256]u8 = undefined;
             const entry = std.fmt.bufPrint(&entry_buf, "{d}:{s}\n", .{ priority, job_id }) catch return;
-            try file.writeAll(entry);
+            try file.writePositionalAll(io, entry, file_len);
         }
 
         pub fn pop(self: *Storage, queue_name: []const u8) !?[]const u8 {
             var path_buf: [512]u8 = undefined;
             const file_path = self.getFilePath(queue_name, &path_buf);
 
-            const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch return null;
-            defer file.close();
+            var threaded = Io.Threaded.init(self.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            const file = Io.Dir.cwd().openFile(io, file_path, .{ .mode = .read_write }) catch return null;
+            defer file.close(io);
 
             // Read all entries using pread
             var content_buf: [8192]u8 = undefined;
-            const content_len = file.pread(&content_buf, 0) catch return null;
+            const content_len = file.readPositionalAll(io, &content_buf, 0) catch return null;
             const content = content_buf[0..content_len];
 
             if (content.len == 0) return null;
@@ -1177,8 +1197,8 @@ pub const DatabaseQueueDriver = struct {
             }
 
             // Write new content and truncate
-            _ = file.pwrite(new_content_buf[0..new_pos], 0) catch {};
-            file.setEndPos(new_pos) catch {};
+            file.writePositionalAll(io, new_content_buf[0..new_pos], 0) catch {};
+            file.setLength(io, new_pos) catch {};
 
             // Return owned copy
             return try self.allocator.dupe(u8, best_job_id.?);
@@ -1188,11 +1208,15 @@ pub const DatabaseQueueDriver = struct {
             var path_buf: [512]u8 = undefined;
             const file_path = self.getFilePath(queue_name, &path_buf);
 
-            const file = std.fs.cwd().openFile(file_path, .{}) catch return 0;
-            defer file.close();
+            var threaded = Io.Threaded.init(self.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            const file = Io.Dir.cwd().openFile(io, file_path, .{}) catch return 0;
+            defer file.close(io);
 
             var content_buf: [8192]u8 = undefined;
-            const content_len = file.pread(&content_buf, 0) catch return 0;
+            const content_len = file.readPositionalAll(io, &content_buf, 0) catch return 0;
             const content = content_buf[0..content_len];
 
             var count: usize = 0;
@@ -1206,7 +1230,10 @@ pub const DatabaseQueueDriver = struct {
         pub fn clear(self: *Storage, queue_name: []const u8) void {
             var path_buf: [512]u8 = undefined;
             const file_path = self.getFilePath(queue_name, &path_buf);
-            std.fs.cwd().deleteFile(file_path) catch {};
+            var threaded = Io.Threaded.init(self.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            Io.Dir.cwd().deleteFile(io, file_path) catch {};
         }
     };
 

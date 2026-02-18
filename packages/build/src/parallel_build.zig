@@ -179,7 +179,7 @@ pub const ParallelBuilder = struct {
         const cache_path = cache_dir orelse ".home-cache";
         const version = compiler_version orelse "0.1.0";
 
-        const cache = try ir_cache.IRCache.init(allocator, cache_path, false);
+        const cache = try ir_cache.IRCache.init(allocator, cache_path, false, null);
 
         return .{
             .allocator = allocator,
@@ -456,7 +456,11 @@ pub const ParallelBuilder = struct {
         }
 
         // Read source file
-        const source = std.fs.cwd().readFileAlloc(task.file_path, self.allocator, std.Io.Limit.limited(1024 * 1024 * 10)) catch |err| {
+        var threaded = std.Io.Threaded.init(self.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        const file = cwd.openFile(io, task.file_path, .{}) catch |err| {
             if (self.verbose) {
                 std.debug.print("    [31m✗ Failed to read file: {any}[0m\n", .{err});
             }
@@ -464,7 +468,33 @@ pub const ParallelBuilder = struct {
             task.end_time = getMilliTimestamp();
             return err;
         };
+        defer file.close(io);
+        const stat = file.stat(io) catch |err| {
+            if (self.verbose) {
+                std.debug.print("    [31m✗ Failed to stat file: {any}[0m\n", .{err});
+            }
+            task.status = .Failed;
+            task.end_time = getMilliTimestamp();
+            return err;
+        };
+        const source = self.allocator.alloc(u8, stat.size) catch |err| {
+            if (self.verbose) {
+                std.debug.print("    [31m✗ Failed to allocate buffer: {any}[0m\n", .{err});
+            }
+            task.status = .Failed;
+            task.end_time = getMilliTimestamp();
+            return err;
+        };
         defer self.allocator.free(source);
+        var bufs = [_][]u8{source};
+        _ = file.readStreaming(io, &bufs) catch |err| {
+            if (self.verbose) {
+                std.debug.print("    [31m✗ Failed to read file: {any}[0m\n", .{err});
+            }
+            task.status = .Failed;
+            task.end_time = getMilliTimestamp();
+            return err;
+        };
 
         // Collect dependency hashes for cache key
         var dep_hashes = std.ArrayList(ir_cache.CacheHash){};

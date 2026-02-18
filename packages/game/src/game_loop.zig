@@ -9,9 +9,9 @@ const std = @import("std");
 
 /// Get current time in nanoseconds (Zig 0.16 compatible)
 pub fn getNanoTimestamp() i128 {
-    const instant = std.time.Instant.now() catch return 0;
-    // Convert timespec to nanoseconds
-    return @as(i128, instant.timestamp.sec) * 1_000_000_000 + instant.timestamp.nsec;
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
 }
 
 // ============================================================================
