@@ -522,7 +522,7 @@ pub fn addAuthHeader(auth_manager: *AuthManager, registry: []const u8, headers: 
 
 /// Verify token is valid by making a test request to the registry
 pub fn verifyToken(auth_manager: *AuthManager, reg: []const u8, io_param: std.Io) !bool {
-    _ = io_param;  // Will be used when HTTP verification is enabled
+    _ = io_param; // Will be used when HTTP verification is enabled
 
     const token = auth_manager.getToken(reg) orelse return false;
 

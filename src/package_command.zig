@@ -215,9 +215,8 @@ fn buildTarball(allocator: std.mem.Allocator, config: *const PackageConfig, outp
     // Create tarball using system tar
     const tar_result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
-            "tar",    "-czf", output_path,
-            "-C",     staging_dir,
-            pkg_name,
+            "tar", "-czf",      output_path,
+            "-C",  staging_dir, pkg_name,
         },
     });
     defer allocator.free(tar_result.stdout);

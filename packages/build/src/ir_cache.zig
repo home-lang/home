@@ -538,90 +538,90 @@ pub const IRCache = struct {
         // Write JSON to file using simple manual JSON serialization
         // Format: { "version": 1, "entries": [...], "stats": {...} }
 
-        try file.writeStreamingAll(io_val,"{");
-        try file.writeStreamingAll(io_val,"\n  \"version\": 1,\n  \"entries\": [\n");
+        try file.writeStreamingAll(io_val, "{");
+        try file.writeStreamingAll(io_val, "\n  \"version\": 1,\n  \"entries\": [\n");
 
         // Write entries
         for (entries_json_array, 0..) |entry, i| {
-            try file.writeStreamingAll(io_val,"    {\n");
+            try file.writeStreamingAll(io_val, "    {\n");
 
             const key_line = try std.fmt.allocPrint(self.allocator, "      \"key\": \"{s}\",\n", .{entry.key});
             defer self.allocator.free(key_line);
-            try file.writeStreamingAll(io_val,key_line);
+            try file.writeStreamingAll(io_val, key_line);
 
             const module_line = try std.fmt.allocPrint(self.allocator, "      \"module_name\": \"{s}\",\n", .{entry.module_name});
             defer self.allocator.free(module_line);
-            try file.writeStreamingAll(io_val,module_line);
+            try file.writeStreamingAll(io_val, module_line);
 
             const source_line = try std.fmt.allocPrint(self.allocator, "      \"source_path\": \"{s}\",\n", .{entry.source_path});
             defer self.allocator.free(source_line);
-            try file.writeStreamingAll(io_val,source_line);
+            try file.writeStreamingAll(io_val, source_line);
 
             const mtime_line = try std.fmt.allocPrint(self.allocator, "      \"source_mtime\": {},\n", .{entry.source_mtime});
             defer self.allocator.free(mtime_line);
-            try file.writeStreamingAll(io_val,mtime_line);
+            try file.writeStreamingAll(io_val, mtime_line);
 
-            try file.writeStreamingAll(io_val,"      \"dependencies\": [");
+            try file.writeStreamingAll(io_val, "      \"dependencies\": [");
             for (entry.dependencies, 0..) |dep, j| {
                 const dep_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{dep});
                 defer self.allocator.free(dep_str);
-                try file.writeStreamingAll(io_val,dep_str);
-                if (j < entry.dependencies.len - 1) try file.writeStreamingAll(io_val,", ");
+                try file.writeStreamingAll(io_val, dep_str);
+                if (j < entry.dependencies.len - 1) try file.writeStreamingAll(io_val, ", ");
             }
-            try file.writeStreamingAll(io_val,"],\n");
+            try file.writeStreamingAll(io_val, "],\n");
 
             const ir_line = try std.fmt.allocPrint(self.allocator, "      \"ir_path\": \"{s}\",\n", .{entry.ir_path});
             defer self.allocator.free(ir_line);
-            try file.writeStreamingAll(io_val,ir_line);
+            try file.writeStreamingAll(io_val, ir_line);
 
             const obj_line = try std.fmt.allocPrint(self.allocator, "      \"object_path\": \"{s}\",\n", .{entry.object_path});
             defer self.allocator.free(obj_line);
-            try file.writeStreamingAll(io_val,obj_line);
+            try file.writeStreamingAll(io_val, obj_line);
 
             const created_line = try std.fmt.allocPrint(self.allocator, "      \"created_at\": {},\n", .{entry.created_at});
             defer self.allocator.free(created_line);
-            try file.writeStreamingAll(io_val,created_line);
+            try file.writeStreamingAll(io_val, created_line);
 
             const accessed_line = try std.fmt.allocPrint(self.allocator, "      \"last_accessed\": {},\n", .{entry.last_accessed});
             defer self.allocator.free(accessed_line);
-            try file.writeStreamingAll(io_val,accessed_line);
+            try file.writeStreamingAll(io_val, accessed_line);
 
             const hits_line = try std.fmt.allocPrint(self.allocator, "      \"hit_count\": {},\n", .{entry.hit_count});
             defer self.allocator.free(hits_line);
-            try file.writeStreamingAll(io_val,hits_line);
+            try file.writeStreamingAll(io_val, hits_line);
 
             const compile_line = try std.fmt.allocPrint(self.allocator, "      \"compile_time_ms\": {}\n", .{entry.compile_time_ms});
             defer self.allocator.free(compile_line);
-            try file.writeStreamingAll(io_val,compile_line);
+            try file.writeStreamingAll(io_val, compile_line);
 
-            try file.writeStreamingAll(io_val,"    }");
-            if (i < entries_json_array.len - 1) try file.writeStreamingAll(io_val,",");
-            try file.writeStreamingAll(io_val,"\n");
+            try file.writeStreamingAll(io_val, "    }");
+            if (i < entries_json_array.len - 1) try file.writeStreamingAll(io_val, ",");
+            try file.writeStreamingAll(io_val, "\n");
         }
 
-        try file.writeStreamingAll(io_val,"  ],\n  \"stats\": {\n");
+        try file.writeStreamingAll(io_val, "  ],\n  \"stats\": {\n");
 
         const hits_line = try std.fmt.allocPrint(self.allocator, "    \"cache_hits\": {},\n", .{self.stats.cache_hits});
         defer self.allocator.free(hits_line);
-        try file.writeStreamingAll(io_val,hits_line);
+        try file.writeStreamingAll(io_val, hits_line);
 
         const misses_line = try std.fmt.allocPrint(self.allocator, "    \"cache_misses\": {},\n", .{self.stats.cache_misses});
         defer self.allocator.free(misses_line);
-        try file.writeStreamingAll(io_val,misses_line);
+        try file.writeStreamingAll(io_val, misses_line);
 
         const stores_line = try std.fmt.allocPrint(self.allocator, "    \"cache_stores\": {},\n", .{self.stats.cache_stores});
         defer self.allocator.free(stores_line);
-        try file.writeStreamingAll(io_val,stores_line);
+        try file.writeStreamingAll(io_val, stores_line);
 
         const inval_line = try std.fmt.allocPrint(self.allocator, "    \"cache_invalidations\": {},\n", .{self.stats.cache_invalidations});
         defer self.allocator.free(inval_line);
-        try file.writeStreamingAll(io_val,inval_line);
+        try file.writeStreamingAll(io_val, inval_line);
 
         const evict_line = try std.fmt.allocPrint(self.allocator, "    \"cache_evictions\": {}\n", .{self.stats.cache_evictions});
         defer self.allocator.free(evict_line);
-        try file.writeStreamingAll(io_val,evict_line);
+        try file.writeStreamingAll(io_val, evict_line);
 
-        try file.writeStreamingAll(io_val,"  }\n}\n");
+        try file.writeStreamingAll(io_val, "  }\n}\n");
     }
 };
 
@@ -683,7 +683,7 @@ test "cache key generation" {
 }
 
 test "hash to hex conversion" {
-    const hash = [_]u8{0xDE, 0xAD, 0xBE, 0xEF} ++ [_]u8{0} ** 28;
+    const hash = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF } ++ [_]u8{0} ** 28;
     var buf: [64]u8 = undefined;
     const hex = hashToHex(hash, &buf);
 

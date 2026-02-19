@@ -97,11 +97,11 @@ fn parseTomlScripts(allocator: std.mem.Allocator, toml_content: []const u8) !std
         if (in_scripts_section and trimmed.len > 0 and trimmed[0] != '#') {
             if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_pos| {
                 const name = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
-                var command = std.mem.trim(u8, trimmed[eq_pos + 1..], " \t");
+                var command = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
 
                 // Remove quotes if present
                 if (command.len >= 2 and command[0] == '"' and command[command.len - 1] == '"') {
-                    command = command[1..command.len - 1];
+                    command = command[1 .. command.len - 1];
                 }
 
                 const name_copy = try allocator.dupe(u8, name);
@@ -679,10 +679,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         // Check if module needs recompilation
         const can_use_cached = try inc_compiler.?.canUseCached(file_path, source);
         if (can_use_cached) {
-            std.debug.print("{s}Cache Hit:{s} Module is up-to-date, skipping compilation\n", .{
-                Color.Green.code(),
-                Color.Reset.code()
-            });
+            std.debug.print("{s}Cache Hit:{s} Module is up-to-date, skipping compilation\n", .{ Color.Green.code(), Color.Reset.code() });
 
             // Get cached object
             if (try inc_compiler.?.getCachedObject(file_path)) |_| {
@@ -692,10 +689,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
                 });
             }
         } else {
-            std.debug.print("{s}Cache Miss:{s} Recompiling module\n", .{
-                Color.Yellow.code(),
-                Color.Reset.code()
-            });
+            std.debug.print("{s}Cache Miss:{s} Recompiling module\n", .{ Color.Yellow.code(), Color.Reset.code() });
         }
 
         // Also init old cache for backward compatibility
@@ -827,13 +821,10 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
         const out_path = if (output_path) |p|
             p
-        else if (std.mem.endsWith(u8, file_path, ".home"))
-            blk: {
-                out_path_owned = try std.fmt.allocPrint(allocator, "{s}.s", .{file_path[0 .. file_path.len - 5]});
-                break :blk out_path_owned.?;
-            }
-        else
-            "kernel.s";
+        else if (std.mem.endsWith(u8, file_path, ".home")) blk: {
+            out_path_owned = try std.fmt.allocPrint(allocator, "{s}.s", .{file_path[0 .. file_path.len - 5]});
+            break :blk out_path_owned.?;
+        } else "kernel.s";
 
         std.debug.print("{s}Generating kernel assembly...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
@@ -887,10 +878,7 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         if (inc_compiler) |ic| {
             _ = ic;
             // TODO: Re-enable after updating cache API
-            std.debug.print("{s}Cache updated:{s} Module registered for incremental compilation\n", .{
-                Color.Cyan.code(),
-                Color.Reset.code()
-            });
+            std.debug.print("{s}Cache updated:{s} Module registered for incremental compilation\n", .{ Color.Cyan.code(), Color.Reset.code() });
         }
     }
 }
@@ -1113,11 +1101,7 @@ fn runAndReportError(allocator: std.mem.Allocator, file_path: []const u8) void {
 }
 
 fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !void {
-    std.debug.print("{s}Discovering tests in:{s} {s}\n\n", .{
-        Color.Blue.code(),
-        Color.Reset.code(),
-        search_path
-    });
+    std.debug.print("{s}Discovering tests in:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), search_path });
 
     // Walk the directory and find test files
     var test_files = std.ArrayList([]const u8){};
@@ -1264,13 +1248,14 @@ fn discoverMonorepoTests(allocator: std.mem.Allocator, test_files: *std.ArrayLis
 
 fn isTestFile(filename: []const u8) bool {
     return std.mem.endsWith(u8, filename, ".test.home") or
-           std.mem.endsWith(u8, filename, ".test.hm");
+        std.mem.endsWith(u8, filename, ".test.hm");
 }
 
 fn shouldSkipDirectory(dirname: []const u8) bool {
     const skip_dirs = [_][]const u8{
-        "node_modules", ".git", ".zig-cache", "zig-out", ".home",
-        "target", "build", "dist", ".vscode", ".idea", "pending",
+        "node_modules", ".git",  ".zig-cache", "zig-out", ".home",
+        "target",       "build", "dist",       ".vscode", ".idea",
+        "pending",
     };
 
     for (skip_dirs) |skip_dir| {
@@ -1516,7 +1501,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
         while (try iter.next(g_io)) |entry| {
             if (entry.kind == .file and
                 (std.mem.endsWith(u8, entry.name, "_test.zig") or
-                std.mem.endsWith(u8, entry.name, "_tests.zig")))
+                    std.mem.endsWith(u8, entry.name, "_tests.zig")))
             {
                 const test_file = try std.fs.path.join(allocator, &.{ test_dir, entry.name });
                 defer allocator.free(test_file);
@@ -1851,7 +1836,6 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 }
 
 /// Test options struct
-
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
     // Enable memory tracking in debug builds if configured
@@ -2231,7 +2215,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     {
         const file = try Io.Dir.cwd().createFile(g_io, "package.jsonc", .{});
         defer file.close(g_io);
-        try file.writeStreamingAll(g_io,package_content);
+        try file.writeStreamingAll(g_io, package_content);
         std.debug.print("{s}✓{s} Created package.jsonc\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2252,7 +2236,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     {
         const file = try Io.Dir.cwd().createFile(g_io, "src/main.home", .{});
         defer file.close(g_io);
-        try file.writeStreamingAll(g_io,main_home);
+        try file.writeStreamingAll(g_io, main_home);
         std.debug.print("{s}✓{s} Created src/main.home\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2287,7 +2271,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     {
         const file = try Io.Dir.cwd().createFile(g_io, "tests/example.home", .{});
         defer file.close(g_io);
-        try file.writeStreamingAll(g_io,test_file);
+        try file.writeStreamingAll(g_io, test_file);
         std.debug.print("{s}✓{s} Created tests/example.home\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2342,7 +2326,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     {
         const file = try Io.Dir.cwd().createFile(g_io, "README.md", .{});
         defer file.close(g_io);
-        try file.writeStreamingAll(g_io,readme_content);
+        try file.writeStreamingAll(g_io, readme_content);
         std.debug.print("{s}✓{s} Created README.md\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2376,7 +2360,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     {
         const file = try Io.Dir.cwd().createFile(g_io, ".gitignore", .{});
         defer file.close(g_io);
-        try file.writeStreamingAll(g_io,gitignore);
+        try file.writeStreamingAll(g_io, gitignore);
         std.debug.print("{s}✓{s} Created .gitignore\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
@@ -2419,7 +2403,7 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
 
     const file = try Io.Dir.cwd().createFile(g_io, "home.toml", .{});
     defer file.close(g_io);
-    try file.writeStreamingAll(g_io,content);
+    try file.writeStreamingAll(g_io, content);
 
     std.debug.print("{s}✓{s} Created home.toml\n", .{ Color.Green.code(), Color.Reset.code() });
     std.debug.print("Edit home.toml to configure your project\n", .{});
