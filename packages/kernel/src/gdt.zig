@@ -15,7 +15,7 @@ pub const GdtEntry = packed struct(u64) {
     limit_high_flags: u8,    // Limit bits 16-19 + flags
     base_high: u8,           // Base bits 24-31
 
-    pub fn null() GdtEntry {
+    pub fn @"null"() GdtEntry {
         return @bitCast(@as(u64, 0));
     }
 
@@ -237,7 +237,7 @@ pub const Gdt = struct {
 
         // Setup entries
         const gdt_entries: [*]GdtEntry = @ptrCast(entries.ptr);
-        gdt_entries[0] = GdtEntry.null();
+        gdt_entries[0] = GdtEntry.@"null"();
         gdt_entries[1] = GdtEntry.code64(0); // Kernel code
         gdt_entries[2] = GdtEntry.data64(0); // Kernel data
         gdt_entries[3] = GdtEntry.code64(3); // User code
@@ -264,7 +264,7 @@ pub const Gdt = struct {
         asm volatile ("lgdt (%[ptr])"
             :
             : [ptr] "r" (&self.pointer),
-            : "memory"
+            : .{ .memory = true }
         );
 
         // Reload CS (code segment)
@@ -276,7 +276,7 @@ pub const Gdt = struct {
             \\1:
             :
             : [sel] "i" (KERNEL_CODE_SELECTOR),
-            : "rax", "memory"
+            : .{ .rax = true, .memory = true }
         );
 
         // Reload data segments
@@ -287,7 +287,7 @@ pub const Gdt = struct {
             \\mov %%ax, %%ss
             :
             : [sel] "i" (KERNEL_DATA_SELECTOR),
-            : "rax"
+            : .{ .rax = true }
         );
 
         // Clear FS and GS (for per-CPU data)
@@ -297,7 +297,7 @@ pub const Gdt = struct {
             \\mov %%ax, %%gs
             :
             :
-            : "rax"
+            : .{ .rax = true }
         );
     }
 
@@ -361,7 +361,7 @@ test "segment selector" {
 }
 
 test "null descriptor" {
-    const null_desc = GdtEntry.null();
+    const null_desc = GdtEntry.@"null"();
     const value: u64 = @bitCast(null_desc);
     try Basics.testing.expectEqual(@as(u64, 0), value);
 }

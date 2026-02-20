@@ -1,7 +1,7 @@
 // Home Programming Language - Kernel Memory Management
 // Low-level memory primitives for OS development
 
-const Basics = @import("basics");
+const std = @import("std");
 const sync = @import("sync.zig");
 
 /// Physical memory address
@@ -224,7 +224,7 @@ pub const BumpAllocator = struct {
         defer self.lock.release();
 
         // Align current pointer
-        const aligned = Basics.mem.alignForward(usize, self.current, alignment);
+        const aligned = std.mem.alignForward(usize, self.current, alignment);
 
         const new_current = aligned + size;
         if (new_current > self.limit) {
@@ -389,7 +389,7 @@ pub const BuddyAllocator = struct {
             }
 
             // Merge with buddy
-            addr = Basics.math.min(addr, buddy_addr);
+            addr = @min(addr, buddy_addr);
             order += 1;
         }
 
@@ -489,31 +489,31 @@ test "MMIO operations" {
     var value: u32 = 0x12345678;
     const mmio = MMIO(u32){ .address = @intFromPtr(&value) };
 
-    try Basics.testing.expectEqual(@as(u32, 0x12345678), mmio.read());
+    try std.testing.expectEqual(@as(u32, 0x12345678), mmio.read());
 
     mmio.write(0xABCDEF00);
-    try Basics.testing.expectEqual(@as(u32, 0xABCDEF00), value);
+    try std.testing.expectEqual(@as(u32, 0xABCDEF00), value);
 
     mmio.setBit(0);
-    try Basics.testing.expectEqual(@as(u32, 0xABCDEF01), value);
+    try std.testing.expectEqual(@as(u32, 0xABCDEF01), value);
 }
 
 test "page alignment" {
-    try Basics.testing.expectEqual(@as(usize, 0x1000), alignDown(0x1234));
-    try Basics.testing.expectEqual(@as(usize, 0x2000), alignUp(0x1234));
-    try Basics.testing.expect(isAligned(0x1000));
-    try Basics.testing.expect(!isAligned(0x1234));
-    try Basics.testing.expectEqual(@as(usize, 2), pageCount(0x1234));
+    try std.testing.expectEqual(@as(usize, 0x1000), alignDown(0x1234));
+    try std.testing.expectEqual(@as(usize, 0x2000), alignUp(0x1234));
+    try std.testing.expect(isAligned(0x1000));
+    try std.testing.expect(!isAligned(0x1234));
+    try std.testing.expectEqual(@as(usize, 2), pageCount(0x1234));
 }
 
 test "bump allocator" {
     var bump = BumpAllocator.init(0x100000, 0x10000);
 
     const mem1 = try bump.alloc(1024, 8);
-    try Basics.testing.expectEqual(@as(usize, 1024), mem1.len);
+    try std.testing.expectEqual(@as(usize, 1024), mem1.len);
 
     const page = try bump.allocPage();
-    try Basics.testing.expect(isAligned(page));
+    try std.testing.expect(isAligned(page));
 }
 
 test "slab allocator" {
@@ -538,5 +538,5 @@ test "slab allocator" {
     // Free and reuse
     slab.free(obj1);
     const obj3 = try slab.alloc();
-    try Basics.testing.expectEqual(@intFromPtr(obj1), @intFromPtr(obj3));
+    try std.testing.expectEqual(@intFromPtr(obj1), @intFromPtr(obj3));
 }

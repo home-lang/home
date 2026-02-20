@@ -174,7 +174,7 @@ pub const SignalQueue = struct {
     info_queue: Basics.ArrayList(SigInfo),
 
     pub fn init(allocator: Basics.Allocator) !SignalQueue {
-        var queue = SignalQueue{
+        var result = SignalQueue{
             .pending = SignalSet.init(),
             .blocked = SignalSet.init(),
             .actions = undefined,
@@ -183,11 +183,11 @@ pub const SignalQueue = struct {
         };
 
         // Initialize all actions to default
-        for (&queue.actions) |*action| {
+        for (&result.actions) |*action| {
             action.* = SigAction.init();
         }
 
-        return queue;
+        return result;
     }
 
     pub fn deinit(self: *SignalQueue) void {
@@ -398,7 +398,6 @@ fn getDefaultAction(sig: Signal) SignalAction {
 
 /// Handle default termination action
 fn handleDefaultAction(proc: *process.Process, sig: Signal) void {
-    _ = sig;
     // Terminate the process
     proc.state = .Zombie;
     proc.exit_code = 128 + @as(i32, @intFromEnum(sig));

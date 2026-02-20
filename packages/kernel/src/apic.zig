@@ -165,11 +165,11 @@ pub const LocalApic = struct {
         };
 
         // Read APIC base MSR
-        const apic_base_msr = asm.rdmsr(ApicMsr.BASE);
+        const apic_base_msr = assembly.rdmsr(ApicMsr.BASE);
         apic.base_addr = apic_base_msr & 0xFFFF_F000;
 
         // Check if x2APIC is supported
-        const cpuid_result = asm.cpuid(1, 0);
+        const cpuid_result = assembly.cpuid(1, 0);
         const x2apic_supported = (cpuid_result.ecx & (1 << 21)) != 0;
 
         if (x2apic_supported) {
@@ -190,17 +190,17 @@ pub const LocalApic = struct {
 
     /// Enable x2APIC mode
     fn enableX2Apic(self: *LocalApic) !void {
-        const apic_base = asm.rdmsr(ApicMsr.BASE);
+        const apic_base = assembly.rdmsr(ApicMsr.BASE);
         const new_value = apic_base | APIC_BASE_X2APIC_ENABLE | APIC_BASE_GLOBAL_ENABLE;
-        asm.wrmsr(ApicMsr.BASE, new_value);
+        assembly.wrmsr(ApicMsr.BASE, new_value);
         self.x2apic_enabled = true;
     }
 
     /// Enable xAPIC mode
     fn enableXApic(self: *LocalApic) !void {
-        const apic_base = asm.rdmsr(ApicMsr.BASE);
+        const apic_base = assembly.rdmsr(ApicMsr.BASE);
         const new_value = (apic_base & ~APIC_BASE_X2APIC_ENABLE) | APIC_BASE_GLOBAL_ENABLE;
-        asm.wrmsr(ApicMsr.BASE, new_value);
+        assembly.wrmsr(ApicMsr.BASE, new_value);
         self.x2apic_enabled = false;
     }
 
@@ -209,7 +209,7 @@ pub const LocalApic = struct {
         if (self.x2apic_enabled) {
             // x2APIC uses MSRs
             const msr = 0x800 + (reg >> 4);
-            return @truncate(asm.rdmsr(msr));
+            return @truncate(assembly.rdmsr(msr));
         } else {
             // xAPIC uses MMIO
             const ptr: *volatile u32 = @ptrFromInt(self.base_addr + reg);
@@ -222,7 +222,7 @@ pub const LocalApic = struct {
         if (self.x2apic_enabled) {
             // x2APIC uses MSRs
             const msr = 0x800 + (reg >> 4);
-            asm.wrmsr(msr, value);
+            assembly.wrmsr(msr, value);
         } else {
             // xAPIC uses MMIO
             const ptr: *volatile u32 = @ptrFromInt(self.base_addr + reg);
@@ -233,7 +233,7 @@ pub const LocalApic = struct {
     /// Read APIC ID
     pub fn readApicId(self: *const LocalApic) u32 {
         if (self.x2apic_enabled) {
-            return @truncate(asm.rdmsr(ApicMsr.X2APIC_ID));
+            return @truncate(assembly.rdmsr(ApicMsr.X2APIC_ID));
         } else {
             return self.readReg(ApicReg.ID) >> 24;
         }
@@ -316,10 +316,10 @@ pub const LocalApic = struct {
             icr |= @as(u64, @intFromEnum(dest_shorthand)) << 18;
             icr |= @as(u64, destination) << 32;
 
-            asm.wrmsr(ApicMsr.X2APIC_ICR, icr);
+            assembly.wrmsr(ApicMsr.X2APIC_ICR, icr);
         } else {
             // xAPIC: Two 32-bit registers
-            var icr_high: u32 = destination << 24;
+            const icr_high: u32 = destination << 24;
             var icr_low: u32 = vector;
             icr_low |= @as(u32, @intFromEnum(delivery_mode)) << 8;
             icr_low |= @as(u32, @intFromEnum(dest_mode)) << 11;
@@ -342,7 +342,7 @@ pub const LocalApic = struct {
         if (!self.x2apic_enabled) {
             // In xAPIC, bit 12 of ICR_LOW indicates delivery pending
             while ((self.readReg(ApicReg.ICR_LOW) & (1 << 12)) != 0) {
-                asm.pause();
+                assembly.pause();
             }
         }
         // In x2APIC, IPIs are guaranteed to be delivered immediately
@@ -442,7 +442,8 @@ pub const LocalApic = struct {
 
     /// Check if this is the Bootstrap Processor
     pub fn isBsp(self: *const LocalApic) bool {
-        const apic_base = asm.rdmsr(ApicMsr.BASE);
+        _ = self;
+        const apic_base = assembly.rdmsr(ApicMsr.BASE);
         return (apic_base & APIC_BASE_BSP) != 0;
     }
 };
@@ -601,7 +602,7 @@ pub const TlbShootdownManager = struct {
             }
 
             if (iterations % 1000 == 0) {
-                asm.pause();
+                assembly.pause();
             }
         }
 
@@ -641,15 +642,15 @@ pub const TlbShootdownManager = struct {
     fn flushLocal(address: u64, page_count: u64) void {
         if (page_count == ~@as(u64, 0) or address == 0) {
             // Full TLB flush
-            asm.flushTlb();
+            assembly.flushTlb();
         } else if (page_count == 0) {
             // Single page flush
-            asm.invlpg(address);
+            assembly.invlpg(address);
         } else {
             // Multiple pages
             var i: u64 = 0;
             while (i < page_count) : (i += 1) {
-                asm.invlpg(address + (i * memory.PAGE_SIZE));
+                assembly.invlpg(address + (i * memory.PAGE_SIZE));
             }
         }
     }

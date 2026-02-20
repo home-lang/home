@@ -1,7 +1,9 @@
 // Home Programming Language - Inline Assembly Support
 // Low-level CPU operations for OS development
 
-const Basics = @import("basics");
+const std = @import("std");
+const builtin = @import("builtin");
+const native_arch = builtin.cpu.arch;
 
 // ============================================================================
 // CPU I/O Port Operations
@@ -81,7 +83,7 @@ pub fn hltForever() noreturn {
 
 /// Pause instruction (for spin loops)
 pub inline fn pause() void {
-    asm volatile ("pause");
+    std.atomic.spinLoopHint();
 }
 
 /// No operation
@@ -144,9 +146,9 @@ pub fn getCpuVendor() [12]u8 {
     const result = cpuid(0, 0);
     var vendor: [12]u8 = undefined;
 
-    Basics.mem.copy(u8, vendor[0..4], Basics.mem.asBytes(&result.ebx));
-    Basics.mem.copy(u8, vendor[4..8], Basics.mem.asBytes(&result.edx));
-    Basics.mem.copy(u8, vendor[8..12], Basics.mem.asBytes(&result.ecx));
+    @memcpy(vendor[0..4], std.mem.asBytes(&result.ebx));
+    @memcpy(vendor[4..8], std.mem.asBytes(&result.edx));
+    @memcpy(vendor[8..12], std.mem.asBytes(&result.ecx));
 
     return vendor;
 }
@@ -533,33 +535,17 @@ pub inline fn ltr(selector: u16) void {
 
 /// Atomic compare and exchange
 pub fn cmpxchg(comptime T: type, ptr: *volatile T, expected: T, desired: T) T {
-    return asm volatile ("lock cmpxchg %[desired], %[ptr]"
-        : [result] "={eax}" (-> T),
-          [ptr] "+m" (ptr.*),
-        : [desired] "r" (desired),
-          [expected] "{eax}" (expected),
-        : "cc", "memory"
-    );
+    return @cmpxchgStrong(T, @volatileCast(ptr), expected, desired, .seq_cst, .seq_cst) orelse expected;
 }
 
 /// Atomic exchange
 pub fn xchg(comptime T: type, ptr: *volatile T, value: T) T {
-    return asm volatile ("xchg %[value], %[ptr]"
-        : [result] "=r" (-> T),
-          [ptr] "+m" (ptr.*),
-        : [value] "0" (value),
-        : "memory"
-    );
+    return @atomicRmw(T, @volatileCast(ptr), .Xchg, value, .seq_cst);
 }
 
 /// Atomic add and fetch
 pub fn xadd(comptime T: type, ptr: *volatile T, value: T) T {
-    return asm volatile ("lock xadd %[value], %[ptr]"
-        : [result] "=r" (-> T),
-          [ptr] "+m" (ptr.*),
-        : [value] "0" (value),
-        : "cc", "memory"
-    );
+    return @atomicRmw(T, @volatileCast(ptr), .Add, value, .seq_cst);
 }
 
 // Tests
@@ -578,8 +564,8 @@ test "CPU feature detection" {
     const features = CpuFeatures.detect();
 
     // Most modern CPUs have these
-    try Basics.testing.expect(features.fpu);
-    try Basics.testing.expect(features.tsc);
+    try std.testing.expect(features.fpu);
+    try std.testing.expect(features.tsc);
 }
 
 test "control register operations" {

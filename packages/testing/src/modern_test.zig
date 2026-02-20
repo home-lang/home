@@ -24,16 +24,19 @@ pub const t = struct {
 
     pub fn expect(allocator: std.mem.Allocator, value: anytype, failures: *std.ArrayListUnmanaged(Failure)) ModernTest.Expect {
         const T = @TypeOf(value);
-        const stored: i128 = switch (@typeInfo(T)) {
-            .bool => if (value) 1 else 0,
-            .comptime_int => @as(i128, value),
-            .int => @as(i128, @intCast(value)),
-            else => 0,
+        const Result = struct { stored: i128, is_error: bool };
+        const result: Result = switch (@typeInfo(T)) {
+            .bool => .{ .stored = if (value) 1 else 0, .is_error = false },
+            .comptime_int => .{ .stored = @as(i128, value), .is_error = false },
+            .int => .{ .stored = @as(i128, @intCast(value)), .is_error = false },
+            .error_union => if (value) |_| .{ .stored = 0, .is_error = false } else |_| .{ .stored = 1, .is_error = true },
+            else => .{ .stored = 0, .is_error = false },
         };
         return ModernTest.Expect{
             .allocator = allocator,
-            .value = stored,
+            .value = result.stored,
             .value_is_bool = @typeInfo(T) == .bool,
+            .value_is_error = result.is_error,
             .failures = failures,
         };
     }
@@ -83,7 +86,18 @@ pub const ModernTest = struct {
         allocator: std.mem.Allocator,
         value: i128,
         value_is_bool: bool,
+        value_is_error: bool = false,
         failures: *std.ArrayListUnmanaged(Failure),
+
+        pub fn toBeError(self: *Expect) !void {
+            if (!self.value_is_error) {
+                try self.failures.append(self.allocator, .{
+                    .test_name = "assertion",
+                    .message = "expected an error",
+                });
+                return error.AssertionFailed;
+            }
+        }
 
         pub fn toBe(self: *Expect, expected: anytype) !void {
             const T = @TypeOf(expected);

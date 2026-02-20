@@ -17,7 +17,7 @@ pub fn hasRdrand() bool {
         \\cpuid
         : [ecx] "={ecx}" (-> u32),
         :
-        : "eax", "ebx", "edx"
+        : .{ .eax = true, .ebx = true, .edx = true }
     );
     return (cpuid_result & (1 << 30)) != 0;
 }
@@ -31,7 +31,7 @@ pub fn hasRdseed() bool {
         \\cpuid
         : [ebx] "={ebx}" (-> u32),
         :
-        : "eax", "ecx", "edx"
+        : .{ .eax = true, .ecx = true, .edx = true }
     );
     return (cpuid_result & (1 << 18)) != 0;
 }
@@ -246,19 +246,19 @@ pub fn getAslrBase(base: u64, max_offset: u64, alignment: u64) u64 {
 /// Add user-provided entropy to the pool
 /// This allows userspace to contribute randomness from hardware sources
 pub fn addUserEntropy(data: []const u8) void {
-    entropy_pool_lock.acquire();
-    defer entropy_pool_lock.release();
+    pool_lock.acquire();
+    defer pool_lock.release();
 
     // Mix the data into the entropy pool using XOR
     // In a production system, this would use a proper mixing function
     // like SHA-256 or ChaCha20, but for now we use simple XOR
     for (data, 0..) |byte, i| {
-        const pool_idx = (entropy_pool_index + i) % ENTROPY_POOL_SIZE;
+        const pool_idx = (pool_position + i) % POOL_SIZE;
         entropy_pool[pool_idx] ^= byte;
     }
 
     // Advance the pool index
-    entropy_pool_index = (entropy_pool_index + data.len) % ENTROPY_POOL_SIZE;
+    pool_position = (pool_position + data.len) % POOL_SIZE;
 }
 
 // ============================================================================

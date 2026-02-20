@@ -2,7 +2,7 @@
 // 80x25 color text mode display
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 
 // ============================================================================
 // VGA Constants
@@ -212,26 +212,26 @@ pub const VgaBuffer = struct {
         const pos = self.cursor_y * self.width + self.cursor_x;
 
         // Cursor low byte
-        asm.outb(0x3D4, 0x0F);
-        asm.outb(0x3D5, @truncate(pos));
+        assembly.outb(0x3D4, 0x0F);
+        assembly.outb(0x3D5, @truncate(pos));
 
         // Cursor high byte
-        asm.outb(0x3D4, 0x0E);
-        asm.outb(0x3D5, @truncate(pos >> 8));
+        assembly.outb(0x3D4, 0x0E);
+        assembly.outb(0x3D5, @truncate(pos >> 8));
     }
 
     /// Show cursor
     pub fn showCursor(self: *VgaBuffer) void {
         _ = self;
-        asm.outb(0x3D4, 0x0A);
-        asm.outb(0x3D5, 0x00);
+        assembly.outb(0x3D4, 0x0A);
+        assembly.outb(0x3D5, 0x00);
     }
 
     /// Hide cursor
     pub fn hideCursor(self: *VgaBuffer) void {
         _ = self;
-        asm.outb(0x3D4, 0x0A);
-        asm.outb(0x3D5, 0x20);
+        assembly.outb(0x3D4, 0x0A);
+        assembly.outb(0x3D5, 0x20);
     }
 
     /// Set cursor position

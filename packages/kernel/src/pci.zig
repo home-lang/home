@@ -46,59 +46,59 @@ pub const PciAddress = struct {
 /// Read 32-bit value from PCI configuration space
 pub fn readConfig32(addr: PciAddress, offset: u8) u32 {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
-    return asm.inl(CONFIG_DATA);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
+    return assembly.inl(CONFIG_DATA);
 }
 
 /// Write 32-bit value to PCI configuration space
 pub fn writeConfig32(addr: PciAddress, offset: u8, value: u32) void {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
-    asm.outl(CONFIG_DATA, value);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_DATA, value);
 }
 
 /// Read 16-bit value from PCI configuration space
 pub fn readConfig16(addr: PciAddress, offset: u8) u16 {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
     const shift: u5 = @intCast((offset & 2) * 8);
-    return @truncate(asm.inl(CONFIG_DATA) >> shift);
+    return @truncate(assembly.inl(CONFIG_DATA) >> shift);
 }
 
 /// Write 16-bit value to PCI configuration space
 pub fn writeConfig16(addr: PciAddress, offset: u8, value: u16) void {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
 
     const shift: u5 = @intCast((offset & 2) * 8);
-    const old = asm.inl(CONFIG_DATA);
+    const old = assembly.inl(CONFIG_DATA);
     const mask: u32 = 0xFFFF << shift;
     const new = (old & ~mask) | (@as(u32, value) << shift);
 
-    asm.outl(CONFIG_ADDRESS, config_addr);
-    asm.outl(CONFIG_DATA, new);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_DATA, new);
 }
 
 /// Read 8-bit value from PCI configuration space
 pub fn readConfig8(addr: PciAddress, offset: u8) u8 {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
     const shift: u5 = @intCast((offset & 3) * 8);
-    return @truncate(asm.inl(CONFIG_DATA) >> shift);
+    return @truncate(assembly.inl(CONFIG_DATA) >> shift);
 }
 
 /// Write 8-bit value to PCI configuration space
 pub fn writeConfig8(addr: PciAddress, offset: u8, value: u8) void {
     const config_addr = addr.toConfigAddress(offset);
-    asm.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
 
     const shift: u5 = @intCast((offset & 3) * 8);
-    const old = asm.inl(CONFIG_DATA);
+    const old = assembly.inl(CONFIG_DATA);
     const mask: u32 = 0xFF << shift;
     const new = (old & ~mask) | (@as(u32, value) << shift);
 
-    asm.outl(CONFIG_ADDRESS, config_addr);
-    asm.outl(CONFIG_DATA, new);
+    assembly.outl(CONFIG_ADDRESS, config_addr);
+    assembly.outl(CONFIG_DATA, new);
 }
 
 // ============================================================================

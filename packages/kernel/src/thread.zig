@@ -508,7 +508,7 @@ pub fn join(target: *Thread) i32 {
     // Block until target thread is dead
     while (target.isAlive()) {
         // Add current thread to join waiters and yield
-        target.join_waiters.add(current() orelse break);
+        target.join_waiters.add(getCurrentThread() orelse break);
         sched.yield();
     }
 

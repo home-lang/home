@@ -501,24 +501,24 @@ pub fn initSyscalls(kernel_cs: u16, user_cs: u16) void {
     syscall_table_initialized = true;
 
     // Enable SYSCALL/SYSRET in EFER
-    var efer = asm.rdmsr(IA32_EFER);
+    var efer = asm_mod.rdmsr(IA32_EFER);
     efer |= EFER_SCE;
-    asm.wrmsr(IA32_EFER, efer);
+    asm_mod.wrmsr(IA32_EFER, efer);
 
     // Setup STAR (segment selectors)
     // Bits 32-47: Kernel CS (SYSCALL loads CS with this)
     // Bits 48-63: User CS (SYSRET loads CS with this + 16)
     const star = (@as(u64, user_cs - 16) << 48) | (@as(u64, kernel_cs) << 32);
-    asm.wrmsr(IA32_STAR, star);
+    asm_mod.wrmsr(IA32_STAR, star);
 
     // Setup LSTAR (system call entry point)
     const entry_addr = @intFromPtr(&syscallEntry);
-    asm.wrmsr(IA32_LSTAR, entry_addr);
+    asm_mod.wrmsr(IA32_LSTAR, entry_addr);
 
     // Setup FMASK (flags to clear on SYSCALL)
     // Clear interrupt flag and other flags for security
     const fmask: u64 = 0x200; // Clear IF (interrupt flag)
-    asm.wrmsr(IA32_FMASK, fmask);
+    asm_mod.wrmsr(IA32_FMASK, fmask);
 }
 
 // ============================================================================

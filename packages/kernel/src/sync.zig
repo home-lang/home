@@ -123,7 +123,7 @@ pub const RwSpinlock = struct {
     /// Acquire read lock
     pub fn acquireRead(self: *RwSpinlock) void {
         while (true) {
-            var current = self.state.load(.Acquire);
+            const current = self.state.load(.Acquire);
 
             // Wait if there's a writer
             if (current & WRITER_BIT != 0) {
@@ -141,7 +141,7 @@ pub const RwSpinlock = struct {
 
     /// Try to acquire read lock
     pub fn tryAcquireRead(self: *RwSpinlock) bool {
-        var current = self.state.load(.Acquire);
+        const current = self.state.load(.Acquire);
 
         if (current & WRITER_BIT != 0) {
             return false;
@@ -159,7 +159,7 @@ pub const RwSpinlock = struct {
     /// Acquire write lock
     pub fn acquireWrite(self: *RwSpinlock) void {
         while (true) {
-            var current = self.state.load(.Acquire);
+            const current = self.state.load(.Acquire);
 
             // Wait if there are any readers or writers
             if (current != 0) {
@@ -314,7 +314,7 @@ pub const Semaphore = struct {
     /// Wait (decrement counter, block if zero)
     pub fn wait(self: *Semaphore) void {
         while (true) {
-            var current = self.count.load(.Acquire);
+            const current = self.count.load(.Acquire);
 
             if (current <= 0) {
                 assembly.pause();
@@ -329,7 +329,7 @@ pub const Semaphore = struct {
 
     /// Try to wait without blocking
     pub fn tryWait(self: *Semaphore) bool {
-        var current = self.count.load(.Acquire);
+        const current = self.count.load(.Acquire);
 
         if (current <= 0) {
             return false;

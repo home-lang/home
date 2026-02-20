@@ -105,68 +105,68 @@ pub const SerialPort = struct {
         parity: Parity,
     }) !void {
         // Disable interrupts
-        asm.outb(self.port + INT_ENABLE, 0x00);
+        assembly.outb(self.port + INT_ENABLE, 0x00);
 
         // Enable DLAB (set baud rate divisor)
-        asm.outb(self.port + LINE_CONTROL, DLAB);
+        assembly.outb(self.port + LINE_CONTROL, DLAB);
 
         // Set baud rate
         const divisor = @intFromEnum(config.baud_rate);
-        asm.outb(self.port + DIVISOR_LOW, @truncate(divisor));
-        asm.outb(self.port + DIVISOR_HIGH, @truncate(divisor >> 8));
+        assembly.outb(self.port + DIVISOR_LOW, @truncate(divisor));
+        assembly.outb(self.port + DIVISOR_HIGH, @truncate(divisor >> 8));
 
         // Configure line: data bits, stop bits, parity
         const line_config = @intFromEnum(config.data_bits) |
             @intFromEnum(config.stop_bits) |
             @intFromEnum(config.parity);
-        asm.outb(self.port + LINE_CONTROL, line_config);
+        assembly.outb(self.port + LINE_CONTROL, line_config);
 
         // Enable FIFO, clear TX/RX queues, 14-byte threshold
-        asm.outb(self.port + INT_ID_FIFO, 0xC7);
+        assembly.outb(self.port + INT_ID_FIFO, 0xC7);
 
         // Enable IRQs, RTS/DSR set
-        asm.outb(self.port + MODEM_CONTROL, 0x0B);
+        assembly.outb(self.port + MODEM_CONTROL, 0x0B);
 
         // Test serial chip (loopback test)
-        asm.outb(self.port + MODEM_CONTROL, 0x1E);
-        asm.outb(self.port + DATA, 0xAE);
+        assembly.outb(self.port + MODEM_CONTROL, 0x1E);
+        assembly.outb(self.port + DATA, 0xAE);
 
-        if (asm.inb(self.port + DATA) != 0xAE) {
+        if (assembly.inb(self.port + DATA) != 0xAE) {
             return error.SerialPortFailed;
         }
 
         // Set normal operation mode
-        asm.outb(self.port + MODEM_CONTROL, 0x0F);
+        assembly.outb(self.port + MODEM_CONTROL, 0x0F);
 
         self.initialized = true;
     }
 
     /// Check if transmit buffer is empty
     fn isTransmitEmpty(self: SerialPort) bool {
-        return (asm.inb(self.port + LINE_STATUS) & TRANSMIT_EMPTY) != 0;
+        return (assembly.inb(self.port + LINE_STATUS) & TRANSMIT_EMPTY) != 0;
     }
 
     /// Check if data is available
     fn isDataAvailable(self: SerialPort) bool {
-        return (asm.inb(self.port + LINE_STATUS) & DATA_READY) != 0;
+        return (assembly.inb(self.port + LINE_STATUS) & DATA_READY) != 0;
     }
 
     /// Write a single byte
     pub fn writeByte(self: SerialPort, byte: u8) void {
         // Wait for transmit buffer to be empty
         while (!self.isTransmitEmpty()) {
-            asm.pause();
+            assembly.pause();
         }
-        asm.outb(self.port + DATA, byte);
+        assembly.outb(self.port + DATA, byte);
     }
 
     /// Read a single byte
     pub fn readByte(self: SerialPort) u8 {
         // Wait for data to be available
         while (!self.isDataAvailable()) {
-            asm.pause();
+            assembly.pause();
         }
-        return asm.inb(self.port + DATA);
+        return assembly.inb(self.port + DATA);
     }
 
     /// Write a string
@@ -181,8 +181,8 @@ pub const SerialPort = struct {
 
     /// Write formatted text
     pub fn print(self: SerialPort, comptime fmt: []const u8, args: anytype) void {
-        const writer = self.writer();
-        Basics.fmt.format(writer, fmt, args) catch {};
+        const w = self.writer();
+        Basics.fmt.format(w, fmt, args) catch {};
     }
 
     /// Print with newline
@@ -212,14 +212,14 @@ pub const SerialPort = struct {
     /// Try to read without blocking
     pub fn tryReadByte(self: SerialPort) ?u8 {
         if (self.isDataAvailable()) {
-            return asm.inb(self.port + DATA);
+            return assembly.inb(self.port + DATA);
         }
         return null;
     }
 
     /// Get line status
     pub fn getLineStatus(self: SerialPort) LineStatus {
-        const status = asm.inb(self.port + LINE_STATUS);
+        const status = assembly.inb(self.port + LINE_STATUS);
         return .{
             .data_ready = (status & DATA_READY) != 0,
             .overrun_error = (status & OVERRUN_ERROR) != 0,
@@ -234,7 +234,7 @@ pub const SerialPort = struct {
     /// Flush transmit buffer
     pub fn flush(self: SerialPort) void {
         while (!self.isTransmitEmpty()) {
-            asm.pause();
+            assembly.pause();
         }
     }
 };
@@ -297,8 +297,8 @@ pub fn panicHandler(msg: []const u8, stack_trace: ?*Basics.builtin.StackTrace) n
 
     // Halt
     while (true) {
-        asm.cli();
-        asm.hlt();
+        assembly.cli();
+        assembly.hlt();
     }
 }
 

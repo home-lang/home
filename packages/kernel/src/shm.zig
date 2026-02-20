@@ -42,6 +42,25 @@ pub const ShmPermissions = struct {
     }
 };
 
+/// IPC permission structure for shmctl
+pub const IpcPerm = struct {
+    uid: u32,
+    gid: u32,
+    mode: u16,
+};
+
+/// shmid_ds structure for shmctl IPC_STAT/IPC_SET
+pub const ShmIdDs = struct {
+    shm_perm: IpcPerm,
+    shm_segsz: usize,
+    shm_atime: u64,
+    shm_dtime: u64,
+    shm_ctime: u64,
+    shm_cpid: u32,
+    shm_lpid: u32,
+    shm_nattch: u32,
+};
+
 pub const ShmSegment = struct {
     key: i32, // IPC key
     id: u32, // Segment ID

@@ -242,7 +242,7 @@ pub const StackSetup = struct {
         envp: []const []const u8,
     ) !u64 {
         // Calculate required size
-        const arg_size = calculateArgSize(args, envp);
+        _ = calculateArgSize(args, envp);
         const stack_size = 2 * 1024 * 1024; // 2MB default stack
         const total_pages = (stack_size + memory.PAGE_SIZE - 1) / memory.PAGE_SIZE;
 
@@ -286,25 +286,25 @@ pub const StackSetup = struct {
         var env_positions: [256]u64 = undefined;
 
         // Write environment strings (backwards to preserve order)
-        var env_idx: usize = envp.len;
-        while (env_idx > 0) {
-            env_idx -= 1;
-            string_ptr -= envp[env_idx].len + 1; // +1 for null terminator
+        var env_write_idx: usize = envp.len;
+        while (env_write_idx > 0) {
+            env_write_idx -= 1;
+            string_ptr -= envp[env_write_idx].len + 1; // +1 for null terminator
             const dest: [*]u8 = @ptrFromInt(string_ptr);
-            @memcpy(dest[0..envp[env_idx].len], envp[env_idx]);
-            dest[envp[env_idx].len] = 0; // null terminator
-            env_positions[env_idx] = string_ptr;
+            @memcpy(dest[0..envp[env_write_idx].len], envp[env_write_idx]);
+            dest[envp[env_write_idx].len] = 0; // null terminator
+            env_positions[env_write_idx] = string_ptr;
         }
 
         // Write argument strings (backwards to preserve order)
-        var arg_idx: usize = args.len;
-        while (arg_idx > 0) {
-            arg_idx -= 1;
-            string_ptr -= args[arg_idx].len + 1;
+        var arg_write_idx: usize = args.len;
+        while (arg_write_idx > 0) {
+            arg_write_idx -= 1;
+            string_ptr -= args[arg_write_idx].len + 1;
             const dest: [*]u8 = @ptrFromInt(string_ptr);
-            @memcpy(dest[0..args[arg_idx].len], args[arg_idx]);
-            dest[args[arg_idx].len] = 0;
-            arg_positions[arg_idx] = string_ptr;
+            @memcpy(dest[0..args[arg_write_idx].len], args[arg_write_idx]);
+            dest[args[arg_write_idx].len] = 0;
+            arg_positions[arg_write_idx] = string_ptr;
         }
 
         // Align to 16 bytes for pointers
@@ -323,9 +323,9 @@ pub const StackSetup = struct {
         ptr_pos += @sizeOf(u64);
 
         // Write argv pointers
-        for (0..args.len) |i| {
+        for (0..args.len) |arg_idx| {
             const argv_ptr: *u64 = @ptrFromInt(ptr_pos);
-            argv_ptr.* = arg_positions[i];
+            argv_ptr.* = arg_positions[arg_idx];
             ptr_pos += @sizeOf(u64);
         }
         // NULL terminator for argv
@@ -334,9 +334,9 @@ pub const StackSetup = struct {
         ptr_pos += @sizeOf(u64);
 
         // Write envp pointers
-        for (0..envp.len) |i| {
+        for (0..envp.len) |env_idx| {
             const envp_ptr: *u64 = @ptrFromInt(ptr_pos);
-            envp_ptr.* = env_positions[i];
+            envp_ptr.* = env_positions[env_idx];
             ptr_pos += @sizeOf(u64);
         }
         // NULL terminator for envp

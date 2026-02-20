@@ -3,7 +3,6 @@
 
 const Basics = @import("basics");
 const assembly = @import("asm.zig");
-const asm = assembly; // Alias for convenience
 
 // ============================================================================
 // IDT (Interrupt Descriptor Table) Structure
@@ -590,66 +589,66 @@ pub const PIC = struct {
 
     /// Remap PIC to avoid conflicts with CPU exceptions
     pub fn remap(offset1: u8, offset2: u8) void {
-        const mask1 = asm.inb(PIC1_DATA);
-        const mask2 = asm.inb(PIC2_DATA);
+        const mask1 = assembly.inb(PIC1_DATA);
+        const mask2 = assembly.inb(PIC2_DATA);
 
         // Start initialization
-        asm.outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
-        asm.ioWait();
-        asm.outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
-        asm.ioWait();
+        assembly.outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
+        assembly.ioWait();
+        assembly.outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
+        assembly.ioWait();
 
         // Set vector offsets
-        asm.outb(PIC1_DATA, offset1);
-        asm.ioWait();
-        asm.outb(PIC2_DATA, offset2);
-        asm.ioWait();
+        assembly.outb(PIC1_DATA, offset1);
+        assembly.ioWait();
+        assembly.outb(PIC2_DATA, offset2);
+        assembly.ioWait();
 
         // Tell master PIC about slave
-        asm.outb(PIC1_DATA, 4);
-        asm.ioWait();
-        asm.outb(PIC2_DATA, 2);
-        asm.ioWait();
+        assembly.outb(PIC1_DATA, 4);
+        assembly.ioWait();
+        assembly.outb(PIC2_DATA, 2);
+        assembly.ioWait();
 
         // Set mode
-        asm.outb(PIC1_DATA, ICW4_8086);
-        asm.ioWait();
-        asm.outb(PIC2_DATA, ICW4_8086);
-        asm.ioWait();
+        assembly.outb(PIC1_DATA, ICW4_8086);
+        assembly.ioWait();
+        assembly.outb(PIC2_DATA, ICW4_8086);
+        assembly.ioWait();
 
         // Restore masks
-        asm.outb(PIC1_DATA, mask1);
-        asm.outb(PIC2_DATA, mask2);
+        assembly.outb(PIC1_DATA, mask1);
+        assembly.outb(PIC2_DATA, mask2);
     }
 
     /// Send End of Interrupt signal
     pub fn sendEoi(irq: u8) void {
         if (irq >= 8) {
-            asm.outb(PIC2_COMMAND, EOI);
+            assembly.outb(PIC2_COMMAND, EOI);
         }
-        asm.outb(PIC1_COMMAND, EOI);
+        assembly.outb(PIC1_COMMAND, EOI);
     }
 
     /// Disable PIC (for APIC usage)
     pub fn disable() void {
-        asm.outb(PIC1_DATA, 0xFF);
-        asm.outb(PIC2_DATA, 0xFF);
+        assembly.outb(PIC1_DATA, 0xFF);
+        assembly.outb(PIC2_DATA, 0xFF);
     }
 
     /// Set IRQ mask
     pub fn setMask(irq: u8) void {
         const port = if (irq < 8) PIC1_DATA else PIC2_DATA;
         const bit = irq % 8;
-        const value = asm.inb(port) | (@as(u8, 1) << @intCast(bit));
-        asm.outb(port, value);
+        const value = assembly.inb(port) | (@as(u8, 1) << @intCast(bit));
+        assembly.outb(port, value);
     }
 
     /// Clear IRQ mask
     pub fn clearMask(irq: u8) void {
         const port = if (irq < 8) PIC1_DATA else PIC2_DATA;
         const bit = irq % 8;
-        const value = asm.inb(port) & ~(@as(u8, 1) << @intCast(bit));
-        asm.outb(port, value);
+        const value = assembly.inb(port) & ~(@as(u8, 1) << @intCast(bit));
+        assembly.outb(port, value);
     }
 };
 

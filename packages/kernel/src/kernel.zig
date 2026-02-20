@@ -235,12 +235,12 @@ pub const Kernel = struct {
 
     pub fn enableInterrupts(self: *Kernel) void {
         _ = self;
-        asm.sti();
+        assembly.sti();
     }
 
     pub fn disableInterrupts(self: *Kernel) void {
         _ = self;
-        asm.cli();
+        assembly.cli();
     }
 };
 
@@ -251,13 +251,13 @@ pub const Kernel = struct {
 /// Halt the CPU
 pub fn halt() noreturn {
     while (true) {
-        asm.hlt();
+        assembly.hlt();
     }
 }
 
 /// Panic handler for kernel
 pub fn panic(msg: []const u8) noreturn {
-    asm.cli(); // Disable interrupts
+    assembly.cli(); // Disable interrupts
     Basics.debug.print("KERNEL PANIC: {s}\n", .{msg});
     halt();
 }
@@ -278,7 +278,7 @@ pub fn println(comptime fmt: []const u8, args: anytype) void {
 
 test "kernel module imports" {
     // Verify all modules are accessible
-    _ = asm;
+    _ = assembly;
     _ = memory;
     _ = interrupts;
     _ = paging;

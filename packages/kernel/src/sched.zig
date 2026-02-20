@@ -167,8 +167,8 @@ pub const CpuScheduler = struct {
         // LOCK-FREE FAST PATH: Same-CPU enqueue
         // If we're enqueueing to the current CPU from the current CPU,
         // we can use a lock-free approach since there's no contention
-        const current_cpu = asm.getCpuId();
-        if (current_cpu == self.cpu_id and !asm.interruptsEnabled()) {
+        const current_cpu = assembly.getCpuId();
+        if (current_cpu == self.cpu_id and !assembly.interruptsEnabled()) {
             // Fast path: local enqueue without lock
             thread.markReady();
             const priority = thread.priority;
@@ -200,8 +200,8 @@ pub const CpuScheduler = struct {
         // LOCK-FREE FAST PATH: Same-CPU dequeue
         // If we're removing from the current CPU on the current CPU,
         // we can use a lock-free approach since there's no contention
-        const current_cpu = asm.getCpuId();
-        if (current_cpu == self.cpu_id and !asm.interruptsEnabled()) {
+        const current_cpu = assembly.getCpuId();
+        if (current_cpu == self.cpu_id and !assembly.interruptsEnabled()) {
             if (thread.state != .Ready and thread.state != .Running) {
                 return;
             }
@@ -493,7 +493,7 @@ fn idleThreadEntry(arg: usize) void {
     _ = arg;
     while (true) {
         // Halt until interrupt
-        asm.hlt();
+        assembly.hlt();
     }
 }
 
@@ -502,7 +502,7 @@ pub fn createIdleThread(allocator: Basics.Allocator, cpu_id: u8) !void {
     const Process = @import("process.zig").Process;
 
     // Get or create kernel process
-    var kernel_proc = Process.findProcess(0) orelse {
+    const kernel_proc = Process.findProcess(0) orelse {
         const proc = try Process.create(allocator, "kernel");
         try Process.registerProcess(proc);
         proc;
@@ -553,7 +553,7 @@ pub fn balanceLoad() void {
             const load = sched.countRunnable();
             if (load > avg_load + 1) {
                 // Overloaded, try to move a thread
-                migrateTh readFromCpu(sched);
+                migrateThreadFromCpu(sched);
             }
         }
     }

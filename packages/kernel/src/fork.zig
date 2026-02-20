@@ -23,8 +23,6 @@ fn markCopyOnWrite(parent: *process.Process) !void {
 
 /// Handle copy-on-write page fault
 pub fn handleCowPageFault(addr: u64, proc: *process.Process, is_write: bool) !bool {
-    _ = proc;
-
     return try cow.CowFaultHandler.handleFault(
         &proc.address_space.page_mapper,
         addr,
@@ -230,7 +228,6 @@ fn copyAddressSpace(
     defer dst.lock.release();
 
     // Copy all VMAs with page data
-    const paging = @import("paging.zig");
     const pmm = @import("pmm.zig");
 
     var vma = src.vma_list;

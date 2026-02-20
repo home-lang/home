@@ -9,6 +9,8 @@ const vfs_advanced = @import("vfs_advanced.zig");
 const process = @import("process.zig");
 const timer = @import("timer.zig");
 
+pub const MAX_PATH_LEN: usize = 4096;
+
 // ============================================================================
 // Inode Types and Flags
 // ============================================================================
@@ -1001,10 +1003,10 @@ pub fn getRootMount() ?*Mount {
 }
 
 /// Set root mount
-pub fn setRootMount(mount: *Mount) void {
+pub fn setRootMount(mnt: *Mount) void {
     mount_lock.acquireWrite();
     defer mount_lock.releaseWrite();
-    root_mount = mount;
+    root_mount = mnt;
 }
 
 /// Mount a filesystem

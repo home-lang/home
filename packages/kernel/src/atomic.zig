@@ -2,7 +2,6 @@
 // Type-safe atomic operations and memory ordering for OS development
 
 const std = @import("std");
-const Basics = @import("basics");
 
 // ============================================================================
 // Memory Ordering
@@ -16,13 +15,13 @@ pub const MemoryOrder = enum {
     SeqCst,
 
     /// Convert to Zig's atomic ordering
-    pub fn toZigOrder(self: MemoryOrder) Basics.builtin.AtomicOrder {
+    pub fn toZigOrder(self: MemoryOrder) std.builtin.AtomicOrder {
         return switch (self) {
-            .Relaxed => .Monotonic,
-            .Acquire => .Acquire,
-            .Release => .Release,
-            .AcqRel => .AcqRel,
-            .SeqCst => .SeqCst,
+            .Relaxed => .monotonic,
+            .Acquire => .acquire,
+            .Release => .release,
+            .AcqRel => .acq_rel,
+            .SeqCst => .seq_cst,
         };
     }
 };
@@ -86,9 +85,9 @@ pub fn Atomic(comptime T: type) type {
         /// Load with specified memory order
         pub fn load(self: *const Self, comptime order: MemoryOrder) T {
             return switch (order) {
-                .Relaxed => @atomicLoad(T, &self.value, .Monotonic),
-                .Acquire => @atomicLoad(T, &self.value, .Acquire),
-                .SeqCst => @atomicLoad(T, &self.value, .SeqCst),
+                .Relaxed => @atomicLoad(T, &self.value, .monotonic),
+                .Acquire => @atomicLoad(T, &self.value, .acquire),
+                .SeqCst => @atomicLoad(T, &self.value, .seq_cst),
                 else => @compileError("Invalid load ordering"),
             };
         }
@@ -96,16 +95,16 @@ pub fn Atomic(comptime T: type) type {
         /// Store with specified memory order
         pub fn store(self: *Self, val: T, comptime order: MemoryOrder) void {
             switch (order) {
-                .Relaxed => @atomicStore(T, &self.value, val, .Monotonic),
-                .Release => @atomicStore(T, &self.value, val, .Release),
-                .SeqCst => @atomicStore(T, &self.value, val, .SeqCst),
+                .Relaxed => @atomicStore(T, &self.value, val, .monotonic),
+                .Release => @atomicStore(T, &self.value, val, .release),
+                .SeqCst => @atomicStore(T, &self.value, val, .seq_cst),
                 else => @compileError("Invalid store ordering"),
             }
         }
 
         /// Exchange (swap) with specified memory order
         pub fn swap(self: *Self, val: T, comptime order: MemoryOrder) T {
-            return @atomicRmw(T, &self.value, .Xchg, val, order.toZigOrder());
+            return @atomicRmw(T, &self.value, .Xchg, val, comptime order.toZigOrder());
         }
 
         /// Compare and exchange (strong)
@@ -116,7 +115,7 @@ pub fn Atomic(comptime T: type) type {
             comptime success_order: MemoryOrder,
             comptime failure_order: MemoryOrder,
         ) ?T {
-            return @cmpxchgStrong(T, &self.value, expected, desired, success_order.toZigOrder(), failure_order.toZigOrder());
+            return @cmpxchgStrong(T, &self.value, expected, desired, comptime success_order.toZigOrder(), comptime failure_order.toZigOrder());
         }
 
         /// Compare and exchange (weak) - may spuriously fail
@@ -127,17 +126,17 @@ pub fn Atomic(comptime T: type) type {
             comptime success_order: MemoryOrder,
             comptime failure_order: MemoryOrder,
         ) ?T {
-            return @cmpxchgWeak(T, &self.value, expected, desired, success_order.toZigOrder(), failure_order.toZigOrder());
+            return @cmpxchgWeak(T, &self.value, expected, desired, comptime success_order.toZigOrder(), comptime failure_order.toZigOrder());
         }
 
         /// Fetch and add
         pub fn fetchAdd(self: *Self, val: T, comptime order: MemoryOrder) T {
-            return @atomicRmw(T, &self.value, .Add, val, order.toZigOrder());
+            return @atomicRmw(T, &self.value, .Add, val, comptime order.toZigOrder());
         }
 
         /// Fetch and subtract
         pub fn fetchSub(self: *Self, val: T, comptime order: MemoryOrder) T {
-            return @atomicRmw(T, &self.value, .Sub, val, order.toZigOrder());
+            return @atomicRmw(T, &self.value, .Sub, val, comptime order.toZigOrder());
         }
 
         /// Fetch and bitwise AND
@@ -223,18 +222,21 @@ pub fn AtomicPtr(comptime T: type) type {
         }
 
         pub fn load(self: *const Self, comptime order: MemoryOrder) *T {
-            const int_val = @atomicLoad(PtrInt, @ptrCast(&self.value), order.toZigOrder());
+            const ptr_to_int: *const PtrInt = @ptrCast(&self.value);
+            const int_val = @atomicLoad(PtrInt, ptr_to_int, comptime order.toZigOrder());
             return @ptrFromInt(int_val);
         }
 
         pub fn store(self: *Self, ptr: *T, comptime order: MemoryOrder) void {
             const int_val: PtrInt = @intFromPtr(ptr);
-            @atomicStore(PtrInt, @ptrCast(&self.value), int_val, order.toZigOrder());
+            const ptr_to_int: *PtrInt = @ptrCast(&self.value);
+            @atomicStore(PtrInt, ptr_to_int, int_val, comptime order.toZigOrder());
         }
 
         pub fn swap(self: *Self, ptr: *T, comptime order: MemoryOrder) *T {
             const int_val: PtrInt = @intFromPtr(ptr);
-            const old_int = @atomicRmw(PtrInt, @ptrCast(&self.value), .Xchg, int_val, order.toZigOrder());
+            const ptr_to_int: *PtrInt = @ptrCast(&self.value);
+            const old_int = @atomicRmw(PtrInt, ptr_to_int, .Xchg, int_val, comptime order.toZigOrder());
             return @ptrFromInt(old_int);
         }
 
@@ -247,7 +249,8 @@ pub fn AtomicPtr(comptime T: type) type {
         ) ?*T {
             const expected_int: PtrInt = @intFromPtr(expected);
             const desired_int: PtrInt = @intFromPtr(desired);
-            const result = @cmpxchgStrong(PtrInt, @ptrCast(&self.value), expected_int, desired_int, success_order.toZigOrder(), failure_order.toZigOrder());
+            const ptr_to_int: *PtrInt = @ptrCast(&self.value);
+            const result = @cmpxchgStrong(PtrInt, ptr_to_int, expected_int, desired_int, comptime success_order.toZigOrder(), comptime failure_order.toZigOrder());
 
             if (result) |actual| {
                 return @ptrFromInt(actual);
@@ -404,7 +407,7 @@ pub fn AtomicQueue(comptime T: type) type {
 
         pub fn dequeue(self: *Self) ?*Node {
             var tail = self.tail;
-            var next = tail.next.load(.Acquire);
+            const next = tail.next.load(.Acquire);
 
             if (next) |next_node| {
                 self.tail = next_node;
@@ -511,17 +514,17 @@ pub const SeqLock = struct {
 // Tests
 test "atomic load/store" {
     var atomic = AtomicU64.init(42);
-    try Basics.testing.expectEqual(@as(u64, 42), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u64, 42), atomic.load(.SeqCst));
 
     atomic.store(100, .SeqCst);
-    try Basics.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
 }
 
 test "atomic swap" {
     var atomic = AtomicU32.init(10);
     const old = atomic.swap(20, .SeqCst);
-    try Basics.testing.expectEqual(@as(u32, 10), old);
-    try Basics.testing.expectEqual(@as(u32, 20), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u32, 10), old);
+    try std.testing.expectEqual(@as(u32, 20), atomic.load(.SeqCst));
 }
 
 test "atomic compare exchange" {
@@ -529,61 +532,61 @@ test "atomic compare exchange" {
 
     // Successful exchange
     const result1 = atomic.compareExchange(42, 100, .SeqCst, .SeqCst);
-    try Basics.testing.expectEqual(@as(?u64, null), result1);
-    try Basics.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(?u64, null), result1);
+    try std.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
 
     // Failed exchange
     const result2 = atomic.compareExchange(42, 200, .SeqCst, .SeqCst);
-    try Basics.testing.expectEqual(@as(u64, 100), result2.?);
-    try Basics.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u64, 100), result2.?);
+    try std.testing.expectEqual(@as(u64, 100), atomic.load(.SeqCst));
 }
 
 test "atomic inc/dec" {
     var atomic = AtomicU32.init(10);
 
     const old1 = atomic.inc(.SeqCst);
-    try Basics.testing.expectEqual(@as(u32, 10), old1);
-    try Basics.testing.expectEqual(@as(u32, 11), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u32, 10), old1);
+    try std.testing.expectEqual(@as(u32, 11), atomic.load(.SeqCst));
 
     const old2 = atomic.dec(.SeqCst);
-    try Basics.testing.expectEqual(@as(u32, 11), old2);
-    try Basics.testing.expectEqual(@as(u32, 10), atomic.load(.SeqCst));
+    try std.testing.expectEqual(@as(u32, 11), old2);
+    try std.testing.expectEqual(@as(u32, 10), atomic.load(.SeqCst));
 }
 
 test "atomic flag" {
     var flag = AtomicFlag.init(false);
-    try Basics.testing.expect(!flag.isSet(.SeqCst));
+    try std.testing.expect(!flag.isSet(.SeqCst));
 
     const was_set = flag.testAndSet(.SeqCst);
-    try Basics.testing.expect(!was_set);
-    try Basics.testing.expect(flag.isSet(.SeqCst));
+    try std.testing.expect(!was_set);
+    try std.testing.expect(flag.isSet(.SeqCst));
 
     flag.clear(.SeqCst);
-    try Basics.testing.expect(!flag.isSet(.SeqCst));
+    try std.testing.expect(!flag.isSet(.SeqCst));
 }
 
 test "atomic ref count" {
     var refcount = AtomicRefCount.init(1);
-    try Basics.testing.expectEqual(@as(usize, 1), refcount.get());
+    try std.testing.expectEqual(@as(usize, 1), refcount.get());
 
     _ = refcount.inc();
-    try Basics.testing.expectEqual(@as(usize, 2), refcount.get());
+    try std.testing.expectEqual(@as(usize, 2), refcount.get());
 
-    try Basics.testing.expect(!refcount.dec());
-    try Basics.testing.expect(refcount.dec());
+    try std.testing.expect(!refcount.dec());
+    try std.testing.expect(refcount.dec());
 }
 
 test "atomic bitset" {
     var bitset = AtomicBitset(128).init();
 
-    try Basics.testing.expect(!bitset.isSet(5, .SeqCst));
+    try std.testing.expect(!bitset.isSet(5, .SeqCst));
     bitset.set(5, .SeqCst);
-    try Basics.testing.expect(bitset.isSet(5, .SeqCst));
+    try std.testing.expect(bitset.isSet(5, .SeqCst));
 
     const was_set = bitset.testAndSet(10, .SeqCst);
-    try Basics.testing.expect(!was_set);
-    try Basics.testing.expect(bitset.isSet(10, .SeqCst));
+    try std.testing.expect(!was_set);
+    try std.testing.expect(bitset.isSet(10, .SeqCst));
 
     bitset.clear(5, .SeqCst);
-    try Basics.testing.expect(!bitset.isSet(5, .SeqCst));
+    try std.testing.expect(!bitset.isSet(5, .SeqCst));
 }

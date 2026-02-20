@@ -106,7 +106,7 @@ pub const Vmm = struct {
     }
 
     fn mapVmaPages(self: *Vmm, vma: *Vma) !void {
-        var page_flags = paging.PageFlags{
+        const page_flags = paging.PageFlags{
             .present = true,
             .writable = vma.flags.write,
             .user = true,

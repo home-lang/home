@@ -2,7 +2,7 @@
 // PIT, HPET, TSC, and timer management
 
 const Basics = @import("basics");
-const asm = @import("asm.zig");
+const assembly = @import("asm.zig");
 const acpi = @import("acpi.zig");
 const atomic = @import("atomic.zig");
 const sync = @import("sync.zig");
@@ -20,15 +20,15 @@ pub const Pit = struct {
         const divisor: u16 = @intCast(FREQUENCY / frequency);
 
         // Command: Channel 0, lobyte/hibyte, rate generator
-        asm.outb(COMMAND, 0x36);
+        assembly.outb(COMMAND, 0x36);
 
         // Set frequency divisor
-        asm.outb(CHANNEL0, @truncate(divisor & 0xFF));
-        asm.outb(CHANNEL0, @truncate((divisor >> 8) & 0xFF));
+        assembly.outb(CHANNEL0, @truncate(divisor & 0xFF));
+        assembly.outb(CHANNEL0, @truncate((divisor >> 8) & 0xFF));
     }
 
     pub fn setFrequency(frequency: u32) void {
-        init(frequency);
+        Pit.init(frequency);
     }
 };
 
@@ -98,7 +98,7 @@ pub const Tsc = struct {
     }
 
     pub fn read() u64 {
-        return asm.rdtsc();
+        return assembly.rdtsc();
     }
 
     /// Calibrate TSC frequency using PIT
@@ -118,10 +118,10 @@ pub const Tsc = struct {
     fn getTscFrequencyFromCpuid() u64 {
         // CPUID leaf 0x15: TSC/Core Crystal Clock ratio
         // Only available on newer Intel processors
-        const max_leaf = asm.cpuid(0, 0).eax;
+        const max_leaf = assembly.cpuid(0, 0).eax;
 
         if (max_leaf >= 0x15) {
-            const cpuid15 = asm.cpuid(0x15, 0);
+            const cpuid15 = assembly.cpuid(0x15, 0);
             const denominator = cpuid15.eax;
             const numerator = cpuid15.ebx;
             const crystal_freq = cpuid15.ecx;
@@ -136,7 +136,7 @@ pub const Tsc = struct {
 
         // CPUID leaf 0x16: Processor Frequency Information
         if (max_leaf >= 0x16) {
-            const cpuid16 = asm.cpuid(0x16, 0);
+            const cpuid16 = assembly.cpuid(0x16, 0);
             const base_freq_mhz = cpuid16.eax & 0xFFFF;
 
             if (base_freq_mhz != 0) {
@@ -158,35 +158,35 @@ pub const Tsc = struct {
         const CALIBRATION_TICKS: u16 = 11932; // ~10ms
 
         // Save current gate value
-        const old_gate = asm.inb(PIT_GATE);
+        const old_gate = assembly.inb(PIT_GATE);
 
         // Disable speaker, enable PIT channel 2 gate
-        asm.outb(PIT_GATE, (old_gate & 0xFD) | 0x01);
+        assembly.outb(PIT_GATE, (old_gate & 0xFD) | 0x01);
 
         // Command: Channel 2, lobyte/hibyte, one-shot mode
-        asm.outb(PIT_COMMAND, 0xB0);
+        assembly.outb(PIT_COMMAND, 0xB0);
 
         // Set countdown value
-        asm.outb(PIT_CHANNEL2, @truncate(CALIBRATION_TICKS & 0xFF));
-        asm.outb(PIT_CHANNEL2, @truncate((CALIBRATION_TICKS >> 8) & 0xFF));
+        assembly.outb(PIT_CHANNEL2, @truncate(CALIBRATION_TICKS & 0xFF));
+        assembly.outb(PIT_CHANNEL2, @truncate((CALIBRATION_TICKS >> 8) & 0xFF));
 
         // Reset channel 2 gate to start countdown
-        asm.outb(PIT_GATE, asm.inb(PIT_GATE) & 0xFE);
-        asm.outb(PIT_GATE, asm.inb(PIT_GATE) | 0x01);
+        assembly.outb(PIT_GATE, assembly.inb(PIT_GATE) & 0xFE);
+        assembly.outb(PIT_GATE, assembly.inb(PIT_GATE) | 0x01);
 
         // Read TSC at start
-        const tsc_start = asm.rdtsc();
+        const tsc_start = assembly.rdtsc();
 
         // Wait for countdown to complete (gate output goes high)
-        while ((asm.inb(PIT_GATE) & 0x20) == 0) {
-            asm.pause();
+        while ((assembly.inb(PIT_GATE) & 0x20) == 0) {
+            assembly.pause();
         }
 
         // Read TSC at end
-        const tsc_end = asm.rdtsc();
+        const tsc_end = assembly.rdtsc();
 
         // Restore gate
-        asm.outb(PIT_GATE, old_gate);
+        assembly.outb(PIT_GATE, old_gate);
 
         // Calculate TSC frequency
         const tsc_delta = tsc_end - tsc_start;

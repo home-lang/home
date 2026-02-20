@@ -227,7 +227,7 @@ pub const SmpContext = struct {
 
         // Wait 200us
         for (0..200_000) |_| {
-            asm.pause();
+            assembly.pause();
         }
 
         // Send second Startup IPI (as per Intel spec)
@@ -243,7 +243,7 @@ pub const SmpContext = struct {
 
             // Wait 1ms
             for (0..1_000_000) |_| {
-                asm.pause();
+                assembly.pause();
             }
         }
 

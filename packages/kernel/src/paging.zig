@@ -288,7 +288,7 @@ pub const PageMapper = struct {
         });
 
         // Invalidate TLB for this page
-        asm.invlpg(virt);
+        assembly.invlpg(virt);
     }
 
     /// Unmap a virtual address
@@ -314,7 +314,7 @@ pub const PageMapper = struct {
         pt.entries[vaddr.pt_index] = Basics.mem.zeroes(PageTableEntry);
 
         // Invalidate TLB entry
-        asm.invlpg(virt);
+        assembly.invlpg(virt);
     }
 
     /// Translate virtual address to physical address
@@ -380,7 +380,7 @@ pub const PageMapper = struct {
     /// Load this page table into CR3
     pub fn activate(self: *const PageMapper) void {
         const pml4_phys = self.pml4.getPhysicalAddress();
-        asm.writeCr3(pml4_phys);
+        assembly.writeCr3(pml4_phys);
     }
 
     /// Map a range of pages
@@ -468,7 +468,7 @@ pub const TlbShootdownRequest = struct {
 
     pub fn waitForAcknowledgments(self: *TlbShootdownRequest, expected: usize) void {
         while (self.acknowledged.load(.Acquire) < expected) {
-            asm.pause();
+            assembly.pause();
         }
     }
 };
@@ -479,7 +479,7 @@ pub var tlb_shootdown_request: ?*TlbShootdownRequest = null;
 /// Perform TLB shootdown on all CPUs
 pub fn tlbShootdownAll(address: u64) void {
     // Invalidate on local CPU first
-    asm.invlpg(address);
+    assembly.invlpg(address);
 
     // Send IPI to all other CPUs for TLB shootdown
     const smp = @import("smp.zig");
@@ -494,7 +494,7 @@ pub fn tlbShootdownAll(address: u64) void {
     // Create TLB shootdown request
     var request = TlbShootdownRequest{
         .address = address,
-        .size = PAGE_SIZE,
+        .size = memory.PAGE_SIZE,
         .is_range = false,
         .cpus_pending = @intCast(online_cpus - 1), // Exclude current CPU
     };
@@ -519,7 +519,7 @@ pub fn tlbShootdownRange(address: u64, size: u64) void {
     var i: usize = 0;
     while (i < page_count) : (i += 1) {
         const virt = address + (i * memory.PAGE_SIZE);
-        asm.invlpg(virt);
+        assembly.invlpg(virt);
     }
 
     // Send IPI to all other CPUs for TLB shootdown
@@ -560,10 +560,10 @@ pub fn tlbShootdownIpiHandler() void {
             var i: usize = 0;
             while (i < page_count) : (i += 1) {
                 const virt = req.address + (i * memory.PAGE_SIZE);
-                asm.invlpg(virt);
+                assembly.invlpg(virt);
             }
         } else {
-            asm.invlpg(req.address);
+            assembly.invlpg(req.address);
         }
         req.acknowledge();
     }
@@ -571,8 +571,8 @@ pub fn tlbShootdownIpiHandler() void {
 
 /// Flush entire TLB (reload CR3)
 pub fn flushTlb() void {
-    const cr3 = asm.readCr3();
-    asm.writeCr3(cr3);
+    const cr3 = assembly.readCr3();
+    assembly.writeCr3(cr3);
 }
 
 // ============================================================================
@@ -606,13 +606,13 @@ pub fn isUserAddress(virt: u64) bool {
 pub const TLB = struct {
     /// Flush entire TLB by reloading CR3
     pub fn flushAll() void {
-        const cr3 = asm.readCr3();
-        asm.writeCr3(cr3);
+        const cr3 = assembly.readCr3();
+        assembly.writeCr3(cr3);
     }
 
     /// Flush single TLB entry
     pub fn flush(virt: u64) void {
-        asm.invlpg(virt);
+        assembly.invlpg(virt);
     }
 
     /// Flush range of TLB entries
@@ -621,7 +621,7 @@ pub const TLB = struct {
         var i: usize = 0;
         while (i < page_count) : (i += 1) {
             const virt = virt_start + (i * memory.PAGE_SIZE);
-            asm.invlpg(virt);
+            assembly.invlpg(virt);
         }
     }
 };
@@ -729,7 +729,7 @@ pub const CowHandler = struct {
             PageRefCount.clearCow(entry);
 
             // Flush TLB for this page
-            asm.invlpg(faulting_addr);
+            assembly.invlpg(faulting_addr);
 
             return true; // Fault handled
         }
@@ -755,7 +755,7 @@ pub const CowHandler = struct {
         PageRefCount.inc(new_phys);
 
         // Flush TLB
-        asm.invlpg(faulting_addr);
+        assembly.invlpg(faulting_addr);
 
         return true; // Fault handled
     }
@@ -808,7 +808,7 @@ pub fn markCowForFork(parent_mapper: *PageMapper, child_mapper: *PageMapper) !vo
                             @truncate(pt_idx),
                             0,
                         );
-                        asm.invlpg(vaddr.toU64());
+                        assembly.invlpg(vaddr.toU64());
                     }
                 }
             }

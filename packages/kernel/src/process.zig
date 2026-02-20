@@ -12,7 +12,9 @@ const limits = @import("limits.zig");
 const namespaces = @import("namespaces.zig");
 
 // Forward declaration
-const Thread = @import("thread.zig").Thread;
+const thread_mod = @import("thread.zig");
+const Thread = thread_mod.Thread;
+const getCurrentThread = thread_mod.getCurrentThread;
 
 // ============================================================================
 // Process ID Management
@@ -218,7 +220,6 @@ pub const AddressSpace = struct {
         vma.flags = new_flags;
 
         // Update page table entries to reflect new permissions
-        const paging = @import("paging.zig");
         var addr = vma.start;
         while (addr < vma.end) : (addr += paging.PAGE_SIZE) {
             paging.updatePagePermissions(self.page_table, addr, new_flags) catch {};
@@ -593,9 +594,9 @@ pub const Process = struct {
         defer self.address_space.lock.release();
 
         var prev: ?*Vma = null;
-        var current = self.address_space.vma_list;
+        var current_vma = self.address_space.vma_list;
 
-        while (current) |vma| {
+        while (current_vma) |vma| {
             const next = vma.next;
 
             // Check if this VMA overlaps with the range
@@ -611,7 +612,7 @@ pub const Process = struct {
                 prev = vma;
             }
 
-            current = next;
+            current_vma = next;
         }
     }
 
@@ -1020,7 +1021,6 @@ pub fn forkWithFlags(parent: *Process, allocator: Basics.Allocator, flags: u32) 
 pub fn exec(proc: *Process, path: []const u8, args: []const []const u8) !void {
     const vfs_mod = @import("vfs.zig");
     const elf_loader = @import("elf_loader.zig");
-    const thread_mod = @import("thread.zig");
 
     // Clear current address space and load new program
     proc.lock.acquire();
@@ -1089,7 +1089,7 @@ pub const WaitResult = struct {
 
 /// Non-blocking wait for child process (WNOHANG)
 pub fn tryWaitForProcess(target_pid: i32) !?WaitResult {
-    const parent = getCurrentProcess() orelse return error.NoProcess;
+    const parent = current() orelse return error.NoProcess;
 
     parent.lock.acquire();
     defer parent.lock.release();
@@ -1121,7 +1121,7 @@ pub fn tryWaitForProcess(target_pid: i32) !?WaitResult {
 /// Blocking wait for child process
 pub fn waitForProcess(target_pid: i32) !WaitResult {
     const sched = @import("sched.zig");
-    const parent = getCurrentProcess() orelse return error.NoProcess;
+    _ = current() orelse return error.NoProcess;
 
     while (true) {
         // Try non-blocking first
