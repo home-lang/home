@@ -1,8 +1,8 @@
 // Home Programming Language - Kernel Atomic Operations
 // Type-safe atomic operations and memory ordering for OS development
 
+const std = @import("std");
 const Basics = @import("basics");
-const assembly = @import("asm.zig");
 
 // ============================================================================
 // Memory Ordering
@@ -34,17 +34,17 @@ pub const MemoryOrder = enum {
 pub const Barrier = struct {
     /// Full memory barrier (mfence)
     pub inline fn full() void {
-        asm.mfence();
+        asm volatile ("mfence" ::: "memory");
     }
 
     /// Load barrier (lfence)
     pub inline fn load() void {
-        asm.lfence();
+        asm volatile ("lfence" ::: "memory");
     }
 
     /// Store barrier (sfence)
     pub inline fn store() void {
-        asm.sfence();
+        asm volatile ("sfence" ::: "memory");
     }
 
     /// Compiler barrier only
@@ -54,14 +54,12 @@ pub const Barrier = struct {
 
     /// Acquire barrier (load + compiler)
     pub inline fn acquire() void {
-        load();
-        compiler();
+        asm volatile ("lfence" ::: "memory");
     }
 
     /// Release barrier (compiler + store)
     pub inline fn release() void {
-        compiler();
-        store();
+        asm volatile ("sfence" ::: "memory");
     }
 };
 
@@ -107,8 +105,7 @@ pub fn Atomic(comptime T: type) type {
 
         /// Exchange (swap) with specified memory order
         pub fn swap(self: *Self, val: T, comptime order: MemoryOrder) T {
-            const ptr: *volatile T = @ptrCast(&self.value);
-            return asm.xchg(T, ptr, val);
+            return @atomicRmw(T, &self.value, .Xchg, val, order.toZigOrder());
         }
 
         /// Compare and exchange (strong)
@@ -119,14 +116,7 @@ pub fn Atomic(comptime T: type) type {
             comptime success_order: MemoryOrder,
             comptime failure_order: MemoryOrder,
         ) ?T {
-            const ptr: *volatile T = @ptrCast(&self.value);
-            const result = asm.cmpxchg(T, ptr, expected, desired);
-
-            if (result == expected) {
-                return null; // Success
-            } else {
-                return result; // Failure, return actual value
-            }
+            return @cmpxchgStrong(T, &self.value, expected, desired, success_order.toZigOrder(), failure_order.toZigOrder());
         }
 
         /// Compare and exchange (weak) - may spuriously fail
@@ -137,20 +127,17 @@ pub fn Atomic(comptime T: type) type {
             comptime success_order: MemoryOrder,
             comptime failure_order: MemoryOrder,
         ) ?T {
-            // On x86, weak is the same as strong
-            return self.compareExchange(expected, desired, success_order, failure_order);
+            return @cmpxchgWeak(T, &self.value, expected, desired, success_order.toZigOrder(), failure_order.toZigOrder());
         }
 
         /// Fetch and add
         pub fn fetchAdd(self: *Self, val: T, comptime order: MemoryOrder) T {
-            const ptr: *volatile T = @ptrCast(&self.value);
-            return asm.xadd(T, ptr, val);
+            return @atomicRmw(T, &self.value, .Add, val, order.toZigOrder());
         }
 
         /// Fetch and subtract
         pub fn fetchSub(self: *Self, val: T, comptime order: MemoryOrder) T {
-            const negated = @as(T, @bitCast(-%@as(i64, @intCast(val))));
-            return self.fetchAdd(negated, order);
+            return @atomicRmw(T, &self.value, .Sub, val, order.toZigOrder());
         }
 
         /// Fetch and bitwise AND
@@ -247,8 +234,7 @@ pub fn AtomicPtr(comptime T: type) type {
 
         pub fn swap(self: *Self, ptr: *T, comptime order: MemoryOrder) *T {
             const int_val: PtrInt = @intFromPtr(ptr);
-            const vol_ptr: *volatile PtrInt = @ptrCast(&self.value);
-            const old_int = asm.xchg(PtrInt, vol_ptr, int_val);
+            const old_int = @atomicRmw(PtrInt, @ptrCast(&self.value), .Xchg, int_val, order.toZigOrder());
             return @ptrFromInt(old_int);
         }
 
@@ -261,13 +247,12 @@ pub fn AtomicPtr(comptime T: type) type {
         ) ?*T {
             const expected_int: PtrInt = @intFromPtr(expected);
             const desired_int: PtrInt = @intFromPtr(desired);
-            const vol_ptr: *volatile PtrInt = @ptrCast(&self.value);
-            const result_int = asm.cmpxchg(PtrInt, vol_ptr, expected_int, desired_int);
+            const result = @cmpxchgStrong(PtrInt, @ptrCast(&self.value), expected_int, desired_int, success_order.toZigOrder(), failure_order.toZigOrder());
 
-            if (result_int == expected_int) {
-                return null;
+            if (result) |actual| {
+                return @ptrFromInt(actual);
             } else {
-                return @ptrFromInt(result_int);
+                return null;
             }
         }
     };
@@ -295,7 +280,7 @@ pub const AtomicFlag = struct {
     }
 
     /// Test the flag without modifying
-    pub fn test(self: *const AtomicFlag, comptime order: MemoryOrder) bool {
+    pub fn isSet(self: *const AtomicFlag, comptime order: MemoryOrder) bool {
         return self.value.load(order);
     }
 };
@@ -466,7 +451,7 @@ pub fn AtomicBitset(comptime size: usize) type {
             _ = self.words[word_idx].fetchAnd(mask, order);
         }
 
-        pub fn test(self: *const Self, bit: usize, comptime order: MemoryOrder) bool {
+        pub fn isSet(self: *const Self, bit: usize, comptime order: MemoryOrder) bool {
             if (bit >= size) return false;
             const word_idx = bit / WORD_BITS;
             const bit_idx = bit % WORD_BITS;
@@ -513,7 +498,7 @@ pub const SeqLock = struct {
             if (seq & 1 == 0) {
                 return seq;
             }
-            asm.pause();
+            std.atomic.spinLoopHint();
         }
     }
 
@@ -567,14 +552,14 @@ test "atomic inc/dec" {
 
 test "atomic flag" {
     var flag = AtomicFlag.init(false);
-    try Basics.testing.expect(!flag.test(.SeqCst));
+    try Basics.testing.expect(!flag.isSet(.SeqCst));
 
     const was_set = flag.testAndSet(.SeqCst);
     try Basics.testing.expect(!was_set);
-    try Basics.testing.expect(flag.test(.SeqCst));
+    try Basics.testing.expect(flag.isSet(.SeqCst));
 
     flag.clear(.SeqCst);
-    try Basics.testing.expect(!flag.test(.SeqCst));
+    try Basics.testing.expect(!flag.isSet(.SeqCst));
 }
 
 test "atomic ref count" {
@@ -591,14 +576,14 @@ test "atomic ref count" {
 test "atomic bitset" {
     var bitset = AtomicBitset(128).init();
 
-    try Basics.testing.expect(!bitset.test(5, .SeqCst));
+    try Basics.testing.expect(!bitset.isSet(5, .SeqCst));
     bitset.set(5, .SeqCst);
-    try Basics.testing.expect(bitset.test(5, .SeqCst));
+    try Basics.testing.expect(bitset.isSet(5, .SeqCst));
 
     const was_set = bitset.testAndSet(10, .SeqCst);
     try Basics.testing.expect(!was_set);
-    try Basics.testing.expect(bitset.test(10, .SeqCst));
+    try Basics.testing.expect(bitset.isSet(10, .SeqCst));
 
     bitset.clear(5, .SeqCst);
-    try Basics.testing.expect(!bitset.test(5, .SeqCst));
+    try Basics.testing.expect(!bitset.isSet(5, .SeqCst));
 }

@@ -20,8 +20,8 @@ pub const Spinlock = struct {
     pub fn acquire(self: *Spinlock) void {
         while (self.locked.testAndSet(.Acquire)) {
             // Spin with pause to reduce power and improve SMT performance
-            while (self.locked.test(.Relaxed)) {
-                asm.pause();
+            while (self.locked.isSet(.Relaxed)) {
+                assembly.pause();
             }
         }
     }
@@ -61,22 +61,22 @@ pub const IrqSpinlock = struct {
 
     /// Acquire the lock and disable interrupts
     pub fn acquire(self: *IrqSpinlock) void {
-        self.irq_state = asm.interruptsEnabled();
-        asm.cli();
+        self.irq_state = assembly.interruptsEnabled();
+        assembly.cli();
 
         while (self.locked.testAndSet(.Acquire)) {
-            asm.sti(); // Re-enable interrupts while spinning
-            while (self.locked.test(.Relaxed)) {
-                asm.pause();
+            assembly.sti(); // Re-enable interrupts while spinning
+            while (self.locked.isSet(.Relaxed)) {
+                assembly.pause();
             }
-            asm.cli();
+            assembly.cli();
         }
     }
 
     /// Try to acquire the lock
     pub fn tryAcquire(self: *IrqSpinlock) bool {
-        self.irq_state = asm.interruptsEnabled();
-        asm.cli();
+        self.irq_state = assembly.interruptsEnabled();
+        assembly.cli();
 
         if (!self.locked.testAndSet(.Acquire)) {
             return true;
@@ -84,7 +84,7 @@ pub const IrqSpinlock = struct {
 
         // Failed to acquire, restore interrupt state
         if (self.irq_state) {
-            asm.sti();
+            assembly.sti();
         }
         return false;
     }
@@ -93,7 +93,7 @@ pub const IrqSpinlock = struct {
     pub fn release(self: *IrqSpinlock) void {
         self.locked.clear(.Release);
         if (self.irq_state) {
-            asm.sti();
+            assembly.sti();
         }
     }
 
@@ -127,7 +127,7 @@ pub const RwSpinlock = struct {
 
             // Wait if there's a writer
             if (current & WRITER_BIT != 0) {
-                asm.pause();
+                assembly.pause();
                 continue;
             }
 
@@ -163,7 +163,7 @@ pub const RwSpinlock = struct {
 
             // Wait if there are any readers or writers
             if (current != 0) {
-                asm.pause();
+                assembly.pause();
                 continue;
             }
 
@@ -243,7 +243,7 @@ pub const Mutex = struct {
 
             // Wait for our turn
             while (self.now_serving.load(.Acquire) != ticket) {
-                asm.pause();
+                assembly.pause();
             }
         }
 
@@ -317,7 +317,7 @@ pub const Semaphore = struct {
             var current = self.count.load(.Acquire);
 
             if (current <= 0) {
-                asm.pause();
+                assembly.pause();
                 continue;
             }
 
@@ -378,7 +378,7 @@ pub const SyncBarrier = struct {
         } else {
             // Wait for all threads
             while (self.generation.load(.Acquire) == gen) {
-                asm.pause();
+                assembly.pause();
             }
         }
     }
@@ -414,7 +414,7 @@ pub const Once = struct {
         } else {
             // Wait for completion
             while (self.state.load(.Acquire) != COMPLETE) {
-                asm.pause();
+                assembly.pause();
             }
         }
     }
@@ -469,7 +469,7 @@ pub const WaitQueue = struct {
     /// Wait until state changes from expected value
     pub fn wait(self: *WaitQueue, expected: u32) void {
         while (self.state.load(.Acquire) == expected) {
-            asm.pause();
+            assembly.pause();
         }
     }
 
@@ -542,10 +542,10 @@ test "spinlock basic" {
     var lock = Spinlock.init();
 
     lock.acquire();
-    try Basics.testing.expect(lock.locked.test(.Relaxed));
+    try Basics.testing.expect(lock.locked.isSet(.Relaxed));
 
     lock.release();
-    try Basics.testing.expect(!lock.locked.test(.Relaxed));
+    try Basics.testing.expect(!lock.locked.isSet(.Relaxed));
 }
 
 test "spinlock try acquire" {

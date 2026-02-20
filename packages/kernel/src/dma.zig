@@ -264,7 +264,7 @@ pub fn DmaPool(comptime buffer_size: usize) type {
         pub fn available(self: *const Self) usize {
             var count: usize = 0;
             for (self.buffers) |*buf| {
-                if (!buf.in_use.test(.Acquire)) {
+                if (!buf.in_use.isSet(.Acquire)) {
                     count += 1;
                 }
             }
