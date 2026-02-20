@@ -1,5 +1,6 @@
 {
-  "name": "@ion-lang/setup-ion",
+  "name": "@home-lang/setup-home",
+  "type": "module",
   "version": "0.1.0",
   "description": "GitHub Action to setup Home programming language",
   "main": "dist/index.js",
@@ -12,12 +13,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ion-lang/ion.git",
+    "url": "git+https://github.com/home-lang/home.git",
     "directory": "packages/action"
   },
   "keywords": [
     "actions",
-    "ion",
+    "home",
     "setup",
     "compiler",
     "programming-language"

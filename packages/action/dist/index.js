@@ -20731,7 +20731,7 @@ var tc = __toESM(require_tool_cache(), 1);
 var exec = __toESM(require_exec(), 1);
 import * as fs from "fs";
 import * as os from "os";
-var INSTALL_BASE = "https://github.com/ion-lang/ion/releases/download";
+var INSTALL_BASE = "https://github.com/home-lang/home/releases/download";
 async function run() {
   try {
     let ionVersion = core.getInput("home-version") || "latest";
@@ -20771,8 +20771,8 @@ async function run() {
     core.addPath(ionPath);
     await verifyInstallation();
     core.info(`✓ Home ${actualVersion} installed successfully`);
-    core.setOutput("ion-version", actualVersion);
-    core.setOutput("ion-path", ionPath);
+    core.setOutput("home-version", actualVersion);
+    core.setOutput("home-path", ionPath);
   } catch (error) {
     if (error instanceof Error) {
       core.setFailed(error.message);
@@ -20790,7 +20790,7 @@ async function getDownloadUrl(version) {
   } else if (version === "canary") {
     actualVersion = "canary";
   }
-  const filename = `ion-${actualVersion}-${platform2}-${arch2}.tar.gz`;
+  const filename = `home-${actualVersion}-${platform2}-${arch2}.tar.gz`;
   const url = `${INSTALL_BASE}/v${actualVersion}/${filename}`;
   return { url, actualVersion };
 }

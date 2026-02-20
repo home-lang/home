@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
-const INSTALL_BASE = 'https://github.com/ion-lang/ion/releases/download';
+const INSTALL_BASE = 'https://github.com/home-lang/home/releases/download';
 
 interface HomeVersion {
   version: string;
@@ -69,8 +69,8 @@ async function run(): Promise<void> {
     await verifyInstallation();
 
     core.info(`✓ Home ${actualVersion} installed successfully`);
-    core.setOutput('ion-version', actualVersion);
-    core.setOutput('ion-path', ionPath);
+    core.setOutput('home-version', actualVersion);
+    core.setOutput('home-path', ionPath);
 
   } catch (error) {
     if (error instanceof Error) {
@@ -94,7 +94,7 @@ async function getDownloadUrl(version: string): Promise<{ url: string; actualVer
     actualVersion = 'canary';
   }
 
-  const filename = `ion-${actualVersion}-${platform}-${arch}.tar.gz`;
+  const filename = `home-${actualVersion}-${platform}-${arch}.tar.gz`;
   const url = `${INSTALL_BASE}/v${actualVersion}/${filename}`;
 
   return { url, actualVersion };
