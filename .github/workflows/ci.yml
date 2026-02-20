@@ -108,12 +108,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Home
-        uses: ./packages/action
-        with:
-          home-version: 'latest'
-          cache: 'true'
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:

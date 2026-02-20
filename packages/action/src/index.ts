@@ -1,47 +1,57 @@
 import * as core from '@actions/core';
 import * as tc from '@actions/tool-cache';
 import * as exec from '@actions/exec';
-import * as io from '@actions/io';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as os from 'os';
+import * as fs from 'fs';
+import * as https from 'https';
 
-const INSTALL_BASE = 'https://github.com/home-lang/home/releases/download';
-
-interface HomeVersion {
-  version: string;
-  url: string;
-}
+const GITHUB_REPO = 'home-lang/home';
+const INSTALL_BASE = `https://github.com/${GITHUB_REPO}/releases/download`;
 
 async function run(): Promise<void> {
   try {
     // Get input version or read from version file
-    let ionVersion = core.getInput('home-version') || 'latest';
-    const ionVersionFile = core.getInput('home-version-file');
+    let version = core.getInput('home-version') || 'latest';
+    const versionFile = core.getInput('home-version-file');
 
-    if (ionVersionFile && fs.existsSync(ionVersionFile)) {
-      ionVersion = fs.readFileSync(ionVersionFile, 'utf-8').trim();
+    if (versionFile && fs.existsSync(versionFile)) {
+      version = fs.readFileSync(versionFile, 'utf-8').trim();
     }
 
     const enableCache = core.getInput('cache') === 'true';
 
-    core.info(`Setting up Home ${ionVersion}...`);
+    core.info(`Setting up Home ${version}...`);
 
     // Check cache first
-    let ionPath: string | undefined;
+    let homePath: string | undefined;
 
+    if (enableCache && version !== 'latest' && version !== 'canary') {
+      homePath = tc.find('home', version);
+      if (homePath) {
+        core.info(`Found Home ${version} in cache`);
+        core.addPath(homePath);
+        await verifyInstallation();
+        return;
+      }
+    }
+
+    // Resolve the actual version
+    const actualVersion = await resolveVersion(version);
+    core.info(`Resolved version: ${actualVersion}`);
+
+    // Check cache again with resolved version
     if (enableCache) {
-      ionPath = tc.find('home', ionVersion);
-      if (ionPath) {
-        core.info(`Found Home ${ionVersion} in cache`);
-        core.addPath(ionPath);
+      homePath = tc.find('home', actualVersion);
+      if (homePath) {
+        core.info(`Found Home ${actualVersion} in cache`);
+        core.addPath(homePath);
         await verifyInstallation();
         return;
       }
     }
 
     // Download and install Home
-    const { url, actualVersion } = await getDownloadUrl(ionVersion);
+    const url = getDownloadUrl(actualVersion);
     core.info(`Downloading Home from ${url}`);
 
     const downloadPath = await tc.downloadTool(url);
@@ -58,19 +68,19 @@ async function run(): Promise<void> {
 
     // Cache the tool
     if (enableCache) {
-      ionPath = await tc.cacheDir(extractedPath, 'home', actualVersion);
+      homePath = await tc.cacheDir(extractedPath, 'home', actualVersion);
     } else {
-      ionPath = extractedPath;
+      homePath = extractedPath;
     }
 
-    core.addPath(ionPath);
+    core.addPath(homePath);
 
     // Verify installation
     await verifyInstallation();
 
-    core.info(`✓ Home ${actualVersion} installed successfully`);
+    core.info(`Home ${actualVersion} installed successfully`);
     core.setOutput('home-version', actualVersion);
-    core.setOutput('home-path', ionPath);
+    core.setOutput('home-path', homePath);
 
   } catch (error) {
     if (error instanceof Error) {
@@ -81,23 +91,78 @@ async function run(): Promise<void> {
   }
 }
 
-async function getDownloadUrl(version: string): Promise<{ url: string; actualVersion: string }> {
-  const platform = getPlatform();
-  const arch = getArch();
-
-  // Handle "latest" and "canary" versions
-  let actualVersion = version;
-  if (version === 'latest') {
-    // In production, fetch from GitHub API
-    actualVersion = '0.1.0'; // Fallback
-  } else if (version === 'canary') {
-    actualVersion = 'canary';
+async function resolveVersion(version: string): Promise<string> {
+  if (version !== 'latest' && version !== 'canary') {
+    return version;
   }
 
-  const filename = `home-${actualVersion}-${platform}-${arch}.tar.gz`;
-  const url = `${INSTALL_BASE}/v${actualVersion}/${filename}`;
+  const apiUrl = version === 'latest'
+    ? `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
+    : `https://api.github.com/repos/${GITHUB_REPO}/releases`;
 
-  return { url, actualVersion };
+  const data = await fetchJson(apiUrl);
+
+  if (version === 'latest') {
+    const tagName = data?.tag_name;
+    if (!tagName) {
+      throw new Error(`No releases found for ${GITHUB_REPO}. Please publish a release first.`);
+    }
+    return tagName.replace(/^v/, '');
+  }
+
+  // For canary, find the first pre-release
+  if (Array.isArray(data)) {
+    const prerelease = data.find((r: { prerelease: boolean }) => r.prerelease);
+    if (prerelease?.tag_name) {
+      return prerelease.tag_name.replace(/^v/, '');
+    }
+  }
+
+  throw new Error(`No canary/prerelease found for ${GITHUB_REPO}`);
+}
+
+function fetchJson(url: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {
+      'User-Agent': 'setup-home-action',
+      'Accept': 'application/vnd.github.v3+json',
+    };
+
+    // Use GITHUB_TOKEN if available for higher rate limits
+    const token = process.env.GITHUB_TOKEN;
+    if (token) {
+      headers['Authorization'] = `token ${token}`;
+    }
+
+    https.get(url, { headers }, (res) => {
+      if (res.statusCode === 404) {
+        resolve(null);
+        return;
+      }
+
+      if (res.statusCode !== 200) {
+        reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`));
+        return;
+      }
+
+      let body = '';
+      res.on('data', (chunk: string) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error(`Failed to parse GitHub API response from ${url}`));
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+function getDownloadUrl(version: string): string {
+  const platform = getPlatform();
+  const arch = getArch();
+  const filename = `home-${version}-${platform}-${arch}.tar.gz`;
+  return `${INSTALL_BASE}/v${version}/${filename}`;
 }
 
 function getPlatform(): string {
@@ -129,7 +194,7 @@ function getArch(): string {
 async function verifyInstallation(): Promise<void> {
   try {
     await exec.exec('home', ['--version']);
-  } catch (error) {
+  } catch {
     throw new Error('Home installation verification failed');
   }
 }

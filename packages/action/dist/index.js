@@ -20729,29 +20729,42 @@ var require_tool_cache = __commonJS((exports) => {
 var core = __toESM(require_core(), 1);
 var tc = __toESM(require_tool_cache(), 1);
 var exec = __toESM(require_exec(), 1);
-import * as fs from "fs";
 import * as os from "os";
-var INSTALL_BASE = "https://github.com/home-lang/home/releases/download";
+import * as fs from "fs";
+import * as https from "https";
+var GITHUB_REPO = "home-lang/home";
+var INSTALL_BASE = `https://github.com/${GITHUB_REPO}/releases/download`;
 async function run() {
   try {
-    let ionVersion = core.getInput("home-version") || "latest";
-    const ionVersionFile = core.getInput("home-version-file");
-    if (ionVersionFile && fs.existsSync(ionVersionFile)) {
-      ionVersion = fs.readFileSync(ionVersionFile, "utf-8").trim();
+    let version = core.getInput("home-version") || "latest";
+    const versionFile = core.getInput("home-version-file");
+    if (versionFile && fs.existsSync(versionFile)) {
+      version = fs.readFileSync(versionFile, "utf-8").trim();
     }
     const enableCache = core.getInput("cache") === "true";
-    core.info(`Setting up Home ${ionVersion}...`);
-    let ionPath;
-    if (enableCache) {
-      ionPath = tc.find("home", ionVersion);
-      if (ionPath) {
-        core.info(`Found Home ${ionVersion} in cache`);
-        core.addPath(ionPath);
+    core.info(`Setting up Home ${version}...`);
+    let homePath;
+    if (enableCache && version !== "latest" && version !== "canary") {
+      homePath = tc.find("home", version);
+      if (homePath) {
+        core.info(`Found Home ${version} in cache`);
+        core.addPath(homePath);
         await verifyInstallation();
         return;
       }
     }
-    const { url, actualVersion } = await getDownloadUrl(ionVersion);
+    const actualVersion = await resolveVersion(version);
+    core.info(`Resolved version: ${actualVersion}`);
+    if (enableCache) {
+      homePath = tc.find("home", actualVersion);
+      if (homePath) {
+        core.info(`Found Home ${actualVersion} in cache`);
+        core.addPath(homePath);
+        await verifyInstallation();
+        return;
+      }
+    }
+    const url = getDownloadUrl(actualVersion);
     core.info(`Downloading Home from ${url}`);
     const downloadPath = await tc.downloadTool(url);
     core.info("Extracting Home...");
@@ -20764,15 +20777,15 @@ async function run() {
       throw new Error(`Unsupported archive format: ${url}`);
     }
     if (enableCache) {
-      ionPath = await tc.cacheDir(extractedPath, "home", actualVersion);
+      homePath = await tc.cacheDir(extractedPath, "home", actualVersion);
     } else {
-      ionPath = extractedPath;
+      homePath = extractedPath;
     }
-    core.addPath(ionPath);
+    core.addPath(homePath);
     await verifyInstallation();
-    core.info(`✓ Home ${actualVersion} installed successfully`);
+    core.info(`Home ${actualVersion} installed successfully`);
     core.setOutput("home-version", actualVersion);
-    core.setOutput("home-path", ionPath);
+    core.setOutput("home-path", homePath);
   } catch (error) {
     if (error instanceof Error) {
       core.setFailed(error.message);
@@ -20781,18 +20794,65 @@ async function run() {
     }
   }
 }
-async function getDownloadUrl(version) {
+async function resolveVersion(version) {
+  if (version !== "latest" && version !== "canary") {
+    return version;
+  }
+  const apiUrl = version === "latest" ? `https://api.github.com/repos/${GITHUB_REPO}/releases/latest` : `https://api.github.com/repos/${GITHUB_REPO}/releases`;
+  const data = await fetchJson(apiUrl);
+  if (version === "latest") {
+    const tagName = data?.tag_name;
+    if (!tagName) {
+      throw new Error(`No releases found for ${GITHUB_REPO}. Please publish a release first.`);
+    }
+    return tagName.replace(/^v/, "");
+  }
+  if (Array.isArray(data)) {
+    const prerelease = data.find((r) => r.prerelease);
+    if (prerelease?.tag_name) {
+      return prerelease.tag_name.replace(/^v/, "");
+    }
+  }
+  throw new Error(`No canary/prerelease found for ${GITHUB_REPO}`);
+}
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const headers = {
+      "User-Agent": "setup-home-action",
+      Accept: "application/vnd.github.v3+json"
+    };
+    const token = process.env.GITHUB_TOKEN;
+    if (token) {
+      headers["Authorization"] = `token ${token}`;
+    }
+    https.get(url, { headers }, (res) => {
+      if (res.statusCode === 404) {
+        resolve(null);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`));
+        return;
+      }
+      let body = "";
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error(`Failed to parse GitHub API response from ${url}`));
+        }
+      });
+    }).on("error", reject);
+  });
+}
+function getDownloadUrl(version) {
   const platform2 = getPlatform();
   const arch2 = getArch();
-  let actualVersion = version;
-  if (version === "latest") {
-    actualVersion = "0.1.0";
-  } else if (version === "canary") {
-    actualVersion = "canary";
-  }
-  const filename = `home-${actualVersion}-${platform2}-${arch2}.tar.gz`;
-  const url = `${INSTALL_BASE}/v${actualVersion}/${filename}`;
-  return { url, actualVersion };
+  const filename = `home-${version}-${platform2}-${arch2}.tar.gz`;
+  return `${INSTALL_BASE}/v${version}/${filename}`;
 }
 function getPlatform() {
   const platform2 = os.platform();
@@ -20821,7 +20881,7 @@ function getArch() {
 async function verifyInstallation() {
   try {
     await exec.exec("home", ["--version"]);
-  } catch (error) {
+  } catch {
     throw new Error("Home installation verification failed");
   }
 }
