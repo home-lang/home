@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const ast = @import("ast");
 const Io = std.Io;
 
@@ -321,9 +323,11 @@ pub const ModuleResolver = struct {
 
     /// Auto-detect Home root directory
     fn getHomeRoot(allocator: std.mem.Allocator, io: Io) ![]const u8 {
-        // Try environment variable first
-        if (std.c.getenv("HOME_ROOT")) |home_root_c| {
-            return try allocator.dupe(u8, std.mem.span(home_root_c));
+        // Try environment variable first (cross-platform)
+        if (comptime native_os != .windows) {
+            if (std.c.getenv("HOME_ROOT")) |home_root_c| {
+                return try allocator.dupe(u8, std.mem.span(home_root_c));
+            }
         }
 
         // Try to find it relative to the current executable

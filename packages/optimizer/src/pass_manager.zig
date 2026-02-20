@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const ast = @import("ast");
 const ir = @import("ir");
 
@@ -173,10 +175,24 @@ pub const PassManager = struct {
         try self.addPass(merge_funcs);
     }
 
+    /// Cross-platform nanosecond timestamp for timing
+    fn getNanoTimestamp() i128 {
+        if (comptime native_os == .windows) {
+            const ntdll = std.os.windows.ntdll;
+            var counter: i64 = undefined;
+            var freq: i64 = undefined;
+            _ = ntdll.RtlQueryPerformanceCounter(&counter);
+            _ = ntdll.RtlQueryPerformanceFrequency(&freq);
+            return @divFloor(@as(i128, counter) * std.time.ns_per_s, @as(i128, freq));
+        }
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    }
+
     /// Run all passes on a program
     pub fn runOnProgram(self: *PassManager, program: *ast.Program) !void {
-        var start_ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &start_ts);
+        const start_ns = getNanoTimestamp();
 
         var changed = true;
         var iteration: usize = 0;
@@ -192,9 +208,8 @@ pub const PassManager = struct {
             }
         }
 
-        var end_ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &end_ts);
-        const elapsed_ns: i64 = (end_ts.sec - start_ts.sec) * std.time.ns_per_s + (end_ts.nsec - start_ts.nsec);
+        const end_ns = getNanoTimestamp();
+        const elapsed_ns = end_ns - start_ns;
         self.stats.total_time_ms = @intCast(@divFloor(elapsed_ns, std.time.ns_per_ms));
     }
 

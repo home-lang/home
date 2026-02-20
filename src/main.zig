@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const lexer_mod = @import("lexer");
 const Lexer = lexer_mod.Lexer;
 const Token = lexer_mod.Token;
@@ -39,6 +41,14 @@ var g_io: Io = undefined;
 
 /// Get monotonic timestamp in nanoseconds (Zig 0.16 compatible)
 fn getMonotonicNs() u64 {
+    if (comptime native_os == .windows) {
+        const ntdll = std.os.windows.ntdll;
+        var counter: i64 = undefined;
+        var freq: i64 = undefined;
+        _ = ntdll.RtlQueryPerformanceCounter(&counter);
+        _ = ntdll.RtlQueryPerformanceFrequency(&freq);
+        return @intCast(@divFloor(@as(i128, counter) * std.time.ns_per_s, @as(i128, freq)));
+    }
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
@@ -1030,7 +1040,13 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var iteration: u32 = 0;
     while (true) {
         // Sleep for 500ms
-        _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);
+        if (comptime native_os == .windows) {
+            // 500ms in 100-nanosecond intervals, negative for relative time
+            var delay: i64 = -5_000_000;
+            _ = std.os.windows.ntdll.NtDelayExecution(0, &delay);
+        } else {
+            _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);
+        }
 
         const stat = Io.Dir.cwd().statFile(g_io, file_path, .{}) catch continue;
 
@@ -2165,7 +2181,20 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
             std.debug.print("{s}Warning:{s} Directory '{s}' already exists, initializing in place\n", .{ Color.Yellow.code(), Color.Reset.code(), name });
         };
 
-        try std.Io.Threaded.chdir(name);
+        if (comptime native_os == .windows) {
+            const windows = std.os.windows;
+            var wide_buf: [256]u16 = undefined;
+            const wide_len = std.unicode.utf8ToUtf16Le(&wide_buf, name) catch return error.BadPathName;
+            const wide_path = windows.UNICODE_STRING{
+                .Length = @intCast(wide_len * 2),
+                .MaximumLength = @intCast(wide_len * 2),
+                .Buffer = &wide_buf,
+            };
+            const status = windows.ntdll.RtlSetCurrentDirectory_U(&wide_path);
+            if (status != .SUCCESS) return error.FileNotFound;
+        } else {
+            try std.Io.Threaded.chdir(name);
+        }
     }
 
     // Create directories
@@ -2668,10 +2697,12 @@ fn pkgLogin(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 
     // Check for token in environment variable
     if (token == null) {
-        if (std.c.getenv("ION_TOKEN")) |env_ptr| {
-            const env_token = std.mem.span(env_ptr);
-            token = env_token;
-            std.debug.print("{s}Using token from ION_TOKEN environment variable{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        if (comptime native_os != .windows) {
+            if (std.c.getenv("ION_TOKEN")) |env_ptr| {
+                const env_token = std.mem.span(env_ptr);
+                token = env_token;
+                std.debug.print("{s}Using token from ION_TOKEN environment variable{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+            }
         }
     }
 

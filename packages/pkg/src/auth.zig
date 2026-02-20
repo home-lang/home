@@ -245,9 +245,11 @@ pub const TokenStore = struct {
 
     /// Get the user's home directory or config directory
     fn getHomeDir(allocator: std.mem.Allocator) ![]const u8 {
-        if (builtin.os.tag == .windows) {
-            const env_ptr = std.c.getenv("APPDATA") orelse std.c.getenv("USERPROFILE") orelse return error.NoHomeDir;
-            return allocator.dupe(u8, std.mem.span(env_ptr));
+        if (comptime builtin.os.tag == .windows) {
+            const environ: std.process.Environ = .{ .block = .{ .use_global = true } };
+            return environ.getAlloc(allocator, "APPDATA") catch
+                environ.getAlloc(allocator, "USERPROFILE") catch
+                return error.NoHomeDir;
         } else {
             const env_ptr = std.c.getenv("HOME") orelse return error.NoHomeDir;
             return allocator.dupe(u8, std.mem.span(env_ptr));
@@ -565,6 +567,12 @@ pub fn verifyToken(auth_manager: *AuthManager, reg: []const u8, io_param: std.Io
 
 /// Get current UNIX timestamp (seconds since epoch)
 fn getUnixTimestamp() i64 {
+    if (comptime builtin.os.tag == .windows) {
+        // RtlGetSystemTimePrecise returns 100-nanosecond intervals since 1601-01-01
+        const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
+        // Convert to Unix epoch (subtract 11644473600 seconds for 1601->1970 difference)
+        return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+    }
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) {
         return 0;

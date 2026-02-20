@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 
 /// HTTP Router for Home - Express.js/Laravel-style routing
 /// Provides high-level routing with middleware support
@@ -468,6 +470,14 @@ pub fn cors() Middleware {
 pub fn logger() Middleware {
     return struct {
         fn getNanoTimestamp() u64 {
+            if (comptime native_os == .windows) {
+                const ntdll = std.os.windows.ntdll;
+                var counter: i64 = undefined;
+                var freq: i64 = undefined;
+                _ = ntdll.RtlQueryPerformanceCounter(&counter);
+                _ = ntdll.RtlQueryPerformanceFrequency(&freq);
+                return @intCast(@divFloor(@as(u128, @intCast(counter)) * std.time.ns_per_s, @as(u128, @intCast(freq))));
+            }
             var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
             _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
             return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));

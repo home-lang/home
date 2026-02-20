@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const ir_cache = @import("ir_cache.zig");
 
 /// Thread-safe mutex (Zig 0.16 compatible - uses atomic spinlock)
@@ -17,18 +18,34 @@ const Mutex = struct {
     }
 };
 
-/// Get current timestamp in milliseconds
+/// Get current timestamp in milliseconds (cross-platform)
 fn getMilliTimestamp() i64 {
+    if (comptime native_os == .windows) {
+        return @as(i64, @intCast(@divFloor(windowsNanoTimestamp(), 1_000_000)));
+    }
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divFloor(ts.nsec, 1_000_000)));
 }
 
-/// Get current timestamp in nanoseconds
+/// Get current timestamp in nanoseconds (cross-platform)
 fn getNanoTimestamp() i128 {
+    if (comptime native_os == .windows) {
+        return windowsNanoTimestamp();
+    }
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+}
+
+/// Windows-specific high-resolution timestamp using QueryPerformanceCounter
+fn windowsNanoTimestamp() i128 {
+    const ntdll = std.os.windows.ntdll;
+    var counter: i64 = undefined;
+    var freq: i64 = undefined;
+    _ = ntdll.RtlQueryPerformanceCounter(&counter);
+    _ = ntdll.RtlQueryPerformanceFrequency(&freq);
+    return @divFloor(@as(i128, counter) * 1_000_000_000, @as(i128, freq));
 }
 
 /// Build task representing a single compilation unit

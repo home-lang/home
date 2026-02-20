@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const Io = std.Io;
 const posix = std.posix;
 const c = std.c;
@@ -18,15 +20,29 @@ const Mutex = struct {
     }
 };
 
-/// Get current unix timestamp in seconds
+/// Get current unix timestamp in seconds (cross-platform)
 fn getTimestamp() i64 {
+    if (comptime native_os == .windows) {
+        return windowsTimestamp();
+    }
     var ts: c.timespec = undefined;
     if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
     return ts.sec;
 }
 
-/// Get nanosecond timestamp for jitter
+/// Windows timestamp: seconds since Unix epoch using RtlGetSystemTimePrecise
+/// Returns 100-nanosecond intervals since FILETIME epoch (Jan 1, 1601)
+fn windowsTimestamp() i64 {
+    const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
+    // Convert 100ns ticks to seconds and adjust from FILETIME epoch to Unix epoch
+    return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+}
+
+/// Get nanosecond timestamp for jitter (cross-platform)
 fn getNanoTimestamp() i128 {
+    if (comptime native_os == .windows) {
+        return @as(i128, windowsTimestamp()) * std.time.ns_per_s;
+    }
     var ts: c.timespec = undefined;
     if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
@@ -779,21 +795,25 @@ pub const RedisQueueDriver = struct {
         pub fn connect(self: *Redis) !void {
             if (self.socket != null) return;
 
-            // Create socket
-            const sock_fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
-            if (sock_fd == -1) return error.ConnectionFailed;
+            // Create socket (cross-platform)
+            const sock_fd = if (comptime native_os == .windows) blk: {
+                const ws = std.os.windows.ws2_32;
+                // Initialize Winsock
+                var wsa_data: ws.WSADATA = undefined;
+                if (ws.WSAStartup(0x0202, &wsa_data) != 0) return error.ConnectionFailed;
+                const s = ws.socket(ws.AF.INET, ws.SOCK.STREAM, 0);
+                if (s == ws.INVALID_SOCKET) return error.ConnectionFailed;
+                break :blk s;
+            } else blk: {
+                const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+                if (fd == -1) return error.ConnectionFailed;
+                break :blk fd;
+            };
             self.socket = sock_fd;
 
-            // Connect
-            var addr: posix.sockaddr.in = .{
-                .family = posix.AF.INET,
-                .port = std.mem.nativeToBig(u16, self.port),
-                .addr = 0x0100007F, // 127.0.0.1 in network byte order
-            };
-
-            // Try to parse host if not localhost
+            // Parse IP address
+            var ip_addr: u32 = 0x0100007F; // 127.0.0.1 in network byte order
             if (!std.mem.eql(u8, self.host, "127.0.0.1") and !std.mem.eql(u8, self.host, "localhost")) {
-                // Parse IP address
                 var parts: [4]u8 = .{ 0, 0, 0, 0 };
                 var iter = std.mem.splitScalar(u8, self.host, '.');
                 var i: usize = 0;
@@ -802,20 +822,62 @@ pub const RedisQueueDriver = struct {
                     parts[i] = std.fmt.parseInt(u8, part, 10) catch 0;
                     i += 1;
                 }
-                addr.addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
+                ip_addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
             }
 
-            if (c.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) == -1) {
-                posix.close(self.socket.?);
-                self.socket = null;
-                return error.ConnectionFailed;
+            // Connect (cross-platform)
+            if (comptime native_os == .windows) {
+                const ws = std.os.windows.ws2_32;
+                var addr: ws.sockaddr.in = .{
+                    .family = ws.AF.INET,
+                    .port = std.mem.nativeToBig(u16, self.port),
+                    .addr = ip_addr,
+                };
+                if (ws.connect(self.socket.?, @ptrCast(&addr), @sizeOf(ws.sockaddr.in)) != 0) {
+                    _ = ws.closesocket(self.socket.?);
+                    self.socket = null;
+                    return error.ConnectionFailed;
+                }
+            } else {
+                var addr: posix.sockaddr.in = .{
+                    .family = posix.AF.INET,
+                    .port = std.mem.nativeToBig(u16, self.port),
+                    .addr = ip_addr,
+                };
+                if (c.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) == -1) {
+                    posix.close(self.socket.?);
+                    self.socket = null;
+                    return error.ConnectionFailed;
+                }
             }
         }
 
         pub fn disconnect(self: *Redis) void {
             if (self.socket) |s| {
-                posix.close(s);
+                if (comptime native_os == .windows) {
+                    _ = std.os.windows.ws2_32.closesocket(s);
+                } else {
+                    posix.close(s);
+                }
                 self.socket = null;
+            }
+        }
+
+        /// Cross-platform socket send
+        fn socketSend(sock: posix.socket_t, data: []const u8) bool {
+            if (comptime native_os == .windows) {
+                return std.os.windows.ws2_32.send(sock, data.ptr, @intCast(data.len), 0) != -1;
+            } else {
+                return c.send(sock, data.ptr, data.len, 0) != -1;
+            }
+        }
+
+        /// Cross-platform socket recv
+        fn socketRecv(sock: posix.socket_t, buf: []u8) i32 {
+            if (comptime native_os == .windows) {
+                return std.os.windows.ws2_32.recv(sock, buf.ptr, @intCast(buf.len), 0);
+            } else {
+                return @intCast(c.recv(sock, buf.ptr, buf.len, 0));
             }
         }
 
@@ -839,7 +901,7 @@ pub const RedisQueueDriver = struct {
                 pos += 2;
             }
 
-            if (c.send(sock, cmd_buf[0..pos].ptr, pos, 0) == -1) return error.ConnectionClosed;
+            if (!socketSend(sock, cmd_buf[0..pos])) return error.ConnectionClosed;
             return self.readResponse();
         }
 
@@ -861,7 +923,7 @@ pub const RedisQueueDriver = struct {
                 pos += 2;
             }
 
-            if (c.send(sock, cmd_buf[0..pos].ptr, pos, 0) == -1) return error.ConnectionClosed;
+            if (!socketSend(sock, cmd_buf[0..pos])) return error.ConnectionClosed;
             return self.readIntResponse();
         }
 
@@ -925,12 +987,10 @@ pub const RedisQueueDriver = struct {
 
         fn fillBuffer(self: *Redis) !void {
             const sock = self.socket orelse return error.ConnectionClosed;
-            const raw_n = c.recv(sock, &self.read_buffer, self.read_buffer.len, 0);
-            if (raw_n == -1) return error.ConnectionClosed;
-            const n: usize = @intCast(raw_n);
-            self.read_len = n;
+            const raw_n = socketRecv(sock, &self.read_buffer);
+            if (raw_n <= 0) return error.ConnectionClosed;
+            self.read_len = @intCast(raw_n);
             self.read_pos = 0;
-            if (self.read_len == 0) return error.ConnectionClosed;
         }
 
         fn readLine(self: *Redis) ![]const u8 {

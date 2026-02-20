@@ -2,12 +2,19 @@
 // Content-addressed caching with dependency tracking
 
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const crypto = std.crypto;
 const fs = std.fs;
 const Io = std.Io;
 
 // Zig 0.16 compatibility: std.time.Instant was removed
 fn getTimestamp() i64 {
+    if (comptime native_os == .windows) {
+        // RtlGetSystemTimePrecise returns 100ns ticks since FILETIME epoch
+        const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
+        return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+    }
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(i64, @intCast(ts.sec));

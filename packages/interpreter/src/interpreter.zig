@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const ast = @import("ast");
 const value_mod = @import("value.zig");
 pub const Value = value_mod.Value;
@@ -10923,8 +10925,10 @@ pub const Interpreter = struct {
                 return error.TypeMismatch;
             }
             const name_z = try self.arena.allocator().dupeZ(u8, name_val.String);
-            if (std.c.getenv(name_z)) |val_ptr| {
-                return Value{ .String = std.mem.span(val_ptr) };
+            if (comptime native_os != .windows) {
+                if (std.c.getenv(name_z)) |val_ptr| {
+                    return Value{ .String = std.mem.span(val_ptr) };
+                }
             }
             return Value.Void;
         } else {
