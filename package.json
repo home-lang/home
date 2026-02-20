@@ -28,11 +28,19 @@
     "build": "bunx bunpress build",
     "build:docs": "bunx bunpress build",
     "preview": "bunx bunpress preview",
+    "lint": "bunx --bun pickier lint . --config pickier.config.ts --max-warnings 9999",
+    "lint:fix": "bunx --bun pickier lint . --fix --config pickier.config.ts --max-warnings 9999",
+    "format": "bunx --bun pickier format . --config pickier.config.ts",
+    "format:fix": "bunx --bun pickier format . --write --config pickier.config.ts",
+    "test": "bun test",
+    "typecheck": "bun --bun tsc --noEmit",
     "release": "bunx --bun bumpx -r --all"
   },
   "devDependencies": {
     "@stacksjs/bunpress": "^0.1.1",
-    "better-dx": "^0.2.0"
+    "@types/bun": "^1.3.9",
+    "better-dx": "^0.2.0",
+    "typescript": "^5.9.3"
   },
   "workspaces": [
     "./packages/vscode-home",

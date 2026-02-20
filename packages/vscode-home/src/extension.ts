@@ -149,7 +149,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }),
         vscode.commands.registerCommand('ion.debug.showTimeline', () => {
-            const timeline = timeTravelDebugger.getTimeline();
+            const _timeline = timeTravelDebugger.getTimeline();
             const stats = timeTravelDebugger.getStatistics();
             vscode.window.showInformationMessage(
                 `Timeline: ${stats.totalSnapshots} snapshots, ` +
@@ -304,7 +304,7 @@ export function deactivate(): Thenable<void> | undefined {
     return client.stop();
 }
 
-function startLanguageServer(context: vscode.ExtensionContext) {
+function startLanguageServer(_context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('home');
     const ionPath = config.get<string>('path') || 'home';
 
@@ -436,7 +436,7 @@ async function formatDocumentProvider(document: vscode.TextDocument): Promise<vs
     const config = vscode.workspace.getConfiguration('home');
     const ionPath = config.get<string>('path') || 'home';
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
         const { spawn } = require('child_process');
         const process = spawn(ionPath, ['format', '-'], {
             cwd: path.dirname(document.uri.fsPath)

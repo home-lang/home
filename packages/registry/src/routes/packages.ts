@@ -290,7 +290,7 @@ packageRouter.post('/:name/download', async (req: Request, res: Response) => {
 // Helper function to extract package metadata
 async function extractPackageMetadata(filePath: string): Promise<any> {
     // This is a simplified version - in practice, you'd extract from the tarball
-    const buffer = await fs.readFile(filePath);
+    const _buffer = await fs.readFile(filePath);
 
     // For now, return mock metadata
     // In real implementation, extract package.ion from tarball

@@ -308,7 +308,7 @@ export class HomeProfiler {
 
                 <h2>Call Timeline</h2>
                 <div id="timeline">
-                    ${reportData.data.slice(0, 100).map((entry: any, index: number) => `
+                    ${reportData.data.slice(0, 100).map((entry: any, _index: number) => `
                         <div style="margin: 5px 0;">
                             <code>${entry.name}</code> - ${entry.duration?.toFixed(2) || 'N/A'}ms
                         </div>

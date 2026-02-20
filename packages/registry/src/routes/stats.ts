@@ -4,7 +4,7 @@ import { mongoDb, logger } from '../server';
 export const statsRouter = Router();
 
 // GET /api/stats - Get registry statistics
-statsRouter.get('/', async (req: Request, res: Response) => {
+statsRouter.get('/', async (_req: Request, res: Response) => {
     try {
         const totalPackages = await mongoDb.collection('packages').countDocuments();
         const totalUsers = await mongoDb.collection('users').countDocuments();
