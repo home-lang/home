@@ -866,65 +866,73 @@ pub fn build(b: *std.Build) void {
     const queue_example_step = b.step("example-queue", "Run queue system example");
     queue_example_step.dependOn(&run_queue_example.step);
 
-    // Database Example
-    const database_example = b.addExecutable(.{
-        .name = "database_example",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/database_example.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    database_example.root_module.addImport("database", database_pkg);
-    database_example.root_module.linkSystemLibrary("sqlite3", .{});
-    database_example.root_module.link_libc = true;
-    b.installArtifact(database_example);
+    // Database Example (requires sqlite3 system library - skip on Windows)
+    const is_windows = target.result.os.tag == .windows;
 
-    const run_database_example = b.addRunArtifact(database_example);
-    const database_example_step = b.step("example-database", "Run database example");
-    database_example_step.dependOn(&run_database_example.step);
+    if (!is_windows) {
+        const database_example = b.addExecutable(.{
+            .name = "database_example",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("examples/database_example.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        database_example.root_module.addImport("database", database_pkg);
+        database_example.root_module.linkSystemLibrary("sqlite3", .{});
+        database_example.root_module.link_libc = true;
+        b.installArtifact(database_example);
 
-    // Generals Engine Example (C&C Generals recreation)
-    const generals_example = b.addExecutable(.{
-        .name = "generals",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/generals_engine_example.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    // Add graphics packages
-    generals_example.root_module.addImport("opengl", opengl_pkg);
-    generals_example.root_module.addImport("openal", openal_pkg);
-    generals_example.root_module.addImport("input", input_pkg);
-    generals_example.root_module.addImport("cocoa", cocoa_pkg);
-    generals_example.root_module.addImport("renderer", renderer_pkg);
-    generals_example.root_module.addImport("particles", particles_pkg);
-    generals_example.root_module.addImport("shaders", shaders_pkg);
-    // Add game development packages
-    generals_example.root_module.addImport("game", game_pkg);
-    generals_example.root_module.addImport("game_loop", game_loop_pkg);
-    generals_example.root_module.addImport("game_assets", game_assets_pkg);
-    generals_example.root_module.addImport("game_ai", game_ai_pkg);
-    generals_example.root_module.addImport("game_ecs", game_ecs_pkg);
-    generals_example.root_module.addImport("game_pathfinding", game_pathfinding_pkg);
-    generals_example.root_module.addImport("game_network", game_network_pkg);
-    generals_example.root_module.addImport("game_replay", game_replay_pkg);
-    generals_example.root_module.addImport("game_mods", game_mods_pkg);
-    // W3D model loading
-    const w3d_loader_pkg = createPackage(b, "packages/game/src/w3d_loader.zig", target, optimize, zig_test_framework);
-    generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
-    // Link macOS frameworks
-    generals_example.root_module.linkFramework("Cocoa", .{});
-    generals_example.root_module.linkFramework("OpenGL", .{});
-    generals_example.root_module.linkFramework("OpenAL", .{});
-    generals_example.root_module.linkFramework("AudioToolbox", .{});
-    generals_example.root_module.link_libc = true;
-    b.installArtifact(generals_example);
+        const run_database_example = b.addRunArtifact(database_example);
+        const database_example_step = b.step("example-database", "Run database example");
+        database_example_step.dependOn(&run_database_example.step);
+    }
 
-    const run_generals_example = b.addRunArtifact(generals_example);
-    const generals_example_step = b.step("generals", "Run C&C Generals engine example");
-    generals_example_step.dependOn(&run_generals_example.step);
+    // Generals Engine Example (C&C Generals recreation - macOS only)
+    const is_macos = target.result.os.tag == .macos;
+
+    if (is_macos) {
+        const generals_example = b.addExecutable(.{
+            .name = "generals",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("examples/generals_engine_example.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        // Add graphics packages
+        generals_example.root_module.addImport("opengl", opengl_pkg);
+        generals_example.root_module.addImport("openal", openal_pkg);
+        generals_example.root_module.addImport("input", input_pkg);
+        generals_example.root_module.addImport("cocoa", cocoa_pkg);
+        generals_example.root_module.addImport("renderer", renderer_pkg);
+        generals_example.root_module.addImport("particles", particles_pkg);
+        generals_example.root_module.addImport("shaders", shaders_pkg);
+        // Add game development packages
+        generals_example.root_module.addImport("game", game_pkg);
+        generals_example.root_module.addImport("game_loop", game_loop_pkg);
+        generals_example.root_module.addImport("game_assets", game_assets_pkg);
+        generals_example.root_module.addImport("game_ai", game_ai_pkg);
+        generals_example.root_module.addImport("game_ecs", game_ecs_pkg);
+        generals_example.root_module.addImport("game_pathfinding", game_pathfinding_pkg);
+        generals_example.root_module.addImport("game_network", game_network_pkg);
+        generals_example.root_module.addImport("game_replay", game_replay_pkg);
+        generals_example.root_module.addImport("game_mods", game_mods_pkg);
+        // W3D model loading
+        const w3d_loader_pkg = createPackage(b, "packages/game/src/w3d_loader.zig", target, optimize, zig_test_framework);
+        generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
+        // Link macOS frameworks
+        generals_example.root_module.linkFramework("Cocoa", .{});
+        generals_example.root_module.linkFramework("OpenGL", .{});
+        generals_example.root_module.linkFramework("OpenAL", .{});
+        generals_example.root_module.linkFramework("AudioToolbox", .{});
+        generals_example.root_module.link_libc = true;
+        b.installArtifact(generals_example);
+
+        const run_generals_example = b.addRunArtifact(generals_example);
+        const generals_example_step = b.step("generals", "Run C&C Generals engine example");
+        generals_example_step.dependOn(&run_generals_example.step);
+    }
 
     // Run all examples
     const examples_step = b.step("examples", "Run all examples");
@@ -932,8 +940,6 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&run_craft_example.step);
     examples_step.dependOn(&run_fullstack_example.step);
     examples_step.dependOn(&run_queue_example.step);
-    examples_step.dependOn(&run_database_example.step);
-    examples_step.dependOn(&run_generals_example.step);
 
     // ═══════════════════════════════════════════════════════════════
     // Additional Build Modes
