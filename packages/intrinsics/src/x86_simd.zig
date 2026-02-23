@@ -77,13 +77,13 @@ pub const SSE = struct {
     /// Load 128 bits (must be 16-byte aligned)
     pub fn load(comptime T: type, ptr: [*]const T) @Vector(16 / @sizeOf(T), T) {
         if (!comptime isX86()) @compileError("SSE only available on x86");
-        return @as(*align(16) const @Vector(16 / @sizeOf(T), T), @ptrCast(ptr)).*;
+        return @as(*align(16) const @Vector(16 / @sizeOf(T), T), @ptrCast(@alignCast(ptr))).*;
     }
 
     /// Store 128 bits (must be 16-byte aligned)
     pub fn store(comptime T: type, ptr: [*]T, value: @Vector(16 / @sizeOf(T), T)) void {
         if (!comptime isX86()) @compileError("SSE only available on x86");
-        @as(*align(16) @Vector(16 / @sizeOf(T), T), @ptrCast(ptr)).* = value;
+        @as(*align(16) @Vector(16 / @sizeOf(T), T), @ptrCast(@alignCast(ptr))).* = value;
     }
 
     /// Load 128 bits (unaligned)

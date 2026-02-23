@@ -155,13 +155,13 @@ pub const Driver = struct {
 pub const DriverRegistry = struct {
     drivers: std.ArrayList(*Driver),
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) DriverRegistry {
         return .{
             .drivers = .{},
             .allocator = allocator,
-            .mutex = .{},
+            .mutex = .unlocked,
         };
     }
 
@@ -170,7 +170,7 @@ pub const DriverRegistry = struct {
     }
 
     pub fn register(self: *DriverRegistry, driver: *Driver) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.mutex.unlock();
 
         // Check if driver already registered
@@ -185,7 +185,7 @@ pub const DriverRegistry = struct {
     }
 
     pub fn unregister(self: *DriverRegistry, name: []const u8) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.mutex.unlock();
 
         for (self.drivers.items, 0..) |driver, i| {
@@ -200,7 +200,7 @@ pub const DriverRegistry = struct {
     }
 
     pub fn find(self: *DriverRegistry, name: []const u8) ?*Driver {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.mutex.unlock();
 
         for (self.drivers.items) |driver| {
@@ -213,7 +213,7 @@ pub const DriverRegistry = struct {
     }
 
     pub fn findByType(self: *DriverRegistry, driver_type: DriverType) []*Driver {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.mutex.unlock();
 
         var result = std.ArrayList(*Driver).init(self.allocator);

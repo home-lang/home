@@ -1,5 +1,5 @@
 // Home Programming Language - WaitGroup
-// Go-style waiting for multiple operations to complete
+// Go-style waiting for multiple operations to complete (spin-based for Zig 0.16)
 
 const std = @import("std");
 
@@ -7,14 +7,10 @@ const std = @import("std");
 /// Similar to Go's sync.WaitGroup
 pub const WaitGroup = struct {
     counter: std.atomic.Value(i32),
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
 
     pub fn init() WaitGroup {
         return .{
             .counter = std.atomic.Value(i32).init(0),
-            .mutex = .{},
-            .cond = .{},
         };
     }
 
@@ -30,12 +26,6 @@ pub const WaitGroup = struct {
         if (new < 0) {
             @panic("WaitGroup counter cannot be negative");
         }
-
-        if (new == 0) {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            self.cond.broadcast();
-        }
     }
 
     /// Decrement counter by 1
@@ -45,11 +35,8 @@ pub const WaitGroup = struct {
 
     /// Wait until counter reaches zero
     pub fn wait(self: *WaitGroup) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         while (self.counter.load(.acquire) > 0) {
-            self.cond.wait(&self.mutex);
+            std.atomic.spinLoopHint();
         }
     }
 };

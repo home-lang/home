@@ -11,6 +11,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+fn lockMutex(mutex: *std.atomic.Mutex) void {
+    while (!mutex.tryLock()) {
+        std.atomic.spinLoopHint();
+    }
+}
+
 pub const context = @import("context.zig");
 pub const policy = @import("policy.zig");
 pub const enforcement = @import("enforcement.zig");
@@ -48,7 +54,7 @@ pub const System = struct {
     config: Config,
     policy: *Policy,
     audit: ?*AuditLog,
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !*System {
         const system = try allocator.create(System);
@@ -66,7 +72,7 @@ pub const System = struct {
             .config = config,
             .policy = sys_policy,
             .audit = sys_audit,
-            .mutex = .{},
+            .mutex = .unlocked,
         };
 
         return system;
@@ -87,7 +93,7 @@ pub const System = struct {
         object: SecurityContext,
         operation: policy.Operation,
     ) !AccessDecision {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         const decision = try enforcement.evaluate(
@@ -107,21 +113,21 @@ pub const System = struct {
 
     /// Set enforcement mode
     pub fn setMode(self: *System, mode: EnforcementMode) void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
         self.config.mode = mode;
     }
 
     /// Get current enforcement mode
     pub fn getMode(self: *System) EnforcementMode {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
         return self.config.mode;
     }
 
     /// Load policy from file
     pub fn loadPolicy(self: *System, path: []const u8) !void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         try self.policy.loadFromFile(path);
@@ -133,7 +139,7 @@ pub const System = struct {
 
     /// Add a policy rule
     pub fn addRule(self: *System, rule: policy.Rule) !void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         try self.policy.addRule(rule);

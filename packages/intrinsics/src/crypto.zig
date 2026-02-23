@@ -183,7 +183,7 @@ pub const Random = struct {
     /// Check if RDRAND is available (x86)
     pub fn hasRdrand() bool {
         return switch (builtin.cpu.arch) {
-            .x86_64, .x86 => std.Target.x86.featureSetHas(builtin.cpu.features, .rdrand),
+            .x86_64, .x86 => std.Target.x86.featureSetHas(builtin.cpu.features, .rdrnd),
             else => false,
         };
     }

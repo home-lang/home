@@ -1,14 +1,15 @@
 // Home Programming Language - Read-Write Locks
-// Wrapper around Zig's std.Thread.RwLock
+// Simple implementation using std.atomic.Mutex (Zig 0.16)
+// Uses a single mutex for both read and write locks (not optimal but functional)
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 
 pub const RwLock = struct {
-    inner: std.Thread.RwLock,
+    mutex: std.atomic.Mutex,
 
     pub fn init() ThreadError!RwLock {
-        return RwLock{ .inner = .{} };
+        return RwLock{ .mutex = .unlocked };
     }
 
     pub fn deinit(self: *RwLock) void {
@@ -16,19 +17,19 @@ pub const RwLock = struct {
     }
 
     pub fn lockRead(self: *RwLock) ThreadError!void {
-        self.inner.lockShared();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
     pub fn lockWrite(self: *RwLock) ThreadError!void {
-        self.inner.lock();
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
     pub fn unlockRead(self: *RwLock) ThreadError!void {
-        self.inner.unlockShared();
+        self.mutex.unlock();
     }
 
     pub fn unlockWrite(self: *RwLock) ThreadError!void {
-        self.inner.unlock();
+        self.mutex.unlock();
     }
 };
 

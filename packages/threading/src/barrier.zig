@@ -1,23 +1,19 @@
 // Home Programming Language - Thread Barriers
-// Wrapper around Zig's std.Thread.ResetEvent
+// Spin-based barrier for Zig 0.16 (std.Thread.Condition removed)
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 
 pub const Barrier = struct {
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
     threshold: u32,
-    count: u32,
-    generation: u32,
+    count: std.atomic.Value(u32),
+    generation: std.atomic.Value(u32),
 
     pub fn init(count: u32) ThreadError!Barrier {
         return Barrier{
-            .mutex = .{},
-            .cond = .{},
             .threshold = count,
-            .count = 0,
-            .generation = 0,
+            .count = std.atomic.Value(u32).init(0),
+            .generation = std.atomic.Value(u32).init(0),
         };
     }
 
@@ -26,19 +22,17 @@ pub const Barrier = struct {
     }
 
     pub fn wait(self: *Barrier) ThreadError!void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const gen = self.generation.load(.acquire);
+        const old = self.count.fetchAdd(1, .acq_rel);
 
-        const gen = self.generation;
-        self.count += 1;
-
-        if (self.count == self.threshold) {
-            self.generation += 1;
-            self.count = 0;
-            self.cond.broadcast();
+        if (old + 1 == self.threshold) {
+            // Last thread: reset count and advance generation
+            self.count.store(0, .release);
+            _ = self.generation.fetchAdd(1, .release);
         } else {
-            while (gen == self.generation) {
-                self.cond.wait(&self.mutex);
+            // Spin until generation advances
+            while (self.generation.load(.acquire) == gen) {
+                std.atomic.spinLoopHint();
             }
         }
     }

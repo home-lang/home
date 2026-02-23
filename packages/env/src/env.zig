@@ -12,10 +12,15 @@ pub const cli = @import("cli.zig");
 
 // Get environment variable value
 pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
-    return std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => err,
-    };
+    // Convert key to null-terminated string for C API
+    const key_z = try allocator.dupeZ(u8, key);
+    defer allocator.free(key_z);
+
+    const result = std.c.getenv(key_z.ptr);
+    if (result) |ptr| {
+        return try allocator.dupe(u8, std.mem.sliceTo(ptr, 0));
+    }
+    return null;
 }
 
 // Get environment variable or return default

@@ -4,15 +4,21 @@
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 
+fn lockMutex(mutex: *std.atomic.Mutex) void {
+    while (!mutex.tryLock()) {
+        std.atomic.spinLoopHint();
+    }
+}
+
 pub const TLS = struct {
     storage: std.AutoHashMap(std.Thread.Id, *anyopaque),
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) ThreadError!TLS {
         return TLS{
             .storage = std.AutoHashMap(std.Thread.Id, *anyopaque).init(allocator),
-            .mutex = .{},
+            .mutex = .unlocked,
             .allocator = allocator,
         };
     }
@@ -23,7 +29,7 @@ pub const TLS = struct {
 
     pub fn set(self: *TLS, value: ?*anyopaque) ThreadError!void {
         const id = std.Thread.getCurrentId();
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         if (value) |v| {
@@ -35,7 +41,7 @@ pub const TLS = struct {
 
     pub fn get(self: *TLS) ?*anyopaque {
         const id = std.Thread.getCurrentId();
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         return self.storage.get(id);

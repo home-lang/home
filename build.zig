@@ -476,19 +476,21 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
-    // Database tests
-    const database_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/database/tests/database_test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    database_tests.root_module.addImport("database", database_pkg);
-    database_tests.root_module.linkSystemLibrary("sqlite3", .{});
-    database_tests.root_module.link_libc = true;
+    // Database tests (requires sqlite3 - skip on Windows)
+    const run_database_tests = if (target.result.os.tag != .windows) blk: {
+        const database_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/database/tests/database_test.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        database_tests.root_module.addImport("database", database_pkg);
+        database_tests.root_module.linkSystemLibrary("sqlite3", .{});
+        database_tests.root_module.link_libc = true;
 
-    const run_database_tests = b.addRunArtifact(database_tests);
+        break :blk b.addRunArtifact(database_tests);
+    } else null;
 
     // Threading tests
     const threading_tests = b.addTest(.{
@@ -585,7 +587,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_interpreter_tests.step);
     test_step.dependOn(&run_formatter_tests.step);
     test_step.dependOn(&run_codegen_tests.step);
-    test_step.dependOn(&run_database_tests.step);
+    if (run_database_tests) |db_tests| test_step.dependOn(&db_tests.step);
     test_step.dependOn(&run_threading_tests.step);
     test_step.dependOn(&run_memory_tests.step);
     test_step.dependOn(&run_intrinsics_tests.step);

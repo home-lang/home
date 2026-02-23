@@ -1,19 +1,19 @@
 // Home Programming Language - Mutex Primitives
-// Wrapper around Zig's std.Thread.Mutex
+// Wrapper around Zig's std.atomic.Mutex
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 
 pub const Mutex = struct {
-    inner: std.Thread.Mutex,
+    inner: std.atomic.Mutex,
 
     pub fn init() ThreadError!Mutex {
-        return Mutex{ .inner = .{} };
+        return Mutex{ .inner = .unlocked };
     }
 
     pub fn initWithAttr(attr: MutexAttr) ThreadError!Mutex {
         _ = attr; // Recursive mutexes not directly supported yet
-        return Mutex{ .inner = .{} };
+        return Mutex{ .inner = .unlocked };
     }
 
     pub fn deinit(self: *Mutex) void {
@@ -21,7 +21,7 @@ pub const Mutex = struct {
     }
 
     pub fn lock(self: *Mutex) ThreadError!void {
-        self.inner.lock();
+        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
     }
 
     pub fn tryLock(self: *Mutex) ThreadError!bool {

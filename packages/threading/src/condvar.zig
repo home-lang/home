@@ -1,15 +1,15 @@
 // Home Programming Language - Condition Variables
-// Wrapper around Zig's std.Thread.Condition
+// Stub implementation for Zig 0.16 (std.Thread.Condition no longer exists)
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 const Mutex = @import("mutex.zig").Mutex;
 
 pub const CondVar = struct {
-    inner: std.Thread.Condition,
+    signaled: bool,
 
     pub fn init() ThreadError!CondVar {
-        return CondVar{ .inner = .{} };
+        return CondVar{ .signaled = false };
     }
 
     pub fn deinit(self: *CondVar) void {
@@ -17,23 +17,43 @@ pub const CondVar = struct {
     }
 
     pub fn wait(self: *CondVar, mutex: *Mutex) ThreadError!void {
-        self.inner.wait(&mutex.inner);
+        // Release the mutex, spin until signaled, then re-acquire
+        try mutex.unlock();
+        while (!self.signaled) {
+            std.atomic.spinLoopHint();
+        }
+        self.signaled = false;
+        try mutex.lock();
     }
 
     pub fn waitTimeout(self: *CondVar, mutex: *Mutex, timeout_ns: u64) ThreadError!bool {
-        const result = self.inner.timedWait(&mutex.inner, timeout_ns) catch {
-            return false; // Timeout
-        };
-        _ = result;
+        // Release the mutex, spin with counter-based timeout, then re-acquire
+        try mutex.unlock();
+
+        // Approximate timeout using spin iterations
+        // Each iteration ~10-100ns depending on CPU, so divide by ~50ns
+        const max_iterations = timeout_ns / 50;
+        var iterations: u64 = 0;
+
+        while (!self.signaled) {
+            iterations += 1;
+            if (iterations >= max_iterations) {
+                try mutex.lock();
+                return false; // Timeout
+            }
+            std.atomic.spinLoopHint();
+        }
+        self.signaled = false;
+        try mutex.lock();
         return true; // Signaled
     }
 
     pub fn signal(self: *CondVar) ThreadError!void {
-        self.inner.signal();
+        self.signaled = true;
     }
 
     pub fn broadcast(self: *CondVar) ThreadError!void {
-        self.inner.broadcast();
+        self.signaled = true;
     }
 };
 

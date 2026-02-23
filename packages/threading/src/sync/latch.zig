@@ -1,5 +1,5 @@
 // Home Programming Language - Latch
-// Single-use countdown synchronization
+// Single-use countdown synchronization (spin-based for Zig 0.16)
 
 const std = @import("std");
 
@@ -7,14 +7,10 @@ const std = @import("std");
 /// Once triggered, remains triggered forever
 pub const Latch = struct {
     count: std.atomic.Value(u32),
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
 
     pub fn init(count: u32) Latch {
         return .{
             .count = std.atomic.Value(u32).init(count),
-            .mutex = .{},
-            .cond = .{},
         };
     }
 
@@ -23,48 +19,35 @@ pub const Latch = struct {
     }
 
     /// Decrement count by 1
-    /// If count reaches 0, wake all waiters
     pub fn countDown(self: *Latch) void {
-        const old = self.count.fetchSub(1, .release);
-        if (old == 1) {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-            self.cond.broadcast();
-        }
+        _ = self.count.fetchSub(1, .release);
     }
 
     /// Wait until count reaches zero
     pub fn wait(self: *Latch) void {
-        if (self.count.load(.acquire) == 0) {
-            return;
-        }
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         while (self.count.load(.acquire) > 0) {
-            self.cond.wait(&self.mutex);
+            std.atomic.spinLoopHint();
         }
     }
 
-    /// Try to wait with timeout (nanoseconds)
+    /// Try to wait with timeout (nanoseconds) - counter-based approximation
     pub fn waitTimeout(self: *Latch, timeout_ns: u64) bool {
         if (self.count.load(.acquire) == 0) {
             return true;
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const max_iterations = timeout_ns / 50;
+        var iterations: u64 = 0;
 
-        if (self.count.load(.acquire) == 0) {
-            return true;
+        while (self.count.load(.acquire) > 0) {
+            iterations += 1;
+            if (iterations >= max_iterations) {
+                return false;
+            }
+            std.atomic.spinLoopHint();
         }
 
-        self.cond.timedWait(&self.mutex, timeout_ns) catch {
-            return false; // Timeout
-        };
-
-        return self.count.load(.acquire) == 0;
+        return true;
     }
 
     /// Check if latch has been triggered

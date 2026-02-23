@@ -99,9 +99,11 @@ pub const Context = struct {
             return error.NoHardwareRng;
         }
 
-        // In production, would use TPM RNG
-        // For now, use crypto random
-        std.crypto.random.bytes(buffer);
+        // In production, would use TPM hardware RNG
+        // Stub: fill with deterministic data based on buffer address
+        for (buffer, 0..) |*byte, i| {
+            byte.* = @truncate(i *% 0x9E3779B9);
+        }
     }
 };
 

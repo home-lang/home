@@ -41,7 +41,10 @@ pub const Signal = enum(i32) {
     }
 
     pub fn fromInt(value: i32) ?Signal {
-        return std.meta.intToEnum(Signal, value) catch null;
+        inline for (@typeInfo(Signal).@"enum".fields) |field| {
+            if (value == field.value) return @enumFromInt(value);
+        }
+        return null;
     }
 
     /// Get human-readable signal name

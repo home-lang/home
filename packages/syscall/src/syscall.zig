@@ -53,18 +53,26 @@ pub fn isWindows() bool {
 
 // File descriptor wrapper
 pub const FileDescriptor = struct {
-    fd: std.posix.fd_t,
+    fd: i32,
 
     pub fn close(self: FileDescriptor) void {
-        std.posix.close(self.fd);
+        if (comptime isUnix()) {
+            std.posix.close(@as(std.posix.fd_t, self.fd));
+        }
     }
 
     pub fn read(self: FileDescriptor, buffer: []u8) !usize {
-        return std.posix.read(self.fd, buffer);
+        if (comptime isUnix()) {
+            return std.posix.read(@as(std.posix.fd_t, self.fd), buffer);
+        }
+        return error.OperationNotSupported;
     }
 
     pub fn write(self: FileDescriptor, data: []const u8) !usize {
-        return std.posix.write(self.fd, data);
+        if (comptime isUnix()) {
+            return std.posix.write(@as(std.posix.fd_t, self.fd), data);
+        }
+        return error.OperationNotSupported;
     }
 
     pub fn isValid(self: FileDescriptor) bool {
@@ -85,7 +93,7 @@ pub const Credentials = struct {
     egid: u32,
 
     pub fn current() !Credentials {
-        if (!isUnix()) {
+        if (comptime !isUnix()) {
             return error.OperationNotSupported;
         }
 
@@ -115,7 +123,7 @@ pub const ResourceLimit = enum {
 };
 
 pub fn getResourceLimit(resource: ResourceLimit) !struct { soft: u64, hard: u64 } {
-    if (!isUnix()) {
+    if (comptime !isUnix()) {
         return error.OperationNotSupported;
     }
 
@@ -135,7 +143,7 @@ pub fn getResourceLimit(resource: ResourceLimit) !struct { soft: u64, hard: u64 
 }
 
 pub fn setResourceLimit(resource: ResourceLimit, soft: u64, hard: u64) !void {
-    if (!isUnix()) {
+    if (comptime !isUnix()) {
         return error.OperationNotSupported;
     }
 

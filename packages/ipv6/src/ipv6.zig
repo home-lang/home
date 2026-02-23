@@ -201,7 +201,10 @@ pub const Address = struct {
     pub fn getMulticastScope(self: Address) ?MulticastScope {
         if (!self.isMulticast()) return null;
         const scope_value = self.octets[1] & 0x0F;
-        return std.meta.intToEnum(MulticastScope, scope_value) catch null;
+        inline for (@typeInfo(MulticastScope).@"enum".fields) |field| {
+            if (scope_value == field.value) return @enumFromInt(scope_value);
+        }
+        return null;
     }
 
     /// Create solicited-node multicast address

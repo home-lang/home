@@ -1,19 +1,15 @@
 // Home Programming Language - Events
-// Windows-style synchronization events
+// Windows-style synchronization events (spin-based for Zig 0.16)
 
 const std = @import("std");
 
 /// Manual-reset event - stays signaled until manually reset
 pub const ManualResetEvent = struct {
     signaled: std.atomic.Value(bool),
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
 
     pub fn init(initial_state: bool) ManualResetEvent {
         return .{
             .signaled = std.atomic.Value(bool).init(initial_state),
-            .mutex = .{},
-            .cond = .{},
         };
     }
 
@@ -24,9 +20,6 @@ pub const ManualResetEvent = struct {
     /// Set event to signaled state
     pub fn set(self: *ManualResetEvent) void {
         self.signaled.store(true, .release);
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.cond.broadcast();
     }
 
     /// Reset event to non-signaled state
@@ -36,36 +29,29 @@ pub const ManualResetEvent = struct {
 
     /// Wait for event to be signaled
     pub fn wait(self: *ManualResetEvent) void {
-        if (self.signaled.load(.acquire)) {
-            return;
-        }
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         while (!self.signaled.load(.acquire)) {
-            self.cond.wait(&self.mutex);
+            std.atomic.spinLoopHint();
         }
     }
 
-    /// Wait with timeout (nanoseconds)
+    /// Wait with timeout (nanoseconds) - counter-based approximation
     pub fn waitTimeout(self: *ManualResetEvent, timeout_ns: u64) bool {
         if (self.signaled.load(.acquire)) {
             return true;
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const max_iterations = timeout_ns / 50;
+        var iterations: u64 = 0;
 
-        if (self.signaled.load(.acquire)) {
-            return true;
+        while (!self.signaled.load(.acquire)) {
+            iterations += 1;
+            if (iterations >= max_iterations) {
+                return false;
+            }
+            std.atomic.spinLoopHint();
         }
 
-        self.cond.timedWait(&self.mutex, timeout_ns) catch {
-            return false; // Timeout
-        };
-
-        return self.signaled.load(.acquire);
+        return true;
     }
 
     pub fn isSignaled(self: *const ManualResetEvent) bool {
@@ -75,15 +61,11 @@ pub const ManualResetEvent = struct {
 
 /// Auto-reset event - automatically resets after one waiter is released
 pub const AutoResetEvent = struct {
-    signaled: bool,
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
+    signaled: std.atomic.Value(bool),
 
     pub fn init(initial_state: bool) AutoResetEvent {
         return .{
-            .signaled = initial_state,
-            .mutex = .{},
-            .cond = .{},
+            .signaled = std.atomic.Value(bool).init(initial_state),
         };
     }
 
@@ -93,45 +75,34 @@ pub const AutoResetEvent = struct {
 
     /// Set event to signaled state (releases one waiter)
     pub fn set(self: *AutoResetEvent) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        self.signaled = true;
-        self.cond.signal(); // Wake one waiter
+        self.signaled.store(true, .release);
     }
 
     /// Wait for event and automatically reset
     pub fn wait(self: *AutoResetEvent) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        while (!self.signaled) {
-            self.cond.wait(&self.mutex);
+        while (true) {
+            if (self.signaled.cmpxchgWeak(true, false, .acquire, .monotonic) == null) {
+                return; // Got the signal, auto-reset done
+            }
+            std.atomic.spinLoopHint();
         }
-
-        self.signaled = false; // Auto-reset
     }
 
-    /// Wait with timeout (nanoseconds)
+    /// Wait with timeout (nanoseconds) - counter-based approximation
     pub fn waitTimeout(self: *AutoResetEvent, timeout_ns: u64) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const max_iterations = timeout_ns / 50;
+        var iterations: u64 = 0;
 
-        if (self.signaled) {
-            self.signaled = false;
-            return true;
+        while (true) {
+            if (self.signaled.cmpxchgWeak(true, false, .acquire, .monotonic) == null) {
+                return true;
+            }
+            iterations += 1;
+            if (iterations >= max_iterations) {
+                return false;
+            }
+            std.atomic.spinLoopHint();
         }
-
-        self.cond.timedWait(&self.mutex, timeout_ns) catch {
-            return false; // Timeout
-        };
-
-        if (self.signaled) {
-            self.signaled = false;
-            return true;
-        }
-
-        return false;
     }
 };
 

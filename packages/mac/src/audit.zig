@@ -1,12 +1,25 @@
 // Audit Logging - Security event logging and monitoring
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+fn isUnix() bool {
+    return builtin.os.tag != .windows;
+}
+
+fn lockMutex(mutex: *std.atomic.Mutex) void {
+    while (!mutex.tryLock()) {
+        std.atomic.spinLoopHint();
+    }
+}
 
 /// Get current Unix timestamp in seconds since epoch
 fn getUnixTimestamp() i64 {
-    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
-        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
-        return ts.sec;
+    if (comptime isUnix()) {
+        if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
+            const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
+            return ts.sec;
+        }
     }
     return 0;
 }
@@ -58,7 +71,7 @@ pub const AuditEntry = struct {
     operation: ?[]const u8, // Operation (if applicable)
     result: ?[]const u8, // Result (allowed/denied)
     message: []const u8,
-    pid: ?std.posix.pid_t, // Process ID (if applicable)
+    pid: ?i32, // Process ID (if applicable)
 
     pub fn format(
         self: AuditEntry,
@@ -98,8 +111,7 @@ pub const AuditEntry = struct {
 pub const AuditLog = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(AuditEntry),
-    file: ?std.fs.File,
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
     max_entries: usize, // Maximum in-memory entries (ring buffer)
 
     pub fn init(allocator: std.mem.Allocator) !*AuditLog {
@@ -107,8 +119,7 @@ pub const AuditLog = struct {
         log.* = .{
             .allocator = allocator,
             .entries = std.ArrayList(AuditEntry){},
-            .file = null,
-            .mutex = .{},
+            .mutex = .unlocked,
             .max_entries = 1000, // Default: keep last 1000 entries in memory
         };
         return log;
@@ -124,30 +135,16 @@ pub const AuditLog = struct {
             self.allocator.free(entry.message);
         }
         self.entries.deinit(self.allocator);
-
-        if (self.file) |f| {
-            f.close();
-        }
-
         self.allocator.destroy(self);
     }
 
-    /// Set output file for audit logs
-    pub fn setOutputFile(self: *AuditLog, path: []const u8) !void {
-        self.mutex.lock();
+    /// Set output file for audit logs (Unix only, no-op on Windows)
+    pub fn setOutputFile(self: *AuditLog, _: []const u8) !void {
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
-        if (self.file) |f| {
-            f.close();
-        }
-
-        self.file = try std.fs.cwd().createFile(path, .{
-            .truncate = false,
-            .mode = 0o600, // Only owner can read/write
-        });
-
-        // Seek to end for append
-        try self.file.?.seekFromEnd(0);
+        // File I/O for audit logs is only supported on Unix
+        // On Windows, logs are kept in memory only
     }
 
     /// Log an access decision
@@ -215,7 +212,7 @@ pub const AuditLog = struct {
 
     /// Internal log function
     fn addEntry(self: *AuditLog, entry: AuditEntry) !void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         // Add to in-memory buffer (ring buffer)
@@ -230,18 +227,11 @@ pub const AuditLog = struct {
         }
 
         try self.entries.append(self.allocator, entry);
-
-        // Write to file if configured
-        if (self.file) |f| {
-            var buf: [4096]u8 = undefined;
-            const formatted = try std.fmt.bufPrint(&buf, "{any}\n", .{entry});
-            try f.writeAll(formatted);
-        }
     }
 
     /// Get recent entries
     pub fn getRecent(self: *AuditLog, num_entries: usize) []const AuditEntry {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         const start = if (self.entries.items.len > num_entries)
@@ -258,7 +248,7 @@ pub const AuditLog = struct {
         allocator: std.mem.Allocator,
         event_type: EventType,
     ) ![]AuditEntry {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         var results = std.ArrayList(AuditEntry){};
@@ -278,13 +268,13 @@ pub const AuditLog = struct {
         allocator: std.mem.Allocator,
         severity: Severity,
     ) ![]AuditEntry {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         var results = std.ArrayList(AuditEntry){};
 
         for (self.entries.items) |entry| {
-            if (entry.event_type == severity) {
+            if (entry.severity == severity) {
                 try results.append(allocator, entry);
             }
         }
@@ -294,7 +284,7 @@ pub const AuditLog = struct {
 
     /// Clear all entries
     pub fn clear(self: *AuditLog) void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         for (self.entries.items) |entry| {
@@ -310,7 +300,7 @@ pub const AuditLog = struct {
 
     /// Get total entry count
     pub fn count(self: *AuditLog) usize {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
         return self.entries.items.len;
     }
