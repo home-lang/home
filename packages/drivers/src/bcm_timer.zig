@@ -2,6 +2,7 @@
 // For Raspberry Pi 3/4
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ============================================================================
 // BCM System Timer Registers
@@ -25,9 +26,14 @@ pub const BCM2711_TIMER_BASE = 0xFE003000; // Raspberry Pi 4
 // ARM Generic Timer Registers (Available in ARM64)
 // ============================================================================
 
+fn isARM64() bool {
+    return builtin.cpu.arch == .aarch64;
+}
+
 pub const ArmTimer = struct {
     /// Read the system counter frequency (Hz)
     pub fn getFrequency() u64 {
+        if (comptime !isARM64()) return 0;
         var freq: u64 = undefined;
         asm volatile ("mrs %[freq], cntfrq_el0"
             : [freq] "=r" (freq),
@@ -37,6 +43,7 @@ pub const ArmTimer = struct {
 
     /// Read the physical counter value
     pub fn readCounter() u64 {
+        if (comptime !isARM64()) return 0;
         var count: u64 = undefined;
         asm volatile ("mrs %[count], cntpct_el0"
             : [count] "=r" (count),
@@ -46,6 +53,7 @@ pub const ArmTimer = struct {
 
     /// Read the virtual counter value
     pub fn readVirtualCounter() u64 {
+        if (comptime !isARM64()) return 0;
         var count: u64 = undefined;
         asm volatile ("mrs %[count], cntvct_el0"
             : [count] "=r" (count),
@@ -55,6 +63,7 @@ pub const ArmTimer = struct {
 
     /// Set physical timer compare value
     pub fn setPhysicalCompare(value: u64) void {
+        if (comptime !isARM64()) return;
         asm volatile ("msr cntp_cval_el0, %[val]"
             :
             : [val] "r" (value),
@@ -63,6 +72,7 @@ pub const ArmTimer = struct {
 
     /// Set physical timer control
     pub fn setPhysicalControl(enable: bool, mask_irq: bool) void {
+        if (comptime !isARM64()) return;
         var ctrl: u64 = 0;
         if (enable) ctrl |= 1 << 0; // ENABLE
         if (!mask_irq) ctrl |= 1 << 1; // IMASK (inverted)
@@ -74,6 +84,7 @@ pub const ArmTimer = struct {
 
     /// Read physical timer control
     pub fn getPhysicalControl() u64 {
+        if (comptime !isARM64()) return 0;
         var ctrl: u64 = undefined;
         asm volatile ("mrs %[ctrl], cntp_ctl_el0"
             : [ctrl] "=r" (ctrl),
@@ -88,6 +99,7 @@ pub const ArmTimer = struct {
 
     /// Set virtual timer compare value
     pub fn setVirtualCompare(value: u64) void {
+        if (comptime !isARM64()) return;
         asm volatile ("msr cntv_cval_el0, %[val]"
             :
             : [val] "r" (value),
@@ -96,6 +108,7 @@ pub const ArmTimer = struct {
 
     /// Set virtual timer control
     pub fn setVirtualControl(enable: bool, mask_irq: bool) void {
+        if (comptime !isARM64()) return;
         var ctrl: u64 = 0;
         if (enable) ctrl |= 1 << 0; // ENABLE
         if (!mask_irq) ctrl |= 1 << 1; // IMASK (inverted)
@@ -380,6 +393,7 @@ test "System timer register layout" {
 }
 
 test "ARM timer frequency" {
+    if (comptime !isARM64()) return;
     const freq = ArmTimer.getFrequency();
     try std.testing.expect(freq > 0);
 }

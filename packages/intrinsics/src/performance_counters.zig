@@ -435,6 +435,10 @@ test "performance session" {
         return;
     }
 
+    // MSR read/write (rdmsr/wrmsr) requires ring 0 privileges.
+    // Skip on Windows where user-mode MSR access causes STATUS_PRIVILEGED_INSTRUCTION.
+    if (comptime builtin.os.tag == .windows) return;
+
     const session = PerfSession.begin();
 
     // Do some work

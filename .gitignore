@@ -3,7 +3,7 @@
 node_modules
 
 # Home package manager
-pantry/
+/pantry/
 /packages/kernel/.zig-cache
 /packages/ffi/.zig-cache
 /packages/linker/.zig-cache
