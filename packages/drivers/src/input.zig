@@ -460,14 +460,18 @@ pub const PS2Mouse = struct {
 // Input Event Queue
 // ============================================================================
 
+fn lockMutex(mutex: *std.atomic.Mutex) void {
+    while (!mutex.tryLock()) std.atomic.spinLoopHint();
+}
+
 pub const InputEventQueue = struct {
     queue: std.ArrayList(InputEvent),
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) InputEventQueue {
         return .{
             .queue = std.ArrayList(InputEvent).init(allocator),
-            .mutex = .{},
+            .mutex = .unlocked,
         };
     }
 
@@ -476,13 +480,13 @@ pub const InputEventQueue = struct {
     }
 
     pub fn push(self: *InputEventQueue, event: InputEvent) !void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
         try self.queue.append(event);
     }
 
     pub fn pop(self: *InputEventQueue) ?InputEvent {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         if (self.queue.items.len == 0) return null;
@@ -490,7 +494,7 @@ pub const InputEventQueue = struct {
     }
 
     pub fn peek(self: *InputEventQueue) ?InputEvent {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
         if (self.queue.items.len == 0) return null;
@@ -498,7 +502,7 @@ pub const InputEventQueue = struct {
     }
 
     pub fn clear(self: *InputEventQueue) void {
-        self.mutex.lock();
+        lockMutex(&self.mutex);
         defer self.mutex.unlock();
         self.queue.clearRetainingCapacity();
     }
