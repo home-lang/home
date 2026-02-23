@@ -526,7 +526,8 @@ fn testBuddySplit(expect: *testing.ModernTest.Expect) !void {
 
 fn testBuddyPairs(expect: *testing.ModernTest.Expect) !void {
     // Buddies are created at addr ^ size offset
-    const addr1: usize = 0x1000;
+    // e.g. block at 0x3000 with size 0x1000: buddy is at 0x3000 ^ 0x1000 = 0x2000
+    const addr1: usize = 0x3000;
     const size: usize = 4096;
     const addr2 = addr1 ^ size;
 
