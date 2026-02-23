@@ -242,11 +242,23 @@ pub const BumpAllocator = struct {
     }
 
     pub fn allocPages(self: *@This(), count: usize) ![]PhysicalAddress {
-        // Allocate storage for the page address array from bump memory
+        // Allocate all pages as one contiguous page-aligned block first.
+        // This avoids the alignment gap that occurred when the small
+        // metadata array was allocated before the page-aligned pages,
+        // which wasted nearly a full page of padding and could cause
+        // the subsequent individual allocPage() calls to produce
+        // addresses outside the valid bump region.
+        const mem = try self.alloc(count * PAGE_SIZE, PAGE_ALIGN);
+        const base = @intFromPtr(mem.ptr);
+
+        // Allocate storage for the page address array from bump memory.
+        // Placed after the contiguous page block so there is no alignment
+        // gap between the array and the pages.
         const array_mem = try self.alloc(count * @sizeOf(PhysicalAddress), @alignOf(PhysicalAddress));
         const pages: [*]PhysicalAddress = @ptrCast(@alignCast(array_mem.ptr));
+
         for (0..count) |i| {
-            pages[i] = try self.allocPage();
+            pages[i] = base + (i * PAGE_SIZE);
         }
         return pages[0..count];
     }
@@ -468,11 +480,19 @@ pub const PageAllocator = struct {
             .Bump => self.bump.?.allocPages(count),
             .Buddy => {
                 const mem = try self.buddy.?.alloc(count * PAGE_SIZE);
-                var pages: []PhysicalAddress = undefined;
+                const base = @intFromPtr(mem.ptr);
+
+                // Allocate a separate block to hold the page address array.
+                // The previous code used `var pages: []PhysicalAddress = undefined`
+                // which left the slice pointer undefined, causing a General
+                // Protection Fault when writing page addresses through it.
+                const array_mem = try self.buddy.?.alloc(count * @sizeOf(PhysicalAddress));
+                const pages: [*]PhysicalAddress = @ptrCast(@alignCast(array_mem.ptr));
+
                 for (0..count) |i| {
-                    pages[i] = @intFromPtr(mem.ptr) + (i * PAGE_SIZE);
+                    pages[i] = base + (i * PAGE_SIZE);
                 }
-                return pages;
+                return pages[0..count];
             },
         };
     }
