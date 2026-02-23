@@ -324,7 +324,7 @@ pub const ModuleResolver = struct {
     /// Auto-detect Home root directory
     fn getHomeRoot(allocator: std.mem.Allocator, io: Io) ![]const u8 {
         // Try environment variable first (cross-platform)
-        if (comptime native_os != .windows) {
+        if (comptime native_os != .windows and native_os != .linux) {
             if (std.c.getenv("HOME_ROOT")) |home_root_c| {
                 return try allocator.dupe(u8, std.mem.span(home_root_c));
             }

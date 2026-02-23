@@ -477,10 +477,16 @@ pub fn logger() Middleware {
                 _ = ntdll.RtlQueryPerformanceCounter(&counter);
                 _ = ntdll.RtlQueryPerformanceFrequency(&freq);
                 return @intCast(@divFloor(@as(u128, @intCast(counter)) * std.time.ns_per_s, @as(u128, @intCast(freq))));
+            } else if (comptime native_os == .linux) {
+                const linux = std.os.linux;
+                var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+                _ = linux.clock_gettime(.MONOTONIC, &ts);
+                return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+            } else {
+                var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+                _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+                return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
             }
-            var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-            return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
         }
 
         fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {

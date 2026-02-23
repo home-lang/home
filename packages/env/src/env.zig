@@ -21,8 +21,11 @@ pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
             error.EnvironmentVariableMissing => null,
             else => |e| return e,
         };
+    } else if (comptime builtin.os.tag == .linux) {
+        // On Linux without libc, std.c.getenv is unavailable
+        return null;
     } else {
-        // On POSIX, use C getenv directly
+        // On POSIX (macOS etc.), use C getenv directly
         const key_z = try allocator.dupeZ(u8, key);
         defer allocator.free(key_z);
 

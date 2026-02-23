@@ -22,20 +22,32 @@ const Mutex = struct {
 fn getMilliTimestamp() i64 {
     if (comptime native_os == .windows) {
         return @as(i64, @intCast(@divFloor(windowsNanoTimestamp(), 1_000_000)));
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divFloor(ts.nsec, 1_000_000)));
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divFloor(ts.nsec, 1_000_000)));
     }
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divFloor(ts.nsec, 1_000_000)));
 }
 
 /// Get current timestamp in nanoseconds (cross-platform)
 fn getNanoTimestamp() i128 {
     if (comptime native_os == .windows) {
         return windowsNanoTimestamp();
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
     }
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
 }
 
 /// Windows-specific high-resolution timestamp using QueryPerformanceCounter

@@ -14,10 +14,16 @@ fn getTimestamp() i64 {
         // RtlGetSystemTimePrecise returns 100ns ticks since FILETIME epoch
         const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
         return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(i64, @intCast(ts.sec));
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i64, @intCast(ts.sec));
     }
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(i64, @intCast(ts.sec));
 }
 
 // ============================================================================

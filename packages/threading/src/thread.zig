@@ -41,6 +41,11 @@ pub const Thread = struct {
             // Windows: use NtDelayExecution with negative 100ns intervals
             const delay = -@as(i64, @intCast(nanoseconds / 100));
             _ = std.os.windows.ntdll.NtDelayExecution(std.os.windows.FALSE, &delay);
+        } else if (comptime builtin.os.tag == .linux) {
+            const linux = std.os.linux;
+            const seconds: isize = @intCast(nanoseconds / 1_000_000_000);
+            const nanos: isize = @intCast(nanoseconds % 1_000_000_000);
+            _ = linux.nanosleep(&.{ .sec = seconds, .nsec = nanos }, null);
         } else {
             const seconds: isize = @intCast(nanoseconds / 1_000_000_000);
             const nanos: isize = @intCast(nanoseconds % 1_000_000_000);

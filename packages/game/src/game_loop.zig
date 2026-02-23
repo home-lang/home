@@ -2,6 +2,8 @@
 // Fixed timestep game loop with interpolation support
 
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 
 // ============================================================================
 // Zig 0.16 Compatibility - Time Helper
@@ -9,9 +11,16 @@ const std = @import("std");
 
 /// Get current time in nanoseconds (Zig 0.16 compatible)
 pub fn getNanoTimestamp() i128 {
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    }
 }
 
 // ============================================================================

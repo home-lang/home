@@ -250,6 +250,9 @@ pub const TokenStore = struct {
             return environ.getAlloc(allocator, "APPDATA") catch
                 environ.getAlloc(allocator, "USERPROFILE") catch
                 return error.NoHomeDir;
+        } else if (comptime builtin.os.tag == .linux) {
+            // On Linux without libc, fall back to /root or /home
+            return error.NoHomeDir;
         } else {
             const env_ptr = std.c.getenv("HOME") orelse return error.NoHomeDir;
             return allocator.dupe(u8, std.mem.span(env_ptr));
@@ -572,10 +575,18 @@ fn getUnixTimestamp() i64 {
         const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
         // Convert to Unix epoch (subtract 11644473600 seconds for 1601->1970 difference)
         return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+    } else if (comptime builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        if (linux.clock_gettime(.REALTIME, &ts) != 0) {
+            return 0;
+        }
+        return @as(i64, @intCast(ts.sec));
+    } else {
+        var ts: std.c.timespec = undefined;
+        if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) {
+            return 0;
+        }
+        return ts.sec;
     }
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) {
-        return 0;
-    }
-    return ts.sec;
 }

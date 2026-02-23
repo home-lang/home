@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const Io = std.Io;
 
 /// Environment variable helper
@@ -7,12 +9,17 @@ pub const Env = struct {
 
     /// Get environment variable
     pub fn get(_: Env, key: []const u8) ?[]const u8 {
-        // key must be null-terminated for C getenv; since Home strings
-        // from the parser are typically backed by source buffers that
-        // have null terminators, we try a direct sentinel cast first.
-        const key_z: [*:0]const u8 = @ptrCast(key.ptr);
-        const val_ptr = std.c.getenv(key_z) orelse return null;
-        return std.mem.span(val_ptr);
+        if (comptime native_os == .linux) {
+            // On Linux without libc, std.c.getenv is unavailable
+            return null;
+        } else {
+            // key must be null-terminated for C getenv; since Home strings
+            // from the parser are typically backed by source buffers that
+            // have null terminators, we try a direct sentinel cast first.
+            const key_z: [*:0]const u8 = @ptrCast(key.ptr);
+            const val_ptr = std.c.getenv(key_z) orelse return null;
+            return std.mem.span(val_ptr);
+        }
     }
 
     /// Get environment variable with default

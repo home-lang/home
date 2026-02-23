@@ -24,10 +24,16 @@ const Mutex = struct {
 fn getTimestamp() i64 {
     if (comptime native_os == .windows) {
         return windowsTimestamp();
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        if (linux.clock_gettime(.REALTIME, &ts) != 0) return 0;
+        return @as(i64, @intCast(ts.sec));
+    } else {
+        var ts: c.timespec = undefined;
+        if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
+        return ts.sec;
     }
-    var ts: c.timespec = undefined;
-    if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
-    return ts.sec;
 }
 
 /// Windows timestamp: seconds since Unix epoch using RtlGetSystemTimePrecise
@@ -42,10 +48,16 @@ fn windowsTimestamp() i64 {
 fn getNanoTimestamp() i128 {
     if (comptime native_os == .windows) {
         return @as(i128, windowsTimestamp()) * std.time.ns_per_s;
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        if (linux.clock_gettime(.REALTIME, &ts) != 0) return 0;
+        return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    } else {
+        var ts: c.timespec = undefined;
+        if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
+        return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
     }
-    var ts: c.timespec = undefined;
-    if (c.clock_gettime(c.CLOCK.REALTIME, &ts) != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
 /// Queue connection/driver types
@@ -804,6 +816,12 @@ pub const RedisQueueDriver = struct {
                 const s = ws.socket(ws.AF.INET, ws.SOCK.STREAM, 0);
                 if (s == ws.INVALID_SOCKET) return error.ConnectionFailed;
                 break :blk s;
+            } else if (comptime native_os == .linux) blk: {
+                const linux = std.os.linux;
+                const rc = linux.socket(linux.AF.INET, linux.SOCK.STREAM, 0);
+                const signed_rc = @as(isize, @bitCast(rc));
+                if (signed_rc < 0) return error.ConnectionFailed;
+                break :blk @as(i32, @intCast(signed_rc));
             } else blk: {
                 const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
                 if (fd == -1) return error.ConnectionFailed;
@@ -838,6 +856,20 @@ pub const RedisQueueDriver = struct {
                     self.socket = null;
                     return error.ConnectionFailed;
                 }
+            } else if (comptime native_os == .linux) {
+                const linux = std.os.linux;
+                var addr: posix.sockaddr.in = .{
+                    .family = posix.AF.INET,
+                    .port = std.mem.nativeToBig(u16, self.port),
+                    .addr = ip_addr,
+                };
+                const rc = linux.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in));
+                const signed_rc = @as(isize, @bitCast(rc));
+                if (signed_rc < 0) {
+                    posix.close(self.socket.?);
+                    self.socket = null;
+                    return error.ConnectionFailed;
+                }
             } else {
                 var addr: posix.sockaddr.in = .{
                     .family = posix.AF.INET,
@@ -867,6 +899,11 @@ pub const RedisQueueDriver = struct {
         fn socketSend(sock: posix.socket_t, data: []const u8) bool {
             if (comptime native_os == .windows) {
                 return std.os.windows.ws2_32.send(sock, data.ptr, @intCast(data.len), 0) != -1;
+            } else if (comptime native_os == .linux) {
+                const linux = std.os.linux;
+                const rc = linux.sendto(sock, data.ptr, data.len, 0, null, 0);
+                const signed_rc = @as(isize, @bitCast(rc));
+                return signed_rc >= 0;
             } else {
                 return c.send(sock, data.ptr, data.len, 0) != -1;
             }
@@ -876,6 +913,12 @@ pub const RedisQueueDriver = struct {
         fn socketRecv(sock: posix.socket_t, buf: []u8) i32 {
             if (comptime native_os == .windows) {
                 return std.os.windows.ws2_32.recv(sock, buf.ptr, @intCast(buf.len), 0);
+            } else if (comptime native_os == .linux) {
+                const linux = std.os.linux;
+                const rc = linux.recvfrom(sock, buf.ptr, buf.len, 0, null, null);
+                const signed_rc = @as(isize, @bitCast(rc));
+                if (signed_rc < 0) return -1;
+                return @intCast(signed_rc);
             } else {
                 return @intCast(c.recv(sock, buf.ptr, buf.len, 0));
             }

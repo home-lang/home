@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const native_os = builtin.os.tag;
 const network = @import("network.zig");
 const Address = network.Address;
 const Allocator = std.mem.Allocator;
@@ -13,134 +15,151 @@ pub const DnsResolver = struct {
 
     /// Lookup hostname and return all addresses (A and AAAA records)
     pub fn lookup(self: *DnsResolver, hostname: []const u8) ![]Address {
-        // Use libc getaddrinfo for DNS resolution
-        var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-        hints.family = std.c.AF.UNSPEC; // Allow both IPv4 and IPv6
-        hints.socktype = std.c.SOCK.STREAM;
-
-        var result: ?*std.c.addrinfo = null;
-        const ret = std.c.getaddrinfo(
-            hostname.ptr,
-            null,
-            &hints,
-            &result,
-        );
-
-        if (ret != 0) {
+        if (comptime native_os == .linux) {
+            // DNS resolution requires libc on Linux
             return error.DnsLookupFailed;
+        } else {
+            // Use libc getaddrinfo for DNS resolution
+            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
+            hints.family = std.c.AF.UNSPEC; // Allow both IPv4 and IPv6
+            hints.socktype = std.c.SOCK.STREAM;
+
+            var result: ?*std.c.addrinfo = null;
+            const ret = std.c.getaddrinfo(
+                hostname.ptr,
+                null,
+                &hints,
+                &result,
+            );
+
+            if (ret != 0) {
+                return error.DnsLookupFailed;
+            }
+
+            defer if (result) |res| std.c.freeaddrinfo(res);
+
+            // Count results
+            var count: usize = 0;
+            var current = result;
+            while (current) |node| : (current = node.next) {
+                count += 1;
+            }
+
+            if (count == 0) {
+                return error.NoAddressFound;
+            }
+
+            // Allocate and populate addresses
+            var addresses = try self.allocator.alloc(Address, count);
+            var i: usize = 0;
+
+            current = result;
+            while (current) |node| : (current = node.next) {
+                const addr = node.addr orelse continue;
+
+                addresses[i] = switch (addr.family) {
+                    std.c.AF.INET => blk: {
+                        const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
+                        var ip: [4]u8 = undefined;
+                        @memcpy(&ip, &addr_in.addr);
+                        break :blk Address.initIp4(ip, 0);
+                    },
+                    std.c.AF.INET6 => blk: {
+                        const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
+                        var ip: [16]u8 = undefined;
+                        @memcpy(&ip, &addr_in6.addr);
+                        break :blk Address.initIp6(ip, 0);
+                    },
+                    else => continue,
+                };
+
+                i += 1;
+            }
+
+            return addresses[0..i];
         }
-
-        defer if (result) |res| std.c.freeaddrinfo(res);
-
-        // Count results
-        var count: usize = 0;
-        var current = result;
-        while (current) |node| : (current = node.next) {
-            count += 1;
-        }
-
-        if (count == 0) {
-            return error.NoAddressFound;
-        }
-
-        // Allocate and populate addresses
-        var addresses = try self.allocator.alloc(Address, count);
-        var i: usize = 0;
-
-        current = result;
-        while (current) |node| : (current = node.next) {
-            const addr = node.addr orelse continue;
-
-            addresses[i] = switch (addr.family) {
-                std.c.AF.INET => blk: {
-                    const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
-                    var ip: [4]u8 = undefined;
-                    @memcpy(&ip, &addr_in.addr);
-                    break :blk Address.initIp4(ip, 0);
-                },
-                std.c.AF.INET6 => blk: {
-                    const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
-                    var ip: [16]u8 = undefined;
-                    @memcpy(&ip, &addr_in6.addr);
-                    break :blk Address.initIp6(ip, 0);
-                },
-                else => continue,
-            };
-
-            i += 1;
-        }
-
-        return addresses[0..i];
     }
 
     /// Lookup and return only IPv4 addresses (A records)
     pub fn lookupIpv4(self: *DnsResolver, hostname: []const u8) ![]Address {
-        var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-        hints.family = std.c.AF.INET; // IPv4 only
-        hints.socktype = std.c.SOCK.STREAM;
-
-        var result: ?*std.c.addrinfo = null;
-        const ret = std.c.getaddrinfo(
-            hostname.ptr,
-            null,
-            &hints,
-            &result,
-        );
-
-        if (ret != 0) {
+        if (comptime native_os == .linux) {
+            _ = self;
+            _ = hostname;
             return error.DnsLookupFailed;
+        } else {
+            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
+            hints.family = std.c.AF.INET; // IPv4 only
+            hints.socktype = std.c.SOCK.STREAM;
+
+            var result: ?*std.c.addrinfo = null;
+            const ret = std.c.getaddrinfo(
+                hostname.ptr,
+                null,
+                &hints,
+                &result,
+            );
+
+            if (ret != 0) {
+                return error.DnsLookupFailed;
+            }
+
+            defer if (result) |res| std.c.freeaddrinfo(res);
+
+            var addresses = std.ArrayList(Address).init(self.allocator);
+            var current = result;
+            while (current) |node| : (current = node.next) {
+                const addr = node.addr orelse continue;
+                if (addr.family != std.c.AF.INET) continue;
+
+                const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
+                var ip: [4]u8 = undefined;
+                @memcpy(&ip, &addr_in.addr);
+                try addresses.append(Address.initIp4(ip, 0));
+            }
+
+            return addresses.toOwnedSlice();
         }
-
-        defer if (result) |res| std.c.freeaddrinfo(res);
-
-        var addresses = std.ArrayList(Address).init(self.allocator);
-        var current = result;
-        while (current) |node| : (current = node.next) {
-            const addr = node.addr orelse continue;
-            if (addr.family != std.c.AF.INET) continue;
-
-            const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
-            var ip: [4]u8 = undefined;
-            @memcpy(&ip, &addr_in.addr);
-            try addresses.append(Address.initIp4(ip, 0));
-        }
-
-        return addresses.toOwnedSlice();
     }
 
     /// Lookup and return only IPv6 addresses (AAAA records)
     pub fn lookupIpv6(self: *DnsResolver, hostname: []const u8) ![]Address {
-        var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-        hints.family = std.c.AF.INET6; // IPv6 only
-        hints.socktype = std.c.SOCK.STREAM;
-
-        var result: ?*std.c.addrinfo = null;
-        const ret = std.c.getaddrinfo(
-            hostname.ptr,
-            null,
-            &hints,
-            &result,
-        );
-
-        if (ret != 0) {
+        if (comptime native_os == .linux) {
+            _ = self;
+            _ = hostname;
             return error.DnsLookupFailed;
+        } else {
+            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
+            hints.family = std.c.AF.INET6; // IPv6 only
+            hints.socktype = std.c.SOCK.STREAM;
+
+            var result: ?*std.c.addrinfo = null;
+            const ret = std.c.getaddrinfo(
+                hostname.ptr,
+                null,
+                &hints,
+                &result,
+            );
+
+            if (ret != 0) {
+                return error.DnsLookupFailed;
+            }
+
+            defer if (result) |res| std.c.freeaddrinfo(res);
+
+            var addresses = std.ArrayList(Address).init(self.allocator);
+            var current = result;
+            while (current) |node| : (current = node.next) {
+                const addr = node.addr orelse continue;
+                if (addr.family != std.c.AF.INET6) continue;
+
+                const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
+                var ip: [16]u8 = undefined;
+                @memcpy(&ip, &addr_in6.addr);
+                try addresses.append(Address.initIp6(ip, 0));
+            }
+
+            return addresses.toOwnedSlice();
         }
-
-        defer if (result) |res| std.c.freeaddrinfo(res);
-
-        var addresses = std.ArrayList(Address).init(self.allocator);
-        var current = result;
-        while (current) |node| : (current = node.next) {
-            const addr = node.addr orelse continue;
-            if (addr.family != std.c.AF.INET6) continue;
-
-            const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
-            var ip: [16]u8 = undefined;
-            @memcpy(&ip, &addr_in6.addr);
-            try addresses.append(Address.initIp6(ip, 0));
-        }
-
-        return addresses.toOwnedSlice();
     }
 
     /// Lookup and connect to first available address
@@ -171,27 +190,31 @@ pub const DnsResolver = struct {
 
     /// Reverse DNS lookup (address to hostname)
     pub fn reverseLookup(self: *DnsResolver, address: Address) ![]const u8 {
-        var hostname_buf: [1024]u8 = undefined;
-
-        const addr = address.toSockAddr();
-        const addr_len = @as(std.c.socklen_t, @intCast(address.getSockAddrSize()));
-
-        const ret = std.c.getnameinfo(
-            &addr,
-            addr_len,
-            &hostname_buf,
-            hostname_buf.len,
-            null,
-            0,
-            0,
-        );
-
-        if (ret != 0) {
+        if (comptime native_os == .linux) {
             return error.ReverseLookupFailed;
-        }
+        } else {
+            var hostname_buf: [1024]u8 = undefined;
 
-        const len = std.mem.indexOfScalar(u8, &hostname_buf, 0) orelse hostname_buf.len;
-        return try self.allocator.dupe(u8, hostname_buf[0..len]);
+            const addr = address.toSockAddr();
+            const addr_len = @as(std.c.socklen_t, @intCast(address.getSockAddrSize()));
+
+            const ret = std.c.getnameinfo(
+                &addr,
+                addr_len,
+                &hostname_buf,
+                hostname_buf.len,
+                null,
+                0,
+                0,
+            );
+
+            if (ret != 0) {
+                return error.ReverseLookupFailed;
+            }
+
+            const len = std.mem.indexOfScalar(u8, &hostname_buf, 0) orelse hostname_buf.len;
+            return try self.allocator.dupe(u8, hostname_buf[0..len]);
+        }
     }
 };
 

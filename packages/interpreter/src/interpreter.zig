@@ -10925,7 +10925,7 @@ pub const Interpreter = struct {
                 return error.TypeMismatch;
             }
             const name_z = try self.arena.allocator().dupeZ(u8, name_val.String);
-            if (comptime native_os != .windows) {
+            if (comptime native_os != .windows and native_os != .linux) {
                 if (std.c.getenv(name_z)) |val_ptr| {
                     return Value{ .String = std.mem.span(val_ptr) };
                 }
