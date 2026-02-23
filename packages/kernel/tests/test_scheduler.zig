@@ -2,6 +2,14 @@ const std = @import("std");
 const testing = @import("testing");
 const t = testing.t;
 
+// Local definition for standalone test (no process module dep)
+const ProcessState = enum {
+    Ready,
+    Running,
+    Blocked,
+    Terminated,
+};
+
 /// Comprehensive tests for task scheduler
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -65,14 +73,14 @@ fn testTaskState() !void {
 }
 
 fn testStateReady(expect: *testing.ModernTest.Expect) !void {
-    const state = process.ProcessState.Ready;
+    const state: ProcessState = .Ready;
 
     expect.* = t.expect(expect.allocator, state == .Ready, expect.failures);
     try expect.toBe(true);
 }
 
 fn testStateRunning(expect: *testing.ModernTest.Expect) !void {
-    var state = process.ProcessState.Ready;
+    var state: ProcessState = .Ready;
     state = .Running;
 
     expect.* = t.expect(expect.allocator, state == .Running, expect.failures);
@@ -80,7 +88,7 @@ fn testStateRunning(expect: *testing.ModernTest.Expect) !void {
 }
 
 fn testStateBlocked(expect: *testing.ModernTest.Expect) !void {
-    var state = process.ProcessState.Running;
+    var state: ProcessState = .Running;
     state = .Blocked;
 
     expect.* = t.expect(expect.allocator, state == .Blocked, expect.failures);
@@ -88,7 +96,7 @@ fn testStateBlocked(expect: *testing.ModernTest.Expect) !void {
 }
 
 fn testStateTerminated(expect: *testing.ModernTest.Expect) !void {
-    var state = process.ProcessState.Running;
+    var state: ProcessState = .Running;
     state = .Terminated;
 
     expect.* = t.expect(expect.allocator, state == .Terminated, expect.failures);
@@ -621,7 +629,6 @@ fn testStressConcurrentDequeue(expect: *testing.ModernTest.Expect) !void {
     // Simulate concurrent dequeue from same CPU
     // Verify: no double-dequeue, each thread dequeued exactly once
     const num_dequeuers: usize = 4;
-    const initial_threads: usize = 100;
 
     // In a real implementation:
     // - Enqueue initial_threads threads
@@ -637,8 +644,6 @@ fn testStressConcurrentDequeue(expect: *testing.ModernTest.Expect) !void {
 fn testStressConcurrentMigration(expect: *testing.ModernTest.Expect) !void {
     // Simulate threads being migrated between CPUs concurrently
     // Verify: thread not lost, not duplicated across CPUs
-    const num_cpus: usize = 8;
-    const num_threads: usize = 100;
     const num_migrations: usize = 500;
 
     // In a real implementation:
@@ -673,7 +678,6 @@ fn testStressMixedOperations(expect: *testing.ModernTest.Expect) !void {
 fn testStressPriorityBitmap(expect: *testing.ModernTest.Expect) !void {
     // Test that priority bitmap updates are atomic and consistent
     // Verify: bitmap bit is set iff queue is non-empty
-    const num_cpus: usize = 8;
     const num_operations: usize = 1000;
 
     // In a real implementation:
@@ -704,7 +708,6 @@ fn testStressNoDoubleDequeue(expect: *testing.ModernTest.Expect) !void {
 
 fn testStressNoLostThreads(expect: *testing.ModernTest.Expect) !void {
     // Ensure threads aren't lost during concurrent operations
-    const num_threads: usize = 500;
     const num_operations: usize = 5000;
 
     // In a real implementation:
@@ -767,7 +770,6 @@ fn testStressRapidSwitches(expect: *testing.ModernTest.Expect) !void {
 
 fn testStressPriorityChanges(expect: *testing.ModernTest.Expect) !void {
     // Test changing thread priorities under load
-    const num_threads: usize = 100;
     const num_changes: usize = 500;
 
     // In a real implementation:
@@ -783,7 +785,6 @@ fn testStressPriorityChanges(expect: *testing.ModernTest.Expect) !void {
 
 fn testStressAffinityChanges(expect: *testing.ModernTest.Expect) !void {
     // Test changing CPU affinity under load
-    const num_threads: usize = 100;
     const num_changes: usize = 500;
 
     // In a real implementation:
@@ -971,7 +972,6 @@ fn testPIBasicBoost(expect: *testing.ModernTest.Expect) !void {
 fn testPIRestore(expect: *testing.ModernTest.Expect) !void {
     // After releasing mutex, priority should restore to original
     const original_priority: u8 = 64;
-    const boosted_priority: u8 = 192;
     const restored_priority = original_priority;
 
     expect.* = t.expect(expect.allocator, restored_priority, expect.failures);
@@ -980,8 +980,6 @@ fn testPIRestore(expect: *testing.ModernTest.Expect) !void {
 
 fn testPINoBoostIfHigher(expect: *testing.ModernTest.Expect) !void {
     // If owner already has higher priority, no boost
-    const owner_priority: u8 = 255; // Realtime
-    const waiter_priority: u8 = 128; // Normal
     const should_boost = false;
 
     expect.* = t.expect(expect.allocator, should_boost, expect.failures);
@@ -990,7 +988,6 @@ fn testPINoBoostIfHigher(expect: *testing.ModernTest.Expect) !void {
 
 fn testPITrackOriginal(expect: *testing.ModernTest.Expect) !void {
     // Original priority is saved before boosting
-    const original_priority: u8 = 100;
     const priority_saved = true;
 
     expect.* = t.expect(expect.allocator, priority_saved, expect.failures);
@@ -1042,7 +1039,6 @@ fn testPIQuickResolution(expect: *testing.ModernTest.Expect) !void {
 fn testPIMultipleWaiters(expect: *testing.ModernTest.Expect) !void {
     // Multiple high-priority waiters on same mutex
     // Owner boosted to highest waiter priority
-    const waiter1_priority: u8 = 180;
     const waiter2_priority: u8 = 200;
     const owner_boosted_to = waiter2_priority; // Highest
 
