@@ -242,11 +242,13 @@ pub const BumpAllocator = struct {
     }
 
     pub fn allocPages(self: *@This(), count: usize) ![]PhysicalAddress {
-        var pages: []PhysicalAddress = undefined;
+        // Allocate storage for the page address array from bump memory
+        const array_mem = try self.alloc(count * @sizeOf(PhysicalAddress), @alignOf(PhysicalAddress));
+        const pages: [*]PhysicalAddress = @ptrCast(@alignCast(array_mem.ptr));
         for (0..count) |i| {
             pages[i] = try self.allocPage();
         }
-        return pages;
+        return pages[0..count];
     }
 
     pub fn reset(self: *@This(), start: usize) void {
