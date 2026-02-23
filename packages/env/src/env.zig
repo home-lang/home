@@ -10,17 +10,28 @@ pub const ParseError = parser.ParseError;
 pub const secure = @import("secure.zig");
 pub const cli = @import("cli.zig");
 
+const builtin = @import("builtin");
+
 // Get environment variable value
 pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
-    // Convert key to null-terminated string for C API
-    const key_z = try allocator.dupeZ(u8, key);
-    defer allocator.free(key_z);
+    if (comptime builtin.os.tag == .windows) {
+        // On Windows, use Environ API (no libc dependency)
+        const environ: std.process.Environ = .{ .block = .{ .use_global = true } };
+        return environ.getAlloc(allocator, key) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => null,
+            else => |e| return e,
+        };
+    } else {
+        // On POSIX, use C getenv directly
+        const key_z = try allocator.dupeZ(u8, key);
+        defer allocator.free(key_z);
 
-    const result = std.c.getenv(key_z.ptr);
-    if (result) |ptr| {
-        return try allocator.dupe(u8, std.mem.sliceTo(ptr, 0));
+        const result = std.c.getenv(key_z.ptr);
+        if (result) |ptr| {
+            return try allocator.dupe(u8, std.mem.sliceTo(ptr, 0));
+        }
+        return null;
     }
-    return null;
 }
 
 // Get environment variable or return default
