@@ -476,8 +476,8 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
-    // Database tests (requires sqlite3 - skip on Windows)
-    const run_database_tests = if (target.result.os.tag != .windows) blk: {
+    // Database tests (requires sqlite3 - skip on Windows and cross-compilation)
+    const run_database_tests = if (target.result.os.tag != .windows and target.query.isNative()) blk: {
         const database_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("packages/database/tests/database_test.zig"),
@@ -868,10 +868,11 @@ pub fn build(b: *std.Build) void {
     const queue_example_step = b.step("example-queue", "Run queue system example");
     queue_example_step.dependOn(&run_queue_example.step);
 
-    // Database Example (requires sqlite3 system library - skip on Windows)
+    // Database Example (requires sqlite3 system library - skip on Windows and cross-compilation)
     const is_windows = target.result.os.tag == .windows;
+    const is_native = target.query.isNative();
 
-    if (!is_windows) {
+    if (!is_windows and is_native) {
         const database_example = b.addExecutable(.{
             .name = "database_example",
             .root_module = b.createModule(.{
