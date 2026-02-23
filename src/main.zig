@@ -48,10 +48,16 @@ fn getMonotonicNs() u64 {
         _ = ntdll.RtlQueryPerformanceCounter(&counter);
         _ = ntdll.RtlQueryPerformanceFrequency(&freq);
         return @intCast(@divFloor(@as(i128, counter) * std.time.ns_per_s, @as(i128, freq)));
+    } else if (comptime native_os == .linux) {
+        const linux = std.os.linux;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
     }
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 const Color = enum {
@@ -1044,6 +1050,9 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
             // 500ms in 100-nanosecond intervals, negative for relative time
             var delay: i64 = -5_000_000;
             _ = std.os.windows.ntdll.NtDelayExecution(0, &delay);
+        } else if (comptime native_os == .linux) {
+            const linux = std.os.linux;
+            _ = linux.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);
         } else {
             _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);
         }
@@ -2697,7 +2706,7 @@ fn pkgLogin(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 
     // Check for token in environment variable
     if (token == null) {
-        if (comptime native_os != .windows) {
+        if (comptime native_os != .windows and native_os != .linux) {
             if (std.c.getenv("ION_TOKEN")) |env_ptr| {
                 const env_token = std.mem.span(env_ptr);
                 token = env_token;
