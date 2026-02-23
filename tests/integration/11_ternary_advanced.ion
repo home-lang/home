@@ -1,0 +1,20 @@
+// Advanced Ternary Expression Tests
+
+it("should evaluate ternary expression") {
+    let x = 10;
+    let result = if (x > 5) 1 else 0;
+    assert(result == 1);
+}
+
+it("should handle nested ternary") {
+    let x = 15;
+    let result = if (x > 20) "high" else if (x > 10) "medium" else "low";
+    assert(result == "medium");
+}
+
+it("should use ternary in assignment") {
+    let a = true;
+    let b = false;
+    let result = if (a and !b) 42 else 0;
+    assert(result == 42);
+}

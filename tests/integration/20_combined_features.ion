@@ -1,0 +1,29 @@
+// Combined Features Integration Test
+
+it("should combine functions and conditionals") {
+    fn max(a: i32, b: i32) -> i32 {
+        if (a > b) a else b
+    }
+    assert(max(10, 20) == 20);
+    assert(max(30, 5) == 30);
+}
+
+it("should combine loops and arrays") {
+    let arr = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for (item in arr) {
+        sum = sum + item;
+    }
+    assert(sum == 15);
+}
+
+it("should combine multiple features") {
+    let mut values = [10, 20, 30];
+    let mut result = 0;
+    for (v in values) {
+        if (v > 15) {
+            result = result + v;
+        }
+    }
+    assert(result == 50);
+}
