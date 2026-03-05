@@ -30,6 +30,8 @@
     "preview": "bunx bunpress preview",
     "lint": "bunx --bun pickier .",
     "lint:fix": "bunx --bun pickier . --fix",
+    "format": "bunx --bun pickier . --format",
+    "format:fix": "bunx --bun pickier . --format --write",
     "test": "bun test",
     "typecheck": "bun --bun tsc --noEmit",
     "release": "bunx --bun bumpx -r --all"
