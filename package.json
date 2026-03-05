@@ -28,10 +28,8 @@
     "build": "bunx bunpress build",
     "build:docs": "bunx bunpress build",
     "preview": "bunx bunpress preview",
-    "lint": "bunx --bun pickier lint . --max-warnings 9999",
-    "lint:fix": "bunx --bun pickier lint . --fix --max-warnings 9999",
-    "format": "bunx --bun pickier format .",
-    "format:fix": "bunx --bun pickier format . --write",
+    "lint": "bunx --bun pickier .",
+    "lint:fix": "bunx --bun pickier . --fix",
     "test": "bun test",
     "typecheck": "bun --bun tsc --noEmit",
     "release": "bunx --bun bumpx -r --all"
