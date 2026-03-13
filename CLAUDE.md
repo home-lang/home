@@ -2,7 +2,7 @@
 
 ## About
 
-Language support for the Home programming language.
+Home is a modern programming language for systems, apps, and games that combines the speed of Zig, the safety of Rust, and the joy of TypeScript. The compiler is built with Zig and produces native x64 code, with features including pattern matching, generics, async/await, comptime evaluation, null safety operators, and error handling via Result types. Source files use `.home` or `.hm` extensions, and the project includes a lexer, parser, type system with inference, and a standard library with HTTP server and database modules.
 
 ## Linting
 
