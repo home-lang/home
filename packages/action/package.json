@@ -32,7 +32,7 @@
     "@actions/tool-cache": "^2.0.1"
   },
   "devDependencies": {
-    "@types/node": "^20.10.6",
+    "@types/node": "^25.5.0",
     "bun-types": "latest",
     "prettier": "^3.1.1",
     "typescript": "^5.3.3"
