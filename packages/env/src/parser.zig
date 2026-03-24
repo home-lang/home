@@ -75,7 +75,7 @@ fn parseDoubleQuoted(allocator: std.mem.Allocator, value: []const u8) ParseError
         return error.InvalidSyntax;
     }
 
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 1; // Skip opening quote
@@ -128,7 +128,7 @@ fn parseSingleQuoted(allocator: std.mem.Allocator, value: []const u8) ParseError
 
 // Parse multi-line value
 pub fn parseMultiLine(allocator: std.mem.Allocator, lines: []const []const u8) ParseError![]const u8 {
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     for (lines, 0..) |line, i| {

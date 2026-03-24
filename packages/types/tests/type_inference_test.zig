@@ -85,7 +85,7 @@ test "type inference: array literal homogeneous" {
     defer env.deinit();
 
     // Create: [1, 2, 3]
-    var elements = std.ArrayList(ast.Expr){ .items = &.{}, .capacity = 0 };
+    var elements = std.ArrayList(ast.Expr).empty;
     defer elements.deinit(testing.allocator);
 
     const lit1 = ast.IntegerLiteral.init(1, ast.SourceLocation{ .line = 1, .column = 2 });
@@ -248,7 +248,7 @@ test "type inference: tuple with heterogeneous types" {
     defer env.deinit();
 
     // Create: (42, "hello", true)
-    var elements = std.ArrayList(ast.Expr){ .items = &.{}, .capacity = 0 };
+    var elements = std.ArrayList(ast.Expr).empty;
     defer elements.deinit(testing.allocator);
 
     const int_lit = ast.IntegerLiteral.init(42, ast.SourceLocation{ .line = 1, .column = 2 });

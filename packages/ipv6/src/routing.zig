@@ -59,7 +59,7 @@ pub const RoutingTable = struct {
 
     pub fn init(allocator: std.mem.Allocator) RoutingTable {
         return .{
-            .routes = std.ArrayList(Route){},
+            .routes = std.ArrayList(Route).empty,
             .mutex = std.Thread.Mutex{},
             .allocator = allocator,
         };

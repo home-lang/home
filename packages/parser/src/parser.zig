@@ -201,7 +201,7 @@ pub const Parser = struct {
             .allocator = allocator,
             .tokens = tokens,
             .current = 0,
-            .errors = std.ArrayList(ParseErrorInfo){ .items = &.{}, .capacity = 0 },
+            .errors = std.ArrayList(ParseErrorInfo).empty,
             .panic_mode = false,
             .recursion_depth = 0,
             .error_formatter = errors.ErrorFormatter.init(allocator),
@@ -472,7 +472,7 @@ pub const Parser = struct {
     /// Returns: Pointer to Program AST node containing all parsed statements
     /// Errors: ParseError if syntax errors prevent parsing (with detailed diagnostics)
     pub fn parse(self: *Parser) ParseError!*ast.Program {
-        var statements = std.ArrayList(ast.Stmt){};
+        var statements = std.ArrayList(ast.Stmt).empty;
         defer statements.deinit(self.allocator);
 
         while (!self.isAtEnd()) {
@@ -502,7 +502,7 @@ pub const Parser = struct {
 
     /// Parse attributes (@test, @inline, @deprecated, etc.)
     fn parseAttributes(self: *Parser) ![]const ast.Attribute {
-        var attrs = std.ArrayList(ast.Attribute){ .items = &.{}, .capacity = 0 };
+        var attrs = std.ArrayList(ast.Attribute).empty;
         defer attrs.deinit(self.allocator);
 
         while (self.check(.At)) {
@@ -530,7 +530,7 @@ pub const Parser = struct {
                 break;
             }
 
-            var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+            var args = std.ArrayList(*ast.Expr).empty;
             defer args.deinit(self.allocator);
 
             // Parse optional arguments: @attribute(arg1, arg2)
@@ -767,7 +767,7 @@ pub const Parser = struct {
         const name = name_token.lexeme;
 
         // Parse generic type parameters if present: fn name<T, U>() or fn name<T: Trait>()
-        var type_params = std.ArrayList(ast.GenericParam){};
+        var type_params = std.ArrayList(ast.GenericParam).empty;
         defer type_params.deinit(self.allocator);
 
         if (self.match(&.{.Less})) {
@@ -776,7 +776,7 @@ pub const Parser = struct {
                 const param_name = type_param.lexeme;
 
                 // Parse optional trait bounds: <T: Trait> or <T: Trait1 + Trait2>
-                var bounds = std.ArrayList([]const u8){};
+                var bounds = std.ArrayList([]const u8).empty;
                 defer bounds.deinit(self.allocator);
 
                 if (self.match(&.{.Colon})) {
@@ -805,7 +805,7 @@ pub const Parser = struct {
         _ = try self.expect(.LeftParen, "Expected '(' after function name");
 
         // Parse parameters
-        var params = std.ArrayList(ast.Parameter){};
+        var params = std.ArrayList(ast.Parameter).empty;
         defer params.deinit(self.allocator);
 
         if (!self.check(.RightParen)) {
@@ -880,9 +880,9 @@ pub const Parser = struct {
         }
 
         // Parse contract clauses: requires and ensures
-        var requires_clauses = std.ArrayList(ast.ContractClause){};
+        var requires_clauses = std.ArrayList(ast.ContractClause).empty;
         defer requires_clauses.deinit(self.allocator);
-        var ensures_clauses = std.ArrayList(ast.ContractClause){};
+        var ensures_clauses = std.ArrayList(ast.ContractClause).empty;
         defer ensures_clauses.deinit(self.allocator);
 
         // Parse requires clauses (preconditions)
@@ -1028,7 +1028,7 @@ pub const Parser = struct {
         const name = name_token.lexeme;
 
         // Parse generic type parameters if present: struct Name<T, U> or struct Name<T: Trait>
-        var type_params = std.ArrayList(ast.GenericParam){};
+        var type_params = std.ArrayList(ast.GenericParam).empty;
         defer type_params.deinit(self.allocator);
 
         if (self.match(&.{.Less})) {
@@ -1037,7 +1037,7 @@ pub const Parser = struct {
                 const param_name = type_param.lexeme;
 
                 // Parse optional trait bounds: <T: Trait> or <T: Trait1 + Trait2>
-                var bounds = std.ArrayList([]const u8){};
+                var bounds = std.ArrayList([]const u8).empty;
                 defer bounds.deinit(self.allocator);
 
                 if (self.match(&.{.Colon})) {
@@ -1066,11 +1066,11 @@ pub const Parser = struct {
         _ = try self.expect(.LeftBrace, "Expected '{' after struct name");
 
         // Parse fields
-        var fields = std.ArrayList(ast.StructField){};
+        var fields = std.ArrayList(ast.StructField).empty;
         defer fields.deinit(self.allocator);
 
         // Also collect methods defined inside the struct
-        var methods = std.ArrayList(*ast.FnDecl){};
+        var methods = std.ArrayList(*ast.FnDecl).empty;
         defer methods.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -1208,7 +1208,7 @@ pub const Parser = struct {
         _ = try self.expect(.LeftBrace, "Expected '{' after enum name");
 
         // Parse variants
-        var variants = std.ArrayList(ast.EnumVariant){};
+        var variants = std.ArrayList(ast.EnumVariant).empty;
         defer variants.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -1273,7 +1273,7 @@ pub const Parser = struct {
 
         _ = try self.expect(.LeftBrace, "Expected '{' after union name");
 
-        var variants = std.ArrayList(ast.UnionVariant){};
+        var variants = std.ArrayList(ast.UnionVariant).empty;
         defer variants.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -1349,7 +1349,7 @@ pub const Parser = struct {
         } else if (self.check(.LeftParen)) {
             // Parse tuple type: (T1, T2, ...)
             _ = self.advance(); // consume '('
-            var tuple_str = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var tuple_str = std.ArrayList(u8).empty;
             defer tuple_str.deinit(self.allocator);
             try tuple_str.append(self.allocator, '(');
 
@@ -1372,7 +1372,7 @@ pub const Parser = struct {
         } else if (self.check(.LeftBracket)) {
             // Parse array type: [T] or [T; N]
             _ = self.advance(); // consume '['
-            var arr_str = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var arr_str = std.ArrayList(u8).empty;
             defer arr_str.deinit(self.allocator);
             try arr_str.append(self.allocator, '[');
 
@@ -1409,7 +1409,7 @@ pub const Parser = struct {
         if (self.check(.LeftParen)) {
             // Tuple type
             _ = self.advance();
-            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(u8).empty;
             defer result.deinit(self.allocator);
             try result.append(self.allocator, '(');
 
@@ -1427,7 +1427,7 @@ pub const Parser = struct {
         } else if (self.check(.LeftBracket)) {
             // Array type
             _ = self.advance();
-            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(u8).empty;
             defer result.deinit(self.allocator);
             try result.append(self.allocator, '[');
             const inner = try self.parseTypeString();
@@ -1455,7 +1455,7 @@ pub const Parser = struct {
         const import_token = self.previous();
 
         // Parse module path (e.g., basics/os/serial)
-        var path_segments = std.ArrayList([]const u8){};
+        var path_segments = std.ArrayList([]const u8).empty;
         defer path_segments.deinit(self.allocator);
 
         // First segment
@@ -1520,7 +1520,7 @@ pub const Parser = struct {
         var imports: ?[]const []const u8 = null;
         // Only support "import path { items }" - NOT Rust-style "import path::{ items }"
         if (self.match(&.{.LeftBrace})) {
-            var import_list = std.ArrayList([]const u8){};
+            var import_list = std.ArrayList([]const u8).empty;
             defer import_list.deinit(self.allocator);
 
             // Parse first import
@@ -1580,7 +1580,7 @@ pub const Parser = struct {
             }
 
             // Parse tuple types (T1, T2, ...)
-            var types = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            var types = std.ArrayList([]const u8).empty;
             defer types.deinit(self.allocator);
 
             while (!self.check(.RightParen) and !self.isAtEnd()) {
@@ -1593,7 +1593,7 @@ pub const Parser = struct {
             _ = try self.expect(.RightParen, "Expected ')' for tuple type");
 
             // Build tuple type string
-            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(u8).empty;
             defer result.deinit(self.allocator);
             try result.append(self.allocator, '(');
             for (types.items, 0..) |t, i| {
@@ -1610,7 +1610,7 @@ pub const Parser = struct {
         if (self.match(&.{.Fn})) {
             _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in function type");
 
-            var param_types = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            var param_types = std.ArrayList([]const u8).empty;
             defer param_types.deinit(self.allocator);
 
             while (!self.check(.RightParen) and !self.isAtEnd()) {
@@ -1629,7 +1629,7 @@ pub const Parser = struct {
             }
 
             // Build function type string: fn(T1, T2): ReturnType
-            var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(u8).empty;
             defer result.deinit(self.allocator);
             try result.appendSlice(self.allocator, "fn(");
             for (param_types.items, 0..) |t, i| {
@@ -1766,7 +1766,7 @@ pub const Parser = struct {
 
         // Check for generic type arguments: Type<Arg1, Arg2, ...>
         if (self.match(&.{.Less})) {
-            var args = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            var args = std.ArrayList([]const u8).empty;
             defer args.deinit(self.allocator);
 
             while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
@@ -1798,7 +1798,7 @@ pub const Parser = struct {
             }
 
             // Build the full generic type string: "Type<Arg1, Arg2>"
-            var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var full_type = std.ArrayList(u8).empty;
             defer full_type.deinit(self.allocator);
             try full_type.appendSlice(self.allocator, result);
             try full_type.append(self.allocator, '<');
@@ -1829,7 +1829,7 @@ pub const Parser = struct {
         // Check for tuple destructuring: let (a, b) = expr
         if (self.match(&.{.LeftParen})) {
             const start_token = self.previous();
-            var names = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+            var names = std.ArrayList([]const u8).empty;
             defer names.deinit(self.allocator);
 
             // Parse first name
@@ -2057,7 +2057,7 @@ pub const Parser = struct {
 
                 // Wrap the else-if in a block
                 const else_block_ptr = try self.allocator.create(ast.BlockStmt);
-                var stmts_list = std.ArrayList(ast.Stmt){};
+                var stmts_list = std.ArrayList(ast.Stmt).empty;
                 try stmts_list.append(self.allocator, else_if_stmt);
                 else_block_ptr.* = ast.BlockStmt{
                     .node = .{ .type = .BlockStmt, .loc = ast.SourceLocation.fromToken(self.previous()) },
@@ -2237,7 +2237,7 @@ pub const Parser = struct {
 
             if (self.match(&.{.Comma})) {
                 // This is tuple destructuring: for (a, b, ...) in items
-                var bindings = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                var bindings = std.ArrayList([]const u8).empty;
                 defer bindings.deinit(self.allocator);
 
                 try bindings.append(self.allocator, first_name);
@@ -2411,13 +2411,13 @@ pub const Parser = struct {
 
         _ = try self.expect(.LeftBrace, "Expected '{' after switch value");
 
-        var cases = std.ArrayList(*ast.CaseClause){ .items = &.{}, .capacity = 0 };
+        var cases = std.ArrayList(*ast.CaseClause).empty;
         defer cases.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             if (self.match(&.{.Case})) {
                 // Parse case patterns
-                var patterns = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                var patterns = std.ArrayList(*ast.Expr).empty;
                 defer patterns.deinit(self.allocator);
 
                 // Parse first pattern
@@ -2433,7 +2433,7 @@ pub const Parser = struct {
                 _ = try self.expect(.Colon, "Expected ':' after case pattern(s)");
 
                 // Parse case body (statements until next case/default/closing brace)
-                var body_stmts = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+                var body_stmts = std.ArrayList(ast.Stmt).empty;
                 defer body_stmts.deinit(self.allocator);
 
                 while (!self.check(.Case) and !self.check(.Default) and !self.check(.RightBrace) and !self.isAtEnd()) {
@@ -2454,7 +2454,7 @@ pub const Parser = struct {
                 _ = try self.expect(.Colon, "Expected ':' after 'default'");
 
                 // Parse default body
-                var body_stmts = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+                var body_stmts = std.ArrayList(ast.Stmt).empty;
                 defer body_stmts.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -2500,7 +2500,7 @@ pub const Parser = struct {
 
         _ = try self.expect(.LeftBrace, "Expected '{' after match value");
 
-        var arms = std.ArrayList(*ast.MatchArm){ .items = &.{}, .capacity = 0 };
+        var arms = std.ArrayList(*ast.MatchArm).empty;
         defer arms.deinit(self.allocator);
 
         // Parse match arms
@@ -2510,7 +2510,7 @@ pub const Parser = struct {
 
             // Check for OR patterns: pattern1 | pattern2 | ...
             if (self.match(&.{.Pipe})) {
-                var patterns = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+                var patterns = std.ArrayList(*ast.Pattern).empty;
                 defer patterns.deinit(self.allocator);
 
                 try patterns.append(self.allocator, pattern);
@@ -2697,7 +2697,7 @@ pub const Parser = struct {
 
         // Tuple pattern: (pattern1, pattern2, ...)
         if (self.match(&.{.LeftParen})) {
-            var elements = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+            var elements = std.ArrayList(*ast.Pattern).empty;
             defer elements.deinit(self.allocator);
 
             if (!self.check(.RightParen)) {
@@ -2717,7 +2717,7 @@ pub const Parser = struct {
 
         // Array pattern: [pattern1, pattern2, ..rest]
         if (self.match(&.{.LeftBracket})) {
-            var elements = std.ArrayList(*ast.Pattern){ .items = &.{}, .capacity = 0 };
+            var elements = std.ArrayList(*ast.Pattern).empty;
             defer elements.deinit(self.allocator);
             var rest: ?[]const u8 = null;
 
@@ -2792,7 +2792,7 @@ pub const Parser = struct {
 
             // Check if it's a struct pattern: Name { field1, field2: pattern }
             if (self.match(&.{.LeftBrace})) {
-                var fields = std.ArrayList(ast.Pattern.FieldPattern){ .items = &.{}, .capacity = 0 };
+                var fields = std.ArrayList(ast.Pattern.FieldPattern).empty;
                 defer fields.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -2867,7 +2867,7 @@ pub const Parser = struct {
         const try_block = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(try_block, self.allocator);
 
-        var catch_clauses = std.ArrayList(*ast.CatchClause){ .items = &.{}, .capacity = 0 };
+        var catch_clauses = std.ArrayList(*ast.CatchClause).empty;
         defer catch_clauses.deinit(self.allocator);
 
         // Parse catch clauses
@@ -2987,7 +2987,7 @@ pub const Parser = struct {
         else
             try self.expect(.LeftBrace, "Expected '{'");
 
-        var statements = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+        var statements = std.ArrayList(ast.Stmt).empty;
         defer statements.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -3366,10 +3366,10 @@ pub const Parser = struct {
     fn call(self: *Parser, callee: *ast.Expr) !*ast.Expr {
         const lparen_token = self.previous();
 
-        var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+        var args = std.ArrayList(*ast.Expr).empty;
         defer args.deinit(self.allocator);
 
-        var named_args = std.ArrayList(ast.NamedArg){ .items = &.{}, .capacity = 0 };
+        var named_args = std.ArrayList(ast.NamedArg).empty;
         defer named_args.deinit(self.allocator);
 
         var seen_named = false; // Track if we've seen a named argument
@@ -3880,7 +3880,7 @@ pub const Parser = struct {
                 expr.* = ast.Expr{ .MemberExpr = member_expr };
             } else if (self.match(&.{.LeftParen})) {
                 // Function call
-                var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                var args = std.ArrayList(*ast.Expr).empty;
                 defer args.deinit(self.allocator);
 
                 if (!self.check(.RightParen)) {
@@ -3998,7 +3998,7 @@ pub const Parser = struct {
             // Check for struct pattern: Name { field1, field2 }
             if (self.match(&.{.LeftBrace})) {
                 // Parse struct pattern fields
-                var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                var fields = std.ArrayList(ast.FieldInit).empty;
                 defer fields.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -4063,7 +4063,7 @@ pub const Parser = struct {
 
         _ = try self.expect(.LeftBrace, "Expected '{' after match value");
 
-        var arms = std.ArrayList(ast.MatchExprArm){ .items = &.{}, .capacity = 0 };
+        var arms = std.ArrayList(ast.MatchExprArm).empty;
         defer arms.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -4114,7 +4114,7 @@ pub const Parser = struct {
     fn blockExprParse(self: *Parser) !*ast.Expr {
         const brace_token = self.previous();
 
-        var statements = std.ArrayList(ast.Stmt){ .items = &.{}, .capacity = 0 };
+        var statements = std.ArrayList(ast.Stmt).empty;
         defer statements.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -4292,7 +4292,7 @@ pub const Parser = struct {
 
             if (looks_like_map) {
                 // Parse as map literal
-                var entries = std.ArrayList(ast.MapEntry){ .items = &.{}, .capacity = 0 };
+                var entries = std.ArrayList(ast.MapEntry).empty;
                 defer entries.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -4521,7 +4521,7 @@ pub const Parser = struct {
             }
 
             // Remove underscores for parsing
-            var clean_lexeme = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var clean_lexeme = std.ArrayList(u8).empty;
             defer clean_lexeme.deinit(self.allocator);
             for (lexeme) |c| {
                 if (c != '_') {
@@ -4581,7 +4581,7 @@ pub const Parser = struct {
             }
 
             // Remove underscores for parsing
-            var clean_lexeme = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+            var clean_lexeme = std.ArrayList(u8).empty;
             defer clean_lexeme.deinit(self.allocator);
             for (lexeme) |c| {
                 if (c != '_') {
@@ -4644,7 +4644,7 @@ pub const Parser = struct {
                 const bang_token = self.previous();
 
                 // Parse macro arguments - support (), [], and {} delimiters (Rust-style)
-                var args = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                var args = std.ArrayList(*ast.Expr).empty;
                 defer args.deinit(self.allocator);
 
                 // Determine which delimiter is used
@@ -4718,7 +4718,7 @@ pub const Parser = struct {
                     var type_name = try self.allocator.dupe(u8, token.lexeme);
 
                     // Parse generic type arguments
-                    var type_args = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                    var type_args = std.ArrayList([]const u8).empty;
                     defer type_args.deinit(self.allocator);
 
                     while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
@@ -4739,7 +4739,7 @@ pub const Parser = struct {
                     }
 
                     // Build full generic type name
-                    var full_type = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                    var full_type = std.ArrayList(u8).empty;
                     defer full_type.deinit(self.allocator);
                     try full_type.appendSlice(self.allocator, type_name);
                     try full_type.append(self.allocator, '<');
@@ -4772,7 +4772,7 @@ pub const Parser = struct {
                         };
 
                         if (is_struct_literal) {
-                            var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                            var fields = std.ArrayList(ast.FieldInit).empty;
                             defer fields.deinit(self.allocator);
 
                             while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -4876,7 +4876,7 @@ pub const Parser = struct {
                     return expr;
                 }
 
-                var fields = std.ArrayList(ast.FieldInit){ .items = &.{}, .capacity = 0 };
+                var fields = std.ArrayList(ast.FieldInit).empty;
                 defer fields.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -5027,7 +5027,7 @@ pub const Parser = struct {
                 return expr;
             }
 
-            var entries = std.ArrayList(ast.MapEntry){ .items = &.{}, .capacity = 0 };
+            var entries = std.ArrayList(ast.MapEntry).empty;
             defer entries.deinit(self.allocator);
 
             while (!self.check(.RightBrace) and !self.isAtEnd()) {
@@ -5068,7 +5068,7 @@ pub const Parser = struct {
                         const type_token = self.advance();
                         if (self.match(&.{.LeftBrace})) {
                             // This is a typed array literal: [N]Type{ values }
-                            var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                            var elements = std.ArrayList(*ast.Expr).empty;
                             defer elements.deinit(self.allocator);
 
                             if (!self.check(.RightBrace)) {
@@ -5105,7 +5105,7 @@ pub const Parser = struct {
             }
 
             // Regular array literal: [a, b, c] or repeat syntax: [value; count]
-            var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+            var elements = std.ArrayList(*ast.Expr).empty;
             defer elements.deinit(self.allocator);
 
             if (!self.check(.RightBracket)) {
@@ -5210,7 +5210,7 @@ pub const Parser = struct {
 
             // Check if it's a tuple (comma after first element)
             if (self.match(&.{.Comma})) {
-                var elements = std.ArrayList(*ast.Expr){ .items = &.{}, .capacity = 0 };
+                var elements = std.ArrayList(*ast.Expr).empty;
                 defer elements.deinit(self.allocator);
 
                 try elements.append(self.allocator, first_expr);
@@ -5258,10 +5258,10 @@ pub const Parser = struct {
         const start_token = try self.expect(.StringInterpolationStart, "Expected string interpolation start");
         const start_loc = ast.SourceLocation.fromToken(start_token);
 
-        var parts_list = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+        var parts_list = std.ArrayList([]const u8).empty;
         defer parts_list.deinit(self.allocator);
 
-        var exprs_list = std.ArrayList(ast.Expr){ .items = &.{}, .capacity = 0 };
+        var exprs_list = std.ArrayList(ast.Expr).empty;
         defer exprs_list.deinit(self.allocator);
 
         // Add first part (text before first ${)
@@ -5376,7 +5376,7 @@ pub const Parser = struct {
     /// Convert path segments array to string representation
     /// Example: ["basics", "os", "serial"] -> "basics/os/serial"
     fn pathToString(self: *Parser, path: []const []const u8) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         for (path, 0..) |segment, i| {
             if (i > 0) try buf.append(self.allocator, '/');
             try buf.appendSlice(self.allocator, segment);

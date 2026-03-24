@@ -17,7 +17,7 @@ pub const ErrorHandler = struct {
     pub fn init(allocator: std.mem.Allocator) ErrorHandler {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList(ErrorInfo){},
+            .errors = std.ArrayList(ErrorInfo).empty,
             .current_function_return = null,
         };
     }

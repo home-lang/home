@@ -105,7 +105,7 @@ pub const Interpreter = struct {
         interpreter.debugger = null;
         interpreter.debug_enabled = false;
         interpreter.source_file = "";
-        interpreter.loop_labels = .{ .items = &.{}, .capacity = 0 };
+        interpreter.loop_labels = .empty;
         interpreter.break_target = null;
         interpreter.continue_target = null;
         interpreter.impl_methods = std.StringHashMap(std.StringHashMap(*ast.FnDecl)).init(arena_allocator);
@@ -637,7 +637,7 @@ pub const Interpreter = struct {
                         return error.RuntimeError;
                     };
                     if (!trait_result.found_existing) {
-                        trait_result.value_ptr.* = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+                        trait_result.value_ptr.* = std.ArrayList([]const u8).empty;
                     }
                     trait_result.value_ptr.append(self.arena.allocator(), trait_name) catch {
                         return error.RuntimeError;
@@ -999,7 +999,7 @@ pub const Interpreter = struct {
             },
             .InterpolatedString => |interp| {
                 // Evaluate all expressions and concatenate with string parts
-                var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(u8).empty;
                 defer result.deinit(self.arena.allocator());
 
                 // Add first part
@@ -1435,7 +1435,7 @@ pub const Interpreter = struct {
             .TupleExpr => |tuple| {
                 // First pass: evaluate elements and count total size (handling spreads)
                 const allocator = self.arena.allocator();
-                var temp_values = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var temp_values = std.ArrayList(Value).empty;
                 for (tuple.elements) |elem| {
                     // Check if this is a spread expression
                     if (elem.* == .SpreadExpr) {
@@ -1781,7 +1781,7 @@ pub const Interpreter = struct {
                 const allocator = self.arena.allocator();
 
                 // Result array
-                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(Value).empty;
 
                 // Handle iterable types
                 if (iterable_val == .Array) {
@@ -3707,7 +3707,7 @@ pub const Interpreter = struct {
                 // Simple strip tags - remove anything between < and >
                 const input = args[0].String;
                 const allocator = self.arena.allocator();
-                var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(u8).empty;
                 var in_tag = false;
                 for (input) |c| {
                     if (c == '<') {
@@ -3726,7 +3726,7 @@ pub const Interpreter = struct {
                 // Simple HTML escape
                 const input = args[0].String;
                 const allocator = self.arena.allocator();
-                var escaped = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var escaped = std.ArrayList(u8).empty;
                 for (input) |c| {
                     switch (c) {
                         '<' => try escaped.appendSlice(allocator, "&lt;"),
@@ -3745,7 +3745,7 @@ pub const Interpreter = struct {
                 // Simple HTML entity decode
                 const input = args[0].String;
                 const allocator = self.arena.allocator();
-                var decoded = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var decoded = std.ArrayList(u8).empty;
                 var i: usize = 0;
                 while (i < input.len) {
                     if (i + 3 < input.len and std.mem.eql(u8, input[i .. i + 4], "&lt;")) {
@@ -4056,7 +4056,7 @@ pub const Interpreter = struct {
                     return Value{ .String = result };
                 }
                 // Handle bold (**text**) and italic (*text*)
-                var result = std.ArrayList(u8){};
+                var result = std.ArrayList(u8).empty;
                 const alloc = self.arena.allocator();
                 var i: usize = 0;
                 while (i < input.len) {
@@ -4098,7 +4098,7 @@ pub const Interpreter = struct {
                 var fields = std.StringHashMap(Value).init(self.arena.allocator());
                 try fields.put("type", Value{ .String = "document" });
                 // Create children array with mock nodes
-                var children = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var children = std.ArrayList(Value).empty;
                 try children.append(self.arena.allocator(), Value{ .String = "heading" });
                 try children.append(self.arena.allocator(), Value{ .String = "paragraph" });
                 try fields.put("children", Value{ .Array = try children.toOwnedSlice(self.arena.allocator()) });
@@ -4107,7 +4107,7 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "toc")) {
             // Generate table of contents
-            var toc = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var toc = std.ArrayList(Value).empty;
             var item1 = std.StringHashMap(Value).init(self.arena.allocator());
             try item1.put("level", Value{ .Int = 1 });
             try item1.put("text", Value{ .String = "H1" });
@@ -4264,7 +4264,7 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "split")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
-                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(Value).empty;
                 var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
                 while (iter.next()) |part| {
                     try result.append(self.arena.allocator(), Value{ .String = part });
@@ -4321,7 +4321,7 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "split")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
-                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(Value).empty;
                 var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
                 while (iter.next()) |part| {
                     try result.append(self.arena.allocator(), Value{ .String = part });
@@ -5197,7 +5197,7 @@ pub const Interpreter = struct {
             if (args[0] == .Struct) {
                 const s = args[0].Struct;
                 const allocator = self.arena.allocator();
-                var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(Value).empty;
                 var iter = s.fields.iterator();
                 while (iter.next()) |entry| {
                     try result.append(allocator, Value{ .String = entry.key_ptr.* });
@@ -5232,7 +5232,7 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "keys")) {
             if (args.len < 1) return Value{ .Array = &.{} };
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             if (args[0] == .Map) {
                 var iter = args[0].Map.entries.iterator();
                 while (iter.next()) |entry| {
@@ -5251,7 +5251,7 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "values")) {
             if (args.len < 1) return Value{ .Array = &.{} };
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             if (args[0] == .Map) {
                 var iter = args[0].Map.entries.iterator();
                 while (iter.next()) |entry| {
@@ -5270,7 +5270,7 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, method, "entries")) {
             if (args.len < 1) return Value{ .Array = &.{} };
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             if (args[0] == .Map) {
                 var iter = args[0].Map.entries.iterator();
                 while (iter.next()) |entry| {
@@ -6451,7 +6451,7 @@ pub const Interpreter = struct {
             return Value.Void;
         } else if (std.mem.eql(u8, method, "checks")) {
             // Return an array of check names from the checks map
-            var arr = std.ArrayList(Value){};
+            var arr = std.ArrayList(Value).empty;
             if (struct_val.fields.get("checks")) |checks| {
                 if (checks == .Map) {
                     var it = checks.Map.entries.iterator();
@@ -6630,7 +6630,7 @@ pub const Interpreter = struct {
             return Value.Void;
         } else if (std.mem.eql(u8, method, "topics")) {
             // Return list of subscribed topics
-            var topics = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var topics = std.ArrayList(Value).empty;
             if (struct_val.fields.get("subscribers")) |subs| {
                 if (subs == .Map) {
                     var iter = subs.Map.entries.iterator();
@@ -7812,7 +7812,7 @@ pub const Interpreter = struct {
                 const mapper_val = try self.evaluateExpression(args[1], env);
                 if (items_val == .Array and mapper_val == .Closure) {
                     const closure = mapper_val.Closure;
-                    var results = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                    var results = std.ArrayList(Value).empty;
                     for (items_val.Array) |item| {
                         // Create closure environment
                         var closure_env = Environment.init(allocator, env);
@@ -7839,7 +7839,7 @@ pub const Interpreter = struct {
                 const pred_val = try self.evaluateExpression(args[1], env);
                 if (items_val == .Array and pred_val == .Closure) {
                     const closure = pred_val.Closure;
-                    var results = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                    var results = std.ArrayList(Value).empty;
                     for (items_val.Array) |item| {
                         // Create closure environment
                         var closure_env = Environment.init(allocator, env);
@@ -7896,7 +7896,7 @@ pub const Interpreter = struct {
             if (args.len > 0) {
                 const tasks_val = try self.evaluateExpression(args[0], env);
                 if (tasks_val == .Array) {
-                    var results = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                    var results = std.ArrayList(Value).empty;
                     for (tasks_val.Array) |task| {
                         if (task == .Closure) {
                             const closure = task.Closure;
@@ -8200,7 +8200,7 @@ pub const Interpreter = struct {
             "unknown";
 
         // Evaluate all arguments
-        var arg_values = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+        var arg_values = std.ArrayList(Value).empty;
         for (args) |arg| {
             try arg_values.append(allocator, try self.evaluateExpression(arg, env));
         }
@@ -8231,7 +8231,7 @@ pub const Interpreter = struct {
             if (evaluated_args.len >= 2 and evaluated_args[1] == .String) {
                 const format = evaluated_args[1].String;
                 // Simple format string handling
-                var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var result = std.ArrayList(u8).empty;
                 var arg_idx: usize = 2;
                 var i: usize = 0;
                 while (i < format.len) {
@@ -8435,13 +8435,13 @@ pub const Interpreter = struct {
         {
             return Value.Void;
         } else if (std.mem.eql(u8, method, "status")) {
-            var arr = std.ArrayList(Value){};
+            var arr = std.ArrayList(Value).empty;
             return Value{ .Array = arr.toOwnedSlice(self.arena.allocator()) catch &.{} };
         } else if (std.mem.eql(u8, method, "pending")) {
-            var arr = std.ArrayList(Value){};
+            var arr = std.ArrayList(Value).empty;
             return Value{ .Array = arr.toOwnedSlice(self.arena.allocator()) catch &.{} };
         } else if (std.mem.eql(u8, method, "applied")) {
-            var arr = std.ArrayList(Value){};
+            var arr = std.ArrayList(Value).empty;
             return Value{ .Array = arr.toOwnedSlice(self.arena.allocator()) catch &.{} };
         } else if (std.mem.eql(u8, method, "seed") or std.mem.eql(u8, method, "migrate_to")) {
             return Value.Void;
@@ -8602,7 +8602,7 @@ pub const Interpreter = struct {
     fn evalHtmlDocumentMethod(self: *Interpreter, struct_val: value_mod.StructValue, method: []const u8, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
         if (std.mem.eql(u8, method, "children")) {
             // Return an array of child elements
-            var children = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var children = std.ArrayList(Value).empty;
             // Mock: parse the content and create child elements
             if (struct_val.fields.get("content")) |content| {
                 if (content == .String) {
@@ -8627,7 +8627,7 @@ pub const Interpreter = struct {
             if (struct_val.fields.get("content")) |content| {
                 if (content == .String) {
                     // Simple strip tags
-                    var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                    var result = std.ArrayList(u8).empty;
                     var in_tag = false;
                     for (content.String) |c| {
                         if (c == '<') {
@@ -8644,7 +8644,7 @@ pub const Interpreter = struct {
             return Value{ .String = "" };
         } else if (std.mem.eql(u8, method, "select")) {
             // Select elements by CSS selector
-            var arr = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var arr = std.ArrayList(Value).empty;
             if (args.len >= 1) {
                 const selector_val = try self.evaluateExpression(args[0], env);
                 if (selector_val == .String and struct_val.fields.get("content") != null) {
@@ -8737,7 +8737,7 @@ pub const Interpreter = struct {
             try fields.put("content", Value{ .String = "Sibling" });
             return Value{ .Struct = .{ .type_name = "HtmlElement", .fields = fields } };
         } else if (std.mem.eql(u8, method, "ancestors")) {
-            var arr = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var arr = std.ArrayList(Value).empty;
             for (0..3) |_| {
                 var fields = std.StringHashMap(Value).init(self.arena.allocator());
                 try fields.put("tag_name", Value{ .String = "div" });
@@ -9061,7 +9061,7 @@ pub const Interpreter = struct {
                 return error.TypeMismatch;
             }
 
-            var parts = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var parts = std.ArrayList(Value).empty;
             defer parts.deinit(allocator);
             var iter = std.mem.splitSequence(u8, str, delim_val.String);
             while (iter.next()) |part| {
@@ -9298,8 +9298,8 @@ pub const Interpreter = struct {
             }
             const closure = predicate_val.Closure;
             const allocator = self.arena.allocator();
-            var matching = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
-            var non_matching = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var matching = std.ArrayList(Value).empty;
+            var non_matching = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 // Create closure environment
                 var closure_env = Environment.init(allocator, env);
@@ -9499,7 +9499,7 @@ pub const Interpreter = struct {
         // unique() - returns array with duplicates removed
         if (std.mem.eql(u8, method, "unique")) {
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 var found = false;
                 for (result.items) |existing| {
@@ -9615,7 +9615,7 @@ pub const Interpreter = struct {
                 // Add element to its group
                 const gop = try groups.getOrPut(key_str);
                 if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+                    gop.value_ptr.* = std.ArrayList(Value).empty;
                 }
                 try gop.value_ptr.append(allocator, elem);
             }
@@ -9643,7 +9643,7 @@ pub const Interpreter = struct {
             }
             const closure = closure_val.Closure;
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 // Create closure environment
                 var closure_env = Environment.init(allocator, env);
@@ -9675,7 +9675,7 @@ pub const Interpreter = struct {
             }
             const closure = closure_val.Closure;
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 // Create closure environment
                 var closure_env = Environment.init(allocator, env);
@@ -9781,7 +9781,7 @@ pub const Interpreter = struct {
             }
             const closure = closure_val.Closure;
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 var closure_env = Environment.init(allocator, env);
                 // Bind captured variables
@@ -9807,7 +9807,7 @@ pub const Interpreter = struct {
         // compact() - removes null/void values from array
         if (std.mem.eql(u8, method, "compact")) {
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 // Skip Void and null values
                 if (elem != .Void) {
@@ -9831,7 +9831,7 @@ pub const Interpreter = struct {
             const closure = closure_val.Closure;
             const allocator = self.arena.allocator();
             var accumulator = try self.evaluateExpression(args[1], env);
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 var closure_env = Environment.init(allocator, env);
                 // Bind captured variables
@@ -9921,7 +9921,7 @@ pub const Interpreter = struct {
         // dedup() - remove consecutive duplicates
         if (std.mem.eql(u8, method, "dedup")) {
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             var prev: ?Value = null;
             for (arr) |elem| {
                 if (prev == null or !valuesEqual(elem, prev.?)) {
@@ -9986,7 +9986,7 @@ pub const Interpreter = struct {
                 return Value{ .Array = &.{} };
             }
             // Simple implementation: count combinations for small inputs
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             // Generate combinations using simple iteration
             var combo = try allocator.alloc(usize, k);
             for (0..k) |i| combo[i] = i;
@@ -10025,7 +10025,7 @@ pub const Interpreter = struct {
                 std.debug.print("permutations() limited to 8 elements\n", .{});
                 return error.RuntimeError;
             }
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             var indices = try allocator.alloc(usize, arr.len);
             for (0..arr.len) |i| indices[i] = i;
             // Heap's algorithm
@@ -10168,7 +10168,7 @@ pub const Interpreter = struct {
         // flatten() - flattens nested arrays by one level
         if (std.mem.eql(u8, method, "flatten")) {
             const allocator = self.arena.allocator();
-            var result = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var result = std.ArrayList(Value).empty;
             for (arr) |elem| {
                 if (elem == .Array) {
                     for (elem.Array) |inner| {
@@ -10341,7 +10341,7 @@ pub const Interpreter = struct {
 
         // keys() - returns array of keys
         if (std.mem.eql(u8, method, "keys")) {
-            var keys_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var keys_list = std.ArrayList(Value).empty;
             var iter = map.entries.keyIterator();
             while (iter.next()) |key| {
                 try keys_list.append(self.arena.allocator(), Value{ .String = key.* });
@@ -10351,7 +10351,7 @@ pub const Interpreter = struct {
 
         // values() - returns array of values
         if (std.mem.eql(u8, method, "values")) {
-            var values_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var values_list = std.ArrayList(Value).empty;
             var iter = map.entries.valueIterator();
             while (iter.next()) |val| {
                 try values_list.append(self.arena.allocator(), val.*);
@@ -10361,7 +10361,7 @@ pub const Interpreter = struct {
 
         // entries() - returns array of [key, value] pairs
         if (std.mem.eql(u8, method, "entries")) {
-            var entries_list = std.ArrayList(Value){ .items = &.{}, .capacity = 0 };
+            var entries_list = std.ArrayList(Value).empty;
             var iter = map.entries.iterator();
             while (iter.next()) |entry| {
                 const pair = try self.arena.allocator().alloc(Value, 2);
@@ -11565,7 +11565,7 @@ pub const Interpreter = struct {
             .Bool => |b| if (b) "true" else "false",
             .String => |s| s,
             .Array => blk: {
-                var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(self.arena.allocator());
                 try buf.appendSlice(self.arena.allocator(), "[");
                 for (value.Array, 0..) |elem, i| {
@@ -11609,7 +11609,7 @@ pub const Interpreter = struct {
                 break :blk str;
             },
             .Map => |m| blk: {
-                var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(self.arena.allocator());
                 try buf.appendSlice(self.arena.allocator(), "{");
                 var iter = m.entries.iterator();
@@ -11644,7 +11644,7 @@ pub const Interpreter = struct {
             return input;
         }
 
-        var result = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+        var result = std.ArrayList(u8).empty;
         var i: usize = 0;
         while (i < input.len) {
             if (input[i] == '\\' and i + 1 < input.len) {

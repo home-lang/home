@@ -251,7 +251,7 @@ pub const ConfigParser = struct {
 
     /// Serialize configuration to Home OS format
     pub fn serialize(self: *ConfigParser, config: *const bootloader.BootConfig) ![]u8 {
-        var output = std.ArrayList(u8){};
+        var output = std.ArrayList(u8).empty;
         errdefer output.deinit(self.allocator);
 
         const writer = output.writer(self.allocator);

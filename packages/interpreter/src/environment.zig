@@ -46,7 +46,7 @@ pub const Environment = struct {
             .bindings = std.StringHashMap(Value).init(allocator),
             .parent = parent,
             .allocator = allocator,
-            .defers = .{ .items = &.{}, .capacity = 0 },
+            .defers = .empty,
         };
     }
 

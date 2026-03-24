@@ -95,7 +95,7 @@ pub const Response = struct {
             .allocator = allocator,
             .status_code = 200,
             .headers = std.StringHashMap([]const u8).init(allocator),
-            .body_content = std.ArrayList(u8){},
+            .body_content = std.ArrayList(u8).empty,
         };
     }
 
@@ -167,8 +167,8 @@ pub const Router = struct {
     pub fn init(allocator: std.mem.Allocator) Router {
         return .{
             .allocator = allocator,
-            .routes = std.ArrayList(Route){},
-            .middleware_stack = std.ArrayList(Middleware){},
+            .routes = std.ArrayList(Route).empty,
+            .middleware_stack = std.ArrayList(Middleware).empty,
             .base_path = "",
         };
     }
@@ -232,7 +232,7 @@ pub const Router = struct {
 
     /// Add route
     fn addRoute(self: *Router, method: Method, pattern: []const u8, handler: Handler) !void {
-        var param_names = std.ArrayList([]const u8){};
+        var param_names = std.ArrayList([]const u8).empty;
 
         // Parse route pattern for parameters (:param)
         var iter = std.mem.splitSequence(u8, pattern, "/");
@@ -422,7 +422,7 @@ pub const RouteGroup = struct {
             .allocator = allocator,
             .router = router,
             .prefix = prefix,
-            .middleware = std.ArrayList(Middleware){},
+            .middleware = std.ArrayList(Middleware).empty,
         };
     }
 

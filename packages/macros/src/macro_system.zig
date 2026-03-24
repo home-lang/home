@@ -188,8 +188,8 @@ pub const MacroSystem = struct {
             .allocator = allocator,
             .macros = std.StringHashMap(*Macro).init(allocator),
             .builtin_macros = std.StringHashMap(BuiltinMacro).init(allocator),
-            .expansion_stack = .{},
-            .errors = .{},
+            .expansion_stack = .empty,
+            .errors = .empty,
         };
 
         // Register built-in macros

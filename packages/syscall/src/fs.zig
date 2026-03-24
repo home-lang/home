@@ -258,7 +258,7 @@ pub fn listDir(allocator: std.mem.Allocator, path: []const u8) ![]DirectoryEntry
     var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
     defer dir.close();
 
-    var entries = std.ArrayList(DirectoryEntry){};
+    var entries = std.ArrayList(DirectoryEntry).empty;
     errdefer {
         for (entries.items) |entry| {
             allocator.free(entry.name);

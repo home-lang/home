@@ -96,7 +96,7 @@ pub const SymbolTable = struct {
         alias: ?[]const u8,
     ) !void {
         // Create full module name
-        var name_buf = std.ArrayList(u8){};
+        var name_buf = std.ArrayList(u8).empty;
         defer name_buf.deinit(self.allocator);
 
         for (path, 0..) |segment, i| {

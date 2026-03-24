@@ -76,7 +76,7 @@ pub const ProcessSnapshot = struct {
         return .{
             .pid = pid,
             .tid = 0,
-            .regions = std.ArrayList(MemoryRegion){},
+            .regions = std.ArrayList(MemoryRegion).empty,
             .registers = [_]u64{0} ** 32,
             .signal = 0,
             .allocator = allocator,
@@ -103,7 +103,7 @@ pub const ProcessSnapshot = struct {
     }
 
     pub fn serialize(self: *const ProcessSnapshot, allocator: std.mem.Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         defer buffer.deinit(allocator);
 
         // Write PID, TID, signal

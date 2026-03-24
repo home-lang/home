@@ -35,7 +35,7 @@ pub const Formatter = struct {
             .allocator = allocator,
             .program = program,
             .indent_level = 0,
-            .output = std.ArrayList(u8){},
+            .output = std.ArrayList(u8).empty,
         };
     }
 

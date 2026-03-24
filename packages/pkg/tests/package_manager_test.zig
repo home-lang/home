@@ -140,9 +140,9 @@ test "Dependency: create with URL" {
 // ═══════════════════════════════════════════════════════════════
 
 test "DependencyResolver: init and deinit" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var resolver = pkg.DependencyResolver.init(allocator);
     defer resolver.deinit();
@@ -151,9 +151,9 @@ test "DependencyResolver: init and deinit" {
 }
 
 test "DependencyResolver: add dependency" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var resolver = pkg.DependencyResolver.init(allocator);
     defer resolver.deinit();
@@ -173,9 +173,9 @@ test "DependencyResolver: add dependency" {
 // ═══════════════════════════════════════════════════════════════
 
 test "EdgeCase: resolve with no dependencies" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var resolver = pkg.DependencyResolver.init(allocator);
     defer resolver.deinit();
@@ -187,9 +187,9 @@ test "EdgeCase: resolve with no dependencies" {
 }
 
 test "EdgeCase: empty lockfile" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const packages: []pkg.ResolvedPackage = &[_]pkg.ResolvedPackage{};
 

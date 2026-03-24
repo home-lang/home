@@ -46,7 +46,7 @@ pub const ModuleResolver = struct {
                 break :blk try allocator.dupe(u8, "packages");
             };
             defer allocator.free(home_root);
-            var packages_path = std.ArrayList(u8){};
+            var packages_path = std.ArrayList(u8).empty;
             try packages_path.appendSlice(allocator, home_root);
             try packages_path.appendSlice(allocator, "/packages");
             break :blk try packages_path.toOwnedSlice(allocator);
@@ -64,7 +64,7 @@ pub const ModuleResolver = struct {
     /// Set the source root directory based on the main source file being compiled
     pub fn setSourceRoot(self: *ModuleResolver, source_file: []const u8) !void {
         // Find the project root by looking for src/ directory or use file's parent
-        var dir_path = std.ArrayList(u8){};
+        var dir_path = std.ArrayList(u8).empty;
         defer dir_path.deinit(self.allocator);
 
         // Get the directory containing the source file
@@ -168,7 +168,7 @@ pub const ModuleResolver = struct {
         if (!is_stdlib) return null;
 
         // Build path: packages/{package}/src/{rest of path}
-        var path_buf = std.ArrayList(u8){};
+        var path_buf = std.ArrayList(u8).empty;
         defer path_buf.deinit(self.allocator);
 
         try path_buf.appendSlice(self.allocator, self.packages_root);
@@ -227,7 +227,7 @@ pub const ModuleResolver = struct {
     /// Resolve local/relative module
     fn resolveLocal(self: *ModuleResolver, path_segments: []const []const u8) !?ResolvedModule {
         // Build relative path
-        var path_buf = std.ArrayList(u8){};
+        var path_buf = std.ArrayList(u8).empty;
         defer path_buf.deinit(self.allocator);
 
         for (path_segments, 0..) |segment, i| {
@@ -313,7 +313,7 @@ pub const ModuleResolver = struct {
 
     /// Create cache key from path segments
     fn pathKey(self: *ModuleResolver, segments: []const []const u8) ![]const u8 {
-        var key = std.ArrayList(u8){};
+        var key = std.ArrayList(u8).empty;
         for (segments, 0..) |segment, i| {
             if (i > 0) try key.append(self.allocator, '/');
             try key.appendSlice(self.allocator, segment);
@@ -336,7 +336,7 @@ pub const ModuleResolver = struct {
 
         // Assume Home executable is in ~/Code/home/zig-out/bin/home
         // So go up to ~/Code/home
-        var path_buf = std.ArrayList(u8){};
+        var path_buf = std.ArrayList(u8).empty;
         try path_buf.appendSlice(allocator, self_exe_path);
         try path_buf.appendSlice(allocator, "/../..");
 

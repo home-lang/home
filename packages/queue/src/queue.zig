@@ -866,7 +866,7 @@ pub const RedisQueueDriver = struct {
                 const rc = linux.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in));
                 const signed_rc = @as(isize, @bitCast(rc));
                 if (signed_rc < 0) {
-                    posix.close(self.socket.?);
+                    _ = c.close(self.socket.?);
                     self.socket = null;
                     return error.ConnectionFailed;
                 }
@@ -877,7 +877,7 @@ pub const RedisQueueDriver = struct {
                     .addr = ip_addr,
                 };
                 if (c.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) == -1) {
-                    posix.close(self.socket.?);
+                    _ = c.close(self.socket.?);
                     self.socket = null;
                     return error.ConnectionFailed;
                 }
@@ -889,7 +889,7 @@ pub const RedisQueueDriver = struct {
                 if (comptime native_os == .windows) {
                     _ = std.os.windows.ws2_32.closesocket(s);
                 } else {
-                    posix.close(s);
+                    _ = c.close(s);
                 }
                 self.socket = null;
             }

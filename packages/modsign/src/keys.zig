@@ -116,7 +116,7 @@ pub const PrivateKey = struct {
         const b64_data = content[start_idx + begin.len .. end_idx];
 
         // Remove newlines
-        var clean_data = std.ArrayList(u8){};
+        var clean_data = std.ArrayList(u8).empty;
         defer clean_data.deinit(allocator);
 
         for (b64_data) |c| {

@@ -11,9 +11,9 @@ const zyte = @import("zyte");
 /// 4. Hot reload for development
 /// 5. Cross-platform desktop app deployment
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     std.debug.print("\n╔═══════════════════════════════════════════╗\n", .{});
     std.debug.print("║  Home Full-Stack Example (HTTP + Zyte)    ║\n", .{});

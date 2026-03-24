@@ -149,7 +149,7 @@ pub const Property = struct {
     }
 
     pub fn asStringList(self: Property, allocator: std.mem.Allocator) ![][]const u8 {
-        var list = std.ArrayList([]const u8){};
+        var list = std.ArrayList([]const u8).empty;
         var offset: usize = 0;
 
         while (offset < self.value.len) {
@@ -192,7 +192,7 @@ pub const Node = struct {
             .name = try allocator.dupe(u8, actual_name),
             .unit_address = unit_addr,
             .properties = std.StringHashMap(Property).init(allocator),
-            .children = std.ArrayList(*Node){},
+            .children = std.ArrayList(*Node).empty,
             .parent = null,
             .allocator = allocator,
         };
@@ -410,7 +410,7 @@ pub const DeviceTree = struct {
 
     /// Get memory reservations
     pub fn getMemoryReservations(self: *DeviceTree, allocator: std.mem.Allocator) ![]MemReserveEntry {
-        var reservations = std.ArrayList(MemReserveEntry){};
+        var reservations = std.ArrayList(MemReserveEntry).empty;
 
         var offset = self.header.off_mem_rsvmap;
         while (offset + @sizeOf(MemReserveEntry) <= self.data.len) {

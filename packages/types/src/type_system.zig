@@ -877,9 +877,9 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .program = program,
             .env = TypeEnvironment.init(allocator),
-            .errors = std.ArrayList(TypeErrorInfo){},
-            .allocated_types = std.ArrayList(*Type){},
-            .allocated_slices = std.ArrayList([]Type){},
+            .errors = std.ArrayList(TypeErrorInfo).empty,
+            .allocated_types = std.ArrayList(*Type).empty,
+            .allocated_slices = std.ArrayList([]Type).empty,
             .comptime_store = null,
             .ownership_tracker = OwnershipTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
@@ -981,7 +981,7 @@ pub const TypeChecker = struct {
                 },
                 .StructDecl => |struct_decl| {
                     // Pre-register struct type
-                    var fields = std.ArrayList(Type.StructType.Field){};
+                    var fields = std.ArrayList(Type.StructType.Field).empty;
                     for (struct_decl.fields) |field| {
                         const field_type = try self.parseTypeName(field.type_name);
                         try fields.append(self.allocator, .{
@@ -999,7 +999,7 @@ pub const TypeChecker = struct {
                 },
                 .EnumDecl => |enum_decl| {
                     // Pre-register enum type
-                    var variants = std.ArrayList(Type.EnumType.Variant){};
+                    var variants = std.ArrayList(Type.EnumType.Variant).empty;
                     for (enum_decl.variants) |variant| {
                         var data_type_val: ?Type = null;
                         if (variant.data_type) |type_name| {
@@ -1111,7 +1111,7 @@ pub const TypeChecker = struct {
     /// and registering the imported types/functions in the current environment
     fn processImport(self: *TypeChecker, import_decl: *const ast.ImportDecl) !void {
         // Build module path key for caching
-        var path_key = std.ArrayList(u8){};
+        var path_key = std.ArrayList(u8).empty;
         defer path_key.deinit(self.allocator);
         for (import_decl.path, 0..) |segment, i| {
             if (i > 0) try path_key.append(self.allocator, '/');
@@ -1236,7 +1236,7 @@ pub const TypeChecker = struct {
 
                     if (should_import) {
                         // Build struct type and register it
-                        var fields = std.ArrayList(Type.StructType.Field){};
+                        var fields = std.ArrayList(Type.StructType.Field).empty;
                         for (struct_decl.fields) |field| {
                             const field_type = self.parseTypeName(field.type_name) catch Type.Void;
                             // Duplicate field name to outlive parser memory
@@ -1268,7 +1268,7 @@ pub const TypeChecker = struct {
                     } else true;
 
                     if (should_import) {
-                        var variants = std.ArrayList(Type.EnumType.Variant){};
+                        var variants = std.ArrayList(Type.EnumType.Variant).empty;
                         for (enum_decl.variants) |variant| {
                             var data_type_val: ?Type = null;
                             if (variant.data_type) |type_name| {
@@ -1315,7 +1315,7 @@ pub const TypeChecker = struct {
     /// Resolve module path to file path
     fn resolveModulePath(self: *TypeChecker, path_segments: []const []const u8) ![]const u8 {
         // Build path from segments
-        var path_buf = std.ArrayList(u8){};
+        var path_buf = std.ArrayList(u8).empty;
         defer path_buf.deinit(self.allocator);
 
         // Get source root directory from source_path
@@ -1589,7 +1589,7 @@ pub const TypeChecker = struct {
             },
             .StructDecl => |struct_decl| {
                 // Build struct type from fields
-                var fields = std.ArrayList(Type.StructType.Field){};
+                var fields = std.ArrayList(Type.StructType.Field).empty;
                 defer fields.deinit(self.allocator);
 
                 for (struct_decl.fields) |field| {
@@ -1616,7 +1616,7 @@ pub const TypeChecker = struct {
             },
             .EnumDecl => |enum_decl| {
                 // Build enum type from variants
-                var variants = std.ArrayList(Type.EnumType.Variant){};
+                var variants = std.ArrayList(Type.EnumType.Variant).empty;
                 defer variants.deinit(self.allocator);
 
                 for (enum_decl.variants) |variant| {
@@ -1759,7 +1759,7 @@ pub const TypeChecker = struct {
             },
             .UnionDecl => |union_decl| {
                 // Build union type from variants
-                var variants = std.ArrayList(Type.UnionType.Variant){};
+                var variants = std.ArrayList(Type.UnionType.Variant).empty;
                 defer variants.deinit(self.allocator);
 
                 for (union_decl.variants) |variant| {
@@ -3048,7 +3048,7 @@ pub const TypeChecker = struct {
             },
             .Function => |func| {
                 // Build parameter list
-                var params_str = std.ArrayList(u8){};
+                var params_str = std.ArrayList(u8).empty;
                 defer params_str.deinit(self.allocator);
 
                 try params_str.appendSlice(self.allocator,"fn(");
@@ -3124,7 +3124,7 @@ pub const TypeEnvironment = struct {
             .bindings = std.StringHashMap(Type).init(allocator),
             .parent = null,
             .allocator = allocator,
-            .allocated_slices = std.ArrayList(TrackedAlloc){},
+            .allocated_slices = std.ArrayList(TrackedAlloc).empty,
         };
     }
 

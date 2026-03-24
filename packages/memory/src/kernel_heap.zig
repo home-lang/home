@@ -64,7 +64,7 @@ pub const KernelHeap = struct {
             .free_list = null,
             .stats = MemStats.init(),
             .parent_allocator = parent,
-            .grown_segments = std.ArrayList(GrowthSegment){},
+            .grown_segments = std.ArrayList(GrowthSegment).empty,
         };
 
         // Initialize with one large free block

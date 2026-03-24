@@ -673,7 +673,7 @@ test "linker script generation" {
     try text.addInputSection(".text*");
     try script.addSection(text);
 
-    var output: std.ArrayList(u8) = .{};
+    var output: std.ArrayList(u8) = .empty;
     defer output.deinit(allocator);
 
     try script.generateGnuLd(output.writer(allocator));

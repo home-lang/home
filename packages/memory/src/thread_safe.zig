@@ -89,8 +89,8 @@ pub const ThreadSafeAllocator = struct {
 test "thread safe allocator" {
     const testing = std.testing;
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
 
     var thread_safe = ThreadSafeAllocator.init(gpa.allocator());
     defer thread_safe.deinit();
@@ -112,8 +112,8 @@ test "thread safe concurrent access" {
     const testing = std.testing;
     const Thread = std.Thread;
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
 
     var thread_safe = ThreadSafeAllocator.init(gpa.allocator());
     defer thread_safe.deinit();

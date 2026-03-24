@@ -122,8 +122,8 @@ pub const W3DLoader = struct {
     pub fn init(allocator: std.mem.Allocator) W3DLoader {
         var loader = W3DLoader{
             .allocator = allocator,
-            .models = .{},
-            .model_paths = .{},
+            .models = .empty,
+            .model_paths = .empty,
         };
         // Pre-allocate space to prevent reallocation invalidating pointers
         loader.models.ensureTotalCapacity(allocator, 32) catch {};
@@ -191,7 +191,7 @@ pub const W3DLoader = struct {
 
     fn parseW3D(self: *W3DLoader, data: []const u8) !W3DModel {
         var model = W3DModel.init(self.allocator);
-        var meshes: std.ArrayList(W3DMesh) = .{};
+        var meshes: std.ArrayList(W3DMesh) = .empty;
 
         // Recursively parse all chunks looking for mesh data
         try self.parseChunks(data, &meshes, 0);
@@ -259,8 +259,8 @@ pub const W3DLoader = struct {
             .allocator = self.allocator,
         };
 
-        var vertices: std.ArrayList(W3DVertex) = .{};
-        var triangles: std.ArrayList(W3DTriangle) = .{};
+        var vertices: std.ArrayList(W3DVertex) = .empty;
+        var triangles: std.ArrayList(W3DTriangle) = .empty;
 
         var pos: usize = 0;
         var vertex_count: u32 = 0;

@@ -307,9 +307,9 @@ pub const TypeMap = struct {
 
 test "header generation" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = HeaderConfig{
         .guard_name = "MY_HEADER",

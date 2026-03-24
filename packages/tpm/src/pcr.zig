@@ -204,7 +204,7 @@ pub const PcrSelection = struct {
     }
 
     pub fn getSelectedIndices(self: *const PcrSelection, allocator: std.mem.Allocator) ![]PcrIndex {
-        var indices = std.ArrayList(PcrIndex){};
+        var indices = std.ArrayList(PcrIndex).empty;
 
         var i: PcrIndex = 0;
         while (i < 24) : (i += 1) {

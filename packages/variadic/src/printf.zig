@@ -79,7 +79,7 @@ pub fn sprintf(buf: []u8, comptime fmt: []const u8, args: anytype) !usize {
 
 /// Print formatted output to allocated string
 pub fn asprintf(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]u8 {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
 
     _ = try fprintf(list.writer(allocator), fmt, args);

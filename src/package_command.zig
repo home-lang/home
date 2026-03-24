@@ -108,8 +108,8 @@ fn parseConfig(allocator: std.mem.Allocator, content: []const u8) !PackageConfig
         .description = "",
         .author = "",
         .license = "MIT",
-        .files = std.ArrayList(PackageConfig.FileEntry){},
-        .dependencies = std.ArrayList([]const u8){},
+        .files = std.ArrayList(PackageConfig.FileEntry).empty,
+        .dependencies = std.ArrayList([]const u8).empty,
     };
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -316,7 +316,7 @@ fn buildDeb(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
 
     var deps_str: []const u8 = "";
     if (config.dependencies.items.len > 0) {
-        var deps_buf = std.ArrayList(u8){};
+        var deps_buf = std.ArrayList(u8).empty;
         defer deps_buf.deinit(allocator);
         for (config.dependencies.items, 0..) |dep, i| {
             if (i > 0) try deps_buf.appendSlice(allocator, ", ");
@@ -742,8 +742,8 @@ pub fn packageCommand(allocator: std.mem.Allocator, args: []const [:0]const u8, 
             .description = "A Home application",
             .author = "",
             .license = "MIT",
-            .files = std.ArrayList(PackageConfig.FileEntry){},
-            .dependencies = std.ArrayList([]const u8){},
+            .files = std.ArrayList(PackageConfig.FileEntry).empty,
+            .dependencies = std.ArrayList([]const u8).empty,
         };
     }
     defer config.deinit(allocator);

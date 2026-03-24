@@ -278,7 +278,7 @@ pub const M3uWriter = struct {
 
     /// Generate M3U content
     pub fn generate(self: *Self, playlist: *const Playlist) ![]u8 {
-        var output: std.ArrayList(u8) = .{};
+        var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
 
         // Header
@@ -341,7 +341,7 @@ pub const PlsWriter = struct {
 
     /// Generate PLS content
     pub fn generate(self: *Self, playlist: *const Playlist) ![]u8 {
-        var output: std.ArrayList(u8) = .{};
+        var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
 
         try output.appendSlice(self.allocator, "[playlist]\n");

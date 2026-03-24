@@ -21,7 +21,7 @@ pub const DotEnv = struct {
         return .{
             .allocator = allocator,
             .vars = std.StringHashMap([]const u8).init(allocator),
-            .loaded_files = std.ArrayList([]const u8){},
+            .loaded_files = std.ArrayList([]const u8).empty,
         };
     }
 

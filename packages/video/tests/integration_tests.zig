@@ -7,8 +7,8 @@ const t = @import("test_framework");
 const regex = @import("regex");
 
 // Test allocator with leak detection
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
+var debug_allocator = std.heap.DebugAllocator(.{}).init;
+const allocator = debug_allocator.allocator();
 
 test "integration tests" {
     defer {

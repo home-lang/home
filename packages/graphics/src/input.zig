@@ -202,7 +202,7 @@ pub const InputState = struct {
             .mouse_scroll_y = 0,
             .modifiers = ModifierKeys{},
             .allocator = allocator,
-            .events = .{},
+            .events = .empty,
         };
     }
 
@@ -562,9 +562,9 @@ fn convertModifiers(ns_modifiers: cocoa.NSEventModifierFlags) ModifierKeys {
 
 test "InputState initialization" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var input = InputState.init(allocator);
     defer input.deinit();
@@ -584,9 +584,9 @@ test "KeyCode conversion" {
 
 test "Input event processing" {
     const testing = std.testing;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var input = InputState.init(allocator);
     defer input.deinit();

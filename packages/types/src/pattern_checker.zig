@@ -15,7 +15,7 @@ pub const PatternChecker = struct {
     pub fn init(allocator: std.mem.Allocator) PatternChecker {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList(PatternError){},
+            .errors = std.ArrayList(PatternError).empty,
         };
     }
 

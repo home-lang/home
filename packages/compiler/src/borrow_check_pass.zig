@@ -36,7 +36,7 @@ pub const BorrowCheckPass = struct {
             .allocator = allocator,
             .tracker = OwnershipTracker.init(allocator),
             .reporter = reporter,
-            .errors = .{},
+            .errors = .empty,
         };
     }
 
@@ -247,7 +247,7 @@ pub const BorrowCheckPass = struct {
         );
         defer self.allocator.free(message);
 
-        var labels: std.ArrayList(EnhancedReporter.EnhancedDiagnostic.Label) = .{};
+        var labels: std.ArrayList(EnhancedReporter.EnhancedDiagnostic.Label) = .empty;
         defer labels.deinit(self.allocator);
 
         try labels.append(self.allocator, .{

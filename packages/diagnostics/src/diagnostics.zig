@@ -147,7 +147,7 @@ pub const DiagnosticReporter = struct {
     pub fn init(allocator: std.mem.Allocator) DiagnosticReporter {
         return .{
             .allocator = allocator,
-            .diagnostics = .{ .items = &.{}, .capacity = 0 },
+            .diagnostics = .empty,
             .source_lines = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -510,8 +510,8 @@ pub const DiagnosticBuilder = struct {
             .error_code = error_code,
             .title = title,
             .primary_label = null,
-            .secondary_labels = std.ArrayList(RichDiagnostic.Label){ .items = &.{}, .capacity = 0 },
-            .notes = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 },
+            .secondary_labels = std.ArrayList(RichDiagnostic.Label).empty,
+            .notes = std.ArrayList([]const u8).empty,
             .help = null,
             .suggestion = null,
         };

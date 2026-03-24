@@ -46,8 +46,8 @@ pub const TimingOracle = struct {
 
     pub fn init(allocator: std.mem.Allocator) TimingOracle {
         return .{
-            .samples_a = std.ArrayList(u64){},
-            .samples_b = std.ArrayList(u64){},
+            .samples_a = std.ArrayList(u64).empty,
+            .samples_b = std.ArrayList(u64).empty,
             .allocator = allocator,
         };
     }

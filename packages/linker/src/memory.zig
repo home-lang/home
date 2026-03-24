@@ -181,7 +181,7 @@ pub const MemoryRegionBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator) MemoryRegionBuilder {
         return .{
-            .regions = std.ArrayList(MemoryRegion){},
+            .regions = std.ArrayList(MemoryRegion).empty,
             .allocator = allocator,
         };
     }

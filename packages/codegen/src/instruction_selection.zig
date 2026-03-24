@@ -64,7 +64,7 @@ pub const InstructionSelector = struct {
         var selector = InstructionSelector{
             .allocator = allocator,
             .target = target,
-            .patterns = std.ArrayList(Pattern){},
+            .patterns = std.ArrayList(Pattern).empty,
         };
 
         try selector.initializePatterns();
@@ -201,7 +201,7 @@ pub const InstructionSelector = struct {
 
     /// Select instructions for an entire basic block
     pub fn selectBlock(self: *InstructionSelector, block: *const IR.BasicBlock) !std.ArrayList(Pattern) {
-        var selected = std.ArrayList(Pattern){};
+        var selected = std.ArrayList(Pattern).empty;
 
         for (block.instructions.items) |inst| {
             if (try self.selectInstruction(inst)) |pattern| {

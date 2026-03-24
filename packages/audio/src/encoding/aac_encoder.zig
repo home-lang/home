@@ -239,7 +239,7 @@ pub const AacEncoder = struct {
         // 4. Pack into ADTS frame
 
         // For this implementation, we create simplified encoded data
-        var frame_data: std.ArrayList(u8) = .{};
+        var frame_data: std.ArrayList(u8) = .empty;
         defer frame_data.deinit(self.allocator);
 
         // Encode raw data block

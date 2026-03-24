@@ -22,7 +22,7 @@ pub const Quote = struct {
         return .{
             .nonce = [_]u8{0} ** 32,
             .pcr_selection = pcr.PcrSelection.init(),
-            .pcr_values = std.ArrayList(pcr.PcrValue){},
+            .pcr_values = std.ArrayList(pcr.PcrValue).empty,
             .signature = &[_]u8{},
             .timestamp = std.time.timestamp(),
             .allocator = allocator,

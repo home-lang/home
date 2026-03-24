@@ -5,9 +5,9 @@ const std = @import("std");
 
 pub const Allocator = std.mem.Allocator;
 
-/// Create a general purpose allocator
-pub fn createGeneralPurposeAllocator() std.heap.GeneralPurposeAllocator(.{}) {
-    return std.heap.GeneralPurposeAllocator(.{}){};
+/// Create a debug allocator (replaces GeneralPurposeAllocator)
+pub fn createDebugAllocator() std.heap.DebugAllocator(.{}) {
+    return std.heap.DebugAllocator(.{}).init;
 }
 
 /// Get the page allocator (direct from OS)

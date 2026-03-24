@@ -50,9 +50,9 @@ pub const Authenticator = struct {
     pub fn init(allocator: std.mem.Allocator, mode: AuthMode) Authenticator {
         return .{
             .mode = mode,
-            .whitelist = std.ArrayList(usb.DeviceID){},
-            .blacklist = std.ArrayList(usb.DeviceID){},
-            .rules = std.ArrayList(AuthRule){},
+            .whitelist = std.ArrayList(usb.DeviceID).empty,
+            .blacklist = std.ArrayList(usb.DeviceID).empty,
+            .rules = std.ArrayList(AuthRule).empty,
             .allocator = allocator,
             .mutex = std.Thread.Mutex{},
         };

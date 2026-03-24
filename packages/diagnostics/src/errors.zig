@@ -201,7 +201,7 @@ pub const ErrorFormatter = struct {
         suggestion: ?[]const u8,
     ) ![]const u8 {
         // Build error message parts
-        var parts = std.ArrayList([]const u8){};
+        var parts = std.ArrayList([]const u8).empty;
         defer parts.deinit(self.allocator);
 
         // Format: file:line:column: error: message

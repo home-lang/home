@@ -159,7 +159,7 @@ pub const Parse = struct {
         const value = try get(allocator, key) orelse return null;
         defer allocator.free(value);
 
-        var list = std.ArrayList([]const u8){};
+        var list = std.ArrayList([]const u8).empty;
         errdefer {
             for (list.items) |item| allocator.free(item);
             list.deinit(allocator);
@@ -187,7 +187,7 @@ pub const Parse = struct {
 
 // Expand environment variables in a string (supports ${VAR} and $VAR syntax)
 pub fn expand(allocator: std.mem.Allocator, template: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 0;

@@ -61,7 +61,7 @@ pub const Address = struct {
             // Parse after ::
             if (pos + 2 < str.len) {
                 var after_parts = std.mem.splitScalar(u8, str[pos + 2 ..], ':');
-                var after_values = std.ArrayList(u16){};
+                var after_values = std.ArrayList(u16).empty;
                 defer after_values.deinit(std.heap.page_allocator);
 
                 while (after_parts.next()) |part| {

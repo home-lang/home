@@ -52,7 +52,7 @@ pub fn signatureSummary(
     allocator: std.mem.Allocator,
     sig: *const modsign.ModuleSignature,
 ) ![]u8 {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
 
     const writer = list.writer(allocator);

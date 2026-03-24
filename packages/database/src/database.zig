@@ -98,14 +98,14 @@ pub const QueryBuilder = struct {
             .allocator = allocator,
             .query_type = .Select,
             .table = null,
-            .select_fields = std.ArrayList([]const u8){},
-            .where_conditions = std.ArrayList([]const u8){},
+            .select_fields = std.ArrayList([]const u8).empty,
+            .where_conditions = std.ArrayList([]const u8).empty,
             .order_by = null,
             .limit_value = null,
             .offset_value = null,
-            .insert_columns = std.ArrayList([]const u8){},
-            .insert_values = std.ArrayList([]const u8){},
-            .update_sets = std.ArrayList([]const u8){},
+            .insert_columns = std.ArrayList([]const u8).empty,
+            .insert_values = std.ArrayList([]const u8).empty,
+            .update_sets = std.ArrayList([]const u8).empty,
         };
     }
 
@@ -220,7 +220,7 @@ pub const QueryBuilder = struct {
     }
 
     pub fn build(self: *QueryBuilder) ![]const u8 {
-        var sql = std.ArrayList(u8){};
+        var sql = std.ArrayList(u8).empty;
         defer sql.deinit(self.allocator);
 
         switch (self.query_type) {
@@ -365,8 +365,8 @@ pub const ConnectionPool = struct {
 
         var pool = ConnectionPool{
             .allocator = allocator,
-            .connections = std.ArrayList(*Connection){},
-            .available = std.ArrayList(*Connection){},
+            .connections = std.ArrayList(*Connection).empty,
+            .available = std.ArrayList(*Connection).empty,
             .mutex = .{},
             .max_connections = max_connections,
             .db_path = db_path_copy,

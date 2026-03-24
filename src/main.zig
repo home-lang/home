@@ -88,7 +88,7 @@ const TomlScript = struct {
 };
 
 fn parseTomlScripts(allocator: std.mem.Allocator, toml_content: []const u8) !std.ArrayList(TomlScript) {
-    var scripts = std.ArrayList(TomlScript){};
+    var scripts = std.ArrayList(TomlScript).empty;
     errdefer scripts.deinit(allocator);
 
     var in_scripts_section = false;
@@ -614,7 +614,7 @@ fn getSuggestion(error_message: []const u8) ?[]const u8 {
 fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     // fmt is an alias for lint --fix
     // Build new args array with --fix flag
-    var new_args = std.ArrayList([:0]const u8){};
+    var new_args = std.ArrayList([:0]const u8).empty;
     defer new_args.deinit(allocator);
 
     try new_args.append(allocator, try allocator.dupeZ(u8, "--fix"));
@@ -1129,7 +1129,7 @@ fn testDiscoverCommand(allocator: std.mem.Allocator, search_path: []const u8) !v
     std.debug.print("{s}Discovering tests in:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), search_path });
 
     // Walk the directory and find test files
-    var test_files = std.ArrayList([]const u8){};
+    var test_files = std.ArrayList([]const u8).empty;
     defer {
         for (test_files.items) |file| {
             allocator.free(file);
@@ -1299,7 +1299,7 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     // Discover all tests
-    var home_test_files = std.ArrayList([]const u8){};
+    var home_test_files = std.ArrayList([]const u8).empty;
     defer {
         for (home_test_files.items) |file| {
             allocator.free(file);
@@ -1307,7 +1307,7 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
         home_test_files.deinit(allocator);
     }
 
-    var zig_test_dirs = std.ArrayList([]const u8){};
+    var zig_test_dirs = std.ArrayList([]const u8).empty;
     defer {
         for (zig_test_dirs.items) |dir| {
             allocator.free(dir);
@@ -1326,7 +1326,7 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
         });
 
         // Filter home tests
-        var filtered_home = std.ArrayList([]const u8){};
+        var filtered_home = std.ArrayList([]const u8).empty;
         for (home_test_files.items) |file| {
             if (std.mem.indexOf(u8, file, pkg_name) != null) {
                 try filtered_home.append(allocator, file);
@@ -1338,7 +1338,7 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
         home_test_files = filtered_home;
 
         // Filter zig test dirs
-        var filtered_zig = std.ArrayList([]const u8){};
+        var filtered_zig = std.ArrayList([]const u8).empty;
         for (zig_test_dirs.items) |dir| {
             if (std.mem.indexOf(u8, dir, pkg_name) != null) {
                 try filtered_zig.append(allocator, dir);
@@ -1575,7 +1575,7 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: Tes
     std.debug.print("{s}━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     // Discover test files
-    var test_files = std.ArrayList([]const u8){};
+    var test_files = std.ArrayList([]const u8).empty;
     defer {
         for (test_files.items) |file| {
             allocator.free(file);
@@ -1615,7 +1615,7 @@ fn runTestSuite(allocator: std.mem.Allocator, dir_path: []const u8, options: Tes
     var passed_files: usize = 0;
     var failed_files: usize = 0;
     var total_tests: usize = 0;
-    var failed_file_list = std.ArrayList([]const u8){};
+    var failed_file_list = std.ArrayList([]const u8).empty;
     defer failed_file_list.deinit(allocator);
     var bailed = false;
 
@@ -1864,17 +1864,17 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
     // Enable memory tracking in debug builds if configured
-    var gpa = std.heap.GeneralPurposeAllocator(.{
+    var debug_allocator = std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.memory_tracking,
         .verbose_log = build_options.memory_tracking,
-    }){};
+    }).init;
     defer {
-        const leaked = gpa.deinit();
+        const leaked = debug_allocator.deinit();
         if (leaked == .leak and build_options.memory_tracking) {
             std.debug.print("\n{s}Warning:{s} Memory leaks detected!\n", .{ Color.Yellow.code(), Color.Reset.code() });
         }
     }
-    const allocator = gpa.allocator();
+    const allocator = debug_allocator.allocator();
 
     var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer args_arena.deinit();
@@ -1884,7 +1884,7 @@ pub fn main(init: std.process.Init) !void {
     const program_name = std.fs.path.basename(args[0]);
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
-        var test_args = std.ArrayList([:0]const u8){};
+        var test_args = std.ArrayList([:0]const u8).empty;
         defer test_args.deinit(allocator);
 
         try test_args.append(allocator, args[0]); // Program name

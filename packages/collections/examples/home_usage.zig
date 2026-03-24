@@ -8,9 +8,9 @@ const Collection = collection_module.Collection;
 const LazyCollection = lazy_collection_module.LazyCollection;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     std.debug.print("=== Home Collections Example ===\n\n", .{});
 

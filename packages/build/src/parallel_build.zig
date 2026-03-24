@@ -526,7 +526,7 @@ pub const ParallelBuilder = struct {
         };
 
         // Collect dependency hashes for cache key
-        var dep_hashes = std.ArrayList(ir_cache.CacheHash){};
+        var dep_hashes = std.ArrayList(ir_cache.CacheHash).empty;
         defer dep_hashes.deinit(self.allocator);
 
         for (task.dependencies) |dep_name| {

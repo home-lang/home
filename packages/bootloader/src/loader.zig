@@ -87,7 +87,7 @@ pub const LoadedKernel = struct {
             .entry_point = 0,
             .load_address = 0,
             .size = 0,
-            .segments = std.ArrayList(Segment){},
+            .segments = std.ArrayList(Segment).empty,
             .allocator = allocator,
         };
     }

@@ -19,7 +19,7 @@ pub const SealedData = struct {
     pub fn init(allocator: std.mem.Allocator) SealedData {
         return .{
             .pcr_selection = pcr.PcrSelection.init(),
-            .expected_pcrs = std.ArrayList(pcr.PcrValue){},
+            .expected_pcrs = std.ArrayList(pcr.PcrValue).empty,
             .data = &[_]u8{},
             .policy_digest = [_]u8{0} ** 32,
             .allocator = allocator,

@@ -8,8 +8,8 @@ pub fn example1_simple_server() !void {
     Basics.println("=== Example 1: Simple HTTP Server ===", .{});
 
     var gpa = Basics.createAllocator();
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     // Create router
     var router = Basics.http_router.Router.init(allocator);
@@ -43,8 +43,8 @@ pub fn example2_middleware() !void {
     Basics.println("\n=== Example 2: Middleware ===", .{});
 
     var gpa = Basics.createAllocator();
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var router = Basics.http_router.Router.init(allocator);
     defer router.deinit();
@@ -77,8 +77,8 @@ pub fn example3_sessions() !void {
     Basics.println("\n=== Example 3: Session Management ===", .{});
 
     var gpa = Basics.createAllocator();
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     // Create session manager
     var session_mgr = try Basics.session.SessionManager.init(allocator, .{
@@ -110,8 +110,8 @@ pub fn example4_validation() !void {
     Basics.println("\n=== Example 4: Validation ===", .{});
 
     var gpa = Basics.createAllocator();
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     // Create validator
     var validator = Basics.validation.Validator.init(allocator);
@@ -180,8 +180,8 @@ pub fn example6_complete_app() !void {
     Basics.println("\n=== Example 6: Complete Web App ===", .{});
 
     var gpa = Basics.createAllocator();
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     // Create router
     var router = Basics.http_router.Router.init(allocator);

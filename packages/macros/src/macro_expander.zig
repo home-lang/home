@@ -34,7 +34,7 @@ pub const MacroExpander = struct {
             .expansion_counter = 0,
             .recursion_depth = 0,
             .max_recursion = 128,
-            .errors = std.ArrayList(ExpansionError){},
+            .errors = std.ArrayList(ExpansionError).empty,
         };
     }
 

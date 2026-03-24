@@ -263,7 +263,7 @@ pub const Generator = struct {
         sections: []const section.Section,
         symbols: []const symbol.Symbol,
     ) ![]const u8 {
-        var list = std.ArrayList(u8){};
+        var list = std.ArrayList(u8).empty;
         errdefer list.deinit(self.allocator);
 
         try self.generate(list.writer(self.allocator), regions, sections, symbols);
@@ -281,7 +281,7 @@ pub fn generateKernelScript(
     var generator = Generator.init(allocator, .{});
 
     // Create regions based on layout
-    var regions_list = std.ArrayList(memory.MemoryRegion){};
+    var regions_list = std.ArrayList(memory.MemoryRegion).empty;
     defer regions_list.deinit(allocator);
 
     switch (layout) {
@@ -306,7 +306,7 @@ pub fn generateKernelScript(
     }
 
     // Create standard sections
-    var sections_list = std.ArrayList(section.Section){};
+    var sections_list = std.ArrayList(section.Section).empty;
     defer sections_list.deinit(allocator);
 
     const std_sections = section.StandardSections.kernel_sections();
@@ -337,7 +337,7 @@ test "generator basic" {
 
     var generator = Generator.init(testing.allocator, .{ .validate = false });
 
-    var output = std.ArrayList(u8){};
+    var output = std.ArrayList(u8).empty;
     defer output.deinit(testing.allocator);
 
     const regions = [_]memory.MemoryRegion{
@@ -388,7 +388,7 @@ test "generate with validation" {
 
     var generator = Generator.init(testing.allocator, .{ .validate = true });
 
-    var output = std.ArrayList(u8){};
+    var output = std.ArrayList(u8).empty;
     defer output.deinit(testing.allocator);
 
     const regions = [_]memory.MemoryRegion{

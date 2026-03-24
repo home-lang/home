@@ -99,7 +99,7 @@ pub const Assembler = struct {
 
     pub fn init(allocator: std.mem.Allocator) Assembler {
         return .{
-            .code = std.ArrayList(u8){},
+            .code = std.ArrayList(u8).empty,
             .allocator = allocator,
         };
     }

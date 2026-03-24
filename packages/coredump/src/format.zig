@@ -105,7 +105,7 @@ pub fn scanDumpDirectory(
     allocator: std.mem.Allocator,
     dir_path: []const u8,
 ) !std.ArrayList([]const u8) {
-    var dumps = std.ArrayList([]const u8){};
+    var dumps = std.ArrayList([]const u8).empty;
     errdefer {
         for (dumps.items) |item| {
             allocator.free(item);

@@ -18,7 +18,7 @@ pub const AllocationProfiler = struct {
     pub fn init(allocator: std.mem.Allocator) AllocationProfiler {
         return .{
             .allocator = allocator,
-            .allocations = .{},
+            .allocations = .empty,
             .total_allocated = 0,
             .total_freed = 0,
             .peak_memory = 0,
@@ -87,7 +87,7 @@ pub const AllocationProfiler = struct {
         }
 
         // Convert to array
-        var hotspots: std.ArrayList(Hotspot) = .{};
+        var hotspots: std.ArrayList(Hotspot) = .empty;
         var it = size_map.iterator();
         while (it.next()) |entry| {
             try hotspots.append(allocator, .{

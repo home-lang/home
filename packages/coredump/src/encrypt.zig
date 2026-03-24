@@ -126,7 +126,7 @@ fn compress(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     // Simplified compression for demonstration
     // In production, would use zlib/zstd
 
-    var compressed = std.ArrayList(u8){};
+    var compressed = std.ArrayList(u8).empty;
     defer compressed.deinit(allocator);
 
     var i: usize = 0;

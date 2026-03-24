@@ -60,7 +60,7 @@ pub const ModuleLoader = struct {
         return .{
             .allocator = allocator,
             .modules = std.StringHashMap(*Module).init(allocator),
-            .search_paths = std.ArrayList([]const u8){},
+            .search_paths = std.ArrayList([]const u8).empty,
         };
     }
 

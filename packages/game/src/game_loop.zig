@@ -328,7 +328,7 @@ pub const DeltaTimeSmoother = struct {
 // ============================================================================
 
 test "FrameLimiter" {
-    var limiter = FrameLimiter.init(60);
+    const limiter = FrameLimiter.init(60);
     try std.testing.expectEqual(@as(u32, 60), limiter.target_fps);
 }
 

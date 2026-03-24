@@ -76,9 +76,9 @@ test "gpa allocator" {
     const testing = std.testing;
 
     var gpa = GeneralPurpose.init();
-    defer _ = gpa.deinit();
+    defer _ = debug_allocator.deinit();
 
-    const allocator = gpa.allocator();
+    const allocator = debug_allocator.allocator();
 
     // Allocate various sizes
     const small = try allocator.alloc(u8, 10);

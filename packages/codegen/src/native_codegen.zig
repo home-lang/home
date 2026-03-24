@@ -696,10 +696,10 @@ pub const NativeCodegen = struct {
             .heap_ptr = HEAP_START,
             .struct_layouts = std.StringHashMap(StructLayout).init(allocator),
             .enum_layouts = std.StringHashMap(EnumLayout).init(allocator),
-            .string_literals = std.ArrayList([]const u8){},
+            .string_literals = std.ArrayList([]const u8).empty,
             .string_offsets = std.StringHashMap(usize).init(allocator),
-            .string_fixups = std.ArrayList(StringFixup){},
-            .data_literals = std.ArrayList([]const u8){},
+            .string_fixups = std.ArrayList(StringFixup).empty,
+            .data_literals = std.ArrayList([]const u8).empty,
             .data_literals_offset = 0,
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
@@ -707,9 +707,9 @@ pub const NativeCodegen = struct {
             .borrow_checker = null, // Initialized on demand
             .source_root = null, // Set via setSourceRoot
             .imported_modules = std.StringHashMap(void).init(allocator),
-            .module_sources = std.ArrayList([]const u8){},
+            .module_sources = std.ArrayList([]const u8).empty,
             .comptime_store = comptime_store,
-            .loop_stack = std.ArrayList(LoopContext){},
+            .loop_stack = std.ArrayList(LoopContext).empty,
             .current_function_name = null,
             .type_registry = type_registry,
         };
@@ -1376,7 +1376,7 @@ pub const NativeCodegen = struct {
 
         // Check for variable binding patterns (also catch-all)
         // and collect covered enum variants
-        var covered_variants = std.ArrayList([]const u8){};
+        var covered_variants = std.ArrayList([]const u8).empty;
         defer covered_variants.deinit(self.allocator);
 
         var match_enum_name: ?[]const u8 = null;
@@ -1395,7 +1395,7 @@ pub const NativeCodegen = struct {
             if (self.enum_layouts.get(enum_name)) |enum_layout| {
                 // Check if all variants are covered
                 var all_covered = true;
-                var missing_variants = std.ArrayList([]const u8){};
+                var missing_variants = std.ArrayList([]const u8).empty;
                 defer missing_variants.deinit(self.allocator);
 
                 for (enum_layout.variants) |variant| {
@@ -1654,7 +1654,7 @@ pub const NativeCodegen = struct {
 
                 // Count matches! Now check each element pattern
                 // Track jump positions for element failures
-                var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var elem_fail_jumps = std.ArrayList(usize).empty;
                 defer elem_fail_jumps.deinit(self.allocator);
 
                 for (tuple_patterns, 0..) |elem_pattern, i| {
@@ -1717,7 +1717,7 @@ pub const NativeCodegen = struct {
                     try self.assembler.jlRel32(0); // Jump if less than
 
                     // Array is long enough! Match the fixed elements
-                    var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                    var elem_fail_jumps = std.ArrayList(usize).empty;
                     defer elem_fail_jumps.deinit(self.allocator);
 
                     for (array_pattern.elements, 0..) |elem_pattern, i| {
@@ -1759,7 +1759,7 @@ pub const NativeCodegen = struct {
                     const count_mismatch_pos = self.assembler.getPosition();
                     try self.assembler.jneRel32(0);
 
-                    var elem_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                    var elem_fail_jumps = std.ArrayList(usize).empty;
                     defer elem_fail_jumps.deinit(self.allocator);
 
                     for (array_pattern.elements, 0..) |elem_pattern, i| {
@@ -1803,7 +1803,7 @@ pub const NativeCodegen = struct {
                 };
 
                 // Check each field pattern
-                var field_fail_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var field_fail_jumps = std.ArrayList(usize).empty;
                 defer field_fail_jumps.deinit(self.allocator);
 
                 for (struct_pattern.fields) |field_pattern| {
@@ -1874,7 +1874,7 @@ pub const NativeCodegen = struct {
                 }
 
                 // Track jump positions for successful matches
-                var success_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var success_jumps = std.ArrayList(usize).empty;
                 defer success_jumps.deinit(self.allocator);
 
                 // Try each alternative pattern
@@ -2437,7 +2437,7 @@ pub const NativeCodegen = struct {
         // Remove from locals HashMap
         // We need to iterate and remove entries added after locals_before
         // Since HashMap doesn't support removal during iteration, collect keys first
-        var keys_to_remove = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+        var keys_to_remove = std.ArrayList([]const u8).empty;
         defer keys_to_remove.deinit(self.allocator);
 
         var iter = self.locals.iterator();
@@ -2906,7 +2906,7 @@ pub const NativeCodegen = struct {
     /// PASS 1: Register types from an imported module (non-fatal - errors are logged as warnings)
     fn registerTypesFromImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) void {
         // Build module key from path components
-        var key_list = std.ArrayList(u8){};
+        var key_list = std.ArrayList(u8).empty;
         defer key_list.deinit(self.allocator);
         for (import_decl.path, 0..) |component, i| {
             if (i > 0) key_list.append(self.allocator, '/') catch return;
@@ -2927,7 +2927,7 @@ pub const NativeCodegen = struct {
         };
 
         // Convert import path to file path
-        var path_list = std.ArrayList(u8){};
+        var path_list = std.ArrayList(u8).empty;
         defer path_list.deinit(self.allocator);
 
         // Add source root prefix if available
@@ -2989,7 +2989,7 @@ pub const NativeCodegen = struct {
         const arena_alloc = arena.allocator();
 
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
-        var token_list = lexer.tokenize() catch |err| {
+        const token_list = lexer.tokenize() catch |err| {
             std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
             return;
         };
@@ -3303,7 +3303,7 @@ pub const NativeCodegen = struct {
                 // Push loop context for break/continue
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
-                    .break_fixups = std.ArrayList(usize){},
+                    .break_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -3339,7 +3339,7 @@ pub const NativeCodegen = struct {
                 // Push loop context for break/continue
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
-                    .break_fixups = std.ArrayList(usize){},
+                    .break_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -3447,7 +3447,7 @@ pub const NativeCodegen = struct {
                 // Push loop context for break/continue
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
-                    .break_fixups = std.ArrayList(usize){},
+                    .break_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -3509,7 +3509,7 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.rbx, .rax);
 
                 // Track positions for patching jumps
-                var case_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var case_end_jumps = std.ArrayList(usize).empty;
                 defer case_end_jumps.deinit(self.allocator);
 
                 var default_pos: ?usize = null;
@@ -3531,7 +3531,7 @@ pub const NativeCodegen = struct {
                     } else {
                         // For each pattern, check if it matches
                         // Track all je positions for this case
-                        var pattern_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                        var pattern_jumps = std.ArrayList(usize).empty;
                         defer pattern_jumps.deinit(self.allocator);
 
                         for (case_clause.patterns) |pattern| {
@@ -3627,7 +3627,7 @@ pub const NativeCodegen = struct {
                 }
 
                 // Calculate struct layout
-                var fields = std.ArrayList(FieldInfo){};
+                var fields = std.ArrayList(FieldInfo).empty;
                 defer fields.deinit(self.allocator);
 
                 var offset: usize = 0;
@@ -3829,7 +3829,7 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.r10, .rax);
 
                 // Track positions for patching jumps to end
-                var arm_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var arm_end_jumps = std.ArrayList(usize).empty;
                 defer arm_end_jumps.deinit(self.allocator);
 
                 // Generate code for each match arm
@@ -4055,7 +4055,7 @@ pub const NativeCodegen = struct {
 
     fn handleImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) CodegenError!void {
         // Build module key from path components
-        var key_list = std.ArrayList(u8){};
+        var key_list = std.ArrayList(u8).empty;
         defer key_list.deinit(self.allocator);
         for (import_decl.path, 0..) |component, i| {
             if (i > 0) try key_list.append(self.allocator, '/');
@@ -4074,7 +4074,7 @@ pub const NativeCodegen = struct {
 
         // Convert import path to file path
         // Use source_root if available, otherwise use current directory
-        var path_list = std.ArrayList(u8){};
+        var path_list = std.ArrayList(u8).empty;
         defer path_list.deinit(self.allocator);
 
         // Add source root prefix if available (skip "." as it's redundant)
@@ -4137,7 +4137,7 @@ pub const NativeCodegen = struct {
         const arena_alloc = arena.allocator();
 
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
-        var token_list = lexer.tokenize() catch |err| {
+        const token_list = lexer.tokenize() catch |err| {
             std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
             return;
         };
@@ -6920,7 +6920,7 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegReg(.r10, .rax);
 
                 // Track positions for patching jumps to end
-                var arm_end_jumps = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+                var arm_end_jumps = std.ArrayList(usize).empty;
                 defer arm_end_jumps.deinit(self.allocator);
 
                 // Generate code for each match arm

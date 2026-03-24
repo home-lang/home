@@ -54,7 +54,7 @@ pub const SemicolonStyle = struct {
         allocator: std.mem.Allocator,
         tokens: []const Token,
     ) ![]LintError {
-        var errors = std.ArrayList(LintError){};
+        var errors = std.ArrayList(LintError).empty;
         errdefer errors.deinit(allocator);
 
         var i: usize = 0;

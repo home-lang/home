@@ -128,7 +128,7 @@ pub const CoverageBuilder = struct {
         );
 
         // Build the test executable
-        var argv: std.ArrayList([]const u8) = .{};
+        var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.allocator);
 
         try argv.append(self.allocator, "zig");

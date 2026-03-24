@@ -107,7 +107,7 @@ pub const RouterSolicitation = struct {
         return .{
             .header = icmpv6.Header.init(.router_solicitation, 0),
             .reserved = 0,
-            .options = std.ArrayList(LinkLayerOption){},
+            .options = std.ArrayList(LinkLayerOption).empty,
             .allocator = allocator,
         };
     }
@@ -152,7 +152,7 @@ pub const RouterAdvertisement = struct {
             .router_lifetime = lifetime,
             .reachable_time = 0,
             .retrans_timer = 0,
-            .options = std.ArrayList(OptionHeader){},
+            .options = std.ArrayList(OptionHeader).empty,
             .allocator = allocator,
         };
     }
@@ -175,7 +175,7 @@ pub const NeighborSolicitation = struct {
             .header = icmpv6.Header.init(.neighbor_solicitation, 0),
             .reserved = 0,
             .target = target,
-            .options = std.ArrayList(LinkLayerOption){},
+            .options = std.ArrayList(LinkLayerOption).empty,
             .allocator = allocator,
         };
     }
@@ -213,7 +213,7 @@ pub const NeighborAdvertisement = struct {
             .header = icmpv6.Header.init(.neighbor_advertisement, 0),
             .flags = flags.toU32(),
             .target = target,
-            .options = std.ArrayList(LinkLayerOption){},
+            .options = std.ArrayList(LinkLayerOption).empty,
             .allocator = allocator,
         };
     }

@@ -19,9 +19,9 @@ pub const LinkerScript = struct {
     pub fn init(allocator: std.mem.Allocator, name: []const u8) LinkerScript {
         return .{
             .name = name,
-            .regions = std.ArrayList(memory.MemoryRegion){},
-            .sections = std.ArrayList(section.Section){},
-            .symbols = std.ArrayList(symbol.Symbol){},
+            .regions = std.ArrayList(memory.MemoryRegion).empty,
+            .sections = std.ArrayList(section.Section).empty,
+            .symbols = std.ArrayList(symbol.Symbol).empty,
             .allocator = allocator,
         };
     }

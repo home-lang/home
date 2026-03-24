@@ -242,7 +242,7 @@ pub const DMARManager = struct {
 
     pub fn init(allocator: std.mem.Allocator) DMARManager {
         return .{
-            .engines = std.ArrayList(DMAREngine){},
+            .engines = std.ArrayList(DMAREngine).empty,
             .device_mappings = std.AutoHashMap(iommu.DeviceID, u16).init(allocator),
             .allocator = allocator,
             .mutex = std.Thread.Mutex{},

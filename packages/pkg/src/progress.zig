@@ -100,7 +100,7 @@ pub const ProgressTracker = struct {
     pub fn init(allocator: std.mem.Allocator, total: usize) !Self {
         return .{
             .allocator = allocator,
-            .bars = std.ArrayList(*ProgressBar){},
+            .bars = std.ArrayList(*ProgressBar).empty,
             .total_packages = total,
             .completed_packages = 0,
             .start_time = std.time.milliTimestamp(),

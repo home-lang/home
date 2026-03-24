@@ -53,7 +53,7 @@ pub const OwnershipTracker = struct {
         return .{
             .allocator = allocator,
             .variables = std.StringHashMap(OwnershipInfo).init(allocator),
-            .errors = std.ArrayList(OwnershipErrorInfo){},
+            .errors = std.ArrayList(OwnershipErrorInfo).empty,
             .current_scope = 0,
         };
     }
@@ -80,7 +80,7 @@ pub const OwnershipTracker = struct {
             .state = .Owned,
             .type = typ,
             .location = loc,
-            .borrows = std.ArrayList(BorrowRecord){},
+            .borrows = std.ArrayList(BorrowRecord).empty,
             .scope_depth = self.current_scope,
         });
     }

@@ -104,9 +104,9 @@ pub const IR = struct {
         pub fn init(allocator: std.mem.Allocator, id: usize) BasicBlock {
             return .{
                 .id = id,
-                .instructions = std.ArrayList(Instruction){},
-                .predecessors = std.ArrayList(usize){},
-                .successors = std.ArrayList(usize){},
+                .instructions = std.ArrayList(Instruction).empty,
+                .predecessors = std.ArrayList(usize).empty,
+                .successors = std.ArrayList(usize).empty,
                 .allocator = allocator,
             };
         }
@@ -126,7 +126,7 @@ pub const IR = struct {
         pub fn init(allocator: std.mem.Allocator, name: []const u8) Function {
             return .{
                 .name = name,
-                .blocks = std.ArrayList(BasicBlock){},
+                .blocks = std.ArrayList(BasicBlock).empty,
                 .allocator = allocator,
             };
         }
@@ -451,7 +451,7 @@ pub const Optimizer = struct {
         var optimizer = Optimizer{
             .allocator = allocator,
             .opt_level = opt_level,
-            .passes = std.ArrayList(Pass){},
+            .passes = std.ArrayList(Pass).empty,
         };
 
         // Configure passes based on optimization level

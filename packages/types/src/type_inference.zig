@@ -43,7 +43,7 @@ pub const TypeInferencer = struct {
         return .{
             .allocator = allocator,
             .next_type_var = 0,
-            .constraints = std.ArrayList(Constraint).initCapacity(allocator, 0) catch std.ArrayList(Constraint){ .items = &.{}, .capacity = 0 },
+            .constraints = std.ArrayList(Constraint).initCapacity(allocator, 0) catch std.ArrayList(Constraint).empty,
             .substitution = Substitution.init(allocator),
             .type_env = std.StringHashMap(*TypeScheme).init(allocator),
             .trait_system = null,
@@ -294,7 +294,7 @@ pub const TypeInferencer = struct {
             // Fall back to synthesis mode with fresh type variables
 
             // Generate fresh type variables for parameters and return type
-            var param_types = std.ArrayList(*Type){ .items = &.{}, .capacity = 0 };
+            var param_types = std.ArrayList(*Type).empty;
             defer param_types.deinit(self.allocator);
 
             for (call.arguments) |_| {
@@ -437,7 +437,7 @@ pub const TypeInferencer = struct {
         defer closure_env.deinit();
 
         // Infer or use annotated parameter types
-        var param_types = std.ArrayList(*Type){ .items = &.{}, .capacity = 0 };
+        var param_types = std.ArrayList(*Type).empty;
         defer param_types.deinit(self.allocator);
 
         for (closure.parameters) |param| {
@@ -470,7 +470,7 @@ pub const TypeInferencer = struct {
 
     /// Infer type of tuple expression
     fn inferTupleExpr(self: *TypeInferencer, tuple: *const ast.TupleExpr, env: *type_system.TypeEnvironment) !*Type {
-        var elem_types = std.ArrayList(Type){ .items = &.{}, .capacity = 0 };
+        var elem_types = std.ArrayList(Type).empty;
         defer elem_types.deinit(self.allocator);
 
         for (tuple.elements) |elem| {
@@ -747,7 +747,7 @@ pub const TypeInferencer = struct {
 
     /// Find all free type variables in a type
     fn freeTypeVars(self: *TypeInferencer, ty: *Type) !std.ArrayList(usize) {
-        var vars = std.ArrayList(usize){ .items = &.{}, .capacity = 0 };
+        var vars = std.ArrayList(usize).empty;
         const resolved = try self.substitution.apply(ty, self.allocator);
 
         switch (resolved.*) {
@@ -859,7 +859,7 @@ pub const Substitution = struct {
                 return result;
             },
             .Function => |func| {
-                var params = std.ArrayList(Type){ .items = &.{}, .capacity = 0 };
+                var params = std.ArrayList(Type).empty;
                 defer params.deinit(allocator);
 
                 for (func.params) |param| {
@@ -877,7 +877,7 @@ pub const Substitution = struct {
                 return result;
             },
             .Tuple => |tuple| {
-                var elems = std.ArrayList(Type){ .items = &.{}, .capacity = 0 };
+                var elems = std.ArrayList(Type).empty;
                 defer elems.deinit(allocator);
 
                 for (tuple.element_types) |elem| {

@@ -127,7 +127,7 @@ pub const EntityManager = struct {
         return EntityManager{
             .next_id = 1,
             .generations = std.AutoHashMap(u32, u16).init(allocator),
-            .free_ids = .{},
+            .free_ids = .empty,
             .alive = std.AutoHashMap(u32, void).init(allocator),
             .allocator = allocator,
         };

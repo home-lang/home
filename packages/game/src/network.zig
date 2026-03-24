@@ -352,7 +352,7 @@ pub const NetworkServer = struct {
 
     pub fn update(self: *NetworkServer) void {
         // Check for timed out connections
-        var to_remove: std.ArrayList(u32) = .{};
+        var to_remove: std.ArrayList(u32) = .empty;
         defer to_remove.deinit(self.allocator);
 
         var iter = self.connections.iterator();
@@ -451,7 +451,7 @@ pub const StateSynchronizer = struct {
     }
 
     pub fn getEntitiesNeedingSync(self: *StateSynchronizer) ![]u32 {
-        var result: std.ArrayList(u32) = .{};
+        var result: std.ArrayList(u32) = .empty;
         errdefer result.deinit(self.allocator);
 
         var iter = self.entities.iterator();

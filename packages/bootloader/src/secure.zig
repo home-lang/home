@@ -86,8 +86,8 @@ pub const SecureBootDB = struct {
 
     pub fn init(allocator: std.mem.Allocator) SecureBootDB {
         return .{
-            .allowed_certificates = std.ArrayList(Certificate){},
-            .forbidden_hashes = std.ArrayList([32]u8){},
+            .allowed_certificates = std.ArrayList(Certificate).empty,
+            .forbidden_hashes = std.ArrayList([32]u8).empty,
             .allocator = allocator,
             .mutex = std.Thread.Mutex{},
         };

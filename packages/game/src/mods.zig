@@ -130,9 +130,9 @@ pub const ModManager = struct {
         self.* = ModManager{
             .allocator = allocator,
             .mods = std.StringHashMap(*LoadedMod).init(allocator),
-            .load_order = .{},
+            .load_order = .empty,
             .mods_directory = "mods",
-            .event_listeners = .{},
+            .event_listeners = .empty,
             .game_version = .{ .major = 1, .minor = 0, .patch = 0 },
         };
         return self;

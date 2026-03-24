@@ -14,7 +14,7 @@ pub fn Channel(comptime T: type) type {
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
-                .queue = std.ArrayList(T){},
+                .queue = std.ArrayList(T).empty,
                 .mutex = .{},
                 .receivers_waiting = 0,
                 .closed = false,

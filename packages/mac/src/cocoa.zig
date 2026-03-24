@@ -448,7 +448,7 @@ pub fn createOpenGLPixelFormatEnum(attributes: []const NSOpenGLPixelFormatAttrib
     const pixel_format = alloc(NSOpenGLPixelFormat);
 
     // Convert attributes to u32 array
-    var attrs: std.ArrayList(u32) = .{};
+    var attrs: std.ArrayList(u32) = .empty;
     defer attrs.deinit(std.heap.page_allocator);
 
     for (attributes) |attr| {

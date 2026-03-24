@@ -140,7 +140,7 @@ pub const Monitor = struct {
 
     pub fn init(allocator: std.mem.Allocator, max_events: usize) Monitor {
         return .{
-            .events = std.ArrayList(Event){},
+            .events = std.ArrayList(Event).empty,
             .sessions = std.AutoHashMap(usb.DeviceID, MonitorSession).init(allocator),
             .max_events = max_events,
             .allocator = allocator,

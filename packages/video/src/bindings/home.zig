@@ -19,8 +19,8 @@ pub const Handle = struct {
 };
 
 /// Global allocator for FFI allocations
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-pub const allocator = gpa.allocator();
+var debug_allocator = std.heap.DebugAllocator(.{}).init;
+pub const allocator = debug_allocator.allocator();
 
 // ============================================================================
 // Error Handling

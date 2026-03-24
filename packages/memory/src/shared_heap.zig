@@ -66,12 +66,12 @@ pub const SharedHeap = struct {
     pub fn init(parent: std.mem.Allocator, config: SharedHeapConfig) AllocatorError!SharedHeap {
         return .{
             .config = config,
-            .regions = std.ArrayList(MemoryRegion){},
+            .regions = std.ArrayList(MemoryRegion).empty,
             .stats = MemStats.init(),
             .parent_allocator = parent,
             .free_list = null,
             .total_allocated = 0,
-            .allocated_regions = std.ArrayList([*]u8){},
+            .allocated_regions = std.ArrayList([*]u8).empty,
         };
     }
 

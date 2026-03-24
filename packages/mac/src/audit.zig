@@ -118,7 +118,7 @@ pub const AuditLog = struct {
         const log = try allocator.create(AuditLog);
         log.* = .{
             .allocator = allocator,
-            .entries = std.ArrayList(AuditEntry){},
+            .entries = std.ArrayList(AuditEntry).empty,
             .mutex = .unlocked,
             .max_entries = 1000, // Default: keep last 1000 entries in memory
         };
@@ -251,7 +251,7 @@ pub const AuditLog = struct {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
-        var results = std.ArrayList(AuditEntry){};
+        var results = std.ArrayList(AuditEntry).empty;
 
         for (self.entries.items) |entry| {
             if (entry.event_type == event_type) {
@@ -271,7 +271,7 @@ pub const AuditLog = struct {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
-        var results = std.ArrayList(AuditEntry){};
+        var results = std.ArrayList(AuditEntry).empty;
 
         for (self.entries.items) |entry| {
             if (entry.severity == severity) {

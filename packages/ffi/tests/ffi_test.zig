@@ -41,9 +41,9 @@ test "C type value ranges" {
 // ============================================================================
 
 test "Home string to C string conversion" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const home_str = "Hello, World!";
     const c_str = try ffi.CString.fromHome(allocator, home_str);
@@ -79,9 +79,9 @@ test "C string comparison" {
 }
 
 test "C string concatenation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const str1: [*:0]const u8 = "Hello, ";
     const str2: [*:0]const u8 = "World!";
@@ -323,9 +323,9 @@ test "C stdlib strcmp" {
 // ============================================================================
 
 test "basic header generation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "TEST_HEADER",
@@ -341,9 +341,9 @@ test "basic header generation" {
 }
 
 test "header with includes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "MY_HEADER",
@@ -359,9 +359,9 @@ test "header with includes" {
 }
 
 test "header with defines" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "DEFINES_TEST",
@@ -379,9 +379,9 @@ test "header with defines" {
 }
 
 test "header with structs" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "STRUCTS_TEST",
@@ -405,9 +405,9 @@ test "header with structs" {
 }
 
 test "header with functions" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "FUNCTIONS_TEST",
@@ -430,9 +430,9 @@ test "header with functions" {
 }
 
 test "header with variadic function" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const config = header_gen.HeaderConfig{
         .guard_name = "VARIADIC_TEST",
@@ -467,9 +467,9 @@ test "type mapping" {
 // ============================================================================
 
 test "bulk C string conversions performance" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     const iterations = 1000;
     var i: usize = 0;

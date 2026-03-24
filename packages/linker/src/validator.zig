@@ -68,8 +68,8 @@ pub const Validator = struct {
 
     pub fn init(allocator: std.mem.Allocator) Validator {
         return .{
-            .errors = std.ArrayList([]const u8){},
-            .warnings = std.ArrayList(ValidationWarning){},
+            .errors = std.ArrayList([]const u8).empty,
+            .warnings = std.ArrayList(ValidationWarning).empty,
             .allocator = allocator,
         };
     }

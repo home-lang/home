@@ -1091,7 +1091,7 @@ pub const Lexer = struct {
     /// Returns: ArrayList of all tokens found in the source
     /// Errors: OutOfMemory if allocation fails
     pub fn tokenize(self: *Lexer) !std.ArrayList(Token) {
-        var tokens = std.ArrayList(Token){ .items = &.{}, .capacity = 0 };
+        var tokens = std.ArrayList(Token).empty;
 
         while (true) {
             const token = self.scanToken();

@@ -44,7 +44,7 @@ pub const CompilationUnit = struct {
             .allocator = allocator,
             .modules = std.StringHashMap(*CompiledModule).init(allocator),
             .resolver = try ModuleResolver.init(allocator, null),
-            .parsing_stack = std.ArrayList([]const u8){},
+            .parsing_stack = std.ArrayList([]const u8).empty,
         };
     }
 
@@ -159,7 +159,7 @@ pub const CompilationUnit = struct {
 
     /// Helper to convert path segments to string
     fn pathToString(self: *CompilationUnit, segments: []const []const u8) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         for (segments, 0..) |segment, i| {
             if (i > 0) try buf.append(self.allocator, '/');
             try buf.appendSlice(self.allocator, segment);

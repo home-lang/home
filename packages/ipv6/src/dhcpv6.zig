@@ -137,7 +137,7 @@ pub const IA_NA = struct {
             .iaid = iaid,
             .t1 = t1,
             .t2 = t2,
-            .options = std.ArrayList(IA_Address){},
+            .options = std.ArrayList(IA_Address).empty,
             .allocator = allocator,
         };
     }
@@ -179,7 +179,7 @@ pub const IA_PD = struct {
             .iaid = iaid,
             .t1 = t1,
             .t2 = t2,
-            .prefixes = std.ArrayList(IA_Prefix){},
+            .prefixes = std.ArrayList(IA_Prefix).empty,
             .allocator = allocator,
         };
     }
@@ -319,8 +319,8 @@ pub const Server = struct {
     pub fn init(allocator: std.mem.Allocator, server_duid: Duid) Server {
         return .{
             .server_duid = server_duid,
-            .address_pool = std.ArrayList(ipv6.Address){},
-            .prefix_pool = std.ArrayList(ipv6.Prefix){},
+            .address_pool = std.ArrayList(ipv6.Address).empty,
+            .prefix_pool = std.ArrayList(ipv6.Prefix).empty,
             .leases = std.AutoHashMap(u32, Lease).init(allocator),
             .allocator = allocator,
         };

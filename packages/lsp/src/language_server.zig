@@ -147,8 +147,8 @@ pub const LanguageServer = struct {
             .text = text_copy,
             .version = version,
             .ast = null,
-            .diagnostics = std.ArrayList(Diagnostic){},
-            .symbols = std.ArrayList(Symbol){},
+            .diagnostics = std.ArrayList(Diagnostic).empty,
+            .symbols = std.ArrayList(Symbol).empty,
         };
 
         // Parse the document

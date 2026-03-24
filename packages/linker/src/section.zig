@@ -257,7 +257,7 @@ pub const SectionGroup = struct {
     pub fn init(allocator: std.mem.Allocator, name: []const u8) SectionGroup {
         return .{
             .name = name,
-            .sections = std.ArrayList(Section){},
+            .sections = std.ArrayList(Section).empty,
             .base_vma = null,
             .region = null,
             .allocator = allocator,
@@ -310,7 +310,7 @@ pub const SectionLayoutBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator) SectionLayoutBuilder {
         return .{
-            .groups = std.ArrayList(SectionGroup){},
+            .groups = std.ArrayList(SectionGroup).empty,
             .allocator = allocator,
         };
     }

@@ -103,9 +103,9 @@ pub fn main() !void {
 
     // Event queue
     std.debug.print("\nInput Event Queue:\n", .{});
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     var event_queue = drivers.input.InputEventQueue.init(allocator);
     defer event_queue.deinit();

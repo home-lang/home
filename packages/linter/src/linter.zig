@@ -97,7 +97,7 @@ pub const Linter = struct {
         return .{
             .allocator = allocator,
             .config = config,
-            .diagnostics = std.ArrayList(LintDiagnostic){},
+            .diagnostics = std.ArrayList(LintDiagnostic).empty,
             .source = "",
         };
     }
@@ -157,7 +157,7 @@ pub const Linter = struct {
     }
 
     pub fn autoFix(self: *Linter) ![]const u8 {
-        var fixed_source = std.ArrayList(u8){};
+        var fixed_source = std.ArrayList(u8).empty;
         defer fixed_source.deinit(self.allocator);
 
         try fixed_source.appendSlice(self.allocator, self.source);

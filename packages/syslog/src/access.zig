@@ -45,7 +45,7 @@ pub const AccessControl = struct {
 
     pub fn init(allocator: std.mem.Allocator) AccessControl {
         return .{
-            .acls = std.ArrayList(ACL){},
+            .acls = std.ArrayList(ACL).empty,
             .allocator = allocator,
         };
     }
@@ -92,7 +92,7 @@ pub const AccessControl = struct {
         messages: []const syslog.LogMessage,
         allocator: std.mem.Allocator,
     ) ![]syslog.LogMessage {
-        var filtered = std.ArrayList(syslog.LogMessage){};
+        var filtered = std.ArrayList(syslog.LogMessage).empty;
         defer filtered.deinit(allocator);
 
         for (messages) |*msg| {

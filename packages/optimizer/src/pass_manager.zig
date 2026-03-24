@@ -68,7 +68,7 @@ pub const PassManager = struct {
     pub fn init(allocator: std.mem.Allocator, level: OptimizationLevel) PassManager {
         return .{
             .allocator = allocator,
-            .passes = .{},
+            .passes = .empty,
             .optimization_level = level,
             .stats = OptimizationStats.init(),
         };
@@ -1210,7 +1210,7 @@ pub const Pass = struct {
 
     fn optimizeLoopsInBlock(self: *Pass, block: *ast.BlockStmt, stats: *PassManager.OptimizationStats) anyerror!bool {
         var changed = false;
-        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        var new_statements: std.ArrayList(ast.Stmt) = .empty;
         defer new_statements.deinit(self.allocator);
 
         for (block.statements) |stmt| {
@@ -1229,7 +1229,7 @@ pub const Pass = struct {
                 }
 
                 // Find and hoist invariant statements
-                var loop_new_statements: std.ArrayList(ast.Stmt) = .{};
+                var loop_new_statements: std.ArrayList(ast.Stmt) = .empty;
                 defer loop_new_statements.deinit(self.allocator);
 
                 for (loop_body.statements) |body_stmt| {
@@ -1350,7 +1350,7 @@ pub const Pass = struct {
 
     fn unrollLoopsInBlock(self: *Pass, block: *ast.BlockStmt, max_iterations: usize, stats: *PassManager.OptimizationStats) anyerror!bool {
         var changed = false;
-        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        var new_statements: std.ArrayList(ast.Stmt) = .empty;
         defer new_statements.deinit(self.allocator);
 
         for (block.statements) |stmt| {
@@ -1470,7 +1470,7 @@ pub const Pass = struct {
             },
             .CallExpr => |call| {
                 const callee = try self.cloneAndSubstituteExprForLoop(call.callee, loop_var, value);
-                var args: std.ArrayList(*ast.Expr) = .{};
+                var args: std.ArrayList(*ast.Expr) = .empty;
                 defer args.deinit(self.allocator);
 
                 for (call.args) |arg| {
@@ -1556,7 +1556,7 @@ pub const Pass = struct {
             loaded_exprs.deinit();
         }
 
-        var new_statements: std.ArrayList(ast.Stmt) = .{};
+        var new_statements: std.ArrayList(ast.Stmt) = .empty;
         defer new_statements.deinit(self.allocator);
 
         for (block.statements) |stmt| {
@@ -1626,7 +1626,7 @@ pub const Pass = struct {
     }
 
     fn loadExprToString(self: *Pass, expr: *ast.Expr) ![]const u8 {
-        var buffer: std.ArrayList(u8) = .{};
+        var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(self.allocator);
 
         try self.loadExprToStringHelper(expr, &buffer);
@@ -1952,7 +1952,7 @@ pub const Pass = struct {
     }
 
     fn getFunctionSignature(self: *Pass, fn_decl: *ast.FnDecl) ![]const u8 {
-        var buffer: std.ArrayList(u8) = .{};
+        var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(self.allocator);
 
         // Include parameter count and types in signature

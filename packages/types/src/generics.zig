@@ -35,7 +35,7 @@ pub const GenericHandler = struct {
         return .{
             .allocator = allocator,
             .monomorphizations = std.StringHashMap(MonomorphizationInfo).init(allocator),
-            .errors = std.ArrayList(GenericError){},
+            .errors = std.ArrayList(GenericError).empty,
             .trait_system = trait_system,
         };
     }

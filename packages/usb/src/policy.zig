@@ -84,7 +84,7 @@ pub const PolicyEngine = struct {
     pub fn init(allocator: std.mem.Allocator, enforcement: EnforcementLevel) PolicyEngine {
         return .{
             .class_policies = std.AutoHashMap(usb.DeviceClass, ClassPolicy).init(allocator),
-            .ports = std.ArrayList(Port){},
+            .ports = std.ArrayList(Port).empty,
             .enforcement = enforcement,
             .allocator = allocator,
             .mutex = std.Thread.Mutex{},

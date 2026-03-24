@@ -130,7 +130,7 @@ pub const BootConfig = struct {
 
     pub fn init(allocator: std.mem.Allocator) BootConfig {
         return .{
-            .entries = std.ArrayList(BootEntry){},
+            .entries = std.ArrayList(BootEntry).empty,
             .timeout_seconds = 5,
             .default_entry = 0,
             .allocator = allocator,

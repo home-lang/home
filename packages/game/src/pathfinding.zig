@@ -184,13 +184,13 @@ pub const Grid = struct {
             return path;
         }
 
-        var open_list: std.ArrayList(PathNode) = .{};
+        var open_list: std.ArrayList(PathNode) = .empty;
         defer open_list.deinit(self.allocator);
 
         var closed_set = std.AutoHashMap(u64, void).init(self.allocator);
         defer closed_set.deinit();
 
-        var all_nodes: std.ArrayList(*PathNode) = .{};
+        var all_nodes: std.ArrayList(*PathNode) = .empty;
         defer {
             for (all_nodes.items) |node| {
                 self.allocator.destroy(node);
@@ -469,7 +469,7 @@ pub const Graph = struct {
         while (open.removeOrNull()) |current| {
             if (current.id == end) {
                 // Reconstruct path
-                var path: std.ArrayList(u32) = .{};
+                var path: std.ArrayList(u32) = .empty;
                 var node_id = end;
                 while (came_from.get(node_id)) |prev| {
                     try path.append(self.allocator, node_id);

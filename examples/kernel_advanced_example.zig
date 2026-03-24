@@ -6,7 +6,7 @@ const Kernel = @import("kernel");
 
 pub fn main() !void {
     var gpa = Basics.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    const allocator = debug_allocator.allocator();
 
     Basics.println("=== Home Advanced Kernel Features ===", .{});
     Basics.println("", .{});

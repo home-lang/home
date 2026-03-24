@@ -39,7 +39,7 @@ pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     const is_move = self.match(&.{.Identifier}) and std.mem.eql(u8, self.previous().lexeme, "move");
 
     // Parse parameters
-    var params = std.ArrayList(ast.ClosureParam){ .items = &.{}, .capacity = 0 };
+    var params = std.ArrayList(ast.ClosureParam).empty;
     defer params.deinit(self.allocator);
 
     // Handle zero-parameter case: || is tokenized as PipePipe
@@ -128,7 +128,7 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
     if (self.match(&.{.Fn})) {
         _ = try self.expect(.LeftParen, "Expected '(' after 'fn'");
 
-        var param_types = std.ArrayList(*ast.closure_nodes.TypeExpr){ .items = &.{}, .capacity = 0 };
+        var param_types = std.ArrayList(*ast.closure_nodes.TypeExpr).empty;
         defer param_types.deinit(self.allocator);
 
         while (!self.check(.RightParen) and !self.isAtEnd()) {
@@ -158,7 +158,7 @@ fn parseClosureTypeExpr(self: *Parser) !*ast.closure_nodes.TypeExpr {
     
     // Check for generic arguments
     if (self.match(&.{.Less})) {
-        var args = std.ArrayList(*ast.closure_nodes.TypeExpr){ .items = &.{}, .capacity = 0 };
+        var args = std.ArrayList(*ast.closure_nodes.TypeExpr).empty;
         defer args.deinit(self.allocator);
 
         while (!self.check(.Greater) and !self.isAtEnd()) {

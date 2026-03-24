@@ -102,7 +102,7 @@ pub const SymbolTable = struct {
 
     pub fn init(allocator: std.mem.Allocator) SymbolTable {
         return .{
-            .symbols = std.ArrayList(Symbol){},
+            .symbols = std.ArrayList(Symbol).empty,
             .allocator = allocator,
         };
     }
@@ -139,7 +139,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn getGlobalSymbols(self: *SymbolTable) []Symbol {
-        var result = std.ArrayList(Symbol){};
+        var result = std.ArrayList(Symbol).empty;
         for (self.symbols.items) |symbol| {
             if (symbol.isGlobal()) {
                 result.append(self.allocator, symbol) catch unreachable;
@@ -289,7 +289,7 @@ pub const KernelSymbols = struct {
 
     // Get all standard kernel symbols (without TLS)
     pub fn standard_symbols(allocator: std.mem.Allocator) ![]Symbol {
-        var list = std.ArrayList(Symbol){};
+        var list = std.ArrayList(Symbol).empty;
 
         try list.append(allocator, kernel_start());
         try list.append(allocator, kernel_end());
@@ -311,7 +311,7 @@ pub const KernelSymbols = struct {
 
     // Get all standard kernel symbols including TLS
     pub fn standard_symbols_with_tls(allocator: std.mem.Allocator) ![]Symbol {
-        var list = std.ArrayList(Symbol){};
+        var list = std.ArrayList(Symbol).empty;
 
         try list.append(allocator, kernel_start());
         try list.append(allocator, kernel_end());

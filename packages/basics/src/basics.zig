@@ -19,7 +19,7 @@ pub const AutoHashMap = std.AutoHashMap;
 pub const mem = struct {
     pub const Allocator = std.mem.Allocator;
     pub const page_allocator = std.heap.page_allocator;
-    pub const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
+    pub const DebugAllocator = std.heap.DebugAllocator;
     pub const ArenaAllocator = std.heap.ArenaAllocator;
     pub const eql = std.mem.eql;
     pub const copy = std.mem.copy;
@@ -38,7 +38,7 @@ pub const mem = struct {
 // Heap allocators
 pub const heap = struct {
     pub const page_allocator = std.heap.page_allocator;
-    pub const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
+    pub const DebugAllocator = std.heap.DebugAllocator;
     pub const ArenaAllocator = std.heap.ArenaAllocator;
     pub const c_allocator = std.heap.c_allocator;
 };
@@ -263,9 +263,9 @@ pub fn sleepSec(seconds: u64) void {
     std.time.sleep(seconds * 1_000_000_000);
 }
 
-/// Create a general-purpose allocator
-pub fn createAllocator() std.heap.GeneralPurposeAllocator(.{}) {
-    return std.heap.GeneralPurposeAllocator(.{}){};
+/// Create a debug allocator (replaces GeneralPurposeAllocator)
+pub fn createAllocator() std.heap.DebugAllocator(.{}) {
+    return std.heap.DebugAllocator(.{}).init;
 }
 
 /// Create an arena allocator

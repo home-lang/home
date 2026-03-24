@@ -6,8 +6,8 @@ const video = @import("video");
 const t = @import("test_framework");
 
 // Test allocator with leak detection
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
+var debug_allocator = std.heap.DebugAllocator(.{}).init;
+const allocator = debug_allocator.allocator();
 
 test "conformance tests" {
     defer {

@@ -87,7 +87,7 @@ pub const Vectorizer = struct {
 
     /// Analyze loops for vectorization opportunities
     pub fn analyzeLoops(self: *Vectorizer, func: *const IR.Function) !std.ArrayList(VectorizationOpportunity) {
-        var opportunities = std.ArrayList(VectorizationOpportunity){};
+        var opportunities = std.ArrayList(VectorizationOpportunity).empty;
 
         var loop_analysis = LoopAnalysis.init(self.allocator);
         defer loop_analysis.deinit();
@@ -231,7 +231,7 @@ pub const Vectorizer = struct {
         // r3 = load [addr + 12]
         // Can be vectorized to a single vector load
 
-        var consecutive_loads = std.ArrayList(usize){};
+        var consecutive_loads = std.ArrayList(usize).empty;
         defer consecutive_loads.deinit(self.allocator);
 
         for (block.instructions.items, 0..) |inst, idx| {

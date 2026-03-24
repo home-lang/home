@@ -347,13 +347,13 @@ const GameState = struct {
             .frame_count = 0,
             .player_resources = PlayerResources.init(.usa),
             .enemy_resources = PlayerResources.init(.china),
-            .unit_positions = .{},
-            .selected_units = .{},
+            .unit_positions = .empty,
+            .selected_units = .empty,
             .selection_box_start = null,
             .selection_box_end = null,
             .is_selecting = false,
             .hovered_button = null,
-            .active_build_queue = .{},
+            .active_build_queue = .empty,
             .current_screen = .main_menu, // Start at main menu
             .menu_hovered_button = null,
             .menu_animation_time = 0,
@@ -1857,9 +1857,9 @@ fn processEvents(game_state: *GameState) void {
 
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
 
     std.debug.print("╔══════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║        C&C Generals - Home Engine                        ║\n", .{});

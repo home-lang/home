@@ -20,8 +20,8 @@ pub const Loop = struct {
     pub fn init(_: std.mem.Allocator, header: usize, depth: usize) Loop {
         return .{
             .header = header,
-            .blocks = std.ArrayList(usize){},
-            .exits = std.ArrayList(usize){},
+            .blocks = std.ArrayList(usize).empty,
+            .exits = std.ArrayList(usize).empty,
             .depth = depth,
             .trip_count = null,
         };
@@ -41,7 +41,7 @@ pub const LoopAnalysis = struct {
     pub fn init(allocator: std.mem.Allocator) LoopAnalysis {
         return .{
             .allocator = allocator,
-            .loops = std.ArrayList(Loop){},
+            .loops = std.ArrayList(Loop).empty,
         };
     }
 
@@ -173,7 +173,7 @@ pub const LoopUnroller = struct {
         var body_block = &func.blocks.items[body_block_idx];
 
         // Save original instructions
-        var original_insts = std.ArrayList(IR.Instruction){};
+        var original_insts = std.ArrayList(IR.Instruction).empty;
         defer original_insts.deinit(self.allocator);
 
         for (body_block.instructions.items) |inst| {

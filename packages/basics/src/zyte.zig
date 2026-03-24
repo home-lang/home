@@ -419,7 +419,7 @@ pub const Components = struct {
         children: []const []const u8,
 
         pub fn toHtml(self: Container, allocator: std.mem.Allocator) ![]const u8 {
-            var html = std.ArrayList(u8){};
+            var html = std.ArrayList(u8).empty;
             try html.appendSlice(allocator, "<div class=\"container\">");
 
             for (self.children) |child| {

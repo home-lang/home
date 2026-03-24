@@ -79,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
     try benchmark(io, allocator, "Struct (13 LOC)", struct_def, 5000);
 
     // Benchmark 4: Large program (100 lines)
-    var large_program = std.ArrayList(u8){};
+    var large_program = std.ArrayList(u8).empty;
     defer large_program.deinit(allocator);
 
     var line_num: usize = 0;
@@ -92,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
     try benchmark(io, allocator, "Large Program (100 LOC)", large_program.items, 1000);
 
     // Benchmark 5: Large program (1000 lines)
-    var very_large_program = std.ArrayList(u8){};
+    var very_large_program = std.ArrayList(u8).empty;
     defer very_large_program.deinit(allocator);
 
     line_num = 0;

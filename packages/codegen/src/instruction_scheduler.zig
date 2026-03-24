@@ -105,7 +105,7 @@ pub const InstructionScheduler = struct {
         self: *InstructionScheduler,
         block: *const IR.BasicBlock,
     ) !std.ArrayList(Dependency) {
-        var deps = std.ArrayList(Dependency){};
+        var deps = std.ArrayList(Dependency).empty;
 
         // Track last writer of each register
         var last_writer = std.AutoHashMap(u8, usize).init(self.allocator);
@@ -172,7 +172,7 @@ pub const InstructionScheduler = struct {
     }
 
     fn getUses(self: *InstructionScheduler, inst: IR.Instruction) !std.ArrayList(u8) {
-        var uses = std.ArrayList(u8){};
+        var uses = std.ArrayList(u8).empty;
 
         switch (inst) {
             .add, .sub, .mul, .div, .and_, .or_, .xor, .shl, .shr => |op| {
@@ -204,7 +204,7 @@ pub const InstructionScheduler = struct {
     }
 
     fn getDefs(self: *InstructionScheduler, inst: IR.Instruction) !std.ArrayList(u8) {
-        var defs = std.ArrayList(u8){};
+        var defs = std.ArrayList(u8).empty;
 
         switch (inst) {
             .add, .sub, .mul, .div, .and_, .or_, .xor, .shl, .shr => |op| {
@@ -256,7 +256,7 @@ pub const InstructionScheduler = struct {
         }
 
         // Create schedule order based on ready times
-        var schedule_order = std.ArrayList(usize){};
+        var schedule_order = std.ArrayList(usize).empty;
         defer schedule_order.deinit(self.allocator);
 
         var scheduled = try self.allocator.alloc(bool, block.instructions.items.len);
@@ -290,7 +290,7 @@ pub const InstructionScheduler = struct {
         }
 
         // Reorder instructions according to schedule
-        var new_instructions = std.ArrayList(IR.Instruction){};
+        var new_instructions = std.ArrayList(IR.Instruction).empty;
 
         for (schedule_order.items) |idx| {
             try new_instructions.append(self.allocator, block.instructions.items[idx]);

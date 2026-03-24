@@ -135,7 +135,7 @@ pub const LogForwarder = struct {
     pub fn init(allocator: std.mem.Allocator, config: RemoteConfig, max_queue: usize) LogForwarder {
         return .{
             .client = RemoteClient.init(allocator, config),
-            .retry_queue = std.ArrayList(syslog.LogMessage){},
+            .retry_queue = std.ArrayList(syslog.LogMessage).empty,
             .max_queue_size = max_queue,
             .retry_attempts = 3,
             .allocator = allocator,

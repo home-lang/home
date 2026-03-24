@@ -16,7 +16,7 @@ pub const RegisterAllocation = struct {
         return .{
             .allocator = allocator,
             .assignments = std.AutoHashMap(u8, u8).init(allocator),
-            .spilled = std.ArrayList(u8){},
+            .spilled = std.ArrayList(u8).empty,
         };
     }
 
@@ -241,7 +241,7 @@ pub const GraphColoringAllocator = struct {
         errdefer allocation.deinit();
 
         // Stack for removal order
-        var stack = std.ArrayList(u8){};
+        var stack = std.ArrayList(u8).empty;
         defer stack.deinit(self.allocator);
 
         // Track which nodes have been removed

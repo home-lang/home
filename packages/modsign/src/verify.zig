@@ -136,7 +136,7 @@ pub const KeyRing = struct {
 
     pub fn init(allocator: std.mem.Allocator) KeyRing {
         return .{
-            .keys = std.ArrayList(keys.PublicKey){},
+            .keys = std.ArrayList(keys.PublicKey).empty,
             .allocator = allocator,
         };
     }
