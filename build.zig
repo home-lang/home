@@ -413,6 +413,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     queue_tests.root_module.addImport("queue", queue_pkg);
+    queue_tests.root_module.link_libc = true;
 
     const run_queue_tests = b.addRunArtifact(queue_tests);
 
