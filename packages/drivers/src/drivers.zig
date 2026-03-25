@@ -159,7 +159,7 @@ pub const DriverRegistry = struct {
 
     pub fn init(allocator: std.mem.Allocator) DriverRegistry {
         return .{
-            .drivers = .{},
+            .drivers = .empty,
             .allocator = allocator,
             .mutex = .unlocked,
         };

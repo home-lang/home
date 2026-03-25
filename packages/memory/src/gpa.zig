@@ -6,12 +6,12 @@ const AllocatorError = @import("memory_types.zig").AllocatorError;
 const MemStats = @import("memory_types.zig").MemStats;
 
 pub const GeneralPurpose = struct {
-    inner: std.heap.GeneralPurposeAllocator(.{}),
+    inner: std.heap.DebugAllocator(.{}),
     stats: MemStats,
 
     pub fn init() GeneralPurpose {
         return GeneralPurpose{
-            .inner = std.heap.GeneralPurposeAllocator(.{}){},
+            .inner = std.heap.DebugAllocator(.{}).init,
             .stats = MemStats.init(),
         };
     }
@@ -76,9 +76,9 @@ test "gpa allocator" {
     const testing = std.testing;
 
     var gpa = GeneralPurpose.init();
-    defer _ = debug_allocator.deinit();
+    defer _ = gpa.deinit();
 
-    const allocator = debug_allocator.allocator();
+    const allocator = gpa.allocator();
 
     // Allocate various sizes
     const small = try allocator.alloc(u8, 10);

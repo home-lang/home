@@ -88,7 +88,7 @@ pub const Policy = struct {
         const policy = try allocator.create(Policy);
         policy.* = .{
             .allocator = allocator,
-            .rules = .{},
+            .rules = .empty,
             .default_decision = .deny,
         };
         return policy;

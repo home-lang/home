@@ -250,7 +250,7 @@ pub const CraftApp = struct {
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
             .allocator = allocator,
-            .windows = .{},
+            .windows = .empty,
         };
     }
 

@@ -92,7 +92,7 @@ test "thread safe allocator" {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer _ = debug_allocator.deinit();
 
-    var thread_safe = ThreadSafeAllocator.init(gpa.allocator());
+    var thread_safe = ThreadSafeAllocator.init(debug_allocator.allocator());
     defer thread_safe.deinit();
 
     const allocator = thread_safe.allocator();
@@ -115,7 +115,7 @@ test "thread safe concurrent access" {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer _ = debug_allocator.deinit();
 
-    var thread_safe = ThreadSafeAllocator.init(gpa.allocator());
+    var thread_safe = ThreadSafeAllocator.init(debug_allocator.allocator());
     defer thread_safe.deinit();
 
     const allocator = thread_safe.allocator();
