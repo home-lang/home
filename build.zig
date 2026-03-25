@@ -862,6 +862,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     queue_example.root_module.addImport("queue", queue_pkg);
+    queue_example.root_module.link_libc = true;
     b.installArtifact(queue_example);
 
     const run_queue_example = b.addRunArtifact(queue_example);

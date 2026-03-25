@@ -162,10 +162,10 @@ pub const ModernTest = struct {
         return .{
             .allocator = allocator,
             .options = options,
-            .suites = .{},
-            .tests = .{},
+            .suites = .empty,
+            .tests = .empty,
             .current_suite = "",
-            .failures = .{},
+            .failures = .empty,
         };
     }
 
