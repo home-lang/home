@@ -304,7 +304,7 @@ pub fn panicHandler(msg: []const u8, stack_trace: ?*Basics.builtin.StackTrace) n
 
 // Tests
 test "serial port init" {
-    var serial = SerialPort.init(COM1);
+    const serial = SerialPort.init(COM1);
     try Basics.testing.expectEqual(@as(u16, COM1), serial.port);
     try Basics.testing.expect(!serial.initialized);
 }

@@ -301,7 +301,7 @@ const TestStruct = struct {
 };
 
 fn testSlabInit(expect: *testing.ModernTest.Expect) !void {
-    var slab = memory.SlabAllocator(TestStruct).init();
+    const slab = memory.SlabAllocator(TestStruct).init();
     expect.* = t.expect(expect.allocator, slab.free_list == null, expect.failures);
     try expect.toBe(true);
 }
@@ -486,7 +486,7 @@ fn testBuddyInit(expect: *testing.ModernTest.Expect) !void {
 
 fn testBuddySmall(expect: *testing.ModernTest.Expect) !void {
     var buffer: [8192]u8 align(4096) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     // Need to add initial block to free list
     // In a real implementation, this would be done during init
@@ -497,7 +497,7 @@ fn testBuddySmall(expect: *testing.ModernTest.Expect) !void {
 
 fn testBuddyLarge(expect: *testing.ModernTest.Expect) !void {
     var buffer: [16384]u8 align(4096) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     expect.* = t.expect(expect.allocator, buddy.total_size >= 16384, expect.failures);
     try expect.toBe(true);
@@ -518,7 +518,7 @@ fn testBuddyRounding(expect: *testing.ModernTest.Expect) !void {
 fn testBuddySplit(expect: *testing.ModernTest.Expect) !void {
     // When allocating 4KB from 8KB block, should split
     var buffer: [8192]u8 align(4096) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     expect.* = t.expect(expect.allocator, buddy.base_address != 0, expect.failures);
     try expect.toBe(true);
@@ -538,7 +538,7 @@ fn testBuddyPairs(expect: *testing.ModernTest.Expect) !void {
 fn testBuddyMerge(expect: *testing.ModernTest.Expect) !void {
     // When both buddies are free, they should merge
     var buffer: [8192]u8 align(4096) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     expect.* = t.expect(expect.allocator, buddy.total_size, expect.failures);
     try expect.toBe(8192);
@@ -547,7 +547,7 @@ fn testBuddyMerge(expect: *testing.ModernTest.Expect) !void {
 fn testBuddyRecursiveMerge(expect: *testing.ModernTest.Expect) !void {
     // Merging can cascade up the orders
     var buffer: [16384]u8 align(4096) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     expect.* = t.expect(expect.allocator, buddy.total_size, expect.failures);
     try expect.toBe(16384);
@@ -567,7 +567,7 @@ fn testBuddyRecovery(expect: *testing.ModernTest.Expect) !void {
     // After freeing, should be able to allocate again
     // This is a conceptual test
     var buffer: [4096]u8 align(8) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     expect.* = t.expect(expect.allocator, buddy.total_size, expect.failures);
     try expect.toBeGreaterThan(0);
@@ -575,7 +575,7 @@ fn testBuddyRecovery(expect: *testing.ModernTest.Expect) !void {
 
 fn testBuddyConcurrent(expect: *testing.ModernTest.Expect) !void {
     var buffer: [4096]u8 align(8) = undefined;
-    var buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
+    const buddy = memory.BuddyAllocator.init(@intFromPtr(&buffer), buffer.len);
 
     // The spinlock should protect concurrent access
     expect.* = t.expect(expect.allocator, buddy.base_address != 0, expect.failures);
