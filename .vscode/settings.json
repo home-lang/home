@@ -9,6 +9,36 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "never"
   },
+
+  "[stx]": {
+    "editor.defaultFormatter": "pickier.pickier-vscode"
+  },
+  // Shell
+  "[shellscript]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  // Markdown
+  "[markdown]": {
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint",
+    "editor.formatOnSave": true
+  },
+  "[dockerfile]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "markdownlint.config": {
+    "default": true,
+    "MD033": {
+      "allowed_elements": [
+        "details",
+        "summary",
+        "VPTeamPage",
+        "VPTeamPageTitle",
+        "VPTeamMembers",
+        "script"
+      ]
+    },
+    "MD041": false
+  },
     "cSpell.words": [
         "basics",
         "bumpx",
