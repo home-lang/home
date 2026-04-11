@@ -1,8 +1,57 @@
 {
-  "name": "home",
+  "name": "home-language",
+  "private": true,
+  "displayName": "Home Language Support",
+  "description": "Language support for the Home programming language",
   "version": "0.1.0",
-  "dependencies": {
-    "bun": "^1.3.0",
-    "zig": "^0.15.1"
+  "publisher": "chrisbreuer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stacksjs/home"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Formatters",
+    "Linters",
+    "Snippets"
+  ],
+  "keywords": [
+    "home",
+    "systems",
+    "programming",
+    "compiler"
+  ],
+  "scripts": {
+    "dev": "bunx bunpress dev",
+    "dev:docs": "bunx bunpress dev",
+    "build": "bunx bunpress build",
+    "build:docs": "bunx bunpress build",
+    "preview": "bunx bunpress preview",
+    "lint": "bunx --bun pickier .",
+    "lint:fix": "bunx --bun pickier . --fix",
+    "format": "bunx --bun pickier . --format",
+    "format:fix": "bunx --bun pickier . --format --write",
+    "test": "bun test",
+    "typecheck": "bun --bun tsc --noEmit",
+    "release": "bunx --bun bumpx -r --all"
+  },
+  "devDependencies": {
+    "@stacksjs/bunpress": "^0.1.1",
+    "@types/bun": "^1.3.9",
+    "better-dx": "^0.2.6",
+    "typescript": "^5.9.3"
+  },
+  "workspaces": [
+    "./packages/vscode-home",
+    "./packages/action"
+  ],
+  "git-hooks": {
+    "pre-commit": {
+      "staged-lint": {
+        "*.{js,ts,json,yaml,yml,md}": "bunx --bun pickier lint --fix"
+      }
+    },
+    "commit-msg": "bunx gitlint --edit .git/COMMIT_EDITMSG"
   }
 }

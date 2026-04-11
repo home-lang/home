@@ -9,6 +9,9 @@ pub const Formatter = struct {
     program: *const ast.Program,
     indent_level: usize,
     output: std.ArrayList(u8),
+    /// Active options, set at the start of `format()` and read throughout
+    /// the walk. Defaults apply until the caller passes something else.
+    opts: FormatterOptions = .{},
 
     pub const FormatterOptions = struct {
         indent_size: usize = 4,
@@ -44,7 +47,10 @@ pub const Formatter = struct {
     }
 
     pub fn format(self: *Formatter, options: FormatterOptions) ![]const u8 {
-        _ = options;
+        // Stash the options on self so formatter helpers can read them
+        // without threading the struct through every call. We copy the
+        // struct (it's small and plain data) to decouple the lifetime.
+        self.opts = options;
 
         // Format each statement
         for (self.program.statements) |stmt| {
@@ -287,11 +293,36 @@ pub const Formatter = struct {
     }
 
     fn writeIndent(self: *Formatter) !void {
-        const indent_size = 4;
-        const total_indent = self.indent_level * indent_size;
+        // Honor the user's indent configuration. Spaces use `indent_size`
+        // characters per level; tabs use a single tab character per level
+        // (width is handled by the editor). `use_spaces=false` implies tabs.
+        const total_indent = self.indent_level * self.opts.indent_size;
+        const indent_char: u8 = if (self.opts.use_spaces) ' ' else '\t';
+        const repeat_count: usize = if (self.opts.use_spaces) total_indent else self.indent_level;
         var i: usize = 0;
-        while (i < total_indent) : (i += 1) {
-            try self.output.append(self.allocator, ' ');
+        while (i < repeat_count) : (i += 1) {
+            try self.output.append(self.allocator, indent_char);
+        }
+    }
+
+    /// Emit a string literal with the user's preferred quote style.
+    /// The input slice is the raw string contents (without delimiters).
+    fn writeStringLiteral(self: *Formatter, contents: []const u8) !void {
+        const quote: u8 = switch (self.opts.quote_style) {
+            .single => '\'',
+            .double => '"',
+        };
+        try self.output.append(self.allocator, quote);
+        try self.output.appendSlice(self.allocator, contents);
+        try self.output.append(self.allocator, quote);
+    }
+
+    /// Append a statement-terminator semicolon if the user wants them.
+    /// Home's syntax treats semicolons as optional, so this only fires in
+    /// `semicolons = true` mode.
+    fn writeSemicolonIfEnabled(self: *Formatter) !void {
+        if (self.opts.semicolons) {
+            try self.output.append(self.allocator, ';');
         }
     }
 };

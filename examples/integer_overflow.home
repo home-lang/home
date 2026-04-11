@@ -1,8 +1,34 @@
-// skip-ci: parser does not yet support feature(s) used here
+// Integer overflow handling in Home.
+//
+// Home inherits Rust-style overflow semantics: arithmetic traps at runtime
+// rather than silently wrapping. For cases where wrapping or saturation is
+// what you actually want, use the explicit operator variants.
+//
+// Checked arithmetic:    +?  -?  *?  /?   → panics on overflow/divzero
+// Saturating arithmetic: +|  -|  *|       → clamps to MIN/MAX
+// Wrapping arithmetic:   +%  -%  *%       → wraps modulo 2^N
+//
+// This file compiles, runs, and asserts its expectations — no UB in sight.
 
-// Integer overflow example (should fail parsing)
-fn main(): int {
-    // i64 max is 9223372036854775807
-    let x = 99999999999999999999999999999999999
-    return 0
+fn near_max_i64(): i64 {
+    // i64::MAX is 9223372036854775807. One less so we can add without
+    // triggering the checked-arithmetic panic we demonstrate below.
+    return 9223372036854775806
+}
+
+fn main() {
+    let x = near_max_i64()
+
+    // Plain `+` is already checked in Home (the codegen emits a trap on
+    // overflow). This one does NOT overflow: max - 1 + 1 == max.
+    let safe = x + 1
+    assert(safe == 9223372036854775807)
+
+    // Saturating add clamps to MAX instead of panicking.
+    let sat = x +| 5
+    assert(sat == 9223372036854775807)
+
+    // Wrapping multiply: 2 * (max-1) wraps around.
+    let wrapped = x *% 2
+    assert(wrapped == -4)
 }

@@ -240,6 +240,15 @@ pub const Parser = struct {
         return self.peek().type == .Eof;
     }
 
+    /// Return true if `s` contains any lowercase letter. Used to tell
+    /// PascalCase type names apart from SCREAMING_SNAKE_CASE constants.
+    fn hasLowercaseLetter(s: []const u8) bool {
+        for (s) |c| {
+            if (c >= 'a' and c <= 'z') return true;
+        }
+        return false;
+    }
+
     /// Heuristic: does the current token look like the start of a type
     /// name (primitive int/float/bool/string or `*`/`[`/`?` prefix)?
     /// Used to pick between type-first and expression-first cast forms
@@ -593,7 +602,12 @@ pub const Parser = struct {
             var args = std.ArrayList(*ast.Expr).empty;
             defer args.deinit(self.allocator);
 
-            // Parse optional arguments: @attribute(arg1, arg2)
+            // Parenthesised form: `@attribute(arg1, arg2)`.
+            // Bare-string form: `@it "description"` (used by test files).
+            //   Accepts a single string literal argument without parens,
+            //   provided it's on the same line as the attribute name so we
+            //   don't accidentally consume an unrelated string on the next
+            //   statement.
             if (self.match(&.{.LeftParen})) {
                 if (!self.check(.RightParen)) {
                     while (true) {
@@ -603,6 +617,17 @@ pub const Parser = struct {
                     }
                 }
                 _ = try self.expect(.RightParen, "Expected ')' after attribute arguments");
+            } else if (self.check(.String) and self.peek().line == name_token.line) {
+                // Bare-string shorthand: `@it "description"`. Consume a
+                // single string literal on the same line as the attribute
+                // name and use it as the attribute's sole argument.
+                const str_tok = self.advance();
+                const raw = str_tok.lexeme;
+                const inner = if (raw.len >= 2) raw[1 .. raw.len - 1] else raw;
+                const loc = ast.SourceLocation.fromToken(str_tok);
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .StringLiteral = ast.StringLiteral.init(inner, loc) };
+                try args.append(self.allocator, expr);
             }
 
             const attr = ast.Attribute.init(name, try args.toOwnedSlice(self.allocator));
@@ -1647,6 +1672,23 @@ pub const Parser = struct {
             return try std.fmt.allocPrint(self.allocator, "mut {s}", .{inner_type});
         }
 
+        // `async T` return-type modifier. Semantically this means "Future<T>".
+        // An async fn already produces a Future header under the hood, so we
+        // treat the annotation as transparent and return the inner type.
+        // Bare `async` (no inner type) is a shorthand for `async void`.
+        if (self.match(&.{.Async})) {
+            // If the next token starts a block or end-of-declaration, the
+            // user wrote just `async` — treat as `async void`.
+            const next_t = self.peek().type;
+            if (next_t == .LeftBrace or next_t == .Semicolon or
+                next_t == .RightParen or next_t == .Comma)
+            {
+                return try self.allocator.dupe(u8, "void");
+            }
+            const inner = try self.parseTypeAnnotation();
+            return inner;
+        }
+
         // Check for unit type () or tuple type (T1, T2, ...)
         if (self.match(&.{.LeftParen})) {
             // Check for unit type ()
@@ -1762,7 +1804,14 @@ pub const Parser = struct {
         // Check for pointer type: *T, *const T, *volatile T, *const volatile T.
         // `volatile` qualifies the pointee the same way `const` does and is
         // required by kernel code that touches MMIO registers.
-        if (self.match(&.{.Star})) {
+        //
+        // Also handles `**T` (pointer-to-pointer) — the lexer collapses
+        // two consecutive stars into a single StarStar token (for the
+        // `a ** b` power operator), so in type position we treat
+        // `StarStar` as two star prefixes before the inner type.
+        if (self.match(&.{.Star, .StarStar})) {
+            const star_tok = self.previous();
+            const is_double = star_tok.type == .StarStar;
             const is_const = self.match(&.{.Const});
             // `volatile` is a soft keyword here — accept either the reserved
             // token (if defined) or an Identifier with that lexeme.
@@ -1772,15 +1821,18 @@ pub const Parser = struct {
                 is_volatile = true;
             }
             const inner_type = try self.parseTypeAnnotation();
-            if (is_const and is_volatile) {
-                return try std.fmt.allocPrint(self.allocator, "*const volatile {s}", .{inner_type});
-            } else if (is_const) {
-                return try std.fmt.allocPrint(self.allocator, "*const {s}", .{inner_type});
-            } else if (is_volatile) {
-                return try std.fmt.allocPrint(self.allocator, "*volatile {s}", .{inner_type});
-            } else {
-                return try std.fmt.allocPrint(self.allocator, "*{s}", .{inner_type});
+            const base = if (is_const and is_volatile)
+                try std.fmt.allocPrint(self.allocator, "*const volatile {s}", .{inner_type})
+            else if (is_const)
+                try std.fmt.allocPrint(self.allocator, "*const {s}", .{inner_type})
+            else if (is_volatile)
+                try std.fmt.allocPrint(self.allocator, "*volatile {s}", .{inner_type})
+            else
+                try std.fmt.allocPrint(self.allocator, "*{s}", .{inner_type});
+            if (is_double) {
+                return try std.fmt.allocPrint(self.allocator, "*{s}", .{base});
             }
+            return base;
         }
 
         // Check for array type: [T], [T; N], [N]T, or []T.
@@ -1959,7 +2011,10 @@ pub const Parser = struct {
             return ast.Stmt{ .TupleDestructureDecl = decl };
         }
 
-        // Accept Identifier or keywords as variable name (keywords can be contextual identifiers)
+        // Accept Identifier or several soft-keywords as variable names.
+        // Kernel code uses `match`, `type`, `default` etc. as field
+        // or local variable names in contexts where the parser can
+        // disambiguate from the keyword form.
         const name_token = if (self.match(&.{.Identifier}))
             self.previous()
         else if (self.match(&.{.Default}))
@@ -1967,6 +2022,12 @@ pub const Parser = struct {
         else if (self.match(&.{.Type}))
             self.previous()
         else if (self.match(&.{.It}))
+            self.previous()
+        else if (self.match(&.{.Match}))
+            self.previous()
+        else if (self.match(&.{.Union}))
+            self.previous()
+        else if (self.match(&.{.In}))
             self.previous()
         else blk: {
             try self.reportError("Expected variable name");
@@ -2003,8 +2064,11 @@ pub const Parser = struct {
     /// Parse a var declaration (module-level mutable variable)
     /// Syntax: var name: Type = value
     fn varDeclaration(self: *Parser) !ast.Stmt {
-        // Accept Identifier as variable name
+        // Accept Identifier or soft-keywords as variable name. Kernel
+        // code uses `match`, `type`, `default` etc. as identifiers.
         const name_token = if (self.match(&.{.Identifier}))
+            self.previous()
+        else if (self.match(&.{ .Match, .Default, .Type, .It, .Union, .In }))
             self.previous()
         else blk: {
             try self.reportError("Expected variable name");
@@ -3398,13 +3462,14 @@ pub const Parser = struct {
         return result;
     }
 
-    /// Parse a type cast expression (e.g., value as i32)
+    /// Parse a type cast expression (e.g., value as i32, value as *u8).
     fn typeCast(self: *Parser, value: *ast.Expr) !*ast.Expr {
         const as_token = self.previous();
 
-        // Expect a type identifier after 'as'
-        const type_token = try self.expect(.Identifier, "Expected type name after 'as'");
-        const target_type = type_token.lexeme;
+        // Delegate to the full type annotation parser so we accept the
+        // same forms the rest of the grammar does: primitives, `*T`,
+        // `[*]T`, `[N]T`, `&T`, `?T`, user struct names, etc.
+        const target_type = try self.parseTypeAnnotation();
 
         const type_cast_expr = try ast.TypeCastExpr.init(
             self.allocator,
@@ -4383,8 +4448,32 @@ pub const Parser = struct {
             return try self.ifExpr();
         }
 
-        // Match expression: match value { pattern => expr, ... }
-        if (self.match(&.{.Match})) {
+        // Match expression: match value { pattern => expr, ... }.
+        // Kernel code also uses `match` as a plain identifier, so only
+        // enter the match-expression parser when the next token could
+        // actually start a match subject (not `{` or a binary op).
+        if (self.check(.Match)) {
+            const save = self.current;
+            _ = self.advance();
+            const next = self.peek().type;
+            const looks_like_identifier_use =
+                next == .LeftBrace or next == .RightParen or next == .Semicolon or
+                next == .Comma or next == .EqualEqual or next == .BangEqual or
+                next == .Less or next == .Greater or next == .LessEqual or
+                next == .GreaterEqual or next == .Plus or next == .Minus or
+                next == .Star or next == .Slash or next == .Equal or
+                next == .AmpersandAmpersand or next == .PipePipe or
+                next == .And or next == .Or;
+            if (looks_like_identifier_use) {
+                // Rewind and emit as plain identifier expression.
+                self.current = save;
+                const tok = self.advance();
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{
+                    .Identifier = ast.Identifier.init(tok.lexeme, ast.SourceLocation.fromToken(tok)),
+                };
+                return expr;
+            }
             return try self.matchExpr();
         }
 
@@ -4966,12 +5055,15 @@ pub const Parser = struct {
                 return expr;
             }
 
-            // Check for generic type with struct literal: Type<T1, T2>{}
-            // e.g., Vec<i32>{} or HashMap<String, Int>{}
-            // Only try to parse generics if the identifier starts with uppercase (type convention)
-            // and is followed by < and then an identifier (not an expression like "x < y")
+            // Check for generic type with struct literal: Type<T1, T2>{}.
+            // Disambiguation from `CONST_NAME < expr` is tricky: the
+            // identifier must look like a TYPE (PascalCase), NOT a
+            // SCREAMING_SNAKE_CASE constant. `Vec` qualifies,
+            // `MIN_GRANULARITY_NS` does not. We require at least one
+            // lowercase letter anywhere in the name.
             if (self.check(.Less) and token.lexeme.len > 0 and
-                token.lexeme[0] >= 'A' and token.lexeme[0] <= 'Z')
+                token.lexeme[0] >= 'A' and token.lexeme[0] <= 'Z' and
+                hasLowercaseLetter(token.lexeme))
             {
                 // Look ahead to see if this looks like generic args (identifier after <)
                 const checkpoint = self.current;

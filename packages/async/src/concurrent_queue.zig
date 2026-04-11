@@ -227,6 +227,11 @@ test "ConcurrentQueue - concurrent push" {
         queue: *ConcurrentQueue(i32),
         start: i32,
         count: i32,
+        /// First error encountered by this worker, if any. Thread fns
+        /// have signature `fn(*Context) void` so they can't return an
+        /// error union; we propagate failures through the context and
+        /// check them after join().
+        err: ?anyerror = null,
     };
 
     const pusher = struct {
@@ -234,7 +239,10 @@ test "ConcurrentQueue - concurrent push" {
             var i = ctx.start;
             const end = ctx.start + ctx.count;
             while (i < end) : (i += 1) {
-                ctx.queue.push(i) catch unreachable;
+                ctx.queue.push(i) catch |e| {
+                    ctx.err = e;
+                    return;
+                };
             }
         }
     }.run;
@@ -251,6 +259,11 @@ test "ConcurrentQueue - concurrent push" {
     t1.join();
     t2.join();
     t3.join();
+
+    // Fail loudly if any worker saw an error.
+    if (ctx1.err) |e| return e;
+    if (ctx2.err) |e| return e;
+    if (ctx3.err) |e| return e;
 
     // Should have 300 items
     try testing.expectEqual(@as(usize, 300), queue.size());
@@ -274,19 +287,24 @@ test "ConcurrentQueue - concurrent push and pop" {
     const PushContext = struct {
         queue: *ConcurrentQueue(i32),
         count: i32,
+        err: ?anyerror = null,
     };
 
     const PopContext = struct {
         queue: *ConcurrentQueue(i32),
         popped: std.ArrayList(i32),
         allocator: std.mem.Allocator,
+        err: ?anyerror = null,
     };
 
     const pusher = struct {
         fn run(ctx: *PushContext) void {
             var i: i32 = 0;
             while (i < ctx.count) : (i += 1) {
-                ctx.queue.push(i) catch unreachable;
+                ctx.queue.push(i) catch |e| {
+                    ctx.err = e;
+                    return;
+                };
                 std.posix.nanosleep(0, 100); // Small delay
             }
         }
@@ -299,7 +317,10 @@ test "ConcurrentQueue - concurrent push and pop" {
 
             while (attempts < max_attempts) : (attempts += 1) {
                 if (ctx.queue.pop()) |value| {
-                    ctx.popped.append(ctx.allocator, value) catch unreachable;
+                    ctx.popped.append(ctx.allocator, value) catch |e| {
+                        ctx.err = e;
+                        return;
+                    };
                 }
                 std.posix.nanosleep(0, 100);
             }
@@ -320,6 +341,10 @@ test "ConcurrentQueue - concurrent push and pop" {
     push_thread.join();
     pop_thread1.join();
     pop_thread2.join();
+
+    if (push_ctx.err) |e| return e;
+    if (pop_ctx1.err) |e| return e;
+    if (pop_ctx2.err) |e| return e;
 
     // Total popped should equal what was pushed
     const total_popped = pop_ctx1.popped.items.len + pop_ctx2.popped.items.len + queue.size();

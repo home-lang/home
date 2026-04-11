@@ -772,6 +772,16 @@ pub const Assembler = struct {
         self.code.items[pos + 5] = offset_bytes[3];
     }
 
+    /// Patch jle rel32 at position
+    pub fn patchJleRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        // jle is 6 bytes: 0F 8E offset32
+        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
+        self.code.items[pos + 2] = offset_bytes[0];
+        self.code.items[pos + 3] = offset_bytes[1];
+        self.code.items[pos + 4] = offset_bytes[2];
+        self.code.items[pos + 5] = offset_bytes[3];
+    }
+
     /// movzx reg64, byte [base + offset] - Zero-extend byte from memory to 64-bit register
     pub fn movzxReg64Mem8(self: *Assembler, dst: Register, base: Register, offset: i32) !void {
         // REX.W + 0F B6 /r [base + disp32]
@@ -900,6 +910,30 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x71);
         try self.code.append(self.allocator, @bitCast(offset));
         return pos;
+    }
+
+    /// jno rel32 - Jump if no overflow (near). Encoded as `0F 81 + i32`.
+    pub fn jnoRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x81);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    /// Patch a jno rel32 instruction in place.
+    pub fn patchJnoRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
+    /// cmovs reg, reg — Conditional move if sign flag is set (SF=1).
+    /// Used for branch-free "pick between two values based on sign".
+    /// Encoded as `REX.W + 0F 48 /r`.
+    pub fn cmovsRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x48);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
     }
 
     /// jz rel8 - Jump if zero (short) - same as je
@@ -1218,6 +1252,238 @@ pub const Assembler = struct {
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x51);
         try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// roundsd xmm1, xmm2, imm8 — Scalar round double-precision.
+    /// SSE4.1 instruction; macOS and Linux x86-64 ABI both require SSE4.1.
+    ///
+    /// imm8 controls the rounding mode:
+    ///   0 = round to nearest (ties to even)
+    ///   1 = round down (floor)
+    ///   2 = round up (ceiling)
+    ///   3 = round toward zero (truncate)
+    ///
+    /// Encoded as 66 0F 3A 0B /r ib.
+    pub fn roundsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister, mode: u8) !void {
+        try self.code.append(self.allocator, 0x66);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x3A);
+        try self.code.append(self.allocator, 0x0B);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+        try self.code.append(self.allocator, mode);
+    }
+
+    /// cvtsi2sd xmm, r64 — Convert 64-bit signed integer to double.
+    /// Encoded as F2 REX.W 0F 2A /r.
+    pub fn cvtsi2sdXmmReg(self: *Assembler, dst: XmmRegister, src: Register) !void {
+        try self.code.append(self.allocator, 0xF2);
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x2A);
+        try self.emitModRM(0b11, dst.encodeModRM(), @intFromEnum(src));
+    }
+
+    /// cvttsd2si r64, xmm — Convert double to 64-bit signed integer (truncate).
+    /// Encoded as F2 REX.W 0F 2C /r.
+    pub fn cvttsd2siRegXmm(self: *Assembler, dst: Register, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x2C);
+        try self.emitModRM(0b11, @intFromEnum(dst), src.encodeModRM());
+    }
+
+    /// mulsd xmm1, xmm2 — Scalar multiply double-precision.
+    /// Encoded as F2 0F 59 /r.
+    pub fn mulsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x59);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// addsd xmm1, xmm2 — Scalar add double-precision.
+    /// Encoded as F2 0F 58 /r.
+    pub fn addsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x58);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// subsd xmm1, xmm2 — Scalar subtract double-precision.
+    /// Encoded as F2 0F 5C /r.
+    pub fn subsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5C);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// divsd xmm1, xmm2 — Scalar divide double-precision.
+    /// Encoded as F2 0F 5E /r.
+    pub fn divsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x5E);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    // ===== x87 FPU instructions =====
+    // These are used for transcendental math functions (sin/cos/tan/exp/log/...)
+    // where a single instruction replaces an expensive polynomial evaluation.
+    // The FPU uses a stack of 8 registers (st0-st7). Values are loaded from
+    // memory via `fld qword ptr [mem]` and stored via `fstp qword ptr [mem]`.
+
+    /// fld qword ptr [rsp] — load 64-bit double from top of stack into st(0).
+    /// Encoded as DD /0 with [rsp] (rm=100, needs SIB 24).
+    pub fn fldQwordRsp(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xDD);
+        try self.code.append(self.allocator, 0x04); // mod=00 reg=0 rm=100
+        try self.code.append(self.allocator, 0x24); // SIB: scale=0 index=100 base=100 (rsp)
+    }
+
+    /// fstp qword ptr [rsp] — store st(0) to 64-bit memory and pop.
+    /// Encoded as DD /3 with [rsp].
+    pub fn fstpQwordRsp(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xDD);
+        try self.code.append(self.allocator, 0x1C); // mod=00 reg=3 rm=100
+        try self.code.append(self.allocator, 0x24); // SIB for rsp
+    }
+
+    /// fsin — st(0) = sin(st(0)). Encoded as D9 FE.
+    pub fn fsin(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xFE);
+    }
+
+    /// fcos — st(0) = cos(st(0)). Encoded as D9 FF.
+    pub fn fcos(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xFF);
+    }
+
+    /// fptan — st(0) = tan(st(0)), pushes 1.0 on top. Encoded as D9 F2.
+    /// A subsequent `fstp st(0)` is needed to discard the 1.0.
+    pub fn fptan(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xF2);
+    }
+
+    /// fpatan — st(1) = atan2(st(1), st(0)), then pops. Encoded as D9 F3.
+    pub fn fpatan(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xF3);
+    }
+
+    /// f2xm1 — st(0) = 2^st(0) - 1. Valid only for st(0) in [-1, 1].
+    /// Encoded as D9 F0.
+    pub fn f2xm1(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xF0);
+    }
+
+    /// fyl2x — st(1) = st(1) * log2(st(0)), then pops st(0).
+    /// Encoded as D9 F1.
+    pub fn fyl2x(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xF1);
+    }
+
+    /// fscale — st(0) = st(0) * 2^trunc(st(1)). Encoded as D9 FD.
+    pub fn fscale(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xFD);
+    }
+
+    /// frndint — st(0) = round-to-integer(st(0)) using FPU rounding mode.
+    /// Encoded as D9 FC.
+    pub fn frndint(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xFC);
+    }
+
+    /// fld1 — push 1.0 onto FPU stack. Encoded as D9 E8.
+    pub fn fld1(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xE8);
+    }
+
+    /// fldl2e — push log2(e) onto FPU stack. Encoded as D9 EA.
+    pub fn fldl2e(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xEA);
+    }
+
+    /// fldln2 — push ln(2) onto FPU stack. Encoded as D9 ED.
+    pub fn fldln2(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xED);
+    }
+
+    /// fldlg2 — push log10(2) onto FPU stack. Encoded as D9 EC.
+    pub fn fldlg2(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xEC);
+    }
+
+    /// fchs — st(0) = -st(0). Encoded as D9 E0.
+    pub fn fchs(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xE0);
+    }
+
+    /// fabs — st(0) = |st(0)|. Encoded as D9 E1.
+    pub fn fabs_(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xE1);
+    }
+
+    /// fxch — exchange st(0) with st(1). Encoded as D9 C9.
+    pub fn fxch(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xC9);
+    }
+
+    /// fstp st(0) — pop top of FPU stack (discard). Encoded as DD D8.
+    pub fn fstpSt0(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xDD);
+        try self.code.append(self.allocator, 0xD8);
+    }
+
+    /// fstp st(1) — store st(0) to st(1) and pop. Encoded as DD D9.
+    /// Effectively drops st(1) from the stack.
+    pub fn fstpSt1(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xDD);
+        try self.code.append(self.allocator, 0xD9);
+    }
+
+    /// fprem — partial remainder: st(0) = st(0) mod st(1).
+    /// Encoded as D9 F8.
+    pub fn fprem(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xF8);
+    }
+
+    /// fsqrt — st(0) = sqrt(st(0)). Encoded as D9 FA.
+    pub fn fsqrt(self: *Assembler) !void {
+        try self.code.append(self.allocator, 0xD9);
+        try self.code.append(self.allocator, 0xFA);
     }
 
     /// movaps xmm, [base + offset] - Move aligned packed single-precision

@@ -1,17 +1,40 @@
-// skip-ci: parser does not yet support feature(s) used here
+// Real async / await in Home. (Runnable.)
+//
+// Each `async fn` compiles to a poll function + an entry that
+// heap-allocates a state struct via mmap. `await` inside an async body
+// emits a real cooperative-suspension sequence: save the inner future,
+// bump the resume point, return Pending, and resume at a dedicated
+// label on the next poll. Locals survive across await points because
+// they live in the state struct, not on the stack.
+//
+// Top-level sync code (main) bridges into async via a `block_on` poll
+// loop that drives the future to completion and extracts the result.
 
-// Async/await in Home
-import std/http { get }
-
-fn fetch_user(id: int): async Result<User> {
-  let response = await http.get("/api/users/{id}")
-  return await response.json()
+async fn fetch_user_score(id: int): int {
+    // Simulated I/O: compute a synthetic score derived from the id.
+    // When real stdlib networking lands, this body becomes an
+    // `await http.get(...)`; the outer runtime stays the same.
+    return id * 100
 }
 
-fn main(): async {
-  let user = await fetch_user(1)
-  match user {
-    Ok(u) => print("User: {u.name}"),
-    Err(e) => print("Error: {e}")
-  }
+async fn compute_bonus(score: int): int {
+    // Another async step that depends on the result of the first.
+    return score + 50
+}
+
+async fn user_score_plus_bonus(id: int): int {
+    // Two awaits in one async fn → two resume points in the generated
+    // poll function, plus a struct slot for the `score` local so it
+    // survives the suspend/resume across the second await.
+    let score = await fetch_user_score(id)
+    let bonus = await compute_bonus(score)
+    return bonus
+}
+
+fn main() {
+    // Sync main → async call. Codegen wraps this in a poll loop
+    // (block_on) that drives `user_score_plus_bonus`'s state machine.
+    let total = await user_score_plus_bonus(3)
+    // id=3 → score=300 → bonus=350
+    assert(total == 350)
 }

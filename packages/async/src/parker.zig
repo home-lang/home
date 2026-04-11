@@ -139,11 +139,12 @@ test "Parker - park timeout" {
 
     var parker = Parker.init();
 
-    const start = std.time.Instant.now() catch unreachable;
+    const start = try std.time.Instant.now();
     const timeout = 10 * std.time.ns_per_ms; // 10ms
 
     const unparked = parker.parkTimeout(timeout);
-    const now = std.time.Instant.now() catch unreachable; const elapsed = now.since(start);
+    const now = try std.time.Instant.now();
+    const elapsed = now.since(start);
 
     // Should have timed out
     try testing.expect(!unparked);
@@ -174,9 +175,10 @@ test "Parker - concurrent unpark" {
 
     const thread = try std.Thread.spawn(.{}, unparker_fn, .{&ctx});
 
-    const start = std.time.Instant.now() catch unreachable;
+    const start = try std.time.Instant.now();
     parker.park();
-    const now = std.time.Instant.now() catch unreachable; const elapsed = now.since(start);
+    const now = try std.time.Instant.now();
+    const elapsed = now.since(start);
 
     thread.join();
 

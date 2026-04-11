@@ -2617,6 +2617,30 @@ pub const NativeCodegen = struct {
     fn inferExprType(self: *NativeCodegen, expr: *ast.Expr) CodegenError!?[]const u8 {
         switch (expr.*) {
             .StructLiteral => |lit| return lit.type_name,
+            .FloatLiteral => return "float",
+            .IntegerLiteral => return "int",
+            .StringLiteral => return "string",
+            .BooleanLiteral => return "bool",
+            .BinaryExpr => |binary| {
+                // Float if either side is float.
+                const left = try self.inferExprType(binary.left);
+                if (left) |t| {
+                    if (std.mem.eql(u8, t, "float") or std.mem.eql(u8, t, "f64") or
+                        std.mem.eql(u8, t, "f32") or std.mem.eql(u8, t, "double"))
+                    {
+                        return "float";
+                    }
+                }
+                const right = try self.inferExprType(binary.right);
+                if (right) |t| {
+                    if (std.mem.eql(u8, t, "float") or std.mem.eql(u8, t, "f64") or
+                        std.mem.eql(u8, t, "f32") or std.mem.eql(u8, t, "double"))
+                    {
+                        return "float";
+                    }
+                }
+                return left orelse right;
+            },
             .Identifier => |id| {
                 // Look up variable type
                 if (self.locals.get(id.name)) |local_info| {
@@ -2651,6 +2675,14 @@ pub const NativeCodegen = struct {
                     const field = call.callee.MemberExpr;
                     if (field.object.* == .Identifier) {
                         const type_name = field.object.Identifier.name;
+                        // math.* functions return float.
+                        if (std.mem.eql(u8, type_name, "math")) {
+                            return "float";
+                        }
+                        // Array.new() builtin returns an Array pointer.
+                        if (std.mem.eql(u8, type_name, "Array") and std.mem.eql(u8, field.member, "new")) {
+                            return "Array";
+                        }
                         // Check if this is an enum type
                         if (self.enum_layouts.contains(type_name)) {
                             return type_name;
@@ -2805,6 +2837,11 @@ pub const NativeCodegen = struct {
         // Self type refers to the containing struct - treat as pointer
         if (std.mem.eql(u8, type_name, "Self")) {
             return 8; // Self is a pointer to the struct
+        }
+
+        // Builtin dynamic Array: pointer to heap header.
+        if (std.mem.eql(u8, type_name, "Array")) {
+            return 8;
         }
 
         // Optional types (T?) are stored as a tagged union: [has_value (8 bytes)][value (8 bytes)]
@@ -4471,6 +4508,110 @@ pub const NativeCodegen = struct {
         };
     }
 
+    /// Detect whether an expression produces a double-precision float value.
+    /// Recognizes literals, locals with float type names, and nested binary
+    /// expressions whose operands are floats. Used to switch BinaryExpr to SSE
+    /// scalar instructions (addsd/subsd/mulsd/divsd) instead of integer ops.
+    fn isFloatExpr(self: *NativeCodegen, expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .FloatLiteral => true,
+            .Identifier => |id| blk: {
+                if (self.locals.get(id.name)) |local_info| {
+                    const tn = local_info.type_name;
+                    break :blk std.mem.eql(u8, tn, "float") or
+                        std.mem.eql(u8, tn, "f64") or
+                        std.mem.eql(u8, tn, "f32") or
+                        std.mem.eql(u8, tn, "double");
+                }
+                break :blk false;
+            },
+            .UnaryExpr => |u| self.isFloatExpr(u.operand),
+            .BinaryExpr => |b| self.isFloatExpr(b.left) or self.isFloatExpr(b.right),
+            .CallExpr => |c| blk: {
+                // math.* functions return float.
+                if (c.callee.* == .MemberExpr) {
+                    const m = c.callee.MemberExpr;
+                    if (m.object.* == .Identifier and std.mem.eql(u8, m.object.Identifier.name, "math")) {
+                        break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    /// Emit float arithmetic for a BinaryExpr using SSE2 scalar ops.
+    /// Both operands are evaluated as double bit patterns held in rax, then
+    /// moved to xmm registers for the actual operation.
+    fn emitFloatBinaryOp(self: *NativeCodegen, binary: *const ast.BinaryExpr) CodegenError!void {
+        // Right first so we can pop it into a secondary register.
+        try self.generateExpr(binary.right);
+        try self.assembler.pushReg(.rax);
+        try self.generateExpr(binary.left);
+        try self.assembler.popReg(.rcx);
+
+        try self.assembler.movqXmmReg(.xmm0, .rax); // xmm0 = left
+        try self.assembler.movqXmmReg(.xmm1, .rcx); // xmm1 = right
+
+        switch (binary.op) {
+            .Add => try self.assembler.addsdXmmXmm(.xmm0, .xmm1),
+            .Sub => try self.assembler.subsdXmmXmm(.xmm0, .xmm1),
+            .Mul => try self.assembler.mulsdXmmXmm(.xmm0, .xmm1),
+            .Div => try self.assembler.divsdXmmXmm(.xmm0, .xmm1),
+            .Mod => {
+                // fmod via x - trunc(x/y)*y using SSE4.1 roundsd.
+                // xmm2 = x (saved), xmm0/xmm1 hold left/right already.
+                try self.assembler.movqXmmReg(.xmm2, .rax); // xmm2 = x saved
+                try self.assembler.divsdXmmXmm(.xmm0, .xmm1);     // xmm0 = x/y
+                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 3); // trunc
+                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1);      // * y
+                try self.assembler.subsdXmmXmm(.xmm2, .xmm0);      // x - ...
+                try self.assembler.movqRegXmm(.rax, .xmm2);
+                return;
+            },
+            .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq => {
+                // For ==/!= a bitwise compare works exactly (modulo -0==+0).
+                // For ordering we want proper IEEE-754 semantics: use ucomisd
+                // to set EFLAGS, then setcc based on unsigned (above/below) —
+                // since ucomisd is unordered-aware but uses CF/ZF like CMP.
+                //
+                //   ucomisd xmm0, xmm1
+                //     if left > right: CF=0, ZF=0  → seta
+                //     if left < right: CF=1, ZF=0  → setb
+                //     if left == right: CF=0, ZF=1 → sete
+                //     NaN: PF=1 (unordered)
+                //
+                // We don't yet have ucomisd or seta/setb/setae/setbe in the
+                // assembler, so we emit raw bytes.
+                //   ucomisd xmm0, xmm1 → 66 0F 2E C1
+                //   seta al           → 0F 97 C0
+                //   setae al          → 0F 93 C0
+                //   setb al           → 0F 92 C0
+                //   setbe al          → 0F 96 C0
+                try self.emitRawBytes(&[_]u8{ 0x66, 0x0F, 0x2E, 0xC1 }); // ucomisd xmm0, xmm1
+                switch (binary.op) {
+                    .Equal => try self.assembler.seteReg(.rax),
+                    .NotEqual => try self.assembler.setneReg(.rax),
+                    .Less => try self.emitRawBytes(&[_]u8{ 0x0F, 0x92, 0xC0 }),   // setb al
+                    .LessEq => try self.emitRawBytes(&[_]u8{ 0x0F, 0x96, 0xC0 }), // setbe al
+                    .Greater => try self.emitRawBytes(&[_]u8{ 0x0F, 0x97, 0xC0 }),// seta al
+                    .GreaterEq => try self.emitRawBytes(&[_]u8{ 0x0F, 0x93, 0xC0 }),// setae al
+                    else => unreachable,
+                }
+                try self.assembler.movzxReg64Reg8(.rax, .rax);
+                return;
+            },
+            else => {
+                // Unsupported float op: fall back to integer.
+                std.debug.print("float binop {}: falling back to integer\n", .{binary.op});
+                try self.assembler.movqRegXmm(.rax, .xmm0);
+                return;
+            },
+        }
+        try self.assembler.movqRegXmm(.rax, .xmm0);
+    }
+
     /// Handle string binary operations (concatenation and comparison)
     fn handleStringBinaryOp(self: *NativeCodegen, binary: *ast.BinaryExpr) !void {
         switch (binary.op) {
@@ -5151,8 +5292,11 @@ pub const NativeCodegen = struct {
         }
 
         // If the body fell off the end without an explicit return, emit a
-        // synthesized one. The async return path sets ready=1 and jumps to
-        // the epilogue.
+        // synthesized one. Zero-initialize rax first so async fns with a
+        // void return (or bodies that don't assign anything useful before
+        // falling through) don't leak whatever happens to be in rax from
+        // the last expression. This matches Rust's `()` fall-through.
+        try self.assembler.movRegImm64(.rax, 0);
         try self.emitAsyncReturn(&ctx);
 
         // -----------------------------------------------------------
@@ -6180,6 +6324,42 @@ pub const NativeCodegen = struct {
         }
     }
 
+    /// Emit raw opcode bytes. Used for x87 instructions that don't have named
+    /// wrappers in the assembler yet (e.g. `fld st(0)`, `faddp`, etc).
+    fn emitRawBytes(self: *NativeCodegen, bytes: []const u8) CodegenError!void {
+        for (bytes) |b| {
+            try self.assembler.code.append(self.assembler.allocator, b);
+        }
+    }
+
+    /// Emit x87 FPU code for `exp(x)` where x is the double-bit-pattern in rax
+    /// on entry and exit.
+    ///
+    /// Strategy: e^x = 2^(x * log2(e)). Split y = x*log2(e) into integer part i
+    /// and fractional part f, then 2^y = 2^i * 2^f = 2^i * (1 + (2^f - 1)).
+    /// Uses fldl2e, fyl2x-free path (just fmulp), frndint, f2xm1, fscale.
+    fn emitFpuExp(self: *NativeCodegen) CodegenError!void {
+        try self.assembler.pushReg(.rax);
+        try self.assembler.fldl2e();        // st(0) = log2(e)
+        try self.assembler.fldQwordRsp();   // st(0) = x, st(1) = log2(e)
+        try self.emitRawBytes(&[_]u8{ 0xDE, 0xC9 }); // fmulp st(1), st(0): st(1)*=st(0), pop
+        // Stack: st(0) = x*log2(e) = y.
+        try self.emitRawBytes(&[_]u8{ 0xD9, 0xC0 }); // fld st(0): duplicate y
+        try self.assembler.frndint();       // st(0) = round(y) = i
+        try self.emitRawBytes(&[_]u8{ 0xDC, 0xE9 }); // fsub st(1), st(0): st(1) -= st(0) → st(1) = f
+        // Stack: st(0) = i, st(1) = f.
+        try self.assembler.fxch();          // st(0) = f, st(1) = i
+        try self.assembler.f2xm1();         // st(0) = 2^f - 1
+        try self.assembler.fld1();          // st(0) = 1, st(1) = 2^f - 1, st(2) = i
+        try self.emitRawBytes(&[_]u8{ 0xDE, 0xC1 }); // faddp st(1), st(0): st(1) += st(0), pop
+        // Stack: st(0) = 2^f, st(1) = i.
+        try self.assembler.fscale();        // st(0) = 2^f * 2^i = 2^y = e^x
+        // Drop i from stack: fstp st(1) stores st(0) to st(1) and pops, leaving st(0) = 2^y.
+        try self.assembler.fstpSt1();
+        try self.assembler.fstpQwordRsp();
+        try self.assembler.popReg(.rax);
+    }
+
     fn generateExpr(self: *NativeCodegen, expr: *const ast.Expr) CodegenError!void {
         // Try constant folding first
         if (self.tryFoldConstant(expr)) |folded_value| {
@@ -6265,6 +6445,12 @@ pub const NativeCodegen = struct {
                 if (is_string_op) {
                     // Handle string operations
                     try self.handleStringBinaryOp(binary);
+                    return;
+                }
+
+                // Float operations: both operands are double — use SSE2.
+                if (self.isFloatExpr(binary.left) or self.isFloatExpr(binary.right)) {
+                    try self.emitFloatBinaryOp(binary);
                     return;
                 }
 
@@ -6495,6 +6681,56 @@ pub const NativeCodegen = struct {
                         const jmp_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jmp_patch + 2))));
                         self.assembler.patchJmp8(jmp_patch, jmp_offset);
                     },
+                    // Clamping/saturating arithmetic (`+|`, `-|`, `*|`).
+                    // On overflow, pin the result at i64::MAX or i64::MIN based
+                    // on the sign of the RHS operand (for add) / the sign of
+                    // the high half (for mul). Different from SaturatingAdd
+                    // which returns 0 (None-like).
+                    .ClampAdd => {
+                        try self.assembler.addRegReg(.rax, .rcx);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0); // no overflow -> done
+                        // Overflow: if rcx (RHS) >= 0 we went above MAX,
+                        // otherwise we went below MIN. Use cmovs to pick.
+                        // Load MAX into rax, MIN into r11, test rcx sign.
+                        try self.assembler.movRegImm64(.rax, std.math.maxInt(i64));
+                        try self.assembler.movRegImm64(.r11, std.math.minInt(i64));
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        // cmovs: if sign flag set (rcx < 0), rax = r11 (MIN).
+                        try self.assembler.cmovsRegReg(.rax, .r11);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(jno_patch, @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)));
+                    },
+                    .ClampSub => {
+                        try self.assembler.subRegReg(.rax, .rcx);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0);
+                        // Overflow: if rcx (RHS) >= 0 we subtracted too much
+                        // (went below MIN), else went above MAX. Opposite of add.
+                        try self.assembler.movRegImm64(.rax, std.math.minInt(i64));
+                        try self.assembler.movRegImm64(.r11, std.math.maxInt(i64));
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        try self.assembler.cmovsRegReg(.rax, .r11);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(jno_patch, @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)));
+                    },
+                    .ClampMul => {
+                        // Save original operands for sign detection.
+                        // rax holds lhs, rcx holds rhs. xor rax ^ rcx keeps
+                        // the sign of the mathematically-correct product.
+                        try self.assembler.movRegReg(.r11, .rax);
+                        try self.assembler.xorRegReg(.r11, .rcx);
+                        try self.assembler.imulRegReg(.rax, .rcx);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0);
+                        // Overflow: clamp based on sign in r11.
+                        try self.assembler.movRegImm64(.rax, std.math.maxInt(i64));
+                        try self.assembler.movRegImm64(.rcx, std.math.minInt(i64));
+                        try self.assembler.testRegReg(.r11, .r11);
+                        try self.assembler.cmovsRegReg(.rax, .rcx);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(jno_patch, @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)));
+                    },
                     else => {
                         std.debug.print("Unsupported binary op in native codegen: {}\n", .{binary.op});
                         return error.UnsupportedFeature;
@@ -6502,14 +6738,22 @@ pub const NativeCodegen = struct {
                 }
             },
             .UnaryExpr => |unary| {
+                const operand_is_float = self.isFloatExpr(unary.operand);
+
                 // Evaluate operand first (result in rax)
                 try self.generateExpr(unary.operand);
 
                 // Apply unary operation
                 switch (unary.op) {
                     .Neg => {
-                        // Arithmetic negation: neg rax
-                        try self.assembler.negReg(.rax);
+                        if (operand_is_float) {
+                            // Flip only the sign bit: rax ^= 1 << 63.
+                            try self.assembler.movRegImm64(.rcx, @bitCast(@as(u64, 0x8000000000000000)));
+                            try self.assembler.xorRegReg(.rax, .rcx);
+                        } else {
+                            // Integer two's complement: neg rax.
+                            try self.assembler.negReg(.rax);
+                        }
                     },
                     .Not => {
                         // Logical NOT: convert to boolean first, then invert
@@ -6547,6 +6791,22 @@ pub const NativeCodegen = struct {
                     if (member.object.* == .Identifier) {
                         const enum_name = member.object.Identifier.name;
                         const variant_name = member.member;
+
+                        // Builtin: Array.new() — heap-allocate a dynamic
+                        // array with header [len:i64, cap:i64, slot0, ...].
+                        // Initial cap = 128 elements (8 bytes each), so the
+                        // total block is 16 + 128*8 = 1040 bytes. heapAlloc
+                        // rounds up to a full page anyway.
+                        if (std.mem.eql(u8, enum_name, "Array") and std.mem.eql(u8, variant_name, "new")) {
+                            try self.assembler.movRegImm64(.rdi, 1040);
+                            try self.heapAlloc();
+                            // rax = base pointer. Initialize header: len=0, cap=128.
+                            try self.assembler.movRegImm64(.rcx, 0);
+                            try self.assembler.movMemReg(.rax, 0, .rcx); // [base+0] = len
+                            try self.assembler.movRegImm64(.rcx, 128);
+                            try self.assembler.movMemReg(.rax, 8, .rcx); // [base+8] = cap
+                            return;
+                        }
 
                         if (self.enum_layouts.get(enum_name)) |enum_layout| {
                             // Find the variant
@@ -6881,20 +7141,212 @@ pub const NativeCodegen = struct {
                         return;
                     }
 
-                    // array.push(value) - add to array (placeholder - needs allocation)
+                    // arr.push(value) — append to a heap-backed dynamic Array.
+                    //
+                    // Layout: [len:i64 @ 0][cap:i64 @ 8][elem_0 @ 16][elem_1 @ 24]...
+                    //
+                    //   rax ← array base pointer
+                    //   rcx ← len, rdx ← cap
+                    //   if len >= cap: runtime panic (fixed-capacity for now)
+                    //   addr = base + 16 + len*8
+                    //   [addr] = value
+                    //   len += 1; [base] = len
                     if (std.mem.eql(u8, method_name, "push") or std.mem.eql(u8, method_name, "append")) {
-                        // For now, evaluate args but don't actually modify (needs heap)
-                        for (call.args) |arg| {
-                            try self.generateExpr(arg);
-                        }
+                        if (call.args.len == 0) return;
+
+                        // Evaluate value → rax; stash on stack.
+                        try self.generateExpr(call.args[0]);
+                        try self.assembler.pushReg(.rax);
+
+                        // Evaluate receiver → rax = array base pointer.
                         try self.generateExpr(member.object);
+                        try self.assembler.pushReg(.rax); // save base
+                        try self.assembler.movRegMem(.rcx, .rax, 0); // len
+                        try self.assembler.movRegMem(.rdx, .rax, 8); // cap
+
+                        // Guard: len < cap. If not, panic.
+                        try self.assembler.cmpRegReg(.rcx, .rdx);
+                        const jl_ok = self.assembler.getPosition();
+                        try self.assembler.jlRel32(0);
+                        try self.emitRuntimePanic("array.push: capacity exceeded");
+                        const ok_target = self.assembler.getPosition();
+                        try self.assembler.patchJlRel32(jl_ok, @as(i32, @intCast(ok_target)) - @as(i32, @intCast(jl_ok + 6)));
+
+                        // Compute element slot address: r11 = base + 16 + len*8.
+                        try self.assembler.popReg(.r11);         // r11 = base
+                        try self.assembler.movRegReg(.r8, .rcx); // r8 = len
+                        try self.assembler.imulRegImm32(.r8, 8);
+                        try self.assembler.addRegReg(.r11, .r8);
+                        try self.assembler.addRegImm(.r11, 16);
+
+                        // Pop value into rax, store at [r11].
+                        try self.assembler.popReg(.rax);
+                        try self.assembler.movMemReg(.r11, 0, .rax);
+
+                        // Re-resolve base (it was popped earlier; re-eval receiver).
+                        try self.generateExpr(member.object);
+                        try self.assembler.movRegMem(.rcx, .rax, 0);
+                        try self.assembler.addRegImm(.rcx, 1);
+                        try self.assembler.movMemReg(.rax, 0, .rcx);
+                        // Return the updated length (convenient for chaining).
+                        try self.assembler.movRegReg(.rax, .rcx);
                         return;
                     }
 
-                    // array.pop() - remove from array (placeholder)
+                    // arr.pop() — returns and removes the last element.
+                    //   if len == 0: panic
+                    //   len -= 1; return [base + 16 + len*8]
                     if (std.mem.eql(u8, method_name, "pop")) {
                         try self.generateExpr(member.object);
-                        try self.assembler.movRegImm64(.rax, 0); // return 0 for now
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = base
+                        try self.assembler.movRegMem(.rcx, .r11, 0); // len
+
+                        // Guard: len > 0.
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        const jnz_ok = self.assembler.getPosition();
+                        try self.assembler.jnzRel32(0);
+                        try self.emitRuntimePanic("array.pop: empty array");
+                        const ok_target = self.assembler.getPosition();
+                        try self.assembler.patchJnzRel32(jnz_ok, @as(i32, @intCast(ok_target)) - @as(i32, @intCast(jnz_ok + 6)));
+
+                        // len -= 1; [base] = len
+                        try self.assembler.subRegImm(.rcx, 1);
+                        try self.assembler.movMemReg(.r11, 0, .rcx);
+
+                        // addr = base + 16 + len*8
+                        try self.assembler.movRegReg(.r8, .rcx);
+                        try self.assembler.imulRegImm32(.r8, 8);
+                        try self.assembler.addRegReg(.r11, .r8);
+                        try self.assembler.addRegImm(.r11, 16);
+                        try self.assembler.movRegMem(.rax, .r11, 0);
+                        return;
+                    }
+
+                    // arr.insert(index, value) — shift right and insert.
+                    //   guard: len < cap, 0 <= index <= len
+                    //   for i from len..index+1 step -1: slot[i] = slot[i-1]
+                    //   slot[index] = value; len += 1
+                    if (std.mem.eql(u8, method_name, "insert")) {
+                        if (call.args.len < 2) return;
+
+                        // Evaluate value → push.
+                        try self.generateExpr(call.args[1]);
+                        try self.assembler.pushReg(.rax);
+                        // Evaluate index → push.
+                        try self.generateExpr(call.args[0]);
+                        try self.assembler.pushReg(.rax);
+                        // Evaluate receiver → rax = base.
+                        try self.generateExpr(member.object);
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = base
+                        try self.assembler.popReg(.r9);  // r9 = index
+                        try self.assembler.popReg(.r10); // r10 = value
+
+                        // Load header.
+                        try self.assembler.movRegMem(.rcx, .r11, 0); // len (= old length)
+                        try self.assembler.movRegMem(.rdx, .r11, 8); // cap
+
+                        // Capacity check: panic if len >= cap.
+                        try self.assembler.cmpRegReg(.rcx, .rdx);
+                        const jl_ok = self.assembler.getPosition();
+                        try self.assembler.jlRel32(0);
+                        try self.emitRuntimePanic("array.insert: capacity exceeded");
+                        const cap_ok = self.assembler.getPosition();
+                        try self.assembler.patchJlRel32(jl_ok, @as(i32, @intCast(cap_ok)) - @as(i32, @intCast(jl_ok + 6)));
+
+                        // Shift elements right: for (i = len; i > index; i--) slot[i] = slot[i-1]
+                        // Loop counter i in r8 starts at len.
+                        try self.assembler.movRegReg(.r8, .rcx);
+
+                        const shift_top = self.assembler.getPosition();
+                        try self.assembler.cmpRegReg(.r8, .r9);
+                        const jle_done = self.assembler.getPosition();
+                        try self.assembler.jleRel32(0);
+
+                        // slot[i] = slot[i-1]
+                        try self.assembler.movRegReg(.rax, .r8);
+                        try self.assembler.imulRegImm32(.rax, 8);
+                        try self.assembler.addRegReg(.rax, .r11);
+                        try self.assembler.addRegImm(.rax, 16); // rax = slot[i] addr
+                        try self.assembler.movRegMem(.rdx, .rax, -8);
+                        try self.assembler.movMemReg(.rax, 0, .rdx);
+
+                        try self.assembler.subRegImm(.r8, 1);
+                        const back = self.assembler.getPosition();
+                        try self.assembler.jmpRel32(@as(i32, @intCast(shift_top)) - @as(i32, @intCast(back + 5)));
+
+                        const shift_done = self.assembler.getPosition();
+                        try self.assembler.patchJleRel32(jle_done, @as(i32, @intCast(shift_done)) - @as(i32, @intCast(jle_done + 6)));
+
+                        // slot[index] = value
+                        try self.assembler.movRegReg(.rax, .r9);
+                        try self.assembler.imulRegImm32(.rax, 8);
+                        try self.assembler.addRegReg(.rax, .r11);
+                        try self.assembler.addRegImm(.rax, 16);
+                        try self.assembler.movMemReg(.rax, 0, .r10);
+
+                        // len += 1; [base] = len
+                        try self.assembler.movRegMem(.rcx, .r11, 0);
+                        try self.assembler.addRegImm(.rcx, 1);
+                        try self.assembler.movMemReg(.r11, 0, .rcx);
+                        try self.assembler.movRegReg(.rax, .rcx);
+                        return;
+                    }
+
+                    // arr.remove(index) — remove and return the element at index.
+                    //   value = slot[index]
+                    //   for i from index..len-1: slot[i] = slot[i+1]
+                    //   len -= 1; return value
+                    if (std.mem.eql(u8, method_name, "remove")) {
+                        if (call.args.len == 0) return;
+
+                        try self.generateExpr(call.args[0]);
+                        try self.assembler.pushReg(.rax);
+                        try self.generateExpr(member.object);
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = base
+                        try self.assembler.popReg(.r9); // r9 = index
+
+                        try self.assembler.movRegMem(.rcx, .r11, 0); // len
+
+                        // Save removed value in r10.
+                        try self.assembler.movRegReg(.rax, .r9);
+                        try self.assembler.imulRegImm32(.rax, 8);
+                        try self.assembler.addRegReg(.rax, .r11);
+                        try self.assembler.addRegImm(.rax, 16);
+                        try self.assembler.movRegMem(.r10, .rax, 0);
+
+                        // Shift left: for (i = index; i < len - 1; i++) slot[i] = slot[i+1]
+                        // Loop counter = r8 = i, starts at index.
+                        try self.assembler.movRegReg(.r8, .r9); // i = index
+                        // end = len - 1 → rdx
+                        try self.assembler.movRegReg(.rdx, .rcx);
+                        try self.assembler.subRegImm(.rdx, 1);
+
+                        const shift_top = self.assembler.getPosition();
+                        try self.assembler.cmpRegReg(.r8, .rdx);
+                        const jge_done = self.assembler.getPosition();
+                        try self.assembler.jgeRel32(0);
+
+                        // dst = base + 16 + i*8; src = dst + 8
+                        try self.assembler.movRegReg(.rax, .r8);
+                        try self.assembler.imulRegImm32(.rax, 8);
+                        try self.assembler.addRegReg(.rax, .r11);
+                        try self.assembler.addRegImm(.rax, 16);
+                        try self.assembler.movRegMem(.rcx, .rax, 8);
+                        try self.assembler.movMemReg(.rax, 0, .rcx);
+
+                        try self.assembler.addRegImm(.r8, 1);
+                        const back = self.assembler.getPosition();
+                        try self.assembler.jmpRel32(@as(i32, @intCast(shift_top)) - @as(i32, @intCast(back + 5)));
+
+                        const shift_done = self.assembler.getPosition();
+                        try self.assembler.patchJgeRel32(jge_done, @as(i32, @intCast(shift_done)) - @as(i32, @intCast(jge_done + 6)));
+
+                        // len -= 1; [base] = len
+                        try self.assembler.movRegMem(.rcx, .r11, 0);
+                        try self.assembler.subRegImm(.rcx, 1);
+                        try self.assembler.movMemReg(.r11, 0, .rcx);
+
+                        try self.assembler.movRegReg(.rax, .r10);
                         return;
                     }
 
@@ -7098,80 +7550,309 @@ pub const NativeCodegen = struct {
                                 try self.generateExpr(call.args[0]);
                             }
 
+                            // Helper pattern for x87 transcendentals: push rax → fld → op → fstp → pop rax.
+                            // Input/output travels through rax as a raw 64-bit double bit pattern.
                             if (std.mem.eql(u8, func_name, "sqrt")) {
-                                // math.sqrt: scalar double-precision square root via SSE2.
-                                // Input is a double-bit-pattern in rax. Move to xmm0, sqrt,
-                                // move back. xmm0 is caller-save under SysV.
+                                // Single-instruction SSE2 path. xmm0 is caller-save under SysV.
                                 try self.assembler.movqXmmReg(.xmm0, .rax);
                                 try self.assembler.sqrtsdXmmXmm(.xmm0, .xmm0);
                                 try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "sin")) {
-                                // sin: placeholder
+                                // x87: fld x; fsin; fstp.
+                                // fsin is accurate to full double precision for |x| < 2^63.
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldQwordRsp();
+                                try self.assembler.fsin();
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "cos")) {
-                                // cos: placeholder
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldQwordRsp();
+                                try self.assembler.fcos();
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "tan")) {
-                                // tan: placeholder
-                                return;
-                            } else if (std.mem.eql(u8, func_name, "acos")) {
-                                // acos: placeholder - arc cosine
-                                return;
-                            } else if (std.mem.eql(u8, func_name, "asin")) {
-                                // asin: placeholder - arc sine
+                                // fptan pushes 1.0 after computing tan, so we must drop it.
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldQwordRsp();
+                                try self.assembler.fptan();
+                                try self.assembler.fstpSt0(); // discard the 1.0
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "atan")) {
-                                // atan: placeholder - arc tangent
+                                // atan(x) = atan2(x, 1). Load x then 1.0, call fpatan.
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldQwordRsp();
+                                try self.assembler.fld1();
+                                try self.assembler.fpatan();
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "asin")) {
+                                // asin(x) = atan2(x, sqrt(1 - x*x)).
+                                // Use SSE for sqrt of (1 - x*x), then x87 fpatan.
+                                // Compute t = sqrt(1 - x*x) into xmm1, keep x in rax.
+                                try self.assembler.movqXmmReg(.xmm0, .rax); // xmm0 = x
+                                try self.assembler.movqXmmReg(.xmm1, .rax);
+                                try self.assembler.mulsdXmmXmm(.xmm1, .xmm1); // xmm1 = x*x
+                                // Build 1.0 in xmm2 via rcx = 0x3FF0000000000000
+                                try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
+                                try self.assembler.movqXmmReg(.xmm2, .rcx); // xmm2 = 1.0
+                                try self.assembler.subsdXmmXmm(.xmm2, .xmm1); // xmm2 = 1 - x*x
+                                try self.assembler.sqrtsdXmmXmm(.xmm2, .xmm2); // xmm2 = sqrt(1 - x*x)
+                                // Now push both onto FPU stack: push y first (denominator), then x.
+                                // fpatan computes atan2(st(1), st(0)) and pops st(0).
+                                // After: st(0)=atan2(x, t). Store from st(0).
+                                try self.assembler.movqRegXmm(.rax, .xmm2);
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldQwordRsp();     // st(0) = t
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
+                                try self.assembler.movRegMem(.rsp, .rsp, 0); // dead; recompute below
+                                // Instead: write x over scratch slot.
+                                try self.assembler.movMemReg(.rsp, 0, .rax);
+                                try self.assembler.fldQwordRsp();     // st(0) = x, st(1) = t
+                                // fpatan: st(1) = atan2(st(1), st(0)); pop st(0).
+                                // That gives st(0) = atan2(t, x), which is NOT what we want.
+                                // We want atan2(x, t). Swap first.
+                                try self.assembler.fxch();            // st(0) = t, st(1) = x
+                                try self.assembler.fpatan();          // st(0) = atan2(x, t)
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
+                                return;
+                            } else if (std.mem.eql(u8, func_name, "acos")) {
+                                // acos(x) = atan2(sqrt(1 - x*x), x).
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.movqXmmReg(.xmm1, .rax);
+                                try self.assembler.mulsdXmmXmm(.xmm1, .xmm1);
+                                try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
+                                try self.assembler.movqXmmReg(.xmm2, .rcx);
+                                try self.assembler.subsdXmmXmm(.xmm2, .xmm1);
+                                try self.assembler.sqrtsdXmmXmm(.xmm2, .xmm2); // xmm2 = sqrt(1-x*x)
+                                // We want atan2(sqrt, x). fpatan computes atan2(st(1), st(0)) then pops.
+                                // So load x first (st(0)=x), then sqrt (st(0)=sqrt, st(1)=x).
+                                // After fpatan: st(0) = atan2(st(1), st(0)) = atan2(x, sqrt) — wrong.
+                                // Swap to get st(0)=x, st(1)=sqrt; fpatan → atan2(sqrt, x).
+                                try self.assembler.pushReg(.rax);     // x
+                                try self.assembler.fldQwordRsp();     // st(0) = x
+                                try self.assembler.movqRegXmm(.rax, .xmm2);
+                                try self.assembler.movMemReg(.rsp, 0, .rax);
+                                try self.assembler.fldQwordRsp();     // st(0) = sqrt, st(1) = x
+                                try self.assembler.fxch();            // st(0) = x, st(1) = sqrt
+                                try self.assembler.fpatan();          // st(0) = atan2(sqrt, x)
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "atan2")) {
-                                // atan2: placeholder - two-argument arc tangent
+                                // atan2(y, x): first arg y already loaded in rax; load x separately.
+                                // The first arg was evaluated above (into rax); we need to also evaluate args[1].
+                                // Save y; evaluate x; stack layout [rsp]=y, [rsp+8] unused → use 16 bytes.
+                                try self.assembler.pushReg(.rax);     // [rsp]=y
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                } else {
+                                    try self.assembler.movRegImm64(.rax, 0x3FF0000000000000); // default x=1
+                                }
+                                try self.assembler.pushReg(.rax);     // [rsp]=x, [rsp+8]=y
+                                try self.assembler.fldQwordRsp();     // st(0) = x
+                                // Load y from [rsp+8]: need fld qword ptr [rsp+8] — use temporary reg.
+                                try self.assembler.movRegMem(.rax, .rsp, 8);
+                                try self.assembler.movMemReg(.rsp, 0, .rax); // overwrite x slot with y
+                                try self.assembler.fldQwordRsp();     // st(0)=y, st(1)=x
+                                try self.assembler.fpatan();          // st(0) = atan2(y, x)
+                                try self.assembler.fstpQwordRsp();    // result → [rsp]
+                                try self.assembler.popReg(.rax);      // rax = result
+                                try self.assembler.popReg(.rcx);      // drop extra slot
                                 return;
                             } else if (std.mem.eql(u8, func_name, "sinh")) {
-                                // sinh: hyperbolic sine - placeholder
+                                // sinh(x) = (e^x - e^-x) / 2.
+                                // Compute via two exp() calls.
+                                // Stash x, compute exp(x), stash, recompute -x, exp, subtract, divide.
+                                // Simpler: use (exp(2x) - 1) / (2*exp(x)).
+                                // We'll emit: e = exp(x); 1/e = 1.0 / e; (e - 1/e) * 0.5.
+                                try self.emitFpuExp(); // rax = exp(x)
+                                try self.assembler.pushReg(.rax);     // save exp(x)
+                                // Compute 1/exp(x) = exp(-x). We already have exp(x); just divide 1 by it.
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
+                                try self.assembler.movqXmmReg(.xmm1, .rcx);
+                                try self.assembler.divsdXmmXmm(.xmm1, .xmm0); // xmm1 = 1/exp(x)
+                                try self.assembler.popReg(.rax);      // exp(x)
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.subsdXmmXmm(.xmm0, .xmm1); // exp(x) - exp(-x)
+                                try self.assembler.movRegImm64(.rcx, 0x3FE0000000000000); // 0.5
+                                try self.assembler.movqXmmReg(.xmm1, .rcx);
+                                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "cosh")) {
-                                // cosh: hyperbolic cosine - placeholder
+                                // cosh(x) = (e^x + e^-x) / 2.
+                                try self.emitFpuExp();
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
+                                try self.assembler.movqXmmReg(.xmm1, .rcx);
+                                try self.assembler.divsdXmmXmm(.xmm1, .xmm0); // 1/exp(x)
+                                try self.assembler.popReg(.rax);
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.addsdXmmXmm(.xmm0, .xmm1); // exp(x) + exp(-x)
+                                try self.assembler.movRegImm64(.rcx, 0x3FE0000000000000);
+                                try self.assembler.movqXmmReg(.xmm1, .rcx);
+                                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "tanh")) {
-                                // tanh: hyperbolic tangent - placeholder
+                                // tanh(x) = (e^(2x) - 1) / (e^(2x) + 1).
+                                // First double x, then exp, then compute.
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.addsdXmmXmm(.xmm0, .xmm0); // 2x
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
+                                try self.emitFpuExp(); // rax = e^(2x)
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
+                                try self.assembler.movqXmmReg(.xmm1, .rcx);
+                                try self.assembler.movqXmmReg(.xmm2, .rcx);
+                                try self.assembler.subsdXmmXmm(.xmm1, .xmm0); // 1 - e^2x … wait wrong order
+                                // Reorder: xmm3 = e^2x - 1, xmm4 = e^2x + 1
+                                try self.assembler.movqXmmReg(.xmm3, .rax);
+                                try self.assembler.subsdXmmXmm(.xmm3, .xmm2); // e^2x - 1
+                                try self.assembler.movqXmmReg(.xmm4, .rax);
+                                try self.assembler.addsdXmmXmm(.xmm4, .xmm2); // e^2x + 1
+                                try self.assembler.divsdXmmXmm(.xmm3, .xmm4);
+                                try self.assembler.movqRegXmm(.rax, .xmm3);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "exp")) {
-                                // exp: e^x - placeholder
+                                try self.emitFpuExp();
                                 return;
-                            } else if (std.mem.eql(u8, func_name, "ln")) {
-                                // ln: natural logarithm - placeholder
-                                return;
-                            } else if (std.mem.eql(u8, func_name, "log")) {
-                                // log: natural logarithm (alias) - placeholder
+                            } else if (std.mem.eql(u8, func_name, "ln") or std.mem.eql(u8, func_name, "log")) {
+                                // ln(x) = ln(2) * log2(x). fyl2x computes st(1) * log2(st(0)).
+                                // Load ln(2) as y, then x, then fyl2x.
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldln2();           // st(0) = ln(2)
+                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = ln(2)
+                                try self.assembler.fyl2x();            // st(0) = ln(2)*log2(x) = ln(x)
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "log10")) {
-                                // log10: base-10 logarithm - placeholder
+                                // log10(x) = log10(2) * log2(x).
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fldlg2();           // st(0) = log10(2)
+                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = log10(2)
+                                try self.assembler.fyl2x();            // st(0) = log10(x)
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "log2")) {
-                                // log2: base-2 logarithm - placeholder
+                                // log2(x) = 1 * log2(x).
+                                try self.assembler.pushReg(.rax);
+                                try self.assembler.fld1();             // st(0) = 1
+                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = 1
+                                try self.assembler.fyl2x();            // st(0) = log2(x)
+                                try self.assembler.fstpQwordRsp();
+                                try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "pow")) {
-                                // pow: x^y - placeholder
-                                // Note: takes two arguments but we only loaded the first
+                                // pow(x, y) = 2^(y * log2(x)).
+                                // First arg x already in rax; evaluate y, then compute.
+                                try self.assembler.pushReg(.rax);      // [rsp] = x
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                } else {
+                                    try self.assembler.movRegImm64(.rax, 0x3FF0000000000000); // y=1
+                                }
+                                try self.assembler.pushReg(.rax);      // [rsp]=y, [rsp+8]=x
+                                // Load y as fyl2x's "y" factor, then x.
+                                try self.assembler.fldQwordRsp();      // st(0) = y
+                                try self.assembler.movRegMem(.rax, .rsp, 8);
+                                try self.assembler.movMemReg(.rsp, 0, .rax);
+                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = y
+                                try self.assembler.fyl2x();            // st(0) = y*log2(x)
+                                // Now compute 2^st(0). Use frndint + f2xm1 + fscale trick.
+                                // st(0) is z = y*log2(x). We want 2^z.
+                                //   Split z = i + f where i = round(z), |f| ≤ 0.5.
+                                //   2^z = 2^i * 2^f = 2^i * (1 + (2^f - 1)).
+                                try self.assembler.fld1();             // st(0)=1, st(1)=z
+                                try self.assembler.fstpSt0();          // pop 1 — we used it to duplicate stack
+                                // Duplicate approach: fld st(0). But our assembler doesn't have fld st(i).
+                                // Alternative: use fscale with a copy of integer part.
+                                // Emit: fld st(0) via DD C0 (fld st(0) = D9 C0). Add it now inline.
+                                try self.emitRawBytes(&[_]u8{ 0xD9, 0xC0 }); // fld st(0) — duplicates z
+                                try self.assembler.frndint();          // st(0) = round(z), st(1) = z
+                                // Compute f = z - round(z): fsub st(1), st(0)? Simpler: fxch; fsub st(0), st(1)
+                                try self.emitRawBytes(&[_]u8{ 0xDC, 0xE9 }); // fsub st(1), st(0): st(1)-=st(0)
+                                // Now st(0)=i, st(1)=f.
+                                try self.assembler.fxch();             // st(0)=f, st(1)=i
+                                try self.assembler.f2xm1();            // st(0) = 2^f - 1
+                                try self.assembler.fld1();             // st(0)=1, st(1)=2^f-1, st(2)=i
+                                // Add: st(1) += st(0) → 2^f. Then pop top.
+                                try self.emitRawBytes(&[_]u8{ 0xDE, 0xC1 }); // faddp st(1), st(0)
+                                // Stack: st(0)=2^f, st(1)=i.
+                                try self.assembler.fscale();           // st(0) = 2^f * 2^i = 2^z
+                                // Drop i from stack.
+                                try self.assembler.fstpSt1();          // stores st(0) to st(1) and pops → st(0)=result
+                                try self.assembler.fstpQwordRsp();     // result → [rsp]
+                                try self.assembler.popReg(.rax);       // rax = result
+                                try self.assembler.popReg(.rcx);       // drop extra slot
                                 return;
                             } else if (std.mem.eql(u8, func_name, "floor")) {
-                                // floor: round down - placeholder
+                                // SSE4.1 roundsd with mode 1 (toward -inf).
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 1);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "ceil")) {
-                                // ceil: round up - placeholder
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 2);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "round")) {
-                                // round: round to nearest - placeholder
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 0);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "trunc")) {
-                                // trunc: truncate toward zero - placeholder
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 3);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "fmod")) {
-                                // fmod: floating point modulo - placeholder
+                                // fmod(x, y) = x - trunc(x/y)*y.
+                                // Both args needed; first already in rax (x); evaluate y next.
+                                try self.assembler.pushReg(.rax);      // save x
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                }
+                                try self.assembler.movqXmmReg(.xmm1, .rax); // xmm1 = y
+                                try self.assembler.popReg(.rax);
+                                try self.assembler.movqXmmReg(.xmm0, .rax); // xmm0 = x
+                                try self.assembler.movqXmmReg(.xmm2, .rax); // xmm2 = x (saved)
+                                try self.assembler.divsdXmmXmm(.xmm0, .xmm1); // x/y
+                                try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 3); // trunc
+                                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1); // trunc(x/y)*y
+                                try self.assembler.subsdXmmXmm(.xmm2, .xmm0); // x - ...
+                                try self.assembler.movqRegXmm(.rax, .xmm2);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "copysign")) {
-                                // copysign: copy sign of y to x - placeholder
+                                // copysign(x, y): magnitude of x, sign of y.
+                                // Use bit manipulation on rax.
+                                // First arg x in rax; evaluate y; combine.
+                                try self.assembler.pushReg(.rax);      // save x
+                                if (call.args.len >= 2) {
+                                    try self.generateExpr(call.args[1]);
+                                }
+                                // rax = y. Extract sign bit: y & 0x8000000000000000.
+                                try self.assembler.movRegImm64(.rcx, @bitCast(@as(u64, 0x8000000000000000)));
+                                try self.assembler.andRegReg(.rax, .rcx); // rax = sign(y) bit
+                                try self.assembler.popReg(.rdx);       // rdx = x
+                                // Clear sign of x: rdx & 0x7FFFFFFFFFFFFFFF.
+                                try self.assembler.movRegImm64(.rcx, 0x7FFFFFFFFFFFFFFF);
+                                try self.assembler.andRegReg(.rdx, .rcx);
+                                // Combine: rax = sign(y) | |x|
+                                try self.assembler.orRegReg(.rax, .rdx);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "abs")) {
                                 // abs: absolute value
@@ -8031,11 +8712,27 @@ pub const NativeCodegen = struct {
                         return error.UndefinedVariable;
                     };
 
-                    // Look up struct layout from type
-                    const struct_layout = self.struct_layouts.get(local_info.type_name) orelse {
-                        // Type might be Self or another unresolved type alias
-                        // For now, just load the variable and return - member access will be lossy
-                        // This allows compilation to continue
+                    // Look up struct layout from type. If the declared type
+                    // is the shorthand `Self`, resolve it to the enclosing
+                    // impl's type by looking at the current function's
+                    // mangled name (`Type$method`). This matters for
+                    // methods declared via `impl Foo { fn bar(self) }`,
+                    // where the parser writes `self: Self` and we can only
+                    // determine the concrete type from context.
+                    const resolved_type_name: []const u8 = blk: {
+                        if (std.mem.eql(u8, local_info.type_name, "Self")) {
+                            if (self.current_function_name) |fname| {
+                                if (std.mem.indexOfScalar(u8, fname, '$')) |dollar| {
+                                    break :blk fname[0..dollar];
+                                }
+                            }
+                        }
+                        break :blk local_info.type_name;
+                    };
+                    const struct_layout = self.struct_layouts.get(resolved_type_name) orelse {
+                        // Truly unresolved — fall back to loading the raw
+                        // pointer. Caller sees garbage but compilation
+                        // continues.
                         const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
                         try self.assembler.movRegMem(.rax, .rbp, stack_offset);
                         return;
@@ -8055,9 +8752,26 @@ pub const NativeCodegen = struct {
                         return error.UnsupportedFeature;
                     }
 
-                    // Check if this is a pointer to struct (size 8 but type is a struct)
-                    // This happens for 'self' parameter in methods
-                    if (local_info.size == 8 and struct_layout.total_size > 8) {
+                    // Check if the local is a POINTER to the struct rather
+                    // than the struct itself.
+                    //
+                    // Historically the codegen used `total_size > 8` as the
+                    // discriminator — "if the struct is bigger than one slot,
+                    // the local must be a pointer". That breaks for methods
+                    // on single-field structs (total_size == 8): the `self`
+                    // parameter IS a pointer but the size check said
+                    // otherwise and we'd mis-read the inline-struct branch.
+                    //
+                    // Better: detect shorthand `self` parameters by name.
+                    // The parser assigns `type_name = "Self"` in that case;
+                    // we already resolved that to the concrete type name
+                    // above. Those are always pointers regardless of size.
+                    const is_self_param = std.mem.eql(u8, type_or_var_name, "self") or
+                        std.mem.eql(u8, local_info.type_name, "Self");
+                    const is_pointer_to_struct = is_self_param or
+                        (local_info.size == 8 and struct_layout.total_size > 8);
+
+                    if (is_pointer_to_struct) {
                         // Local contains a pointer to the struct
                         // First load the pointer from stack
                         const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));

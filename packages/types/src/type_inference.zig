@@ -114,6 +114,57 @@ pub const TypeInferencer = struct {
         self.current_origin = origin;
     }
 
+    /// Find the closest identifier in `type_env` to `needle`, using
+    /// Levenshtein distance with a cutoff of 3 edits. Returns null if
+    /// nothing is close enough — we'd rather say nothing than suggest a
+    /// nonsense match.
+    pub fn findClosestIdentifier(self: *TypeInferencer, needle: []const u8) ?[]const u8 {
+        var best: ?[]const u8 = null;
+        var best_dist: usize = 4;
+        var it = self.type_env.keyIterator();
+        while (it.next()) |k| {
+            const dist = levenshtein(needle, k.*);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best = k.*;
+            }
+        }
+        return best;
+    }
+
+    /// Standard iterative-with-two-rows Levenshtein. Short strings only
+    /// (caller enforces reasonable length via the identifier namespace).
+    fn levenshtein(a: []const u8, b: []const u8) usize {
+        if (a.len == 0) return b.len;
+        if (b.len == 0) return a.len;
+
+        // Stack-allocate the two rows. Identifiers shouldn't exceed 256
+        // chars in any sane codebase; if they do we return a large
+        // number so the caller's cutoff rejects the match.
+        if (a.len > 256 or b.len > 256) return 999;
+
+        var prev: [257]usize = undefined;
+        var curr: [257]usize = undefined;
+
+        var j: usize = 0;
+        while (j <= b.len) : (j += 1) prev[j] = j;
+
+        var i: usize = 1;
+        while (i <= a.len) : (i += 1) {
+            curr[0] = i;
+            j = 1;
+            while (j <= b.len) : (j += 1) {
+                const cost: usize = if (a[i - 1] == b[j - 1]) 0 else 1;
+                const del = prev[j] + 1;
+                const ins = curr[j - 1] + 1;
+                const sub = prev[j - 1] + cost;
+                curr[j] = @min(@min(del, ins), sub);
+            }
+            @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+        }
+        return prev[b.len];
+    }
+
     /// Record a type-mismatch detail for the most recent failed unification.
     /// Frees any previously stored detail.
     fn recordMismatch(self: *TypeInferencer, expected: *Type, found: *Type) !void {
@@ -286,6 +337,22 @@ pub const TypeInferencer = struct {
                     result.* = ty;
                     return result;
                 }
+
+                // Record a diagnostic with a "did you mean" suggestion.
+                // We walk the type_env looking for the closest match by
+                // Levenshtein distance ≤ 3, which is the sweet spot for
+                // catching typos without producing wild guesses.
+                if (self.last_error) |*old| old.deinit(self.allocator);
+                const suggestion_name = self.findClosestIdentifier(id.name);
+                self.last_error = .{
+                    .expected_repr = try self.allocator.dupe(u8, "defined identifier"),
+                    .found_repr = try std.fmt.allocPrint(self.allocator, "`{s}`", .{id.name}),
+                    .origin = try std.fmt.allocPrint(self.allocator, "identifier `{s}`", .{id.name}),
+                    .suggestion = if (suggestion_name) |s|
+                        try std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{s})
+                    else
+                        null,
+                };
                 return error.UndefinedVariable;
             },
 
@@ -389,6 +456,32 @@ pub const TypeInferencer = struct {
             const func_info = resolved_func_ty.Function;
 
             if (call.arguments.len != func_info.params.len) {
+                // Record a rich diagnostic the caller can surface. Reuses
+                // the same `last_error` channel used by unify() mismatches
+                // so error reporters see argument-count issues uniformly.
+                if (self.last_error) |*old| old.deinit(self.allocator);
+                const origin_str = try std.fmt.allocPrint(
+                    self.allocator,
+                    "function takes {d} argument(s), called with {d}",
+                    .{ func_info.params.len, call.arguments.len },
+                );
+                self.last_error = .{
+                    .expected_repr = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{d} argument(s)",
+                        .{func_info.params.len},
+                    ),
+                    .found_repr = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{d} argument(s)",
+                        .{call.arguments.len},
+                    ),
+                    .origin = origin_str,
+                    .suggestion = if (call.arguments.len < func_info.params.len)
+                        try self.allocator.dupe(u8, "too few arguments — add the missing ones")
+                    else
+                        try self.allocator.dupe(u8, "too many arguments — remove the extras"),
+                };
                 return error.ArgumentCountMismatch;
             }
 
@@ -1192,4 +1285,40 @@ test "type inference: matching primitives don't create errors" {
     try inferencer.unify(&a, &b);
 
     try std.testing.expectEqual(@as(?TypeMismatchDetail, null), inferencer.last_error);
+}
+
+test "type inference: levenshtein distance" {
+    try std.testing.expectEqual(@as(usize, 0), TypeInferencer.levenshtein("foo", "foo"));
+    try std.testing.expectEqual(@as(usize, 1), TypeInferencer.levenshtein("foo", "foa"));
+    try std.testing.expectEqual(@as(usize, 1), TypeInferencer.levenshtein("foo", "foos"));
+    // Classic reference: kitten -> sitting is 3 edits
+    // (k->s, e->i, +g).
+    try std.testing.expectEqual(@as(usize, 3), TypeInferencer.levenshtein("kitten", "sitting"));
+    // Empty string edge cases.
+    try std.testing.expectEqual(@as(usize, 3), TypeInferencer.levenshtein("", "abc"));
+    try std.testing.expectEqual(@as(usize, 3), TypeInferencer.levenshtein("abc", ""));
+}
+
+test "type inference: did-you-mean suggests the closest identifier" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    // Seed the type environment with a handful of valid names.
+    const names = [_][]const u8{ "counter", "length", "visible" };
+    for (names) |name| {
+        const ty = try allocator.create(Type);
+        ty.* = .Int;
+        const scheme = try allocator.create(TypeScheme);
+        scheme.* = .{ .forall = &.{}, .ty = ty };
+        try inferencer.type_env.put(name, scheme);
+    }
+
+    // "lenght" is one transposition away from "length".
+    const got = inferencer.findClosestIdentifier("lenght");
+    try std.testing.expect(got != null);
+    try std.testing.expectEqualStrings("length", got.?);
+
+    // "xyzqrs" is too far from anything; expect no suggestion.
+    try std.testing.expectEqual(@as(?[]const u8, null), inferencer.findClosestIdentifier("xyzqrs"));
 }

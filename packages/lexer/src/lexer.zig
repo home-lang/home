@@ -353,6 +353,45 @@ pub const Lexer = struct {
         return self.makeToken(.String);
     }
 
+    /// Lex a single-quoted string literal (`'hello world'`).
+    /// The opening `'` has already been consumed. Accepts the same escape
+    /// sequences as double-quoted strings but uses `'` as the terminator.
+    /// Returns a `.String` token indistinguishable from the double-quoted
+    /// form — the parser doesn't need to know which delimiter was used.
+    fn singleQuotedString(self: *Lexer) Token {
+        while (self.peek() != '\'' and !self.isAtEnd()) {
+            if (self.peek() == '\\') {
+                _ = self.advance(); // consume backslash
+                if (self.isAtEnd()) return self.makeToken(.Invalid);
+                const escape_char = self.peek();
+                switch (escape_char) {
+                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                        _ = self.advance();
+                    },
+                    'x' => {
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) return self.makeToken(.Invalid);
+                        _ = self.advance();
+                        if (!std.ascii.isHex(self.peek())) return self.makeToken(.Invalid);
+                        _ = self.advance();
+                    },
+                    else => return self.makeToken(.Invalid),
+                }
+            } else {
+                if (self.peek() == '\n') {
+                    // Newlines inside single-quoted strings are rejected
+                    // (unlike `"""..."""`). Surfaces common missing-quote
+                    // typos instead of consuming half the file.
+                    return self.makeToken(.Invalid);
+                }
+                _ = self.advance();
+            }
+        }
+        if (self.isAtEnd()) return self.makeToken(.Invalid);
+        _ = self.advance(); // closing '
+        return self.makeToken(.String);
+    }
+
     /// Lex a character literal ('a', '\n', '\x41', etc.)
     fn charLiteral(self: *Lexer) Token {
         if (self.isAtEnd()) {
@@ -988,17 +1027,50 @@ pub const Lexer = struct {
             return self.string();
         }
 
-        // Character literals or label identifiers (like 'outer for labeled loops)
+        // Single-quote delimiter — three possible interpretations:
+        //   1. Char literal:       'a'   or  '\n'  (exactly one char + closing ')
+        //   2. Label identifier:   'outer  (identifier-start chars, no closing ')
+        //   3. String literal:     'multi char content'  (multi-char + closing ')
+        //
+        // We disambiguate by scanning forward: if we hit a closing `'` on the
+        // same line and the content is longer than a char literal would be,
+        // it's a string. Char literals and labels get the legacy handling.
         if (c == '\'') {
-            // Check if this is a label (like 'outer) or char literal (like 'a')
-            // Labels: ' followed by alphabetic/underscore, then more identifier chars
-            // Char literals: ' followed by char (or escape), then '
+            // Look ahead for a closing single quote on the same line,
+            // handling escapes and stopping at newline.
+            var look: usize = self.current;
+            var found_close: bool = false;
+            var content_bytes: usize = 0;
+            while (look < self.source.len) {
+                const lc = self.source[look];
+                if (lc == '\n') break;
+                if (lc == '\\' and look + 1 < self.source.len) {
+                    // Escape sequence: counts as one content byte, skip both.
+                    look += 2;
+                    content_bytes += 1;
+                    continue;
+                }
+                if (lc == '\'') {
+                    found_close = true;
+                    break;
+                }
+                look += 1;
+                content_bytes += 1;
+            }
+
+            if (found_close and content_bytes != 1) {
+                // Multi-char (or empty) single-quoted literal → treat as
+                // a string literal. Reuse singleQuotedString.
+                return self.singleQuotedString();
+            }
+
+            // Single char or no closing quote → use the original logic:
+            // decide between char literal and label.
             const next = self.peek();
             if (std.ascii.isAlphabetic(next) or next == '_') {
-                // Could be label or char literal - check if char after next is '
                 const after_next = self.peekNext();
                 if (after_next != '\'') {
-                    // It's a label like 'outer - scan as identifier (including the ')
+                    // Label like 'outer
                     return self.labelIdentifier();
                 }
             }
