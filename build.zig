@@ -1,5 +1,12 @@
 const std = @import("std");
 
+/// Resolve the active Xcode macOS SDK path. Panics if it can't be found —
+/// only called from macOS-only branches.
+fn macosSdkPath(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    return std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse
+        std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{});
+}
+
 /// Helper function to create a package module with optional zig-test-framework
 fn createPackage(
     b: *std.Build,
@@ -21,17 +28,7 @@ fn createPackage(
 }
 
 pub fn build(b: *std.Build) void {
-    // Pin the host macOS minimum to 13.0 by default. Zig 0.16-dev's bundled
-    // libSystem stubs only cover up to a certain version, and on macOS 14+
-    // hosts auto-detection picks a version that has no stubs at all,
-    // producing "undefined symbol: _malloc" / `_sigaction` / etc. at link
-    // time even for the build script itself. Users targeting a different
-    // platform can still override with `-Dtarget=...`.
-    var default_target_query: std.Target.Query = .{};
-    if (@import("builtin").os.tag == .macos) {
-        default_target_query.os_version_min = .{ .semver = .{ .major = 13, .minor = 0, .patch = 0 } };
-    }
-    const target = b.standardTargetOptions(.{ .default_target = default_target_query });
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // ========================================================================
@@ -908,10 +905,12 @@ pub fn build(b: *std.Build) void {
         database_example_step.dependOn(&run_database_example.step);
     }
 
-    // Generals Engine Example (C&C Generals recreation - macOS only)
+    // Generals Engine Example (C&C Generals recreation - macOS only).
+    // Opt-in via `-Dgenerals=true` to keep the default build fast.
     const is_macos = target.result.os.tag == .macos;
+    const build_generals = b.option(bool, "generals", "Build the C&C Generals engine example (macOS only)") orelse false;
 
-    if (is_macos) {
+    if (is_macos and build_generals) {
         const generals_example = b.addExecutable(.{
             .name = "generals",
             .root_module = b.createModule(.{
@@ -941,6 +940,15 @@ pub fn build(b: *std.Build) void {
         // W3D model loading
         const w3d_loader_pkg = createPackage(b, "packages/game/src/w3d_loader.zig", target, optimize, zig_test_framework);
         generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
+
+        // Resolve Xcode SDK so frameworks like Cocoa/OpenGL/OpenAL/AudioToolbox
+        // are findable. zig 0.16-dev no longer auto-imports the SDK from xcrun.
+        const sdk_path = macosSdkPath(b, target);
+        const fw_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_path});
+        const lib_path = b.fmt("{s}/usr/lib", .{sdk_path});
+        generals_example.root_module.addSystemFrameworkPath(.{ .cwd_relative = fw_path });
+        generals_example.root_module.addLibraryPath(.{ .cwd_relative = lib_path });
+
         // Link macOS frameworks
         generals_example.root_module.linkFramework("Cocoa", .{});
         generals_example.root_module.linkFramework("OpenGL", .{});

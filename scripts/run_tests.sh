@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # Run the unit-test suite for modules that have tests under zig 0.16-dev.
 #
-# Each test invocation goes through `zig test -target aarch64-macos.13.0`
-# which works around the same libSystem-stub bug that breaks `zig build`:
-# pinning the min macOS version to 13.0 keeps zig's bundled stubs in range.
-#
 # We do NOT yet drive every package's tests through this script — only the
 # ones whose source compiles cleanly under zig 0.16-dev. Adding new packages
 # is a one-line append to the table below once the code compiles.
@@ -14,13 +10,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [[ -z "${ZIG:-}" ]]; then
-    if [[ -x "$HOME/.local/share/zig-0.16-dev/zig" ]]; then
-        ZIG="$HOME/.local/share/zig-0.16-dev/zig"
-    else
-        ZIG="$(command -v zig 2>/dev/null || true)"
-    fi
+    ZIG="$(command -v zig 2>/dev/null || true)"
 fi
-TARGET="-target aarch64-macos.13.0"
 
 if [[ -z "$ZIG" || ! -x "$ZIG" ]]; then
     echo "zig not found in PATH" >&2
@@ -54,7 +45,7 @@ for entry in "${modules[@]}"; do
 
     printf '== %-45s ' "$label"
     # shellcheck disable=SC2086
-    if "$ZIG" test $TARGET $args >/tmp/run_tests.log 2>&1; then
+    if "$ZIG" test $args >/tmp/run_tests.log 2>&1; then
         # Pull the "All N tests passed." footer.
         tail -1 /tmp/run_tests.log
         pass=$((pass + 1))
