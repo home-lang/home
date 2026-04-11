@@ -165,30 +165,68 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, @intFromEnum(src), @intFromEnum(dst));
     }
 
-    /// mov reg, [base + offset] - Load from memory
+    /// mov reg, [base + offset] - Load from memory.
+    ///
+    /// x64 quirk: when the base register's low 3 bits are 0b100 (rsp, r12),
+    /// the modrm rm value 100 is RESERVED to indicate "next byte is SIB".
+    /// We MUST emit a SIB byte for those bases or the CPU will interpret
+    /// our displacement bytes as a SIB descriptor and read garbage.
     pub fn movRegMem(self: *Assembler, dst: Register, base: Register, offset: i32) !void {
-        // REX.W + 8B /r [base + disp32]
         try self.emitRex(true, dst.needsRexPrefix(), false, base.needsRexPrefix());
         try self.code.append(self.allocator, 0x8B);
-        // ModRM byte: mod=10 (32-bit displacement), reg=dst, rm=base
-        try self.emitModRM(0b10, @intFromEnum(dst), @intFromEnum(base));
-        // Emit 32-bit displacement
-        var bytes: [4]u8 = undefined;
-        std.mem.writeInt(i32, &bytes, offset, .little);
-        try self.code.appendSlice(self.allocator, &bytes);
+        try self.emitMemModRM(@intFromEnum(dst), base, offset);
     }
 
-    /// mov [base + offset], src - Store register to memory
+    /// mov [base + offset], src - Store register to memory. Same SIB rule
+    /// as movRegMem — see that function for details.
     pub fn movMemReg(self: *Assembler, base: Register, offset: i32, src: Register) !void {
-        // REX.W + 89 /r [base + disp32]
         try self.emitRex(true, src.needsRexPrefix(), false, base.needsRexPrefix());
         try self.code.append(self.allocator, 0x89);
-        // ModRM byte: mod=10 (32-bit displacement), reg=src, rm=base
-        try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
-        // Emit 32-bit displacement
-        var bytes: [4]u8 = undefined;
-        std.mem.writeInt(i32, &bytes, offset, .little);
-        try self.code.appendSlice(self.allocator, &bytes);
+        try self.emitMemModRM(@intFromEnum(src), base, offset);
+    }
+
+    /// Emit the ModRM + (optional SIB) + displacement bytes for a
+    /// `[base + offset]` memory operand. `reg` is the encoding of the
+    /// "other" operand (the register half of the operation). Picks the
+    /// shortest legal encoding:
+    ///   - mod=00 if offset==0 AND base isn't rbp/r13 (those need disp8)
+    ///   - mod=01 if offset fits in i8
+    ///   - mod=10 otherwise (32-bit displacement)
+    /// Always emits a SIB byte when the base's low 3 bits == 100
+    /// (rsp / r12).
+    fn emitMemModRM(self: *Assembler, reg: u8, base: Register, offset: i32) !void {
+        const base_enc: u8 = @intFromEnum(base) & 0b111;
+        const needs_sib = base_enc == 0b100;
+        // rbp / r13 (low 3 bits == 101) cannot use mod=00 form — that
+        // encoding means RIP-relative. Force at least mod=01 with disp8=0.
+        const is_rbp_like = base_enc == 0b101;
+
+        const mod: u2 = if (offset == 0 and !is_rbp_like) 0b00
+            else if (offset >= -128 and offset <= 127) 0b01
+            else 0b10;
+
+        // ModRM
+        const modrm_byte = (@as(u8, mod) << 6) | ((reg & 0b111) << 3) | base_enc;
+        try self.code.append(self.allocator, modrm_byte);
+
+        // SIB byte (only when base is rsp/r12).
+        if (needs_sib) {
+            // SIB: scale=00, index=100 (none), base=base_enc
+            const sib_byte: u8 = (0b00 << 6) | (0b100 << 3) | base_enc;
+            try self.code.append(self.allocator, sib_byte);
+        }
+
+        // Displacement.
+        switch (mod) {
+            0b00 => {}, // no displacement
+            0b01 => try self.code.append(self.allocator, @as(u8, @bitCast(@as(i8, @intCast(offset))))),
+            0b10 => {
+                var bytes: [4]u8 = undefined;
+                std.mem.writeInt(i32, &bytes, offset, .little);
+                try self.code.appendSlice(self.allocator, &bytes);
+            },
+            else => unreachable,
+        }
     }
 
     /// lea reg, [rip + disp32] - Load Effective Address with RIP-relative addressing

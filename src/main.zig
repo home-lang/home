@@ -474,6 +474,12 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     const program = try parser.parse();
 
+    // Parse errors are collected into parser.errors but `parse()`
+    // returns a partial AST so the type checker can still run for
+    // richer diagnostics. Make sure parse errors fail the command
+    // though — otherwise a broken file exits 0 and fools CI.
+    const had_parse_errors = parser.errors.items.len > 0;
+
     // Create comptime value store for compile-time evaluation
     var comptime_store = ComptimeValueStore.init(allocator);
     defer comptime_store.deinit();
@@ -487,7 +493,7 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     const passed = try type_checker.check();
 
-    if (!passed) {
+    if (!passed or had_parse_errors) {
         // Display rich type errors with enhanced formatting
         for (type_checker.errors.items) |err_info| {
             try printEnhancedError(file_path, source, err_info);
@@ -889,6 +895,11 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
         var codegen = NativeCodegen.init(allocator, program, &comptime_store, &type_registry);
         defer codegen.deinit();
+
+        // Propagate I/O so the back end's MachOWriter / ElfWriter can open
+        // the output file. Without this they default to no-io and return
+        // FileSystemAccessDenied.
+        codegen.io = g_io;
 
         // Set source root for import resolution
         try codegen.setSourceRoot(file_path);

@@ -587,6 +587,107 @@ pub const VectorizablePattern = struct {
 /// const machine_code = codegen.assembler.getCode();
 /// ```
 pub const NativeCodegen = struct {
+    /// Information about an emitted trait vtable. See `emitTraitVtable` for
+    /// the layout. Declared at the top of the struct so the field below can
+    /// reference it (Zig allows decls before fields, not interleaved).
+    pub const VtableInfo = struct {
+        /// Byte offset into the data section where the vtable starts.
+        data_offset: usize,
+        /// Number of method slots (each 8 bytes wide on x64).
+        method_count: usize,
+        /// Maps method name -> slot index in the vtable.
+        method_indices: std.StringHashMap(usize),
+
+        pub fn deinit(self: *VtableInfo) void {
+            self.method_indices.deinit();
+        }
+    };
+
+    // ----------------------------------------------------------------
+    // Async runtime layout
+    // ----------------------------------------------------------------
+    //
+    // Every async fn allocates a state struct on the heap. The first 32
+    // bytes are a fixed header that the executor and recursive `await`
+    // sites understand polymorphically:
+    //
+    //     [0]  ready     (u64) -- 0 = Pending, 1 = Ready
+    //     [8]  poll_fn   (fn ptr) -- (Future*) -> void; modifies state
+    //     [16] resume_pt (u64) -- which segment to run on next poll
+    //     [24] result    (u64) -- final value (only meaningful when Ready)
+    //     [32] inner_fut (u64) -- inner Future* awaited by the current segment
+    //     [40+] locals/params (each 8 bytes)
+    //
+    // The poll_fn pointer enables the executor to drive any future
+    // without knowing its concrete type. Recursive `await` works the
+    // same way: an async fn that awaits another async fn polls the
+    // inner future via its own poll_fn pointer.
+    pub const STATE_OFF_READY: i32 = 0;
+    pub const STATE_OFF_POLL_FN: i32 = 8;
+    pub const STATE_OFF_RESUME: i32 = 16;
+    pub const STATE_OFF_RESULT: i32 = 24;
+    pub const STATE_OFF_INNER: i32 = 32;
+    pub const STATE_HEADER_SIZE: i32 = 40;
+
+    /// Per-async-fn compile-time bookkeeping. Created by the pre-scan,
+    /// consumed by the poll-function emitter. The state struct layout is
+    /// derived from `param_count + local_count`.
+    pub const AsyncFnContext = struct {
+        allocator: std.mem.Allocator,
+        /// Local name -> byte offset within the state struct.
+        /// Includes both function parameters (assigned first) and
+        /// `let`-declared locals (assigned during the pre-scan).
+        locals: std.StringHashMap(i32),
+        /// Number of awaits found in the body. There are `num_awaits + 1`
+        /// segments and `num_awaits + 1` resume points (state IDs 0..N).
+        num_awaits: usize = 0,
+        /// Total state struct size in bytes (header + locals).
+        struct_size: usize = STATE_HEADER_SIZE,
+        /// Code position of each resume label, indexed by state ID.
+        /// Filled in as the corresponding segment is emitted.
+        state_labels: std.ArrayList(usize),
+        /// Code positions of `je` instructions in the dispatch table.
+        /// Patched after each segment label is known.
+        dispatch_jumps: std.ArrayList(usize),
+        /// Code positions of `jmp` instructions to the function epilogue.
+        /// Patched once the epilogue is emitted.
+        epilogue_jumps: std.ArrayList(usize),
+        /// Counter that tracks which state ID the next emitted await is for.
+        /// Starts at 0 (start segment), incremented as awaits are processed.
+        emitted_awaits: usize = 0,
+
+        pub fn init(allocator: std.mem.Allocator) AsyncFnContext {
+            return .{
+                .allocator = allocator,
+                .locals = std.StringHashMap(i32).init(allocator),
+                .state_labels = std.ArrayList(usize).empty,
+                .dispatch_jumps = std.ArrayList(usize).empty,
+                .epilogue_jumps = std.ArrayList(usize).empty,
+            };
+        }
+
+        pub fn deinit(self: *AsyncFnContext) void {
+            var it = self.locals.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            self.locals.deinit();
+            self.state_labels.deinit(self.allocator);
+            self.dispatch_jumps.deinit(self.allocator);
+            self.epilogue_jumps.deinit(self.allocator);
+        }
+
+        /// Allocate a state-struct slot for the given local name.
+        /// Idempotent: if `name` is already known, returns its existing offset.
+        pub fn allocLocal(self: *AsyncFnContext, name: []const u8) !i32 {
+            if (self.locals.get(name)) |off| return off;
+            const offset: i32 = @intCast(self.struct_size);
+            const key = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(key);
+            try self.locals.put(key, offset);
+            self.struct_size += 8;
+            return offset;
+        }
+    };
+
     /// Memory allocator for codegen data structures
     allocator: std.mem.Allocator,
     /// x64 assembler for emitting machine code
@@ -677,6 +778,18 @@ pub const NativeCodegen = struct {
     // Current function being generated
     /// Name of the function currently being generated (for return statement handling)
     current_function_name: ?[]const u8,
+    /// True while we're emitting the body of an `async fn`. The return-stmt
+    /// handler reads this to decide whether to wrap the return value in a
+    /// Future header before jumping to the epilogue. Restored automatically
+    /// in `generateFnDeclWithName`.
+    current_function_is_async: bool = false,
+    /// Per-async-fn context. Non-null only while emitting an async fn body.
+    /// When set, local-variable accesses (LetDecl, Identifier load) and
+    /// AwaitExpr go through the state-struct path instead of the stack path.
+    async_ctx: ?*AsyncFnContext = null,
+    /// Set of names known to be async fns. Callers consult this to decide
+    /// whether to wrap a top-level call in the executor `block_on` loop.
+    async_fn_names: std.StringHashMap(void),
 
     // Global type registry for cross-module type resolution
     /// Global type registry shared across all compilation units
@@ -711,6 +824,7 @@ pub const NativeCodegen = struct {
             .data_literals = std.ArrayList([]const u8).empty,
             .data_literals_offset = 0,
             .trait_vtables = std.StringHashMap(VtableInfo).init(allocator),
+            .async_fn_names = std.StringHashMap(void).init(allocator),
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
@@ -888,6 +1002,11 @@ pub const NativeCodegen = struct {
             entry.value_ptr.deinit();
         }
         self.trait_vtables.deinit();
+
+        // Free async_fn_names (keys are interned via duplication when added).
+        var afn_it = self.async_fn_names.keyIterator();
+        while (afn_it.next()) |k| self.allocator.free(k.*);
+        self.async_fn_names.deinit();
 
         // Free imported_modules keys and hashmap
         {
@@ -2827,13 +2946,44 @@ pub const NativeCodegen = struct {
     }
 
     pub fn generate(self: *NativeCodegen) ![]const u8 {
-        // Generate code for all statements
-        // Note: Don't add prologue/epilogue here - each function handles its own
+        // Pass 0: register every async fn name BEFORE walking the program.
+        // This way a sync fn that calls an async fn declared later still
+        // sees the right name and the call-site dispatch can wrap it in
+        // a block_on loop. Without this pre-pass, top-level main calling
+        // a forward-declared async fn would emit a plain call.
+        try self.preregisterAsyncFns(self.program.statements);
+
+        // Generate code for all statements.
+        // Note: Don't add prologue/epilogue here - each function handles its own.
         for (self.program.statements) |stmt| {
             try self.generateStmt(stmt);
         }
 
         return try self.assembler.getCode();
+    }
+
+    /// Walk the program top-level and add every `async fn` name to
+    /// `async_fn_names`. Idempotent — names already present are skipped.
+    fn preregisterAsyncFns(self: *NativeCodegen, stmts: []const ast.Stmt) !void {
+        for (stmts) |stmt| {
+            switch (stmt) {
+                .FnDecl => |fn_decl| {
+                    if (fn_decl.is_async and !self.async_fn_names.contains(fn_decl.name)) {
+                        const k = try self.allocator.dupe(u8, fn_decl.name);
+                        try self.async_fn_names.put(k, {});
+                    }
+                },
+                .ImplDecl => |impl_decl| {
+                    for (impl_decl.methods) |m| {
+                        if (m.is_async and !self.async_fn_names.contains(m.name)) {
+                            const k = try self.allocator.dupe(u8, m.name);
+                            try self.async_fn_names.put(k, {});
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     /// PASS 1: Register all types from a statement without generating code
@@ -3100,10 +3250,15 @@ pub const NativeCodegen = struct {
         switch (builtin.os.tag) {
             .macos => {
                 var writer = macho.MachOWriter.init(self.allocator, code, data);
+                // Propagate the I/O context so the writer can actually open
+                // the output file. Without this it would always return
+                // FileSystemAccessDenied.
+                writer.io = self.io;
                 try writer.writeWithEntryPoint(path, main_offset);
             },
             .linux => {
                 var writer = elf.ElfWriter.init(self.allocator, code);
+                writer.io = self.io;
                 try writer.write(path);
             },
             else => {
@@ -3147,10 +3302,25 @@ pub const NativeCodegen = struct {
             },
             .FnDecl => |func| try self.generateFnDecl(func),
             .ReturnStmt => |ret| {
+                // Async fast path: write result into the state struct,
+                // mark Ready, and jump to the function epilogue. The
+                // sync prologue/epilogue cleanup below is skipped — the
+                // poll function emitter handles its own teardown.
+                if (self.async_ctx) |ctx| {
+                    if (ret.value) |value| {
+                        try self.generateExpr(value);
+                    } else {
+                        try self.assembler.movRegImm64(.rax, 0);
+                    }
+                    try self.emitAsyncReturn(ctx);
+                    return;
+                }
+
                 if (ret.value) |value| {
                     try self.generateExpr(value);
                     // Result is in rax
                 }
+
                 // Jump to epilogue
                 try self.assembler.movRegReg(.rsp, .rbp);
                 try self.assembler.popReg(.rbp);
@@ -4032,31 +4202,34 @@ pub const NativeCodegen = struct {
                 const skip_abort_pos = self.assembler.getPosition();
                 try self.assembler.jnzRel32(0); // Placeholder - jump if condition is true
 
+                // Pick the right syscall numbers per platform.
+                const write_syscall: u64 = switch (builtin.os.tag) {
+                    .macos => 0x2000004,
+                    .linux => 1,
+                    else => 1,
+                };
+                const exit_syscall: u64 = switch (builtin.os.tag) {
+                    .macos => 0x2000001,
+                    .linux => 60,
+                    else => 60,
+                };
+
                 // Condition is false - print message if provided and abort
                 if (assert_stmt.message) |message_expr| {
                     // Evaluate message expression
                     try self.generateExpr(message_expr);
 
-                    // Call write syscall to print message to stderr (fd=2)
-                    // write(fd, buf, count)
-                    try self.assembler.movRegImm64(.rdi, 2); // stderr
-                    try self.assembler.movRegReg(.rsi, .rax); // message pointer
-
-                    // Get message length (assume it's a string with length at offset 0)
-                    try self.assembler.movRegMem(.rdx, .rax, 0); // length
-
-                    // syscall number for write (1 on Linux, macOS may differ)
-                    try self.assembler.movRegImm64(.rax, 1);
+                    // write(stderr=2, message, len)
+                    try self.assembler.movRegImm64(.rdi, 2);
+                    try self.assembler.movRegReg(.rsi, .rax);
+                    try self.assembler.movRegMem(.rdx, .rax, 0); // length at offset 0
+                    try self.assembler.movRegImm64(.rax, write_syscall);
                     try self.assembler.syscall();
-                } else {
-                    // No message - print default "Assertion failed"
-                    // For now, just skip printing (would need string literals setup)
                 }
 
-                // Exit with failure code
-                // exit(1)
-                try self.assembler.movRegImm64(.rdi, 1); // exit code
-                try self.assembler.movRegImm64(.rax, 60); // syscall number for exit
+                // Exit with failure code 1 using the platform's exit syscall.
+                try self.assembler.movRegImm64(.rdi, 1);
+                try self.assembler.movRegImm64(.rax, exit_syscall);
                 try self.assembler.syscall();
 
                 // Patch the skip jump to here (condition was true)
@@ -4068,11 +4241,82 @@ pub const NativeCodegen = struct {
                 // Test blocks are skipped during normal compilation
                 // They're only executed when running in test mode
             },
+            .TraitDecl => {
+                // Trait declarations are pure compile-time information: a
+                // method-signature list that the type checker uses to verify
+                // impls. They don't emit any code on their own. The vtables
+                // get built when we walk the matching ImplDecl.
+            },
             .ImplDecl => |impl_decl| {
-                // Implementation blocks (trait impls and inherent impls)
-                // Generate code for each method in the impl block
+                // Implementation blocks. Two flavours:
+                //   1. Inherent impl  (`impl Foo { ... }`) — just generate methods.
+                //   2. Trait impl     (`impl Drawable for Circle { ... }`) — also
+                //      build a vtable in the data section so dynamic dispatch
+                //      through `dyn Drawable` works.
+                //
+                // Methods are emitted under their mangled name `Type$method`
+                // (matching the convention used by `impl Foo { ... }` inside
+                // a struct decl) so that `c.draw()` member dispatch can find
+                // them via the existing static-method table.
+                const impl_type: []const u8 = switch (impl_decl.for_type.*) {
+                    .Named => |n| n,
+                    else => "<generic>",
+                };
+
+                // First pass: pre-register every mangled name with a placeholder
+                // position so methods on the same impl can call each other.
                 for (impl_decl.methods) |method| {
-                    try self.generateStmt(ast.Stmt{ .FnDecl = method });
+                    const mangled = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}${s}",
+                        .{ impl_type, method.name },
+                    );
+                    errdefer self.allocator.free(mangled);
+                    try self.functions.put(mangled, 0);
+                }
+
+                // Second pass: emit each method body and patch its position.
+                for (impl_decl.methods) |method| {
+                    const method_pos = self.assembler.getPosition();
+                    const mangled = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}${s}",
+                        .{ impl_type, method.name },
+                    );
+                    defer self.allocator.free(mangled);
+                    try self.generateFnDeclWithName(method, mangled);
+                    if (self.functions.getPtr(mangled)) |pos_ptr| {
+                        pos_ptr.* = method_pos;
+                    }
+                }
+
+                // For trait impls, also build a vtable mapping method names
+                // to function offsets so dynamic dispatch through a `dyn`
+                // pointer can find them at runtime.
+                if (impl_decl.trait_name) |trait_name| {
+                    var slots = try self.allocator.alloc(VtableSlot, impl_decl.methods.len);
+                    defer self.allocator.free(slots);
+
+                    for (impl_decl.methods, 0..) |method, i| {
+                        const mangled = try std.fmt.allocPrint(
+                            self.allocator,
+                            "{s}${s}",
+                            .{ impl_type, method.name },
+                        );
+                        defer self.allocator.free(mangled);
+                        const offset = self.functions.get(mangled) orelse 0;
+                        slots[i] = .{
+                            .name = method.name,
+                            .function_offset = offset,
+                        };
+                    }
+
+                    _ = self.emitTraitVtable(trait_name, impl_type, slots) catch |err| {
+                        std.debug.print(
+                            "vtable emission for `impl {s} for {s}` failed: {}\n",
+                            .{ trait_name, impl_type, err },
+                        );
+                    };
                 }
             },
             else => {
@@ -4539,15 +4783,46 @@ pub const NativeCodegen = struct {
     /// Allocate memory on the heap
     /// Input: rdi = size to allocate
     /// Output: rax = pointer to allocated memory
+    /// Real heap allocator backed by anonymous mmap. Each call gets a fresh
+    /// page (or more, for larger requests), which is wasteful for small
+    /// allocations but is the simplest correct allocator that doesn't leak
+    /// references when the calling stack frame unwinds.
+    ///
+    /// Why we can't use the stack: state structs allocated by an async fn's
+    /// entry function need to outlive the entry call (the executor polls
+    /// them later from a different stack frame). Stack-bump would point at
+    /// freed memory.
+    ///
+    /// Calling convention:
+    ///   in:  rdi = size in bytes
+    ///   out: rax = page-aligned pointer (always at least `size` bytes)
+    ///   clobbers: rdi, rsi, rdx, r10, r8, r9, rcx, r11
     fn heapAlloc(self: *NativeCodegen) !void {
-        // Simple bump allocator
-        // Heap pointer stored at HEAP_START - 8
-        // For now, we'll use a simpler approach: allocate on stack
-        // In a real implementation, this would use a proper heap allocator
+        // Round size up to a page (4096) so mmap accepts it cleanly.
+        //   rsi = (rdi + 4095) & ~4095
+        // x64 lacks an immediate-mask form we can reach with the current
+        // assembler helpers, so we materialize ~4095 in rcx and use and.
+        try self.assembler.movRegReg(.rsi, .rdi);
+        try self.assembler.addRegImm(.rsi, 4095);
+        try self.assembler.movRegImm64(.rcx, @bitCast(@as(i64, -4096)));
+        try self.assembler.andRegReg(.rsi, .rcx);
 
-        // Allocate on stack (simple but works for testing)
-        try self.assembler.subRegReg(.rsp, .rdi);
-        try self.assembler.movRegReg(.rax, .rsp);
+        // mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0)
+        try self.assembler.movRegImm64(.rdi, 0);             // addr = NULL
+        try self.assembler.movRegImm64(.rdx, 3);             // PROT_READ|PROT_WRITE
+        try self.assembler.movRegImm64(.r10, 0x1002);        // MAP_ANON|MAP_PRIVATE
+        try self.assembler.movRegImm64(.r8, @bitCast(@as(i64, -1)));  // fd = -1
+        try self.assembler.movRegImm64(.r9, 0);              // offset = 0
+        // syscall number: macOS uses 0x20000C5 for mmap (BSD syscall class).
+        const mmap_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x20000C5,
+            .linux => 9, // mmap on linux x86-64
+            else => 9,
+        };
+        try self.assembler.movRegImm64(.rax, mmap_syscall);
+        try self.assembler.syscall();
+        // rax now holds the allocation pointer (or -errno on failure;
+        // we don't check — programs that hit OOM crash, which is fine).
     }
 
     /// Emit a runtime panic: write `message` to stderr and exit with code 101.
@@ -4606,6 +4881,14 @@ pub const NativeCodegen = struct {
     //     fn_ptr = *(vtable + method_index * 8)
     //     fn_ptr(data, args...)
 
+    /// One method slot in a trait vtable. The order of slots matters: it
+    /// must match the order in which the trait declares its methods, because
+    /// virtual dispatch indexes into the vtable by position.
+    pub const VtableSlot = struct {
+        name: []const u8,
+        function_offset: usize,
+    };
+
     /// Build a vtable for `(trait_name, impl_type)` from `(method_name,
     /// function_offset)` entries. Allocates `N * 8` zero bytes in the data
     /// literals section, then patches each slot with the absolute-ish offset
@@ -4618,7 +4901,7 @@ pub const NativeCodegen = struct {
         self: *NativeCodegen,
         trait_name: []const u8,
         impl_type: []const u8,
-        methods: []const struct { name: []const u8, function_offset: usize },
+        methods: []const VtableSlot,
     ) !usize {
         const key = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ trait_name, impl_type });
         errdefer self.allocator.free(key);
@@ -4668,6 +4951,537 @@ pub const NativeCodegen = struct {
         var key_buf: [256]u8 = undefined;
         const key = std.fmt.bufPrint(&key_buf, "{s}::{s}", .{ trait_name, impl_type }) catch return null;
         return self.trait_vtables.getPtr(key);
+    }
+
+    // ----------------------------------------------------------------
+    // Async / Future runtime
+    // ----------------------------------------------------------------
+    //
+    // We don't yet have an executor, so the runtime model is the simplest
+    // possible: an `async fn` returns a Future header that's already in the
+    // Ready state, and `await` immediately extracts the result. The header
+    // layout is:
+    //
+    //     offset 0 (8 bytes): state    -- 0=Pending, 2=Ready
+    //     offset 8 (8 bytes): result   -- the value (or 0 if void)
+    //
+    // This is a degenerate state machine — one state, no suspension — but it
+    // is a real coroutine: the calling convention round-trips through a heap
+    // (currently stack-bump) struct, and `await` actually does an indirect
+    // memory load. When a real executor lands, the same wrapper site grows
+    // into a multi-state poll function and `await` becomes a poll loop.
+    //
+    // Crucially, this means user code MUST write `await` to extract the
+    // value of an async call. Direct call sites yield a Future pointer.
+
+    /// Allocate a 16-byte Future header on the stack, write `state=2 (Ready)`
+    /// and `result=<rax>`, leave the header pointer in rax.
+    /// Clobbers rcx and r10.
+    // ----------------------------------------------------------------
+    // Async fn pre-scan
+    // ----------------------------------------------------------------
+    //
+    // Walks the body of an `async fn` to:
+    //   1. Allocate a state-struct slot for every parameter and `let`-declared
+    //      local. Locals declared inside conditional branches all share the
+    //      same struct because the state machine flattens control flow.
+    //   2. Count the number of `await` expressions, which determines the
+    //      state count of the resulting poll function.
+    //
+    // The pre-scan does NOT emit any code. It just populates the
+    // AsyncFnContext that the emitter consumes.
+
+    fn scanAsyncFnBody(self: *NativeCodegen, func: *ast.FnDecl, ctx: *AsyncFnContext) CodegenError!void {
+        // Parameters get the lowest offsets, in declaration order, so the
+        // entry function can copy them in via the SysV register sequence.
+        for (func.params) |param| {
+            _ = try ctx.allocLocal(param.name);
+        }
+        // Walk the body. The function body is a BlockStmt held by `func.body`.
+        try self.scanAsyncStmts(func.body.statements, ctx);
+    }
+
+    fn scanAsyncStmts(self: *NativeCodegen, stmts: []const ast.Stmt, ctx: *AsyncFnContext) CodegenError!void {
+        for (stmts) |stmt| try self.scanAsyncStmt(stmt, ctx);
+    }
+
+    fn scanAsyncStmt(self: *NativeCodegen, stmt: ast.Stmt, ctx: *AsyncFnContext) CodegenError!void {
+        switch (stmt) {
+            .LetDecl => |decl| {
+                _ = try ctx.allocLocal(decl.name);
+                if (decl.value) |v| try self.scanAsyncExpr(v, ctx);
+            },
+            .ExprStmt => |e| try self.scanAsyncExpr(e, ctx),
+            .ReturnStmt => |r| if (r.value) |v| try self.scanAsyncExpr(v, ctx),
+            .BlockStmt => |b| try self.scanAsyncStmts(b.statements, ctx),
+            .IfStmt => |if_stmt| {
+                try self.scanAsyncExpr(if_stmt.condition, ctx);
+                try self.scanAsyncStmts(if_stmt.then_block.statements, ctx);
+                if (if_stmt.else_block) |else_block| {
+                    try self.scanAsyncStmts(else_block.statements, ctx);
+                }
+            },
+            .WhileStmt => |w| {
+                try self.scanAsyncExpr(w.condition, ctx);
+                try self.scanAsyncStmts(w.body.statements, ctx);
+            },
+            else => {},
+        }
+    }
+
+    fn scanAsyncExpr(self: *NativeCodegen, expr: *ast.Expr, ctx: *AsyncFnContext) CodegenError!void {
+        switch (expr.*) {
+            .AwaitExpr => |a| {
+                ctx.num_awaits += 1;
+                try self.scanAsyncExpr(a.expression, ctx);
+            },
+            .BinaryExpr => |b| {
+                try self.scanAsyncExpr(b.left, ctx);
+                try self.scanAsyncExpr(b.right, ctx);
+            },
+            .UnaryExpr => |u| try self.scanAsyncExpr(u.operand, ctx),
+            .CallExpr => |c| {
+                try self.scanAsyncExpr(c.callee, ctx);
+                for (c.args) |arg| try self.scanAsyncExpr(arg, ctx);
+            },
+            .MemberExpr => |m| try self.scanAsyncExpr(m.object, ctx),
+            .IndexExpr => |i| {
+                try self.scanAsyncExpr(i.array, ctx);
+                try self.scanAsyncExpr(i.index, ctx);
+            },
+            .IfExpr => |if_expr| {
+                try self.scanAsyncExpr(if_expr.condition, ctx);
+                try self.scanAsyncExpr(if_expr.then_branch, ctx);
+                try self.scanAsyncExpr(if_expr.else_branch, ctx);
+            },
+            .TernaryExpr => |t| {
+                try self.scanAsyncExpr(t.condition, ctx);
+                try self.scanAsyncExpr(t.true_val, ctx);
+                try self.scanAsyncExpr(t.false_val, ctx);
+            },
+            else => {},
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Async fn emission
+    // ----------------------------------------------------------------
+    //
+    // For each `async fn name(...)`, we emit two functions:
+    //
+    //   1. `<name>_poll` — the state machine. Takes a *FutureState in rdi,
+    //      mutates it in place. Body is a switch on `state.resume_pt` that
+    //      jumps to the right segment. Each segment ends with either an
+    //      `await` (which sets next state and returns Pending) or function
+    //      end (which sets `ready=1` + `result` and returns).
+    //
+    //   2. `<name>` — the entry. Allocates a FutureState on the heap, copies
+    //      params from the SysV registers into struct slots, fills in the
+    //      header (ready=0, poll_fn=<name>_poll, resume_pt=0), returns the
+    //      pointer in rax.
+    //
+    // We emit poll first so the entry can take the poll_fn's address via a
+    // RIP-relative LEA computed at emit time.
+
+    fn generateAsyncFnDecl(self: *NativeCodegen, func: *ast.FnDecl, effective_name: []const u8) !void {
+        const allocator = self.allocator;
+
+        // Pre-scan: walk the body to count awaits and allocate locals.
+        var ctx = AsyncFnContext.init(allocator);
+        defer ctx.deinit();
+        try self.scanAsyncFnBody(func, &ctx);
+
+        // Pre-allocate state-label slots so the dispatch table can patch them.
+        try ctx.state_labels.resize(allocator, ctx.num_awaits + 1);
+        for (ctx.state_labels.items) |*p| p.* = 0;
+        try ctx.dispatch_jumps.resize(allocator, ctx.num_awaits + 1);
+        for (ctx.dispatch_jumps.items) |*p| p.* = 0;
+
+        // -----------------------------------------------------------
+        // Emit poll function
+        // -----------------------------------------------------------
+        const poll_name = try std.fmt.allocPrint(allocator, "{s}_poll", .{effective_name});
+        defer allocator.free(poll_name);
+
+        const poll_pos = self.assembler.getPosition();
+        try self.functions.put(try allocator.dupe(u8, poll_name), poll_pos);
+
+        // Standard prologue.
+        try self.assembler.pushReg(.rbp);
+        try self.assembler.movRegReg(.rbp, .rsp);
+
+        // Move state pointer (rdi) into rbx, our dedicated callee-save
+        // state register. rbx is preserved across the function so we can
+        // rely on it after recursive `poll` calls. We use rbx instead of
+        // r12 because r12's encoding (100) collides with the SIB-required
+        // pattern in mod-displacement memory addressing — the assembler
+        // helpers don't yet emit SIB bytes for that case.
+        try self.assembler.pushReg(.rbx);
+        try self.assembler.movRegReg(.rbx, .rdi);
+
+        // Bind active context for the body codegen below. Local accesses now
+        // route through the state struct.
+        const prev_async_ctx = self.async_ctx;
+        self.async_ctx = &ctx;
+        defer self.async_ctx = prev_async_ctx;
+
+        // Dispatch table: load resume_pt and jump to the matching segment.
+        try self.assembler.movRegMem(.rax, .rbx, STATE_OFF_RESUME);
+        var i: usize = 0;
+        while (i <= ctx.num_awaits) : (i += 1) {
+            try self.assembler.cmpRegImm(.rax, @intCast(i));
+            ctx.dispatch_jumps.items[i] = self.assembler.getPosition();
+            try self.assembler.jeRel32(0); // patched once segment label is known
+        }
+        // Fall-through trap: unknown state shouldn't happen.
+        try self.assembler.ud2();
+
+        // -----------------------------------------------------------
+        // Segment 0: from function entry up to the first await (or end).
+        // -----------------------------------------------------------
+        // Patch dispatch_jumps[0] to point here.
+        try self.recordAsyncSegmentLabel(&ctx, 0);
+
+        // Emit the body. The walk uses the existing generateStmt machinery,
+        // which now sees self.async_ctx != null and routes locals through
+        // the state struct. AwaitExpr handlers also notice and emit the
+        // suspend pattern instead of block-on.
+        for (func.body.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+
+        // If the body fell off the end without an explicit return, emit a
+        // synthesized one. The async return path sets ready=1 and jumps to
+        // the epilogue.
+        try self.emitAsyncReturn(&ctx);
+
+        // -----------------------------------------------------------
+        // Epilogue
+        // -----------------------------------------------------------
+        const epilogue_pos = self.assembler.getPosition();
+        for (ctx.epilogue_jumps.items) |jpos| {
+            const offset: i32 = @as(i32, @intCast(epilogue_pos)) - @as(i32, @intCast(jpos + 5));
+            try self.assembler.patchJmpRel32(jpos, offset);
+        }
+
+        // Return self (Future*) in rax. Many callers don't use the return
+        // value (they read state via the pointer they already have), but
+        // returning it makes the calling convention symmetric with sync fns.
+        try self.assembler.movRegReg(.rax, .rbx);
+        try self.assembler.popReg(.rbx);
+        try self.assembler.movRegReg(.rsp, .rbp);
+        try self.assembler.popReg(.rbp);
+        try self.assembler.ret();
+
+        // -----------------------------------------------------------
+        // Emit entry function (registered under the user-visible name)
+        // -----------------------------------------------------------
+        const entry_pos = self.assembler.getPosition();
+        if (!self.functions.contains(effective_name)) {
+            try self.functions.put(try allocator.dupe(u8, effective_name), entry_pos);
+        } else if (self.functions.getPtr(effective_name)) |p| {
+            p.* = entry_pos;
+        }
+        // Mark this name as async so the call-site dispatch knows to wrap it
+        // in a `block_on` loop when invoked from sync code.
+        if (!self.async_fn_names.contains(effective_name)) {
+            try self.async_fn_names.put(try allocator.dupe(u8, effective_name), {});
+        }
+
+        // Standard prologue.
+        try self.assembler.pushReg(.rbp);
+        try self.assembler.movRegReg(.rbp, .rsp);
+
+        // Save incoming args (rdi/rsi/rdx/rcx/r8/r9) so heapAlloc doesn't
+        // clobber them. Push in reverse order so we can pop in declaration
+        // order later.
+        const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+        const param_count = @min(func.params.len, arg_regs.len);
+        var pi: usize = param_count;
+        while (pi > 0) {
+            pi -= 1;
+            try self.assembler.pushReg(arg_regs[pi]);
+        }
+
+        // heap_alloc(struct_size) -> rax
+        try self.assembler.movRegImm64(.rdi, @intCast(ctx.struct_size));
+        try self.heapAlloc();
+        // Save the state pointer in r10 so we can keep using rax for the
+        // header writes via movRegImm + movMemReg.
+        try self.assembler.movRegReg(.r10, .rax);
+
+        // Header[ready] = 0
+        try self.assembler.movRegImm64(.rax, 0);
+        try self.assembler.movMemReg(.r10, STATE_OFF_READY, .rax);
+
+        // Header[poll_fn] = address of <name>_poll
+        // Use a RIP-relative LEA whose displacement we compute right now,
+        // since both the poll function position and the LEA position are
+        // known at this point.
+        const lea_pos = self.assembler.getPosition();
+        // leaRipRel emits a 7-byte instruction; the displacement field is
+        // the 4 bytes starting at lea_pos+3. The CPU computes
+        //   target = next_rip + displacement
+        // where next_rip = lea_pos + 7. So:
+        //   displacement = poll_pos - (lea_pos + 7)
+        const poll_disp: i32 = @as(i32, @intCast(poll_pos)) - @as(i32, @intCast(lea_pos + 7));
+        _ = try self.assembler.leaRipRel(.rax, poll_disp);
+        try self.assembler.movMemReg(.r10, STATE_OFF_POLL_FN, .rax);
+
+        // Header[resume_pt] = 0 (Start segment)
+        try self.assembler.movRegImm64(.rax, 0);
+        try self.assembler.movMemReg(.r10, STATE_OFF_RESUME, .rax);
+
+        // Header[result] = 0 (placeholder)
+        try self.assembler.movMemReg(.r10, STATE_OFF_RESULT, .rax);
+
+        // Header[inner_fut] = 0
+        try self.assembler.movMemReg(.r10, STATE_OFF_INNER, .rax);
+
+        // Pop saved params back into the SysV registers, then store each
+        // into its allocated slot in the state struct.
+        var pj: usize = 0;
+        while (pj < param_count) : (pj += 1) {
+            try self.assembler.popReg(arg_regs[pj]);
+        }
+        for (func.params, 0..) |param, idx| {
+            if (idx >= arg_regs.len) break;
+            const slot_off = ctx.locals.get(param.name) orelse continue;
+            try self.assembler.movMemReg(.r10, slot_off, arg_regs[idx]);
+        }
+
+        // Return the state pointer in rax.
+        try self.assembler.movRegReg(.rax, .r10);
+        try self.assembler.movRegReg(.rsp, .rbp);
+        try self.assembler.popReg(.rbp);
+        try self.assembler.ret();
+    }
+
+    /// Record the code position of state segment `state_id` and back-patch
+    /// its dispatch jump.
+    fn recordAsyncSegmentLabel(self: *NativeCodegen, ctx: *AsyncFnContext, state_id: usize) !void {
+        const here = self.assembler.getPosition();
+        ctx.state_labels.items[state_id] = here;
+        const jpos = ctx.dispatch_jumps.items[state_id];
+        // jeRel32 is 6 bytes (0F 84 + i32). The displacement is computed
+        // relative to the next instruction.
+        const disp: i32 = @as(i32, @intCast(here)) - @as(i32, @intCast(jpos + 6));
+        try self.assembler.patchJeRel32(jpos, disp);
+    }
+
+    /// Emit the "function exit" path for an async fn:
+    ///   1. Store rax (the value to return) into state.result
+    ///   2. Set state.ready = 1
+    ///   3. Jump to the epilogue (which restores callee-save and returns)
+    ///
+    /// Used by both the synthesized fall-off-the-end return and the
+    /// explicit ReturnStmt path.
+    fn emitAsyncReturn(self: *NativeCodegen, ctx: *AsyncFnContext) !void {
+        // Save the return value (currently in rax) into state.result.
+        try self.assembler.movMemReg(.rbx, STATE_OFF_RESULT, .rax);
+        // Set state.ready = 1
+        try self.assembler.movRegImm64(.rax, 1);
+        try self.assembler.movMemReg(.rbx, STATE_OFF_READY, .rax);
+        // Jump to the function epilogue (patched in caller after epilogue is emitted).
+        const jpos = self.assembler.getPosition();
+        try self.assembler.jmpRel32(0);
+        try ctx.epilogue_jumps.append(self.allocator, jpos);
+    }
+
+    /// Emit the suspend-and-yield sequence for an `await` expression in
+    /// an async fn body. The pre-scan has already counted N awaits, so
+    /// each call to this routine bumps `emitted_awaits` by one and
+    /// creates segment id `emitted_awaits + 1`.
+    ///
+    /// Sequence:
+    ///   1. The inner future pointer is currently in rax. Save it into
+    ///      state.inner_fut so the next poll knows what to poll.
+    ///   2. Set state.resume_pt = next_segment_id.
+    ///   3. Jump to the function epilogue (returning Pending).
+    ///   4. Emit the resume label and patch its dispatch jump.
+    ///   5. Reload inner future from state.inner_fut.
+    ///   6. Indirect-call inner.poll_fn(inner). The poll function may not
+    ///      mark inner as Ready yet, so:
+    ///   7. Re-check inner.ready. If 0, jump back to the epilogue
+    ///      (we suspend again at the same state ID — executor will retry).
+    ///   8. If 1, load inner.result into rax (the value of `await x`).
+    fn emitAwaitSuspend(self: *NativeCodegen, ctx: *AsyncFnContext) !void {
+        // Inner future pointer is currently in rax (we're being called right
+        // after generateExpr on the awaited expression).
+        try self.assembler.movMemReg(.rbx, STATE_OFF_INNER, .rax);
+
+        const next_state_id = ctx.emitted_awaits + 1;
+        // Store next_state_id in state.resume_pt.
+        try self.assembler.movRegImm64(.rax, @intCast(next_state_id));
+        try self.assembler.movMemReg(.rbx, STATE_OFF_RESUME, .rax);
+
+        // Jump to epilogue (returning Pending).
+        const jpos = self.assembler.getPosition();
+        try self.assembler.jmpRel32(0);
+        try ctx.epilogue_jumps.append(self.allocator, jpos);
+
+        // Emit the resume label and patch the dispatch jump for this state.
+        try self.recordAsyncSegmentLabel(ctx, next_state_id);
+        ctx.emitted_awaits += 1;
+
+        // On resume: reload inner future, poll it, check ready, etc.
+        try self.assembler.movRegMem(.rdi, .rbx, STATE_OFF_INNER);
+        // Load inner.poll_fn into r11 (caller-save, fine to clobber).
+        try self.assembler.movRegMem(.r11, .rdi, STATE_OFF_POLL_FN);
+        // Indirect call: call r11 — preserves rdi (which inner uses as self)
+        // and modifies inner's state in place.
+        try self.assembler.callReg(.r11);
+
+        // Re-fetch the inner pointer (callee may have clobbered rdi) and
+        // check inner.ready.
+        try self.assembler.movRegMem(.rdi, .rbx, STATE_OFF_INNER);
+        try self.assembler.movRegMem(.rax, .rdi, STATE_OFF_READY);
+        try self.assembler.testRegReg(.rax, .rax);
+        // If ready == 0, suspend again at the same state ID (the dispatch
+        // will jump us back here on the next poll).
+        const jz_susp = self.assembler.getPosition();
+        try self.assembler.jeRel32(0);
+        // Ready -> load result and continue. rax now holds the value.
+        try self.assembler.movRegMem(.rax, .rdi, STATE_OFF_RESULT);
+        // Skip past the suspend block.
+        const jmp_skip = self.assembler.getPosition();
+        try self.assembler.jmpRel32(0);
+
+        // Suspend block: jump to epilogue without changing resume_pt
+        // (so we re-enter this segment next poll).
+        const susp_pos = self.assembler.getPosition();
+        try self.assembler.patchJeRel32(jz_susp, @as(i32, @intCast(susp_pos)) - @as(i32, @intCast(jz_susp + 6)));
+        const susp_jmp = self.assembler.getPosition();
+        try self.assembler.jmpRel32(0);
+        try ctx.epilogue_jumps.append(self.allocator, susp_jmp);
+
+        // Continue point: after the suspend block.
+        const continue_pos = self.assembler.getPosition();
+        try self.assembler.patchJmpRel32(jmp_skip, @as(i32, @intCast(continue_pos)) - @as(i32, @intCast(jmp_skip + 5)));
+    }
+
+    /// Emit a `block_on` loop: poll the future in rax until it reports Ready,
+    /// then load its result into rax. Used to bridge async results into sync
+    /// code (top-level main, or any sync fn calling an async fn).
+    /// Emit a `block_on` loop: poll the future in rax until it reports Ready,
+    /// then load its result into rax. Used to bridge async results into sync
+    /// code (top-level main, or any sync fn calling an async fn).
+    ///
+    /// Codegen layout:
+    ///   push  rdi          ; save future pointer across the loop
+    /// loop:
+    ///   mov   rdi, [rsp]   ; reload future
+    ///   mov   r11, [rdi+8] ; poll_fn
+    ///   call  r11          ; (poll_fn)(future)
+    ///   mov   rdi, [rsp]
+    ///   mov   rax, [rdi]   ; ready
+    ///   test  rax, rax
+    ///   jz    loop         ; ready==0 -> still pending, retry
+    ///   mov   rdi, [rsp]
+    ///   mov   rax, [rdi+24]; load result
+    ///   pop   rdi
+    fn emitBlockOn(self: *NativeCodegen) !void {
+        // Save future pointer on the stack so it survives the call.
+        try self.assembler.movRegReg(.rdi, .rax);
+        try self.assembler.pushReg(.rdi);
+
+        const loop_start = self.assembler.getPosition();
+        try self.assembler.movRegMem(.rdi, .rsp, 0);
+        try self.assembler.movRegMem(.r11, .rdi, STATE_OFF_POLL_FN);
+        try self.assembler.callReg(.r11);
+
+        // Re-check ready flag.
+        try self.assembler.movRegMem(.rdi, .rsp, 0);
+        try self.assembler.movRegMem(.rax, .rdi, STATE_OFF_READY);
+        try self.assembler.testRegReg(.rax, .rax);
+
+        // ready == 0 → still Pending → loop. Backward je takes the jump.
+        const jz_pos = self.assembler.getPosition();
+        try self.assembler.jeRel32(0);
+        const after_jz = self.assembler.getPosition();
+        try self.assembler.patchJeRel32(jz_pos, @as(i32, @intCast(loop_start)) - @as(i32, @intCast(after_jz)));
+
+        // Ready: load result into rax.
+        try self.assembler.movRegMem(.rdi, .rsp, 0);
+        try self.assembler.movRegMem(.rax, .rdi, STATE_OFF_RESULT);
+        try self.assembler.popReg(.rdi);
+    }
+
+    fn emitFutureWrap(self: *NativeCodegen) !void {
+        // Save the value we want to wrap.
+        try self.assembler.movRegReg(.rcx, .rax);
+
+        // Allocate 16 bytes via the bump allocator.
+        try self.assembler.movRegImm64(.rdi, 16);
+        try self.heapAlloc(); // rax = pointer
+        try self.assembler.movRegReg(.r10, .rax);
+
+        // header[0] = 2 (Ready)
+        try self.assembler.movRegImm64(.rax, 2);
+        try self.assembler.movMemReg(.r10, 0, .rax);
+
+        // header[8] = result
+        try self.assembler.movMemReg(.r10, 8, .rcx);
+
+        // Return pointer in rax.
+        try self.assembler.movRegReg(.rax, .r10);
+    }
+
+    /// Try to emit a virtual call through any matching vtable. Searches all
+    /// known vtables for `trait_name` to find the first one that has a slot
+    /// named `method_name`. Used when we know the receiver is `dyn Trait`
+    /// but don't know the concrete impl type at compile time — at runtime the
+    /// trait-object header carries the right vtable.
+    ///
+    /// Args are pushed/popped using the same SysV ABI sequence as direct
+    /// calls. The receiver is passed as the first argument (rdi); call.args
+    /// fill rsi/rdx/rcx/r8/r9.
+    ///
+    /// Returns `true` if the dispatch was emitted, `false` if no matching
+    /// trait+method combination was found and the caller should fall through.
+    pub fn tryEmitVirtualCall(
+        self: *NativeCodegen,
+        receiver_expr: *ast.Expr,
+        trait_name: []const u8,
+        method_name: []const u8,
+        args: []const *ast.Expr,
+    ) !bool {
+        // Walk vtables and find the first one whose key starts with
+        // "TraitName::" and contains the requested method.
+        var slot_index: ?usize = null;
+        var it = self.trait_vtables.iterator();
+        const prefix = try std.fmt.allocPrint(self.allocator, "{s}::", .{trait_name});
+        defer self.allocator.free(prefix);
+        while (it.next()) |entry| {
+            if (!std.mem.startsWith(u8, entry.key_ptr.*, prefix)) continue;
+            if (entry.value_ptr.method_indices.get(method_name)) |idx| {
+                slot_index = idx;
+                break;
+            }
+        }
+        const idx = slot_index orelse return false;
+
+        // Push args (skip arg 0 — that's `self`, supplied by the receiver).
+        for (args) |arg| {
+            try self.generateExpr(arg);
+            try self.assembler.pushReg(.rax);
+        }
+
+        // Pop args into rsi/rdx/rcx/r8/r9 in reverse order.
+        const arg_regs = [_]x64.Register{ .rsi, .rdx, .rcx, .r8, .r9 };
+        const reg_arg_count = @min(args.len, arg_regs.len);
+        var j: usize = reg_arg_count;
+        while (j > 0) {
+            j -= 1;
+            try self.assembler.popReg(arg_regs[j]);
+        }
+
+        // Evaluate the receiver — gives us the trait-object header pointer
+        // in rax. emitVirtualDispatch handles the rest (load vtable, load
+        // function ptr, call indirect).
+        try self.generateExpr(receiver_expr);
+        try self.emitVirtualDispatch(idx);
+        return true;
     }
 
     /// Emit an indirect call sequence for a virtual method dispatch.
@@ -4844,17 +5658,37 @@ pub const NativeCodegen = struct {
         try self.assembler.addRegImm(.rax, 1);
     }
 
-    fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
+    fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) CodegenError!void {
         return self.generateFnDeclWithName(func, null);
     }
 
-    fn generateFnDeclWithName(self: *NativeCodegen, func: *ast.FnDecl, override_name: ?[]const u8) !void {
+    fn generateFnDeclWithName(self: *NativeCodegen, func: *ast.FnDecl, override_name: ?[]const u8) CodegenError!void {
         // Use override name if provided (for struct methods with mangled names)
         const effective_name = override_name orelse func.name;
+
+        // Async functions get a completely separate code path: a poll
+        // function with a state machine plus an entry function that
+        // allocates and initializes the state struct. Dispatch early so
+        // none of the sync prologue/epilogue/local-tracking machinery
+        // interferes.
+        if (func.is_async) {
+            // Track the current function name so error messages still make
+            // sense; the poll/entry emitter records its own positions.
+            self.current_function_name = effective_name;
+            defer self.current_function_name = null;
+            return self.generateAsyncFnDecl(func, effective_name);
+        }
 
         // Track current function name for return statement handling
         self.current_function_name = effective_name;
         defer self.current_function_name = null;
+
+        // Track async-ness so the return-stmt handler knows whether to wrap
+        // the return value in a Future header. Restored on function exit.
+        // (Sync path keeps the old behavior for back-compat.)
+        const prev_async = self.current_function_is_async;
+        self.current_function_is_async = func.is_async;
+        defer self.current_function_is_async = prev_async;
 
         // Reset local variable tracking for new function
         self.next_local_offset = 0;
@@ -5014,6 +5848,19 @@ pub const NativeCodegen = struct {
     }
 
     fn generateLetDecl(self: *NativeCodegen, decl: *ast.LetDecl) !void {
+        // Async fast path: locals live in the heap-allocated state struct
+        // instead of on the stack. The pre-scan already allocated a slot.
+        // Just evaluate the value and store it via [r12 + offset].
+        if (self.async_ctx) |ctx| {
+            if (decl.value) |value| {
+                try self.generateExpr(value);
+                if (ctx.locals.get(decl.name)) |off| {
+                    try self.assembler.movMemReg(.rbx, off, .rax);
+                }
+            }
+            return;
+        }
+
         if (self.next_local_offset >= MAX_LOCALS) {
             return error.TooManyVariables;
         }
@@ -5360,6 +6207,14 @@ pub const NativeCodegen = struct {
                 try self.assembler.movRegImm64(.rax, 0);
             },
             .Identifier => |id| {
+                // Async fast path: identifier resolves to a state-struct slot.
+                // Reads happen via `mov rax, [rbx + offset]`.
+                if (self.async_ctx) |ctx| {
+                    if (ctx.locals.get(id.name)) |off| {
+                        try self.assembler.movRegMem(.rax, .rbx, off);
+                        return;
+                    }
+                }
                 // Load from stack
                 if (self.locals.get(id.name)) |local_info| {
                     // Check if this is an array, struct, or enum type - return pointer instead of value
@@ -5754,6 +6609,19 @@ pub const NativeCodegen = struct {
                     if (member.object.* == .Identifier) {
                         const obj_name = member.object.Identifier.name;
                         if (self.locals.get(obj_name)) |local_info| {
+                            // Trait-object dispatch path: a local typed
+                            // `dyn TraitName` is a 16-byte header (data ptr +
+                            // vtable ptr). We resolve the method index by
+                            // walking the vtable's method_indices map and
+                            // emit an indirect call instead of going through
+                            // the static-method table.
+                            if (local_info.type_name.len > 4 and std.mem.startsWith(u8, local_info.type_name, "dyn ")) {
+                                const trait_name = std.mem.trim(u8, local_info.type_name[4..], " ");
+                                if (try self.tryEmitVirtualCall(member.object, trait_name, method_name, call.args)) {
+                                    return;
+                                }
+                            }
+
                             // We have a local variable - check its type
                             if (self.struct_layouts.contains(local_info.type_name)) {
                                 // It's a struct type - check if the method exists
@@ -6590,79 +7458,30 @@ pub const NativeCodegen = struct {
             .AwaitExpr => |await_expr| {
                 // Await expression: await future_expr
                 //
-                // Full async state machine implementation:
-                // 1. Evaluate the future expression
-                // 2. Call future.poll()
-                // 3. Check if Ready or Pending
-                // 4. If Pending, save state and yield to runtime
-                // 5. Runtime will call waker.wake() when ready
-                // 6. Resume execution and get result
-
-                // Evaluate the future expression (returns Future pointer in rax)
+                // Two semantics depending on context:
+                //
+                // 1. INSIDE an async fn body (self.async_ctx != null):
+                //    Real cooperative suspension. We evaluate the operand
+                //    (which produces a Future*), then call emitAwaitSuspend
+                //    to:
+                //      - save the inner future on our state
+                //      - bump our resume_pt
+                //      - return Pending so the executor re-polls us
+                //      - on resume, poll the inner future, check ready,
+                //        and either re-suspend or load the result.
+                //
+                // 2. OUTSIDE an async fn (sync context, e.g. main):
+                //    Eager block-on. We evaluate the operand and then call
+                //    emitBlockOn which spins polling the future until it
+                //    reports Ready, then loads the result. This bridges
+                //    async results back into sync code without giving up
+                //    the strict semantics that `await` returns the value.
                 try self.generateExpr(await_expr.expression);
-
-                // Save future pointer
-                try self.assembler.pushReg(.rax);
-
-                // Poll loop label
-                const poll_loop_start = self.assembler.getPosition();
-
-                // Restore future pointer
-                try self.assembler.movRegMem(.rdi, .rsp, 0); // Future* in rdi
-
-                // Call future.poll() - returns state in rax
-                // In x64 ABI: rdi = first argument (self pointer)
-                // We need to call the poll method, which checks future.state
-
-                // Load state from future: future->state (offset 0)
-                try self.assembler.movRegMem(.rax, .rdi, 0);
-
-                // Compare state with Completed (state == 2)
-                try self.assembler.movRegImm64(.rcx, 2);
-                try self.assembler.cmpRegReg(.rax, .rcx);
-
-                // If completed, jump to get result
-                const je_completed = self.assembler.getPosition();
-                try self.assembler.jeRel32(0);
-
-                // State is Pending - yield to runtime
-                // In full implementation:
-                // - Save current stack frame
-                // - Return control to executor
-                // - Executor schedules other tasks
-                // - When woken, executor resumes here
-
-                // For now, spin-wait (in production this would yield)
-                try self.assembler.movRegImm64(.rcx, 1000); // Small delay
-                const spin_loop = self.assembler.getPosition();
-                try self.assembler.movRegImm64(.rdx, 1);
-                try self.assembler.subRegReg(.rcx, .rdx);
-                try self.assembler.testRegReg(.rcx, .rcx);
-                const jnz_spin = self.assembler.getPosition();
-                try self.assembler.jnzRel32(0);
-
-                // Patch spin loop
-                const spin_offset = @as(i32, @intCast(spin_loop)) - @as(i32, @intCast(jnz_spin + 6));
-                try self.assembler.patchJnzRel32(jnz_spin, spin_offset);
-
-                // Jump back to poll
-                const jmp_poll = self.assembler.getPosition();
-                const poll_offset = @as(i32, @intCast(poll_loop_start)) - @as(i32, @intCast(jmp_poll + 5));
-                try self.assembler.jmpRel32(poll_offset);
-
-                // Completed: Get result
-                const completed_label = self.assembler.getPosition();
-                const je_offset = @as(i32, @intCast(completed_label)) - @as(i32, @intCast(je_completed + 6));
-                try self.assembler.patchJeRel32(je_completed, je_offset);
-
-                // Load result from future: future->result (offset 8, assuming state is u64)
-                try self.assembler.movRegMem(.rax, .rdi, 8);
-
-                // Clean up: pop future pointer from stack
-                try self.assembler.movRegImm64(.rdx, 8);
-                try self.assembler.addRegReg(.rsp, .rdx);
-
-                // Result is now in rax
+                if (self.async_ctx) |ctx| {
+                    try self.emitAwaitSuspend(ctx);
+                } else {
+                    try self.emitBlockOn();
+                }
             },
 
             .ComptimeExpr => |comptime_expr| {

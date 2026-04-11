@@ -52,3 +52,9 @@ test_timer
 test_type
 test_type2
 test_typeinfo
+
+# Compiled example binaries (sources are .home/.hm files in the same dir)
+/examples/*[!.][!h][!o][!m][!e]
+/examples/async_basic
+/examples/trait_basic
+/examples/fibonacci

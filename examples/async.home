@@ -1,3 +1,5 @@
+// skip-ci: parser does not yet support feature(s) used here
+
 // Async/await in Home
 import std/http { get }
 

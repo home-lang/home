@@ -1,0 +1,22 @@
+// Trait dispatch through inherent impl. Calls Square::area() via the
+// MemberExpr static-method path; if the parser/codegen ever regresses
+// this example will fail `home build`.
+
+trait Shape {
+    fn area(self): int;
+}
+
+struct Square {
+    side: int
+}
+
+impl Shape for Square {
+    fn area(self): int {
+        return self.side * self.side
+    }
+}
+
+fn main() {
+    let s = Square { side: 7 }
+    let _a = s.area()
+}

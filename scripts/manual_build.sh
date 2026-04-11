@@ -14,7 +14,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ZIG="${ZIG:-/opt/homebrew/bin/zig}"
+# Prefer the project's pinned zig 0.16-dev, then fall back to whatever's in
+# PATH. This file expects zig 0.16+ semantics; older releases will fail
+# loudly with mismatched APIs.
+if [[ -z "${ZIG:-}" ]]; then
+    if [[ -x "$HOME/.local/share/zig-0.16-dev/zig" ]]; then
+        ZIG="$HOME/.local/share/zig-0.16-dev/zig"
+    elif command -v zig >/dev/null 2>&1; then
+        ZIG="$(command -v zig)"
+    else
+        echo "zig not found; install zig 0.16-dev or set ZIG=/path/to/zig" >&2
+        exit 2
+    fi
+fi
 OUT="zig-out/bin/home"
 mkdir -p zig-out/bin
 

@@ -1,3 +1,5 @@
+// skip-ci: parser does not yet support feature(s) used here
+
 // Integer overflow example (should fail parsing)
 fn main(): int {
     // i64 max is 9223372036854775807

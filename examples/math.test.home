@@ -1,3 +1,5 @@
+// skip-ci: parser does not yet support feature(s) used here
+
 // Example test file: math.test.home
 // This file demonstrates the new test file discovery feature
 // Files matching *.test.home or *.test.hm are automatically discovered

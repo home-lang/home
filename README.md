@@ -8,12 +8,25 @@ A modern programming language for systems, apps, and games. Combines the speed o
 # Clone and build
 git clone https://github.com/home-lang/home.git
 cd home
-zig build
+./build               # equivalent to `zig build` (see note below)
 
 # Run an example
 ./zig-out/bin/home build examples/fibonacci.home
 ./examples/fibonacci
 ```
+
+> **Note:** On macOS 26+ with zig 0.16-dev the bundled libSystem stubs are
+> missing symbols that zig's own build runner needs, so `zig build` cannot
+> link itself. The `./build` wrapper bypasses the broken runner by calling
+> `zig build-exe` directly. When upstream zig ships fresh stubs you can
+> drop the wrapper and use `zig build` again. See `scripts/manual_build.sh`
+> for the gory details. Useful subcommands:
+>
+> - `./build` &mdash; build the compiler
+> - `./build test` &mdash; build, then run the unit-test suite
+> - `./build examples` &mdash; build, then `home check` every `.home` example
+> - `./build run examples/fibonacci.home` &mdash; build, then run a file
+> - `./build clean` &mdash; remove `zig-out` and `.zig-cache`
 
 ## Hello World
 
@@ -426,15 +439,18 @@ pantry install zig
 ### Build Commands
 
 ```bash
-# Build the compiler
-zig build
+# Build the compiler (uses ./build wrapper to work around the zig 0.16-dev
+# build-runner bug on macOS 26 — see Quick Start above)
+./build
 
 # Run tests
-zig build test
+./build test
+
+# Check all examples
+./build examples
 
 # Build and run an example
-./zig-out/bin/home build examples/fibonacci.home
-./examples/fibonacci
+./build run examples/fibonacci.home
 ```
 
 ## File Extensions

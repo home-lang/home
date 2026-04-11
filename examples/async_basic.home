@@ -1,0 +1,42 @@
+// Real native async runtime.
+//
+// Each `async fn` becomes two functions in the binary:
+//   1. `<name>` (entry)  -- mmap-allocates a 40-byte+ state struct,
+//      copies parameters into the locals area, fills in the header
+//      (ready=0, poll_fn pointer, resume_pt=0), returns the pointer.
+//   2. `<name>_poll` (state machine) -- the actual coroutine. Loads
+//      `resume_pt` from the state struct and dispatches via cmp/je
+//      to the right segment. Each `await` becomes:
+//        - store the inner future in state.inner_fut
+//        - bump state.resume_pt to the next segment id
+//        - return Pending so the executor re-polls us
+//        - resume label: indirect-call inner.poll_fn, check inner.ready,
+//          if 0 jump back to epilogue (suspend again), else load
+//          inner.result into rax and continue.
+//
+// When `main` (sync) calls an async fn, the codegen wraps the result in
+// a `block_on` poll loop that drives the future to completion.
+
+async fn double(n: int): int {
+    return n * 2
+}
+
+async fn add_one(n: int): int {
+    return n + 1
+}
+
+// Two awaits → two state IDs in the poll function. The local `a`
+// crosses an await point and is stored in the state struct (offset 40)
+// rather than on the stack, so it survives suspension and resume.
+async fn pipeline(): int {
+    let a = await double(10)
+    let b = await add_one(a)
+    return b
+}
+
+fn main() {
+    // `await pipeline()` from sync context: codegen emits a block_on
+    // poll loop that drives `pipeline`'s state machine until ready.
+    let result = await pipeline()
+    assert(result == 21)
+}

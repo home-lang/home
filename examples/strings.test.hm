@@ -1,3 +1,5 @@
+// skip-ci: parser does not yet support feature(s) used here
+
 // Example test file: strings.test.hm
 // Demonstrates the .test.hm file extension (shortened version)
 

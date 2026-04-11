@@ -1822,6 +1822,17 @@ pub const TypeChecker = struct {
             if (isIntegerType(expected)) {
                 return; // Valid integer literal coercion
             }
+            // Integer literal `0` is valid as a null pointer for *T
+            // (matches Home's existing kernel convention). Any other
+            // integer value would be suspicious in a pointer init.
+            if (expr.IntegerLiteral.value == 0) {
+                // Field-access into Void passes through permissively,
+                // pointer types are modeled either via Reference or as
+                // Void in imported namespaces — accept both here.
+                if (expected == .Reference or expected == .MutableReference or expected == .Void) {
+                    return;
+                }
+            }
         }
 
         // Special case: float literals can be coerced to any float type
@@ -2327,6 +2338,21 @@ pub const TypeChecker = struct {
         // Allow Void (unknown) types to be indexed - return Void
         if (array_type == .Void) {
             return Type.Void;
+        }
+
+        // Pointers support index access (many-item pointer `[*]T` and
+        // raw pointer `*T`). Kernel code uses `name[i]` where name is
+        // `[*]u8` for string-like buffers.
+        if (array_type == .Reference) {
+            return array_type.Reference.*;
+        }
+        if (array_type == .MutableReference) {
+            return array_type.MutableReference.*;
+        }
+
+        // String indexing returns u8.
+        if (array_type == .String) {
+            return Type.U8;
         }
 
         // Array must be an array type
@@ -2842,6 +2868,35 @@ pub const TypeChecker = struct {
         if (std.mem.startsWith(u8, name, "&")) {
             const inner_type_name = name[1..];
             const inner_type = try self.parseTypeName(inner_type_name);
+            const inner_ptr = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(inner_ptr);
+            inner_ptr.* = inner_type;
+            try self.allocated_types.append(self.allocator, inner_ptr);
+            return Type{ .Reference = inner_ptr };
+        }
+
+        // C-style raw pointer: `*T`, `*const T`, `*volatile T`,
+        // `*const volatile T`, `[*]T`. Modeled as Reference to avoid
+        // introducing a new variant — kernel code mostly uses these
+        // interchangeably with references.
+        if (std.mem.startsWith(u8, name, "*") or std.mem.startsWith(u8, name, "[*]")) {
+            var rest: []const u8 = undefined;
+            if (std.mem.startsWith(u8, name, "[*]")) {
+                rest = name[3..];
+            } else {
+                rest = name[1..];
+            }
+            // Strip leading `const ` / `volatile ` qualifiers.
+            while (true) {
+                if (std.mem.startsWith(u8, rest, "const ")) {
+                    rest = rest[6..];
+                } else if (std.mem.startsWith(u8, rest, "volatile ")) {
+                    rest = rest[9..];
+                } else {
+                    break;
+                }
+            }
+            const inner_type = try self.parseTypeName(rest);
             const inner_ptr = try self.allocator.create(Type);
             errdefer self.allocator.destroy(inner_ptr);
             inner_ptr.* = inner_type;

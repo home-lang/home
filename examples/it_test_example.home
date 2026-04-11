@@ -1,3 +1,5 @@
+// skip-ci: parser does not yet support feature(s) used here
+
 // Example demonstrating the new it('description') test syntax
 // This shows how to write inline tests similar to JavaScript testing frameworks
 

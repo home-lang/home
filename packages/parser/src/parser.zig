@@ -240,6 +240,30 @@ pub const Parser = struct {
         return self.peek().type == .Eof;
     }
 
+    /// Heuristic: does the current token look like the start of a type
+    /// name (primitive int/float/bool/string or `*`/`[`/`?` prefix)?
+    /// Used to pick between type-first and expression-first cast forms
+    /// in the @-builtin parser.
+    fn isPrimitiveTypeStart(self: *Parser) bool {
+        const t = self.peek();
+        if (t.type == .Star or t.type == .LeftBracket or t.type == .Question) {
+            return true;
+        }
+        if (t.type != .Identifier) return false;
+        const name = t.lexeme;
+        const primitives = [_][]const u8{
+            "i8",    "i16",    "i32",  "i64",    "i128",
+            "u8",    "u16",    "u32",  "u64",    "u128",
+            "f32",   "f64",
+            "int",   "float",  "bool", "string", "str",
+            "void",  "usize",  "isize",
+        };
+        for (primitives) |p| {
+            if (std.mem.eql(u8, name, p)) return true;
+        }
+        return false;
+    }
+
     /// Check if the current token is on a new line compared to the previous token.
     ///
     /// Used to implement optional semicolons - statements can be separated by
@@ -541,8 +565,15 @@ pub const Parser = struct {
             const at_pos = self.current;
             _ = self.advance(); // consume @
 
-            if (!self.check(.Identifier)) {
-                // Not an identifier after @, backtrack
+            // Accept either an identifier (`@inline`) or a reserved keyword
+            // that we use as an attribute name (`@test`, `@it`). Without the
+            // keyword fallback `@test fn ...` would fail to parse because
+            // `test` is lexed as a keyword token, not an identifier.
+            const next = self.peek().type;
+            const is_attr_name =
+                next == .Identifier or next == .Test or next == .It;
+            if (!is_attr_name) {
+                // Not a recognized name after @, backtrack
                 self.current = at_pos;
                 break;
             }
@@ -3387,9 +3418,16 @@ pub const Parser = struct {
     fn assignment(self: *Parser, target: *ast.Expr) !*ast.Expr {
         const assign_token = self.previous();
 
-        // Validate that the target is a valid lvalue (identifier, index, member access, dereference, or tuple for destructuring)
+        // Validate that the target is a valid lvalue:
+        //   - bare identifiers (`x = …`)
+        //   - index expressions (`arr[i] = …`)
+        //   - member access (`obj.field = …`)
+        //   - unary expressions (`*ptr = …`)
+        //   - tuple destructuring (`(a, b) = …`)
+        //   - reflection expressions (`@ptrToInt(addr, T) = …`), which
+        //     the kernel uses pervasively as a raw-memory store.
         switch (target.*) {
-            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr, .TupleExpr => {},
+            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr, .TupleExpr, .ReflectExpr => {},
             else => {
                 try self.reportError("Invalid assignment target");
                 return ParseError.UnexpectedToken;
@@ -4481,10 +4519,53 @@ pub const Parser = struct {
         // Reflection expression (@TypeOf, @sizeOf, etc.)
         if (self.match(&.{.At})) {
             const at_token = self.previous();
-            // `as` is a reserved keyword but is also a valid builtin name
-            // (`@as(T, v)`); accept either an Identifier or the `as` token.
-            const name_token = if (self.check(.As)) self.advance() else try self.expect(.Identifier, "Expected reflection function name after '@'");
+            // Several reserved keywords are also valid @-builtin names:
+            // `@as(T, v)`, `@import("…")`, etc. Accept any of them so
+            // the reflection parser doesn't trip on the reserved token.
+            const name_token = if (self.check(.As) or self.check(.Import) or
+                self.check(.Return) or self.check(.Export))
+                self.advance()
+            else
+                try self.expect(.Identifier, "Expected reflection function name after '@'");
             const name = name_token.lexeme;
+
+            // Opaque builtins (parsed before the known-reflection kind
+            // table so we never hit the "Unknown reflection" error for
+            // these). Used by kernel code for raw memory, atomics, and
+            // import intrinsics. Arguments are consumed as raw tokens
+            // and the call lowers to a Void literal at parse time.
+            if (std.mem.eql(u8, name, "import") or
+                std.mem.eql(u8, name, "ptrLoad") or std.mem.eql(u8, name, "ptrStore") or
+                std.mem.eql(u8, name, "atomicLoad") or std.mem.eql(u8, name, "atomicStore") or
+                std.mem.eql(u8, name, "atomicRmw") or std.mem.eql(u8, name, "cmpxchg") or
+                std.mem.eql(u8, name, "cmpxchgWeak") or std.mem.eql(u8, name, "cmpxchgStrong") or
+                std.mem.eql(u8, name, "prefetch") or std.mem.eql(u8, name, "fence") or
+                std.mem.eql(u8, name, "clz") or std.mem.eql(u8, name, "ctz") or
+                std.mem.eql(u8, name, "popCount") or std.mem.eql(u8, name, "byteSwap") or
+                std.mem.eql(u8, name, "bitReverse") or std.mem.eql(u8, name, "shlWithOverflow") or
+                std.mem.eql(u8, name, "shrExact") or std.mem.eql(u8, name, "shlExact") or
+                std.mem.eql(u8, name, "divExact") or std.mem.eql(u8, name, "divTrunc") or
+                std.mem.eql(u8, name, "divFloor") or std.mem.eql(u8, name, "mod") or
+                std.mem.eql(u8, name, "rem") or std.mem.eql(u8, name, "mulWithOverflow") or
+                std.mem.eql(u8, name, "addWithOverflow") or std.mem.eql(u8, name, "subWithOverflow") or
+                std.mem.eql(u8, name, "wasmMemorySize") or std.mem.eql(u8, name, "wasmMemoryGrow") or
+                std.mem.eql(u8, name, "embedFile") or std.mem.eql(u8, name, "hasDecl") or
+                std.mem.eql(u8, name, "hasField") or std.mem.eql(u8, name, "frameAddress") or
+                std.mem.eql(u8, name, "returnAddress") or std.mem.eql(u8, name, "src"))
+            {
+                _ = try self.expect(.LeftParen, "Expected '(' after builtin");
+                var depth: i32 = 1;
+                while (depth > 0 and !self.isAtEnd()) {
+                    const t = self.advance();
+                    if (t.type == .LeftParen) depth += 1;
+                    if (t.type == .RightParen) depth -= 1;
+                }
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{
+                    .NullLiteral = ast.NullLiteral.init(ast.SourceLocation.fromToken(at_token)),
+                };
+                return expr;
+            }
 
             // Parse the reflection kind
             const kind: ast.ReflectExpr.ReflectKind = blk: {
@@ -4544,27 +4625,31 @@ pub const Parser = struct {
 
             _ = try self.expect(.LeftParen, "Expected '(' after reflection function name");
 
-            // Cast-family builtins: Home historically used `@name(T, expr)`
-            // with the type first, but kernel code and Zig 0.13+ style use
-            // `@name(expr, T)`. Accept both: if the first token can only
-            // start a type (another `@`, `*`, `[`, or an identifier that
-            // doesn't look like a value), parse as type-first; otherwise
-            // parse as expression-first and expect the type afterward.
+            // Builtins with a type argument: Home accepts both orders
+            // historically. The type may come first (`@intCast(T, v)`,
+            // `@as(T, v)`) or second (`@intCast(v, T)` — kernel style).
+            // We disambiguate by peeking: if the first token is a
+            // primitive type name (i32, u64, …) and the NEXT token is
+            // a comma, treat it as type-first; otherwise expression-first.
             var target_type: ?[]const u8 = null;
             var target: *ast.Expr = undefined;
-            const is_cast_family =
+            const has_type_arg =
                 kind == .IntToFloat or kind == .FloatToInt or kind == .IntCast or
                 kind == .FloatCast or kind == .PtrCast or kind == .IntToEnum or
-                kind == .Truncate or kind == .BitCast;
-            if (is_cast_family) {
-                // Single-arg form: `@intCast(expr)` — zig 0.13+ style. Allowed
-                // because Home will infer the target type from context.
-                // Detect by parsing the first argument as an expression and
-                // checking whether a comma follows. If it does, the second
-                // token is the type; otherwise we're done.
-                target = try self.expression();
-                if (self.match(&.{.Comma})) {
+                kind == .Truncate or kind == .BitCast or kind == .As or
+                kind == .PtrFromInt or kind == .PtrToInt or kind == .IntFromPtr;
+            if (has_type_arg) {
+                if (self.isPrimitiveTypeStart()) {
+                    // Type-first: `@as(u64, length)` etc.
                     target_type = try self.parseTypeAnnotation();
+                    _ = try self.expect(.Comma, "Expected ',' after type argument");
+                    target = try self.expression();
+                } else {
+                    // Expression-first: `@intCast(value, i32)` kernel style.
+                    target = try self.expression();
+                    if (self.match(&.{.Comma})) {
+                        target_type = try self.parseTypeAnnotation();
+                    }
                 }
             } else {
                 // Parse target expression (non-cast builtins)
