@@ -902,9 +902,11 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightParen, "Expected ')' after parameters");
 
-        // Parse return type (TypeScript-style with colon)
+        // Parse return type. Both styles are accepted:
+        //   TypeScript-style: `fn foo(x: int): int { ... }`
+        //   Rust-style:       `fn foo(x: int) -> int { ... }`
         var return_type: ?[]const u8 = null;
-        if (self.match(&.{.Colon})) {
+        if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
             return_type = try self.parseTypeAnnotation();
         }
 
@@ -1665,9 +1667,9 @@ pub const Parser = struct {
 
             _ = try self.expect(.RightParen, "Expected ')' in function type");
 
-            // Parse optional return type
+            // Parse optional return type. Accept both `: T` and `-> T`.
             var return_type: []const u8 = "()";
-            if (self.match(&.{.Colon})) {
+            if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
                 return_type = try self.parseTypeAnnotation();
             }
 
@@ -1726,19 +1728,40 @@ pub const Parser = struct {
             return try std.fmt.allocPrint(self.allocator, "?[{s}]", .{inner});
         }
 
-        // Check for pointer type: *T or *const T
+        // Check for pointer type: *T, *const T, *volatile T, *const volatile T.
+        // `volatile` qualifies the pointee the same way `const` does and is
+        // required by kernel code that touches MMIO registers.
         if (self.match(&.{.Star})) {
             const is_const = self.match(&.{.Const});
+            // `volatile` is a soft keyword here — accept either the reserved
+            // token (if defined) or an Identifier with that lexeme.
+            var is_volatile = false;
+            if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                _ = self.advance();
+                is_volatile = true;
+            }
             const inner_type = try self.parseTypeAnnotation();
-            if (is_const) {
+            if (is_const and is_volatile) {
+                return try std.fmt.allocPrint(self.allocator, "*const volatile {s}", .{inner_type});
+            } else if (is_const) {
                 return try std.fmt.allocPrint(self.allocator, "*const {s}", .{inner_type});
+            } else if (is_volatile) {
+                return try std.fmt.allocPrint(self.allocator, "*volatile {s}", .{inner_type});
             } else {
                 return try std.fmt.allocPrint(self.allocator, "*{s}", .{inner_type});
             }
         }
 
-        // Check for array type: [T], [T; N], [N]T, or []T
+        // Check for array type: [T], [T; N], [N]T, or []T.
+        // Also handles `[*]T` — Zig-style many-item pointer used in
+        // kernel FFI signatures (pointer to unknown-length array).
         if (self.match(&.{.LeftBracket})) {
+            if (self.peek().type == .Star) {
+                _ = self.advance(); // consume `*`
+                _ = try self.expect(.RightBracket, "Expected ']' after [*");
+                const elem_type = try self.parseTypeAnnotation();
+                return try std.fmt.allocPrint(self.allocator, "[*]{s}", .{elem_type});
+            }
             if (self.peek().type == .RightBracket) {
                 // Empty brackets: []T - dynamic array
                 _ = try self.expect(.RightBracket, "Expected ']'");
@@ -3211,7 +3234,7 @@ pub const Parser = struct {
     /// Returns the folded value if both operands are IntegerLiterals AND the
     /// operation is total at runtime. Returns null otherwise; the caller
     /// falls back to constructing a BinaryExpr.
-    fn foldIntegerBinary(op: ast.BinaryOp, left: *ast.Expr, right: *ast.Expr) ?i64 {
+    pub fn foldIntegerBinary(op: ast.BinaryOp, left: *ast.Expr, right: *ast.Expr) ?i64 {
         if (left.* != .IntegerLiteral) return null;
         if (right.* != .IntegerLiteral) return null;
         const a = left.IntegerLiteral.value;
@@ -4239,18 +4262,49 @@ pub const Parser = struct {
 
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
-        // Inline assembly
+        // Inline assembly. Two forms supported:
+        //   1. asm("string")                          — simple literal form
+        //   2. asm volatile ( ... )                    — Zig-style operand
+        //      form with output/input/clobber lists. The body (between the
+        //      outer parens) is captured as an opaque raw string so kernel
+        //      code that mixes operand expressions can at least parse.
         if (self.match(&.{.Asm})) {
             const asm_token = self.previous();
+            // Optional `volatile` keyword (soft — matched as Identifier).
+            if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                _ = self.advance();
+            }
             _ = try self.expect(.LeftParen, "Expected '(' after 'asm'");
-            const str_token = try self.expect(.String, "Expected string literal for assembly instruction");
-            _ = try self.expect(.RightParen, "Expected ')' after assembly instruction");
 
-            // Remove quotes from string literal
-            const instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+            // If the body is a simple string literal followed by `)`, keep
+            // the old behavior (captures just the instruction string).
+            if (self.check(.String)) {
+                const save_pos = self.current;
+                const str_token = self.advance();
+                if (self.check(.RightParen)) {
+                    _ = self.advance();
+                    const instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+                    const expr = try self.allocator.create(ast.Expr);
+                    expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init(instruction, ast.SourceLocation.fromToken(asm_token)) };
+                    return expr;
+                }
+                // Not a simple form — rewind and fall through to raw capture.
+                self.current = save_pos;
+            }
+
+            // Raw-capture mode: walk the token stream until the matching
+            // right paren, tracking nesting. Operand lists are preserved
+            // as opaque tokens — the codegen layer is where we interpret
+            // them if/when we ship a real inline-asm backend.
+            var depth: i32 = 1;
+            while (depth > 0 and !self.isAtEnd()) {
+                const t = self.advance();
+                if (t.type == .LeftParen) depth += 1;
+                if (t.type == .RightParen) depth -= 1;
+            }
 
             const expr = try self.allocator.create(ast.Expr);
-            expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init(instruction, ast.SourceLocation.fromToken(asm_token)) };
+            expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init("", ast.SourceLocation.fromToken(asm_token)) };
             return expr;
         }
 
@@ -4427,7 +4481,9 @@ pub const Parser = struct {
         // Reflection expression (@TypeOf, @sizeOf, etc.)
         if (self.match(&.{.At})) {
             const at_token = self.previous();
-            const name_token = try self.expect(.Identifier, "Expected reflection function name after '@'");
+            // `as` is a reserved keyword but is also a valid builtin name
+            // (`@as(T, v)`); accept either an Identifier or the `as` token.
+            const name_token = if (self.check(.As)) self.advance() else try self.expect(.Identifier, "Expected reflection function name after '@'");
             const name = name_token.lexeme;
 
             // Parse the reflection kind
@@ -4441,6 +4497,8 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "fieldType")) break :blk .FieldType;
                 if (std.mem.eql(u8, name, "intFromPtr")) break :blk .IntFromPtr;
                 if (std.mem.eql(u8, name, "ptrFromInt")) break :blk .PtrFromInt;
+                // Legacy alias for code that still uses @intToPtr.
+                if (std.mem.eql(u8, name, "intToPtr")) break :blk .PtrFromInt;
                 if (std.mem.eql(u8, name, "truncate")) break :blk .Truncate;
                 if (std.mem.eql(u8, name, "as")) break :blk .As;
                 if (std.mem.eql(u8, name, "bitCast")) break :blk .BitCast;
@@ -4486,19 +4544,32 @@ pub const Parser = struct {
 
             _ = try self.expect(.LeftParen, "Expected '(' after reflection function name");
 
-            // Some builtins take a type as the first argument
+            // Cast-family builtins: Home historically used `@name(T, expr)`
+            // with the type first, but kernel code and Zig 0.13+ style use
+            // `@name(expr, T)`. Accept both: if the first token can only
+            // start a type (another `@`, `*`, `[`, or an identifier that
+            // doesn't look like a value), parse as type-first; otherwise
+            // parse as expression-first and expect the type afterward.
             var target_type: ?[]const u8 = null;
-            if (kind == .IntToFloat or kind == .FloatToInt or kind == .IntCast or
+            var target: *ast.Expr = undefined;
+            const is_cast_family =
+                kind == .IntToFloat or kind == .FloatToInt or kind == .IntCast or
                 kind == .FloatCast or kind == .PtrCast or kind == .IntToEnum or
-                kind == .Truncate or kind == .BitCast)
-            {
-                // Parse type argument first
-                target_type = try self.parseTypeAnnotation();
-                _ = try self.expect(.Comma, "Expected ',' after type argument");
+                kind == .Truncate or kind == .BitCast;
+            if (is_cast_family) {
+                // Single-arg form: `@intCast(expr)` — zig 0.13+ style. Allowed
+                // because Home will infer the target type from context.
+                // Detect by parsing the first argument as an expression and
+                // checking whether a comma follows. If it does, the second
+                // token is the type; otherwise we're done.
+                target = try self.expression();
+                if (self.match(&.{.Comma})) {
+                    target_type = try self.parseTypeAnnotation();
+                }
+            } else {
+                // Parse target expression (non-cast builtins)
+                target = try self.expression();
             }
-
-            // Parse target expression
-            const target = try self.expression();
 
             // Parse second argument for two-arg builtins like @atan2, @min, @max, @pow
             var second_arg: ?*ast.Expr = null;
@@ -4582,6 +4653,18 @@ pub const Parser = struct {
             return expr;
         }
 
+        // `undefined` — Zig-style typed undefined value. Represented as
+        // a NullLiteral here so it assigns to any type without tripping
+        // the "Undefined variable" type-checker rule.
+        if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "undefined")) {
+            const token = self.advance();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .NullLiteral = ast.NullLiteral.init(ast.SourceLocation.fromToken(token)),
+            };
+            return expr;
+        }
+
         // Integer literals
         if (self.match(&.{.Integer})) {
             const token = self.previous();
@@ -4627,12 +4710,24 @@ pub const Parser = struct {
             // Skip prefix for non-decimal bases
             const parse_str = if (base != 10) clean[2..] else clean;
 
-            const value = std.fmt.parseInt(i64, parse_str, base) catch |err| {
-                if (err == error.Overflow) {
-                    try self.reportError("Integer literal is too large (exceeds i64 range)");
-                    return error.IntegerOverflow;
+            // Parse as i64 first; if that overflows, fall back to u64 (for
+            // large unsigned masks like 0xFFFFFFFFFFFFFFFF) and reinterpret
+            // the bit pattern as i64 via a cast. The type suffix decides
+            // the final signedness at typecheck time.
+            const value: i64 = blk: {
+                if (std.fmt.parseInt(i64, parse_str, base)) |v| {
+                    break :blk v;
+                } else |err| {
+                    if (err == error.Overflow) {
+                        if (std.fmt.parseInt(u64, parse_str, base)) |uv| {
+                            break :blk @bitCast(uv);
+                        } else |_| {
+                            try self.reportError("Integer literal is too large (exceeds u64 range)");
+                            return error.IntegerOverflow;
+                        }
+                    }
+                    return err;
                 }
-                return err;
             };
 
             const expr = try self.allocator.create(ast.Expr);

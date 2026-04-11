@@ -1898,7 +1898,7 @@ pub fn main(init: std.process.Init) !void {
     const program_name = std.fs.path.basename(args[0]);
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
-        var test_args = std.ArrayList([:0]const u8).empty;
+        var test_args: std.ArrayList([:0]const u8) = .empty;
         defer test_args.deinit(allocator);
 
         try test_args.append(allocator, args[0]); // Program name

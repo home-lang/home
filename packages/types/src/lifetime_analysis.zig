@@ -146,9 +146,9 @@ pub const LifetimeTracker = struct {
             .var_lifetimes = std.StringHashMap(Lifetime).init(allocator),
             .var_ownership = std.StringHashMap(OwnershipState).init(allocator),
             .active_borrows = std.StringHashMap([]const u8).init(allocator),
-            .constraints = std.ArrayList(LifetimeConstraint).init(allocator),
-            .errors = std.ArrayList(LifetimeError).init(allocator),
-            .warnings = std.ArrayList(LifetimeWarning).init(allocator),
+            .constraints = std.ArrayList(LifetimeConstraint).empty,
+            .errors = std.ArrayList(LifetimeError).empty,
+            .warnings = std.ArrayList(LifetimeWarning).empty,
         };
     }
 
@@ -156,9 +156,17 @@ pub const LifetimeTracker = struct {
         self.var_lifetimes.deinit();
         self.var_ownership.deinit();
         self.active_borrows.deinit();
-        self.constraints.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        self.constraints.deinit(self.allocator);
+        // Errors and warnings hold owned message strings; release them so
+        // the test allocator's leak detector stays happy.
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
+        self.errors.deinit(self.allocator);
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+        }
+        self.warnings.deinit(self.allocator);
     }
 
     /// Enter a new scope
@@ -265,7 +273,7 @@ pub const LifetimeTracker = struct {
         try self.active_borrows.put(borrow_name, source_var);
 
         // Add constraint: source must outlive borrow
-        try self.constraints.append(LifetimeConstraint.init(source_lifetime, borrow_lifetime));
+        try self.constraints.append(self.allocator, LifetimeConstraint.init(source_lifetime, borrow_lifetime));
     }
 
     /// Create a mutable borrow
@@ -326,7 +334,7 @@ pub const LifetimeTracker = struct {
         try self.var_ownership.put(borrow_name, .BorrowedMut);
         try self.active_borrows.put(borrow_name, source_var);
 
-        try self.constraints.append(LifetimeConstraint.init(source_lifetime, borrow_lifetime));
+        try self.constraints.append(self.allocator, LifetimeConstraint.init(source_lifetime, borrow_lifetime));
     }
 
     /// Move value from one variable to another
@@ -450,11 +458,11 @@ pub const LifetimeTracker = struct {
     }
 
     fn addError(self: *LifetimeTracker, err: LifetimeError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *LifetimeTracker, warning: LifetimeWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *LifetimeTracker) bool {
@@ -530,7 +538,7 @@ test "move detection" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Move x to y
     try tracker.moveValue("x", "y", scope1, loc);
@@ -548,7 +556,7 @@ test "borrow creation" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Create shared borrow
     try tracker.createBorrow("r", "x", scope1, loc);
@@ -564,7 +572,7 @@ test "conflicting borrows" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Create mutable borrow
     try tracker.createBorrowMut("r1", "x", scope1, loc);
@@ -585,7 +593,7 @@ test "dangling reference detection" {
     const scope2 = tracker.enterScope();
     try tracker.declareOwned("y", scope2);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Create borrow from y in outer scope
     try tracker.createBorrow("r", "y", scope1, loc);

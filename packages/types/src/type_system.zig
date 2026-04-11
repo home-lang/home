@@ -962,6 +962,14 @@ pub const TypeChecker = struct {
                         if (err == error.OutOfMemory) return err;
                         // Other errors are logged as warnings
                     };
+                    // `import "…" as foo` — bind the alias to Void so
+                    // `foo.anything` type-checks as an opaque namespace.
+                    // The real resolution of what lives inside the
+                    // module happens at codegen time; for type checking
+                    // we just need the alias to exist.
+                    if (import_decl.alias) |alias_name| {
+                        self.env.define(alias_name, Type.Void) catch {};
+                    }
                 },
                 .FnDecl => |fn_decl| {
                     try self.collectFunctionSignature(fn_decl);

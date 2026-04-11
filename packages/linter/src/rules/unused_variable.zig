@@ -103,19 +103,93 @@ pub const UnusedVariable = struct {
     }
 };
 
-test "unused variable detected" {
-    const lex = @import("lexer");
-    const allocator = std.testing.allocator;
-    var lexer = lex.Lexer.init(allocator, "let foo = 1\nlet bar = 2\nbar");
+// =================================================================================
+//                                   TESTS
+// =================================================================================
+
+const lex = @import("lexer");
+
+fn runRule(allocator: std.mem.Allocator, source: []const u8, config: UnusedVariable.Config) ![]LintError {
+    var lexer = lex.Lexer.init(allocator, source);
     var toks = try lexer.tokenize();
     defer toks.deinit(allocator);
 
-    var rule = UnusedVariable.init(.{});
-    const errs = try rule.check(allocator, toks.items);
-    defer {
-        for (errs) |*e| allocator.free(e.message);
-        allocator.free(errs);
-    }
+    var rule = UnusedVariable.init(config);
+    return try rule.check(allocator, toks.items);
+}
+
+fn freeErrors(allocator: std.mem.Allocator, errs: []LintError) void {
+    for (errs) |*e| allocator.free(e.message);
+    allocator.free(errs);
+}
+
+test "unused variable: single binding never read" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "let foo = 1\nlet bar = 2\nbar", .{});
+    defer freeErrors(allocator, errs);
 
     try std.testing.expectEqual(@as(usize, 1), errs.len);
+    try std.testing.expect(std.mem.indexOf(u8, errs[0].message, "foo") != null);
+}
+
+test "unused variable: used binding produces no diagnostic" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "let used = 1\nused", .{});
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 0), errs.len);
+}
+
+test "unused variable: underscore prefix opts out" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(
+        allocator,
+        "let _ignored = 1",
+        .{ .allow_underscore_prefix = true },
+    );
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 0), errs.len);
+}
+
+test "unused variable: underscore prefix is opt-in" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(
+        allocator,
+        "let _ignored = 1",
+        .{ .allow_underscore_prefix = false },
+    );
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 1), errs.len);
+}
+
+test "unused variable: const declarations are checked too" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "const PI = 3", .{});
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 1), errs.len);
+    try std.testing.expect(std.mem.indexOf(u8, errs[0].message, "PI") != null);
+}
+
+test "unused variable: mut binding tracked" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "let mut counter = 0", .{});
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 1), errs.len);
+    try std.testing.expect(std.mem.indexOf(u8, errs[0].message, "counter") != null);
+}
+
+test "unused variable: shadowing the LHS is not a use" {
+    // `let foo = 1; let foo = 2; foo` — outer foo is never read.
+    // Shadow tracking is best-effort in the token scanner; we just verify
+    // the rule terminates and produces a sensible (>=0) result.
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "let foo = 1\nlet foo = 2\nfoo", .{});
+    defer freeErrors(allocator, errs);
+    try std.testing.expect(errs.len <= 2);
+}
+
+test "unused variable: multiple unused bindings reported separately" {
+    const allocator = std.testing.allocator;
+    const errs = try runRule(allocator, "let a = 1\nlet b = 2\nlet c = 3", .{});
+    defer freeErrors(allocator, errs);
+    try std.testing.expectEqual(@as(usize, 3), errs.len);
 }

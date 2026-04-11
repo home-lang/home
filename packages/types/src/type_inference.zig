@@ -198,6 +198,26 @@ pub const TypeInferencer = struct {
         try self.unify(actual, expected);
     }
 
+    /// Like `checkExpression`, but tags any resulting mismatch with `origin`
+    /// so the diagnostic can say where the expected type came from
+    /// (annotation, return position, function arg, etc.).
+    ///
+    /// The origin is stored on the inferencer for the duration of the call;
+    /// after `checkExpression` returns we restore the previous value so
+    /// callers don't pollute each other's context.
+    pub fn checkExpressionWithOrigin(
+        self: *TypeInferencer,
+        expr: *const ast.Expr,
+        expected: *Type,
+        env: *type_system.TypeEnvironment,
+        origin: []const u8,
+    ) !void {
+        const saved = self.current_origin;
+        self.setExpectedOrigin(origin);
+        defer self.current_origin = saved;
+        try self.checkExpression(expr, expected, env);
+    }
+
     /// Synthesis mode: Type flows UP from expression to context
     /// This is used when we don't know what type an expression has and need to infer it.
     ///
@@ -372,9 +392,17 @@ pub const TypeInferencer = struct {
                 return error.ArgumentCountMismatch;
             }
 
-            // CHECK each argument against its expected parameter type
-            for (call.arguments, func_info.params) |arg, param_ty| {
-                try self.checkExpression(&arg, @constCast(param_ty), env);
+            // CHECK each argument against its expected parameter type. We
+            // use the origin-aware checker so a mismatch can say "argument N
+            // of function call" instead of just "expected X, got Y".
+            for (call.arguments, func_info.params, 0..) |arg, param_ty, idx| {
+                var origin_buf: [64]u8 = undefined;
+                const origin = std.fmt.bufPrint(
+                    &origin_buf,
+                    "function argument #{d}",
+                    .{idx + 1},
+                ) catch "function argument";
+                try self.checkExpressionWithOrigin(&arg, @constCast(param_ty), env, origin);
             }
 
             // Return type is known
@@ -427,9 +455,11 @@ pub const TypeInferencer = struct {
         // SYNTHESIZE type from first element
         const first_ty = try self.synthesizeExpression(&arr.elements[0], env);
 
-        // CHECK that all other elements have the same type
+        // CHECK that all other elements have the same type. Tag the origin
+        // so a mismatch points the user at "must match the first array
+        // element's type" rather than just "type mismatch".
         for (arr.elements[1..]) |elem| {
-            try self.checkExpression(&elem, first_ty, env);
+            try self.checkExpressionWithOrigin(&elem, first_ty, env, "array element type (inferred from first element)");
         }
 
         const arr_ty = try self.allocator.create(Type);
@@ -506,16 +536,18 @@ pub const TypeInferencer = struct {
 
     /// Infer type of ternary expression
     fn inferTernaryExpr(self: *TypeInferencer, tern: *const ast.TernaryExpr, env: *type_system.TypeEnvironment) !*Type {
-        // CHECK that condition is Bool
+        // CHECK that condition is Bool. Tag the origin so a non-bool
+        // condition produces "ternary condition must be bool" rather than
+        // a generic mismatch.
         const bool_ty = try self.allocator.create(Type);
         bool_ty.* = Type.Bool;
-        try self.checkExpression(&tern.condition, bool_ty, env);
+        try self.checkExpressionWithOrigin(&tern.condition, bool_ty, env, "ternary condition (must be bool)");
 
         // SYNTHESIZE type from then branch
         const then_ty = try self.synthesizeExpression(&tern.then_expr, env);
 
-        // CHECK that else branch matches then branch
-        try self.checkExpression(&tern.else_expr, then_ty, env);
+        // CHECK that else branch matches then branch.
+        try self.checkExpressionWithOrigin(&tern.else_expr, then_ty, env, "ternary else branch (must match then branch)");
 
         return then_ty;
     }
@@ -706,7 +738,9 @@ pub const TypeInferencer = struct {
                 }
 
                 for (func1.params, func2.params) |p1, p2| {
-                    try self.unify(@constCast(p1), @constCast(p2));
+                    var p1_copy = p1;
+                    var p2_copy = p2;
+                    try self.unify(&p1_copy, &p2_copy);
                 }
 
                 try self.unify(@constCast(func1.return_type), @constCast(func2.return_type));
@@ -750,7 +784,9 @@ pub const TypeInferencer = struct {
                 if (tv.name) |n| {
                     try buf.appendSlice(allocator, n);
                 } else {
-                    try buf.writer(allocator).print("'t{d}", .{tv.id});
+                    var num_buf: [32]u8 = undefined;
+                    const formatted = try std.fmt.bufPrint(&num_buf, "'t{d}", .{tv.id});
+                    try buf.appendSlice(allocator, formatted);
                 }
             },
             .Array => |arr| {
@@ -762,7 +798,8 @@ pub const TypeInferencer = struct {
                 try buf.appendSlice(allocator, "fn(");
                 for (func.params, 0..) |p, i| {
                     if (i > 0) try buf.appendSlice(allocator, ", ");
-                    try renderType(@constCast(p), buf, allocator);
+                    var p_copy = p;
+                    try renderType(&p_copy, buf, allocator);
                 }
                 try buf.appendSlice(allocator, ") -> ");
                 try renderType(@constCast(func.return_type), buf, allocator);
@@ -791,13 +828,15 @@ pub const TypeInferencer = struct {
             .Array => |arr| return try self.occursCheck(var_id, @constCast(arr.element_type)),
             .Function => |func| {
                 for (func.params) |param| {
-                    if (try self.occursCheck(var_id, @constCast(param))) return true;
+                    var param_copy = param;
+                    if (try self.occursCheck(var_id, &param_copy)) return true;
                 }
                 return try self.occursCheck(var_id, @constCast(func.return_type));
             },
             .Tuple => |tuple| {
                 for (tuple.element_types) |elem| {
-                    if (try self.occursCheck(var_id, @constCast(elem))) return true;
+                    var elem_copy = elem;
+                    if (try self.occursCheck(var_id, &elem_copy)) return true;
                 }
                 return false;
             },
@@ -1010,7 +1049,8 @@ pub const Substitution = struct {
                 defer params.deinit(allocator);
 
                 for (func.params) |param| {
-                    const param_ty = try self.apply(@constCast(param), allocator);
+                    var param_copy = param;
+                    const param_ty = try self.apply(&param_copy, allocator);
                     try params.append(allocator, param_ty.*);
                 }
 
@@ -1042,3 +1082,114 @@ pub const Substitution = struct {
         }
     }
 };
+
+// =================================================================================
+//                       MISMATCH-DETAIL TESTS
+// =================================================================================
+//
+// These exercise the new TypeMismatchDetail bookkeeping in TypeInferencer:
+// recordMismatch must capture rendered type names, takeLastError must transfer
+// ownership cleanly, and the suggestion heuristics must fire on the cases the
+// user is most likely to hit (int↔float, bool from numeric).
+
+test "type inference: mismatch records expected and found names" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    var int_ty: Type = .Int;
+    var str_ty: Type = .String;
+
+    try std.testing.expectError(error.TypeMismatch, inferencer.unify(&int_ty, &str_ty));
+
+    const detail = inferencer.takeLastError() orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    var owned = detail;
+    defer owned.deinit(allocator);
+
+    try std.testing.expectEqualStrings("int", owned.expected_repr);
+    try std.testing.expectEqualStrings("string", owned.found_repr);
+}
+
+test "type inference: takeLastError transfers ownership" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    var a: Type = .Int;
+    var b: Type = .Bool;
+    try std.testing.expectError(error.TypeMismatch, inferencer.unify(&a, &b));
+
+    // First take should succeed, second should be null.
+    var first = inferencer.takeLastError();
+    try std.testing.expect(first != null);
+    if (first) |*d| d.deinit(allocator);
+    try std.testing.expectEqual(@as(?TypeMismatchDetail, null), inferencer.takeLastError());
+}
+
+test "type inference: int↔float mismatch suggests cast" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    var i: Type = .Int;
+    var f: Type = .Float;
+    try std.testing.expectError(error.TypeMismatch, inferencer.unify(&i, &f));
+
+    var detail = inferencer.takeLastError() orelse return error.TestExpectedEqual;
+    defer detail.deinit(allocator);
+
+    try std.testing.expect(detail.suggestion != null);
+    if (detail.suggestion) |s| {
+        try std.testing.expect(std.mem.indexOf(u8, s, "float") != null);
+    }
+}
+
+test "type inference: bool from int suggests explicit comparison" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    var b: Type = .Bool;
+    var i: Type = .Int;
+    try std.testing.expectError(error.TypeMismatch, inferencer.unify(&b, &i));
+
+    var detail = inferencer.takeLastError() orelse return error.TestExpectedEqual;
+    defer detail.deinit(allocator);
+
+    try std.testing.expect(detail.suggestion != null);
+    if (detail.suggestion) |s| {
+        try std.testing.expect(std.mem.indexOf(u8, s, "x != 0") != null);
+    }
+}
+
+test "type inference: setExpectedOrigin propagates through to error" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    inferencer.setExpectedOrigin("variable annotation `let x: int`");
+
+    var i: Type = .Int;
+    var s: Type = .String;
+    try std.testing.expectError(error.TypeMismatch, inferencer.unify(&i, &s));
+
+    var detail = inferencer.takeLastError() orelse return error.TestExpectedEqual;
+    defer detail.deinit(allocator);
+
+    try std.testing.expectEqualStrings("variable annotation `let x: int`", detail.origin);
+}
+
+test "type inference: matching primitives don't create errors" {
+    const allocator = std.testing.allocator;
+    var inferencer = TypeInferencer.init(allocator);
+    defer inferencer.deinit();
+
+    var a: Type = .Int;
+    var b: Type = .Int;
+    try inferencer.unify(&a, &b);
+
+    try std.testing.expectEqual(@as(?TypeMismatchDetail, null), inferencer.last_error);
+}

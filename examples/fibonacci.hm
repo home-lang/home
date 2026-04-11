@@ -1,4 +1,4 @@
-// Fibonacci sequence in Home
+// Fibonacci sequence in Home (Rust-style `-> ReturnType` syntax variant).
 fn fib(n: int) -> int {
   if n <= 1 {
     return n

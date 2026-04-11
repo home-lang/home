@@ -630,6 +630,13 @@ pub const NativeCodegen = struct {
     /// Current offset for binary data (starts after strings end)
     data_literals_offset: usize,
 
+    // Trait vtables (per (trait, type) pair). Each vtable is a contiguous
+    // array of function pointers placed in the data section. Method calls on
+    // a trait object load the function pointer from the vtable and call it
+    // indirectly. The map key is "TraitName::ImplType" so different impls of
+    // the same trait don't collide.
+    trait_vtables: std.StringHashMap(VtableInfo),
+
     // Register allocation
     /// Simple register allocator for optimizing register usage
     reg_alloc: RegisterAllocator,
@@ -703,6 +710,7 @@ pub const NativeCodegen = struct {
             .string_fixups = std.ArrayList(StringFixup).empty,
             .data_literals = std.ArrayList([]const u8).empty,
             .data_literals_offset = 0,
+            .trait_vtables = std.StringHashMap(VtableInfo).init(allocator),
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
@@ -872,6 +880,14 @@ pub const NativeCodegen = struct {
             self.allocator.free(data);
         }
         self.data_literals.deinit(self.allocator);
+
+        // Free trait_vtables (keys are owned, values hold an inner hashmap).
+        var vt_it = self.trait_vtables.iterator();
+        while (vt_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit();
+        }
+        self.trait_vtables.deinit();
 
         // Free imported_modules keys and hashmap
         {
@@ -2442,9 +2458,20 @@ pub const NativeCodegen = struct {
         var keys_to_remove = std.ArrayList([]const u8).empty;
         defer keys_to_remove.deinit(self.allocator);
 
+        // locals_before counts how many locals were live before the block we're
+        // unwinding. Truncating it to u8 silently corrupts cleanup once a
+        // function has > 255 locals — use the checked cast helper so we get a
+        // hard error instead of a miscompilation.
+        const cutoff = safeIntCast(u8, locals_before) catch {
+            std.debug.print(
+                "codegen: function exceeds 256 local slots (locals_before={d})\n",
+                .{locals_before},
+            );
+            return error.TooManyVariables;
+        };
         var iter = self.locals.iterator();
         while (iter.next()) |entry| {
-            if (entry.value_ptr.offset >= @as(u8, @intCast(locals_before))) {
+            if (entry.value_ptr.offset >= cutoff) {
                 try keys_to_remove.append(self.allocator, entry.key_ptr.*);
             }
         }
@@ -4563,6 +4590,115 @@ pub const NativeCodegen = struct {
         try self.assembler.syscall();
     }
 
+    // ----------------------------------------------------------------
+    // Trait vtable layout & dispatch
+    // ----------------------------------------------------------------
+    //
+    // Layout: each (Trait, ImplType) pair gets a flat array of N
+    // function pointers in the data section, where N is the number of
+    // methods declared on the trait. The order matches the trait's
+    // declaration order so dispatch is `*(vtable + index*8)`.
+    //
+    // Trait objects are pairs of (data pointer, vtable pointer). The
+    // data pointer is the receiver; the vtable pointer is loaded with
+    // an LEA to the data section. A virtual call computes:
+    //
+    //     fn_ptr = *(vtable + method_index * 8)
+    //     fn_ptr(data, args...)
+
+    /// Build a vtable for `(trait_name, impl_type)` from `(method_name,
+    /// function_offset)` entries. Allocates `N * 8` zero bytes in the data
+    /// literals section, then patches each slot with the absolute-ish offset
+    /// of the implementation function. The linker resolves the slot to a
+    /// runtime address when emitting the binary.
+    ///
+    /// Returns the data-section offset of the vtable, suitable for storing in
+    /// trait-object headers.
+    pub fn emitTraitVtable(
+        self: *NativeCodegen,
+        trait_name: []const u8,
+        impl_type: []const u8,
+        methods: []const struct { name: []const u8, function_offset: usize },
+    ) !usize {
+        const key = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ trait_name, impl_type });
+        errdefer self.allocator.free(key);
+
+        if (self.trait_vtables.get(key)) |existing| {
+            self.allocator.free(key);
+            return existing.data_offset;
+        }
+
+        // Reserve N * 8 bytes in the data section. Each slot starts as zero
+        // and is overwritten with the function offset below.
+        var bytes = try self.allocator.alloc(u8, methods.len * 8);
+        errdefer self.allocator.free(bytes);
+        @memset(bytes, 0);
+
+        var indices = std.StringHashMap(usize).init(self.allocator);
+        errdefer indices.deinit();
+
+        for (methods, 0..) |m, i| {
+            try indices.put(m.name, i);
+            std.mem.writeInt(u64, bytes[i * 8 ..][0..8], @as(u64, @intCast(m.function_offset)), .little);
+        }
+
+        const offset = self.data_literals_offset;
+        try self.data_literals.append(self.allocator, bytes);
+        self.data_literals_offset += bytes.len;
+
+        try self.trait_vtables.put(key, .{
+            .data_offset = offset,
+            .method_count = methods.len,
+            .method_indices = indices,
+        });
+
+        return offset;
+    }
+
+    /// Look up a vtable by `(trait_name, impl_type)`. Returns null if no
+    /// vtable has been emitted yet (caller is expected to fall back to
+    /// static dispatch or report an error).
+    pub fn lookupTraitVtable(
+        self: *NativeCodegen,
+        trait_name: []const u8,
+        impl_type: []const u8,
+    ) ?*const VtableInfo {
+        // The lookup key needs to be heap-allocated because the StringHashMap
+        // stores keys by pointer. Stack-format and check.
+        var key_buf: [256]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "{s}::{s}", .{ trait_name, impl_type }) catch return null;
+        return self.trait_vtables.getPtr(key);
+    }
+
+    /// Emit an indirect call sequence for a virtual method dispatch.
+    ///
+    /// Preconditions:
+    ///   - rax holds the *trait object header* (a pointer to a 16-byte
+    ///     record: { data_ptr, vtable_ptr }).
+    ///   - rsi/rdx/rcx/r8/r9 hold args 2..6 already (caller's responsibility).
+    ///
+    /// Effect:
+    ///   - Loads the vtable pointer from [rax + 8] into r10.
+    ///   - Loads the data pointer from [rax + 0] into rdi (receiver = arg 1).
+    ///   - Loads the function pointer from [r10 + slot*8] into r11.
+    ///   - Emits `call r11`.
+    ///
+    /// `slot` is the method's index in the vtable (0-based, in declaration order).
+    pub fn emitVirtualDispatch(self: *NativeCodegen, slot: usize) !void {
+        // r10 = vtable_ptr = [rax + 8]
+        try self.assembler.movRegMem(.r10, .rax, 8);
+        // rdi = data_ptr = [rax + 0]
+        try self.assembler.movRegMem(.rdi, .rax, 0);
+        // r11 = [r10 + slot*8]
+        const offset_i32 = safeIntCast(i32, slot * 8) catch {
+            std.debug.print("vtable slot {d} too large for i32 displacement\n", .{slot});
+            return error.UnsupportedFeature;
+        };
+        try self.assembler.movRegMem(.r11, .r10, offset_i32);
+        // call r11
+        try self.assembler.callReg(.r11);
+    }
+
     /// Load the address of a string literal into rax (registers a fixup for linking).
     fn loadStringLiteralIntoRax(self: *NativeCodegen, literal: []const u8) !void {
         const data_offset = try self.registerStringLiteral(literal);
@@ -5146,7 +5282,13 @@ pub const NativeCodegen = struct {
         self.next_local_offset += @as(u32, @intCast(n + 1));
     }
 
-    /// Try to fold constant expressions at compile-time
+    /// Try to fold constant expressions at compile-time.
+    ///
+    /// Uses checked arithmetic so an overflowing literal in the user's source
+    /// (`9223372036854775807 + 1`) refuses to fold rather than wrapping
+    /// silently. The caller falls back to emitting a real BinaryExpr, which
+    /// goes through the runtime arithmetic path and traps if it actually
+    /// overflows at run time.
     fn tryFoldConstant(self: *NativeCodegen, expr: *const ast.Expr) ?i64 {
         switch (expr.*) {
             .IntegerLiteral => |lit| return lit.value,
@@ -5156,9 +5298,9 @@ pub const NativeCodegen = struct {
                 const right = self.tryFoldConstant(bin.right) orelse return null;
 
                 return switch (bin.op) {
-                    .Add => left + right,
-                    .Sub => left - right,
-                    .Mul => left * right,
+                    .Add => std.math.add(i64, left, right) catch null,
+                    .Sub => std.math.sub(i64, left, right) catch null,
+                    .Mul => std.math.mul(i64, left, right) catch null,
                     .Div => if (right != 0) @divTrunc(left, right) else null,
                     .Mod => if (right != 0) @mod(left, right) else null,
                     .BitAnd => left & right,

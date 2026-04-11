@@ -595,5 +595,30 @@ test "optimizer" {
     var optimizer = try Optimizer.init(testing.allocator, .standard);
     defer optimizer.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 5), optimizer.passes.items.len);
+    // .standard pipeline: const-fold, strength-reduction, cse, copy-propagation,
+    // dce, instruction-scheduling = 6 passes.
+    try testing.expectEqual(@as(usize, 6), optimizer.passes.items.len);
+
+    // Verify the scheduling pass is the *last* one — if it ran before
+    // simplification it would waste work and the simplification passes
+    // could undo its decisions.
+    const last = optimizer.passes.items[optimizer.passes.items.len - 1];
+    try testing.expectEqualStrings("instruction-scheduling", last.name);
+}
+
+test "optimizer aggressive includes vectorize" {
+    const testing = std.testing;
+
+    var opt = try Optimizer.init(testing.allocator, .aggressive);
+    defer opt.deinit(testing.allocator);
+
+    // .aggressive should include both the vectorizer and the scheduler.
+    var has_vec = false;
+    var has_sched = false;
+    for (opt.passes.items) |p| {
+        if (std.mem.eql(u8, p.name, "vectorize")) has_vec = true;
+        if (std.mem.eql(u8, p.name, "instruction-scheduling")) has_sched = true;
+    }
+    try testing.expect(has_vec);
+    try testing.expect(has_sched);
 }

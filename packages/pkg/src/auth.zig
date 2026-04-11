@@ -76,7 +76,7 @@ pub const TokenStore = struct {
     /// Load tokens from disk
     pub fn load(self: *TokenStore) !void {
         // Read and parse JSON
-        var threaded = std.Io.Threaded.init(self.allocator, .{});
+        var threaded = std.Io.Threaded.init(self.allocator, .{ .environ = std.process.Environ.empty });
         defer threaded.deinit();
         const io = threaded.io();
 
@@ -129,7 +129,7 @@ pub const TokenStore = struct {
 
         // Ensure directory exists
         const dir_path = std.fs.path.dirname(self.config_path) orelse return error.InvalidPath;
-        var threaded_save = std.Io.Threaded.init(self.allocator, .{});
+        var threaded_save = std.Io.Threaded.init(self.allocator, .{ .environ = std.process.Environ.empty });
         defer threaded_save.deinit();
         const io_val = threaded_save.io();
         const cwd = Io.Dir.cwd();
@@ -323,7 +323,7 @@ pub const AuthManager = struct {
         }
 
         // Interactive login
-        var threaded_io = std.Io.Threaded.init(self.allocator, .{});
+        var threaded_io = std.Io.Threaded.init(self.allocator, .{ .environ = std.process.Environ.empty });
         defer threaded_io.deinit();
         const io = threaded_io.io();
 

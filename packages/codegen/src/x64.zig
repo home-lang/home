@@ -476,6 +476,17 @@ pub const Assembler = struct {
         try self.code.appendSlice(self.allocator, &bytes);
     }
 
+    /// call r/m64 — indirect call through a register. Used for trait/vtable
+    /// dispatch where the function address is loaded at runtime. Encoded as
+    /// `FF /2` with optional REX.B for r8-r15.
+    pub fn callReg(self: *Assembler, target: Register) !void {
+        if (target.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0xFF);
+        try self.emitModRM(0b11, 2, @intFromEnum(target));
+    }
+
     /// Get current code position (for calculating jumps)
     pub fn getPosition(self: *Assembler) usize {
         return self.code.items.len;

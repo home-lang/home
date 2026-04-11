@@ -36,6 +36,10 @@ pub const ModuleResolver = struct {
     packages_root: []const u8,
     /// Source file root directory (for resolving relative imports)
     source_root: ?[]const u8,
+    /// Directory of the file currently being parsed. Used by the
+    /// string-path import resolver so `../core/foo.home` is relative
+    /// to the importer, not the project root.
+    current_file_dir: ?[]const u8,
     /// I/O context for file system operations (null when io is not available)
     io: ?Io,
 
@@ -57,6 +61,7 @@ pub const ModuleResolver = struct {
             .module_cache = std.StringHashMap(ResolvedModule).init(allocator),
             .packages_root = packages_root,
             .source_root = null,
+            .current_file_dir = null,
             .io = io,
         };
     }
@@ -73,6 +78,11 @@ pub const ModuleResolver = struct {
         } else {
             try dir_path.appendSlice(self.allocator, ".");
         }
+
+        // Record the file's own directory so string-path imports can
+        // resolve `../foo` relative to the importing file.
+        if (self.current_file_dir) |old| self.allocator.free(old);
+        self.current_file_dir = try self.allocator.dupe(u8, dir_path.items);
 
         // Check if we're in a src/ directory and go up to project root
         const dir_str = dir_path.items;
@@ -114,6 +124,7 @@ pub const ModuleResolver = struct {
         self.module_cache.deinit();
         self.allocator.free(self.packages_root);
         if (self.source_root) |root| self.allocator.free(root);
+        if (self.current_file_dir) |dir| self.allocator.free(dir);
     }
 
     /// Resolve a module path to an actual file
@@ -129,6 +140,17 @@ pub const ModuleResolver = struct {
         if (self.module_cache.get(cache_key)) |cached| {
             self.allocator.free(cache_key);
             return cached;
+        }
+
+        // String-path form: `import "../core/foundation.home" as foo`.
+        // The parser hands this to us as a single segment containing a
+        // relative or absolute file path. We resolve it against the
+        // source file's directory rather than the package root.
+        if (path_segments.len == 1 and isFilePathLike(path_segments[0])) {
+            if (try self.resolveFilePath(path_segments)) |module| {
+                try self.module_cache.put(cache_key, module);
+                return module;
+            }
         }
 
         // Try resolving as standard library module
@@ -147,6 +169,65 @@ pub const ModuleResolver = struct {
 
         // Module not found - errdefer will free cache_key
         return error.ModuleNotFound;
+    }
+
+    /// Heuristic for string-path imports: the segment contains a `/`, a
+    /// path-relative prefix (`./` or `../`), an absolute path, or ends in
+    /// a known source extension.
+    fn isFilePathLike(segment: []const u8) bool {
+        if (segment.len == 0) return false;
+        if (segment[0] == '/') return true;
+        if (std.mem.startsWith(u8, segment, "./")) return true;
+        if (std.mem.startsWith(u8, segment, "../")) return true;
+        if (std.mem.indexOf(u8, segment, "/") != null) return true;
+        if (std.mem.endsWith(u8, segment, ".home")) return true;
+        if (std.mem.endsWith(u8, segment, ".hm")) return true;
+        if (std.mem.endsWith(u8, segment, ".zig")) return true;
+        return false;
+    }
+
+    /// Resolve an explicit file-path import against source_root (dir of
+    /// the file doing the import).
+    fn resolveFilePath(self: *ModuleResolver, path_segments: []const []const u8) !?ResolvedModule {
+        const raw = path_segments[0];
+
+        // Try as absolute path first.
+        if (raw.len > 0 and raw[0] == '/') {
+            if (try self.fileExists(raw)) {
+                return ResolvedModule{
+                    .path = path_segments,
+                    .file_path = try self.allocator.dupe(u8, raw),
+                    .name = basename(raw),
+                    .is_zig = std.mem.endsWith(u8, raw, ".zig"),
+                };
+            }
+            return null;
+        }
+
+        // Resolve against the importing file's own directory first,
+        // then the project root, then cwd.
+        const bases: [3]?[]const u8 = .{ self.current_file_dir, self.source_root, "." };
+        for (bases) |base_opt| {
+            const base = base_opt orelse continue;
+            var path_buf = std.ArrayList(u8).empty;
+            defer path_buf.deinit(self.allocator);
+            try path_buf.appendSlice(self.allocator, base);
+            if (base.len > 0 and base[base.len - 1] != '/') {
+                try path_buf.append(self.allocator, '/');
+            }
+            try path_buf.appendSlice(self.allocator, raw);
+
+            if (try self.fileExists(path_buf.items)) {
+                return ResolvedModule{
+                    .path = path_segments,
+                    .file_path = try self.allocator.dupe(u8, path_buf.items),
+                    .name = basename(raw),
+                    .is_zig = std.mem.endsWith(u8, raw, ".zig"),
+                };
+            }
+        }
+
+        return null;
     }
 
     /// Resolve standard library module
@@ -301,14 +382,35 @@ pub const ModuleResolver = struct {
         return null;
     }
 
-    /// Check if file exists
+    /// Check if file exists. Falls back to libc `access()` when the Io
+    /// context is null so the resolver works during early parse before
+    /// g_io is plumbed through.
     fn fileExists(self: *ModuleResolver, path: []const u8) !bool {
-        const io = self.io orelse return false;
-        Io.Dir.cwd().access(io, path, .{}) catch |err| {
-            if (err == error.FileNotFound) return false;
-            return err;
-        };
-        return true;
+        if (self.io) |io| {
+            Io.Dir.cwd().access(io, path, .{}) catch |err| {
+                if (err == error.FileNotFound) return false;
+                return err;
+            };
+            return true;
+        }
+        // Sync fallback via libc access(F_OK).
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (path.len >= buf.len) return false;
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0;
+        const rc = std.c.access(@ptrCast(&buf[0]), 0); // F_OK = 0
+        return rc == 0;
+    }
+
+    /// Return the portion of `path` after its last `/`. Used to derive
+    /// a module name from a file-path import.
+    fn basename(path: []const u8) []const u8 {
+        var i: usize = path.len;
+        while (i > 0) {
+            i -= 1;
+            if (path[i] == '/') return path[i + 1 ..];
+        }
+        return path;
     }
 
     /// Create cache key from path segments

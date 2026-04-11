@@ -3,18 +3,25 @@
 
 const std = @import("std");
 
-/// Simple spinlock mutex (std.Thread.Mutex removed in Zig 0.16)
+/// Simple test-and-test-and-set spinlock built from a u32 atomic.
+/// std.atomic.Mutex was removed in Zig 0.16; std.Thread.Mutex requires
+/// OS primitives that we don't need here.
 const SpinMutex = struct {
-    inner: std.atomic.Mutex = .unlocked,
+    state: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     pub fn lock(self: *SpinMutex) void {
-        while (!self.inner.tryLock()) {
-            std.atomic.spinLoopHint();
+        while (true) {
+            if (self.state.cmpxchgWeak(0, 1, .acquire, .monotonic) == null) {
+                return;
+            }
+            while (self.state.load(.monotonic) != 0) {
+                std.atomic.spinLoopHint();
+            }
         }
     }
 
     pub fn unlock(self: *SpinMutex) void {
-        self.inner.unlock();
+        self.state.store(0, .release);
     }
 };
 

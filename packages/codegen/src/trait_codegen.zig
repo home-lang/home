@@ -69,8 +69,12 @@ pub const TraitCodegen = struct {
     }
 
     pub fn deinit(self: *TraitCodegen) void {
+        // The hash map keys are owned (dup'd via allocator.dupe). The values
+        // own additional state via VTable.deinit. Free both halves before
+        // releasing the maps.
         var vtable_it = self.vtables.iterator();
         while (vtable_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
             var vtable = entry.value_ptr;
             vtable.deinit(self.allocator);
         }
@@ -78,7 +82,8 @@ pub const TraitCodegen = struct {
 
         var impl_it = self.trait_impls.iterator();
         while (impl_it.next()) |entry| {
-            entry.value_ptr.deinit();
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(self.allocator);
         }
         self.trait_impls.deinit();
     }
@@ -543,4 +548,69 @@ test "trait codegen static dispatch" {
 
     // Test static dispatch code generation
     // Would need actual implementation registration
+}
+
+// =================================================================================
+//                       VTABLE LOOKUP / SET TESTS
+// =================================================================================
+
+test "lookupMethod returns null when trait is unknown" {
+    const allocator = std.testing.allocator;
+    var codegen = TraitCodegen.init(allocator);
+    defer codegen.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), codegen.lookupMethod("Display", "fmt"));
+}
+
+test "vtable round-trip: insert -> setMethodPointer -> lookupMethod" {
+    const allocator = std.testing.allocator;
+    var codegen = TraitCodegen.init(allocator);
+    defer codegen.deinit();
+
+    // Build a fake vtable directly (we don't have a TraitDecl in scope here).
+    var vtable = TraitCodegen.VTable.init(allocator, try allocator.dupe(u8, "Display"));
+
+    // Initial method entry — function_ptr starts at 0 (placeholder).
+    try vtable.methods.put(try allocator.dupe(u8, "fmt"), .{
+        .name = try allocator.dupe(u8, "fmt"),
+        .function_ptr = 0,
+        .param_types = try allocator.alloc([]const u8, 0),
+        .return_type = null,
+    });
+
+    try codegen.vtables.put(try allocator.dupe(u8, "Display"), vtable);
+
+    // Before setMethodPointer is called, lookup must return null because
+    // function_ptr == 0 means "not yet bound".
+    try std.testing.expectEqual(@as(?usize, null), codegen.lookupMethod("Display", "fmt"));
+
+    // Bind it. The native back end calls this once it knows the offset.
+    try codegen.setMethodPointer("Display", "fmt", 0x1234);
+
+    // Now lookup must return the bound address.
+    try std.testing.expectEqual(@as(?usize, 0x1234), codegen.lookupMethod("Display", "fmt"));
+
+    // Method count tracks vtable size.
+    try std.testing.expectEqual(@as(?usize, 1), codegen.methodCount("Display"));
+}
+
+test "setMethodPointer surfaces errors for missing trait or method" {
+    const allocator = std.testing.allocator;
+    var codegen = TraitCodegen.init(allocator);
+    defer codegen.deinit();
+
+    // No trait registered yet.
+    try std.testing.expectError(
+        error.TraitNotFound,
+        codegen.setMethodPointer("Iterator", "next", 0x42),
+    );
+
+    // Register an empty vtable so we can hit the MethodNotFound branch too.
+    const vtable = TraitCodegen.VTable.init(allocator, try allocator.dupe(u8, "Iterator"));
+    try codegen.vtables.put(try allocator.dupe(u8, "Iterator"), vtable);
+
+    try std.testing.expectError(
+        error.MethodNotFound,
+        codegen.setMethodPointer("Iterator", "next", 0x42),
+    );
 }

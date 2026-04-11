@@ -75,8 +75,8 @@ pub const MoveTracker = struct {
             .var_states = std.StringHashMap(MoveState).init(allocator),
             .field_states = std.StringHashMap(std.ArrayList(FieldMoveState)).init(allocator),
             .move_history = std.StringHashMap(ast.SourceLocation).init(allocator),
-            .errors = std.ArrayList(MoveError).init(allocator),
-            .warnings = std.ArrayList(MoveWarning).init(allocator),
+            .errors = std.ArrayList(MoveError).empty,
+            .warnings = std.ArrayList(MoveWarning).empty,
         };
     }
 
@@ -86,13 +86,21 @@ pub const MoveTracker = struct {
 
         var iter = self.field_states.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.field_states.deinit();
 
         self.move_history.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        // Errors carry owned message strings (allocated via std.fmt.allocPrint).
+        // Free them so the test allocator's leak detector stays clean.
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
+        self.errors.deinit(self.allocator);
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+        }
+        self.warnings.deinit(self.allocator);
     }
 
     /// Register type move semantics
@@ -131,8 +139,8 @@ pub const MoveTracker = struct {
                     .kind = .UseAfterMove,
                     .message = try std.fmt.allocPrint(
                         self.allocator,
-                        "Use of moved variable '{s}' (moved at {s}:{}:{})",
-                        .{ var_name, ml.file, ml.line, ml.column },
+                        "Use of moved variable '{s}' (moved at line {}:{})",
+                        .{ var_name, ml.line, ml.column },
                     ),
                     .location = loc,
                     .variable_name = var_name,
@@ -220,15 +228,20 @@ pub const MoveTracker = struct {
             return;
         }
 
-        // Track field-level move
-        var fields = self.field_states.get(struct_var) orelse blk: {
-            var new_fields = std.ArrayList(FieldMoveState).init(self.allocator);
-            try self.field_states.put(struct_var, new_fields);
-            break :blk self.field_states.get(struct_var).?;
+        // Track field-level move.
+        //
+        // HashMap.get() returns a *copy* of the value, so we'd be appending to
+        // a stack-local ArrayList that gets discarded — leaking the backing
+        // storage. Use getPtr() to mutate in place. If the entry doesn't
+        // exist yet, putNoClobber an empty list and then re-fetch the pointer.
+        const fields_ptr = blk: {
+            if (self.field_states.getPtr(struct_var)) |p| break :blk p;
+            try self.field_states.put(struct_var, std.ArrayList(FieldMoveState).empty);
+            break :blk self.field_states.getPtr(struct_var).?;
         };
 
         // Check if field already moved
-        for (fields.items) |field_state| {
+        for (fields_ptr.items) |field_state| {
             if (std.mem.eql(u8, field_state.field_name, field_name)) {
                 if (field_state.state == .FullyMoved) {
                     try self.addError(.{
@@ -247,8 +260,8 @@ pub const MoveTracker = struct {
             }
         }
 
-        // Record field move
-        try fields.append(.{
+        // Record field move on the in-place pointer.
+        try fields_ptr.append(self.allocator, .{
             .field_name = field_name,
             .state = .FullyMoved,
         });
@@ -354,11 +367,11 @@ pub const MoveTracker = struct {
     }
 
     fn addError(self: *MoveTracker, err: MoveError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *MoveTracker, warning: MoveWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *MoveTracker) bool {
@@ -473,7 +486,7 @@ test "use after move detection" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Move x to y
     try tracker.moveValue("x", "y", "String", loc);
@@ -491,7 +504,7 @@ test "copy type does not move" {
     try tracker.initialize("x");
     try tracker.registerType("Int", .Copy);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // "Move" x to y (but it's Copy, so x is still usable)
     try tracker.moveValue("x", "y", "Int", loc);
@@ -508,7 +521,7 @@ test "partial move" {
 
     try tracker.initialize("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Move field from struct
     try tracker.moveField("s", "field1", "x", loc);
@@ -523,7 +536,7 @@ test "conditional move" {
 
     try tracker.initialize("x");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // First conditional move
     try tracker.conditionalMove("x", loc);
@@ -539,7 +552,7 @@ test "reinitialize after move" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
 
     // Move x
     try tracker.moveValue("x", "y", "String", loc);

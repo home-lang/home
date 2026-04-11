@@ -135,8 +135,8 @@ pub const BoundsTracker = struct {
             .array_bounds = std.StringHashMap(BoundsInfo).init(allocator),
             .index_ranges = std.StringHashMap(IndexRange).init(allocator),
             .checked_indices = std.StringHashMap(bool).init(allocator),
-            .errors = std.ArrayList(BoundsError).init(allocator),
-            .warnings = std.ArrayList(BoundsWarning).init(allocator),
+            .errors = std.ArrayList(BoundsError).empty,
+            .warnings = std.ArrayList(BoundsWarning).empty,
         };
     }
 
@@ -144,8 +144,15 @@ pub const BoundsTracker = struct {
         self.array_bounds.deinit();
         self.index_ranges.deinit();
         self.checked_indices.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        // Errors hold owned message strings; free before releasing the list.
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
+        self.errors.deinit(self.allocator);
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+        }
+        self.warnings.deinit(self.allocator);
     }
 
     pub fn setMode(self: *BoundsTracker, mode: BoundsCheckMode) void {
@@ -364,11 +371,11 @@ pub const BoundsTracker = struct {
     }
 
     fn addError(self: *BoundsTracker, err: BoundsError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *BoundsTracker, warning: BoundsWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *BoundsTracker) bool {
@@ -548,7 +555,7 @@ test "out of bounds detection" {
 
     try tracker.setBounds("arr", BoundsInfo.constant(10));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
     try tracker.checkAccess("arr", IndexRange.constant(15), loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -562,7 +569,7 @@ test "safe in bounds access" {
 
     try tracker.setBounds("arr", BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
     try tracker.checkAccess("arr", IndexRange.constant(50), loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -608,4 +615,58 @@ test "range intersection" {
     const intersection = StaticAnalysis.rangeIntersect(a, b);
     try std.testing.expect(intersection.min_index == 5);
     try std.testing.expect(intersection.max_index == 10);
+}
+
+// =================================================================================
+//                       ERROR-MESSAGE RENDERING TESTS
+// =================================================================================
+
+test "definitely-out-of-bounds error includes array name and length" {
+    const allocator = std.testing.allocator;
+    var tracker = BoundsTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.setBounds("arr", BoundsInfo.constant(4));
+
+    const loc = ast.SourceLocation{ .line = 7, .column = 3 };
+    try tracker.checkAccess("arr", IndexRange.constant(10), loc);
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.errors.items.len);
+    const msg = tracker.errors.items[0].message;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "arr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "out of bounds") != null);
+}
+
+test "in-bounds access produces no error" {
+    const allocator = std.testing.allocator;
+    var tracker = BoundsTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.setBounds("buf", BoundsInfo.constant(8));
+
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
+    try tracker.checkAccess("buf", IndexRange.constant(0), loc);
+    try tracker.checkAccess("buf", IndexRange.constant(7), loc);
+
+    try std.testing.expectEqual(@as(usize, 0), tracker.errors.items.len);
+}
+
+test "possibly-out-of-bounds error suggests runtime check" {
+    const allocator = std.testing.allocator;
+    var tracker = BoundsTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.setBounds("dyn", BoundsInfo.constant(10));
+
+    // Index range that overlaps both inside and outside.
+    const loc = ast.SourceLocation{ .line = 1, .column = 1 };
+    try tracker.checkAccess("dyn", IndexRange.init(8, 12), loc);
+
+    try std.testing.expect(tracker.errors.items.len >= 1);
+    const msg = tracker.errors.items[0].message;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "dyn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "hint") != null or
+        std.mem.indexOf(u8, msg, "bounds check") != null);
 }

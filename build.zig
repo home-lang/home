@@ -21,7 +21,17 @@ fn createPackage(
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // Pin the host macOS minimum to 13.0 by default. Zig 0.16-dev's bundled
+    // libSystem stubs only cover up to a certain version, and on macOS 14+
+    // hosts auto-detection picks a version that has no stubs at all,
+    // producing "undefined symbol: _malloc" / `_sigaction` / etc. at link
+    // time even for the build script itself. Users targeting a different
+    // platform can still override with `-Dtarget=...`.
+    var default_target_query: std.Target.Query = .{};
+    if (@import("builtin").os.tag == .macos) {
+        default_target_query.os_version_min = .{ .semver = .{ .major = 13, .minor = 0, .patch = 0 } };
+    }
+    const target = b.standardTargetOptions(.{ .default_target = default_target_query });
     const optimize = b.standardOptimizeOption(.{});
 
     // ========================================================================

@@ -396,3 +396,103 @@ pub const PatternMatcher = struct {
         };
     }
 };
+
+// =================================================================================
+//                            EXHAUSTIVENESS TESTS
+// =================================================================================
+
+const dummy_loc = ast.SourceLocation{ .line = 1, .column = 1 };
+
+fn makeBoolPattern(value: bool) ast.Pattern {
+    return .{ .BoolLiteral = value };
+}
+
+test "exhaustiveness: bool with both true and false is exhaustive" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var p_true = makeBoolPattern(true);
+    var p_false = makeBoolPattern(false);
+    const patterns = [_]*ast.Pattern{ &p_true, &p_false };
+
+    const ok = try checker.checkExhaustiveness(.Bool, &patterns, dummy_loc);
+    try std.testing.expect(ok);
+    try std.testing.expectEqual(@as(usize, 0), checker.errors.items.len);
+}
+
+test "exhaustiveness: bool with only true is non-exhaustive" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var p_true = makeBoolPattern(true);
+    const patterns = [_]*ast.Pattern{&p_true};
+
+    const ok = try checker.checkExhaustiveness(.Bool, &patterns, dummy_loc);
+    try std.testing.expect(!ok);
+    try std.testing.expect(checker.errors.items.len >= 1);
+}
+
+test "exhaustiveness: wildcard alone is exhaustive for any type" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var wildcard: ast.Pattern = .Wildcard;
+    const patterns = [_]*ast.Pattern{&wildcard};
+
+    try std.testing.expect(try checker.checkExhaustiveness(.Bool, &patterns, dummy_loc));
+    try std.testing.expect(try checker.checkExhaustiveness(.Int, &patterns, dummy_loc));
+    try std.testing.expect(try checker.checkExhaustiveness(.String, &patterns, dummy_loc));
+    try std.testing.expectEqual(@as(usize, 0), checker.errors.items.len);
+}
+
+test "exhaustiveness: identifier pattern is also irrefutable" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var ident: ast.Pattern = .{ .Identifier = "x" };
+    const patterns = [_]*ast.Pattern{&ident};
+
+    try std.testing.expect(try checker.checkExhaustiveness(.Int, &patterns, dummy_loc));
+}
+
+test "exhaustiveness: int without wildcard is non-exhaustive" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var p_one: ast.Pattern = .{ .IntLiteral = 1 };
+    var p_two: ast.Pattern = .{ .IntLiteral = 2 };
+    const patterns = [_]*ast.Pattern{ &p_one, &p_two };
+
+    const ok = try checker.checkExhaustiveness(.Int, &patterns, dummy_loc);
+    try std.testing.expect(!ok);
+    try std.testing.expect(checker.errors.items.len >= 1);
+    // The diagnostic should mention the wildcard fix.
+    try std.testing.expect(std.mem.indexOf(u8, checker.errors.items[0].message, "_") != null);
+}
+
+test "exhaustiveness: string with wildcard is exhaustive" {
+    const allocator = std.testing.allocator;
+    var checker = PatternChecker.init(allocator);
+    defer checker.deinit();
+
+    var p_a: ast.Pattern = .{ .StringLiteral = "a" };
+    var w: ast.Pattern = .Wildcard;
+    const patterns = [_]*ast.Pattern{ &p_a, &w };
+
+    try std.testing.expect(try checker.checkExhaustiveness(.String, &patterns, dummy_loc));
+}
+
+test "isIrrefutable: only wildcard / identifier / nested-irrefutable" {
+    var w: ast.Pattern = .Wildcard;
+    var i: ast.Pattern = .{ .Identifier = "x" };
+    var n: ast.Pattern = .{ .IntLiteral = 7 };
+
+    try std.testing.expect(PatternMatcher.isIrrefutable(&w));
+    try std.testing.expect(PatternMatcher.isIrrefutable(&i));
+    try std.testing.expect(!PatternMatcher.isIrrefutable(&n));
+}

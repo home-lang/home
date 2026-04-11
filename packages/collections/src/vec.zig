@@ -471,3 +471,143 @@ test "Vec - automatic growth" {
         try testing.expectEqual(@as(?i32, i), vec.get(@intCast(i)));
     }
 }
+
+// =================================================================================
+//                            COMBINATOR TESTS
+// =================================================================================
+
+test "Vec.map type-preserving" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    try v.push(1);
+    try v.push(2);
+    try v.push(3);
+
+    var doubled = try v.map(i32, struct {
+        fn dbl(x: i32) i32 {
+            return x * 2;
+        }
+    }.dbl);
+    defer doubled.deinit();
+
+    try testing.expectEqual(@as(usize, 3), doubled.length());
+    try testing.expectEqual(@as(?i32, 2), doubled.get(0));
+    try testing.expectEqual(@as(?i32, 4), doubled.get(1));
+    try testing.expectEqual(@as(?i32, 6), doubled.get(2));
+}
+
+test "Vec.map type-changing" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    try v.push(0);
+    try v.push(5);
+    try v.push(-3);
+
+    var as_bool = try v.map(bool, struct {
+        fn nonzero(x: i32) bool {
+            return x != 0;
+        }
+    }.nonzero);
+    defer as_bool.deinit();
+
+    try testing.expectEqual(@as(?bool, false), as_bool.get(0));
+    try testing.expectEqual(@as(?bool, true), as_bool.get(1));
+    try testing.expectEqual(@as(?bool, true), as_bool.get(2));
+}
+
+test "Vec.filter" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    var i: i32 = 1;
+    while (i <= 6) : (i += 1) try v.push(i);
+
+    var evens = try v.filter(struct {
+        fn even(x: i32) bool {
+            return @rem(x, 2) == 0;
+        }
+    }.even);
+    defer evens.deinit();
+
+    try testing.expectEqual(@as(usize, 3), evens.length());
+    try testing.expectEqual(@as(?i32, 2), evens.get(0));
+    try testing.expectEqual(@as(?i32, 4), evens.get(1));
+    try testing.expectEqual(@as(?i32, 6), evens.get(2));
+}
+
+test "Vec.fold sum and product" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    try v.push(1);
+    try v.push(2);
+    try v.push(3);
+    try v.push(4);
+
+    const total = v.fold(i32, 0, struct {
+        fn add(a: i32, b: i32) i32 {
+            return a + b;
+        }
+    }.add);
+    try testing.expectEqual(@as(i32, 10), total);
+
+    const product = v.fold(i32, 1, struct {
+        fn mul(a: i32, b: i32) i32 {
+            return a * b;
+        }
+    }.mul);
+    try testing.expectEqual(@as(i32, 24), product);
+}
+
+test "Vec.sum convenience" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    try v.push(10);
+    try v.push(20);
+    try v.push(30);
+
+    try testing.expectEqual(@as(i32, 60), v.sum());
+}
+
+test "Vec.any and Vec.all" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const Pred = struct {
+        fn isPositive(x: i32) bool {
+            return x > 0;
+        }
+        fn isNegative(x: i32) bool {
+            return x < 0;
+        }
+    };
+
+    var v = Vec(i32).new(allocator);
+    defer v.deinit();
+    try v.push(1);
+    try v.push(-2);
+    try v.push(3);
+
+    try testing.expect(v.any(Pred.isNegative));
+    try testing.expect(!v.all(Pred.isPositive));
+    try testing.expect(v.any(Pred.isPositive));
+
+    // All positive: empty list is vacuously true.
+    var empty = Vec(i32).new(allocator);
+    defer empty.deinit();
+    try testing.expect(empty.all(Pred.isPositive));
+    try testing.expect(!empty.any(Pred.isPositive));
+}

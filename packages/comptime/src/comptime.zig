@@ -263,7 +263,7 @@ pub const ComptimeExecutor = struct {
             switch (stmt) {
                 .ExprStmt => |e| result = try self.eval(e),
                 .LetDecl => |let_decl| {
-                    if (let_decl.initializer) |init_expr| {
+                    if (let_decl.value) |init_expr| {
                         const v = try self.eval(init_expr);
                         try self.scope.set(let_decl.name, v);
                     }
@@ -597,3 +597,110 @@ pub const ComptimeExecutor = struct {
 
 // Export integration module for use in semantic analysis and codegen
 pub const integration = @import("integration.zig");
+
+// =================================================================================
+//                       COMPTIME EVAL TESTS
+// =================================================================================
+
+const dummy_loc_ct = ast.SourceLocation{ .line = 1, .column = 1 };
+
+fn intExpr(value: i64) ast.Expr {
+    return .{ .IntegerLiteral = ast.IntegerLiteral.init(value, dummy_loc_ct) };
+}
+
+fn boolExpr(value: bool) ast.Expr {
+    return .{ .BooleanLiteral = ast.BooleanLiteral.init(value, dummy_loc_ct) };
+}
+
+test "comptime: integer literal evaluation" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var e = intExpr(42);
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 42), v.int);
+}
+
+test "comptime: addition of literals" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var l = intExpr(2);
+    var r = intExpr(3);
+    const bin = try ast.BinaryExpr.init(std.testing.allocator, .Add, &l, &r, dummy_loc_ct);
+    defer std.testing.allocator.destroy(bin);
+
+    var e: ast.Expr = .{ .BinaryExpr = bin };
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 5), v.int);
+}
+
+test "comptime: if true takes then branch" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var cond = boolExpr(true);
+    var then_e = intExpr(10);
+    var else_e = intExpr(20);
+    const if_expr = try ast.IfExpr.init(std.testing.allocator, &cond, &then_e, &else_e, dummy_loc_ct);
+    defer std.testing.allocator.destroy(if_expr);
+
+    var e: ast.Expr = .{ .IfExpr = if_expr };
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 10), v.int);
+}
+
+test "comptime: if false takes else branch" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var cond = boolExpr(false);
+    var then_e = intExpr(10);
+    var else_e = intExpr(20);
+    const if_expr = try ast.IfExpr.init(std.testing.allocator, &cond, &then_e, &else_e, dummy_loc_ct);
+    defer std.testing.allocator.destroy(if_expr);
+
+    var e: ast.Expr = .{ .IfExpr = if_expr };
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 20), v.int);
+}
+
+test "comptime: if with non-bool condition errors" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var cond = intExpr(1); // not a bool
+    var then_e = intExpr(10);
+    var else_e = intExpr(20);
+    const if_expr = try ast.IfExpr.init(std.testing.allocator, &cond, &then_e, &else_e, dummy_loc_ct);
+    defer std.testing.allocator.destroy(if_expr);
+
+    var e: ast.Expr = .{ .IfExpr = if_expr };
+    try std.testing.expectError(error.TypeMismatch, executor.eval(&e));
+}
+
+test "comptime: empty block returns zero" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const block = try ast.BlockExpr.init(std.testing.allocator, &.{}, dummy_loc_ct);
+    defer std.testing.allocator.destroy(block);
+
+    var e: ast.Expr = .{ .BlockExpr = block };
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 0), v.int);
+}
+
+test "comptime: block with single ExprStmt returns its value" {
+    var executor = try ComptimeExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    var inner = intExpr(7);
+    const stmts = [_]ast.Stmt{.{ .ExprStmt = &inner }};
+    const block = try ast.BlockExpr.init(std.testing.allocator, &stmts, dummy_loc_ct);
+    defer std.testing.allocator.destroy(block);
+
+    var e: ast.Expr = .{ .BlockExpr = block };
+    const v = try executor.eval(&e);
+    try std.testing.expectEqual(@as(i64, 7), v.int);
+}
