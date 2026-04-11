@@ -249,35 +249,58 @@ pub const GraphColoringAllocator = struct {
         defer self.allocator.free(removed);
         @memset(removed, false);
 
-        // Simplification: remove nodes with degree < num_physical_regs
-        var changed = true;
-        while (changed) {
-            changed = false;
+        // Chaitin/Briggs simplify+spill loop. The previous version stopped as
+        // soon as no degree<k node remained and immediately marked everything
+        // else as spilled. That's correct but pessimistic — choosing one
+        // *highest-degree* candidate to optimistically push and continuing the
+        // simplification loop can color most of the remainder, leaving only
+        // truly hard nodes spilled. This is the standard "Briggs optimistic"
+        // refinement of Chaitin's algorithm.
+        while (true) {
+            var simplified = true;
+            while (simplified) {
+                simplified = false;
+                for (0..graph.num_registers) |reg| {
+                    if (removed[reg]) continue;
+                    var deg: usize = 0;
+                    for (0..graph.num_registers) |neighbor| {
+                        if (!removed[neighbor] and graph.interferes(@intCast(reg), @intCast(neighbor))) {
+                            deg += 1;
+                        }
+                    }
+                    if (deg < self.num_physical_regs) {
+                        try stack.append(self.allocator, @intCast(reg));
+                        removed[reg] = true;
+                        simplified = true;
+                    }
+                }
+            }
 
+            // Pick a spill candidate: highest residual degree (Chaitin heuristic).
+            // If everyone's gone we're done.
+            var spill_candidate: ?u8 = null;
+            var spill_degree: usize = 0;
             for (0..graph.num_registers) |reg| {
                 if (removed[reg]) continue;
-
-                // Calculate current degree (excluding removed neighbors)
                 var deg: usize = 0;
                 for (0..graph.num_registers) |neighbor| {
                     if (!removed[neighbor] and graph.interferes(@intCast(reg), @intCast(neighbor))) {
                         deg += 1;
                     }
                 }
-
-                if (deg < self.num_physical_regs) {
-                    try stack.append(self.allocator, @intCast(reg));
-                    removed[reg] = true;
-                    changed = true;
+                if (spill_candidate == null or deg > spill_degree) {
+                    spill_candidate = @intCast(reg);
+                    spill_degree = deg;
                 }
             }
-        }
-
-        // Mark remaining nodes as potential spills
-        for (0..graph.num_registers) |reg| {
-            if (!removed[reg]) {
-                try allocation.spilled.append(self.allocator, @intCast(reg));
+            if (spill_candidate) |sc| {
+                // Optimistically push: it might still be colorable in the
+                // assignment phase if its actual neighbors got cheap colors.
+                try stack.append(self.allocator, sc);
+                removed[sc] = true;
+                continue;
             }
+            break;
         }
 
         // Coloring: assign colors in reverse order

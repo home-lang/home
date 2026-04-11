@@ -172,6 +172,30 @@ pub const BoundsTracker = struct {
         return self.index_ranges.get(var_name) orelse IndexRange.unknown();
     }
 
+    /// Render the size of an array's bounds for inclusion in an error message.
+    /// Returns an owned string. Caller must free.
+    fn renderArraySize(self: *BoundsTracker, bounds: BoundsInfo) ![]const u8 {
+        if (bounds.known_length) |len| {
+            return try std.fmt.allocPrint(self.allocator, "{d}", .{len});
+        }
+        if (bounds.max_length) |hi| {
+            return try std.fmt.allocPrint(self.allocator, "{d}..{d}", .{ bounds.min_length, hi });
+        }
+        return try std.fmt.allocPrint(self.allocator, ">={d}", .{bounds.min_length});
+    }
+
+    /// Render an index range succinctly: "5" if single, "[2..7]" if a range.
+    fn renderIndex(self: *BoundsTracker, index: IndexRange) ![]const u8 {
+        if (index.min_index == index.max_index) {
+            return try std.fmt.allocPrint(self.allocator, "{d}", .{index.min_index});
+        }
+        return try std.fmt.allocPrint(
+            self.allocator,
+            "[{d}..{d}]",
+            .{ index.min_index, index.max_index },
+        );
+    }
+
     /// Check array access
     pub fn checkAccess(
         self: *BoundsTracker,
@@ -183,12 +207,16 @@ pub const BoundsTracker = struct {
 
         // Check if definitely out of bounds
         if (index.isDefinitelyInvalid(bounds)) {
+            const size_str = try self.renderArraySize(bounds);
+            defer self.allocator.free(size_str);
+            const idx_str = try self.renderIndex(index);
+            defer self.allocator.free(idx_str);
             try self.addError(.{
                 .kind = .DefinitelyOutOfBounds,
                 .message = try std.fmt.allocPrint(
                     self.allocator,
-                    "Index [{}, {}] is definitely out of bounds for array '{s}'",
-                    .{ index.min_index, index.max_index, array_name },
+                    "index out of bounds: array `{s}` has length {s}, but the index is {s}\n  hint: valid indices for `{s}` are 0..{s}",
+                    .{ array_name, size_str, idx_str, array_name, size_str },
                 ),
                 .location = loc,
                 .array_name = array_name,
@@ -219,12 +247,16 @@ pub const BoundsTracker = struct {
             }
 
             if (bounds.mightBeOutOfBounds(index)) {
+                const size_str = try self.renderArraySize(bounds);
+                defer self.allocator.free(size_str);
+                const idx_str = try self.renderIndex(index);
+                defer self.allocator.free(idx_str);
                 try self.addError(.{
                     .kind = .PossiblyOutOfBounds,
                     .message = try std.fmt.allocPrint(
                         self.allocator,
-                        "Index [{}, {}] might be out of bounds for array '{s}' (needs bounds check)",
-                        .{ index.min_index, index.max_index, array_name },
+                        "potentially out-of-bounds index {s} into array `{s}` (length {s})\n  hint: insert a runtime bounds check or narrow the index type",
+                        .{ idx_str, array_name, size_str },
                     ),
                     .location = loc,
                     .array_name = array_name,
@@ -256,7 +288,7 @@ pub const BoundsTracker = struct {
         end: IndexRange,
         loc: ast.SourceLocation,
     ) !BoundsInfo {
-        const bounds = self.getBounds(array_name);
+        _ = self.getBounds(array_name);
 
         // Check start index
         try self.checkAccess(array_name, start, loc);

@@ -357,14 +357,28 @@ pub const NullSafetyWarning = struct {
 // ============================================================================
 
 pub const NullSafeConstructors = struct {
-    /// Create a non-null reference (panics if null)
+    /// Unwrap a nullable value, aborting the process with a clear message if null.
+    /// Equivalent to `value.unwrap()` in user code; the type checker is expected to
+    /// have proven the value is Some, but this is the runtime backstop.
     pub fn unwrap(comptime T: type, value: ?T) T {
-        return value orelse @panic("Attempted to unwrap null value");
+        return value orelse {
+            std.debug.print("panic: called unwrap() on a null/None value (type={s})\n", .{@typeName(T)});
+            std.process.exit(101);
+        };
     }
 
-    /// Create a non-null reference with custom message
+    /// Like `unwrap` but with a caller-supplied message. Mirrors Rust's `Option::expect`.
     pub fn expect(comptime T: type, value: ?T, message: []const u8) T {
-        return value orelse @panic(message);
+        return value orelse {
+            std.debug.print("panic: {s} (expect on null/None of type {s})\n", .{ message, @typeName(T) });
+            std.process.exit(101);
+        };
+    }
+
+    /// Non-aborting variant: returns `error.NullValue` instead of panicking.
+    /// Prefer this in library code; it lets callers decide policy.
+    pub fn tryUnwrap(comptime T: type, value: ?T) error{NullValue}!T {
+        return value orelse error.NullValue;
     }
 
     /// Get value or default

@@ -231,8 +231,51 @@ pub const ComptimeExecutor = struct {
             .ComptimeExpr => |comptime_expr| try self.eval(comptime_expr.expression),
             .ReflectExpr => |reflect| try self.evalReflectExpr(reflect),
 
+            // Conditional: only one branch is evaluated, mirroring runtime semantics.
+            .IfExpr => |if_expr| blk: {
+                const cond = try self.eval(if_expr.condition);
+                if (cond != .bool) return error.TypeMismatch;
+                const target = if (cond.bool) if_expr.then_branch else if_expr.else_branch;
+                break :blk try self.eval(target);
+            },
+
+            // Block expression: execute statements left-to-right in a fresh scope
+            // and return the value of the trailing expression statement.
+            .BlockExpr => |block| try self.evalBlock(block),
+
             else => error.UnsupportedComptimeExpression,
         };
+    }
+
+    /// Evaluate a `{ ...; expr }` block. Each statement runs in a child scope so
+    /// `let` bindings don't leak to the caller. Returns the value of the final
+    /// `ExprStmt`, or `void`-equivalent (here: `int = 0`) when the block is empty
+    /// or only contains side-effecting statements.
+    fn evalBlock(self: *ComptimeExecutor, block: *ast.BlockExpr) ComptimeError!ComptimeValue {
+        var inner = Scope.init(self.allocator, &self.scope);
+        defer inner.deinit();
+        const old_scope = self.scope;
+        self.scope = inner;
+        defer self.scope = old_scope;
+
+        var result: ComptimeValue = .{ .int = 0 };
+        for (block.statements) |stmt| {
+            switch (stmt) {
+                .ExprStmt => |e| result = try self.eval(e),
+                .LetDecl => |let_decl| {
+                    if (let_decl.initializer) |init_expr| {
+                        const v = try self.eval(init_expr);
+                        try self.scope.set(let_decl.name, v);
+                    }
+                },
+                .ReturnStmt => |ret| {
+                    if (ret.value) |v| return try self.eval(v);
+                    return .{ .int = 0 };
+                },
+                else => return error.UnsupportedComptimeExpression,
+            }
+        }
+        return result;
     }
 
     fn evalBinaryExpr(self: *ComptimeExecutor, expr: *ast.BinaryExpr) ComptimeError!ComptimeValue {

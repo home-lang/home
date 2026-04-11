@@ -154,6 +154,7 @@ pub fn lintCommand(allocator: std.mem.Allocator, args: []const [:0]const u8, io:
         const tokens = try lexer.tokenize();
 
         var parser = try Parser.init(arena_allocator, tokens.items);
+        parser.source_text = fixed_source;
         const program = try parser.parse();
 
         var formatter = Formatter.init(allocator, program);

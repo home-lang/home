@@ -610,13 +610,24 @@ pub const StateMachine = struct {
             try writer.writeAll("                            .Pending => return .Pending,\n");
             try writer.writeAll("                        }\n");
             try writer.writeAll("                    } else {\n");
-            try writer.writeAll("                        // Future not initialized, error\n");
-            try writer.writeAll("                        unreachable;\n");
+            // Future not yet polled into this state — return Pending instead
+            // of `unreachable`. The previous unreachable would crash the
+            // process if a state machine was polled out of order (e.g. after
+            // being moved between executors); Pending is the conservative
+            // correct response — the executor will re-poll us.
+            try writer.writeAll("                        return .Pending;\n");
             try writer.writeAll("                    }\n");
             try writer.writeAll("                },\n");
         }
 
-        try writer.writeAll("                .Done => unreachable,\n");
+        // After completion, polling again is a programmer error: it means
+        // the executor did not respect the contract that `Ready` is terminal.
+        // Surface this as a clear diagnostic + abort instead of `unreachable`,
+        // which produces no information at all in release builds.
+        try writer.writeAll("                .Done => {\n");
+        try writer.writeAll("                    std.debug.print(\"async state machine polled after completion\\n\", .{});\n");
+        try writer.writeAll("                    std.process.exit(101);\n");
+        try writer.writeAll("                },\n");
         try writer.writeAll("            }\n");
         try writer.writeAll("        }\n");
         try writer.writeAll("    }\n");

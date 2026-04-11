@@ -132,6 +132,7 @@ pub const Linter = struct {
 
         // Run all enabled rules
         try self.checkNoUnusedVariables(program);
+        try self.checkDeadCodeAfterReturn(program);
         try self.checkNoConsoleLog(program);
         try self.checkPreferConst(program);
         try self.checkNoVarKeyword(program);
@@ -194,16 +195,72 @@ pub const Linter = struct {
         const rule_id = "no-unused-vars";
         const config = self.config.getRule(rule_id) orelse return;
         if (!config.enabled) return;
-
-        // Track variable declarations and usages
-        // var declared = std.StringHashMap(ast.Node).init(self.allocator);
-        // defer declared.deinit();
-
-        // var used = std.StringHashMap(bool).init(self.allocator);
-        // defer used.deinit();
-
-        // Simplified implementation - would need full AST traversal
         _ = program;
+
+        // Token-based scan: catches the common case (let/const binding never
+        // referenced again). Full AST scope tracking lives in the type checker.
+        var lex = @import("lexer").Lexer.init(self.allocator, self.source);
+        var tokens = lex.tokenize() catch return;
+        defer tokens.deinit(self.allocator);
+
+        var rule = @import("rules/unused_variable.zig").UnusedVariable.init(.{});
+        const errors = rule.check(self.allocator, tokens.items) catch return;
+        defer {
+            for (errors) |*err| err.deinit(self.allocator);
+            self.allocator.free(errors);
+        }
+
+        for (errors) |err| {
+            try self.diagnostics.append(self.allocator, .{
+                .rule_id = rule_id,
+                .severity = switch (err.severity) {
+                    .Error => .error_,
+                    .Warning => .warning,
+                    .Info => .info,
+                },
+                .message = try self.allocator.dupe(u8, err.message),
+                .line = err.line,
+                .column = err.column,
+                .end_line = err.line,
+                .end_column = err.column + 1,
+                .fix = null,
+            });
+        }
+    }
+
+    fn checkDeadCodeAfterReturn(self: *Linter, program: *ast.Program) !void {
+        const rule_id = "no-unreachable";
+        const config = self.config.getRule(rule_id) orelse return;
+        if (!config.enabled) return;
+        _ = program;
+
+        var lex = @import("lexer").Lexer.init(self.allocator, self.source);
+        var tokens = lex.tokenize() catch return;
+        defer tokens.deinit(self.allocator);
+
+        var rule = @import("rules/dead_code_after_return.zig").DeadCodeAfterReturn.init();
+        const errors = rule.check(self.allocator, tokens.items) catch return;
+        defer {
+            for (errors) |*err| err.deinit(self.allocator);
+            self.allocator.free(errors);
+        }
+
+        for (errors) |err| {
+            try self.diagnostics.append(self.allocator, .{
+                .rule_id = rule_id,
+                .severity = switch (err.severity) {
+                    .Error => .error_,
+                    .Warning => .warning,
+                    .Info => .info,
+                },
+                .message = try self.allocator.dupe(u8, err.message),
+                .line = err.line,
+                .column = err.column,
+                .end_line = err.line,
+                .end_column = err.column + 1,
+                .fix = null,
+            });
+        }
     }
 
     fn checkNoConsoleLog(self: *Linter, program: *ast.Program) !void {

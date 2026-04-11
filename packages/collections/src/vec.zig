@@ -218,6 +218,76 @@ pub fn Vec(comptime T: type) type {
                 .index = 0,
             };
         }
+
+        // ----------------------------------------------------------------
+        // Functional combinators
+        // ----------------------------------------------------------------
+        //
+        // These return a *new* Vec rather than mutating in place. They use
+        // the same allocator the source Vec was constructed with so the
+        // ownership story is "result lives as long as you keep it; call
+        // deinit when done".
+
+        /// Apply `func` to every element and collect the results into a new Vec.
+        /// `U` is the element type of the result vector. Use `mapInPlace` if
+        /// the type doesn't change and you want to avoid the allocation.
+        pub fn map(self: *const Self, comptime U: type, func: fn (T) U) !Vec(U) {
+            var out = try Vec(U).withCapacity(self.allocator, self.len);
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                try out.push(func(self.data[i]));
+            }
+            return out;
+        }
+
+        /// Return a new Vec containing only the elements for which `predicate` is true.
+        pub fn filter(self: *const Self, predicate: fn (T) bool) !Vec(T) {
+            var out = Vec(T).new(self.allocator);
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                if (predicate(self.data[i])) try out.push(self.data[i]);
+            }
+            return out;
+        }
+
+        /// Left fold: apply `func(acc, element)` repeatedly, starting from `init`.
+        /// Mirrors Rust's `Iterator::fold`. Returns the final accumulator.
+        pub fn fold(self: *const Self, comptime Acc: type, init: Acc, func: fn (Acc, T) Acc) Acc {
+            var acc = init;
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                acc = func(acc, self.data[i]);
+            }
+            return acc;
+        }
+
+        /// Sum the elements; only valid for numeric T. Implemented in terms of
+        /// `fold` to demonstrate composability.
+        pub fn sum(self: *const Self) T {
+            return self.fold(T, 0, struct {
+                fn add(a: T, b: T) T {
+                    return a + b;
+                }
+            }.add);
+        }
+
+        /// True if any element matches the predicate.
+        pub fn any(self: *const Self, predicate: fn (T) bool) bool {
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                if (predicate(self.data[i])) return true;
+            }
+            return false;
+        }
+
+        /// True if every element matches the predicate. Vacuously true on empty.
+        pub fn all(self: *const Self, predicate: fn (T) bool) bool {
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                if (!predicate(self.data[i])) return false;
+            }
+            return true;
+        }
     };
 }
 

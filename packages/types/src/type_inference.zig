@@ -26,6 +26,33 @@ const TraitSystem = @import("traits").TraitSystem;
 ///
 /// const inferred_type = try inferencer.inferExpression(expr, &env);
 /// ```
+/// Detailed information about the most recent unification failure.
+///
+/// Holds rendered type names plus an optional "origin" — a short note describing
+/// where the expected type came from (annotation, return position, function arg).
+/// Stored on the inferencer so error reporting can produce messages like:
+///
+///   error: type mismatch
+///     expected `int` (from variable annotation)
+///     found    `string`
+///     hint:    add an explicit conversion or fix the annotation
+///
+/// `expected_repr` and `found_repr` are owned by the inferencer and freed in
+/// `clearLastError`.
+pub const TypeMismatchDetail = struct {
+    expected_repr: []const u8,
+    found_repr: []const u8,
+    origin: []const u8 = "",
+    suggestion: ?[]const u8 = null,
+
+    pub fn deinit(self: *TypeMismatchDetail, allocator: std.mem.Allocator) void {
+        allocator.free(self.expected_repr);
+        allocator.free(self.found_repr);
+        if (self.origin.len > 0) allocator.free(self.origin);
+        if (self.suggestion) |s| allocator.free(s);
+    }
+};
+
 pub const TypeInferencer = struct {
     allocator: std.mem.Allocator,
     /// Counter for generating unique type variables
@@ -38,6 +65,13 @@ pub const TypeInferencer = struct {
     type_env: std.StringHashMap(*TypeScheme),
     /// Trait system for trait bound checking
     trait_system: ?*TraitSystem,
+    /// Detail of the most recent unification failure, if any.
+    /// Cleared when consumed by the caller via `takeLastError`.
+    last_error: ?TypeMismatchDetail,
+    /// Optional human-readable note describing where the *current* expected type
+    /// originated from. Set by callers (e.g. `let x: int = ...` sets origin to
+    /// "variable annotation"). Read by `unify` when recording an error.
+    current_origin: []const u8,
 
     pub fn init(allocator: std.mem.Allocator) TypeInferencer {
         return .{
@@ -47,6 +81,8 @@ pub const TypeInferencer = struct {
             .substitution = Substitution.init(allocator),
             .type_env = std.StringHashMap(*TypeScheme).init(allocator),
             .trait_system = null,
+            .last_error = null,
+            .current_origin = "",
         };
     }
 
@@ -54,12 +90,66 @@ pub const TypeInferencer = struct {
         self.constraints.deinit(self.allocator);
         self.substitution.deinit();
 
+        if (self.last_error) |*err| err.deinit(self.allocator);
+
         var it = self.type_env.valueIterator();
         while (it.next()) |scheme| {
             scheme.*.deinit(self.allocator);
             self.allocator.destroy(scheme.*);
         }
         self.type_env.deinit();
+    }
+
+    /// Pop the last recorded type-mismatch detail, transferring ownership to the caller.
+    pub fn takeLastError(self: *TypeInferencer) ?TypeMismatchDetail {
+        const e = self.last_error;
+        self.last_error = null;
+        return e;
+    }
+
+    /// Set the contextual origin string used for the next unification failure.
+    /// Caller retains ownership of the string slice; the inferencer dupes it on
+    /// error capture so the slice can be transient.
+    pub fn setExpectedOrigin(self: *TypeInferencer, origin: []const u8) void {
+        self.current_origin = origin;
+    }
+
+    /// Record a type-mismatch detail for the most recent failed unification.
+    /// Frees any previously stored detail.
+    fn recordMismatch(self: *TypeInferencer, expected: *Type, found: *Type) !void {
+        if (self.last_error) |*old| old.deinit(self.allocator);
+        var expected_buf = std.ArrayList(u8).empty;
+        defer expected_buf.deinit(self.allocator);
+        var found_buf = std.ArrayList(u8).empty;
+        defer found_buf.deinit(self.allocator);
+        try renderType(expected, &expected_buf, self.allocator);
+        try renderType(found, &found_buf, self.allocator);
+
+        const origin_copy = if (self.current_origin.len > 0)
+            try self.allocator.dupe(u8, self.current_origin)
+        else
+            "";
+
+        const suggestion: ?[]const u8 = blk: {
+            // Cheap heuristic: int <-> float gets a numeric-conversion hint.
+            if (expected.* == .Int and found.* == .Float) {
+                break :blk try self.allocator.dupe(u8, "use `as int` to truncate the float");
+            }
+            if (expected.* == .Float and found.* == .Int) {
+                break :blk try self.allocator.dupe(u8, "use `as float` or write the literal as e.g. `1.0`");
+            }
+            if (expected.* == .Bool and (found.* == .Int or found.* == .Float)) {
+                break :blk try self.allocator.dupe(u8, "compare against zero explicitly: `x != 0`");
+            }
+            break :blk null;
+        };
+
+        self.last_error = .{
+            .expected_repr = try self.allocator.dupe(u8, expected_buf.items),
+            .found_repr = try self.allocator.dupe(u8, found_buf.items),
+            .origin = origin_copy,
+            .suggestion = suggestion,
+        };
     }
 
     /// Set the trait system for trait bound checking
@@ -565,7 +655,8 @@ pub const TypeInferencer = struct {
         }
     }
 
-    /// Unify two types
+    /// Unify two types. On failure records a TypeMismatchDetail in `last_error`
+    /// so the caller can produce a high-quality error message.
     fn unify(self: *TypeInferencer, t1: *Type, t2: *Type) !void {
         const t1_resolved = try self.substitution.apply(t1, self.allocator);
         const t2_resolved = try self.substitution.apply(t2, self.allocator);
@@ -576,6 +667,7 @@ pub const TypeInferencer = struct {
         // Type variable on left
         if (t1_resolved.* == .TypeVar) {
             if (try self.occursCheck(t1_resolved.TypeVar.id, t2_resolved)) {
+                try self.recordMismatch(t1_resolved, t2_resolved);
                 return error.InfiniteType;
             }
             try self.substitution.bind(t1_resolved.TypeVar.id, t2_resolved);
@@ -585,6 +677,7 @@ pub const TypeInferencer = struct {
         // Type variable on right
         if (t2_resolved.* == .TypeVar) {
             if (try self.occursCheck(t2_resolved.TypeVar.id, t1_resolved)) {
+                try self.recordMismatch(t1_resolved, t2_resolved);
                 return error.InfiniteType;
             }
             try self.substitution.bind(t2_resolved.TypeVar.id, t1_resolved);
@@ -594,14 +687,21 @@ pub const TypeInferencer = struct {
         // Both are concrete types - must match structurally
         switch (t1_resolved.*) {
             .Array => |arr1| {
-                if (t2_resolved.* != .Array) return error.TypeMismatch;
+                if (t2_resolved.* != .Array) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
+                    return error.TypeMismatch;
+                }
                 try self.unify(@constCast(arr1.element_type), @constCast(t2_resolved.Array.element_type));
             },
             .Function => |func1| {
-                if (t2_resolved.* != .Function) return error.TypeMismatch;
+                if (t2_resolved.* != .Function) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
+                    return error.TypeMismatch;
+                }
                 const func2 = t2_resolved.Function;
 
                 if (func1.params.len != func2.params.len) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
                     return error.TypeMismatch;
                 }
 
@@ -612,10 +712,14 @@ pub const TypeInferencer = struct {
                 try self.unify(@constCast(func1.return_type), @constCast(func2.return_type));
             },
             .Tuple => |tuple1| {
-                if (t2_resolved.* != .Tuple) return error.TypeMismatch;
+                if (t2_resolved.* != .Tuple) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
+                    return error.TypeMismatch;
+                }
                 const tuple2 = t2_resolved.Tuple;
 
                 if (tuple1.element_types.len != tuple2.element_types.len) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
                     return error.TypeMismatch;
                 }
 
@@ -626,9 +730,52 @@ pub const TypeInferencer = struct {
             else => {
                 // For primitive types, check equality
                 if (!Type.equals(t1_resolved.*, t2_resolved.*)) {
+                    try self.recordMismatch(t1_resolved, t2_resolved);
                     return error.TypeMismatch;
                 }
             },
+        }
+    }
+
+    /// Render a Type into a human-readable name for error messages.
+    /// Recursive but bounded by AST depth in practice.
+    fn renderType(ty: *Type, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+        switch (ty.*) {
+            .Int => try buf.appendSlice(allocator, "int"),
+            .Float => try buf.appendSlice(allocator, "float"),
+            .Bool => try buf.appendSlice(allocator, "bool"),
+            .String => try buf.appendSlice(allocator, "string"),
+            .Void => try buf.appendSlice(allocator, "void"),
+            .TypeVar => |tv| {
+                if (tv.name) |n| {
+                    try buf.appendSlice(allocator, n);
+                } else {
+                    try buf.writer(allocator).print("'t{d}", .{tv.id});
+                }
+            },
+            .Array => |arr| {
+                try buf.appendSlice(allocator, "[");
+                try renderType(@constCast(arr.element_type), buf, allocator);
+                try buf.appendSlice(allocator, "]");
+            },
+            .Function => |func| {
+                try buf.appendSlice(allocator, "fn(");
+                for (func.params, 0..) |p, i| {
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try renderType(@constCast(p), buf, allocator);
+                }
+                try buf.appendSlice(allocator, ") -> ");
+                try renderType(@constCast(func.return_type), buf, allocator);
+            },
+            .Tuple => |t| {
+                try buf.appendSlice(allocator, "(");
+                for (t.element_types, 0..) |e, i| {
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try renderType(@constCast(&e), buf, allocator);
+                }
+                try buf.appendSlice(allocator, ")");
+            },
+            else => try buf.appendSlice(allocator, @tagName(ty.*)),
         }
     }
 

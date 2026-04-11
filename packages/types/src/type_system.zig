@@ -3175,27 +3175,19 @@ pub const TypeEnvironment = struct {
     }
 };
 
-/// Stub for lifetime tracking (to be implemented)
-pub const LifetimeTracker = struct {
-    pub fn init(allocator: std.mem.Allocator) LifetimeTracker {
-        _ = allocator;
-        return .{};
-    }
-    pub fn deinit(self: *LifetimeTracker) void {
-        _ = self;
-    }
-};
+/// Lifetime tracker — re-exports the real implementation from
+/// `lifetime_analysis.zig` so the rest of the type system can use it through
+/// the same name. Previously this was a no-op stub, which meant lifetime
+/// constraints were silently ignored.
+pub const LifetimeTracker = @import("lifetime_analysis.zig").LifetimeTracker;
 
-/// Stub for move tracking (to be implemented)
-pub const MoveTracker = struct {
-    pub fn init(allocator: std.mem.Allocator) MoveTracker {
-        _ = allocator;
-        return .{};
-    }
-    pub fn deinit(self: *MoveTracker) void {
-        _ = self;
-    }
-};
+/// Move tracker — re-exports the real implementation from
+/// `move_detection.zig`. The previous stub silently allowed double-moves and
+/// use-after-move because it had no state. The real tracker enforces:
+///   * `MoveSemantics.Copy` types are implicitly copied (no-op move).
+///   * `MoveSemantics.Move` types are invalidated on move; later use is an error.
+///   * Partial moves of struct fields are tracked individually.
+pub const MoveTracker = @import("move_detection.zig").MoveTracker;
 
 /// Stub for type inference (to be implemented)
 pub const TypeInferencer = struct {

@@ -209,6 +209,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link libc: the compiler itself uses the Zig std allocator +
+    // posix APIs that pull in _malloc, _posix_memalign, _sigaction,
+    // _realpath, _sysctlbyname, etc. on macOS.
+    exe.root_module.link_libc = true;
+
     // Add package imports to main executable
     exe.root_module.addImport("lexer", lexer_pkg);
     exe.root_module.addImport("ast", ast_pkg);

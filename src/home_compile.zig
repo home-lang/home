@@ -129,6 +129,7 @@ fn compileFile(allocator: std.mem.Allocator, args: []const []const u8, io: Io) !
     // Parse
     if (verbose) std.debug.print("Parsing...\n", .{});
     var parser = try Parser.init(allocator, tokens.items);
+    parser.source_text = source;
     const program = try parser.parse();
 
     if (verbose) std.debug.print("Statements: {d}\n", .{program.statements.len});

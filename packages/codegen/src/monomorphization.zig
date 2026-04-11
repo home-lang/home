@@ -13,6 +13,15 @@ pub const Monomorphization = struct {
     generic_structs: std.StringHashMap(*ast.StructDecl),
     instantiations: std.ArrayList(MonomorphizedItem),
     generated_names: std.StringHashMap(void),
+    /// Stack of monomorphized names currently being generated. Used by the
+    /// recursive walker to detect cycles like `Foo<Bar<Foo<…>>>`. If we see
+    /// the same name twice on the stack, we bail with `RecursiveMonomorphization`.
+    in_progress: std.StringHashMap(void),
+    /// Maximum monomorphization depth (recursive instantiation guard).
+    /// Set generously — legitimate generic recursion is rare beyond a handful
+    /// of levels but pathological types can blow up exponentially.
+    max_depth: usize = 32,
+    current_depth: usize = 0,
 
     pub const Error = error{
         OutOfMemory,
@@ -53,6 +62,7 @@ pub const Monomorphization = struct {
             .generic_structs = std.StringHashMap(*ast.StructDecl).init(allocator),
             .instantiations = std.ArrayList(MonomorphizedItem).init(allocator),
             .generated_names = std.StringHashMap(void).init(allocator),
+            .in_progress = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -66,6 +76,7 @@ pub const Monomorphization = struct {
         self.instantiations.deinit();
 
         self.generated_names.deinit();
+        self.in_progress.deinit();
     }
 
     /// Register a generic function for monomorphization
@@ -106,7 +117,9 @@ pub const Monomorphization = struct {
         // Generate monomorphized name
         const mono_name = try self.generateMonomorphizedName(generic_name, type_args);
 
-        // Check if already generated
+        // Check if already generated. Cache hit short-circuits before we touch
+        // the cycle / depth tracking, because a finished instantiation cannot
+        // by definition still be on the in-progress stack.
         if (self.generated_names.contains(mono_name)) {
             // Return the existing one
             for (self.instantiations.items) |item| {
@@ -114,6 +127,25 @@ pub const Monomorphization = struct {
                     return try self.allocator.dupe(u8, item.code);
                 }
             }
+        }
+
+        // Cycle detection: if this exact specialization is already on the
+        // recursion stack we have an infinite type like `Foo<Foo<Foo<...>>>`.
+        // Reject before blowing the actual call stack.
+        if (self.in_progress.contains(mono_name)) {
+            return Error.RecursiveMonomorphization;
+        }
+
+        // Depth guard: even non-cyclic deep nesting can be exponential.
+        if (self.current_depth >= self.max_depth) {
+            return Error.RecursiveMonomorphization;
+        }
+
+        try self.in_progress.put(try self.allocator.dupe(u8, mono_name), {});
+        self.current_depth += 1;
+        defer {
+            _ = self.in_progress.remove(mono_name);
+            self.current_depth -= 1;
         }
 
         // Generate the monomorphized function

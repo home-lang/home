@@ -26,19 +26,50 @@ pub const PatternChecker = struct {
         self.errors.deinit(self.allocator);
     }
 
-    /// Check if a match expression is exhaustive
+    /// Check if a match expression is exhaustive.
+    ///
+    /// Dispatches on the scrutinee type so each algebraic family gets its own
+    /// coverage analysis. The previous implementation built a coverage set and
+    /// then dispatched with empty pattern arrays — meaning the dispatch
+    /// functions never saw the real patterns and always reported "missing
+    /// cases". This passes patterns through directly.
     pub fn checkExhaustiveness(
         self: *PatternChecker,
         match_type: Type,
         patterns: []const *ast.Pattern,
         loc: ast.SourceLocation,
     ) !bool {
-        // Build a coverage set of what patterns match
-        var coverage = try self.buildCoverage(patterns);
-        defer coverage.deinit();
+        // Bare wildcard or identifier is always exhaustive regardless of type.
+        for (patterns) |p| {
+            if (p.* == .Wildcard or p.* == .Identifier) return true;
+        }
 
-        // Check if coverage is complete for the given type
-        return try self.isCoverageComplete(match_type, coverage, loc);
+        return switch (match_type) {
+            .Enum => |et| try self.checkEnumExhaustiveness(et, patterns, loc),
+            .Bool => try self.checkBoolExhaustiveness(patterns, loc),
+            // For Int/Float/String the only way to be total is via a wildcard
+            // (handled above). Anything else is non-exhaustive.
+            .Int, .I32, .I64, .Float, .F32, .F64, .String => blk: {
+                try self.addError(
+                    "non-exhaustive patterns: add a wildcard `_` arm to match the remaining cases",
+                    loc,
+                );
+                break :blk false;
+            },
+            // Tuples and structs are total if every component pattern is irrefutable.
+            // We don't yet decompose structurally, so accept anything that
+            // includes at least one irrefutable arm.
+            else => blk: {
+                for (patterns) |p| {
+                    if (PatternMatcher.isIrrefutable(p)) break :blk true;
+                }
+                try self.addError(
+                    "non-exhaustive patterns: add a wildcard `_` arm",
+                    loc,
+                );
+                break :blk false;
+            },
+        };
     }
 
     /// Check if a pattern is valid for the given type

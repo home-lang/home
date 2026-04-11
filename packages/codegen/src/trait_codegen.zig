@@ -418,6 +418,43 @@ pub const TraitCodegen = struct {
         return false;
     }
 
+    /// Record the resolved code-section offset for a trait method on a given
+    /// concrete type. Called by the native back end after it has emitted the
+    /// implementation function and knows its address. Without this hook the
+    /// vtable's `function_ptr` slot stays at 0 (its initial placeholder), and
+    /// indirect calls through it crash.
+    pub fn setMethodPointer(
+        self: *TraitCodegen,
+        trait_name: []const u8,
+        method_name: []const u8,
+        function_offset: usize,
+    ) !void {
+        const vtable = self.vtables.getPtr(trait_name) orelse return Error.TraitNotFound;
+        const entry = vtable.methods.getPtr(method_name) orelse return Error.MethodNotFound;
+        entry.function_ptr = function_offset;
+    }
+
+    /// Look up the resolved method pointer for `(trait_name, method_name)`.
+    /// Returns null if either the vtable or the method is missing, or if the
+    /// pointer hasn't been set yet (still 0).
+    pub fn lookupMethod(
+        self: *TraitCodegen,
+        trait_name: []const u8,
+        method_name: []const u8,
+    ) ?usize {
+        const vtable = self.vtables.get(trait_name) orelse return null;
+        const entry = vtable.methods.get(method_name) orelse return null;
+        if (entry.function_ptr == 0) return null;
+        return entry.function_ptr;
+    }
+
+    /// Number of methods in a trait's vtable. Useful for laying out the vtable
+    /// in the data section: each method occupies 8 bytes (a function pointer).
+    pub fn methodCount(self: *TraitCodegen, trait_name: []const u8) ?usize {
+        const vtable = self.vtables.get(trait_name) orelse return null;
+        return vtable.methods.count();
+    }
+
     /// Register a trait implementation
     fn registerImpl(self: *TraitCodegen, type_name: []const u8, trait_name: []const u8, impl_decl: *ImplDecl) !void {
         const gop = try self.trait_impls.getOrPut(try self.allocator.dupe(u8, type_name));

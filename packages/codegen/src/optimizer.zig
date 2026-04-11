@@ -146,6 +146,30 @@ pub const Pass = struct {
     run: *const fn (func: *IR.Function) anyerror!bool,
 };
 
+/// Instruction-scheduling pass adapter.
+///
+/// Wraps `InstructionScheduler.optimize` so it can be plugged into the normal
+/// pass pipeline. Defaults to the x64 latency model — this is fine even when
+/// targeting other archs because the schedule is a *suggestion*; the back end
+/// re-validates dependencies before emitting bytes.
+pub fn instructionScheduling(func: *IR.Function) !bool {
+    const scheduler_mod = @import("instruction_scheduler.zig");
+    var scheduler = scheduler_mod.InstructionScheduler.init(func.allocator, .x64);
+    return try scheduler.optimize(func);
+}
+
+/// SIMD vectorization pass adapter.
+///
+/// Plugs the loop / SLP vectorizer into the standard pass pipeline. Defaults
+/// to AVX2 because that's what every x64 chip from the last decade supports;
+/// the underlying analysis still emits SSE2 fallbacks for the chunks that
+/// don't fit AVX widths.
+pub fn vectorize(func: *IR.Function) !bool {
+    const vec_mod = @import("vectorizer.zig");
+    var vec = vec_mod.Vectorizer.init(func.allocator, .avx2);
+    return try vec.optimize(func);
+}
+
 /// Dead Code Elimination
 pub fn deadCodeElimination(func: *IR.Function) !bool {
     var changed = false;
@@ -467,6 +491,10 @@ pub const Optimizer = struct {
                 try optimizer.passes.append(allocator, .{ .name = "cse", .run = commonSubexpressionElimination });
                 try optimizer.passes.append(allocator, .{ .name = "copy-propagation", .run = copyPropagation });
                 try optimizer.passes.append(allocator, .{ .name = "dce", .run = deadCodeElimination });
+                // Schedule last so it sees the final instruction stream after
+                // simplification — reduces work and avoids invalidating earlier
+                // passes' assumptions about ordering.
+                try optimizer.passes.append(allocator, .{ .name = "instruction-scheduling", .run = instructionScheduling });
             },
             .aggressive => {
                 try optimizer.passes.append(allocator, .{ .name = "constant-folding", .run = constantFolding });
@@ -478,6 +506,8 @@ pub const Optimizer = struct {
                 // Run passes multiple times for aggressive optimization
                 try optimizer.passes.append(allocator, .{ .name = "constant-folding", .run = constantFolding });
                 try optimizer.passes.append(allocator, .{ .name = "dce", .run = deadCodeElimination });
+                try optimizer.passes.append(allocator, .{ .name = "vectorize", .run = vectorize });
+                try optimizer.passes.append(allocator, .{ .name = "instruction-scheduling", .run = instructionScheduling });
             },
         }
 

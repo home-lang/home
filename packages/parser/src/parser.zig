@@ -46,6 +46,8 @@ pub const ParseError = error{
     SymbolNotFound,
     /// Expected array size (integer or identifier)
     ExpectedArraySize,
+    /// Token type is not a valid binary operator
+    InvalidBinaryOperator,
 };
 
 /// Operator precedence levels for expression parsing.
@@ -171,6 +173,8 @@ pub const Parser = struct {
     error_formatter: errors.ErrorFormatter,
     /// Optional source filename for error reporting
     source_file: ?[]const u8,
+    /// Optional original source text for caret/snippet rendering in errors
+    source_text: ?[]const u8,
     /// Module resolver for handling imports
     module_resolver: ModuleResolver,
     /// Symbol table for tracking imported modules and symbols
@@ -206,6 +210,7 @@ pub const Parser = struct {
             .recursion_depth = 0,
             .error_formatter = errors.ErrorFormatter.init(allocator),
             .source_file = null,
+            .source_text = null,
             .module_resolver = try ModuleResolver.init(allocator, null),
             .symbol_table = SymbolTable.init(allocator),
             .pending_greater = false,
@@ -392,6 +397,29 @@ pub const Parser = struct {
     ///   - message: Human-readable description of the error
     ///
     /// Errors: OutOfMemory if allocation fails, UnexpectedToken if too many errors
+    /// Extract the 1-indexed source line containing the given line number.
+    /// Returns null if source_text is not available or line is out of range.
+    fn getSourceLine(self: *Parser, line: usize) ?[]const u8 {
+        const text = self.source_text orelse return null;
+        if (line == 0) return null;
+        var current_line: usize = 1;
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) : (i += 1) {
+            if (current_line == line) {
+                // Find end of this line
+                var end = i;
+                while (end < text.len and text[end] != '\n') : (end += 1) {}
+                return text[start..end];
+            }
+            if (text[i] == '\n') {
+                current_line += 1;
+                start = i + 1;
+            }
+        }
+        return null;
+    }
+
     fn reportError(self: *Parser, message: []const u8) !void {
         if (self.panic_mode) return; // Don't report cascading errors
 
@@ -405,12 +433,13 @@ pub const Parser = struct {
 
         // Use centralized error formatter for consistent output
         const filename = self.source_file orelse "<input>";
+        const source_line = self.getSourceLine(token.line);
         const formatted = try self.error_formatter.formatError(
             filename,
             token.line,
             token.column,
             message,
-            null, // source_line (would need access to source)
+            source_line,
             errors.E_PARSER_UNEXPECTED_TOKEN,
             null, // suggestion
         );
@@ -1449,8 +1478,9 @@ pub const Parser = struct {
 
     /// Parse an import declaration
     /// Syntax:
-    ///   import basics/os/serial              (import everything)
-    ///   import basics/os/serial { init, COM1 }  (selective import)
+    ///   import basics/os/serial                       (slash-path form)
+    ///   import basics/os/serial { init, COM1 }        (selective)
+    ///   import "relative/path/to/file.home" as alias  (string-path form)
     fn importDeclaration(self: *Parser) !ast.Stmt {
         const import_token = self.previous();
 
@@ -1458,14 +1488,27 @@ pub const Parser = struct {
         var path_segments = std.ArrayList([]const u8).empty;
         defer path_segments.deinit(self.allocator);
 
-        // First segment
-        const first_token = try self.expect(.Identifier, "Expected module name after 'import'");
-        try path_segments.append(self.allocator, first_token.lexeme);
+        // String-path form: `import "path/to/file.home" as alias`.
+        // Path comes in as a single literal; subsequent `as` aliasing
+        // is handled at the bottom of this function.
+        if (self.check(.String)) {
+            const str_tok = self.advance();
+            // Strip surrounding quotes from the lexeme if present.
+            var lex = str_tok.lexeme;
+            if (lex.len >= 2 and lex[0] == '"' and lex[lex.len - 1] == '"') {
+                lex = lex[1 .. lex.len - 1];
+            }
+            try path_segments.append(self.allocator, lex);
+        } else {
+            // First segment
+            const first_token = try self.expect(.Identifier, "Expected module name after 'import'");
+            try path_segments.append(self.allocator, first_token.lexeme);
 
-        // Additional segments separated by '/'
-        while (self.match(&.{.Slash})) {
-            const segment_token = try self.expect(.Identifier, "Expected module name after '/'");
-            try path_segments.append(self.allocator, segment_token.lexeme);
+            // Additional segments separated by '/'
+            while (self.match(&.{.Slash})) {
+                const segment_token = try self.expect(.Identifier, "Expected module name after '/'");
+                try path_segments.append(self.allocator, segment_token.lexeme);
+            }
         }
 
         const path = try path_segments.toOwnedSlice(self.allocator);
@@ -3128,12 +3171,28 @@ pub const Parser = struct {
         return expr;
     }
 
-    /// Parse a binary expression
+    /// Parse a binary expression.
+    /// Performs *early* constant folding for two integer literals — this
+    /// turns `let SECONDS_PER_DAY = 60 * 60 * 24` into a single literal at
+    /// parse time so the type checker, optimizer and codegen never even see
+    /// the arithmetic. Folding bails out on overflow or division by zero so
+    /// the user still sees a real diagnostic in those cases.
     fn binary(self: *Parser, left: *ast.Expr) !*ast.Expr {
         const op_token = self.previous();
-        const op = self.tokenToBinaryOp(op_token.type);
+        const op = try self.tokenToBinaryOp(op_token.type);
         const precedence = Precedence.fromToken(op_token.type);
         const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+
+        if (foldIntegerBinary(op, left, right)) |folded| {
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{
+                .IntegerLiteral = ast.IntegerLiteral.init(
+                    folded,
+                    ast.SourceLocation.fromToken(op_token),
+                ),
+            };
+            return result;
+        }
 
         const binary_expr = try ast.BinaryExpr.init(
             self.allocator,
@@ -3146,6 +3205,30 @@ pub const Parser = struct {
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .BinaryExpr = binary_expr };
         return result;
+    }
+
+    /// Try to fold a binary expression of two integer literals at parse time.
+    /// Returns the folded value if both operands are IntegerLiterals AND the
+    /// operation is total at runtime. Returns null otherwise; the caller
+    /// falls back to constructing a BinaryExpr.
+    fn foldIntegerBinary(op: ast.BinaryOp, left: *ast.Expr, right: *ast.Expr) ?i64 {
+        if (left.* != .IntegerLiteral) return null;
+        if (right.* != .IntegerLiteral) return null;
+        const a = left.IntegerLiteral.value;
+        const b = right.IntegerLiteral.value;
+        return switch (op) {
+            .Add => std.math.add(i64, a, b) catch null,
+            .Sub => std.math.sub(i64, a, b) catch null,
+            .Mul => std.math.mul(i64, a, b) catch null,
+            .Div => if (b == 0) null else @divTrunc(a, b),
+            .Mod => if (b == 0) null else @rem(a, b),
+            .BitAnd => a & b,
+            .BitOr => a | b,
+            .BitXor => a ^ b,
+            .LeftShift => if (b < 0 or b >= 64) null else a << @as(u6, @intCast(b)),
+            .RightShift => if (b < 0 or b >= 64) null else a >> @as(u6, @intCast(b)),
+            else => null,
+        };
     }
 
     /// Parse a range expression (e.g., 0..10, 1..=100)
@@ -5330,9 +5413,9 @@ pub const Parser = struct {
         return expr;
     }
 
-    /// Convert token type to binary operator
-    fn tokenToBinaryOp(self: *Parser, token_type: TokenType) ast.BinaryOp {
-        _ = self;
+    /// Convert token type to binary operator.
+    /// Returns InvalidBinaryOperator with a proper diagnostic instead of panicking.
+    fn tokenToBinaryOp(self: *Parser, token_type: TokenType) ParseError!ast.BinaryOp {
         return switch (token_type) {
             .Plus => .Add,
             .Minus => .Sub,
@@ -5369,7 +5452,16 @@ pub const Parser = struct {
             .LeftShift => .LeftShift,
             .RightShift => .RightShift,
             .Equal => .Assign,
-            else => std.debug.panic("Invalid binary operator token: {any}", .{token_type}),
+            else => {
+                const msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Invalid binary operator token: {s}",
+                    .{@tagName(token_type)},
+                );
+                defer self.allocator.free(msg);
+                try self.reportError(msg);
+                return ParseError.InvalidBinaryOperator;
+            },
         };
     }
 

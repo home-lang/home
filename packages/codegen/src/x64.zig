@@ -1147,6 +1147,30 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
     }
 
+    /// sqrtsd xmm1, xmm2 - Scalar square root double-precision (single 64-bit float).
+    /// Encoded as F2 0F 51 /r.
+    pub fn sqrtsdXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF2);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x51);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
+    /// sqrtss xmm1, xmm2 - Scalar square root single-precision (single 32-bit float).
+    /// Encoded as F3 0F 51 /r.
+    pub fn sqrtssXmmXmm(self: *Assembler, dst: XmmRegister, src: XmmRegister) !void {
+        try self.code.append(self.allocator, 0xF3);
+        if (dst.needsRexPrefix() or src.needsRexPrefix()) {
+            try self.emitRex(false, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x51);
+        try self.emitModRM(0b11, dst.encodeModRM(), src.encodeModRM());
+    }
+
     /// movaps xmm, [base + offset] - Move aligned packed single-precision
     pub fn movapsXmmMem(self: *Assembler, dst: XmmRegister, base: Register, offset: i32) !void {
         // 0F 28 /r [base + disp32]

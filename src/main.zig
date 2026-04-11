@@ -422,6 +422,8 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse (AST allocated in arena)
     var parser = try Parser.init(arena_allocator, tokens.items);
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
@@ -464,6 +466,8 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
@@ -644,6 +648,8 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
@@ -728,6 +734,8 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
 
     // Parse
     var parser = try Parser.init(arena_allocator, tokens.items);
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
@@ -930,6 +938,8 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // Parse
     const start_parse = getMonotonicNs();
     var parser = try Parser.init(arena_allocator, tokens.items);
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
@@ -1101,6 +1111,8 @@ fn runAndReportError(allocator: std.mem.Allocator, file_path: []const u8) void {
         std.debug.print("{s}Parser Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
         return;
     };
+    parser.source_text = source;
+    parser.source_file = file_path;
     const program = parser.parse() catch |err| {
         std.debug.print("{s}Parse Error:{s} {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
         return;
@@ -1708,6 +1720,8 @@ fn runTestFile(allocator: std.mem.Allocator, file_path: []const u8, verbose: boo
         std.debug.print("  Error: Parser init error: {}\n", .{err});
         return err;
     };
+    parser.source_text = source;
+    parser.source_file = file_path;
 
     // Set source root for module resolution
     try parser.module_resolver.setSourceRoot(file_path);

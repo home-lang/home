@@ -19,6 +19,7 @@ pub const vectorizer = @import("vectorizer.zig");
 pub const trait_codegen = @import("trait_codegen.zig");
 pub const closure_codegen = @import("closure_codegen.zig");
 pub const monomorphization = @import("monomorphization.zig");
+pub const checked_cast = @import("checked_cast.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;

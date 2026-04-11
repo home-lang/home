@@ -224,6 +224,8 @@ pub const Repl = struct {
             std.debug.print("{s}Parser initialization error:{s} {}\n\n", .{ Color.Red.code(), Color.Reset.code(), err });
             return;
         };
+        parser.source_text = input;
+        parser.source_file = "<repl>";
         const program = parser.parse() catch |err| {
             std.debug.print("{s}Parser error:{s} {}\n\n", .{ Color.Red.code(), Color.Reset.code(), err });
             return;

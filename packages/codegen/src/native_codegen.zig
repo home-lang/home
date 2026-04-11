@@ -18,6 +18,8 @@ const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 const ComptimeValue = comptime_mod.ComptimeValue;
 const type_registry_mod = @import("type_registry.zig");
 pub const TypeRegistry = type_registry_mod.TypeRegistry;
+const checked_cast = @import("checked_cast.zig");
+const safeIntCast = checked_cast.safeIntCast;
 
 /// Error set for code generation operations.
 ///
@@ -4521,6 +4523,191 @@ pub const NativeCodegen = struct {
         try self.assembler.movRegReg(.rax, .rsp);
     }
 
+    /// Emit a runtime panic: write `message` to stderr and exit with code 101.
+    /// Inline so each panic site has its own data; avoids the need for a per-process
+    /// panic routine and works correctly even when called from places where the
+    /// stack frame is not well-formed.
+    fn emitRuntimePanic(self: *NativeCodegen, message: []const u8) !void {
+        // Build the message bytes (with newline) into the data section.
+        const buf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
+        defer self.allocator.free(buf);
+        const data_offset = try self.registerStringLiteral(buf);
+
+        // syscall numbers
+        const write_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000004,
+            .linux => 1,
+            else => 1,
+        };
+        const exit_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000001,
+            .linux => 60,
+            else => 60,
+        };
+
+        // write(stderr=2, message, len)
+        try self.assembler.movRegImm64(.rax, write_syscall);
+        try self.assembler.movRegImm64(.rdi, 2);
+        // Load message address into rsi via RIP-relative LEA + fixup.
+        const lea_pos = try self.assembler.leaRipRel(.rsi, 0);
+        try self.string_fixups.append(self.allocator, .{
+            .code_pos = lea_pos,
+            .data_offset = data_offset,
+        });
+        try self.assembler.movRegImm64(.rdx, @as(i64, @intCast(buf.len)));
+        try self.assembler.syscall();
+
+        // exit(101) — matches Rust's panic exit code.
+        try self.assembler.movRegImm64(.rax, exit_syscall);
+        try self.assembler.movRegImm64(.rdi, 101);
+        try self.assembler.syscall();
+    }
+
+    /// Load the address of a string literal into rax (registers a fixup for linking).
+    fn loadStringLiteralIntoRax(self: *NativeCodegen, literal: []const u8) !void {
+        const data_offset = try self.registerStringLiteral(literal);
+        const code_pos = try self.assembler.leaRipRel(.rax, 0);
+        try self.string_fixups.append(self.allocator, .{
+            .code_pos = code_pos,
+            .data_offset = data_offset,
+        });
+    }
+
+    /// Concatenate two NUL-terminated strings whose pointers live in `left_reg` and `right_reg`.
+    /// Result pointer ends up in rax.
+    /// Both input registers may be clobbered.
+    fn concatStringPointers(
+        self: *NativeCodegen,
+        left_reg: x64.Register,
+        right_reg: x64.Register,
+    ) !void {
+        // Stash both inputs.
+        try self.assembler.pushReg(left_reg);
+        try self.assembler.pushReg(right_reg);
+
+        // strlen(left) -> r8
+        try self.assembler.movRegReg(.rdi, left_reg);
+        try self.stringLength(.rdi);
+        try self.assembler.movRegReg(.r8, .rax);
+
+        // strlen(right) -> r9
+        // (left_reg/right_reg may have been clobbered above; reload from stack.)
+        try self.assembler.movRegMem(.rdi, .rsp, 0); // top of stack = saved right
+        try self.stringLength(.rdi);
+        try self.assembler.movRegReg(.r9, .rax);
+
+        // total = r8 + r9 + 1
+        try self.assembler.movRegReg(.rax, .r8);
+        try self.assembler.addRegReg(.rax, .r9);
+        try self.assembler.addRegImm(.rax, 1);
+
+        // Allocate buffer.
+        try self.assembler.movRegReg(.rdi, .rax);
+        try self.heapAlloc();
+        try self.assembler.movRegReg(.r10, .rax); // r10 = dest base
+
+        // memcpy(r10, left, r8)
+        try self.assembler.movRegMem(.rsi, .rsp, 8); // saved left = stack[8]
+        try self.assembler.movRegReg(.rdi, .r10);
+        try self.assembler.movRegReg(.rdx, .r8);
+        try self.memcpy();
+
+        // memcpy(r10 + r8, right, r9)
+        try self.assembler.movRegMem(.rsi, .rsp, 0); // saved right = stack[0]
+        try self.assembler.movRegReg(.rdi, .r10);
+        try self.assembler.addRegReg(.rdi, .r8);
+        try self.assembler.movRegReg(.rdx, .r9);
+        try self.memcpy();
+
+        // Null-terminate at r10 + r8 + r9
+        try self.assembler.movRegReg(.rdi, .r10);
+        try self.assembler.addRegReg(.rdi, .r8);
+        try self.assembler.addRegReg(.rdi, .r9);
+        try self.assembler.movByteMemImm(.rdi, 0, 0);
+
+        // Pop saved inputs (discard).
+        try self.assembler.popReg(.rcx);
+        try self.assembler.popReg(.rcx);
+
+        // Result in rax.
+        try self.assembler.movRegReg(.rax, .r10);
+    }
+
+    /// Convert a signed 64-bit integer (in rax on entry) to a heap-allocated decimal string.
+    /// Result pointer in rax. Handles negative numbers and zero. Clobbers rcx, rdx, r10, r11, r12.
+    fn intToDecimalString(self: *NativeCodegen) !void {
+        // Save the value we want to convert (rax) on the stack — heapAlloc clobbers rax.
+        try self.assembler.pushReg(.rax);
+
+        // Reserve a 32-byte buffer.
+        try self.assembler.movRegImm64(.rdi, 32);
+        try self.heapAlloc(); // rax = buffer
+        try self.assembler.movRegReg(.r10, .rax); // r10 = buffer base
+
+        // r11 = write cursor at buffer + 31 (NUL slot), then back up by one for first digit.
+        try self.assembler.movRegReg(.r11, .r10);
+        try self.assembler.addRegImm(.r11, 31);
+        try self.assembler.movByteMemImm(.r11, 0, 0);
+        try self.assembler.subRegImm(.r11, 1);
+
+        // Restore the integer.
+        try self.assembler.popReg(.rax);
+
+        // Sign tracking in r12 (1 if negative).
+        try self.assembler.xorRegReg(.r12, .r12);
+        try self.assembler.testRegReg(.rax, .rax);
+        const jns_pos = self.assembler.getPosition();
+        try self.assembler.jnsRel32(0); // patched
+        try self.assembler.negReg(.rax);
+        try self.assembler.movRegImm64(.r12, 1);
+        const after_neg = self.assembler.getPosition();
+        try self.assembler.patchJnsRel32(jns_pos, @as(i32, @intCast(after_neg)) - @as(i32, @intCast(jns_pos + 6)));
+
+        // Zero shortcut.
+        try self.assembler.testRegReg(.rax, .rax);
+        const jne_skip_zero = self.assembler.getPosition();
+        try self.assembler.jneRel32(0);
+        try self.assembler.movByteMemImm(.r11, 0, '0');
+        try self.assembler.subRegImm(.r11, 1);
+        const jmp_after_zero_pos = self.assembler.getPosition();
+        try self.assembler.jmpRel32(0);
+        const after_zero_branch = self.assembler.getPosition();
+        try self.assembler.patchJneRel32(jne_skip_zero, @as(i32, @intCast(after_zero_branch)) - @as(i32, @intCast(jne_skip_zero + 6)));
+
+        // Digit-extraction loop.
+        const loop_start = self.assembler.getPosition();
+        try self.assembler.testRegReg(.rax, .rax);
+        const jeq_done = self.assembler.getPosition();
+        try self.assembler.jeRel32(0);
+
+        try self.assembler.cqo(); // sign-extend rax into rdx:rax
+        try self.assembler.movRegImm64(.rcx, 10);
+        try self.assembler.idivReg(.rcx); // rax = quot, rdx = rem
+        try self.assembler.addRegImm(.rdx, '0');
+        try self.assembler.movByteMemReg(.r11, 0, .rdx);
+        try self.assembler.subRegImm(.r11, 1);
+
+        const back_pos = self.assembler.getPosition();
+        try self.assembler.jmpRel32(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(back_pos + 5)));
+
+        const after_loop = self.assembler.getPosition();
+        try self.assembler.patchJeRel32(jeq_done, @as(i32, @intCast(after_loop)) - @as(i32, @intCast(jeq_done + 6)));
+        try self.assembler.patchJmpRel32(jmp_after_zero_pos, @as(i32, @intCast(after_loop)) - @as(i32, @intCast(jmp_after_zero_pos + 5)));
+
+        // Prepend '-' if negative.
+        try self.assembler.testRegReg(.r12, .r12);
+        const jeq_no_sign = self.assembler.getPosition();
+        try self.assembler.jeRel32(0);
+        try self.assembler.movByteMemImm(.r11, 0, '-');
+        try self.assembler.subRegImm(.r11, 1);
+        const after_sign = self.assembler.getPosition();
+        try self.assembler.patchJeRel32(jeq_no_sign, @as(i32, @intCast(after_sign)) - @as(i32, @intCast(jeq_no_sign + 6)));
+
+        // Result pointer = r11 + 1.
+        try self.assembler.movRegReg(.rax, .r11);
+        try self.assembler.addRegImm(.rax, 1);
+    }
+
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) !void {
         return self.generateFnDeclWithName(func, null);
     }
@@ -5225,15 +5412,13 @@ pub const NativeCodegen = struct {
                         // Logical right shift (unsigned)
                         try self.assembler.shrRegCl(.rax);
                     },
-                    // Checked arithmetic operators - panic on overflow
+                    // Checked arithmetic operators - panic on overflow.
+                    // The inline panic block is ~60 bytes; rel8 jumps span up to 127
+                    // bytes so a forward jno over the panic still fits.
                     .CheckedAdd => {
-                        // add rax, rcx; trap on overflow
                         try self.assembler.addRegReg(.rax, .rcx);
-                        // Jump past int3 if no overflow
                         const jno_patch = try self.assembler.jnoRel8(0);
-                        // int3 for panic (only reached on overflow)
-                        try self.assembler.int3();
-                        // Patch jno to skip past int3
+                        try self.emitRuntimePanic("panic: integer overflow in checked add");
                         const end_pos = self.assembler.code.items.len;
                         const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
                         self.assembler.patchJno8(jno_patch, jno_offset);
@@ -5241,39 +5426,30 @@ pub const NativeCodegen = struct {
                     .CheckedSub => {
                         try self.assembler.subRegReg(.rax, .rcx);
                         const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.assembler.int3();
+                        try self.emitRuntimePanic("panic: integer overflow in checked sub");
                         const end_pos = self.assembler.code.items.len;
                         const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
                         self.assembler.patchJno8(jno_patch, jno_offset);
                     },
                     .CheckedMul => {
                         try self.assembler.imulRegReg(.rax, .rcx);
-                        // imul sets OF on overflow
                         const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.assembler.int3();
+                        try self.emitRuntimePanic("panic: integer overflow in checked mul");
                         const end_pos = self.assembler.code.items.len;
                         const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
                         self.assembler.patchJno8(jno_patch, jno_offset);
                     },
                     .CheckedDiv => {
-                        // Check for division by zero before dividing
+                        // Check for division by zero before dividing.
                         try self.assembler.testRegReg(.rcx, .rcx);
-                        const jz_patch = try self.assembler.jzRel8(0); // Jump to panic if zero
-                        // Perform division
+                        const jnz_patch = try self.assembler.jnzRel8(0); // skip panic if non-zero
+                        try self.emitRuntimePanic("panic: division by zero in checked div");
+                        const after_panic = self.assembler.code.items.len;
+                        const jnz_offset = @as(i8, @intCast(@as(i64, @intCast(after_panic)) - @as(i64, @intCast(jnz_patch + 2))));
+                        self.assembler.patchJnz8(jnz_patch, jnz_offset);
+                        // Perform division (rax already holds dividend; cqo sign-extends).
                         try self.assembler.cqo();
                         try self.assembler.idivReg(.rcx);
-                        // Jump past panic
-                        const jmp_patch = try self.assembler.jmpRel8(0);
-                        // Patch jz to here (panic point)
-                        const panic_pos = self.assembler.code.items.len;
-                        const jz_offset = @as(i8, @intCast(@as(i64, @intCast(panic_pos)) - @as(i64, @intCast(jz_patch + 2))));
-                        self.assembler.patchJz8(jz_patch, jz_offset);
-                        // int3 for panic
-                        try self.assembler.int3();
-                        // Patch jmp to skip panic
-                        const end_pos = self.assembler.code.items.len;
-                        const jmp_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jmp_patch + 2))));
-                        self.assembler.patchJmp8(jmp_patch, jmp_offset);
                     },
                     // Saturating arithmetic - return 0 (representing None) on overflow
                     .SaturatingAdd => {
@@ -5568,10 +5744,130 @@ pub const NativeCodegen = struct {
                         return;
                     }
 
+                    // string.upper() and string.lower() - ASCII case conversion.
+                    // Allocates a new heap buffer (via heapAlloc, currently a stack
+                    // bump allocator) and copies the string with case applied.
+                    if (std.mem.eql(u8, method_name, "upper") or std.mem.eql(u8, method_name, "lower")) {
+                        const to_upper = std.mem.eql(u8, method_name, "upper");
+                        try self.generateExpr(member.object); // rax = string ptr
+                        try self.assembler.pushReg(.rax); // save src
+
+                        // Compute length.
+                        try self.assembler.movRegReg(.rdi, .rax);
+                        try self.stringLength(.rdi); // rax = len
+                        try self.assembler.movRegReg(.r8, .rax); // r8 = len
+
+                        // Allocate len+1 bytes.
+                        try self.assembler.movRegReg(.rdi, .rax);
+                        try self.assembler.addRegImm(.rdi, 1);
+                        try self.heapAlloc(); // rax = dst
+                        try self.assembler.movRegReg(.r10, .rax); // r10 = dst
+
+                        // Loop: for i in 0..len { c = src[i]; if cased adjust; dst[i] = c }
+                        try self.assembler.popReg(.r11); // r11 = src
+                        try self.assembler.xorRegReg(.rcx, .rcx); // rcx = i
+
+                        const loop_start = self.assembler.getPosition();
+                        try self.assembler.cmpRegReg(.rcx, .r8);
+                        const jeq_done = self.assembler.getPosition();
+                        try self.assembler.jeRel32(0);
+
+                        // Load byte: rax = (u64) src[rcx]
+                        try self.assembler.movRegReg(.rax, .r11);
+                        try self.assembler.addRegReg(.rax, .rcx);
+                        try self.assembler.movzxReg64Mem8(.rdx, .rax, 0);
+
+                        // Conditional case adjust. We branch on range:
+                        //   upper: if 'a' <= b <= 'z' then b -= 32
+                        //   lower: if 'A' <= b <= 'Z' then b += 32
+                        const lo: i64 = if (to_upper) 'a' else 'A';
+                        const hi: i64 = if (to_upper) 'z' else 'Z';
+                        try self.assembler.cmpRegImm(.rdx, @intCast(lo));
+                        const jl_skip = self.assembler.getPosition();
+                        try self.assembler.jlRel32(0);
+                        try self.assembler.cmpRegImm(.rdx, @intCast(hi));
+                        const jg_skip = self.assembler.getPosition();
+                        try self.assembler.jgRel32(0);
+                        if (to_upper) {
+                            try self.assembler.subRegImm(.rdx, 32);
+                        } else {
+                            try self.assembler.addRegImm(.rdx, 32);
+                        }
+                        const skip_target = self.assembler.getPosition();
+                        try self.assembler.patchJlRel32(jl_skip, @as(i32, @intCast(skip_target)) - @as(i32, @intCast(jl_skip + 6)));
+                        try self.assembler.patchJgRel32(jg_skip, @as(i32, @intCast(skip_target)) - @as(i32, @intCast(jg_skip + 6)));
+
+                        // Store byte: dst[i] = dl
+                        try self.assembler.movRegReg(.rax, .r10);
+                        try self.assembler.addRegReg(.rax, .rcx);
+                        try self.assembler.movByteMemReg(.rax, 0, .rdx);
+
+                        // i++
+                        try self.assembler.addRegImm(.rcx, 1);
+
+                        const back = self.assembler.getPosition();
+                        try self.assembler.jmpRel32(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(back + 5)));
+
+                        const done = self.assembler.getPosition();
+                        try self.assembler.patchJeRel32(jeq_done, @as(i32, @intCast(done)) - @as(i32, @intCast(jeq_done + 6)));
+
+                        // NUL-terminate at dst[len].
+                        try self.assembler.movRegReg(.rax, .r10);
+                        try self.assembler.addRegReg(.rax, .r8);
+                        try self.assembler.movByteMemImm(.rax, 0, 0);
+
+                        // Result pointer in rax.
+                        try self.assembler.movRegReg(.rax, .r10);
+                        return;
+                    }
+
                     // string.substring(start, end) or array.slice(start, end)
                     if (std.mem.eql(u8, method_name, "substring") or std.mem.eql(u8, method_name, "slice")) {
-                        // For now, just return the original - proper slicing needs memory allocation
-                        try self.generateExpr(member.object);
+                        // Real implementation: copy bytes [start, end) into a fresh
+                        // heap buffer and NUL-terminate. start/end clamped at >= 0
+                        // by caller; we don't bounds-check yet.
+                        if (call.args.len < 2) {
+                            try self.generateExpr(member.object);
+                            return;
+                        }
+                        // Evaluate end, then start, then source.
+                        try self.generateExpr(call.args[1]);
+                        try self.assembler.pushReg(.rax);
+                        try self.generateExpr(call.args[0]);
+                        try self.assembler.pushReg(.rax);
+                        try self.generateExpr(member.object); // rax = src
+                        try self.assembler.popReg(.rcx); // rcx = start
+                        try self.assembler.popReg(.rdx); // rdx = end
+
+                        // length = end - start
+                        try self.assembler.subRegReg(.rdx, .rcx);
+                        try self.assembler.movRegReg(.r8, .rdx); // r8 = len
+
+                        // Allocate len + 1
+                        try self.assembler.movRegReg(.rdi, .r8);
+                        try self.assembler.addRegImm(.rdi, 1);
+                        try self.assembler.pushReg(.rax); // save src
+                        try self.assembler.pushReg(.rcx); // save start
+                        try self.assembler.pushReg(.r8); // save len
+                        try self.heapAlloc(); // rax = dst
+                        try self.assembler.movRegReg(.r10, .rax);
+                        try self.assembler.popReg(.r8);
+                        try self.assembler.popReg(.rcx);
+                        try self.assembler.popReg(.rax);
+
+                        // memcpy(r10, src + start, len)
+                        try self.assembler.addRegReg(.rax, .rcx); // src + start
+                        try self.assembler.movRegReg(.rsi, .rax);
+                        try self.assembler.movRegReg(.rdi, .r10);
+                        try self.assembler.movRegReg(.rdx, .r8);
+                        try self.memcpy();
+
+                        // NUL terminate
+                        try self.assembler.movRegReg(.rax, .r10);
+                        try self.assembler.addRegReg(.rax, .r8);
+                        try self.assembler.movByteMemImm(.rax, 0, 0);
+
+                        try self.assembler.movRegReg(.rax, .r10);
                         return;
                     }
 
@@ -5793,9 +6089,12 @@ pub const NativeCodegen = struct {
                             }
 
                             if (std.mem.eql(u8, func_name, "sqrt")) {
-                                // sqrt: Placeholder - proper implementation would use SSE sqrtsd
-                                // For now, return value unchanged
-                                // Input value is in rax, leave it as-is
+                                // math.sqrt: scalar double-precision square root via SSE2.
+                                // Input is a double-bit-pattern in rax. Move to xmm0, sqrt,
+                                // move back. xmm0 is caller-save under SysV.
+                                try self.assembler.movqXmmReg(.xmm0, .rax);
+                                try self.assembler.sqrtsdXmmXmm(.xmm0, .xmm0);
+                                try self.assembler.movqRegXmm(.rax, .xmm0);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "sin")) {
                                 // sin: placeholder
@@ -5920,12 +6219,23 @@ pub const NativeCodegen = struct {
                     }
                 }
 
-                // Unknown function - evaluate args and return 0 to allow compilation
-                // This is a stub for functions that aren't implemented yet
-                for (call.args) |arg| {
-                    try self.generateExpr(arg);
-                }
-                try self.assembler.movRegImm64(.rax, 0); // Return 0 as placeholder
+                // Unknown function: produce a real diagnostic instead of silently
+                // returning 0. Silent fallbacks turn missing-symbol bugs into
+                // miscompilations, which is worse than a hard error.
+                const callee_name: []const u8 = blk: {
+                    if (call.callee.* == .Identifier) {
+                        break :blk call.callee.Identifier.name;
+                    }
+                    if (call.callee.* == .MemberExpr) {
+                        break :blk call.callee.MemberExpr.member;
+                    }
+                    break :blk "<unknown>";
+                };
+                std.debug.print(
+                    "codegen error: call to undefined function '{s}'\n",
+                    .{callee_name},
+                );
+                return error.UnsupportedFeature;
             },
             .TernaryExpr => |ternary| {
                 // Ternary: condition ? true_val : false_val
@@ -7163,36 +7473,63 @@ pub const NativeCodegen = struct {
                 // Return pointer to start of array (rsp points to first element)
                 try self.assembler.movRegReg(.rax, .rsp);
 
-                // Track stack usage
-                self.next_local_offset +|= @as(u32, @intCast(count));
+                // Track stack usage. The count comes from a user-supplied integer
+                // literal — must not silently truncate.
+                const count_u32 = safeIntCast(u32, count) catch {
+                    std.debug.print("array repeat count {d} exceeds u32\n", .{count});
+                    return error.UnsupportedFeature;
+                };
+                self.next_local_offset +|= count_u32;
             },
 
             .InterpolatedString => |interp_str| {
                 // Interpolated string: "Hello {name}!"
-                // For now, we concatenate the parts and expressions at runtime.
-                // In native code, we'll build the string on the heap.
+                //
+                // Layout from the parser: parts[i] is literal text, expressions[i]
+                // is interpolated between parts[i] and parts[i+1]. So the result is:
+                //   parts[0] + str(expressions[0]) + parts[1] + ... + parts[N]
+                //
+                // Built left-to-right with stringConcat. Non-string expressions go
+                // through intToDecimalString. The accumulator lives in rax between
+                // pieces and is spilled to the stack while evaluating the next piece.
 
-                // Simple implementation: just concatenate all parts as a single string
-                // and skip interpolation (expressions evaluate but result is ignored).
-                // This is a stub - full implementation would need runtime string concatenation.
-
-                // For each expression, evaluate it (side effects may be needed)
-                for (interp_str.expressions) |expr_item| {
-                    try self.generateExpr(&expr_item);
+                if (interp_str.parts.len == 0 and interp_str.expressions.len == 0) {
+                    try self.loadStringLiteralIntoRax("");
+                    return;
                 }
 
-                // Return pointer to first part as the string result
-                // (This is a simplification - real impl needs string building)
-                if (interp_str.parts.len > 0) {
-                    const first_part = interp_str.parts[0];
-                    // Register string literal and get data section offset
-                    const str_offset = try self.registerStringLiteral(first_part);
-                    // Store address relative to data section base (will be patched at link time)
-                    // For now, use a placeholder that will need fixing
-                    try self.assembler.movRegImm64(.rax, @as(i64, @intCast(str_offset)));
+                // Initial accumulator = parts[0] (or "" if missing/empty).
+                if (interp_str.parts.len > 0 and interp_str.parts[0].len > 0) {
+                    try self.loadStringLiteralIntoRax(interp_str.parts[0]);
                 } else {
-                    // Empty string
-                    try self.assembler.movRegImm64(.rax, 0);
+                    try self.loadStringLiteralIntoRax("");
+                }
+
+                var i: usize = 0;
+                while (i < interp_str.expressions.len) : (i += 1) {
+                    // Append str(expressions[i]) to the accumulator.
+                    try self.assembler.pushReg(.rax); // spill acc
+                    try self.generateExpr(&interp_str.expressions[i]);
+
+                    const needs_int_conv = switch (interp_str.expressions[i]) {
+                        .StringLiteral, .InterpolatedString => false,
+                        else => true,
+                    };
+                    if (needs_int_conv) try self.intToDecimalString();
+
+                    try self.assembler.movRegReg(.rcx, .rax); // right = expr str
+                    try self.assembler.popReg(.rax); // left = acc
+                    try self.concatStringPointers(.rax, .rcx);
+
+                    // Append parts[i+1] if any and non-empty.
+                    const next_idx = i + 1;
+                    if (next_idx < interp_str.parts.len and interp_str.parts[next_idx].len > 0) {
+                        try self.assembler.pushReg(.rax);
+                        try self.loadStringLiteralIntoRax(interp_str.parts[next_idx]);
+                        try self.assembler.movRegReg(.rcx, .rax);
+                        try self.assembler.popReg(.rax);
+                        try self.concatStringPointers(.rax, .rcx);
+                    }
                 }
             },
 

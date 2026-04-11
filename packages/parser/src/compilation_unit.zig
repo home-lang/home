@@ -82,6 +82,7 @@ pub const CompilationUnit = struct {
         // Parse
         var parser = try Parser.init(self.allocator, tokens.items);
         parser.source_file = file_path;
+        parser.source_text = source;
         const program = try parser.parse();
 
         // Check for parse errors
