@@ -80,7 +80,10 @@ test "parser: identifier" {
 }
 
 test "parser: binary expression - addition" {
-    const program = try parseSource(testing.allocator, "1 + 2");
+    // Use an identifier so the parser can't fold the expression at parse time
+    // (see foldIntegerBinary in parser.zig). The dedicated folding test below
+    // covers the literal-on-literal path.
+    const program = try parseSource(testing.allocator, "x + 2");
     defer program.deinit(testing.allocator);
 
     const expr = program.statements[0].ExprStmt;
@@ -88,14 +91,14 @@ test "parser: binary expression - addition" {
 
     const binary = expr.BinaryExpr;
     try testing.expectEqual(ast.BinaryOp.Add, binary.op);
-    try testing.expect(binary.left.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 1), binary.left.IntegerLiteral.value);
+    try testing.expect(binary.left.* == .Identifier);
+    try testing.expectEqualStrings("x", binary.left.Identifier.name);
     try testing.expect(binary.right.* == .IntegerLiteral);
     try testing.expectEqual(@as(i64, 2), binary.right.IntegerLiteral.value);
 }
 
 test "parser: binary expression - multiplication" {
-    const program = try parseSource(testing.allocator, "3 * 4");
+    const program = try parseSource(testing.allocator, "x * 4");
     defer program.deinit(testing.allocator);
 
     const expr = program.statements[0].ExprStmt;
@@ -106,7 +109,7 @@ test "parser: binary expression - multiplication" {
 }
 
 test "parser: operator precedence" {
-    const program = try parseSource(testing.allocator, "1 + 2 * 3");
+    const program = try parseSource(testing.allocator, "x + y * 3");
     defer program.deinit(testing.allocator);
 
     const expr = program.statements[0].ExprStmt;
@@ -114,11 +117,23 @@ test "parser: operator precedence" {
 
     const add = expr.BinaryExpr;
     try testing.expectEqual(ast.BinaryOp.Add, add.op);
-    try testing.expect(add.left.* == .IntegerLiteral);
+    try testing.expect(add.left.* == .Identifier);
     try testing.expect(add.right.* == .BinaryExpr);
 
     const mul = add.right.BinaryExpr;
     try testing.expectEqual(ast.BinaryOp.Mul, mul.op);
+}
+
+test "parser: integer binary expressions are constant-folded" {
+    // The parser folds literal-on-literal arithmetic at parse time so the
+    // type checker / codegen never see it. `1 + 2 * 3` should collapse all
+    // the way to a single IntegerLiteral with value 7.
+    const program = try parseSource(testing.allocator, "1 + 2 * 3");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .IntegerLiteral);
+    try testing.expectEqual(@as(i64, 7), expr.IntegerLiteral.value);
 }
 
 test "parser: comparison operators" {

@@ -3238,6 +3238,10 @@ pub const Parser = struct {
         const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
 
         if (foldIntegerBinary(op, left, right)) |folded| {
+            // The IntegerLiteral operands are leaf nodes with no nested heap
+            // data — free them so the folded result is the only allocation.
+            self.allocator.destroy(left);
+            self.allocator.destroy(right);
             const result = try self.allocator.create(ast.Expr);
             result.* = ast.Expr{
                 .IntegerLiteral = ast.IntegerLiteral.init(
