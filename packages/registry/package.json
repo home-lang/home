@@ -39,7 +39,7 @@
     "@types/compression": "^1.7.2",
     "@types/jsonwebtoken": "^9.0.2",
     "@types/bcrypt": "^5.0.0",
-    "@types/multer": "^1.4.7",
+    "@types/multer": "^2.1.0",
     "@types/tar": "^6.1.5",
     "@types/semver": "^7.5.0",
     "@types/node": "^20.4.2",
