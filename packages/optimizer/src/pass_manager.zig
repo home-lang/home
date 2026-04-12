@@ -422,8 +422,11 @@ pub const Pass = struct {
                 }
 
                 // Algebraic simplifications
-                // x + 0 = x, x * 1 = x, x * 0 = 0, etc.
-                if (right_is_const) {
+                // x + 0 = x, x * 1 = x, x * 0 = 0, etc. Only apply when
+                // the right operand is an *integer* literal; the float
+                // path would need IEEE-754 semantics (0.0 * x is NOT x if
+                // x is NaN) and isn't handled here.
+                if (right_is_const and bin.right.* == .IntegerLiteral) {
                     if (bin.right.IntegerLiteral.value == 0) {
                         switch (bin.op) {
                             .Add, .Sub => {

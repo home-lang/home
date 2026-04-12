@@ -908,6 +908,11 @@ pub const RangeExpr = struct {
     start: *Expr,
     end: *Expr,
     inclusive: bool, // true for ..=, false for ..
+    /// Optional step for strided iteration: `for i in 0..10 step 2`.
+    /// When null, the step defaults to 1. The parser only sets this for
+    /// for-loop ranges; free-standing range expressions always have it
+    /// null and use step 1.
+    step: ?*Expr = null,
 
     pub fn init(allocator: std.mem.Allocator, start: *Expr, end: *Expr, inclusive: bool, loc: SourceLocation) !*RangeExpr {
         const expr = try allocator.create(RangeExpr);
@@ -1513,6 +1518,11 @@ pub const LetDecl = struct {
     value: ?*Expr,
     is_mutable: bool,
     is_public: bool = false,
+    /// True when this binding was declared with the `static` keyword.
+    /// Distinguishes module-level long-lived storage from stack-local
+    /// `let`. `static` alone is immutable; `static mut` additionally
+    /// sets is_mutable = true.
+    is_static: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, type_name: ?[]const u8, value: ?*Expr, is_mutable: bool, loc: SourceLocation) !*LetDecl {
         const decl = try allocator.create(LetDecl);

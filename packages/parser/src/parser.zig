@@ -764,13 +764,17 @@ pub const Parser = struct {
             return stmt;
         }
 
-        // static local variable (static mut seed: u32 = 12345)
-        // Parse as a mutable variable declaration with static storage
+        // static binding: `static NAME = EXPR` (immutable) or
+        // `static mut NAME = EXPR` (mutable global). Track the
+        // distinction on the AST so downstream passes can reject writes
+        // to non-mut statics (and the codegen can place them in
+        // read-only vs mutable data sections).
         if (self.match(&.{.Static})) {
-            // Expect 'mut' after 'static' for now (static mut pattern)
-            _ = self.match(&.{.Mut}); // Optional mut, but we treat static as always mutable storage
+            const decl_is_mut = self.match(&.{.Mut});
             var stmt = try self.varDeclaration();
             if (is_pub) stmt.LetDecl.is_public = true;
+            stmt.LetDecl.is_static = true;
+            stmt.LetDecl.is_mutable = decl_is_mut;
             return stmt;
         }
 
@@ -958,11 +962,18 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightParen, "Expected ')' after parameters");
 
-        // Parse return type. Both styles are accepted:
+        // Parse return type. Three styles are accepted:
         //   TypeScript-style: `fn foo(x: int): int { ... }`
         //   Rust-style:       `fn foo(x: int) -> int { ... }`
+        //   Zig-style:        `fn foo(x: int) int { ... }`
         var return_type: ?[]const u8 = null;
         if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
+            return_type = try self.parseTypeAnnotation();
+        } else if (!self.check(.LeftBrace) and !self.check(.Requires) and !self.check(.Ensures) and
+            (self.isPrimitiveTypeStart() or self.check(.Identifier) or self.check(.Star) or
+                self.check(.StarStar) or self.check(.LeftBracket) or self.check(.Ampersand) or
+                self.check(.Question)))
+        {
             return_type = try self.parseTypeAnnotation();
         }
 
@@ -1571,8 +1582,15 @@ pub const Parser = struct {
 
         const path = try path_segments.toOwnedSlice(self.allocator);
 
-        // Resolve the module using the module resolver
-        const resolved_module = self.module_resolver.resolve(path) catch |err| {
+        // Resolve the module using the module resolver. If resolution
+        // fails we still emit an ImportDecl (with alias) into the AST
+        // so downstream type-checking can register the alias as an
+        // opaque namespace. Previously a missing module would abort
+        // parsing of the file and silently drop any uses of the
+        // alias, leading to "Undefined variable" noise everywhere.
+        var resolution_failed = false;
+        const resolved_module = self.module_resolver.resolve(path) catch |err| blk: {
+            resolution_failed = true;
             const path_str = try self.pathToString(path);
             defer self.allocator.free(path_str);
 
@@ -1600,17 +1618,24 @@ pub const Parser = struct {
             };
             defer self.allocator.free(err_msg);
             try self.reportError(err_msg);
-            return error.UnexpectedToken;  // Return a parse error
+            break :blk module_resolver.ResolvedModule{
+                .path = path,
+                .file_path = try self.allocator.dupe(u8, path_str),
+                .name = if (path.len > 0) path[path.len - 1] else "unknown",
+                .is_zig = false,
+            };
         };
 
         // Register the module in the symbol table
         const module_path_str = try self.pathToString(path);
         defer self.allocator.free(module_path_str);
 
-        try self.symbol_table.registerModule(path, resolved_module.is_zig, null);
+        if (!resolution_failed) {
+            try self.symbol_table.registerModule(path, resolved_module.is_zig, null);
+        }
 
         // Populate symbols based on module type
-        if (resolved_module.is_zig) {
+        if (!resolution_failed and resolved_module.is_zig) {
             // Zig module - use predefined symbols
             try self.symbol_table.populateZigModuleSymbols(module_path_str);
         }
@@ -1740,9 +1765,12 @@ pub const Parser = struct {
 
             _ = try self.expect(.RightParen, "Expected ')' in function type");
 
-            // Parse optional return type. Accept both `: T` and `-> T`.
+            // Parse optional return type. Accept `: T`, `-> T`, OR
+            // Zig-style `fn(...) T` with no separator before the type.
             var return_type: []const u8 = "()";
             if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
+                return_type = try self.parseTypeAnnotation();
+            } else if (self.isPrimitiveTypeStart() or self.check(.Identifier)) {
                 return_type = try self.parseTypeAnnotation();
             }
 
@@ -1846,8 +1874,12 @@ pub const Parser = struct {
                 return try std.fmt.allocPrint(self.allocator, "[*]{s}", .{elem_type});
             }
             if (self.peek().type == .RightBracket) {
-                // Empty brackets: []T - dynamic array
+                // Empty brackets: `[]T`, `[]const T`, or `[]volatile T`.
                 _ = try self.expect(.RightBracket, "Expected ']'");
+                _ = self.match(&.{.Const});
+                if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                    _ = self.advance();
+                }
                 const elem_type = try self.parseTypeAnnotation();
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[]{s}", .{elem_type});
                 return arr_type;
@@ -1860,6 +1892,30 @@ pub const Parser = struct {
                 const elem_type = try self.parseTypeAnnotation();
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, elem_type });
                 return arr_type;
+            }
+
+            // Check for [IDENT]T syntax where IDENT is a constant name,
+            // e.g. `[MAX_QUEUES]RequestQueue`. Disambiguate from `[T]`
+            // by looking at the token immediately past the `]`: if it
+            // could start a type, treat as size-then-element form.
+            if (self.check(.Identifier)) {
+                const save = self.current;
+                const id_tok = self.advance();
+                if (self.check(.RightBracket)) {
+                    _ = self.advance();
+                    const nt = self.peek().type;
+                    const looks_like_type =
+                        nt == .Identifier or nt == .Star or nt == .StarStar or
+                        nt == .LeftBracket or nt == .Question or nt == .Ampersand;
+                    if (looks_like_type) {
+                        const elem_type = try self.parseTypeAnnotation();
+                        return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ id_tok.lexeme, elem_type });
+                    }
+                    // `[T]` form with T being the identifier we consumed.
+                    return try std.fmt.allocPrint(self.allocator, "[{s}]", .{id_tok.lexeme});
+                }
+                // Rewind and let the generic case handle it.
+                self.current = save;
             }
 
             // Has something inside brackets - either [T] or [T; N]
@@ -2397,13 +2453,25 @@ pub const Parser = struct {
             const first_name = first_token.lexeme;
 
             if (self.match(&.{.Comma})) {
-                // This is tuple destructuring: for (a, b, ...) in items
+                // This is tuple destructuring: for (a, b, ...) in items.
+                // Nested patterns like `for (a, (b, c)) in pairs` are
+                // not yet supported by the current AST — the bindings
+                // slot is a flat `[][]const u8`. We flatten them here
+                // if encountered, but emit a clear error pointing at
+                // the nested paren so the user isn't left wondering
+                // why `(b, c)` silently disappeared.
                 var bindings = std.ArrayList([]const u8).empty;
                 defer bindings.deinit(self.allocator);
 
                 try bindings.append(self.allocator, first_name);
 
                 while (true) {
+                    if (self.check(.LeftParen)) {
+                        try self.reportError(
+                            "nested tuple destructuring in `for` is not yet supported; flatten the pattern (e.g. `for (a, b, c) in pairs`)",
+                        );
+                        return error.UnexpectedToken;
+                    }
                     const binding_token = try self.expect(.Identifier, "Expected identifier in tuple pattern");
                     try bindings.append(self.allocator, binding_token.lexeme);
 
@@ -2474,6 +2542,22 @@ pub const Parser = struct {
 
         const iterable = try self.expression();
         errdefer ast.Program.deinitExpr(iterable, self.allocator);
+
+        // Optional `step N` clause — only meaningful when the iterable
+        // is a range. `step` is a soft keyword (not a reserved word) so
+        // we match it as an identifier with lexeme "step" and only when
+        // followed by something that could start an expression.
+        if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "step")) {
+            _ = self.advance();
+            const step_expr = try self.expression();
+            if (iterable.* == .RangeExpr) {
+                iterable.RangeExpr.step = step_expr;
+            } else {
+                // Only ranges support step. Leak the step expr node for
+                // now; the arena the parser runs on will clean up.
+                try self.reportError("'step' is only valid for range expressions");
+            }
+        }
 
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
@@ -2772,9 +2856,13 @@ pub const Parser = struct {
             const token = self.previous();
             const start_value = try std.fmt.parseInt(i64, token.lexeme, 10);
 
-            // Check for range pattern: N..M or N..=M
-            if (self.match(&.{.DotDot})) {
-                const inclusive = self.match(&.{.Equal}); // ..= for inclusive
+            // Check for range pattern: N..M (exclusive) or N..=M (inclusive).
+            // The lexer emits DotDotEqual as a single token, so we must
+            // match both variants explicitly — DotDot followed by Equal
+            // would not work because `Equal` is its own token after any
+            // non-DotDotEqual DotDot.
+            if (self.match(&.{ .DotDot, .DotDotEqual })) {
+                const inclusive = self.previous().type == .DotDotEqual;
                 const end_token = try self.expect(.Integer, "Expected end value in range pattern");
                 const end_value = try std.fmt.parseInt(i64, end_token.lexeme, 10);
 
@@ -3495,10 +3583,18 @@ pub const Parser = struct {
         //   - tuple destructuring (`(a, b) = …`)
         //   - reflection expressions (`@ptrToInt(addr, T) = …`), which
         //     the kernel uses pervasively as a raw-memory store.
+        //   - binary expressions (`*ptr + N = …`) — kernel often
+        //     writes to computed addresses like `*(base + offset) = v`.
         switch (target.*) {
-            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr, .TupleExpr, .ReflectExpr => {},
+            .Identifier, .IndexExpr, .MemberExpr, .UnaryExpr, .TupleExpr, .ReflectExpr, .BinaryExpr => {},
             else => {
-                try self.reportError("Invalid assignment target");
+                const msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Invalid assignment target ({s})",
+                    .{@tagName(target.*)},
+                );
+                defer self.allocator.free(msg);
+                try self.reportError(msg);
                 return ParseError.UnexpectedToken;
             },
         }
@@ -4038,14 +4134,27 @@ pub const Parser = struct {
     /// Parentheses around the condition are optional
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
-        // Parse condition - let expression() handle all grouping naturally
-        // This supports both `if x > 0 {` and `if (x > 0) {` as well as
-        // complex conditions like `if (a > b) != (c > d) && e {`
+        // Parse condition - let expression() handle all grouping naturally.
         const condition = try self.expression();
 
-        _ = try self.expect(.LeftBrace, "Expected '{' after if condition");
-        const then_branch = try self.expression();
-        _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+        // Two body forms:
+        //   `if cond { expr } else { expr }` — brace form
+        //   `if cond then expr else expr`    — ternary/SML form (soft
+        //                                      keyword `then`)
+        const uses_then =
+            self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "then");
+        var then_branch: *ast.Expr = undefined;
+        if (uses_then) {
+            _ = self.advance();
+            // Parse with Or-level precedence so `else` (which lives at
+            // NullCoalesce) stops the expression parser and is picked
+            // up as the branch separator below.
+            then_branch = try self.parsePrecedence(.Or);
+        } else {
+            _ = try self.expect(.LeftBrace, "Expected '{' after if condition");
+            then_branch = try self.expression();
+            _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+        }
 
         _ = try self.expect(.Else, "If expression requires 'else' branch");
 
@@ -4054,6 +4163,8 @@ pub const Parser = struct {
         if (self.match(&.{.If})) {
             // Recursively parse else if as another if expression
             else_branch = try self.ifExpr();
+        } else if (uses_then) {
+            else_branch = try self.parsePrecedence(.Or);
         } else {
             _ = try self.expect(.LeftBrace, "Expected '{' after 'else'");
             else_branch = try self.expression();
@@ -4628,6 +4739,7 @@ pub const Parser = struct {
             // import intrinsics. Arguments are consumed as raw tokens
             // and the call lowers to a Void literal at parse time.
             if (std.mem.eql(u8, name, "import") or
+                std.mem.eql(u8, name, "ptrFromString") or
                 std.mem.eql(u8, name, "ptrLoad") or std.mem.eql(u8, name, "ptrStore") or
                 std.mem.eql(u8, name, "atomicLoad") or std.mem.eql(u8, name, "atomicStore") or
                 std.mem.eql(u8, name, "atomicRmw") or std.mem.eql(u8, name, "cmpxchg") or
@@ -4673,6 +4785,12 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "ptrFromInt")) break :blk .PtrFromInt;
                 // Legacy alias for code that still uses @intToPtr.
                 if (std.mem.eql(u8, name, "intToPtr")) break :blk .PtrFromInt;
+                // Bit-extension intrinsics used in kernel SIMD / register
+                // access. Modeled as IntCast since they have the same
+                // `(expr, T)` shape.
+                if (std.mem.eql(u8, name, "zext")) break :blk .IntCast;
+                if (std.mem.eql(u8, name, "sext")) break :blk .IntCast;
+                if (std.mem.eql(u8, name, "trunc")) break :blk .Truncate;
                 if (std.mem.eql(u8, name, "truncate")) break :blk .Truncate;
                 if (std.mem.eql(u8, name, "as")) break :blk .As;
                 if (std.mem.eql(u8, name, "bitCast")) break :blk .BitCast;

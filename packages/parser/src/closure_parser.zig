@@ -353,8 +353,28 @@ pub const ClosureAnalyzer = struct {
                 try self.walkExpression(refs, tern.else_expr);
             },
             .MatchExpr => |match_expr| {
-                try self.walkExpression(refs, match_expr.expr);
-                // Note: match arms would need special handling for bindings
+                try self.walkExpression(refs, match_expr.value);
+                // Each arm: walk guard + body, but remove any identifiers
+                // that the pattern introduces — those are arm-local
+                // bindings, not captures from the outer scope. We gather
+                // every reference the arm sees, then drop the pattern
+                // binders before merging into the outer set.
+                for (match_expr.arms) |arm| {
+                    var arm_refs = std.StringHashMap(void).init(self.allocator);
+                    defer arm_refs.deinit();
+                    if (arm.guard) |g| try self.walkExpression(&arm_refs, g);
+                    try self.walkExpression(&arm_refs, arm.body);
+
+                    var binders = std.StringHashMap(void).init(self.allocator);
+                    defer binders.deinit();
+                    try collectPatternBinders(arm.pattern, &binders);
+
+                    var it = arm_refs.iterator();
+                    while (it.next()) |entry| {
+                        if (binders.contains(entry.key_ptr.*)) continue;
+                        try refs.put(entry.key_ptr.*, {});
+                    }
+                }
             },
             .ArrayLiteral => |arr| {
                 for (arr.elements) |elem| {
@@ -430,3 +450,45 @@ pub const ClosureAnalyzer = struct {
         is_mut: bool,
     };
 };
+
+/// Walk a match-arm pattern expression and gather every identifier that
+/// could serve as a binding introduced by the pattern. Enum variants and
+/// literal comparisons end up in the set too, but that's fine — they
+/// aren't captured from enclosing scope (enum variants are resolved as
+/// globals, literals aren't identifiers), so erasing them from the
+/// closure's reference set is harmless.
+fn collectPatternBinders(pattern: *ast.Expr, out: *std.StringHashMap(void)) !void {
+    switch (pattern.*) {
+        .Identifier => |id| {
+            try out.put(id.name, {});
+        },
+        .BinaryExpr => |bin| {
+            try collectPatternBinders(bin.left, out);
+            try collectPatternBinders(bin.right, out);
+        },
+        .UnaryExpr => |un| {
+            try collectPatternBinders(un.operand, out);
+        },
+        .CallExpr => |call| {
+            // Constructor-style pattern: Ok(x), Some(y), Point { x, y }.
+            try collectPatternBinders(call.callee, out);
+            for (call.arguments) |arg| {
+                try collectPatternBinders(arg, out);
+            }
+        },
+        .MemberExpr => |member| {
+            try collectPatternBinders(member.object, out);
+        },
+        .TupleLiteral => |tup| {
+            for (tup.elements) |elem| {
+                try collectPatternBinders(elem, out);
+            }
+        },
+        .ArrayLiteral => |arr| {
+            for (arr.elements) |elem| {
+                try collectPatternBinders(elem, out);
+            }
+        },
+        else => {},
+    }
+}

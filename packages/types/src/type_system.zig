@@ -485,14 +485,13 @@ pub const Type = union(enum) {
             .Reference => |r1| r1.equals(other.Reference.*),
             .MutableReference => |r1| r1.equals(other.MutableReference.*),
             .Struct => |s1| {
+                // Nominal struct equality by name only. Structural
+                // comparison over fields infinitely recurses on types
+                // that contain a pointer to themselves (e.g. a linked
+                // list node with `next: *Self`), which every kernel
+                // data structure does.
                 const s2 = other.Struct;
-                if (!std.mem.eql(u8, s1.name, s2.name)) return false;
-                if (s1.fields.len != s2.fields.len) return false;
-                for (s1.fields, s2.fields) |f1, f2| {
-                    if (!std.mem.eql(u8, f1.name, f2.name)) return false;
-                    if (!f1.type.equals(f2.type)) return false;
-                }
-                return true;
+                return std.mem.eql(u8, s1.name, s2.name);
             },
             .Enum => |e1| {
                 const e2 = other.Enum;
@@ -861,6 +860,10 @@ pub const TypeChecker = struct {
     loaded_modules: std.StringHashMap(bool),
     /// Optional I/O context for file operations
     io: ?Io = null,
+    /// Names that were declared with `let NAME: TYPE` and have not yet
+    /// received a value. Reads of these names trigger a "used before
+    /// initialization" warning. A later assignment removes the name.
+    uninitialized_vars: std.StringHashMap(ast.SourceLocation),
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -886,6 +889,7 @@ pub const TypeChecker = struct {
             .error_handler = ErrorHandler.init(allocator),
             .source_path = null,
             .loaded_modules = std.StringHashMap(bool).init(allocator),
+            .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
         };
     }
 
@@ -930,6 +934,7 @@ pub const TypeChecker = struct {
         self.pattern_checker.deinit();
         self.error_handler.deinit();
         self.loaded_modules.deinit();
+        self.uninitialized_vars.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {
@@ -964,11 +969,14 @@ pub const TypeChecker = struct {
                     };
                     // `import "…" as foo` — bind the alias to Void so
                     // `foo.anything` type-checks as an opaque namespace.
-                    // The real resolution of what lives inside the
-                    // module happens at codegen time; for type checking
-                    // we just need the alias to exist.
                     if (import_decl.alias) |alias_name| {
                         self.env.define(alias_name, Type.Void) catch {};
+                    } else if (import_decl.path.len > 0) {
+                        // `import basics/os/serial` (no alias) — use
+                        // the last path segment as an implicit
+                        // namespace name: `serial.write(...)` is OK.
+                        const last = import_decl.path[import_decl.path.len - 1];
+                        self.env.define(last, Type.Void) catch {};
                     }
                 },
                 .FnDecl => |fn_decl| {
@@ -1404,6 +1412,9 @@ pub const TypeChecker = struct {
                     const var_type = try self.parseTypeName(type_name);
                     try self.env.define(decl.name, var_type);
                     try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
+                    // Remember the declaration so a subsequent read
+                    // before any assignment can surface a warning.
+                    try self.uninitialized_vars.put(decl.name, decl.node.loc);
                 }
             },
             .TupleDestructureDecl => |decl| {
@@ -1465,13 +1476,25 @@ pub const TypeChecker = struct {
                 self.ownership_tracker.exitScope();
             },
             .IfStmt => |if_stmt| {
-                // Check condition is boolean, optional, or Void (unknown)
-                // Optionals are truthy if Some, falsy if None
+                // Check condition is boolean, optional, Void (unknown),
+                // or any integer/reference type. Kernel code uses
+                // C-style `if (flag)` and `if (count)` pervasively.
                 const cond_type = try self.inferExpression(if_stmt.condition);
-                if (cond_type != .Void and !cond_type.equals(Type.Bool) and cond_type != .Optional) {
+                const cond_ok = cond_type == .Void or cond_type.equals(Type.Bool) or
+                    cond_type == .Optional or isIntegerType(cond_type) or
+                    cond_type == .Reference or cond_type == .MutableReference;
+                if (!cond_ok) {
                     try self.addError("If condition must be boolean or optional", if_stmt.node.loc);
                     return error.TypeMismatch;
                 }
+
+                // Snapshot of the uninitialized set so we can merge
+                // per-branch initialization effects after each branch
+                // runs. Without this, an assignment in the then branch
+                // would "leak out" and make the variable appear
+                // unconditionally initialized after the if.
+                var pre_uninit = try self.cloneUninitSet();
+                defer pre_uninit.deinit();
 
                 // Check then block
                 for (if_stmt.then_block.statements) |then_stmt| {
@@ -1481,6 +1504,10 @@ pub const TypeChecker = struct {
                         }
                     };
                 }
+                var after_then = try self.cloneUninitSet();
+                defer after_then.deinit();
+                // Restore state so the else branch sees the pre-if view.
+                try self.replaceUninitSet(&pre_uninit);
                 // Release borrows at end of then block
                 self.ownership_tracker.exitScope();
 
@@ -1493,8 +1520,18 @@ pub const TypeChecker = struct {
                             }
                         };
                     }
+                    var after_else = try self.cloneUninitSet();
+                    defer after_else.deinit();
+                    // After an if/else: a variable is still uninitialized
+                    // iff it was uninitialized in *either* branch. This is
+                    // the classic meet for may-uninitialized dataflow.
+                    try self.unionUninitSets(&after_then, &after_else);
                     // Release borrows at end of else block
                     self.ownership_tracker.exitScope();
+                } else {
+                    // No else: assume the then branch didn't run, so the
+                    // pre-if uninitialized set is still authoritative.
+                    // (after_then effects are discarded.)
                 }
             },
             .IfLetStmt => |if_let_stmt| {
@@ -1849,6 +1886,17 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Special case: string literals coerce to `*u8`, `[*]u8`, or
+        // any other pointer-like type that kernel code uses for
+        // C-style string storage.
+        if (expr.* == .StringLiteral) {
+            if (expected == .Reference or expected == .MutableReference or
+                expected == .U64 or expected == .I64 or expected == .Void)
+            {
+                return;
+            }
+        }
+
         // Compare actual type with expected type
         if (!actual.equals(expected) and !canCoerce(actual, expected)) {
             try self.addTypeMismatchError(expected, actual, expr.getLocation());
@@ -1889,9 +1937,19 @@ pub const TypeChecker = struct {
         if (from == .Int) {
             return isIntegerType(to);
         }
+        // Sized integer widening: any integer type can coerce to any
+        // other integer type. Kernel code routinely assigns u16 register
+        // reads into u32 locals, or u8 bytes into u64 accumulators.
+        if (isIntegerType(from) and isIntegerType(to)) {
+            return true;
+        }
         // Float type coercion: generic Float can coerce to specific float types
         if (from == .Float) {
             return isFloatType(to);
+        }
+        // Float widening similarly.
+        if (isFloatType(from) and isFloatType(to)) {
+            return true;
         }
         // Struct name-based coercion: structs with the same name are compatible
         // This handles cases where the same struct is defined in multiple files or imported
@@ -1899,6 +1957,35 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, from.Struct.name, to.Struct.name)) {
                 return true;
             }
+        }
+        // Pointer-style coercion: kernel code mixes `*T`, `*const T`,
+        // `*volatile T` freely. Treat all Reference / MutableReference
+        // types as interchangeable — the volatile/const distinction is
+        // a codegen hint, not a type-system constraint.
+        const from_is_ref = from == .Reference or from == .MutableReference;
+        const to_is_ref = to == .Reference or to == .MutableReference;
+        if (from_is_ref and to_is_ref) {
+            return true;
+        }
+        // Also allow u64 ↔ Reference: kernel passes raw addresses as u64.
+        if ((from == .U64 or from == .I64 or from == .Int) and to_is_ref) {
+            return true;
+        }
+        if (from_is_ref and (to == .U64 or to == .I64 or to == .Int)) {
+            return true;
+        }
+        // Array element coercion: `[int]` → `[u8]` / `[u32]` etc. when
+        // the element types are both integer-family. Kernel tables like
+        // the AES S-box are declared `[u8; 256]` but literal-initialized
+        // with `0xNN` values which infer as plain `int`.
+        if (from == .Array and to == .Array) {
+            const from_elem = from.Array.element_type.*;
+            const to_elem = to.Array.element_type.*;
+            if (from_elem.equals(to_elem)) return true;
+            if (isIntegerType(from_elem) and isIntegerType(to_elem)) return true;
+            if (isFloatType(from_elem) and isFloatType(to_elem)) return true;
+            // Unknown/void element is a wildcard.
+            if (from_elem == .Void or to_elem == .Void) return true;
         }
         return false;
     }
@@ -1922,6 +2009,15 @@ pub const TypeChecker = struct {
                     if (err != error.UseAfterMove) return err;
                     // Error already added to ownership tracker, continue type checking
                 };
+
+                // Use-before-def: if this identifier was declared with a
+                // type annotation but never assigned, warn about reading
+                // an uninitialized value. We warn once per read site and
+                // keep the entry in the map so multiple bad reads each
+                // generate their own warning.
+                if (self.uninitialized_vars.contains(id.name)) {
+                    try self.addError("use of possibly uninitialized variable", id.node.loc);
+                }
 
                 return self.env.get(id.name) orelse {
                     // If identifier starts with uppercase, it might be a type name used
@@ -1949,6 +2045,16 @@ pub const TypeChecker = struct {
             .TupleExpr => |tuple| try self.inferTupleExpression(tuple),
             .StructLiteral => |struct_lit| try self.inferStructLiteral(struct_lit),
             .UnaryExpr => |unary| try self.inferUnaryExpression(unary),
+            .AssignmentExpr => |assign| blk: {
+                // Track initialization: if the target is a bare
+                // identifier, mark it as initialized now so later reads
+                // don't warn. We still need to type-check the value.
+                _ = try self.inferExpression(assign.value);
+                if (assign.target.* == .Identifier) {
+                    _ = self.uninitialized_vars.remove(assign.target.Identifier.name);
+                }
+                break :blk Type.Void;
+            },
             else => Type.Void,
         };
     }
@@ -2061,9 +2167,18 @@ pub const TypeChecker = struct {
                     for (call.args, 0..) |arg, i| {
                         const arg_type = try self.inferExpression(arg);
                         // Allow Void (unknown/inferred type) to match any expected type
-                        // This handles cases where .get() returns unknown type from generic collections
+                        // This handles cases where .get() returns unknown type from generic collections.
+                        // Also allow String → integer/pointer coercion for kernel
+                        // string literals passed to C-style `*u8` / `u64` parameters.
+                        const is_string_to_pointer_like =
+                            arg_type == .String and
+                            (expected_params[i] == .U64 or expected_params[i] == .I64 or
+                                expected_params[i] == .Reference or expected_params[i] == .MutableReference);
+                        const is_integer_literal_slack =
+                            arg.* == .IntegerLiteral and isIntegerType(expected_params[i]);
                         if (arg_type != .Void and expected_params[i] != .Void and
-                            !arg_type.equals(expected_params[i]) and !canCoerce(arg_type, expected_params[i]))
+                            !arg_type.equals(expected_params[i]) and !canCoerce(arg_type, expected_params[i]) and
+                            !is_string_to_pointer_like and !is_integer_literal_slack)
                         {
                             try self.addError("Argument type mismatch", call.node.loc);
                             return error.TypeMismatch;
@@ -2465,25 +2580,45 @@ pub const TypeChecker = struct {
             return Type.Void;
         }
 
+        // Auto-deref pointer-like types so `ptr.field` works when
+        // `ptr: *Foo`. Kernel code uses this pattern everywhere for
+        // linked-list walks and intrusive data structures.
+        var resolved = object_type;
+        if (resolved == .Reference) {
+            resolved = resolved.Reference.*;
+        } else if (resolved == .MutableReference) {
+            resolved = resolved.MutableReference.*;
+        } else if (resolved == .Optional) {
+            resolved = resolved.Optional.*;
+        }
+
         // For non-struct, non-enum types (arrays, etc), allow member access and return Void
         // This supports .length, .len, .capacity, method calls, etc on arrays and other types
-        if (object_type != .Struct and object_type != .Enum) {
+        if (resolved != .Struct and resolved != .Enum) {
             return Type.Void;
         }
 
+        // Continue with the resolved type below.
+        const object_type_resolved = resolved;
         // Placeholder struct check - must come BEFORE field iteration
         // Placeholder structs have no fields and are created when imports fail
-        if (object_type.Struct.fields.len == 0) {
+        if (object_type_resolved == .Struct and object_type_resolved.Struct.fields.len == 0) {
             // Placeholder struct - return Void to allow type checking to continue
             return Type.Void;
         }
 
-        // Safety check: if fields slice has invalid length, return Void
-        if (object_type.Struct.fields.len > 1000) {
+        // Enum access already handled above; if we still have one here it's
+        // a variant reference, return Void so callers can chain further.
+        if (object_type_resolved == .Enum) {
             return Type.Void;
         }
 
-        for (object_type.Struct.fields) |field| {
+        // Safety check: if fields slice has invalid length, return Void
+        if (object_type_resolved.Struct.fields.len > 1000) {
+            return Type.Void;
+        }
+
+        for (object_type_resolved.Struct.fields) |field| {
             // Safety check for field names - check length first
             if (field.name.len == 0 or field.name.len > 1000) {
                 continue;
@@ -2496,7 +2631,7 @@ pub const TypeChecker = struct {
         const err_msg = try std.fmt.allocPrint(
             self.allocator,
             "Struct '{s}' has no field '{s}'",
-            .{ object_type.Struct.name, member_name },
+            .{ object_type_resolved.Struct.name, member_name },
         );
         try self.addError(err_msg, member.node.loc);
         self.allocator.free(err_msg);
@@ -2617,14 +2752,21 @@ pub const TypeChecker = struct {
                 return operand_type;
             },
             .Deref => {
-                // Dereference returns the pointed-to type
-                // For now, just return the operand type (pointer semantics not fully implemented)
+                // Dereference strips one level of reference if present,
+                // otherwise returns the operand type (loose fallback).
+                if (operand_type == .Reference) return operand_type.Reference.*;
+                if (operand_type == .MutableReference) return operand_type.MutableReference.*;
                 return operand_type;
             },
             .AddressOf => {
-                // Address-of returns a pointer to the operand type
-                // For now, just return the operand type (pointer semantics not fully implemented)
-                return operand_type;
+                // Address-of (`&expr`) wraps the operand type in a
+                // Reference so callers that expect `*T` see a matching
+                // pointer type. Without this the type flowed through
+                // as a plain T and argument coercion rejected it.
+                const inner_ptr = try self.allocator.create(Type);
+                inner_ptr.* = operand_type;
+                try self.allocated_types.append(self.allocator, inner_ptr);
+                return Type{ .Reference = inner_ptr };
             },
             .Borrow => {
                 // Immutable borrow: &x
@@ -3062,6 +3204,46 @@ pub const TypeChecker = struct {
 
         // Unknown type - for now, treat as void
         return Type.Void;
+    }
+
+    /// Clone the current uninitialized-variables map so a branch can
+    /// work on a snapshot without disturbing the parent scope.
+    fn cloneUninitSet(self: *TypeChecker) !std.StringHashMap(ast.SourceLocation) {
+        var out = std.StringHashMap(ast.SourceLocation).init(self.allocator);
+        var it = self.uninitialized_vars.iterator();
+        while (it.next()) |entry| {
+            try out.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        return out;
+    }
+
+    /// Replace the current uninit set with the contents of `src`.
+    fn replaceUninitSet(self: *TypeChecker, src: *const std.StringHashMap(ast.SourceLocation)) !void {
+        self.uninitialized_vars.clearRetainingCapacity();
+        var it = src.iterator();
+        while (it.next()) |entry| {
+            try self.uninitialized_vars.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
+    /// After `if/else`: merge both branches' views. A name stays marked
+    /// uninitialized only if it is uninitialized in *either* branch (may
+    /// analysis). We start from `a`, then add anything still uninit in
+    /// `b`, into `uninitialized_vars`.
+    fn unionUninitSets(
+        self: *TypeChecker,
+        a: *const std.StringHashMap(ast.SourceLocation),
+        b: *const std.StringHashMap(ast.SourceLocation),
+    ) !void {
+        self.uninitialized_vars.clearRetainingCapacity();
+        var ait = a.iterator();
+        while (ait.next()) |entry| {
+            try self.uninitialized_vars.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var bit = b.iterator();
+        while (bit.next()) |entry| {
+            try self.uninitialized_vars.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
     }
 
     fn addError(self: *TypeChecker, message: []const u8, loc: ast.SourceLocation) !void {

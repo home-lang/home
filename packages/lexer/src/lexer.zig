@@ -900,14 +900,13 @@ pub const Lexer = struct {
 
             if (!std.ascii.isHex(c)) break;
 
-            // Check if this might be a type suffix BEFORE consuming the char
-            // (i,u,f are valid hex digits but might start a type suffix)
-            if ((c == 'i' or c == 'u' or c == 'f') and self.current + 1 < self.source.len) {
-                const next = self.source[self.current + 1];
-                if (std.ascii.isDigit(next)) {
-                    // This is likely a type suffix, stop parsing hex digits
-                    break;
-                }
+            // `i`, `u`, and `f` are valid hex digits but can also start
+            // a type suffix (`0xFFu32`, `0x3f_i64`, ...). Only stop
+            // consuming hex when the character AND the following bytes
+            // form a KNOWN type suffix — otherwise `0xfe` truncates to
+            // `0x` and the file fails to parse.
+            if ((c == 'i' or c == 'u' or c == 'f') and self.isTypeSuffixAt(self.current)) {
+                break;
             }
 
             has_digits = true;
@@ -922,6 +921,29 @@ pub const Lexer = struct {
         self.parseTypeSuffix();
 
         return self.makeToken(.Integer);
+    }
+
+    /// Return true iff `source[pos..]` starts with a known numeric
+    /// type suffix (i8/i16/i32/i64/i128, u8/u16/u32/u64/u128, f32/f64)
+    /// and the suffix isn't followed by another identifier char.
+    fn isTypeSuffixAt(self: *Lexer, pos: usize) bool {
+        if (pos >= self.source.len) return false;
+        const c = self.source[pos];
+        if (c != 'i' and c != 'u' and c != 'f') return false;
+        const rest = self.source[pos + 1 ..];
+        const int_widths = [_][]const u8{ "128", "64", "32", "16", "8" };
+        const float_widths = [_][]const u8{ "64", "32" };
+        const widths = if (c == 'f') float_widths[0..] else int_widths[0..];
+        for (widths) |w| {
+            if (std.mem.startsWith(u8, rest, w)) {
+                const after = pos + 1 + w.len;
+                if (after >= self.source.len) return true;
+                const next = self.source[after];
+                if (!std.ascii.isAlphanumeric(next) and next != '_') return true;
+                return false;
+            }
+        }
+        return false;
     }
 
     /// Lex an octal number literal (0o prefix).

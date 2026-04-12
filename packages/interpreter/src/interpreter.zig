@@ -946,6 +946,51 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Recursively clone a runtime value so the result shares no
+    /// mutable backing storage with the source. Primitives copy
+    /// trivially; arrays, structs and maps get new allocations, with
+    /// their elements/fields recursively cloned so nested containers
+    /// are truly independent.
+    fn deepCloneValue(self: *Interpreter, value: Value) InterpreterError!Value {
+        return switch (value) {
+            .Int, .Float, .Bool, .Void, .Range, .EnumType => value,
+            .String => |s| Value{ .String = try self.arena.allocator().dupe(u8, s) },
+            .Array => |arr| blk: {
+                const new_arr = try self.arena.allocator().alloc(Value, arr.len);
+                for (arr, 0..) |elem, i| {
+                    new_arr[i] = try self.deepCloneValue(elem);
+                }
+                break :blk Value{ .Array = new_arr };
+            },
+            .Struct => |sv| blk: {
+                var new_fields = std.StringHashMap(Value).init(self.arena.allocator());
+                var it = sv.fields.iterator();
+                while (it.next()) |entry| {
+                    const cloned = try self.deepCloneValue(entry.value_ptr.*);
+                    try new_fields.put(entry.key_ptr.*, cloned);
+                }
+                break :blk Value{ .Struct = .{
+                    .type_name = sv.type_name,
+                    .fields = new_fields,
+                } };
+            },
+            .Map => |m| blk: {
+                var new_map = std.StringHashMap(Value).init(self.arena.allocator());
+                var it = m.entries.iterator();
+                while (it.next()) |entry| {
+                    const cloned = try self.deepCloneValue(entry.value_ptr.*);
+                    try new_map.put(entry.key_ptr.*, cloned);
+                }
+                break :blk Value{ .Map = .{ .entries = new_map } };
+            },
+            // Functions, closures, references and futures intentionally
+            // pass through by identity: cloning a closure's captured
+            // environment would change semantics, and references are
+            // supposed to alias.
+            else => value,
+        };
+    }
+
     fn evaluateExpression(self: *Interpreter, expr: *const ast.Expr, env: *Environment) InterpreterError!Value {
         switch (expr.*) {
             .IntegerLiteral => |lit| {
@@ -3059,21 +3104,16 @@ pub const Interpreter = struct {
                 std.debug.print("abs() requires numeric argument\n", .{});
                 return error.TypeMismatch;
             } else if (std.mem.eql(u8, func_name, "clone")) {
-                // clone(value) - deep clone value
+                // clone(value) - deep clone value. Primitives are value
+                // types, so they're trivially copied. Arrays and structs
+                // must be recursively cloned so nested containers don't
+                // share backing storage with the source.
                 if (call.args.len != 1) {
                     std.debug.print("clone() requires exactly 1 argument\n", .{});
                     return error.InvalidArguments;
                 }
                 const val = try self.evaluateExpression(call.args[0], env);
-                // For primitives, values are already copied. For arrays, create new array
-                return switch (val) {
-                    .Array => |arr| blk: {
-                        const new_arr = try self.arena.allocator().alloc(Value, arr.len);
-                        @memcpy(new_arr, arr);
-                        break :blk Value{ .Array = new_arr };
-                    },
-                    else => val, // Primitives are value types, already cloned
-                };
+                return try self.deepCloneValue(val);
             } else if (std.mem.eql(u8, func_name, "is_ok")) {
                 // is_ok(result) - check if Result is Ok
                 if (call.args.len != 1) {

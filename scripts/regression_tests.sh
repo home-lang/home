@@ -177,6 +177,116 @@ fn main() {
 echo
 echo "=== float arithmetic + math module ==="
 
+run_case "range_for_with_step" '
+fn main() {
+    let sum = 0
+    for i in 0..10 step 2 {
+        sum = sum + i
+    }
+    // 0 + 2 + 4 + 6 + 8 = 20
+    assert(sum == 20)
+}
+' 0
+
+run_case "string_repeat_operator" '
+fn main() {
+    let s = "ab" * 3
+    // "ababab" — length 6, bytes match original repeated.
+    assert(s == "ababab")
+}
+' 0
+
+run_case "for_loop_over_array" '
+fn main() {
+    let a = Array.new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    let sum = 0
+    for x in a {
+        sum = sum + x
+    }
+    assert(sum == 60)
+}
+' 0
+
+run_case "supertrait_composition" '
+trait Animal {
+    fn name(self): int;
+}
+trait Dog: Animal {
+    fn bark(self): int;
+}
+struct Puppy { id: int }
+impl Animal for Puppy {
+    fn name(self): int { return self.id }
+}
+impl Dog for Puppy {
+    fn bark(self): int { return self.id * 2 }
+}
+fn main() {
+    let p = Puppy { id: 5 }
+    // Supertrait and subtrait methods are both reachable.
+    assert(p.name() == 5)
+    assert(p.bark() == 10)
+}
+' 0
+
+run_case "trait_default_method_body" '
+trait Greet {
+    fn hello(self): int {
+        return 42
+    }
+    fn custom(self): int;
+}
+
+struct Person { age: int }
+
+impl Greet for Person {
+    fn custom(self): int { return self.age }
+}
+
+fn main() {
+    let p = Person { age: 7 }
+    // hello is not in the impl; it uses the trait default body.
+    let h = p.hello()
+    // custom is overridden and returns the field directly.
+    let c = p.custom()
+    assert(h == 42)
+    assert(c == 7)
+}
+' 0
+
+run_case "array_push_pop_insert_remove" '
+fn main() {
+    let a = Array.new()
+    a.push(10)
+    a.push(20)
+    a.push(30)
+    assert(a.len() == 3)
+
+    // insert 15 at index 1 → [10, 15, 20, 30]
+    a.insert(1, 15)
+    assert(a.len() == 4)
+
+    // remove index 0 (10) → [15, 20, 30]
+    let r = a.remove(0)
+    assert(r == 10)
+    assert(a.len() == 3)
+
+    // pop last → 30, leaving [15, 20]
+    let p = a.pop()
+    assert(p == 30)
+    assert(a.len() == 2)
+
+    // insert at end (index == len)
+    a.insert(2, 99)
+    assert(a.len() == 3)
+    let last = a.pop()
+    assert(last == 99)
+}
+' 0
+
 run_case "math_transcendentals_and_float_ops" '
 fn main() {
     // sin^2 + cos^2 = 1 uses mulsd/addsd on SSE registers, plus the
@@ -215,6 +325,93 @@ fn main() {
     let l2 = math.log2(8.0)
     assert(l2 > 2.999)
     assert(l2 < 3.001)
+}
+' 0
+
+# ----------------------------------------------------------------
+# Regression coverage for the compiler refresh in this session.
+# Each test pins one of the bug-fix items so the next round of
+# refactoring trips a red test instead of silently regressing.
+# ----------------------------------------------------------------
+
+run_case "constant_shift_imm8" '
+fn main() {
+    // T1: constant shifts take the imm8 path (no CL register use).
+    let a = 1
+    let b = a << 3   // 8
+    let c = 64 >> 2  // 16
+    assert(b == 8)
+    assert(c == 16)
+}
+' 0
+
+run_case "match_range_patterns" '
+// T12: both exclusive (..) and inclusive (..=) integer range
+// patterns match inside a match statement.
+fn classify(n: int): int {
+    let out = 0
+    match n {
+        0 => { out = 100 }
+        1..5 => { out = 200 }
+        5..=10 => { out = 300 }
+        _ => { out = 999 }
+    }
+    return out
+}
+
+fn main() {
+    assert(classify(0) == 100)
+    assert(classify(1) == 200)
+    assert(classify(4) == 200)
+    assert(classify(5) == 300)
+    assert(classify(10) == 300)
+    assert(classify(11) == 999)
+}
+' 0
+
+run_case "array_grows_past_old_fixed_cap" '
+fn main() {
+    // T8: Array.new() now backs its slot storage with a doubling
+    // allocator, so we can push well past the historical cap=128
+    // ceiling without panicking.
+    let a = Array.new()
+    let i = 0
+    while i < 200 {
+        a.push(i)
+        i = i + 1
+    }
+    assert(a.len() == 200)
+    // Verify a few sample slots round-trip through the growth path.
+    let sum = 0
+    for x in a {
+        sum = sum + x
+    }
+    // 0+1+..+199 == 19900
+    assert(sum == 19900)
+}
+' 0
+
+run_case "popcount_intrinsic" '
+fn main() {
+    // T6: bit-manipulation intrinsics are exposed as compiler
+    // built-ins and lower to x64 popcnt/lzcnt/tzcnt.
+    assert(popcount(0) == 0)
+    assert(popcount(1) == 1)
+    assert(popcount(7) == 3)
+    assert(popcount(255) == 8)
+}
+' 0
+
+run_case "narrowing_cast_in_range" '
+fn main() {
+    // T9: in-range narrowing casts fall through the runtime guard
+    // without panicking. (Out-of-range cases are covered in the
+    // matching negative test below.)
+    let x = 42
+    let y = x as i8
+    assert(y == 42)
+    let z = 200 as u8
+    assert(z == 200)
 }
 ' 0
 

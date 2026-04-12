@@ -50,6 +50,12 @@ pub const CodegenError = error{
     LabelNotFound,
     /// Stack offset calculation overflowed i32 bounds
     StackOffsetOverflow,
+    /// Constant shift count outside the 0..63 range accepted by shl/shr/sar imm8
+    ShiftCountOutOfRange,
+    /// Narrowing @intCast would truncate — reported when constant folding proves the value is out of range
+    NarrowingCastOutOfRange,
+    /// SIB index field rejected rsp as the index register
+    InvalidSibIndex,
 } || std.mem.Allocator.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError;
 
 /// Maximum number of local variables per function.
@@ -58,6 +64,20 @@ pub const CodegenError = error{
 /// constraints. Each local variable occupies stack space indexed by an 8-bit
 /// offset, allowing for efficient encoding in x64 instructions.
 const MAX_LOCALS = 256;
+
+// Stack overflow protection: we do NOT emit an explicit guard-page check
+// in each function prologue. Instead, the codegen is structured so every
+// stack allocation goes through a single `push` (touching the next 8 bytes
+// immediately). That means runaway recursion will hit the OS-provided
+// guard page on the very next `push`, producing SIGBUS/SIGSEGV rather
+// than silently walking past the stack end.
+//
+// Downside: programs see exit 138/139 with no custom message. Upside:
+// zero-overhead detection on every non-leaf call. The only risk is a
+// codegen path that grows the frame via `sub rsp, N` for N ≥ 16 KiB
+// without an incremental touch — today the only `sub rsp, N` in the
+// compiler is a fixed 20-byte scratch buffer in `print`, which is
+// nowhere near the guard-page distance.
 
 /// Start address for runtime heap memory.
 ///
@@ -431,6 +451,35 @@ pub const Vectorizer = struct {
 
     /// Generate SSE code for a single 128-bit chunk
     fn compileSseChunk(pattern: VectorizablePattern, assembler: *x64.Assembler, offset: i32) !void {
+        // Integer division isn't available in SSE/AVX, so for .div we
+        // emit a scalar fallback that processes the 4 lanes one at a time
+        // through rax/rcx. All other ops use the packed instructions.
+        if (pattern.op == .div) {
+            // Per-lane scalar idiv. Loads 4 × i32 from the two input
+            // arrays, divides, writes back.
+            //
+            // rdi = src1, rsi = src2, rdx = dst. The vectorizer already
+            // owns these registers for the duration of the chunk. We
+            // clobber rax/rcx/r11; callers save them.
+            var lane: usize = 0;
+            while (lane < 4) : (lane += 1) {
+                const lane_off = offset + @as(i32, @intCast(lane * 4));
+
+                // Load 32-bit lane from src1 into eax (sign-extended to rax).
+                try assembler.movRegMem(.rax, .rdi, lane_off);
+                // Load 32-bit lane from src2 into rcx.
+                try assembler.movRegMem(.rcx, .rsi, lane_off);
+
+                // Sign-extend rax into rdx:rax and divide.
+                try assembler.cqo();
+                try assembler.idivReg(.rcx);
+
+                // Store 32-bit quotient back to dst lane.
+                try assembler.movMemReg(.rdx, lane_off, .rax);
+            }
+            return;
+        }
+
         // Load first operand into xmm0
         try assembler.movdqaXmmMem(.xmm0, .rdi, offset); // rdi = first array base
 
@@ -442,10 +491,7 @@ pub const Vectorizer = struct {
             .add => try assembler.padddXmmXmm(.xmm0, .xmm1),
             .sub => try assembler.psubdXmmXmm(.xmm0, .xmm1),
             .mul => try assembler.pmulldXmmXmm(.xmm0, .xmm1),
-            .div => {
-                // Integer division not available in SIMD, fall back to scalar
-                // For now, skip - would need scalar fallback
-            },
+            .div => unreachable, // handled above
         }
 
         // Store result
@@ -711,6 +757,12 @@ pub const NativeCodegen = struct {
     /// Current heap allocation pointer (bump allocator state)
     heap_ptr: usize,
 
+    /// Optional module-name prefix used by mangleMethodName. When set,
+    /// methods are mangled as `module::Type$method` instead of the bare
+    /// `Type$method`. This prevents cross-module collisions when two
+    /// files both declare `impl Foo { fn bar(self) {} }`.
+    module_prefix: ?[]const u8 = null,
+
     // Type/struct layouts
     /// Map of struct names to their memory layouts
     struct_layouts: std.StringHashMap(StructLayout),
@@ -737,6 +789,31 @@ pub const NativeCodegen = struct {
     // indirectly. The map key is "TraitName::ImplType" so different impls of
     // the same trait don't collide.
     trait_vtables: std.StringHashMap(VtableInfo),
+
+    // Trait declarations indexed by trait name. Used to look up default
+    // method bodies when processing `impl Trait for Type` — methods with
+    // `has_default_impl = true` that aren't overridden by the impl block
+    // get synthesized into FnDecls and emitted like regular impl methods.
+    trait_decls: std.StringHashMap(*ast.TraitDecl),
+
+    // Set of "TraitName::ImplType" keys for every impl we've seen. Used by
+    // supertrait verification: when we encounter `impl Dog for Puppy`, we
+    // look up the trait's super_traits list and confirm each one also has
+    // an entry in this set. Missing supertrait impls produce a codegen
+    // error rather than silently compiling with half a vtable.
+    impl_set: std.StringHashMap(void),
+
+    // Data-section offset of the bump allocator state: [current_ptr:i64, current_end:i64].
+    // Lazily initialized on the first heapAlloc call. Setting it to null
+    // means no bump allocator slot is reserved yet; subsequent allocs reuse
+    // the same slot.
+    bump_state_offset: ?usize = null,
+
+    /// When true, `match` without covering every enum variant (and without
+    /// a wildcard arm) fails codegen. Defaults to false so existing code
+    /// with incomplete matches still compiles; front-ends that want to
+    /// enforce exhaustiveness can flip this via `setStrictExhaustive`.
+    strict_exhaustive_matches: bool = false,
 
     // Register allocation
     /// Simple register allocator for optimizing register usage
@@ -824,6 +901,8 @@ pub const NativeCodegen = struct {
             .data_literals = std.ArrayList([]const u8).empty,
             .data_literals_offset = 0,
             .trait_vtables = std.StringHashMap(VtableInfo).init(allocator),
+            .trait_decls = std.StringHashMap(*ast.TraitDecl).init(allocator),
+            .impl_set = std.StringHashMap(void).init(allocator),
             .async_fn_names = std.StringHashMap(void).init(allocator),
             .reg_alloc = RegisterAllocator.init(),
             .type_integration = null, // Initialized on demand
@@ -1002,6 +1081,16 @@ pub const NativeCodegen = struct {
             entry.value_ptr.deinit();
         }
         self.trait_vtables.deinit();
+
+        // trait_decls stores borrowed pointers to AST nodes owned by the
+        // program; just free the duplicated keys.
+        var td_it = self.trait_decls.keyIterator();
+        while (td_it.next()) |k| self.allocator.free(k.*);
+        self.trait_decls.deinit();
+
+        var is_it = self.impl_set.keyIterator();
+        while (is_it.next()) |k| self.allocator.free(k.*);
+        self.impl_set.deinit();
 
         // Free async_fn_names (keys are interned via duplication when added).
         var afn_it = self.async_fn_names.keyIterator();
@@ -1501,7 +1590,12 @@ pub const NativeCodegen = struct {
         }
     }
 
-    fn checkMatchExhaustiveness(self: *NativeCodegen, match_stmt: *ast.MatchStmt) CodegenError!void {
+    /// Walks a match statement and decides whether codegen must emit a
+    /// runtime fall-through panic. Returns `true` when the match is
+    /// provably exhaustive (has a wildcard / variable binding, or covers
+    /// every variant of the scrutinized enum). Also emits warnings for
+    /// uncovered enum variants as a side effect.
+    fn checkMatchExhaustiveness(self: *NativeCodegen, match_stmt: *ast.MatchStmt) CodegenError!bool {
         // Check if there's a wildcard pattern (catch-all)
         var has_wildcard = false;
         for (match_stmt.arms) |arm| {
@@ -1524,7 +1618,7 @@ pub const NativeCodegen = struct {
 
         if (has_wildcard) {
             // Match is exhaustive
-            return;
+            return true;
         }
 
         // If we identified an enum type, check if all variants are covered
@@ -1550,19 +1644,31 @@ pub const NativeCodegen = struct {
                 }
 
                 if (!all_covered) {
-                    // Emit warning for non-exhaustive match
                     std.debug.print("Warning: non-exhaustive pattern match on enum '{s}'\n", .{enum_name});
                     std.debug.print("Missing variants:\n", .{});
                     for (missing_variants.items) |variant| {
                         std.debug.print("  - {s}\n", .{variant});
                     }
                     std.debug.print("Consider adding a wildcard pattern '_' to handle all cases\n", .{});
+
+                    // In strict mode this is a hard error: matching on an
+                    // enum without covering every variant is usually a
+                    // programming mistake — at runtime the codegen would
+                    // fall through the match block and produce 0, which
+                    // looks like a legitimate default in numeric contexts
+                    // but is really "unhandled case".
+                    if (self.strict_exhaustive_matches) {
+                        return error.UnsupportedFeature;
+                    }
                 }
+                // Exhaustive iff every variant is covered.
+                return all_covered;
             }
         }
-
-        // Allow non-exhaustive matches for now (with warning)
-        // Future enhancement: make this an error in strict mode
+        // We couldn't determine the scrutinized enum type (e.g. matching
+        // on a raw int). Without a wildcard, treat as non-exhaustive so
+        // the codegen inserts a runtime fall-through panic.
+        return false;
     }
 
     /// Generate pattern matching code
@@ -2246,16 +2352,30 @@ pub const NativeCodegen = struct {
                         try self.assembler.movRegImm64(.rax, 0);
                     }
                 } else {
-                    // Complex member expression - unsupported
-                    std.debug.print("Unsupported complex MemberExpr in pattern matching\n", .{});
-                    try self.assembler.movRegImm64(.rax, 0);
+                    // Complex nested member expression in a pattern:
+                    //   match x { some.module.Variant => ... }
+                    // Evaluate it as a normal expression and compare against
+                    // `value_reg`. This is the same treatment any literal
+                    // pattern receives: we load the pattern's runtime value
+                    // and test for equality. If this interpretation is
+                    // wrong for a specific case (e.g. the user meant a
+                    // binding), the type checker already rejects it.
+                    try self.generateExpr(pattern_expr);
+                    try self.assembler.cmpRegReg(value_reg, .rax);
+                    try self.assembler.seteReg(.rax);
+                    try self.assembler.movzxReg64Reg8(.rax, .rax);
                 }
             },
             else => {
-                // For other expressions, this is an unsupported pattern
-                // For now, try to evaluate and compare directly
-                std.debug.print("Unsupported expression type in pattern matching: {s}\n", .{@tagName(pattern_expr.*)});
-                try self.assembler.movRegImm64(.rax, 0); // No match
+                // Unrecognised pattern node. This is a hard codegen error
+                // rather than a silent 0-match: a pattern we can't compile
+                // would previously match nothing at runtime regardless of
+                // the scrutinee, turning bugs into wrong-branch execution.
+                std.debug.print(
+                    "codegen error: unsupported expression in pattern matching: {s}\n",
+                    .{@tagName(pattern_expr.*)},
+                );
+                return error.UnsupportedFeature;
             },
         }
     }
@@ -2348,10 +2468,16 @@ pub const NativeCodegen = struct {
                     const name_copy = try self.allocator.dupe(u8, name);
                     errdefer self.allocator.free(name_copy);
 
-                    // We don't know the exact type, so use a generic size
+                    // Use "int" rather than "i32" as the default type name:
+                    // isFloatExpr/inferExprType recognise "int" as the
+                    // canonical integer type, so downstream code treats the
+                    // binding the same way it would treat a plain `let x`
+                    // from an integer expression. The real type is known
+                    // only via the scrutinee, which the caller would have
+                    // to thread through; this is a best-effort default.
                     try self.locals.put(name_copy, .{
                         .offset = offset,
-                        .type_name = "i32", // Default to i32 for now
+                        .type_name = "int",
                         .size = 8,
                     });
                 }
@@ -2792,6 +2918,62 @@ pub const NativeCodegen = struct {
         }
     }
 
+    /// Mangle a method into the symbol used in `self.functions`. When
+    /// `module_prefix` is set, we emit `module::Type$method` so two
+    /// modules that define the same `Type.method` pair don't collide;
+    /// otherwise we keep the historical bare `Type$method` form that
+    /// the rest of the codebase already expects.
+    ///
+    /// Callers must `allocator.free` the returned slice.
+    fn mangleMethodName(
+        self: *NativeCodegen,
+        type_name: []const u8,
+        method_name: []const u8,
+    ) ![]const u8 {
+        if (self.module_prefix) |prefix| {
+            return try std.fmt.allocPrint(
+                self.allocator,
+                "{s}::{s}${s}",
+                .{ prefix, type_name, method_name },
+            );
+        }
+        return try std.fmt.allocPrint(
+            self.allocator,
+            "{s}${s}",
+            .{ type_name, method_name },
+        );
+    }
+
+    /// Natural alignment for a primitive or known struct type. Used to
+    /// pad struct fields so each one lands on a multiple of its own
+    /// alignment, matching the C / SysV layout rules most callers
+    /// expect. Falls back to 8 for unknown types to stay safe on x64
+    /// where 8-byte alignment is the pointer alignment.
+    fn getTypeAlignment(self: *NativeCodegen, type_name: []const u8) usize {
+        var resolved = type_name;
+        if (std.mem.startsWith(u8, type_name, "mut ")) resolved = type_name[4..];
+
+        if (std.mem.eql(u8, resolved, "u8") or
+            std.mem.eql(u8, resolved, "i8") or
+            std.mem.eql(u8, resolved, "bool")) return 1;
+        if (std.mem.eql(u8, resolved, "u16") or std.mem.eql(u8, resolved, "i16")) return 2;
+        if (std.mem.eql(u8, resolved, "u32") or
+            std.mem.eql(u8, resolved, "i32") or
+            std.mem.eql(u8, resolved, "f32")) return 4;
+        // Named struct: recurse to compute the max alignment of its fields.
+        if (self.struct_layouts.get(resolved)) |layout| {
+            var max_align: usize = 1;
+            for (layout.fields) |f| {
+                const a = self.getTypeAlignment(f.type_name);
+                if (a > max_align) max_align = a;
+            }
+            return max_align;
+        }
+        // Everything else (pointers, i64, f64, str, arrays, generics,
+        // unresolved type names…) uses full 8-byte alignment.
+        return 8;
+    }
+
     /// Get the size of a type in bytes
     fn getTypeSize(self: *NativeCodegen, type_name: []const u8) CodegenError!usize {
         // Strip 'mut ' prefix if present (e.g., "mut Particle" -> "Particle")
@@ -3071,7 +3253,13 @@ pub const NativeCodegen = struct {
                 var fields = try self.allocator.alloc(FieldInfo, struct_decl.fields.len);
                 errdefer self.allocator.free(fields);
 
+                // Compute per-field offsets with proper alignment so
+                // mixed-width fields (e.g. `u8`, `i64`) don't end up at
+                // straddling offsets. Also round the total size up to
+                // the struct's own alignment so arrays-of-struct don't
+                // land on misaligned boundaries.
                 var offset: usize = 0;
+                var struct_align: usize = 1;
                 for (struct_decl.fields, 0..) |field, i| {
                     const field_name = try self.allocator.dupe(u8, field.name);
                     const field_type_name = if (field.type_name.len > 0)
@@ -3083,6 +3271,12 @@ pub const NativeCodegen = struct {
                         (self.getTypeSize(field.type_name) catch 8)
                     else
                         8;
+                    const field_align = if (field.type_name.len > 0)
+                        self.getTypeAlignment(field.type_name)
+                    else
+                        8;
+                    if (field_align > struct_align) struct_align = field_align;
+                    offset = std.mem.alignForward(usize, offset, field_align);
 
                     fields[i] = .{
                         .name = field_name,
@@ -3092,11 +3286,12 @@ pub const NativeCodegen = struct {
                     };
                     offset += field_size;
                 }
+                const total_size = std.mem.alignForward(usize, offset, struct_align);
 
                 const layout = StructLayout{
                     .name = name_copy,
                     .fields = fields,
-                    .total_size = offset,
+                    .total_size = total_size,
                 };
 
                 // Register locally
@@ -3217,11 +3412,24 @@ pub const NativeCodegen = struct {
         };
         defer parser.deinit();
 
-        // Set source root for nested imports
+        // Set source root for nested imports. A failure here means nested
+        // imports inside the module will resolve relative to the cwd
+        // instead of the parent module's directory — worth flagging rather
+        // than silently degrading.
         if (self.source_root) |root| {
-            parser.module_resolver.setSourceRootDirect(root) catch {};
+            parser.module_resolver.setSourceRootDirect(root) catch |err| {
+                std.debug.print(
+                    "Warning: failed to propagate source root to module '{s}': {}\n",
+                    .{ module_path, err },
+                );
+            };
         } else {
-            parser.module_resolver.setSourceRoot(module_path) catch {};
+            parser.module_resolver.setSourceRoot(module_path) catch |err| {
+                std.debug.print(
+                    "Warning: failed to set source root for module '{s}': {}\n",
+                    .{ module_path, err },
+                );
+            };
         }
 
         const module_ast = parser.parse() catch |err| {
@@ -3609,11 +3817,136 @@ pub const NativeCodegen = struct {
             .ForStmt => |for_stmt| {
                 // For loop: for iterator in iterable { body }
 
-                // Check if iterable is a range expression
+                // Dynamic-array iteration: if `iterable` is an identifier
+                // of type `Array`, walk the heap header's `len` slots from
+                // [base+16] upward. This is the other non-range shape the
+                // parser can produce; anything else still returns silently.
                 if (for_stmt.iterable.* != .RangeExpr) {
-                    // Non-range for loop - for now just skip the loop body
-                    // A proper implementation would iterate over arrays/collections
-                    // This allows compilation to continue
+                    const is_array = blk: {
+                        if (for_stmt.iterable.* == .Identifier) {
+                            const id = for_stmt.iterable.Identifier;
+                            if (self.locals.get(id.name)) |info| {
+                                break :blk std.mem.eql(u8, info.type_name, "Array");
+                            }
+                        }
+                        break :blk false;
+                    };
+
+                    if (is_array) {
+                        // Array iteration. Because the loop body can
+                        // clobber any register, we keep the ground-truth
+                        // state in three stack slots that rank above the
+                        // iterator binding: [base_ptr, len, index]. The
+                        // iterator variable lives in a fourth slot that we
+                        // rewrite at the top of each iteration.
+                        //
+                        // Stack layout while the loop runs (top is rsp):
+                        //   [rsp+0]  iterator value (== current element)
+                        //   [rsp+8]  index (i)
+                        //   [rsp+16] len
+                        //   [rsp+24] base pointer (Array header ptr)
+                        try self.generateExpr(for_stmt.iterable);
+                        try self.assembler.pushReg(.rax);                // base
+                        try self.assembler.movRegMem(.rax, .rax, 0);    // len
+                        try self.assembler.pushReg(.rax);                // len slot
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.pushReg(.rax);                // i = 0
+                        self.next_local_offset += 3;
+
+                        const iter_offset = self.next_local_offset;
+                        self.next_local_offset += 1;
+                        var shadowed_old: ?LocalInfo = null;
+                        if (self.locals.fetchRemove(for_stmt.iterator)) |old_entry| {
+                            shadowed_old = old_entry.value;
+                            self.allocator.free(old_entry.key);
+                        }
+                        const name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
+                        try self.locals.put(name_copy, .{
+                            .offset = iter_offset,
+                            .type_name = "int",
+                            .size = 8,
+                        });
+                        try self.assembler.movRegImm64(.rax, 0);
+                        try self.assembler.pushReg(.rax); // iterator value
+
+                        // rbp-relative offsets for each state slot. Must
+                        // match the pushReg order above. localDisp rejects
+                        // frames past x64's i32 displacement limit.
+                        const base_off: i32 = try self.localDisp(iter_offset - 3);
+                        const len_off: i32 = try self.localDisp(iter_offset - 2);
+                        const i_off: i32 = try self.localDisp(iter_offset - 1);
+                        const slot_off: i32 = try self.localDisp(iter_offset);
+
+                        const loop_start = self.assembler.getPosition();
+
+                        // Load i and len, test i < len.
+                        try self.assembler.movRegMem(.r8, .rbp, i_off);
+                        try self.assembler.movRegMem(.r9, .rbp, len_off);
+                        try self.assembler.cmpRegReg(.r8, .r9);
+                        const jge_done = self.assembler.getPosition();
+                        try self.assembler.jgeRel32(0);
+
+                        // Load header, then data_ptr = [header+16]. Slot i
+                        // now lives at [data_ptr + i*8] in the indirect
+                        // Array layout.
+                        try self.assembler.movRegMem(.r11, .rbp, base_off);
+                        try self.assembler.movRegMem(.r11, .r11, 16);
+                        try self.assembler.leaRegMemSib(.rax, .r11, .r8, .eight, 0);
+                        try self.assembler.movRegMem(.rcx, .rax, 0);
+                        try self.assembler.movMemReg(.rbp, slot_off, .rcx);
+
+                        try self.loop_stack.append(self.allocator, .{
+                            .loop_start = loop_start,
+                            .break_fixups = std.ArrayList(usize).empty,
+                            .label = null,
+                        });
+
+                        for (for_stmt.body.statements) |body_stmt| {
+                            try self.generateStmt(body_stmt);
+                        }
+
+                        var loop_ctx = self.loop_stack.pop().?;
+                        defer loop_ctx.break_fixups.deinit(self.allocator);
+
+                        // i = i + 1
+                        try self.assembler.movRegMem(.r8, .rbp, i_off);
+                        try self.assembler.addRegImm(.r8, 1);
+                        try self.assembler.movMemReg(.rbp, i_off, .r8);
+
+                        const back_pos = self.assembler.getPosition();
+                        try self.assembler.jmpRel32(
+                            @as(i32, @intCast(loop_start)) - @as(i32, @intCast(back_pos + 5)),
+                        );
+
+                        const loop_end = self.assembler.getPosition();
+                        try self.assembler.patchJgeRel32(
+                            jge_done,
+                            @as(i32, @intCast(loop_end)) - @as(i32, @intCast(jge_done + 6)),
+                        );
+                        for (loop_ctx.break_fixups.items) |break_pos| {
+                            const break_offset = @as(i32, @intCast(loop_end)) - @as(i32, @intCast(break_pos + 5));
+                            try self.assembler.patchJmpRel32(break_pos, break_offset);
+                        }
+
+                        // Drop iterator, index, len, base — four pops.
+                        try self.assembler.popReg(.rax);
+                        try self.assembler.popReg(.rax);
+                        try self.assembler.popReg(.rax);
+                        try self.assembler.popReg(.rax);
+                        self.next_local_offset -= 4;
+
+                        if (self.locals.fetchRemove(for_stmt.iterator)) |removed| {
+                            self.allocator.free(removed.key);
+                        }
+                        if (shadowed_old) |info| {
+                            const restored = try self.allocator.dupe(u8, for_stmt.iterator);
+                            try self.locals.put(restored, info);
+                        }
+                        return;
+                    }
+
+                    // Any other iterable shape: skip (same as before) so
+                    // compilation keeps flowing.
                     return;
                 }
 
@@ -3638,10 +3971,18 @@ pub const NativeCodegen = struct {
                 // Allocate stack space for iterator variable (push once at start)
                 const iterator_offset = self.next_local_offset;
                 self.next_local_offset += 1;
-                // Free old key if variable exists (shadowing)
+
+                // If the iterator name shadows an existing binding, remember
+                // the old LocalInfo so we can restore it when the loop ends.
+                // Previously we just dropped the outer binding, which made
+                // `for x in 0..n { ... } use(x)` silently see stale stack
+                // slots once the loop had finished.
+                var shadowed_old: ?LocalInfo = null;
                 if (self.locals.fetchRemove(for_stmt.iterator)) |old_entry| {
+                    shadowed_old = old_entry.value;
                     self.allocator.free(old_entry.key);
                 }
+
                 const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
                 try self.locals.put(iterator_name_copy, .{
                     .offset = iterator_offset,
@@ -3658,14 +3999,9 @@ pub const NativeCodegen = struct {
                 const loop_start = self.assembler.getPosition();
 
                 // Update the stack with current iterator value
-                // Stack offset calculation: [rbp - (offset + 1) * 8]
-                const offset_bytes = (iterator_offset + 1) * 8;
-                // Check for overflow before casting to i32
-                if (offset_bytes > std.math.maxInt(i31)) {
-                    std.debug.print("Stack offset too large: {d}\n", .{offset_bytes});
-                    return error.StackOffsetOverflow;
-                }
-                const stack_offset: i32 = -@as(i32, @intCast(offset_bytes));
+                // [rbp - (offset + 1) * 8]. localDisp reports the stack-too-large
+                // case as a compile error rather than truncating to 0.
+                const stack_offset: i32 = try self.localDisp(iterator_offset);
                 try self.assembler.movMemReg(.rbp, stack_offset, .r8);
 
                 // Compare iterator (r8) with end (r9)
@@ -3696,8 +4032,21 @@ pub const NativeCodegen = struct {
                 var loop_ctx = self.loop_stack.pop().?;
                 defer loop_ctx.break_fixups.deinit(self.allocator);
 
-                // Increment iterator: inc r8
-                try self.assembler.incReg(.r8);
+                // Increment iterator. If a `step N` clause was given,
+                // compute it now and add; otherwise fall back to inc. The
+                // step expression is evaluated fresh each iteration so
+                // non-literal steps — though rare — still work.
+                if (range.step) |step_expr| {
+                    try self.assembler.pushReg(.r8);
+                    try self.assembler.pushReg(.r9);
+                    try self.generateExpr(step_expr);
+                    try self.assembler.movRegReg(.rcx, .rax);
+                    try self.assembler.popReg(.r9);
+                    try self.assembler.popReg(.r8);
+                    try self.assembler.addRegReg(.r8, .rcx);
+                } else {
+                    try self.assembler.incReg(.r8);
+                }
 
                 // Jump back to loop start
                 const current_pos = self.assembler.getPosition();
@@ -3722,10 +4071,15 @@ pub const NativeCodegen = struct {
                 // Pop the iterator value (cleanup stack after loop)
                 try self.assembler.popReg(.rax);
 
-                // Clean up the iterator variable from locals and restore offset
-                // Note: We remove the entry but don't free the key to avoid double-free issues
-                // The allocator will clean up all memory when codegen completes
-                _ = self.locals.fetchRemove(for_stmt.iterator);
+                // Remove the iterator entry and — if the iterator shadowed
+                // an outer binding — put the outer binding back.
+                if (self.locals.fetchRemove(for_stmt.iterator)) |removed| {
+                    self.allocator.free(removed.key);
+                }
+                if (shadowed_old) |info| {
+                    const restored = try self.allocator.dupe(u8, for_stmt.iterator);
+                    try self.locals.put(restored, info);
+                }
                 self.next_local_offset -= 1;
 
                 // Restore r8 and r9 for nested loop support
@@ -3867,10 +4221,13 @@ pub const NativeCodegen = struct {
                 defer fields.deinit(self.allocator);
 
                 var offset: usize = 0;
+                var struct_align: usize = 1;
                 for (struct_decl.fields) |field| {
                     const field_size = try self.getTypeSize(field.type_name);
-                    // Align to field size (simple alignment for now), with minimum alignment of 1
-                    const alignment = if (field_size == 0) 1 else @min(field_size, 8);
+                    // Align to the field's natural alignment (matches the
+                    // rules used in the simpler registration pass above).
+                    const alignment = self.getTypeAlignment(field.type_name);
+                    if (alignment > struct_align) struct_align = alignment;
                     offset = std.mem.alignForward(usize, offset, alignment);
 
                     const field_name_copy = try self.allocator.dupe(u8, field.name);
@@ -3887,6 +4244,7 @@ pub const NativeCodegen = struct {
                     });
                     offset += field_size;
                 }
+                offset = std.mem.alignForward(usize, offset, struct_align);
 
                 // Store struct layout
                 // First get fields_slice, then name_copy to ensure proper cleanup order
@@ -3931,7 +4289,7 @@ pub const NativeCodegen = struct {
                 // First pass: Pre-register all mangled method names with placeholder positions
                 // This enables methods to call other methods on the same struct
                 for (struct_decl.methods) |method| {
-                    const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_decl.name, method.name });
+                    const mangled_name = try self.mangleMethodName(struct_decl.name, method.name);
                     errdefer self.allocator.free(mangled_name);
                     // Register with position 0 as placeholder - will be updated when method is generated
                     try self.functions.put(mangled_name, 0);
@@ -3943,7 +4301,7 @@ pub const NativeCodegen = struct {
                     const method_pos = self.assembler.getPosition();
 
                     // Create mangled method name: StructName$methodName
-                    const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_decl.name, method.name });
+                    const mangled_name = try self.mangleMethodName(struct_decl.name, method.name);
                     defer self.allocator.free(mangled_name);
 
                     // Generate the method with mangled name to avoid collisions
@@ -4049,8 +4407,11 @@ pub const NativeCodegen = struct {
                 // Match statement: match value { pattern => body, ... }
                 // Implemented using sequential pattern matching with conditional jumps
 
-                // Check exhaustiveness before code generation
-                try self.checkMatchExhaustiveness(match_stmt);
+                // Check exhaustiveness before code generation. When the
+                // match isn't provably exhaustive, we emit a runtime panic
+                // at the fall-through point so silent logic errors become
+                // loud, observable failures (see end-of-match block below).
+                const match_is_exhaustive = try self.checkMatchExhaustiveness(match_stmt);
 
                 // Save callee-saved register rbx (required by x86-64 ABI)
                 // Track as pseudo-local to keep stack offsets consistent
@@ -4130,6 +4491,17 @@ pub const NativeCodegen = struct {
                 }
 
                 // Match value is in r10, no need to pop from stack
+
+                // Fall-through panic for non-exhaustive matches. If none of
+                // the arm patterns matched, execution lands here; previously
+                // it silently returned 0 which hides logic errors. Now we
+                // abort with a message including the unmatched value.
+                if (!match_is_exhaustive) {
+                    try self.assembler.pushReg(.r10); // scrutinee
+                    try self.emitRuntimePanicWithOperand(
+                        "panic: non-exhaustive match: no arm matched value ",
+                    );
+                }
 
                 // Patch all "end of match" jumps
                 const match_end = self.assembler.getPosition();
@@ -4278,11 +4650,16 @@ pub const NativeCodegen = struct {
                 // Test blocks are skipped during normal compilation
                 // They're only executed when running in test mode
             },
-            .TraitDecl => {
+            .TraitDecl => |trait_decl| {
                 // Trait declarations are pure compile-time information: a
                 // method-signature list that the type checker uses to verify
-                // impls. They don't emit any code on their own. The vtables
-                // get built when we walk the matching ImplDecl.
+                // impls. They don't emit any code on their own. But we stash
+                // the node in `trait_decls` so ImplDecl processing can later
+                // pull out default method bodies for methods the impl block
+                // does not override.
+                const dup_name = try self.allocator.dupe(u8, trait_decl.name);
+                errdefer self.allocator.free(dup_name);
+                try self.trait_decls.put(dup_name, trait_decl);
             },
             .ImplDecl => |impl_decl| {
                 // Implementation blocks. Two flavours:
@@ -4300,26 +4677,100 @@ pub const NativeCodegen = struct {
                     else => "<generic>",
                 };
 
+                // Supertrait check: for `impl Sub for T`, make sure every
+                // supertrait listed on Sub already has an `impl Super for T`.
+                // Record this impl first so when multiple subtrait impls
+                // reference each other they all resolve, then walk the trait
+                // hierarchy.
+                if (impl_decl.trait_name) |trait_name| {
+                    const impl_key = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}::{s}",
+                        .{ trait_name, impl_type },
+                    );
+                    errdefer self.allocator.free(impl_key);
+                    if (!self.impl_set.contains(impl_key)) {
+                        try self.impl_set.put(impl_key, {});
+                    } else {
+                        self.allocator.free(impl_key);
+                    }
+
+                    if (self.trait_decls.get(trait_name)) |trait_decl| {
+                        for (trait_decl.super_traits) |super| {
+                            const super_key = try std.fmt.allocPrint(
+                                self.allocator,
+                                "{s}::{s}",
+                                .{ super, impl_type },
+                            );
+                            defer self.allocator.free(super_key);
+                            if (!self.impl_set.contains(super_key)) {
+                                std.debug.print(
+                                    "codegen error: `impl {s} for {s}` requires `impl {s} for {s}` (supertrait of {s})\n",
+                                    .{ trait_name, impl_type, super, impl_type, trait_name },
+                                );
+                                return error.UnsupportedFeature;
+                            }
+                        }
+                    }
+                }
+
+                // Collect the list of methods we'll emit: the impl's explicit
+                // methods, plus synthesized copies of any trait default methods
+                // the impl doesn't override.
+                var all_methods = std.ArrayList(*ast.FnDecl).empty;
+                defer all_methods.deinit(self.allocator);
+                // Track synthesized FnDecls so we can free them after emission.
+                var synthesized = std.ArrayList(*ast.FnDecl).empty;
+                defer {
+                    for (synthesized.items) |fd| {
+                        self.allocator.destroy(fd);
+                    }
+                    synthesized.deinit(self.allocator);
+                }
+
+                for (impl_decl.methods) |method| {
+                    try all_methods.append(self.allocator, method);
+                }
+
+                if (impl_decl.trait_name) |trait_name| {
+                    if (self.trait_decls.get(trait_name)) |trait_decl| {
+                        for (trait_decl.methods) |tm| {
+                            if (!tm.has_default_impl) continue;
+                            const body = tm.default_body orelse continue;
+
+                            var overridden = false;
+                            for (impl_decl.methods) |im| {
+                                if (std.mem.eql(u8, im.name, tm.name)) {
+                                    overridden = true;
+                                    break;
+                                }
+                            }
+                            if (overridden) continue;
+
+                            // Synthesize an ast.FnDecl from the trait method's
+                            // signature + default body so the existing
+                            // function-emission path can lower it. Parameters
+                            // and return type are converted TypeExpr → string
+                            // with Self resolved to the concrete impl type.
+                            const fd = try self.synthesizeTraitDefaultFn(tm, body, impl_type);
+                            try synthesized.append(self.allocator, fd);
+                            try all_methods.append(self.allocator, fd);
+                        }
+                    }
+                }
+
                 // First pass: pre-register every mangled name with a placeholder
                 // position so methods on the same impl can call each other.
-                for (impl_decl.methods) |method| {
-                    const mangled = try std.fmt.allocPrint(
-                        self.allocator,
-                        "{s}${s}",
-                        .{ impl_type, method.name },
-                    );
+                for (all_methods.items) |method| {
+                    const mangled = try self.mangleMethodName(impl_type, method.name);
                     errdefer self.allocator.free(mangled);
                     try self.functions.put(mangled, 0);
                 }
 
                 // Second pass: emit each method body and patch its position.
-                for (impl_decl.methods) |method| {
+                for (all_methods.items) |method| {
                     const method_pos = self.assembler.getPosition();
-                    const mangled = try std.fmt.allocPrint(
-                        self.allocator,
-                        "{s}${s}",
-                        .{ impl_type, method.name },
-                    );
+                    const mangled = try self.mangleMethodName(impl_type, method.name);
                     defer self.allocator.free(mangled);
                     try self.generateFnDeclWithName(method, mangled);
                     if (self.functions.getPtr(mangled)) |pos_ptr| {
@@ -4329,17 +4780,15 @@ pub const NativeCodegen = struct {
 
                 // For trait impls, also build a vtable mapping method names
                 // to function offsets so dynamic dispatch through a `dyn`
-                // pointer can find them at runtime.
+                // pointer can find them at runtime. Includes synthesized
+                // default methods so the vtable has a slot for every trait
+                // method, not just the ones the impl explicitly overrode.
                 if (impl_decl.trait_name) |trait_name| {
-                    var slots = try self.allocator.alloc(VtableSlot, impl_decl.methods.len);
+                    var slots = try self.allocator.alloc(VtableSlot, all_methods.items.len);
                     defer self.allocator.free(slots);
 
-                    for (impl_decl.methods, 0..) |method, i| {
-                        const mangled = try std.fmt.allocPrint(
-                            self.allocator,
-                            "{s}${s}",
-                            .{ impl_type, method.name },
-                        );
+                    for (all_methods.items, 0..) |method, i| {
+                        const mangled = try self.mangleMethodName(impl_type, method.name);
                         defer self.allocator.free(mangled);
                         const offset = self.functions.get(mangled) orelse 0;
                         slots[i] = .{
@@ -4571,35 +5020,46 @@ pub const NativeCodegen = struct {
                 return;
             },
             .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq => {
-                // For ==/!= a bitwise compare works exactly (modulo -0==+0).
-                // For ordering we want proper IEEE-754 semantics: use ucomisd
-                // to set EFLAGS, then setcc based on unsigned (above/below) —
-                // since ucomisd is unordered-aware but uses CF/ZF like CMP.
+                // IEEE-754 ordered comparison via ucomisd. Flag layout:
+                //   xmm0 >  xmm1 → CF=0 ZF=0 PF=0
+                //   xmm0 <  xmm1 → CF=1 ZF=0 PF=0
+                //   xmm0 == xmm1 → CF=0 ZF=1 PF=0
+                //   unordered    → CF=1 ZF=1 PF=1   (NaN on either side)
                 //
-                //   ucomisd xmm0, xmm1
-                //     if left > right: CF=0, ZF=0  → seta
-                //     if left < right: CF=1, ZF=0  → setb
-                //     if left == right: CF=0, ZF=1 → sete
-                //     NaN: PF=1 (unordered)
-                //
-                // We don't yet have ucomisd or seta/setb/setae/setbe in the
-                // assembler, so we emit raw bytes.
-                //   ucomisd xmm0, xmm1 → 66 0F 2E C1
-                //   seta al           → 0F 97 C0
-                //   setae al          → 0F 93 C0
-                //   setb al           → 0F 92 C0
-                //   setbe al          → 0F 96 C0
+                // Since NaN must compare as false for <, <=, >, >=, and ==
+                // — and as true for != — we gate every result on PF=0
+                // ("not unordered"). rdx holds the not-unordered flag and
+                // rax holds the raw setcc; final result is rax & rdx (or
+                // rax | (PF=1) for !=).
                 try self.emitRawBytes(&[_]u8{ 0x66, 0x0F, 0x2E, 0xC1 }); // ucomisd xmm0, xmm1
+                // setnp dl — 1 if ordered, 0 if either operand is NaN.
+                try self.emitRawBytes(&[_]u8{ 0x0F, 0x9B, 0xC2 });
+                try self.assembler.movzxReg64Reg8(.rdx, .rdx);
+
                 switch (binary.op) {
                     .Equal => try self.assembler.seteReg(.rax),
                     .NotEqual => try self.assembler.setneReg(.rax),
-                    .Less => try self.emitRawBytes(&[_]u8{ 0x0F, 0x92, 0xC0 }),   // setb al
-                    .LessEq => try self.emitRawBytes(&[_]u8{ 0x0F, 0x96, 0xC0 }), // setbe al
-                    .Greater => try self.emitRawBytes(&[_]u8{ 0x0F, 0x97, 0xC0 }),// seta al
-                    .GreaterEq => try self.emitRawBytes(&[_]u8{ 0x0F, 0x93, 0xC0 }),// setae al
+                    .Less => try self.assembler.setbReg(.rax),
+                    .LessEq => try self.assembler.setbeReg(.rax),
+                    .Greater => try self.assembler.setaReg(.rax),
+                    .GreaterEq => try self.assembler.setaeReg(.rax),
                     else => unreachable,
                 }
                 try self.assembler.movzxReg64Reg8(.rax, .rax);
+
+                if (binary.op == .NotEqual) {
+                    // NaN makes != true: rax := rax | (~rdx & 1).
+                    // rdx holds 1 for ordered, 0 for unordered; we want the
+                    // opposite, so XOR with 1 first.
+                    try self.assembler.xorRegReg(.rcx, .rcx);
+                    try self.assembler.movRegReg(.rcx, .rdx);
+                    try self.assembler.movRegImm64(.r11, 1);
+                    try self.assembler.xorRegReg(.rcx, .r11);
+                    try self.assembler.orRegReg(.rax, .rcx);
+                } else {
+                    // NaN makes <, <=, >, >=, == false: rax := rax & rdx.
+                    try self.assembler.andRegReg(.rax, .rdx);
+                }
                 return;
             },
             else => {
@@ -4619,6 +5079,16 @@ pub const NativeCodegen = struct {
                 // String concatenation
                 try self.stringConcat(binary.left, binary.right);
             },
+            .Mul => {
+                // String repetition: `"ab" * 3` → "ababab". Works with the
+                // int on either side — Python-style.
+                const left_is_string = self.isStringExpr(binary.left);
+                if (left_is_string) {
+                    try self.stringRepeat(binary.left, binary.right);
+                } else {
+                    try self.stringRepeat(binary.right, binary.left);
+                }
+            },
             .Equal, .NotEqual => {
                 // String comparison
                 try self.stringCompare(binary.left, binary.right, binary.op);
@@ -4632,6 +5102,109 @@ pub const NativeCodegen = struct {
                 return error.UnsupportedFeature;
             },
         }
+    }
+
+    /// str * n — allocate a fresh buffer of size len(str)*n + 1 and copy
+    /// the source bytes `n` times. Caller passes the string expr and the
+    /// count expr (either order in the original source is handled above).
+    fn stringRepeat(self: *NativeCodegen, str_expr: *ast.Expr, count_expr: *ast.Expr) !void {
+        // Evaluate count → push.
+        try self.generateExpr(count_expr);
+        try self.assembler.pushReg(.rax); // [rsp] = count
+        // Evaluate string → rax = src ptr.
+        try self.generateExpr(str_expr);
+        try self.assembler.pushReg(.rax); // [rsp] = src, [rsp+8] = count
+
+        // Compute strlen(src) → r8.
+        try self.assembler.movRegReg(.rdi, .rax);
+        try self.stringLength(.rdi);
+        try self.assembler.movRegReg(.r8, .rax); // r8 = len
+
+        // Pop src (was [rsp]) and count (was [rsp+8] which is now [rsp]).
+        try self.assembler.popReg(.rax);   // rax = src
+        try self.assembler.popReg(.rcx);   // rcx = count
+
+        // If count < 0, treat as 0.
+        try self.assembler.testRegReg(.rcx, .rcx);
+        const jns_ok = self.assembler.getPosition();
+        try self.assembler.jnsRel32(0);
+        try self.assembler.movRegImm64(.rcx, 0);
+        const ns_ok = self.assembler.getPosition();
+        try self.assembler.patchJnsRel32(
+            jns_ok,
+            @as(i32, @intCast(ns_ok)) - @as(i32, @intCast(jns_ok + 6)),
+        );
+
+        // total_len = len * count → r9.
+        try self.assembler.movRegReg(.r9, .r8);
+        try self.assembler.imulRegReg(.r9, .rcx);
+
+        // Allocate total_len + 1 bytes.
+        try self.assembler.pushReg(.rax); // src
+        try self.assembler.pushReg(.rcx); // count
+        try self.assembler.pushReg(.r8);  // len
+        try self.assembler.pushReg(.r9);  // total
+        try self.assembler.movRegReg(.rdi, .r9);
+        try self.assembler.addRegImm(.rdi, 1);
+        try self.heapAlloc();
+        try self.assembler.movRegReg(.r10, .rax); // r10 = dst base
+        try self.assembler.popReg(.r9);
+        try self.assembler.popReg(.r8);
+        try self.assembler.popReg(.rcx);
+        try self.assembler.popReg(.rax); // rax = src
+
+        // Loop: for (i = 0; i < count; i++) memcpy(dst + i*len, src, len)
+        //   rdx = i (counter), r11 = cursor into dst.
+        try self.assembler.xorRegReg(.rdx, .rdx);
+        try self.assembler.movRegReg(.r11, .r10);
+
+        const top = self.assembler.getPosition();
+        try self.assembler.cmpRegReg(.rdx, .rcx);
+        const jge_end = self.assembler.getPosition();
+        try self.assembler.jgeRel32(0);
+
+        // memcpy(r11, rax, r8). memcpy wants rdi=dst, rsi=src, rdx=len.
+        try self.assembler.pushReg(.rax);
+        try self.assembler.pushReg(.rcx);
+        try self.assembler.pushReg(.rdx);
+        try self.assembler.pushReg(.r8);
+        try self.assembler.pushReg(.r9);
+        try self.assembler.pushReg(.r10);
+        try self.assembler.pushReg(.r11);
+        try self.assembler.movRegReg(.rdi, .r11);
+        try self.assembler.movRegReg(.rsi, .rax);
+        try self.assembler.movRegReg(.rdx, .r8);
+        try self.memcpy();
+        try self.assembler.popReg(.r11);
+        try self.assembler.popReg(.r10);
+        try self.assembler.popReg(.r9);
+        try self.assembler.popReg(.r8);
+        try self.assembler.popReg(.rdx);
+        try self.assembler.popReg(.rcx);
+        try self.assembler.popReg(.rax);
+
+        // Advance cursor and counter.
+        try self.assembler.addRegReg(.r11, .r8);
+        try self.assembler.addRegImm(.rdx, 1);
+
+        const back = self.assembler.getPosition();
+        try self.assembler.jmpRel32(
+            @as(i32, @intCast(top)) - @as(i32, @intCast(back + 5)),
+        );
+
+        const end_pos = self.assembler.getPosition();
+        try self.assembler.patchJgeRel32(
+            jge_end,
+            @as(i32, @intCast(end_pos)) - @as(i32, @intCast(jge_end + 6)),
+        );
+
+        // NUL-terminate: dst[total_len] = 0
+        try self.assembler.movRegReg(.rax, .r10);
+        try self.assembler.addRegReg(.rax, .r9);
+        try self.assembler.movByteMemImm(.rax, 0, 0);
+
+        // Return the new buffer.
+        try self.assembler.movRegReg(.rax, .r10);
     }
 
     /// Concatenate two strings
@@ -4966,32 +5539,248 @@ pub const NativeCodegen = struct {
         // we don't check — programs that hit OOM crash, which is fine).
     }
 
-    /// Emit a runtime panic: write `message` to stderr and exit with code 101.
-    /// Inline so each panic site has its own data; avoids the need for a per-process
-    /// panic routine and works correctly even when called from places where the
-    /// stack frame is not well-formed.
-    fn emitRuntimePanic(self: *NativeCodegen, message: []const u8) !void {
-        // Build the message bytes (with newline) into the data section.
-        const buf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
-        defer self.allocator.free(buf);
-        const data_offset = try self.registerStringLiteral(buf);
-
-        // syscall numbers
-        const write_syscall: u64 = switch (builtin.os.tag) {
-            .macos => 0x2000004,
-            .linux => 1,
-            else => 1,
-        };
+    /// Emit a silent bounds-check panic: exit(101) without printing a
+    /// message. This is intentionally lightweight — no string_fixups, no
+    /// write syscall — so it can be emitted dozens of times per function
+    /// without the string-table interaction that the message-form
+    /// `emitRuntimePanic` has been known to hit.
+    ///
+    /// The tradeoff is that the user sees only the exit code; stderr is
+    /// silent. That's still strictly better than silently reading
+    /// adjacent heap memory.
+    fn emitBoundsPanic(self: *NativeCodegen) !void {
         const exit_syscall: u64 = switch (builtin.os.tag) {
             .macos => 0x2000001,
             .linux => 60,
             else => 60,
         };
+        try self.assembler.movRegImm64(.rax, exit_syscall);
+        try self.assembler.movRegImm64(.rdi, 101);
+        try self.assembler.syscall();
+    }
 
-        // write(stderr=2, message, len)
+    /// Emit a deep clone of a dynamic Array value. The receiver is
+    /// expected to be an expression producing an Array header pointer.
+    /// On return rax holds a fresh header pointer whose data block is a
+    /// byte-for-byte copy of the source's used slots.
+    fn emitArrayClone(self: *NativeCodegen, receiver: *ast.Expr) !void {
+        try self.generateExpr(receiver);
+        // rax = source header
+        try self.assembler.pushReg(.rax); // save source header
+
+        // Allocate new header (24 bytes).
+        try self.assembler.movRegImm64(.rdi, 24);
+        try self.heapAlloc();
+        try self.assembler.pushReg(.rax); // save new header
+
+        // Read source cap (from src_header+8). Allocate new data block
+        // sized to match so future push() has the same slack.
+        try self.assembler.movRegMem(.r11, .rsp, 8); // src_header (below new_header)
+        try self.assembler.movRegMem(.rdi, .r11, 8); // rdi = cap
+        try self.assembler.shlRegImm8(.rdi, 3); // cap*8 bytes
+        try self.heapAlloc(); // rax = new_data
+        try self.assembler.movRegReg(.r10, .rax); // r10 = new_data
+
+        // Reload pointers from the stack.
+        try self.assembler.popReg(.r12); // r12 = new_header
+        try self.assembler.popReg(.r11); // r11 = src_header
+
+        // Copy len, cap, data_ptr into new header.
+        try self.assembler.movRegMem(.rcx, .r11, 0); // len
+        try self.assembler.movMemReg(.r12, 0, .rcx);
+        try self.assembler.movRegMem(.rcx, .r11, 8); // cap
+        try self.assembler.movMemReg(.r12, 8, .rcx);
+        try self.assembler.movMemReg(.r12, 16, .r10); // data_ptr = new_data
+
+        // memcpy: src_data = [src+16], dst = new_data, count = len*8.
+        try self.assembler.movRegMem(.rsi, .r11, 16);
+        try self.assembler.movRegReg(.rdi, .r10);
+        try self.assembler.movRegMem(.rcx, .r11, 0);
+        try self.assembler.shlRegImm8(.rcx, 3);
+        // rep movsb (F3 A4)
+        try self.assembler.code.append(self.allocator, 0xF3);
+        try self.assembler.code.append(self.allocator, 0xA4);
+
+        // Return new header pointer.
+        try self.assembler.movRegReg(.rax, .r12);
+    }
+
+    /// Emit a deep clone of a nul-terminated string. Equivalent to
+    /// `strdup`: walks the source to compute its length, allocates
+    /// len+1 bytes, copies the bytes plus terminator. Returns the new
+    /// pointer in rax.
+    fn emitStringClone(self: *NativeCodegen, receiver: *ast.Expr) !void {
+        try self.generateExpr(receiver);
+        try self.assembler.pushReg(.rax); // [0] source
+        try self.stringLength(.rax); // rax = len (excluding NUL)
+        try self.assembler.pushReg(.rax); // [1] len
+        // Allocate len + 1 bytes.
+        try self.assembler.movRegReg(.rdi, .rax);
+        try self.assembler.addRegImm(.rdi, 1);
+        try self.heapAlloc(); // rax = dest
+        try self.assembler.popReg(.rcx); // rcx = len
+        try self.assembler.popReg(.rsi); // rsi = source
+        try self.assembler.movRegReg(.rdi, .rax); // rdi = dest
+        try self.assembler.pushReg(.rax); // save dest as return value
+        // rep movsb — copies rcx bytes, advances rdi/rsi past the last
+        // byte so rdi now points at dest + len where the nul lives.
+        try self.assembler.code.append(self.allocator, 0xF3);
+        try self.assembler.code.append(self.allocator, 0xA4);
+        try self.assembler.movByteMemImm(.rdi, 0, 0);
+        try self.assembler.popReg(.rax); // dest
+    }
+
+    /// Representable range for a narrowing-cast target. Returned by
+    /// `narrowingRangeFor` for the primitive integer widths codegen knows
+    /// how to emit checks for. i64/u64 intentionally return null — a
+    /// "cast to i64" can never overflow at runtime since rax is already
+    /// 64-bit.
+    const NarrowingRange = struct {
+        min: i64,
+        max: i64,
+        signed: bool,
+    };
+
+    fn narrowingRangeFor(target_type: []const u8) ?NarrowingRange {
+        if (std.mem.eql(u8, target_type, "i8")) {
+            return .{ .min = -128, .max = 127, .signed = true };
+        }
+        if (std.mem.eql(u8, target_type, "i16")) {
+            return .{ .min = -32768, .max = 32767, .signed = true };
+        }
+        if (std.mem.eql(u8, target_type, "i32")) {
+            return .{ .min = std.math.minInt(i32), .max = std.math.maxInt(i32), .signed = true };
+        }
+        if (std.mem.eql(u8, target_type, "u8")) {
+            return .{ .min = 0, .max = 255, .signed = false };
+        }
+        if (std.mem.eql(u8, target_type, "u16")) {
+            return .{ .min = 0, .max = 65535, .signed = false };
+        }
+        if (std.mem.eql(u8, target_type, "u32")) {
+            return .{ .min = 0, .max = 4294967295, .signed = false };
+        }
+        return null;
+    }
+
+    /// Emit: if rax < min or rax > max, push rax; panic. Otherwise fall
+    /// through with rax unchanged. Uses signed compares for signed
+    /// targets and unsigned compares for unsigned targets.
+    fn emitNarrowingRangeCheck(
+        self: *NativeCodegen,
+        target_type: []const u8,
+        r: NarrowingRange,
+    ) !void {
+        // For unsigned targets we first reject negative values with a
+        // signed compare against 0; then we fall through to the
+        // "≤ max" check (using unsigned compare so that large positives
+        // don't wrap).
+        if (!r.signed) {
+            try self.assembler.testRegReg(.rax, .rax);
+            const jns_neg_ok = self.assembler.getPosition();
+            try self.assembler.jnsRel32(0);
+            try self.assembler.pushReg(.rax);
+            const prefix = try std.fmt.allocPrint(
+                self.allocator,
+                "panic: narrowing cast out of range (target {s}): ",
+                .{target_type},
+            );
+            try self.emitRuntimePanicWithOperand(prefix);
+            try self.assembler.patchJnsRel32(
+                jns_neg_ok,
+                @as(i32, @intCast(self.assembler.getPosition())) - @as(i32, @intCast(jns_neg_ok + 6)),
+            );
+        } else {
+            // Signed target: check rax >= min.
+            try self.assembler.movRegImm64(.rcx, r.min);
+            try self.assembler.cmpRegReg(.rax, .rcx);
+            const jge_lo_ok = self.assembler.getPosition();
+            try self.assembler.jgeRel32(0);
+            try self.assembler.pushReg(.rax);
+            const prefix_lo = try std.fmt.allocPrint(
+                self.allocator,
+                "panic: narrowing cast out of range (target {s}): ",
+                .{target_type},
+            );
+            try self.emitRuntimePanicWithOperand(prefix_lo);
+            try self.assembler.patchJgeRel32(
+                jge_lo_ok,
+                @as(i32, @intCast(self.assembler.getPosition())) - @as(i32, @intCast(jge_lo_ok + 6)),
+            );
+        }
+
+        // Upper-bound check.
+        try self.assembler.movRegImm64(.rcx, r.max);
+        try self.assembler.cmpRegReg(.rax, .rcx);
+        const jle_hi_ok = self.assembler.getPosition();
+        try self.assembler.jleRel32(0);
+        try self.assembler.pushReg(.rax);
+        const prefix_hi = try std.fmt.allocPrint(
+            self.allocator,
+            "panic: narrowing cast out of range (target {s}): ",
+            .{target_type},
+        );
+        try self.emitRuntimePanicWithOperand(prefix_hi);
+        try self.assembler.patchJleRel32(
+            jle_hi_ok,
+            @as(i32, @intCast(self.assembler.getPosition())) - @as(i32, @intCast(jle_hi_ok + 6)),
+        );
+    }
+
+    /// Convert an abstract local slot index into an rbp-relative i32
+    /// displacement, returning CodegenError.StackOffsetOverflow when the
+    /// frame grows larger than x64's 32-bit displacement field. Every
+    /// local-load/store site should go through this helper so the
+    /// compiler reports a loud, actionable error instead of silently
+    /// truncating to a 0 displacement and clobbering adjacent memory.
+    fn localDisp(self: *NativeCodegen, slot: u32) CodegenError!i32 {
+        _ = self;
+        // Each local occupies 8 bytes; slot 0 lives at [rbp-8].
+        const bytes: u64 = (@as(u64, slot) + 1) * 8;
+        // A negative i32 displacement bottoms out at -2^31 (≈2 GiB).
+        // We allow the full magnitude by rejecting anything strictly
+        // greater than that bound. The i31 shrug-check lets us use
+        // @intCast without triggering Zig's safety check.
+        if (bytes > @as(u64, 1) << 31) {
+            return error.StackOffsetOverflow;
+        }
+        return -@as(i32, @intCast(bytes));
+    }
+
+    /// Emit a runtime panic: write `message` to stderr and exit with code 101.
+    /// Inline so each panic site has its own data; avoids the need for a per-process
+    /// panic routine and works correctly even when called from places where the
+    /// stack frame is not well-formed.
+    fn emitRuntimePanic(self: *NativeCodegen, message: []const u8) !void {
+        // Build the message bytes (with newline) into the data section. We
+        // hand ownership of the dupe to string_literals for the lifetime of
+        // the codegen pass — registerStringLiteral stores the slice directly.
+        const buf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
+        try self.emitWriteStderrStaticBuf(buf);
+
+        // exit(101) — matches Rust's panic exit code.
+        const exit_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000001,
+            .linux => 60,
+            else => 60,
+        };
+        try self.assembler.movRegImm64(.rax, exit_syscall);
+        try self.assembler.movRegImm64(.rdi, 101);
+        try self.assembler.syscall();
+    }
+
+    /// Write a static buffer (owned, alive for the rest of the codegen pass)
+    /// to stderr using a direct write syscall.
+    fn emitWriteStderrStaticBuf(self: *NativeCodegen, buf: []const u8) !void {
+        if (buf.len == 0) return;
+        const data_offset = try self.registerStringLiteral(buf);
+        const write_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000004,
+            .linux => 1,
+            else => 1,
+        };
         try self.assembler.movRegImm64(.rax, write_syscall);
         try self.assembler.movRegImm64(.rdi, 2);
-        // Load message address into rsi via RIP-relative LEA + fixup.
         const lea_pos = try self.assembler.leaRipRel(.rsi, 0);
         try self.string_fixups.append(self.allocator, .{
             .code_pos = lea_pos,
@@ -4999,8 +5788,147 @@ pub const NativeCodegen = struct {
         });
         try self.assembler.movRegImm64(.rdx, @as(i64, @intCast(buf.len)));
         try self.assembler.syscall();
+    }
 
-        // exit(101) — matches Rust's panic exit code.
+    /// Convenience: emit a static string literal (by dup-ing it) and write
+    /// it to stderr. Use this for short constant fragments that appear at
+    /// exactly one panic site.
+    fn emitWriteStderrStatic(self: *NativeCodegen, msg: []const u8) !void {
+        if (msg.len == 0) return;
+        const owned = try self.allocator.dupe(u8, msg);
+        try self.emitWriteStderrStaticBuf(owned);
+    }
+
+    /// Emit write(2, <nul-terminated C string pointed to by rax>, strlen).
+    /// Clobbers rax, rcx, rdx, rdi, rsi, r11.
+    fn emitWriteStderrCStr(self: *NativeCodegen) !void {
+        // Save the pointer across stringLength (which clobbers rax/rcx/r11
+        // but leaves rsi untouched if we park it there first).
+        try self.assembler.movRegReg(.rsi, .rax); // rsi = message ptr
+        try self.stringLength(.rsi); // rax = strlen
+        try self.assembler.movRegReg(.rdx, .rax); // rdx = len
+        try self.assembler.movRegImm64(.rdi, 2); // stderr
+        const write_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000004,
+            .linux => 1,
+            else => 1,
+        };
+        try self.assembler.movRegImm64(.rax, write_syscall);
+        try self.assembler.syscall();
+    }
+
+    /// Emit an inline panic that prints `<prefix><value>\n` and exits.
+    /// The value must be on the top of the stack when this is called.
+    /// Does not return.
+    fn emitRuntimePanicWithOperand(self: *NativeCodegen, prefix: []const u8) !void {
+        try self.assembler.popReg(.r12); // value
+        try self.emitWriteStderrStatic(prefix);
+        try self.assembler.movRegReg(.rax, .r12);
+        try self.intToDecimalString();
+        try self.emitWriteStderrCStr();
+        try self.emitWriteStderrStatic("\n");
+        const exit_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000001,
+            .linux => 60,
+            else => 60,
+        };
+        try self.assembler.movRegImm64(.rax, exit_syscall);
+        try self.assembler.movRegImm64(.rdi, 101);
+        try self.assembler.syscall();
+    }
+
+    /// Which primitive arithmetic op to issue in emitCheckedBinaryOp.
+    const CheckedOp = enum { Add, Sub, Mul };
+
+    /// Emit: `push rax; push rcx; <op> rax, rcx; jno .ok; <rich panic>; .ok:
+    /// add rsp, 16`. The rich panic path uses the two pushed operands to
+    /// format a message of the form `<prefix><lhs><op_glyph><rhs>\n`.
+    fn emitCheckedBinaryOp(
+        self: *NativeCodegen,
+        op: CheckedOp,
+        prefix: []const u8,
+        op_glyph: []const u8,
+    ) !void {
+        // Save operands (lhs in rax, rhs in rcx) for the panic path.
+        try self.assembler.pushReg(.rax);
+        try self.assembler.pushReg(.rcx);
+
+        switch (op) {
+            .Add => try self.assembler.addRegReg(.rax, .rcx),
+            .Sub => try self.assembler.subRegReg(.rax, .rcx),
+            .Mul => try self.assembler.imulRegReg(.rax, .rcx),
+        }
+
+        // Spill the (possibly) wrapped result so the panic path's clobbers
+        // don't destroy it. We restore into rax after the patched jno lands.
+        // We can't just live on rsp because emitCheckedOpPanic itself pushes
+        // things, so instead we stash in a local slot via r9 across the jump.
+        try self.assembler.movRegReg(.r9, .rax);
+
+        const jno_patch = self.assembler.getPosition();
+        try self.assembler.jnoRel32(0);
+
+        // --- overflow path: does not return ---
+        try self.emitCheckedOpPanic(prefix, op_glyph);
+
+        // --- happy path ---
+        const after_panic = self.assembler.getPosition();
+        try self.assembler.patchJnoRel32(
+            jno_patch,
+            @as(i32, @intCast(after_panic)) - @as(i32, @intCast(jno_patch + 6)),
+        );
+        // Drop the two pushed operands.
+        try self.assembler.addRegImm(.rsp, 16);
+        // Restore the result into rax.
+        try self.assembler.movRegReg(.rax, .r9);
+    }
+
+    /// Emit an inline "integer overflow" panic that prints the two operand
+    /// values alongside a static prefix and operator glyph. The caller must
+    /// have pushed the operands on the stack as `push lhs; push rhs` *before*
+    /// performing the checked arithmetic, so that when this routine runs the
+    /// top of stack is [rhs, lhs]. The routine does not return.
+    ///
+    /// Example output: `panic: integer overflow in checked add: 9223372036854775800 + 42\n`
+    fn emitCheckedOpPanic(
+        self: *NativeCodegen,
+        prefix: []const u8,
+        op_glyph: []const u8,
+    ) !void {
+        // Pop rhs first (top of stack), then lhs.
+        try self.assembler.popReg(.r13); // rhs
+        try self.assembler.popReg(.r12); // lhs
+
+        // --- prefix ---
+        try self.emitWriteStderrStatic(prefix);
+
+        // --- itoa(lhs) and write ---
+        // intToDecimalString clobbers rcx/rdx/r10/r11/r12 but NOT r13, so we
+        // save r13 on the stack across it just to be safe across future
+        // refactors.
+        try self.assembler.pushReg(.r13);
+        try self.assembler.movRegReg(.rax, .r12);
+        try self.intToDecimalString(); // rax = c-string ptr
+        try self.emitWriteStderrCStr();
+        try self.assembler.popReg(.r13);
+
+        // --- " <op> " ---
+        try self.emitWriteStderrStatic(op_glyph);
+
+        // --- itoa(rhs) and write ---
+        try self.assembler.movRegReg(.rax, .r13);
+        try self.intToDecimalString();
+        try self.emitWriteStderrCStr();
+
+        // --- newline ---
+        try self.emitWriteStderrStatic("\n");
+
+        // exit(101)
+        const exit_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000001,
+            .linux => 60,
+            else => 60,
+        };
         try self.assembler.movRegImm64(.rax, exit_syscall);
         try self.assembler.movRegImm64(.rdi, 101);
         try self.assembler.syscall();
@@ -5806,6 +6734,72 @@ pub const NativeCodegen = struct {
         return self.generateFnDeclWithName(func, null);
     }
 
+    /// Synthesize a concrete FnDecl from a trait method that has a default
+    /// body, specialized for a given impl type. The resulting FnDecl can be
+    /// passed to `generateFnDeclWithName` exactly like any regular method.
+    ///
+    /// Parameter/return types are converted from `*TypeExpr` to the string
+    /// representation the codegen expects (just a type name), resolving
+    /// `Self` → `impl_type`. Only the shapes the existing codegen actually
+    /// inspects are filled in; everything else uses sensible defaults.
+    fn synthesizeTraitDefaultFn(
+        self: *NativeCodegen,
+        tm: ast.TraitMethod,
+        body: *ast.BlockStmt,
+        impl_type: []const u8,
+    ) !*ast.FnDecl {
+        // Convert each trait FnParam → ast.Parameter. Allocated memory is
+        // owned by self.allocator and outlives the synthesized FnDecl.
+        var params = try self.allocator.alloc(ast.Parameter, tm.params.len);
+        for (tm.params, 0..) |p, i| {
+            const type_name = try self.typeExprToName(p.type_expr, impl_type);
+            params[i] = .{
+                .name = p.name,
+                .type_name = type_name,
+                .default_value = null,
+                .loc = body.node.loc,
+            };
+        }
+
+        const return_type_name: ?[]const u8 = if (tm.return_type) |rt|
+            try self.typeExprToName(rt, impl_type)
+        else
+            null;
+
+        const fd = try self.allocator.create(ast.FnDecl);
+        fd.* = .{
+            .node = .{ .type = .FnDecl, .loc = body.node.loc },
+            .name = tm.name,
+            .params = params,
+            .return_type = return_type_name,
+            .body = body,
+            .is_async = tm.is_async,
+            .type_params = &.{},
+        };
+        return fd;
+    }
+
+    /// Convert a TypeExpr to the flat string form used by native_codegen's
+    /// other paths. `impl_type` is used to resolve `Self`.
+    fn typeExprToName(
+        self: *NativeCodegen,
+        type_expr: *ast.TypeExpr,
+        impl_type: []const u8,
+    ) ![]const u8 {
+        return switch (type_expr.*) {
+            .Named => |n| try self.allocator.dupe(u8, n),
+            .SelfType => try self.allocator.dupe(u8, impl_type),
+            .Reference => |r| try self.typeExprToName(r.inner, impl_type),
+            .Nullable => |inner| try self.typeExprToName(inner, impl_type),
+            .Pointer => |p| try self.typeExprToName(p.inner, impl_type),
+            .Generic => |g| try self.allocator.dupe(u8, g.base),
+            .Array => try self.allocator.dupe(u8, "[int]"),
+            .Tuple => try self.allocator.dupe(u8, "tuple"),
+            .Function => try self.allocator.dupe(u8, "fn"),
+            .TraitObject => |o| try self.allocator.dupe(u8, o.trait_name),
+        };
+    }
+
     fn generateFnDeclWithName(self: *NativeCodegen, func: *ast.FnDecl, override_name: ?[]const u8) CodegenError!void {
         // Use override name if provided (for struct methods with mangled names)
         const effective_name = override_name orelse func.name;
@@ -6454,6 +7448,28 @@ pub const NativeCodegen = struct {
                     return;
                 }
 
+                // Constant-shift fast path: if the RHS of a shift is a
+                // small non-negative integer literal, we can emit the
+                // shorter `shl/shr/sar reg, imm8` form instead of piping
+                // the count through CL. Saves at least one `mov` + skips
+                // a register save/restore in the common case
+                // `x << 1`, `x >> 2`, etc.
+                if ((binary.op == .LeftShift or binary.op == .RightShift) and
+                    binary.right.* == .IntegerLiteral)
+                {
+                    const count = binary.right.IntegerLiteral.value;
+                    if (count >= 0 and count < 64) {
+                        try self.generateExpr(binary.left);
+                        const imm: u8 = @intCast(count);
+                        switch (binary.op) {
+                            .LeftShift => try self.assembler.shlRegImm8(.rax, imm),
+                            .RightShift => try self.assembler.shrRegImm8(.rax, imm),
+                            else => unreachable,
+                        }
+                        return;
+                    }
+                }
+
                 // Evaluate right operand first (save result)
                 try self.generateExpr(binary.right);
                 try self.assembler.pushReg(.rax);
@@ -6596,71 +7612,103 @@ pub const NativeCodegen = struct {
                         try self.assembler.shrRegCl(.rax);
                     },
                     // Checked arithmetic operators - panic on overflow.
-                    // The inline panic block is ~60 bytes; rel8 jumps span up to 127
-                    // bytes so a forward jno over the panic still fits.
-                    .CheckedAdd => {
-                        try self.assembler.addRegReg(.rax, .rcx);
-                        const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.emitRuntimePanic("panic: integer overflow in checked add");
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
-                    },
-                    .CheckedSub => {
-                        try self.assembler.subRegReg(.rax, .rcx);
-                        const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.emitRuntimePanic("panic: integer overflow in checked sub");
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
-                    },
-                    .CheckedMul => {
-                        try self.assembler.imulRegReg(.rax, .rcx);
-                        const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.emitRuntimePanic("panic: integer overflow in checked mul");
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
-                    },
+                    // We stash the original operand values on the stack
+                    // before performing the op so the panic path can print
+                    // them. The panic body is now large (itoa + 4 syscalls)
+                    // so we must use rel32 jumps for the jno-over-panic.
+                    .CheckedAdd => try self.emitCheckedBinaryOp(
+                        .Add,
+                        "panic: integer overflow in checked add: ",
+                        " + ",
+                    ),
+                    .CheckedSub => try self.emitCheckedBinaryOp(
+                        .Sub,
+                        "panic: integer overflow in checked sub: ",
+                        " - ",
+                    ),
+                    .CheckedMul => try self.emitCheckedBinaryOp(
+                        .Mul,
+                        "panic: integer overflow in checked mul: ",
+                        " * ",
+                    ),
                     .CheckedDiv => {
-                        // Check for division by zero before dividing.
+                        // Check for division by zero before dividing. We
+                        // also capture the dividend so the panic path can
+                        // report "panic: division by zero: N / 0".
+                        try self.assembler.pushReg(.rax); // lhs (dividend)
+                        try self.assembler.pushReg(.rcx); // rhs (divisor, known 0 on panic)
                         try self.assembler.testRegReg(.rcx, .rcx);
-                        const jnz_patch = try self.assembler.jnzRel8(0); // skip panic if non-zero
-                        try self.emitRuntimePanic("panic: division by zero in checked div");
-                        const after_panic = self.assembler.code.items.len;
-                        const jnz_offset = @as(i8, @intCast(@as(i64, @intCast(after_panic)) - @as(i64, @intCast(jnz_patch + 2))));
-                        self.assembler.patchJnz8(jnz_patch, jnz_offset);
+                        const jnz_patch = self.assembler.getPosition();
+                        try self.assembler.jnzRel32(0); // skip panic if non-zero
+                        try self.emitCheckedOpPanic(
+                            "panic: division by zero in checked div: ",
+                            " / ",
+                        );
+                        const after_panic = self.assembler.getPosition();
+                        try self.assembler.patchJnzRel32(
+                            jnz_patch,
+                            @as(i32, @intCast(after_panic)) - @as(i32, @intCast(jnz_patch + 6)),
+                        );
+                        // Drop the two pushed operands from the happy path.
+                        try self.assembler.addRegImm(.rsp, 16);
                         // Perform division (rax already holds dividend; cqo sign-extends).
                         try self.assembler.cqo();
                         try self.assembler.idivReg(.rcx);
                     },
-                    // Saturating arithmetic - return 0 (representing None) on overflow
+                    // Saturating arithmetic — on overflow, clamp at i64::MAX
+                    // or i64::MIN based on the sign of the mathematically
+                    // correct result. Matches Rust's `i64::saturating_add`
+                    // semantics. Previous revision returned 0 on overflow,
+                    // which silently produced a value that looked like a
+                    // legal computation result.
                     .SaturatingAdd => {
                         try self.assembler.addRegReg(.rax, .rcx);
-                        // On overflow, set result to 0 (None)
-                        const jno_patch = try self.assembler.jnoRel8(0); // Jump if no overflow
-                        // Overflow occurred - return 0
-                        try self.assembler.movRegImm64(.rax, 0);
-                        // Patch jno to skip the zero assignment
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0);
+                        // Overflow → MAX if rhs >= 0, else MIN (same as ClampAdd).
+                        try self.assembler.movRegImm64(.rax, std.math.maxInt(i64));
+                        try self.assembler.movRegImm64(.r11, std.math.minInt(i64));
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        try self.assembler.cmovsRegReg(.rax, .r11);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(
+                            jno_patch,
+                            @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)),
+                        );
                     },
                     .SaturatingSub => {
                         try self.assembler.subRegReg(.rax, .rcx);
-                        const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.assembler.movRegImm64(.rax, 0);
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0);
+                        // Overflow → MIN if rhs >= 0 (we subtracted too much),
+                        // else MAX.
+                        try self.assembler.movRegImm64(.rax, std.math.minInt(i64));
+                        try self.assembler.movRegImm64(.r11, std.math.maxInt(i64));
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        try self.assembler.cmovsRegReg(.rax, .r11);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(
+                            jno_patch,
+                            @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)),
+                        );
                     },
                     .SaturatingMul => {
+                        // xor the operands first to capture the sign of the
+                        // mathematically correct product, then multiply.
+                        try self.assembler.movRegReg(.r11, .rax);
+                        try self.assembler.xorRegReg(.r11, .rcx);
                         try self.assembler.imulRegReg(.rax, .rcx);
-                        const jno_patch = try self.assembler.jnoRel8(0);
-                        try self.assembler.movRegImm64(.rax, 0);
-                        const end_pos = self.assembler.code.items.len;
-                        const jno_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jno_patch + 2))));
-                        self.assembler.patchJno8(jno_patch, jno_offset);
+                        const jno_patch = self.assembler.getPosition();
+                        try self.assembler.jnoRel32(0);
+                        try self.assembler.movRegImm64(.rax, std.math.maxInt(i64));
+                        try self.assembler.movRegImm64(.rcx, std.math.minInt(i64));
+                        try self.assembler.testRegReg(.r11, .r11);
+                        try self.assembler.cmovsRegReg(.rax, .rcx);
+                        const after_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnoRel32(
+                            jno_patch,
+                            @as(i32, @intCast(after_pos)) - @as(i32, @intCast(jno_patch + 6)),
+                        );
                     },
                     .SaturatingDiv => {
                         // Check for division by zero - return 0 if divisor is zero
@@ -6793,18 +7841,37 @@ pub const NativeCodegen = struct {
                         const variant_name = member.member;
 
                         // Builtin: Array.new() — heap-allocate a dynamic
-                        // array with header [len:i64, cap:i64, slot0, ...].
-                        // Initial cap = 128 elements (8 bytes each), so the
-                        // total block is 16 + 128*8 = 1040 bytes. heapAlloc
-                        // rounds up to a full page anyway.
+                        // array with an *indirect* header layout so growth
+                        // can reallocate the slot storage without moving
+                        // the header pointer the caller holds.
+                        //
+                        //   [base+0]  len       (i64, mutated by push/pop/...)
+                        //   [base+8]  cap       (i64, updated on growth)
+                        //   [base+16] data_ptr  (i64 → separate heap block)
+                        //
+                        // Slot i lives at `[data_ptr + i*8]`. push() triggers
+                        // exponential growth (doubling) when len == cap so
+                        // the old fixed-cap=128 ceiling is gone.
                         if (std.mem.eql(u8, enum_name, "Array") and std.mem.eql(u8, variant_name, "new")) {
-                            try self.assembler.movRegImm64(.rdi, 1040);
+                            const INITIAL_CAP: i64 = 8;
+                            // Header block (24 bytes — heapAlloc rounds up).
+                            try self.assembler.movRegImm64(.rdi, 24);
                             try self.heapAlloc();
-                            // rax = base pointer. Initialize header: len=0, cap=128.
+                            try self.assembler.pushReg(.rax); // save header
+                            // Data block (INITIAL_CAP * 8 bytes).
+                            try self.assembler.movRegImm64(.rdi, INITIAL_CAP * 8);
+                            try self.heapAlloc();
+                            // rax = data ptr; retrieve header from stack.
+                            try self.assembler.movRegReg(.r11, .rax); // r11 = data
+                            try self.assembler.popReg(.rax); // rax = header
+                            // len = 0
                             try self.assembler.movRegImm64(.rcx, 0);
-                            try self.assembler.movMemReg(.rax, 0, .rcx); // [base+0] = len
-                            try self.assembler.movRegImm64(.rcx, 128);
-                            try self.assembler.movMemReg(.rax, 8, .rcx); // [base+8] = cap
+                            try self.assembler.movMemReg(.rax, 0, .rcx);
+                            // cap = INITIAL_CAP
+                            try self.assembler.movRegImm64(.rcx, INITIAL_CAP);
+                            try self.assembler.movMemReg(.rax, 8, .rcx);
+                            // data_ptr = r11
+                            try self.assembler.movMemReg(.rax, 16, .r11);
                             return;
                         }
 
@@ -6885,7 +7952,7 @@ pub const NativeCodegen = struct {
                             // We have a local variable - check its type
                             if (self.struct_layouts.contains(local_info.type_name)) {
                                 // It's a struct type - check if the method exists
-                                const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ local_info.type_name, method_name });
+                                const mangled_method_name = try self.mangleMethodName(local_info.type_name, method_name);
                                 defer self.allocator.free(mangled_method_name);
                                 if (self.functions.contains(mangled_method_name)) {
                                     found_struct_name = local_info.type_name;
@@ -6894,7 +7961,7 @@ pub const NativeCodegen = struct {
                         } else if (self.struct_layouts.contains(obj_name)) {
                             // Object is a struct type name itself - this is a static method call
                             // e.g., Vec3.zero()
-                            const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ obj_name, method_name });
+                            const mangled_method_name = try self.mangleMethodName(obj_name, method_name);
                             defer self.allocator.free(mangled_method_name);
                             if (self.functions.contains(mangled_method_name)) {
                                 found_struct_name = obj_name;
@@ -6908,7 +7975,7 @@ pub const NativeCodegen = struct {
                         var iterator = self.struct_layouts.iterator();
                         while (iterator.next()) |entry| {
                             const struct_name = entry.key_ptr.*;
-                            const mangled_method_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_name, method_name });
+                            const mangled_method_name = try self.mangleMethodName(struct_name, method_name);
                             defer self.allocator.free(mangled_method_name);
 
                             if (self.functions.contains(mangled_method_name)) {
@@ -6920,7 +7987,7 @@ pub const NativeCodegen = struct {
 
                     if (found_struct_name) |struct_name| {
                         // Found a method - generate method call
-                        const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ struct_name, method_name });
+                        const mangled_name = try self.mangleMethodName(struct_name, method_name);
                         defer self.allocator.free(mangled_name);
 
                         if (self.functions.get(mangled_name)) |func_pos| {
@@ -7154,51 +8221,94 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, method_name, "push") or std.mem.eql(u8, method_name, "append")) {
                         if (call.args.len == 0) return;
 
-                        // Evaluate value → rax; stash on stack.
+                        // Evaluate value → stash on stack.
                         try self.generateExpr(call.args[0]);
                         try self.assembler.pushReg(.rax);
-
-                        // Evaluate receiver → rax = array base pointer.
+                        // Evaluate receiver → rax = array header pointer.
                         try self.generateExpr(member.object);
-                        try self.assembler.pushReg(.rax); // save base
+                        try self.assembler.pushReg(.rax); // save header across grow
+
+                        // Load len, cap.
                         try self.assembler.movRegMem(.rcx, .rax, 0); // len
                         try self.assembler.movRegMem(.rdx, .rax, 8); // cap
 
-                        // Guard: len < cap. If not, panic.
+                        // If len < cap, skip the grow path.
                         try self.assembler.cmpRegReg(.rcx, .rdx);
-                        const jl_ok = self.assembler.getPosition();
+                        const jl_skip_grow = self.assembler.getPosition();
                         try self.assembler.jlRel32(0);
-                        try self.emitRuntimePanic("array.push: capacity exceeded");
-                        const ok_target = self.assembler.getPosition();
-                        try self.assembler.patchJlRel32(jl_ok, @as(i32, @intCast(ok_target)) - @as(i32, @intCast(jl_ok + 6)));
 
-                        // Compute element slot address: r11 = base + 16 + len*8.
-                        try self.assembler.popReg(.r11);         // r11 = base
-                        try self.assembler.movRegReg(.r8, .rcx); // r8 = len
-                        try self.assembler.imulRegImm32(.r8, 8);
-                        try self.assembler.addRegReg(.r11, .r8);
-                        try self.assembler.addRegImm(.r11, 16);
+                        // --- grow path: double cap, allocate new data,
+                        //     memcpy old slots over, update header. Clobbers
+                        //     a lot so we treat the header slot on the stack
+                        //     as the source of truth and reload it.
+                        // rax still holds the header (we saved it above).
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = header
+                        try self.assembler.movRegMem(.rdx, .r11, 8); // rdx = old_cap
+                        // new_cap = old_cap * 2 (stored in rdi for the alloc).
+                        try self.assembler.movRegReg(.rdi, .rdx);
+                        try self.assembler.shlRegImm8(.rdi, 1);
+                        // Keep old_cap on the stack so we can compute the
+                        // memcpy length after heapAlloc clobbers everything.
+                        try self.assembler.pushReg(.rdx); // old_cap
+                        // new_size_bytes = new_cap * 8.
+                        try self.assembler.shlRegImm8(.rdi, 3);
+                        try self.heapAlloc(); // rax = new_data
+                        try self.assembler.popReg(.rdx); // rdx = old_cap
+                        // Stack is now back to [rsp+0]=header, [rsp+8]=value.
+                        try self.assembler.movRegMem(.r11, .rsp, 0); // r11 = header
+                        // new_cap = old_cap << 1 into [header+8].
+                        try self.assembler.movRegReg(.r8, .rdx);
+                        try self.assembler.shlRegImm8(.r8, 1);
+                        try self.assembler.movMemReg(.r11, 8, .r8);
+                        // old_data = [header+16]; save, then overwrite.
+                        try self.assembler.movRegMem(.r9, .r11, 16);
+                        try self.assembler.movMemReg(.r11, 16, .rax);
+                        // memcpy: rdi = new_data (rax), rsi = old_data (r9),
+                        //         rcx = len*8. We only need to copy the
+                        //         in-use slots, not the full old capacity.
+                        try self.assembler.movRegMem(.rcx, .r11, 0); // len
+                        try self.assembler.shlRegImm8(.rcx, 3);
+                        try self.assembler.movRegReg(.rdi, .rax);
+                        try self.assembler.movRegReg(.rsi, .r9);
+                        // rep movsb (F3 A4) — copies rcx bytes from
+                        // [rsi] to [rdi], incrementing both.
+                        try self.assembler.code.append(self.allocator, 0xF3);
+                        try self.assembler.code.append(self.allocator, 0xA4);
+                        // Reload len/cap for the happy path below.
+                        try self.assembler.movRegMem(.rax, .rsp, 0); // header (top of stack)
+                        try self.assembler.movRegMem(.rcx, .rax, 0); // len
+                        try self.assembler.movRegMem(.rdx, .rax, 8); // cap
 
-                        // Pop value into rax, store at [r11].
+                        // --- happy path: cap has room for one more element ---
+                        const grow_skip = self.assembler.getPosition();
+                        try self.assembler.patchJlRel32(
+                            jl_skip_grow,
+                            @as(i32, @intCast(grow_skip)) - @as(i32, @intCast(jl_skip_grow + 6)),
+                        );
+
+                        // r11 = data_ptr = [header+16]
+                        try self.assembler.popReg(.r11); // r11 = header
+                        try self.assembler.movRegMem(.r8, .r11, 16); // r8 = data_ptr
+                        // slot_addr = data_ptr + len*8
+                        try self.assembler.leaRegMemSib(.r8, .r8, .rcx, .eight, 0);
+                        // Pop pushed value into rax, store at [r8].
                         try self.assembler.popReg(.rax);
-                        try self.assembler.movMemReg(.r11, 0, .rax);
-
-                        // Re-resolve base (it was popped earlier; re-eval receiver).
-                        try self.generateExpr(member.object);
-                        try self.assembler.movRegMem(.rcx, .rax, 0);
+                        try self.assembler.movMemReg(.r8, 0, .rax);
+                        // len += 1
+                        try self.assembler.movRegMem(.rcx, .r11, 0);
                         try self.assembler.addRegImm(.rcx, 1);
-                        try self.assembler.movMemReg(.rax, 0, .rcx);
-                        // Return the updated length (convenient for chaining).
+                        try self.assembler.movMemReg(.r11, 0, .rcx);
                         try self.assembler.movRegReg(.rax, .rcx);
                         return;
                     }
 
                     // arr.pop() — returns and removes the last element.
                     //   if len == 0: panic
-                    //   len -= 1; return [base + 16 + len*8]
+                    //   len -= 1
+                    //   return [data_ptr + len*8]
                     if (std.mem.eql(u8, method_name, "pop")) {
                         try self.generateExpr(member.object);
-                        try self.assembler.movRegReg(.r11, .rax); // r11 = base
+                        try self.assembler.movRegReg(.r11, .rax); // r11 = header
                         try self.assembler.movRegMem(.rcx, .r11, 0); // len
 
                         // Guard: len > 0.
@@ -7213,12 +8323,10 @@ pub const NativeCodegen = struct {
                         try self.assembler.subRegImm(.rcx, 1);
                         try self.assembler.movMemReg(.r11, 0, .rcx);
 
-                        // addr = base + 16 + len*8
-                        try self.assembler.movRegReg(.r8, .rcx);
-                        try self.assembler.imulRegImm32(.r8, 8);
-                        try self.assembler.addRegReg(.r11, .r8);
-                        try self.assembler.addRegImm(.r11, 16);
-                        try self.assembler.movRegMem(.rax, .r11, 0);
+                        // data_ptr = [base+16]; addr = data_ptr + len*8
+                        try self.assembler.movRegMem(.r8, .r11, 16);
+                        try self.assembler.leaRegMemSib(.r8, .r8, .rcx, .eight, 0);
+                        try self.assembler.movRegMem(.rax, .r8, 0);
                         return;
                     }
 
@@ -7244,14 +8352,37 @@ pub const NativeCodegen = struct {
                         // Load header.
                         try self.assembler.movRegMem(.rcx, .r11, 0); // len (= old length)
                         try self.assembler.movRegMem(.rdx, .r11, 8); // cap
+                        try self.assembler.movRegMem(.r12, .r11, 16); // data_ptr
 
-                        // Capacity check: panic if len >= cap.
+                        // Bounds checks: len < cap (capacity) and index <=
+                        // len. Both use the silent `emitBoundsPanic` helper
+                        // so we never introduce the extra string_fixups
+                        // that the `emitRuntimePanic` path would add.
+                        //
+                        // NOTE: the push() path handles growth via a proper
+                        // doubling allocator; insert() still bails if a new
+                        // element would overflow cap. Callers that need
+                        // growth + insert should push() then shuffle.
                         try self.assembler.cmpRegReg(.rcx, .rdx);
-                        const jl_ok = self.assembler.getPosition();
-                        try self.assembler.jlRel32(0);
-                        try self.emitRuntimePanic("array.insert: capacity exceeded");
+                        const jb_cap_ok = self.assembler.getPosition();
+                        try self.assembler.jbRel32(0);
+                        try self.emitBoundsPanic();
                         const cap_ok = self.assembler.getPosition();
-                        try self.assembler.patchJlRel32(jl_ok, @as(i32, @intCast(cap_ok)) - @as(i32, @intCast(jl_ok + 6)));
+                        try self.assembler.patchJbRel32(
+                            jb_cap_ok,
+                            @as(i32, @intCast(cap_ok)) - @as(i32, @intCast(jb_cap_ok + 6)),
+                        );
+
+                        // index (r9) must be in [0, len]. Treat as unsigned.
+                        try self.assembler.cmpRegReg(.r9, .rcx);
+                        const jbe_idx_ok = self.assembler.getPosition();
+                        try self.assembler.jbeRel32(0);
+                        try self.emitBoundsPanic();
+                        const idx_ok = self.assembler.getPosition();
+                        try self.assembler.patchJbeRel32(
+                            jbe_idx_ok,
+                            @as(i32, @intCast(idx_ok)) - @as(i32, @intCast(jbe_idx_ok + 6)),
+                        );
 
                         // Shift elements right: for (i = len; i > index; i--) slot[i] = slot[i-1]
                         // Loop counter i in r8 starts at len.
@@ -7262,11 +8393,8 @@ pub const NativeCodegen = struct {
                         const jle_done = self.assembler.getPosition();
                         try self.assembler.jleRel32(0);
 
-                        // slot[i] = slot[i-1]
-                        try self.assembler.movRegReg(.rax, .r8);
-                        try self.assembler.imulRegImm32(.rax, 8);
-                        try self.assembler.addRegReg(.rax, .r11);
-                        try self.assembler.addRegImm(.rax, 16); // rax = slot[i] addr
+                        // slot[i] = slot[i-1] (addresses off of data_ptr in r12)
+                        try self.assembler.leaRegMemSib(.rax, .r12, .r8, .eight, 0);
                         try self.assembler.movRegMem(.rdx, .rax, -8);
                         try self.assembler.movMemReg(.rax, 0, .rdx);
 
@@ -7277,11 +8405,8 @@ pub const NativeCodegen = struct {
                         const shift_done = self.assembler.getPosition();
                         try self.assembler.patchJleRel32(jle_done, @as(i32, @intCast(shift_done)) - @as(i32, @intCast(jle_done + 6)));
 
-                        // slot[index] = value
-                        try self.assembler.movRegReg(.rax, .r9);
-                        try self.assembler.imulRegImm32(.rax, 8);
-                        try self.assembler.addRegReg(.rax, .r11);
-                        try self.assembler.addRegImm(.rax, 16);
+                        // slot[index] = value  (data_ptr + index*8)
+                        try self.assembler.leaRegMemSib(.rax, .r12, .r9, .eight, 0);
                         try self.assembler.movMemReg(.rax, 0, .r10);
 
                         // len += 1; [base] = len
@@ -7307,11 +8432,24 @@ pub const NativeCodegen = struct {
 
                         try self.assembler.movRegMem(.rcx, .r11, 0); // len
 
-                        // Save removed value in r10.
-                        try self.assembler.movRegReg(.rax, .r9);
-                        try self.assembler.imulRegImm32(.rax, 8);
-                        try self.assembler.addRegReg(.rax, .r11);
-                        try self.assembler.addRegImm(.rax, 16);
+                        // Bounds check: index (r9) < len (rcx). Unsigned
+                        // compare so negative indices fall in the panic
+                        // bucket as well.
+                        try self.assembler.cmpRegReg(.r9, .rcx);
+                        const jb_ok = self.assembler.getPosition();
+                        try self.assembler.jbRel32(0);
+                        try self.emitBoundsPanic();
+                        const ok_target = self.assembler.getPosition();
+                        try self.assembler.patchJbRel32(
+                            jb_ok,
+                            @as(i32, @intCast(ok_target)) - @as(i32, @intCast(jb_ok + 6)),
+                        );
+
+                        // data_ptr = [base+16] (cached in r12 for all addressing)
+                        try self.assembler.movRegMem(.r12, .r11, 16);
+
+                        // Save removed value in r10: [data_ptr + index*8]
+                        try self.assembler.leaRegMemSib(.rax, .r12, .r9, .eight, 0);
                         try self.assembler.movRegMem(.r10, .rax, 0);
 
                         // Shift left: for (i = index; i < len - 1; i++) slot[i] = slot[i+1]
@@ -7326,11 +8464,8 @@ pub const NativeCodegen = struct {
                         const jge_done = self.assembler.getPosition();
                         try self.assembler.jgeRel32(0);
 
-                        // dst = base + 16 + i*8; src = dst + 8
-                        try self.assembler.movRegReg(.rax, .r8);
-                        try self.assembler.imulRegImm32(.rax, 8);
-                        try self.assembler.addRegReg(.rax, .r11);
-                        try self.assembler.addRegImm(.rax, 16);
+                        // dst = data_ptr + i*8; src = dst + 8
+                        try self.assembler.leaRegMemSib(.rax, .r12, .r8, .eight, 0);
                         try self.assembler.movRegMem(.rcx, .rax, 8);
                         try self.assembler.movMemReg(.rax, 0, .rcx);
 
@@ -7350,9 +8485,39 @@ pub const NativeCodegen = struct {
                         return;
                     }
 
-                    // object.clone() - return same for now
+                    // object.clone() / object.copy() — deep-copy for the
+                    // types we know how to clone (dynamic Array, string).
+                    // Anything else falls back to identity because we
+                    // don't yet have a generic "Copy" trait machinery.
                     if (std.mem.eql(u8, method_name, "clone") or std.mem.eql(u8, method_name, "copy")) {
-                        try self.generateExpr(member.object);
+                        // Decide clone strategy from the static type we can
+                        // see at codegen time. If the receiver is a local
+                        // of type "Array" we emit an array clone; if we
+                        // can prove it's a string (literal or typed local)
+                        // we emit a strdup; otherwise identity.
+                        var kind: enum { array, string, identity } = .identity;
+                        if (member.object.* == .Identifier) {
+                            const id = member.object.Identifier;
+                            if (self.locals.get(id.name)) |info| {
+                                if (std.mem.eql(u8, info.type_name, "Array")) {
+                                    kind = .array;
+                                } else if (std.mem.eql(u8, info.type_name, "str") or
+                                    std.mem.eql(u8, info.type_name, "string"))
+                                {
+                                    kind = .string;
+                                }
+                            }
+                        } else if (member.object.* == .StringLiteral) {
+                            kind = .string;
+                        }
+
+                        switch (kind) {
+                            .identity => {
+                                try self.generateExpr(member.object);
+                            },
+                            .array => try self.emitArrayClone(member.object),
+                            .string => try self.emitStringClone(member.object),
+                        }
                         return;
                     }
 
@@ -7502,6 +8667,56 @@ pub const NativeCodegen = struct {
                             // Restore stack
                             try self.assembler.movRegImm64(.rdx, 20);
                             try self.assembler.addRegReg(.rsp, .rdx);
+                        }
+                        return;
+                    }
+
+                    // Bit-manipulation intrinsics. Each takes a single
+                    // 64-bit integer argument and returns an integer in
+                    // rax. LZCNT / TZCNT / POPCNT require their respective
+                    // CPUID bits, but modern x64 (Haswell+) has them all.
+                    if (std.mem.eql(u8, func_name, "popcount") or
+                        std.mem.eql(u8, func_name, "bit_count"))
+                    {
+                        if (call.args.len == 1) {
+                            try self.generateExpr(call.args[0]);
+                            try self.assembler.popcntRegReg(.rax, .rax);
+                        }
+                        return;
+                    }
+                    if (std.mem.eql(u8, func_name, "leading_zeros") or
+                        std.mem.eql(u8, func_name, "clz"))
+                    {
+                        if (call.args.len == 1) {
+                            try self.generateExpr(call.args[0]);
+                            try self.assembler.lzcntRegReg(.rax, .rax);
+                        }
+                        return;
+                    }
+                    if (std.mem.eql(u8, func_name, "trailing_zeros") or
+                        std.mem.eql(u8, func_name, "ctz"))
+                    {
+                        if (call.args.len == 1) {
+                            try self.generateExpr(call.args[0]);
+                            try self.assembler.tzcntRegReg(.rax, .rax);
+                        }
+                        return;
+                    }
+                    if (std.mem.eql(u8, func_name, "bit_scan_forward") or
+                        std.mem.eql(u8, func_name, "bsf"))
+                    {
+                        if (call.args.len == 1) {
+                            try self.generateExpr(call.args[0]);
+                            try self.assembler.bsfRegReg(.rax, .rax);
+                        }
+                        return;
+                    }
+                    if (std.mem.eql(u8, func_name, "bit_scan_reverse") or
+                        std.mem.eql(u8, func_name, "bsr"))
+                    {
+                        if (call.args.len == 1) {
+                            try self.generateExpr(call.args[0]);
+                            try self.assembler.bsrRegReg(.rax, .rax);
                         }
                         return;
                     }
@@ -8266,15 +9481,116 @@ pub const NativeCodegen = struct {
                 // Handle builtin functions
                 switch (reflect_expr.kind) {
                     .SizeOf => {
-                        // @sizeOf(Type) - returns size in bytes
-                        // The target should be a type identifier
-                        if (reflect_expr.target.* == .Identifier) {
-                            const type_name = reflect_expr.target.Identifier.name;
-                            const size = try self.getTypeSize(type_name);
+                        // @sizeOf(Type) — returns the size in bytes of a
+                        // type. We walk a handful of expression shapes the
+                        // parser can produce:
+                        //   - Identifier: plain type name (`int`, `MyStruct`).
+                        //   - MemberExpr: module-qualified (`mod.Type`).
+                        //   - Non-type expression (rare): resolve via
+                        //     inferExprType, which walks locals and literals.
+                        // Unknown types now produce a hard error instead of
+                        // silently returning 8, which previously masked
+                        // typos and missing imports.
+                        const resolved_name: ?[]const u8 = switch (reflect_expr.target.*) {
+                            .Identifier => |id| id.name,
+                            .MemberExpr => |m| blk: {
+                                // For `mod.Type`, use the member name.
+                                break :blk m.member;
+                            },
+                            else => try self.inferExprType(reflect_expr.target),
+                        };
+
+                        if (resolved_name) |tn| {
+                            const size = self.getTypeSize(tn) catch {
+                                std.debug.print(
+                                    "codegen error: @sizeOf(): unknown type '{s}'\n",
+                                    .{tn},
+                                );
+                                return error.UnsupportedFeature;
+                            };
                             try self.assembler.movRegImm64(.rax, @intCast(size));
                         } else {
-                            try self.assembler.movRegImm64(.rax, 8); // Default to 8 bytes
+                            std.debug.print(
+                                "codegen error: @sizeOf() target is not a type name\n",
+                                .{},
+                            );
+                            return error.UnsupportedFeature;
                         }
+                    },
+                    .AlignOf => {
+                        // @alignOf(Type) — returns the natural alignment.
+                        // Every type in this codegen is 8-byte aligned
+                        // (stack slots, struct fields, and Array elements
+                        // all use 8-byte slots), so alignment tracks size
+                        // for primitives and defaults to 8 otherwise.
+                        const name: ?[]const u8 = if (reflect_expr.target.* == .Identifier)
+                            reflect_expr.target.Identifier.name
+                        else
+                            null;
+                        var alignment: usize = 8;
+                        if (name) |n| {
+                            const sz = self.getTypeSize(n) catch 8;
+                            alignment = if (sz >= 8) 8 else sz;
+                        }
+                        try self.assembler.movRegImm64(.rax, @intCast(alignment));
+                    },
+                    .OffsetOf => {
+                        // @offsetOf(Type, "field") — field offset in bytes.
+                        // We look up the struct layout and find the named
+                        // field's byte offset. Unknown type or field is a
+                        // hard error instead of silently returning 0.
+                        if (reflect_expr.target.* != .Identifier) {
+                            std.debug.print(
+                                "codegen error: @offsetOf first arg must be a struct type name\n",
+                                .{},
+                            );
+                            return error.UnsupportedFeature;
+                        }
+                        const struct_name = reflect_expr.target.Identifier.name;
+                        const field_name = reflect_expr.field_name orelse {
+                            std.debug.print(
+                                "codegen error: @offsetOf requires a field name\n",
+                                .{},
+                            );
+                            return error.UnsupportedFeature;
+                        };
+                        const layout = self.struct_layouts.get(struct_name) orelse {
+                            std.debug.print(
+                                "codegen error: @offsetOf({s}, ...): unknown struct\n",
+                                .{struct_name},
+                            );
+                            return error.UnsupportedFeature;
+                        };
+                        var found: ?usize = null;
+                        for (layout.fields) |field| {
+                            if (std.mem.eql(u8, field.name, field_name)) {
+                                found = field.offset;
+                                break;
+                            }
+                        }
+                        if (found) |off| {
+                            try self.assembler.movRegImm64(.rax, @intCast(off));
+                        } else {
+                            std.debug.print(
+                                "codegen error: @offsetOf({s}, \"{s}\"): unknown field\n",
+                                .{ struct_name, field_name },
+                            );
+                            return error.UnsupportedFeature;
+                        }
+                    },
+                    .TypeOf => {
+                        // @TypeOf(expr) — return the inferred type name as
+                        // a string pointer into the data section. We run
+                        // inferExprType (the same helper LetDecl uses for
+                        // untyped bindings) and register the resulting
+                        // name as a string literal.
+                        const tn = (try self.inferExprType(reflect_expr.target)) orelse "unknown";
+                        const data_offset = try self.registerStringLiteral(tn);
+                        const code_pos = try self.assembler.leaRipRel(.rax, 0);
+                        try self.string_fixups.append(self.allocator, .{
+                            .code_pos = code_pos,
+                            .data_offset = data_offset,
+                        });
                     },
                     .IntCast, .FloatCast, .PtrCast, .BitCast, .As, .Truncate => {
                         // Type cast builtins - for now, just evaluate the value
@@ -8337,14 +9653,13 @@ pub const NativeCodegen = struct {
             },
 
             .CharLiteral => |char_lit| {
-                // Character literals are converted to their integer value
-                // Value includes quotes, e.g., "'a'" or "'\n'"
+                // Character literals are converted to their integer value.
+                // `value` includes quotes, e.g. "'a'" or "'\\n'".
                 const value = char_lit.value;
                 var char_value: i64 = 0;
 
                 if (value.len >= 3) {
                     if (value[1] == '\\' and value.len >= 4) {
-                        // Escape sequence
                         char_value = switch (value[2]) {
                             'n' => '\n',
                             't' => '\t',
@@ -8354,13 +9669,32 @@ pub const NativeCodegen = struct {
                             '"' => '"',
                             '0' => 0,
                             'x' => blk: {
-                                // Hex escape \xNN
-                                if (value.len >= 6) {
-                                    const hi = std.fmt.charToDigit(value[3], 16) catch 0;
-                                    const lo = std.fmt.charToDigit(value[4], 16) catch 0;
-                                    break :blk @as(i64, hi * 16 + lo);
+                                // Hex escape `\xNN` — require exactly two
+                                // hex digits. Previous revision would quietly
+                                // return 0 on malformed input, which meant
+                                // buggy source compiled to a NUL literal.
+                                if (value.len < 6) {
+                                    std.debug.print(
+                                        "codegen error: incomplete \\x escape in char literal {s}\n",
+                                        .{value},
+                                    );
+                                    return error.UnsupportedFeature;
                                 }
-                                break :blk 0;
+                                const hi = std.fmt.charToDigit(value[3], 16) catch {
+                                    std.debug.print(
+                                        "codegen error: invalid hex digit '{c}' in char literal {s}\n",
+                                        .{ value[3], value },
+                                    );
+                                    return error.UnsupportedFeature;
+                                };
+                                const lo = std.fmt.charToDigit(value[4], 16) catch {
+                                    std.debug.print(
+                                        "codegen error: invalid hex digit '{c}' in char literal {s}\n",
+                                        .{ value[4], value },
+                                    );
+                                    return error.UnsupportedFeature;
+                                };
+                                break :blk @as(i64, hi * 16 + lo);
                             },
                             else => value[2],
                         };
@@ -8388,7 +9722,7 @@ pub const NativeCodegen = struct {
                     const target_name = assign.target.Identifier.name;
                     if (self.locals.get(target_name)) |local_info| {
                         // Store rax to stack location
-                        const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const stack_offset: i32 = try self.localDisp(local_info.offset);
                         try self.assembler.movMemReg(.rbp, stack_offset, .rax);
                     } else {
                         // Variable doesn't exist - create it on the fly
@@ -8432,7 +9766,7 @@ pub const NativeCodegen = struct {
                         const struct_layout = maybe_struct_layout orelse {
                             // Type might be Self or another unresolved type alias
                             // For now, just store to the variable directly
-                            const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                            const stack_offset: i32 = try self.localDisp(local_info.offset);
                             try self.assembler.movMemReg(.rbp, stack_offset, .rax);
                             return;
                         };
@@ -8456,7 +9790,7 @@ pub const NativeCodegen = struct {
                         if (local_info.size == 8 and struct_layout.total_size > 8) {
                             // Local contains a pointer to the struct
                             // First load the pointer from stack
-                            const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                            const ptr_stack_offset: i32 = try self.localDisp(local_info.offset);
                             try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
                             // Then store the value to the field in the pointed struct
                             // Stack grows downward, so field at offset N is at [pointer - N]
@@ -8465,7 +9799,7 @@ pub const NativeCodegen = struct {
                         } else {
                             // Struct is stored inline on stack
                             // Calculate address of field on stack
-                            const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                            const struct_stack_base: i32 = try self.localDisp(local_info.offset);
                             const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
 
                             // Store value to field on stack
@@ -8551,7 +9885,7 @@ pub const NativeCodegen = struct {
                                 try self.assembler.movRegMem(.rax, .rbx, tuple_offset);
 
                                 // Store to the target variable
-                                const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                                const stack_offset: i32 = try self.localDisp(local_info.offset);
                                 try self.assembler.movMemReg(.rbp, stack_offset, .rax);
                             }
                         }
@@ -8733,7 +10067,7 @@ pub const NativeCodegen = struct {
                         // Truly unresolved — fall back to loading the raw
                         // pointer. Caller sees garbage but compilation
                         // continues.
-                        const stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const stack_offset: i32 = try self.localDisp(local_info.offset);
                         try self.assembler.movRegMem(.rax, .rbp, stack_offset);
                         return;
                     };
@@ -8774,7 +10108,7 @@ pub const NativeCodegen = struct {
                     if (is_pointer_to_struct) {
                         // Local contains a pointer to the struct
                         // First load the pointer from stack
-                        const ptr_stack_offset: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const ptr_stack_offset: i32 = try self.localDisp(local_info.offset);
                         try self.assembler.movRegMem(.rax, .rbp, ptr_stack_offset);
                         // Then load the field from the pointed struct
                         // Stack grows downward, so field at offset N is at [pointer - N] not [pointer + N]
@@ -8784,7 +10118,7 @@ pub const NativeCodegen = struct {
                         // Struct is stored inline on stack
                         // Calculate address of field on stack
                         // Struct fields are stored in order, so field offset is struct_base + field.offset
-                        const struct_stack_base: i32 = -@as(i32, @intCast((local_info.offset + 1) * 8));
+                        const struct_stack_base: i32 = try self.localDisp(local_info.offset);
                         const field_stack_offset: i32 = struct_stack_base - @as(i32, @intCast(field_offset.?));
 
                         // Load field value directly from stack
@@ -8990,22 +10324,39 @@ pub const NativeCodegen = struct {
             },
 
             .TypeCastExpr => |type_cast| {
-                // Type cast expression: cast value to target_type
-                // For now, just generate the value - the type cast is mostly semantic
-                // The actual conversion happens based on the types involved
+                // Type cast expression: cast value to target_type.
+                //
+                // For narrowing integer casts (i64 → i8/i16/i32 or
+                // u8/u16/u32) we now emit a runtime range check that
+                // panics with the offending value if the source doesn't
+                // fit, instead of silently truncating. If the source is a
+                // compile-time IntegerLiteral we also reject it at codegen
+                // time via NarrowingCastOutOfRange.
                 try self.generateExpr(type_cast.value);
 
-                // Type-specific conversions could be added here:
-                // - int to float: cvtsi2sd
-                // - float to int: cvttsd2si
-                // - pointer casts: no-op (same size)
-                // For now, assume most casts are no-ops at the machine level
+                const range = narrowingRangeFor(type_cast.target_type);
+                if (range) |r| {
+                    // Compile-time rejection for constant literals.
+                    if (type_cast.value.* == .IntegerLiteral) {
+                        const v = type_cast.value.IntegerLiteral.value;
+                        if (v < r.min or v > r.max) {
+                            std.debug.print(
+                                "narrowing cast out of range: {d} as {s} (valid range {d}..{d})\n",
+                                .{ v, type_cast.target_type, r.min, r.max },
+                            );
+                            return error.NarrowingCastOutOfRange;
+                        }
+                        // In-range constant: no runtime check needed.
+                    } else {
+                        try self.emitNarrowingRangeCheck(type_cast.target_type, r);
+                    }
+                }
             },
 
             .StaticCallExpr => |static_call| {
                 // Static method call: Type.method(args)
                 // Look for a mangled function name: Type$method
-                const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}${s}", .{ static_call.type_name, static_call.method_name });
+                const mangled_name = try self.mangleMethodName(static_call.type_name, static_call.method_name);
                 defer self.allocator.free(mangled_name);
 
                 if (self.functions.get(mangled_name)) |func_pos| {
@@ -9263,6 +10614,74 @@ pub const NativeCodegen = struct {
                     // Invert the result: xor rax, 1
                     try self.assembler.xorRegImm32(.rax, 1);
                 }
+            },
+
+            .SliceExpr => |slice| {
+                // `s[i..j]` / `s[..j]` / `s[i..]` / `s[..]` — produce a
+                // freshly heap-allocated NUL-terminated string containing
+                // the requested byte range. Missing bounds default to 0
+                // (start) or `strlen(s)` (end). This is the same strategy
+                // as the existing `substring` method but lowered from the
+                // SliceExpr node.
+                //
+                // Evaluate source → rax; stash, then compute start and end.
+                try self.generateExpr(slice.array);
+                try self.assembler.pushReg(.rax); // [rsp] = src ptr
+
+                // end (default: strlen(src))
+                if (slice.end) |end_expr| {
+                    try self.generateExpr(end_expr);
+                } else {
+                    try self.assembler.movRegMem(.rdi, .rsp, 0); // src ptr
+                    try self.stringLength(.rdi);                 // rax = len
+                }
+                if (slice.inclusive) {
+                    try self.assembler.addRegImm(.rax, 1);
+                }
+                try self.assembler.pushReg(.rax); // [rsp] = end
+
+                // start (default: 0)
+                if (slice.start) |start_expr| {
+                    try self.generateExpr(start_expr);
+                } else {
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
+                try self.assembler.pushReg(.rax); // [rsp] = start
+
+                // Now stack: [rsp]=start, [rsp+8]=end, [rsp+16]=src
+                // Compute len = end - start in rdx.
+                try self.assembler.popReg(.rcx); // start
+                try self.assembler.popReg(.rdx); // end
+                try self.assembler.subRegReg(.rdx, .rcx); // rdx = len
+                try self.assembler.popReg(.rax); // src
+                try self.assembler.movRegReg(.r8, .rdx); // r8 = len
+
+                // heapAlloc(len + 1)
+                try self.assembler.movRegReg(.rdi, .r8);
+                try self.assembler.addRegImm(.rdi, 1);
+                try self.assembler.pushReg(.rax); // src
+                try self.assembler.pushReg(.rcx); // start
+                try self.assembler.pushReg(.r8); // len
+                try self.heapAlloc();
+                try self.assembler.movRegReg(.r10, .rax); // r10 = dst
+                try self.assembler.popReg(.r8);
+                try self.assembler.popReg(.rcx);
+                try self.assembler.popReg(.rax);
+
+                // memcpy(dst, src + start, len)
+                try self.assembler.addRegReg(.rax, .rcx);
+                try self.assembler.movRegReg(.rsi, .rax);
+                try self.assembler.movRegReg(.rdi, .r10);
+                try self.assembler.movRegReg(.rdx, .r8);
+                try self.memcpy();
+
+                // NUL-terminate at dst[len]
+                try self.assembler.movRegReg(.rax, .r10);
+                try self.assembler.addRegReg(.rax, .r8);
+                try self.assembler.movByteMemImm(.rax, 0, 0);
+
+                // Return pointer.
+                try self.assembler.movRegReg(.rax, .r10);
             },
 
             else => |expr_tag| {

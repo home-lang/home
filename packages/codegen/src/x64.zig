@@ -259,6 +259,74 @@ pub const Assembler = struct {
         std.mem.writeInt(i32, self.code.items[disp_pos..][0..4], new_disp, .little);
     }
 
+    /// Scale factor for SIB addressing. The encoded field is log2(scale),
+    /// so only 1/2/4/8 are valid.
+    pub const SibScale = enum(u2) {
+        one = 0,
+        two = 1,
+        four = 2,
+        eight = 3,
+    };
+
+    /// lea dst, [base + index*scale + disp]. Emits a SIB byte so the full
+    /// x64 addressing form is available — useful for `base + i*8`
+    /// array-element addressing without a separate imul+add sequence.
+    ///
+    /// Constraints: index must not be .rsp (the encoding reserves 0b100
+    /// in the index field to mean "no index"). Callers who need rsp as
+    /// the index must swap base/index first.
+    pub fn leaRegMemSib(
+        self: *Assembler,
+        dst: Register,
+        base: Register,
+        index: Register,
+        scale: SibScale,
+        disp: i32,
+    ) !void {
+        if (index == .rsp) return error.InvalidSibIndex;
+
+        // REX.W + 8D /r [SIB + disp]
+        try self.emitRex(
+            true,
+            dst.needsRexPrefix(),
+            index.needsRexPrefix(),
+            base.needsRexPrefix(),
+        );
+        try self.code.append(self.allocator, 0x8D);
+
+        // r/m = 0b100 signals "SIB follows". Addressing mode picks
+        // between no-disp / disp8 / disp32. Note: base == rbp / r13 with
+        // mod==0b00 is encoded differently (no-base form), so we promote
+        // to disp8(0) in that case.
+        const base_is_bp_family = base == .rbp or base == .r13;
+        const mod: u2 = if (disp == 0 and !base_is_bp_family)
+            0b00
+        else if (disp >= -128 and disp <= 127)
+            0b01
+        else
+            0b10;
+
+        try self.emitModRM(mod, @intFromEnum(dst), 0b100);
+
+        // SIB byte: scale[7:6] index[5:3] base[2:0]
+        const sib: u8 =
+            (@as(u8, @intFromEnum(scale)) << 6) |
+            ((@as(u8, @intFromEnum(index)) & 0x7) << 3) |
+            (@as(u8, @intFromEnum(base)) & 0x7);
+        try self.code.append(self.allocator, sib);
+
+        switch (mod) {
+            0b00 => {},
+            0b01 => try self.code.append(self.allocator, @bitCast(@as(i8, @intCast(disp)))),
+            0b10 => {
+                var bytes: [4]u8 = undefined;
+                std.mem.writeInt(i32, &bytes, disp, .little);
+                try self.code.appendSlice(self.allocator, &bytes);
+            },
+            else => unreachable,
+        }
+    }
+
     /// lea dst, [src + disp]
     pub fn leaRegMem(self: *Assembler, dst: Register, src: Register, disp: i32) !void {
         // REX.W + 8D /r [src + disp]
@@ -506,6 +574,62 @@ pub const Assembler = struct {
         try self.code.appendSlice(self.allocator, &bytes);
     }
 
+    // --- Unsigned Jcc rel32 forms. Opcodes follow the same Intel table as
+    // the signed variants, offset by the CF/ZF test instead of SF/OF.
+    //   ja  / jnbe — 0F 87
+    //   jae / jnb  — 0F 83
+    //   jb  / jnae — 0F 82
+    //   jbe / jna  — 0F 86
+    //
+    // These are the Jcc forms that pair with `ucomisd` for IEEE-754 float
+    // comparisons (ucomisd sets CF for "below" and an unordered compare
+    // behaves like "below" so NaN-handling falls out naturally).
+
+    pub fn jaRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x87);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    pub fn jaeRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x83);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    pub fn jbRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x82);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    pub fn jbeRel32(self: *Assembler, offset: i32) !void {
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x86);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, offset, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    pub fn patchJaRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+    pub fn patchJaeRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+    pub fn patchJbRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+    pub fn patchJbeRel32(self: *Assembler, pos: usize, offset: i32) !void {
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
+    }
+
     /// call rel32 (relative call)
     pub fn callRel32(self: *Assembler, offset: i32) !void {
         try self.code.append(self.allocator, 0xE8);
@@ -673,6 +797,51 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, 0, @intFromEnum(dst));
     }
 
+    // --- Unsigned setcc variants. These test CF/ZF rather than SF/OF and
+    // are the correct ones for unsigned integer comparisons as well as the
+    // outputs of IEEE-754 `ucomisd` (where an unordered compare sets CF=1).
+    //
+    //   seta  / setnbe  — above         (CF=0 AND ZF=0)   0F 97
+    //   setae / setnb   — above or eq   (CF=0)            0F 93
+    //   setb  / setnae  — below         (CF=1)            0F 92
+    //   setbe / setna   — below or eq   (CF=1 OR ZF=1)    0F 96
+
+    pub fn setaReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x97);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    pub fn setaeReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x93);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    pub fn setbReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x92);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
+    pub fn setbeReg(self: *Assembler, dst: Register) !void {
+        if (dst.needsRexPrefix()) {
+            try self.emitRex(false, false, false, true);
+        }
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0x96);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+    }
+
     /// setz reg (set byte on zero flag, alias for sete)
     pub fn setzReg(self: *Assembler, dst: Register) !void {
         // SETZ is the same as SETE (both check ZF=1)
@@ -725,6 +894,108 @@ pub const Assembler = struct {
         try self.emitModRM(0b11, 7, @intFromEnum(dst));
     }
 
+    /// shl reg, imm8 — REX.W + C1 /4 ib. For imm8 == 1 we emit the
+    /// shorter D1 /4 form; imm8 == 0 is a no-op and skipped entirely.
+    /// The shift count is masked to 6 bits by the CPU, so we also reject
+    /// counts ≥ 64 at assemble time to catch the caller's bug rather than
+    /// silently producing a zero-result shift.
+    pub fn shlRegImm8(self: *Assembler, dst: Register, imm: u8) !void {
+        if (imm == 0) return;
+        if (imm >= 64) return error.ShiftCountOutOfRange;
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        if (imm == 1) {
+            try self.code.append(self.allocator, 0xD1);
+            try self.emitModRM(0b11, 4, @intFromEnum(dst));
+        } else {
+            try self.code.append(self.allocator, 0xC1);
+            try self.emitModRM(0b11, 4, @intFromEnum(dst));
+            try self.code.append(self.allocator, imm);
+        }
+    }
+
+    /// shr reg, imm8 — REX.W + C1 /5 ib (logical right shift).
+    pub fn shrRegImm8(self: *Assembler, dst: Register, imm: u8) !void {
+        if (imm == 0) return;
+        if (imm >= 64) return error.ShiftCountOutOfRange;
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        if (imm == 1) {
+            try self.code.append(self.allocator, 0xD1);
+            try self.emitModRM(0b11, 5, @intFromEnum(dst));
+        } else {
+            try self.code.append(self.allocator, 0xC1);
+            try self.emitModRM(0b11, 5, @intFromEnum(dst));
+            try self.code.append(self.allocator, imm);
+        }
+    }
+
+    // --- Bit-manipulation instructions (BSF/BSR/POPCNT/LZCNT/TZCNT).
+    //
+    // These all take a 64-bit destination and a 64-bit source register.
+    // Callers that only care about "result in rax, input in rax" can pass
+    // the same register twice.
+
+    /// bsf dst, src — 0F BC /r. Bit Scan Forward: sets dst to the index of
+    /// the least-significant set bit in src. If src is zero, dst is
+    /// undefined and ZF=1.
+    pub fn bsfRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBC);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// bsr dst, src — 0F BD /r. Bit Scan Reverse.
+    pub fn bsrRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBD);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// popcnt dst, src — F3 0F B8 /r. Population count.
+    pub fn popcntRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        // F3 prefix first, then REX.W, then escape and opcode.
+        try self.code.append(self.allocator, 0xF3);
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xB8);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// lzcnt dst, src — F3 0F BD /r. Count leading zeros. Unlike BSR,
+    /// this is well-defined for src = 0 (returns operand size in bits).
+    pub fn lzcntRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        try self.code.append(self.allocator, 0xF3);
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBD);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// tzcnt dst, src — F3 0F BC /r. Count trailing zeros.
+    pub fn tzcntRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        try self.code.append(self.allocator, 0xF3);
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBC);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// sar reg, imm8 — REX.W + C1 /7 ib (arithmetic right shift).
+    pub fn sarRegImm8(self: *Assembler, dst: Register, imm: u8) !void {
+        if (imm == 0) return;
+        if (imm >= 64) return error.ShiftCountOutOfRange;
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        if (imm == 1) {
+            try self.code.append(self.allocator, 0xD1);
+            try self.emitModRM(0b11, 7, @intFromEnum(dst));
+        } else {
+            try self.code.append(self.allocator, 0xC1);
+            try self.emitModRM(0b11, 7, @intFromEnum(dst));
+            try self.code.append(self.allocator, imm);
+        }
+    }
+
     /// movzx reg64, reg8 (zero-extend 8-bit to 64-bit)
     pub fn movzxReg64Reg8(self: *Assembler, dst: Register, src: Register) !void {
         // REX.W + 0F B6 /r
@@ -748,6 +1019,113 @@ pub const Assembler = struct {
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0xFF);
         try self.emitModRM(0b11, 1, @intFromEnum(dst));
+    }
+
+    // --- movsx sign-extend variants. All produce a 64-bit destination,
+    // sign-extending from the low 8/16/32 bits of the source register.
+    //   movsx r64, r8  — REX.W + 0F BE /r
+    //   movsx r64, r16 — REX.W + 0F BF /r
+    //   movsxd r64, r32 — REX.W + 63   /r
+    //
+    // These are the correct choice when promoting narrow signed integers
+    // to i64; the existing movzx variants zero-extend instead and would
+    // flip the sign for negative narrow values.
+
+    pub fn movsxReg64Reg8(self: *Assembler, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBE);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    pub fn movsxReg64Reg16(self: *Assembler, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, 0xBF);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    pub fn movsxdReg64Reg32(self: *Assembler, dst: Register, src: Register) !void {
+        // MOVSXD is spelled differently in the Intel manual but behaves as
+        // a sign-extending move from a 32-bit source.
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x63);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    /// xchg reg, reg — swap contents of two 64-bit registers. This is the
+    /// only x86-64 xchg form we care about; when one operand is rax the
+    /// short 1-byte encoding exists, but the ModRM form encodes any pair.
+    /// Note: `xchg` against memory has an implicit LOCK prefix and is
+    /// therefore atomic — we keep that variant out of this helper.
+    pub fn xchgRegReg(self: *Assembler, a: Register, b: Register) !void {
+        try self.emitRex(true, a.needsRexPrefix(), false, b.needsRexPrefix());
+        try self.code.append(self.allocator, 0x87);
+        try self.emitModRM(0b11, @intFromEnum(a), @intFromEnum(b));
+    }
+
+    /// test reg, imm32 — AND without writing back, just set flags.
+    /// Encoded as REX.W + F7 /0 imm32. Useful when we only want to know
+    /// whether a masked bit pattern is zero without needing a scratch.
+    pub fn testRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
+        try self.emitRex(true, false, false, dst.needsRexPrefix());
+        try self.code.append(self.allocator, 0xF7);
+        try self.emitModRM(0b11, 0, @intFromEnum(dst));
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, imm, .little);
+        try self.code.appendSlice(self.allocator, &bytes);
+    }
+
+    // --- cmov variants. Conditional moves are branch-free selects that
+    // pair with `cmp`/`test`. Opcodes are the same table as Jcc, just
+    // with a different 0F prefix byte:
+    //   cmove/cmovz    — 0F 44
+    //   cmovne/cmovnz  — 0F 45
+    //   cmovl          — 0F 4C
+    //   cmovle         — 0F 4E
+    //   cmovg          — 0F 4F
+    //   cmovge         — 0F 4D
+    //   cmova          — 0F 47
+    //   cmovae/cmovnc  — 0F 43
+    //   cmovb/cmovc    — 0F 42
+    //   cmovbe         — 0F 46
+
+    fn emitCmov(self: *Assembler, opcode: u8, dst: Register, src: Register) !void {
+        try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
+        try self.code.append(self.allocator, 0x0F);
+        try self.code.append(self.allocator, opcode);
+        try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(src));
+    }
+
+    pub fn cmoveRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x44, dst, src);
+    }
+    pub fn cmovneRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x45, dst, src);
+    }
+    pub fn cmovlRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x4C, dst, src);
+    }
+    pub fn cmovleRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x4E, dst, src);
+    }
+    pub fn cmovgRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x4F, dst, src);
+    }
+    pub fn cmovgeRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x4D, dst, src);
+    }
+    pub fn cmovaRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x47, dst, src);
+    }
+    pub fn cmovaeRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x43, dst, src);
+    }
+    pub fn cmovbRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x42, dst, src);
+    }
+    pub fn cmovbeRegReg(self: *Assembler, dst: Register, src: Register) !void {
+        return self.emitCmov(0x46, dst, src);
     }
 
     /// Patch jg rel32 at position
