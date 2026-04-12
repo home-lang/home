@@ -212,9 +212,9 @@ pub const TypeChecker = struct {
     pub fn printErrors(self: *TypeChecker) void {
         if (self.errors.items.len == 0) return;
 
-        std.debug.print("\n=== Type Errors ===\n", .{});
+        std.log.err("=== Type Errors ===", .{});
         for (self.errors.items) |err| {
-            std.debug.print("Error at line {d}, column {d}: {s}\n", .{
+            std.log.err("line {d}, column {d}: {s}", .{
                 err.line,
                 err.column,
                 err.message,

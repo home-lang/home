@@ -726,30 +726,6 @@ pub fn build(b: *std.Build) void {
     }
 
     // Parallel test runner with caching and benchmarking
-    // TODO: Fix ArrayList compilation issue in Zig 0.15.1
-    // const test_runner_pkg = createPackage(b, "packages/testing/src/test_runner.zig", target, optimize);
-
-    // const test_runner_exe = b.addExecutable(.{
-    //     .name = "ion-test",
-    //     .root_module = b.createModule(.{
-    //         .root_source_file = b.path("packages/testing/src/test_cli.zig"),
-    //         .target = target,
-    //         .optimize = optimize,
-    //     }),
-    // });
-
-    // test_runner_exe.root_module.addImport("test_runner", test_runner_pkg);
-
-    // b.installArtifact(test_runner_exe);
-
-    // const run_test_runner = b.addRunArtifact(test_runner_exe);
-    // if (b.args) |args| {
-    //     run_test_runner.addArgs(args);
-    // }
-
-    // const test_parallel_step = b.step("test-parallel", "Run all tests in parallel with caching");
-    // test_parallel_step.dependOn(&run_test_runner.step);
-
     // Parallel build demo
     const parallel_build_demo = b.addExecutable(.{
         .name = "parallel-build-demo",

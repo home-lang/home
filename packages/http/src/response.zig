@@ -12,8 +12,8 @@ pub const Response = struct {
     body: std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) *Response {
-        const res = allocator.create(Response) catch unreachable;
+    pub fn init(allocator: std.mem.Allocator) !*Response {
+        const res = try allocator.create(Response);
         res.* = .{
             .status = .OK,
             .version = .HTTP_1_1,

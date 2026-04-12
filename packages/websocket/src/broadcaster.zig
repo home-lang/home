@@ -15,8 +15,8 @@ pub const Broadcaster = struct {
         user_info: ?[]const u8, // JSON string with user info
     };
 
-    pub fn init(allocator: std.mem.Allocator, ws_server: *server.Server) *Self {
-        const self = allocator.create(Self) catch unreachable;
+    pub fn init(allocator: std.mem.Allocator, ws_server: *server.Server) !*Self {
+        const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
             .ws_server = ws_server,

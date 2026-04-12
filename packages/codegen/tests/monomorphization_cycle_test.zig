@@ -1,10 +1,6 @@
-//! Standalone tests for the cycle-detection logic added to
-//! `monomorphization.zig`. We can't import the real Monomorphization type from
-//! here because the surrounding file still uses zig 0.15 ArrayList API and
-//! won't compile under zig 0.16-dev. Instead these tests reproduce the
-//! relevant data structures (an in_progress set + a depth counter + a max)
-//! and verify the algorithm directly. When the rest of monomorphization.zig
-//! gets the zig-0.16 cleanup these tests should be folded back in.
+//! Standalone tests for the cycle-detection logic in `monomorphization.zig`.
+//! Reproduces the relevant data structures (an in_progress set + a depth
+//! counter + a max) and verifies the algorithm directly.
 
 const std = @import("std");
 

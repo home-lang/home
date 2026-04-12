@@ -25,7 +25,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 if [[ ! -x "$HOME_BIN" ]]; then
     echo "compiler binary not found at $HOME_BIN" >&2
-    echo "run ./build first" >&2
+    echo "run 'zig build' first" >&2
     exit 2
 fi
 

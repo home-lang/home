@@ -27,7 +27,6 @@ const PackageManager = pkg_manager_mod.PackageManager;
 const AuthManager = pkg_manager_mod.AuthManager;
 const ir_cache_mod = @import("ir_cache");
 const IRCache = ir_cache_mod.IRCache;
-const FileWatcher = ir_cache_mod.FileWatcher;
 const IncrementalCompiler = ir_cache_mod.IncrementalCompiler;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
@@ -881,11 +880,18 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
     } else {
         // Normal mode: generate executable
         const out_path = output_path orelse blk: {
-            // Default: remove .home or .hm extension and use that as output name
             if (std.mem.endsWith(u8, file_path, ".home")) {
                 break :blk file_path[0 .. file_path.len - 5];
             } else if (std.mem.endsWith(u8, file_path, ".hm")) {
                 break :blk file_path[0 .. file_path.len - 3];
+            }
+            // Warn if the input file doesn't have a recognized extension.
+            if (!std.mem.endsWith(u8, file_path, ".home") and
+                !std.mem.endsWith(u8, file_path, ".hm"))
+            {
+                std.debug.print("{s}Warning:{s} input file '{s}' does not have a .home or .hm extension\n", .{
+                    Color.Yellow.code(), Color.Reset.code(), file_path,
+                });
             }
             break :blk "a.out";
         };
@@ -916,7 +922,14 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         // Set source root for import resolution
         try codegen.setSourceRoot(file_path);
 
-        try codegen.writeExecutable(out_path);
+        codegen.writeExecutable(out_path) catch |err| {
+            // Remove partial binary so a failed build doesn't leave a
+            // corrupt executable on disk that could be accidentally run.
+            if (codegen.io) |cio| {
+                Io.Dir.cwd().deleteFile(cio, out_path) catch {};
+            }
+            return err;
+        };
 
         std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
         std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
@@ -1057,8 +1070,6 @@ fn printTestUsage() void {
 
 /// Watch command for hot reloading
 fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
-    _ = FileWatcher; // Available for future advanced use
-
     std.debug.print("{s}Watching:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
     std.debug.print("{s}Press Ctrl+C to stop{s}\n\n", .{ Color.Yellow.code(), Color.Reset.code() });
 

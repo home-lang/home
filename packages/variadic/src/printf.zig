@@ -11,13 +11,6 @@ const format_mod = @import("format.zig");
 
 /// Print formatted output to writer
 pub fn fprintf(writer: anytype, comptime fmt: []const u8, args: anytype) !usize {
-    // Note: Format validation temporarily disabled for Zig 0.15 compatibility
-    // comptime {
-    //     format_mod.validateFormat(fmt, @TypeOf(args)) catch |err| {
-    //         @compileError("Invalid format string: " ++ @errorName(err));
-    //     };
-    // }
-
     var bytes_written: usize = 0;
     var i: usize = 0;
     var arg_index: usize = 0;

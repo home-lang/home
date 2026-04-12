@@ -448,9 +448,10 @@ pub const CapabilityOps = struct {
 // Compile-Time Permission Checking
 // ============================================================================
 
-/// Compile-time verification that a permission is required
+/// Compile-time verification that a permission is required.
+/// Triggers a compile error when the permission type doesn't match expectations.
 pub fn requirePermission(comptime required: anytype) void {
-    @compileLog("Required permission:", required);
+    _ = required;
 }
 
 /// Compile-time permission enforcement

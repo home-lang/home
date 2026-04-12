@@ -211,7 +211,7 @@ pub fn getArg(comptime T: type, args: anytype, index: usize) ?T {
                         const child_info = @typeInfo(ptr_info.child);
                         if (child_info == .array) {
                             const arr_info = child_info.array;
-                            // Check if it's a u8 array (sentinel is in pointer, not array in 0.15.1)
+                            // Check if it's a u8 array
                             if (arr_info.child == u8) {
                                 return @as([]const u8, value);
                             }

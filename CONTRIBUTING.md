@@ -17,7 +17,7 @@ Thank you for your interest in contributing to Home! This document provides guid
 
 ### Prerequisites
 
-- **Zig**: Version 0.11.0 or later
+- **Zig**: Version 0.16-dev (run `pantry install` to get the pinned version)
 - **Git**: For version control
 - **A text editor**: VS Code with Zig extension recommended
 

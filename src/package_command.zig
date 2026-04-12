@@ -454,7 +454,7 @@ fn buildDmg(allocator: std.mem.Allocator, config: *const PackageConfig, output_d
         \\    <key>CFBundlePackageType</key>
         \\    <string>APPL</string>
         \\    <key>LSMinimumSystemVersion</key>
-        \\    <string>10.13</string>
+        \\    <string>13.0</string>
         \\    <key>NSHighResolutionCapable</key>
         \\    <true/>
         \\</dict>

@@ -35,7 +35,7 @@ Declares your project's dependencies:
   "version": "0.1.0",
   "dependencies": {
     "bun": "^1.3.0",
-    "zig": "^0.15.1",
+    "ziglang.org": "^0.16.0-dev.3144+ac6fb0b59",
     "craft": "^0.1.0"
   }
 }
@@ -59,10 +59,10 @@ Lockfile with resolved package information:
       "source": "path",
       "installedAt": "2025-10-31T00:00:00.000Z"
     },
-    "ziglang.org@0.15.1": {
+    "ziglang.org@0.16.0-dev.3144+ac6fb0b59": {
       "name": "ziglang.org",
-      "version": "0.15.1",
-      "resolved": "https://ziglang.org/download/0.15.1/",
+      "version": "0.16.0-dev.3144+ac6fb0b59",
+      "resolved": "https://ziglang.org/builds/",
       "integrity": "sha512-...",
       "source": "registry",
       "installedAt": "2025-10-26T00:00:00.000Z"
@@ -199,7 +199,7 @@ pantry install
 
 # Install specific package
 pantry install craft
-pantry install ziglang.org@0.15.1
+pantry install ziglang.org
 
 # Install from git
 pantry install github.com/user/repo

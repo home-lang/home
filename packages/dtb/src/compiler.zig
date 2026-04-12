@@ -322,7 +322,7 @@ pub const Compiler = struct {
 
     fn consume(self: *Compiler, token_type: TokenType, message: []const u8) !void {
         if (self.current_token.type != token_type) {
-            std.debug.print("Error at line {}: {s}\n", .{ self.current_token.line, message });
+            std.log.err("line {}: {s}", .{ self.current_token.line, message });
             return error.ParseError;
         }
         self.advance();

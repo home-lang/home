@@ -297,7 +297,7 @@ pub fn errorHandler() http_router.Middleware {
     return struct {
         fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
             next() catch |err| {
-                std.debug.print("Error handling request {s} {s}: {}\n", .{
+                std.log.err("Error handling request {s} {s}: {}", .{
                     req.method.toString(),
                     req.path,
                     err,

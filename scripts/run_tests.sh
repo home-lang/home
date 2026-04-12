@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run the unit-test suite for modules that have tests under zig 0.16-dev.
+# Run the unit-test suite for individual compiler modules.
 #
-# We do NOT yet drive every package's tests through this script — only the
-# ones whose source compiles cleanly under zig 0.16-dev. Adding new packages
-# is a one-line append to the table below once the code compiles.
+# Not every package is wired up here yet — only the ones whose source
+# compiles cleanly. Adding new packages is a one-line append to the
+# table below once the code compiles.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
