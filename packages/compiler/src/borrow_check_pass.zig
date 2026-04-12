@@ -290,13 +290,13 @@ pub const BorrowCheckPass = struct {
 
     fn getErrorMessage(self: *BorrowCheckPass, kind: BorrowError.ErrorKind, var_name: []const u8) []const u8 {
         return switch (kind) {
-            .UseAfterMove => std.fmt.allocPrint(self.allocator, "use of moved value: `{s}`", .{var_name}) catch unreachable,
-            .MultipleMutableBorrows => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as mutable more than once at a time", .{var_name}) catch unreachable,
-            .BorrowWhileMutablyBorrowed => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as immutable because it is also borrowed as mutable", .{var_name}) catch unreachable,
-            .MutBorrowWhileBorrowed => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as mutable because it is also borrowed as immutable", .{var_name}) catch unreachable,
-            .MoveWhileBorrowed => std.fmt.allocPrint(self.allocator, "cannot move out of `{s}` because it is borrowed", .{var_name}) catch unreachable,
+            .UseAfterMove => std.fmt.allocPrint(self.allocator, "use of moved value: `{s}`", .{var_name}) catch "use of moved value",
+            .MultipleMutableBorrows => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as mutable more than once at a time", .{var_name}) catch "multiple mutable borrows",
+            .BorrowWhileMutablyBorrowed => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as immutable because it is also borrowed as mutable", .{var_name}) catch "borrow while mutably borrowed",
+            .MutBorrowWhileBorrowed => std.fmt.allocPrint(self.allocator, "cannot borrow `{s}` as mutable because it is also borrowed as immutable", .{var_name}) catch "mutable borrow while borrowed",
+            .MoveWhileBorrowed => std.fmt.allocPrint(self.allocator, "cannot move out of `{s}` because it is borrowed", .{var_name}) catch "move while borrowed",
             .InvalidLifetime => "lifetime parameter mismatch",
-            .UseAfterScopeClosed => std.fmt.allocPrint(self.allocator, "`{s}` does not live long enough", .{var_name}) catch unreachable,
+            .UseAfterScopeClosed => std.fmt.allocPrint(self.allocator, "`{s}` does not live long enough", .{var_name}) catch "value does not live long enough",
         };
     }
 
@@ -315,7 +315,7 @@ pub const BorrowCheckPass = struct {
 
     fn getHelpText(self: *BorrowCheckPass, kind: BorrowError.ErrorKind, var_name: []const u8) []const u8 {
         return switch (kind) {
-            .UseAfterMove => std.fmt.allocPrint(self.allocator, "consider cloning the value before moving: `{s}.clone()`", .{var_name}) catch unreachable,
+            .UseAfterMove => std.fmt.allocPrint(self.allocator, "consider cloning the value before moving: `{s}.clone()`", .{var_name}) catch "consider cloning the value before moving",
             .MultipleMutableBorrows => "mutable borrows cannot exist simultaneously; consider restructuring your code",
             .BorrowWhileMutablyBorrowed => "immutable and mutable borrows cannot coexist; end the mutable borrow first",
             .MutBorrowWhileBorrowed => "mutable borrows cannot occur while immutable borrows exist; end all borrows first",

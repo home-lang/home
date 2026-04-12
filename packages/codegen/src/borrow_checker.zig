@@ -333,16 +333,16 @@ pub const BorrowChecker = struct {
 
     /// Print all borrow errors
     pub fn printErrors(self: *BorrowChecker) void {
-        std.debug.print("\n=== Borrow Checking Errors ===\n", .{});
+        std.log.debug("=== Borrow Checking Errors ===", .{});
 
         for (self.errors.items) |err| {
             if (err.location) |loc| {
-                std.debug.print(
+                std.log.info(
                     "[{s}:{}:{}] {s}: {s}\n",
                     .{ loc.file, loc.line, loc.column, @tagName(err.kind), err.message },
                 );
             } else {
-                std.debug.print(
+                std.log.info(
                     "{s}: {s}\n",
                     .{ @tagName(err.kind), err.message },
                 );
@@ -350,10 +350,10 @@ pub const BorrowChecker = struct {
         }
 
         if (self.errors.items.len == 0) {
-            std.debug.print("No errors\n", .{});
+            std.log.debug("No errors", .{});
         }
 
-        std.debug.print("==============================\n\n", .{});
+        std.log.info("==============================\n", .{});
     }
 
     /// Check if a variable is borrowed

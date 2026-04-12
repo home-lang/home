@@ -37,10 +37,6 @@ pub fn safeIntCast(comptime Target: type, value: anytype) CastError!Target {
 pub fn assertingCast(comptime Target: type, value: anytype) Target {
     if (std.debug.runtime_safety) {
         return std.math.cast(Target, value) orelse {
-            std.debug.print(
-                "assertingCast: value {} does not fit in {s}\n",
-                .{ value, @typeName(Target) },
-            );
             @panic("assertingCast overflow");
         };
     }

@@ -339,20 +339,20 @@ pub const MoveChecker = struct {
 
     /// Print all move errors
     pub fn printErrors(self: *MoveChecker) void {
-        std.debug.print("\n=== Move Semantics Errors ===\n", .{});
+        std.log.debug("=== Move Semantics Errors ===", .{});
 
         for (self.errors.items) |err| {
-            std.debug.print(
+            std.log.info(
                 "[{s}:{}:{}] {s}: {s}\n",
                 .{ err.location.file, err.location.line, err.location.column, @tagName(err.kind), err.message },
             );
         }
 
         if (self.errors.items.len == 0) {
-            std.debug.print("No errors\n", .{});
+            std.log.debug("No errors", .{});
         }
 
-        std.debug.print("============================\n\n", .{});
+        std.log.info("============================\n", .{});
     }
 
     /// Register custom type move semantics

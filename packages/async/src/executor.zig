@@ -129,7 +129,7 @@ pub const Executor = struct {
 
         task.poll() catch |err| {
             task.state = .Failed;
-            std.debug.print("Task {} failed: {}\n", .{ task.id, err });
+            std.log.err("Task {} failed: {}", .{ task.id, err });
         };
     }
 

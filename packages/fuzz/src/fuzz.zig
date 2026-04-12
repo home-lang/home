@@ -189,7 +189,7 @@ pub fn Fuzzer(comptime Context: type) type {
             const elapsed = std.time.milliTimestamp() - self.stats.start_time;
             const exec_per_sec = if (elapsed > 0) @as(f64, @floatFromInt(self.stats.total_runs)) / (@as(f64, @floatFromInt(elapsed)) / 1000.0) else 0;
 
-            std.debug.print(
+            std.log.info(
                 \\[FUZZ] Runs: {d} | Crashes: {d} | Unique: {d} | Timeouts: {d}
                 \\       Exec/s: {d:.1} | Coverage: {d:.1}%
                 \\

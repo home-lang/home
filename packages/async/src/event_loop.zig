@@ -85,7 +85,7 @@ pub const EventLoop = struct {
     /// Poll a single task
     fn pollTask(self: *EventLoop, task: *Task) !void {
         const result = task.poll() catch |err| {
-            std.debug.print("Task error: {}\n", .{err});
+            std.log.err("Task error: {}", .{err});
             return;
         };
 

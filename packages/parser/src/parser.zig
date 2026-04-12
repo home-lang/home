@@ -360,6 +360,7 @@ pub const Parser = struct {
     ///
     /// Returns: The token just before the current position
     pub fn previous(self: *Parser) Token {
+        if (self.current == 0) return self.tokens[0];
         return self.tokens[self.current - 1];
     }
 
@@ -511,7 +512,9 @@ pub const Parser = struct {
 
             // Check if we're at the start of a new statement/declaration
             switch (self.peek().type) {
-                .Fn, .Struct, .Let, .Const, .If, .While, .For, .Return => return,
+                .Fn, .Struct, .Let, .Const, .If, .While, .For, .Return,
+                .Enum, .Trait, .Impl, .Import, .Match, .Defer, .Try,
+                => return,
                 .RightBrace => {
                     // Stop before the brace — let the caller's block
                     // parser consume it. Consuming it here skips the

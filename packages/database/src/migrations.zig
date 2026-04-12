@@ -462,18 +462,18 @@ pub const Migrator = struct {
                 continue;
             }
 
-            std.debug.print("Migrating: {s}\n", .{migration.name});
+            std.log.info("Migrating: {s}", .{migration.name});
 
             // Run up migration
             migration.up(&schema_builder) catch |err| {
-                std.debug.print("Migration failed: {s} - {}\n", .{ migration.name, err });
+                std.log.err("Migration failed: {s} - {}", .{ migration.name, err });
                 return err;
             };
 
             // Record migration
             try self.recordMigration(migration.name);
 
-            std.debug.print("Migrated: {s}\n", .{migration.name});
+            std.log.info("Migrated: {s}", .{migration.name});
         }
     }
 
@@ -482,7 +482,7 @@ pub const Migrator = struct {
         try self.initialize();
 
         if (self.current_batch == 0) {
-            std.debug.print("Nothing to rollback\n", .{});
+            std.log.warn("Nothing to rollback", .{});
             return;
         }
 
@@ -510,18 +510,18 @@ pub const Migrator = struct {
             // Find migration
             for (migrations) |migration| {
                 if (std.mem.eql(u8, migration.name, name)) {
-                    std.debug.print("Rolling back: {s}\n", .{migration.name});
+                    std.log.info("Rolling back: {s}", .{migration.name});
 
                     // Run down migration
                     migration.down(&schema_builder) catch |err| {
-                        std.debug.print("Rollback failed: {s} - {}\n", .{ migration.name, err });
+                        std.log.err("Rollback failed: {s} - {}", .{ migration.name, err });
                         return err;
                     };
 
                     // Remove migration record
                     try self.removeMigration(migration.name);
 
-                    std.debug.print("Rolled back: {s}\n", .{migration.name});
+                    std.log.info("Rolled back: {s}", .{migration.name});
                     break;
                 }
             }

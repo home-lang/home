@@ -159,7 +159,7 @@ const WakerData = struct {
 
         // Re-queue the task
         self.runtime.enqueueTask(self.task) catch {
-            std.debug.print("Failed to re-queue task\n", .{});
+            std.log.err("Failed to re-queue task", .{});
         };
 
         // Cleanup
@@ -171,7 +171,7 @@ const WakerData = struct {
 
         // Re-queue the task
         self.runtime.enqueueTask(self.task) catch {
-            std.debug.print("Failed to re-queue task\n", .{});
+            std.log.err("Failed to re-queue task", .{});
         };
     }
 

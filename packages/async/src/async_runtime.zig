@@ -223,7 +223,7 @@ pub const AsyncRuntime = struct {
                 if (task.state == .Pending or task.state == .Running) {
                     task.poll() catch |err| {
                         task.state = .Failed;
-                        std.debug.print("Task {d} failed: {}\n", .{ task.id, err });
+                        std.log.err("Task {d} failed: {}", .{ task.id, err });
                     };
                 }
                 i += 1;

@@ -126,7 +126,7 @@ pub const Monomorphization = struct {
         for (func.generic_params, type_args) |param, arg_type_name| {
             for (param.bounds) |bound| {
                 if (!self.typeSatisfiesBound(arg_type_name, bound)) {
-                    std.debug.print(
+                    std.log.info(
                         "error: type `{s}` does not satisfy bound `{s}` on generic parameter `{s}` of `{s}`\n",
                         .{ arg_type_name, bound, param.name, generic_name },
                     );
@@ -259,14 +259,14 @@ pub const Monomorphization = struct {
         try writer.writeAll(">\n");
 
         // Generate struct definition
-        try writer.print("pub const {s} = struct {{\n", .{mono_name});
+        try writer.print("pub const {s} = struct {{", .{mono_name});
 
         // Fields with substituted types
         for (struct_decl.fields) |field| {
             try writer.print("    {s}: ", .{field.name});
 
             const field_type = try self.substituteType(field.type_name, struct_decl.generic_params, type_args);
-            try writer.print("{s},\n", .{field_type});
+            try writer.print("{s},", .{field_type});
         }
 
         // Generate methods with substituted types
@@ -695,7 +695,7 @@ pub const Monomorphization = struct {
                 try writer.print("{s}", .{arg});
             }
             try writer.writeAll(">\n");
-            try writer.print("{s}\n", .{item.code});
+            try writer.print("{s}", .{item.code});
         }
 
         return try code.toOwnedSlice();

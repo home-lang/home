@@ -194,7 +194,7 @@ pub const TypeIntegration = struct {
 
     /// Print inferred types for debugging
     pub fn printInferredTypes(self: *TypeIntegration) !void {
-        std.debug.print("\n=== Inferred Types ===\n", .{});
+        std.log.info("\n=== Inferred Types ===", .{});
 
         var it = self.var_types.iterator();
         while (it.next()) |entry| {
@@ -204,10 +204,10 @@ pub const TypeIntegration = struct {
             const ty_str = try self.typeToString(ty);
             defer self.allocator.free(ty_str);
 
-            std.debug.print("{s}: {s}\n", .{ var_name, ty_str });
+            std.log.info("{s}: {s}", .{ var_name, ty_str });
         }
 
-        std.debug.print("======================\n\n", .{});
+        std.log.info("======================\n", .{});
     }
 
     /// Convert AST TypeExpr to Type

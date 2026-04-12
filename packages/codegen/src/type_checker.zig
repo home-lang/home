@@ -220,7 +220,7 @@ pub const TypeChecker = struct {
                 err.message,
             });
         }
-        std.debug.print("Found {d} type error(s)\n\n", .{self.errors.items.len});
+        std.log.err("Found {d} type error(s)", .{self.errors.items.len});
     }
 
     /// Parse a type annotation string into a SimpleType
