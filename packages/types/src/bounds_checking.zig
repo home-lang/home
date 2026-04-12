@@ -337,7 +337,7 @@ pub const BoundsTracker = struct {
         const bounds = self.getBounds(array_name);
 
         if (bounds.known_length) |len| {
-            // Set index range for loop variable
+            if (len == 0) return;
             try self.setIndexRange(index_var, IndexRange.init(0, @as(i64, @intCast(len - 1))));
         } else {
             try self.addWarning(.{
@@ -472,13 +472,13 @@ pub const StaticAnalysis = struct {
         return IndexRange.init(a.min_index - b.max_index, a.max_index - b.min_index);
     }
 
-    /// Compute index range from multiplication
+    /// Compute index range from multiplication (saturating to avoid overflow)
     pub fn rangeMul(a: IndexRange, b: IndexRange) IndexRange {
         const products = [4]i64{
-            a.min_index * b.min_index,
-            a.min_index * b.max_index,
-            a.max_index * b.min_index,
-            a.max_index * b.max_index,
+            std.math.mul(i64, a.min_index, b.min_index) catch std.math.maxInt(i64),
+            std.math.mul(i64, a.min_index, b.max_index) catch std.math.minInt(i64),
+            std.math.mul(i64, a.max_index, b.min_index) catch std.math.minInt(i64),
+            std.math.mul(i64, a.max_index, b.max_index) catch std.math.maxInt(i64),
         };
 
         var min = products[0];

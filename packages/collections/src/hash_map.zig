@@ -211,21 +211,43 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return self.get(key) != null;
         }
 
-        /// Remove a key-value pair
+        /// Remove a key-value pair.
+        /// Uses backward-shift deletion so subsequent probed lookups still work.
         pub fn remove(self: *Self, key: K) bool {
             if (self.capacity == 0) return false;
 
             const hash = hashKey(key);
-            const index = self.findSlot(key, hash);
+            var index = self.findSlot(key, hash);
             const entry = &self.entries[index];
 
-            if (entry.occupied and entry.hash == hash and keysEqual(entry.key, key)) {
-                entry.occupied = false;
-                self.count -= 1;
-                return true;
+            if (!(entry.occupied and entry.hash == hash and keysEqual(entry.key, key))) {
+                return false;
             }
 
-            return false;
+            // Backward-shift deletion: slide subsequent entries whose
+            // natural slot is at or before the vacated index back one
+            // position so the probe chain stays intact.
+            self.entries[index].occupied = false;
+            self.count -= 1;
+
+            var i = (index + 1) % self.capacity;
+            while (self.entries[i].occupied) : (i = (i + 1) % self.capacity) {
+                const natural = self.entries[i].hash % self.capacity;
+                // Check if moving this entry backward to `index` is valid:
+                // it must be the case that `natural` is at or before `index`
+                // in the circular probe chain originating from `natural`.
+                const should_move = if (i >= index)
+                    (natural <= index or natural > i)
+                else
+                    (natural <= index and natural > i);
+                if (should_move) {
+                    self.entries[index] = self.entries[i];
+                    self.entries[i].occupied = false;
+                    index = i;
+                }
+            }
+
+            return true;
         }
 
         /// Clear all entries

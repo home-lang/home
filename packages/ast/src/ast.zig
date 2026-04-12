@@ -2463,6 +2463,60 @@ pub const Program = struct {
                 if (slice.end) |end| deinitExpr(end, allocator);
                 allocator.destroy(slice);
             },
+            .TryExpr => |try_e| {
+                deinitExpr(try_e.operand, allocator);
+                if (try_e.else_branch) |eb| deinitExpr(eb, allocator);
+                allocator.destroy(try_e);
+            },
+            .TypeCastExpr => |cast| {
+                deinitExpr(cast.value, allocator);
+                allocator.destroy(cast);
+            },
+            .TernaryExpr => |tern| {
+                deinitExpr(tern.condition, allocator);
+                deinitExpr(tern.true_val, allocator);
+                deinitExpr(tern.false_val, allocator);
+                allocator.destroy(tern);
+            },
+            .NullCoalesceExpr => |nc| {
+                deinitExpr(nc.left, allocator);
+                deinitExpr(nc.right, allocator);
+                allocator.destroy(nc);
+            },
+            .PipeExpr => |pipe| {
+                deinitExpr(pipe.left, allocator);
+                deinitExpr(pipe.right, allocator);
+                allocator.destroy(pipe);
+            },
+            .SpreadExpr => |spread| {
+                deinitExpr(spread.operand, allocator);
+                allocator.destroy(spread);
+            },
+            .SafeNavExpr => |sn| {
+                deinitExpr(sn.object, allocator);
+                allocator.destroy(sn);
+            },
+            .AwaitExpr => |aw| {
+                deinitExpr(aw.expression, allocator);
+                allocator.destroy(aw);
+            },
+            .ReturnExpr => |ret| {
+                if (ret.value) |v| deinitExpr(v, allocator);
+                allocator.destroy(ret);
+            },
+            .MapLiteral => |map| {
+                for (map.entries) |entry| {
+                    deinitExpr(entry.key, allocator);
+                    deinitExpr(entry.value, allocator);
+                }
+                allocator.free(map.entries);
+                allocator.destroy(map);
+            },
+            .StaticCallExpr => |sc| {
+                for (sc.args) |arg| deinitExpr(arg, allocator);
+                allocator.free(sc.args);
+                allocator.destroy(sc);
+            },
             else => {},
         }
         allocator.destroy(expr);

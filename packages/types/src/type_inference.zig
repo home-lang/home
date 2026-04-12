@@ -367,7 +367,7 @@ pub const TypeInferencer = struct {
             .TupleExpr => |tuple| try self.inferTupleExpr(tuple, env),
 
             else => {
-                // For unsupported expressions, generate a fresh type variable
+                try self.addDiagnostic("type inference not implemented for this expression", .warning);
                 return try self.freshTypeVar();
             },
         };

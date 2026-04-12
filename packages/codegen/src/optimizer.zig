@@ -436,8 +436,11 @@ pub fn strengthReduction(func: *IR.Function) !bool {
                     }
                 },
                 .div => |op| {
-                    // Replace division by power of 2 with shift
-                    if (op.rhs == .constant) {
+                    // Replace UNSIGNED division by power of 2 with shift.
+                    // Signed division rounds toward zero while logical
+                    // right-shift rounds toward negative infinity, so this
+                    // optimization is only valid for unsigned operands.
+                    if (op.rhs == .constant and op.is_unsigned) {
                         const val = op.rhs.constant;
                         if (val > 0 and (val & (val - 1)) == 0) {
                             const shift = @ctz(val);

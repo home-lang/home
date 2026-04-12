@@ -11293,20 +11293,18 @@ pub const Interpreter = struct {
             .Int => |l| switch (right) {
                 .Int => |r| {
                     if ((op == .Div or op == .IntDiv or op == .Mod) and r == 0) return error.DivisionByZero;
-                    return Value{ .Int = switch (op) {
-                        .Sub => l - r,
-                        .Mul => l * r,
+                    const result: i64 = switch (op) {
+                        .Sub => std.math.sub(i64, l, r) catch return error.RuntimeError,
+                        .Mul => std.math.mul(i64, l, r) catch return error.RuntimeError,
                         .Div => @divTrunc(l, r),
                         .IntDiv => @divTrunc(l, r),
                         .Mod => @mod(l, r),
-                        else => {
-                            std.debug.print("Invalid arithmetic operator\n", .{});
-                            return error.InvalidOperation;
-                        },
-                    } };
+                        else => return error.InvalidOperation,
+                    };
+                    return Value{ .Int = result };
                 },
                 .Float => |r| {
-                    if ((op == .Div or op == .IntDiv) and r == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv or op == .Mod) and r == 0.0) return error.DivisionByZero;
                     const lf = @as(f64, @floatFromInt(l));
                     if (op == .IntDiv) {
                         return Value{ .Int = @as(i64, @intFromFloat(@trunc(lf / r))) };
@@ -11316,10 +11314,7 @@ pub const Interpreter = struct {
                         .Mul => lf * r,
                         .Div => lf / r,
                         .Mod => @mod(lf, r),
-                        else => {
-                            std.debug.print("Invalid arithmetic operator\n", .{});
-                            return error.InvalidOperation;
-                        },
+                        else => return error.InvalidOperation,
                     } };
                 },
                 else => return error.TypeMismatch,
@@ -11327,7 +11322,7 @@ pub const Interpreter = struct {
             .Float => |l| switch (right) {
                 .Int => |r| {
                     const rf = @as(f64, @floatFromInt(r));
-                    if ((op == .Div or op == .IntDiv) and rf == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv or op == .Mod) and rf == 0.0) return error.DivisionByZero;
                     if (op == .IntDiv) {
                         return Value{ .Int = @as(i64, @intFromFloat(@trunc(l / rf))) };
                     }
@@ -11336,14 +11331,11 @@ pub const Interpreter = struct {
                         .Mul => l * rf,
                         .Div => l / rf,
                         .Mod => @mod(l, rf),
-                        else => {
-                            std.debug.print("Invalid arithmetic operator\n", .{});
-                            return error.InvalidOperation;
-                        },
+                        else => return error.InvalidOperation,
                     } };
                 },
                 .Float => |r| {
-                    if ((op == .Div or op == .IntDiv) and r == 0.0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv or op == .Mod) and r == 0.0) return error.DivisionByZero;
                     if (op == .IntDiv) {
                         return Value{ .Int = @as(i64, @intFromFloat(@trunc(l / r))) };
                     }
@@ -11352,10 +11344,7 @@ pub const Interpreter = struct {
                         .Mul => l * r,
                         .Div => l / r,
                         .Mod => @mod(l, r),
-                        else => {
-                            std.debug.print("Invalid arithmetic operator\n", .{});
-                            return error.InvalidOperation;
-                        },
+                        else => return error.InvalidOperation,
                     } };
                 },
                 else => return error.TypeMismatch,

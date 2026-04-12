@@ -376,7 +376,15 @@ pub const TypeChecker = struct {
                 }
                 return .Bool;
             },
-            .Minus => return operand_type, // Numeric negation preserves type
+            .Minus => {
+                return switch (operand_type) {
+                    .I8, .I16, .I32, .I64, .F32, .F64, .Unknown => operand_type,
+                    else => {
+                        try self.addError("Unary negation requires a numeric type", 0, 0);
+                        return .Unknown;
+                    },
+                };
+            },
             else => return .Unknown,
         }
     }
@@ -507,9 +515,16 @@ pub const TypeChecker = struct {
     fn checkMemberExpr(self: *TypeChecker, mem: *const ast.MemberExpr) TypeCheckError!SimpleType {
         const object_type = try self.checkExpression(&mem.object);
 
-        // For now, just return Unknown for struct member access
-        // A complete implementation would look up the field type in struct_layouts
-        _ = object_type;
+        const type_name = switch (object_type) {
+            .Struct => |s| s.name,
+            else => return .Unknown,
+        };
+        if (self.structs.get(type_name)) |fields| {
+            if (fields.get(mem.member)) |field_type| {
+                return field_type;
+            }
+        }
+
         return .Unknown;
     }
 
@@ -573,14 +588,17 @@ pub const TypeChecker = struct {
         var param_types = std.ArrayList(SimpleType).init(self.allocator);
         defer param_types.deinit();
 
+        var param_names = std.ArrayList([]const u8).init(self.allocator);
+        defer param_names.deinit();
+
         for (fn_decl.params) |param| {
             const param_type = if (param.type_annotation) |type_str|
                 try self.parseTypeAnnotation(type_str)
             else
                 .Unknown;
             try param_types.append(param_type);
+            try param_names.append(param.name);
 
-            // Add parameters to variable scope
             try self.variables.put(param.name, param_type);
         }
 
@@ -602,6 +620,11 @@ pub const TypeChecker = struct {
         // Check function body
         for (fn_decl.body.statements) |stmt| {
             try self.checkStatement(&stmt);
+        }
+
+        // Remove parameters from scope so they don't leak into the next function
+        for (param_names.items) |name| {
+            _ = self.variables.remove(name);
         }
 
         // Restore previous return type

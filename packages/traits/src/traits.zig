@@ -136,13 +136,23 @@ pub const TraitSystem = struct {
         // Verify trait exists
         const trait_def = self.traits.get(trait_name) orelse return error.UndefinedTrait;
 
-        // Verify all required methods are implemented
+        // Verify all required methods are implemented with matching signatures
         for (trait_def.methods) |method_sig| {
             if (!method_sig.is_required) continue;
 
             var found = false;
             for (methods) |impl_method| {
                 if (std.mem.eql(u8, impl_method.name, method_sig.name)) {
+                    if (impl_method.param_count != method_sig.param_count) {
+                        return error.MethodSignatureMismatch;
+                    }
+                    if (method_sig.return_type) |expected_ret| {
+                        if (impl_method.return_type) |actual_ret| {
+                            if (!std.mem.eql(u8, actual_ret, expected_ret)) {
+                                return error.MethodSignatureMismatch;
+                            }
+                        }
+                    }
                     found = true;
                     break;
                 }
