@@ -195,7 +195,16 @@ pub const Formatter = struct {
             },
             .StringLiteral => |lit| {
                 try self.output.append(self.allocator, '"');
-                try self.output.appendSlice(self.allocator, lit.value);
+                for (lit.value) |ch| {
+                    switch (ch) {
+                        '"' => try self.output.appendSlice(self.allocator, "\\\""),
+                        '\\' => try self.output.appendSlice(self.allocator, "\\\\"),
+                        '\n' => try self.output.appendSlice(self.allocator, "\\n"),
+                        '\r' => try self.output.appendSlice(self.allocator, "\\r"),
+                        '\t' => try self.output.appendSlice(self.allocator, "\\t"),
+                        else => try self.output.append(self.allocator, ch),
+                    }
+                }
                 try self.output.append(self.allocator, '"');
             },
             .BooleanLiteral => |lit| {
@@ -307,13 +316,32 @@ pub const Formatter = struct {
 
     /// Emit a string literal with the user's preferred quote style.
     /// The input slice is the raw string contents (without delimiters).
+    /// Special characters are escaped so the output is always valid.
     fn writeStringLiteral(self: *Formatter, contents: []const u8) !void {
         const quote: u8 = switch (self.opts.quote_style) {
             .single => '\'',
             .double => '"',
         };
         try self.output.append(self.allocator, quote);
-        try self.output.appendSlice(self.allocator, contents);
+        for (contents) |ch| {
+            switch (ch) {
+                '"' => if (quote == '"') {
+                    try self.output.appendSlice(self.allocator, "\\\"");
+                } else {
+                    try self.output.append(self.allocator, ch);
+                },
+                '\'' => if (quote == '\'') {
+                    try self.output.appendSlice(self.allocator, "\\'");
+                } else {
+                    try self.output.append(self.allocator, ch);
+                },
+                '\\' => try self.output.appendSlice(self.allocator, "\\\\"),
+                '\n' => try self.output.appendSlice(self.allocator, "\\n"),
+                '\r' => try self.output.appendSlice(self.allocator, "\\r"),
+                '\t' => try self.output.appendSlice(self.allocator, "\\t"),
+                else => try self.output.append(self.allocator, ch),
+            }
+        }
         try self.output.append(self.allocator, quote);
     }
 

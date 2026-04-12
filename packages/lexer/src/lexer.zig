@@ -602,21 +602,32 @@ pub const Lexer = struct {
                         _ = self.advance();
                     },
                     'u' => {
+                        // Match both \u{NNNN} (braced, 1–6 hex) and
+                        // \uNNNN (unbraced, exactly 4 hex) — same as
+                        // the regular-string path so escape behavior
+                        // is consistent across string types.
                         _ = self.advance();
-                        if (self.peek() != '{') {
-                            return self.makeToken(.Invalid);
-                        }
-                        _ = self.advance();
-
-                        var hex_count: usize = 0;
-                        while (std.ascii.isHex(self.peek()) and hex_count < 6) : (hex_count += 1) {
+                        if (self.peek() == '{') {
                             _ = self.advance();
-                        }
-
-                        if (hex_count == 0 or self.peek() != '}') {
+                            var hex_count: usize = 0;
+                            while (std.ascii.isHex(self.peek()) and hex_count < 6) : (hex_count += 1) {
+                                _ = self.advance();
+                            }
+                            if (hex_count == 0 or self.peek() != '}') {
+                                return self.makeToken(.Invalid);
+                            }
+                            _ = self.advance();
+                        } else if (std.ascii.isHex(self.peek())) {
+                            var hex_count: usize = 0;
+                            while (std.ascii.isHex(self.peek()) and hex_count < 4) : (hex_count += 1) {
+                                _ = self.advance();
+                            }
+                            if (hex_count != 4) {
+                                return self.makeToken(.Invalid);
+                            }
+                        } else {
                             return self.makeToken(.Invalid);
                         }
-                        _ = self.advance();
                     },
                     else => {
                         return self.makeToken(.Invalid);

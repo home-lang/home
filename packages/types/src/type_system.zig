@@ -2046,15 +2046,34 @@ pub const TypeChecker = struct {
             .StructLiteral => |struct_lit| try self.inferStructLiteral(struct_lit),
             .UnaryExpr => |unary| try self.inferUnaryExpression(unary),
             .AssignmentExpr => |assign| blk: {
-                // Track initialization: if the target is a bare
-                // identifier, mark it as initialized now so later reads
-                // don't warn. We still need to type-check the value.
-                _ = try self.inferExpression(assign.value);
+                const val_type = try self.inferExpression(assign.value);
                 if (assign.target.* == .Identifier) {
                     _ = self.uninitialized_vars.remove(assign.target.Identifier.name);
                 }
+                break :blk val_type;
+            },
+            // Expression types whose inference is known but was previously
+            // falling through to Void.
+            .CharLiteral => Type.Int,
+            .InterpolatedString => Type.String,
+            .MatchExpr => |me| blk: {
+                // Infer from the first arm body, or Void if empty.
+                if (me.arms.len > 0) {
+                    break :blk try self.inferExpression(me.arms[0].body);
+                }
                 break :blk Type.Void;
             },
+            .IfExpr => |ie| blk: {
+                const then_t = try self.inferExpression(ie.then_branch);
+                const else_t = self.inferExpression(ie.else_branch) catch {
+                    break :blk then_t;
+                };
+                if (!then_t.equals(else_t) and then_t != .Void and else_t != .Void) {
+                    try self.addError("if-expression branches have different types", ie.node.loc);
+                }
+                break :blk then_t;
+            },
+            .ClosureExpr => Type.Void,
             else => Type.Void,
         };
     }
@@ -2386,9 +2405,13 @@ pub const TypeChecker = struct {
     }
 
     fn inferTryExpression(self: *TypeChecker, try_expr: *const ast.TryExpr) TypeError!Type {
-        const operand_type = try self.inferExpression(try_expr.operand);
+        const operand_type = self.inferExpression(try_expr.operand) catch |err| {
+            if (err == error.UndefinedVariable) {
+                try self.addError("`try` operand could not be resolved — the expression or its import may be missing", try_expr.node.loc);
+            }
+            return err;
+        };
 
-        // Allow Void (unknown) types - return Void
         if (operand_type == .Void) {
             return Type.Void;
         }
@@ -2411,11 +2434,12 @@ pub const TypeChecker = struct {
 
     fn inferArrayLiteral(self: *TypeChecker, array: *const ast.ArrayLiteral) TypeError!Type {
         if (array.elements.len == 0) {
-            // Empty array - we'll infer type from context or default to void array
-            // For now, return an array of void (not very useful, but valid)
+            // Empty array: use Int as the default element type (the most
+            // common case) instead of Void which is never useful and
+            // triggers confusing downstream type mismatches.
             const elem_type = try self.allocator.create(Type);
             errdefer self.allocator.destroy(elem_type);
-            elem_type.* = Type.Void;
+            elem_type.* = Type.Int;
             try self.allocated_types.append(self.allocator, elem_type);
             return Type{ .Array = .{ .element_type = elem_type } };
         }
@@ -2592,9 +2616,38 @@ pub const TypeChecker = struct {
             resolved = resolved.Optional.*;
         }
 
-        // For non-struct, non-enum types (arrays, etc), allow member access and return Void
-        // This supports .length, .len, .capacity, method calls, etc on arrays and other types
+        // For non-struct, non-enum types, return the most likely type
+        // for common member accesses instead of blanket Void.
         if (resolved != .Struct and resolved != .Enum) {
+            if (resolved == .Array) {
+                if (std.mem.eql(u8, member.member, "len") or
+                    std.mem.eql(u8, member.member, "length") or
+                    std.mem.eql(u8, member.member, "indexOf") or
+                    std.mem.eql(u8, member.member, "lastIndexOf"))
+                {
+                    return Type.Int;
+                }
+                if (std.mem.eql(u8, member.member, "contains") or
+                    std.mem.eql(u8, member.member, "is_empty"))
+                {
+                    return Type.Bool;
+                }
+            }
+            if (resolved == .String) {
+                if (std.mem.eql(u8, member.member, "len") or
+                    std.mem.eql(u8, member.member, "length"))
+                {
+                    return Type.Int;
+                }
+                if (std.mem.eql(u8, member.member, "contains") or
+                    std.mem.eql(u8, member.member, "starts_with") or
+                    std.mem.eql(u8, member.member, "ends_with") or
+                    std.mem.eql(u8, member.member, "is_empty"))
+                {
+                    return Type.Bool;
+                }
+                return Type.String;
+            }
             return Type.Void;
         }
 

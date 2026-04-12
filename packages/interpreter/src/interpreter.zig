@@ -86,6 +86,12 @@ pub const Interpreter = struct {
     current_span: ?Value,
     /// Baggage for tracing context propagation
     tracing_baggage: std.StringHashMap([]const u8),
+    /// Tracks call / expression recursion depth so pathological input
+    /// can't exhaust the process stack. Incremented on evaluateExpression
+    /// entry, decremented on exit.
+    recursion_depth: u32 = 0,
+
+    const MAX_RECURSION_DEPTH: u32 = 512;
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) !*Interpreter {
         const interpreter = try allocator.create(Interpreter);
@@ -192,13 +198,17 @@ pub const Interpreter = struct {
 
                 const elements = value.Array;
 
-                // Check if we have enough elements
                 if (elements.len < decl.names.len) {
                     std.debug.print("Error: Not enough elements in tuple for destructuring\n", .{});
                     return error.RuntimeError;
                 }
+                if (elements.len > decl.names.len) {
+                    std.debug.print(
+                        "Warning: tuple has {d} elements but only {d} bindings — excess elements dropped\n",
+                        .{ elements.len, decl.names.len },
+                    );
+                }
 
-                // Assign each element to its corresponding variable name
                 for (decl.names, 0..) |name, i| {
                     try env.define(name, elements[i]);
                 }
@@ -440,6 +450,10 @@ pub const Interpreter = struct {
                     }
                 } else if (iterable_value == .Range) {
                     const range = iterable_value.Range;
+                    if (range.step == 0) {
+                        std.debug.print("range step cannot be zero\n", .{});
+                        return error.RuntimeError;
+                    }
                     var current = range.start;
                     var idx: i64 = 0;
                     const end_condition = if (range.inclusive) range.end + 1 else range.end;
@@ -992,6 +1006,12 @@ pub const Interpreter = struct {
     }
 
     fn evaluateExpression(self: *Interpreter, expr: *const ast.Expr, env: *Environment) InterpreterError!Value {
+        self.recursion_depth += 1;
+        defer self.recursion_depth -= 1;
+        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
+            std.debug.print("stack overflow: expression recursion depth exceeded {d}\n", .{MAX_RECURSION_DEPTH});
+            return error.RuntimeError;
+        }
         switch (expr.*) {
             .IntegerLiteral => |lit| {
                 // Check bounds if a type suffix is specified
@@ -3923,7 +3943,12 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "replace")) {
             if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
-                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                const search = args[1].String;
+                if (search.len == 0) {
+                    std.debug.print("replace(): search string cannot be empty\n", .{});
+                    return error.InvalidArguments;
+                }
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, search, args[2].String);
                 return Value{ .String = result };
             }
             return error.InvalidArguments;
@@ -4304,8 +4329,13 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "split")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                const delim = args[1].String;
+                if (delim.len == 0) {
+                    std.debug.print("split(): delimiter cannot be empty\n", .{});
+                    return error.InvalidArguments;
+                }
                 var result = std.ArrayList(Value).empty;
-                var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
+                var iter = std.mem.splitSequence(u8, args[0].String, delim);
                 while (iter.next()) |part| {
                     try result.append(self.arena.allocator(), Value{ .String = part });
                 }
@@ -4324,7 +4354,12 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "replace")) {
             if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
-                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                const search = args[1].String;
+                if (search.len == 0) {
+                    std.debug.print("replace(): search string cannot be empty\n", .{});
+                    return error.InvalidArguments;
+                }
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, search, args[2].String);
                 return Value{ .String = result };
             }
             return error.InvalidArguments;
@@ -4361,8 +4396,13 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "split")) {
             if (args.len >= 2 and args[0] == .String and args[1] == .String) {
+                const delim = args[1].String;
+                if (delim.len == 0) {
+                    std.debug.print("split(): delimiter cannot be empty\n", .{});
+                    return error.InvalidArguments;
+                }
                 var result = std.ArrayList(Value).empty;
-                var iter = std.mem.splitSequence(u8, args[0].String, args[1].String);
+                var iter = std.mem.splitSequence(u8, args[0].String, delim);
                 while (iter.next()) |part| {
                     try result.append(self.arena.allocator(), Value{ .String = part });
                 }
@@ -4381,7 +4421,12 @@ pub const Interpreter = struct {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, method, "replace")) {
             if (args.len >= 3 and args[0] == .String and args[1] == .String and args[2] == .String) {
-                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, args[1].String, args[2].String);
+                const search = args[1].String;
+                if (search.len == 0) {
+                    std.debug.print("replace(): search string cannot be empty\n", .{});
+                    return error.InvalidArguments;
+                }
+                const result = try std.mem.replaceOwned(u8, self.arena.allocator(), args[0].String, search, args[2].String);
                 return Value{ .String = result };
             }
             return error.InvalidArguments;
@@ -9140,7 +9185,11 @@ pub const Interpreter = struct {
                 return error.TypeMismatch;
             }
             const count: usize = @intCast(@max(0, count_val.Int));
-            const result = try allocator.alloc(u8, str.len * count);
+            const total = std.math.mul(usize, str.len, count) catch {
+                std.debug.print("repeat(): result too large (overflow)\n", .{});
+                return error.RuntimeError;
+            };
+            const result = try allocator.alloc(u8, total);
             for (0..count) |i| {
                 @memcpy(result[i * str.len .. (i + 1) * str.len], str);
             }
@@ -9163,13 +9212,20 @@ pub const Interpreter = struct {
                 std.debug.print("char_at() argument must be an integer\n", .{});
                 return error.TypeMismatch;
             }
-            const idx: usize = @intCast(@max(0, idx_val.Int));
+            if (idx_val.Int < 0) {
+                std.debug.print("char_at() index cannot be negative\n", .{});
+                return error.RuntimeError;
+            }
+            const idx: usize = @intCast(idx_val.Int);
             if (idx >= str.len) {
                 std.debug.print("char_at() index out of bounds\n", .{});
                 return error.RuntimeError;
             }
-            const char_str = try allocator.alloc(u8, 1);
-            char_str[0] = str[idx];
+            // Return the full UTF-8 codepoint starting at idx.
+            const byte = str[idx];
+            const cp_len: usize = if (byte < 0x80) 1 else if (byte < 0xE0) 2 else if (byte < 0xF0) 3 else 4;
+            const end = @min(idx + cp_len, str.len);
+            const char_str = try allocator.dupe(u8, str[idx..end]);
             return Value{ .String = char_str };
         }
 
@@ -10617,7 +10673,10 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunctionWithNamed(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, named_args: []const ast.NamedArg, parent_env: *Environment) InterpreterError!Value {
-        // Create new environment for function scope
+        // Clear any stale return value from a previous call so nested
+        // invocations don't accidentally inherit it.
+        self.return_value = null;
+
         var func_env = Environment.init(self.arena.allocator(), parent_env);
         defer func_env.deinit();
 
@@ -11237,7 +11296,7 @@ pub const Interpreter = struct {
         switch (left) {
             .Int => |l| switch (right) {
                 .Int => |r| {
-                    if ((op == .Div or op == .IntDiv) and r == 0) return error.DivisionByZero;
+                    if ((op == .Div or op == .IntDiv or op == .Mod) and r == 0) return error.DivisionByZero;
                     return Value{ .Int = switch (op) {
                         .Sub => l - r,
                         .Mul => l * r,

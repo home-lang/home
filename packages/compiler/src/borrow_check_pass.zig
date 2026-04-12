@@ -74,8 +74,17 @@ pub const BorrowCheckPass = struct {
                 if (let_decl.value) |val| {
                     try self.checkExpression(val);
                 }
-                // Register variable as owned
-                try self.tracker.define(let_decl.name, .Int, let_decl.node.loc);
+                // Derive the ownership type from the declared type_name
+                // instead of hardcoding everything as Int. Primitives
+                // (int, bool, float, str) are Copy types; anything else
+                // is a move type.
+                const owner_type: types.Type = if (let_decl.type_name) |tn| blk: {
+                    if (std.mem.eql(u8, tn, "bool")) break :blk .Bool;
+                    if (std.mem.eql(u8, tn, "float") or std.mem.eql(u8, tn, "f64") or std.mem.eql(u8, tn, "f32")) break :blk .Float;
+                    if (std.mem.eql(u8, tn, "str") or std.mem.eql(u8, tn, "string")) break :blk .String;
+                    break :blk .Int;
+                } else .Int;
+                try self.tracker.define(let_decl.name, owner_type, let_decl.node.loc);
             },
             .ExprStmt => |expr| {
                 // Check if it's an assignment expression
@@ -121,9 +130,18 @@ pub const BorrowCheckPass = struct {
         // Enter function scope
         self.tracker.enterScope();
 
-        // Register parameters
+        // Register parameters — derive type from the declared type name.
         for (func.params) |param| {
-            try self.tracker.define(param.name, .Int, param.loc);
+            const param_type: types.Type = if (param.type_name.len > 0) blk: {
+                if (std.mem.eql(u8, param.type_name, "bool")) break :blk .Bool;
+                if (std.mem.eql(u8, param.type_name, "float") or
+                    std.mem.eql(u8, param.type_name, "f64") or
+                    std.mem.eql(u8, param.type_name, "f32")) break :blk .Float;
+                if (std.mem.eql(u8, param.type_name, "str") or
+                    std.mem.eql(u8, param.type_name, "string")) break :blk .String;
+                break :blk .Int;
+            } else .Int;
+            try self.tracker.define(param.name, param_type, param.loc);
         }
 
         // Check body

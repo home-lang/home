@@ -148,10 +148,13 @@ pub const Assembler = struct {
 
     /// mov reg, imm32 (zero-extended to 64-bit)
     pub fn movRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
-        // B8 + rd + imm32 (no REX prefix needed, zero-extends to 64-bit)
+        // For r8–r15 the high bit of the register number is encoded in
+        // the REX.B prefix; without it the CPU decodes eax–edi instead.
+        if (dst.needsRexPrefix()) {
+            try self.code.append(self.allocator, 0x41); // REX.B
+        }
         try self.code.append(self.allocator, 0xB8 + dst.encodeModRM());
 
-        // Write i32 in little endian
         var bytes: [4]u8 = undefined;
         std.mem.writeInt(i32, &bytes, imm, .little);
         try self.code.appendSlice(self.allocator, &bytes);
@@ -654,10 +657,15 @@ pub const Assembler = struct {
         return self.code.items.len;
     }
 
-    /// Patch a rel32 offset at a specific position
+    /// Patch a rel32 offset at a specific position. Returns an error
+    /// if the displacement doesn't fit in 32 bits (code section >2 GB).
     pub fn patchRel32(self: *Assembler, pos: usize, target: usize) !void {
-        const current = pos + 4; // Position after the rel32
-        const offset = @as(i32, @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(current))));
+        const current = pos + 4;
+        const diff = @as(i64, @intCast(target)) - @as(i64, @intCast(current));
+        if (diff < std.math.minInt(i32) or diff > std.math.maxInt(i32)) {
+            return error.CodegenFailed;
+        }
+        const offset: i32 = @intCast(diff);
         std.mem.writeInt(i32, self.code.items[pos..][0..4], offset, .little);
     }
 
@@ -1130,34 +1138,15 @@ pub const Assembler = struct {
 
     /// Patch jg rel32 at position
     pub fn patchJgRel32(self: *Assembler, pos: usize, offset: i32) !void {
-        // jg is 6 bytes: 0F 8F offset32
-        // Patch the offset32 at pos + 2
-        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
-        self.code.items[pos + 2] = offset_bytes[0];
-        self.code.items[pos + 3] = offset_bytes[1];
-        self.code.items[pos + 4] = offset_bytes[2];
-        self.code.items[pos + 5] = offset_bytes[3];
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
     }
 
-    /// Patch jge rel32 at position
     pub fn patchJgeRel32(self: *Assembler, pos: usize, offset: i32) !void {
-        // jge is 6 bytes: 0F 8D offset32
-        // Patch the offset32 at pos + 2
-        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
-        self.code.items[pos + 2] = offset_bytes[0];
-        self.code.items[pos + 3] = offset_bytes[1];
-        self.code.items[pos + 4] = offset_bytes[2];
-        self.code.items[pos + 5] = offset_bytes[3];
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
     }
 
-    /// Patch jle rel32 at position
     pub fn patchJleRel32(self: *Assembler, pos: usize, offset: i32) !void {
-        // jle is 6 bytes: 0F 8E offset32
-        const offset_bytes = @as([4]u8, @bitCast(@as(i32, offset)));
-        self.code.items[pos + 2] = offset_bytes[0];
-        self.code.items[pos + 3] = offset_bytes[1];
-        self.code.items[pos + 4] = offset_bytes[2];
-        self.code.items[pos + 5] = offset_bytes[3];
+        std.mem.writeInt(i32, self.code.items[pos + 2 ..][0..4], offset, .little);
     }
 
     /// movzx reg64, byte [base + offset] - Zero-extend byte from memory to 64-bit register
@@ -1241,6 +1230,9 @@ pub const Assembler = struct {
     }
 
     /// cmp reg, imm32 - Compare register with immediate
+    /// cmp reg, imm32 (sign-extended to 64-bit by the CPU).
+    /// For values that don't fit in i32, use cmpRegReg with a
+    /// scratch register loaded via movRegImm64.
     pub fn cmpRegImm(self: *Assembler, dst: Register, value: i32) !void {
         // REX.W + 81 /7 imm32
         try self.emitRex(true, false, false, dst.needsRexPrefix());

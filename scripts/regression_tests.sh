@@ -415,6 +415,69 @@ fn main() {
 }
 ' 0
 
+# ----------------------------------------------------------------
+# Round-6: continue in for-loops, SafeNavExpr, type inference
+# ----------------------------------------------------------------
+
+run_case "for_loop_continue_advances" '
+fn main() {
+    let a = Array.new()
+    a.push(1)
+    a.push(2)
+    a.push(3)
+    a.push(4)
+    a.push(5)
+    let sum = 0
+    for x in a {
+        if x == 3 {
+            continue
+        }
+        sum = sum + x
+    }
+    assert(sum == 12)
+}
+' 0
+
+run_case "range_for_continue_advances" '
+fn main() {
+    let sum = 0
+    for i in 0..5 {
+        if i == 2 {
+            continue
+        }
+        sum = sum + i
+    }
+    assert(sum == 8)
+}
+' 0
+
+run_case "safe_nav_field_lookup" '
+struct Vec2 { x: int, y: int }
+fn main() {
+    let v = Vec2 { x: 10, y: 20 }
+    assert(v.x == 10)
+    assert(v.y == 20)
+}
+' 0
+
+run_case "negative_match_literal" '
+fn classify(n: int): int {
+    let r = 0
+    match n {
+        -1 => { r = 100 }
+        0 => { r = 200 }
+        1 => { r = 300 }
+        _ => { r = 999 }
+    }
+    return r
+}
+fn main() {
+    assert(classify(-1) == 100)
+    assert(classify(0) == 200)
+    assert(classify(1) == 300)
+}
+' 0
+
 echo
 echo "==========================================="
 echo "  $pass passed, $fail failed"

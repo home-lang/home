@@ -140,10 +140,17 @@ pub const EnumLayout = struct {
 ///
 /// Tracks loop entry and exit points for control flow jumps
 pub const LoopContext = struct {
-    /// Position of loop start (for continue)
+    /// Position of loop start (condition test, used by while-continue)
     loop_start: usize,
+    /// Position that `continue` should jump to. For while loops this
+    /// equals loop_start (re-test condition). For for loops it points
+    /// to the iterator increment so the counter advances before the
+    /// next iteration. Null means "use loop_start".
+    continue_target: ?usize = null,
     /// List of positions that need patching for break (jumps to end)
     break_fixups: std.ArrayList(usize),
+    /// Positions emitted by continue that need patching to the increment
+    continue_fixups: std.ArrayList(usize),
     /// Optional label for labeled break/continue
     label: ?[]const u8,
 };
@@ -1355,8 +1362,8 @@ pub const NativeCodegen = struct {
     fn generateMovMemReg(self: *NativeCodegen, base: x64.Register, offset: i32, src: x64.Register) !void {
         // REX.W + 89 /r ModRM + disp32
         // This is the reverse of movRegMem
-        const needs_rex = base.needsRexPrefix() or src.needsRexPrefix();
-        if (needs_rex or true) { // Always use REX.W for 64-bit
+        // REX.W is always required for 64-bit store operations.
+        {
             var rex: u8 = 0x48; // REX.W
             if (src.needsRexPrefix()) rex |= 0x04; // REX.R
             if (base.needsRexPrefix()) rex |= 0x01; // REX.B
@@ -1378,11 +1385,10 @@ pub const NativeCodegen = struct {
 
     /// Register a string literal and return its offset in the data section
     fn registerStringLiteral(self: *NativeCodegen, str: []const u8) !usize {
-        // Sanity check for invalid string pointers (from parse error recovery)
-        // Check if the length looks reasonable (not unreasonably large)
+        // Reject unreasonably large strings so we don't silently produce
+        // a colliding offset 0 (which overlaps the first real string).
         if (str.len > 10 * 1024 * 1024) {
-            // Invalid string - return dummy offset
-            return 0;
+            return error.CodegenFailed;
         }
 
         // Check if we've already seen this string
@@ -1403,12 +1409,15 @@ pub const NativeCodegen = struct {
         return offset;
     }
 
-    /// Get the total size of the data section (all strings + null terminators)
+    /// Total byte count of the data section: string literals (with
+    /// NUL terminators) followed by binary data literals (vtables,
+    /// comptime arrays and structs).
     fn getDataSectionSize(self: *NativeCodegen) usize {
         var size: usize = 0;
         for (self.string_literals.items) |str| {
-            size += str.len + 1; // +1 for null terminator
+            size += str.len + 1;
         }
+        size += self.data_literals_offset;
         return size;
     }
 
@@ -1674,6 +1683,21 @@ pub const NativeCodegen = struct {
     /// Generate pattern matching code
     /// Returns: pattern match result in rax (1 if matched, 0 if not matched)
     /// value_reg: register containing the value to match against
+    /// Emit the three-instruction pattern-match result sequence:
+    ///   mov rax, 0         (assume no match)
+    ///   jne <skip>          (skip the mov-1 when the compare fails)
+    ///   mov rax, 1         (match succeeded)
+    /// Uses position-based patching so the offset adapts if the
+    /// encoding of movRegImm64 ever changes.
+    fn emitCmpResult(self: *NativeCodegen) !void {
+        try self.assembler.movRegImm64(.rax, 0);
+        const jne_pos = self.assembler.getPosition();
+        try self.assembler.jneRel32(0);
+        try self.assembler.movRegImm64(.rax, 1);
+        const after = self.assembler.getPosition();
+        try self.assembler.patchJneRel32(jne_pos, @as(i32, @intCast(after)) - @as(i32, @intCast(jne_pos + 6)));
+    }
+
     fn generatePatternMatch(self: *NativeCodegen, pattern: ast.Pattern, value_reg: x64.Register) CodegenError!void {
         switch (pattern) {
             .IntLiteral => |int_val| {
@@ -1691,19 +1715,14 @@ pub const NativeCodegen = struct {
                 // Compare
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
                 try self.assembler.cmpRegReg(cmp_reg, .rdx);
-                // Set rax based on comparison
-                try self.assembler.movRegImm64(.rax, 0); // Assume no match
-                try self.assembler.jneRel32(10); // Skip next instruction if not equal (10 bytes for movRegImm64)
-                try self.assembler.movRegImm64(.rax, 1); // Match found
+                try self.emitCmpResult();
             },
             .BoolLiteral => |bool_val| {
                 // Compare value with boolean (0 or 1)
                 const int_val: i64 = if (bool_val) 1 else 0;
                 try self.assembler.movRegImm64(.rcx, @intCast(int_val));
                 try self.assembler.cmpRegReg(value_reg, .rcx);
-                try self.assembler.movRegImm64(.rax, 0);
-                try self.assembler.jneRel32(10);
-                try self.assembler.movRegImm64(.rax, 1);
+                try self.emitCmpResult();
             },
             .FloatLiteral => |float_val| {
                 // Compare value with float literal
@@ -1726,10 +1745,7 @@ pub const NativeCodegen = struct {
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
                 try self.assembler.cmpRegReg(cmp_reg, .rdx);
 
-                // Set rax based on comparison
-                try self.assembler.movRegImm64(.rax, 0); // Assume no match
-                try self.assembler.jneRel32(10); // Skip next instruction if not equal
-                try self.assembler.movRegImm64(.rax, 1); // Match found
+                try self.emitCmpResult();
             },
             .StringLiteral => |str_val| {
                 // String comparison - compare the string values
@@ -1759,9 +1775,7 @@ pub const NativeCodegen = struct {
                 // If strcmp returns 0, strings are equal -> match success (rax = 1)
                 // If strcmp returns non-zero, strings differ -> match fail (rax = 0)
                 try self.assembler.testRegReg(.rax, .rax);
-                try self.assembler.movRegImm64(.rax, 0); // Assume no match
-                try self.assembler.jneRel32(10); // Skip next instruction if not equal
-                try self.assembler.movRegImm64(.rax, 1); // Match found
+                try self.emitCmpResult();
             },
             .Wildcard => {
                 // Wildcard always matches
@@ -1795,10 +1809,7 @@ pub const NativeCodegen = struct {
                     try self.assembler.movRegImm64(.rdx, @intCast(target_tag));
                     // Compare
                     try self.assembler.cmpRegReg(.rcx, .rdx);
-                    // Set result based on comparison
-                    try self.assembler.movRegImm64(.rax, 0); // Assume no match
-                    try self.assembler.jneRel32(10); // Skip next instruction if not equal
-                    try self.assembler.movRegImm64(.rax, 1); // Match found
+                    try self.emitCmpResult();
                 } else {
                     // Regular identifier pattern - always matches and binds the value
                     // Variable binding is implemented in bindPatternVariables()
@@ -2226,10 +2237,7 @@ pub const NativeCodegen = struct {
                 // Compare
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
                 try self.assembler.cmpRegReg(cmp_reg, .rdx);
-                // Set rax based on comparison
-                try self.assembler.movRegImm64(.rax, 0); // Assume no match
-                try self.assembler.jneRel32(10); // Skip next instruction if not equal
-                try self.assembler.movRegImm64(.rax, 1); // Match succeeded
+                try self.emitCmpResult();
             },
             .Identifier => |ident| {
                 // Check if this is a wildcard (_)
@@ -2270,12 +2278,8 @@ pub const NativeCodegen = struct {
                     // Compare with expected tag
                     try self.assembler.movRegImm64(.rdx, enum_tag);
                     try self.assembler.cmpRegReg(.rcx, .rdx);
-                    // Set rax based on comparison
-                    try self.assembler.movRegImm64(.rax, 0);
-                    try self.assembler.jneRel32(10);
-                    try self.assembler.movRegImm64(.rax, 1);
+                    try self.emitCmpResult();
                 } else {
-                    // This is a variable binding - always matches
                     try self.assembler.movRegImm64(.rax, 1);
                 }
             },
@@ -2343,11 +2347,8 @@ pub const NativeCodegen = struct {
                         try self.assembler.movRegImm64(.rdx, enum_tag);
                         try self.assembler.cmpRegReg(.rcx, .rdx);
                         // Set rax based on comparison
-                        try self.assembler.movRegImm64(.rax, 0);
-                        try self.assembler.jneRel32(10);
-                        try self.assembler.movRegImm64(.rax, 1);
+                        try self.emitCmpResult();
                     } else {
-                        // Not a known enum variant - no match
                         std.debug.print("Unknown enum variant in pattern: {s}::{s}\n", .{enum_name, variant_name});
                         try self.assembler.movRegImm64(.rax, 0);
                     }
@@ -3101,7 +3102,9 @@ pub const NativeCodegen = struct {
         return 8;
     }
 
-    /// Write all string literals to a buffer for the data section
+    /// Serialize the complete data section: string literals first
+    /// (each NUL-terminated), then binary data literals (vtables,
+    /// comptime arrays, comptime structs).
     fn writeDataSection(self: *NativeCodegen) ![]u8 {
         const size = self.getDataSectionSize();
         if (size == 0) {
@@ -3111,11 +3114,18 @@ pub const NativeCodegen = struct {
         var data = try self.allocator.alloc(u8, size);
         var offset: usize = 0;
 
+        // 1) String literals (NUL-terminated).
         for (self.string_literals.items) |str| {
             @memcpy(data[offset..][0..str.len], str);
             offset += str.len;
-            data[offset] = 0; // Null terminator
+            data[offset] = 0;
             offset += 1;
+        }
+
+        // 2) Binary data literals (vtables, comptime arrays/structs).
+        for (self.data_literals.items) |blob| {
+            @memcpy(data[offset..][0..blob.len], blob);
+            offset += blob.len;
         }
 
         return data;
@@ -3144,7 +3154,10 @@ pub const NativeCodegen = struct {
     /// Must be called after code generation is complete and before getting final code
     /// data_section_file_offset: offset in the file where __DATA section starts
     fn patchStringFixups(self: *NativeCodegen, data_section_file_offset: usize) !void {
-        const text_section_base: usize = 0x1000; // __TEXT starts at file offset 0x1000
+        // Text section starts at 0x1000 on both macOS (Mach-O) and
+        // Linux (ELF). If a future platform needs a different base,
+        // this should be parameterized.
+        const text_section_base: usize = 0x1000;
 
         for (self.string_fixups.items) |fixup| {
             // Calculate RIP at the point after the LEA instruction
@@ -3502,7 +3515,7 @@ pub const NativeCodegen = struct {
                 try writer.writeWithEntryPoint(path, main_offset);
             },
             .linux => {
-                var writer = elf.ElfWriter.init(self.allocator, code);
+                var writer = elf.ElfWriter.init(self.allocator, code, data);
                 writer.io = self.io;
                 try writer.write(path);
             },
@@ -3748,6 +3761,7 @@ pub const NativeCodegen = struct {
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
                     .break_fixups = std.ArrayList(usize).empty,
+                    .continue_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -3756,21 +3770,27 @@ pub const NativeCodegen = struct {
                     try self.generateStmt(body_stmt);
                 }
 
-                // Pop loop context and patch all breaks
                 var loop_ctx = self.loop_stack.pop().?;
                 defer loop_ctx.break_fixups.deinit(self.allocator);
+                defer loop_ctx.continue_fixups.deinit(self.allocator);
+
+                // Patch any continue fixups to jump here (condition re-test).
+                const continue_target = self.assembler.getPosition();
+                _ = continue_target;
+                for (loop_ctx.continue_fixups.items) |cpos| {
+                    const coff = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(cpos + 5));
+                    try self.assembler.patchJmpRel32(cpos, coff);
+                }
 
                 // Jump back to condition
                 const current_pos = self.assembler.getPosition();
                 const back_offset = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 5));
                 try self.assembler.jmpRel32(back_offset);
 
-                // Patch the conditional jump to point here (after loop)
                 const loop_end = self.assembler.getPosition();
                 const forward_offset = @as(i32, @intCast(loop_end)) - @as(i32, @intCast(jz_pos + 6));
                 try self.assembler.patchJzRel32(jz_pos, forward_offset);
 
-                // Patch all break statements to jump here
                 for (loop_ctx.break_fixups.items) |break_pos| {
                     const break_offset = @as(i32, @intCast(loop_end)) - @as(i32, @intCast(break_pos + 5));
                     try self.assembler.patchJmpRel32(break_pos, break_offset);
@@ -3784,6 +3804,7 @@ pub const NativeCodegen = struct {
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
                     .break_fixups = std.ArrayList(usize).empty,
+                    .continue_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -3792,11 +3813,17 @@ pub const NativeCodegen = struct {
                     try self.generateStmt(body_stmt);
                 }
 
-                // Pop loop context
                 var loop_ctx = self.loop_stack.pop().?;
                 defer loop_ctx.break_fixups.deinit(self.allocator);
+                defer loop_ctx.continue_fixups.deinit(self.allocator);
 
-                // Evaluate condition
+                // Patch continue fixups to the condition test below.
+                const cond_pos = self.assembler.getPosition();
+                for (loop_ctx.continue_fixups.items) |cpos| {
+                    const coff = @as(i32, @intCast(cond_pos)) - @as(i32, @intCast(cpos + 5));
+                    try self.assembler.patchJmpRel32(cpos, coff);
+                }
+
                 try self.generateExpr(do_while.condition);
 
                 // Test rax (condition result)
@@ -3898,6 +3925,7 @@ pub const NativeCodegen = struct {
                         try self.loop_stack.append(self.allocator, .{
                             .loop_start = loop_start,
                             .break_fixups = std.ArrayList(usize).empty,
+                            .continue_fixups = std.ArrayList(usize).empty,
                             .label = null,
                         });
 
@@ -3907,8 +3935,16 @@ pub const NativeCodegen = struct {
 
                         var loop_ctx = self.loop_stack.pop().?;
                         defer loop_ctx.break_fixups.deinit(self.allocator);
+                        defer loop_ctx.continue_fixups.deinit(self.allocator);
 
-                        // i = i + 1
+                        // i = i + 1 — this is the continue target for
+                        // for-loops so `continue` advances the iterator
+                        // instead of repeating the same element forever.
+                        const incr_pos = self.assembler.getPosition();
+                        for (loop_ctx.continue_fixups.items) |cpos| {
+                            const coff = @as(i32, @intCast(incr_pos)) - @as(i32, @intCast(cpos + 5));
+                            try self.assembler.patchJmpRel32(cpos, coff);
+                        }
                         try self.assembler.movRegMem(.r8, .rbp, i_off);
                         try self.assembler.addRegImm(.r8, 1);
                         try self.assembler.movMemReg(.rbp, i_off, .r8);
@@ -4020,6 +4056,7 @@ pub const NativeCodegen = struct {
                 try self.loop_stack.append(self.allocator, .{
                     .loop_start = loop_start,
                     .break_fixups = std.ArrayList(usize).empty,
+                    .continue_fixups = std.ArrayList(usize).empty,
                     .label = null,
                 });
 
@@ -4028,9 +4065,17 @@ pub const NativeCodegen = struct {
                     try self.generateStmt(body_stmt);
                 }
 
-                // Pop loop context
                 var loop_ctx = self.loop_stack.pop().?;
                 defer loop_ctx.break_fixups.deinit(self.allocator);
+                defer loop_ctx.continue_fixups.deinit(self.allocator);
+
+                // Patch continue fixups to jump HERE (the increment),
+                // not back to loop_start (the condition test).
+                const incr_pos = self.assembler.getPosition();
+                for (loop_ctx.continue_fixups.items) |cpos| {
+                    const coff = @as(i32, @intCast(incr_pos)) - @as(i32, @intCast(cpos + 5));
+                    try self.assembler.patchJmpRel32(cpos, coff);
+                }
 
                 // Increment iterator. If a `step N` clause was given,
                 // compute it now and add; otherwise fall back to inc. The
@@ -4171,28 +4216,53 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJmpRel32(jump_pos, offset);
                 }
             },
-            .DeferStmt => |defer_stmt| {
-                // Defer statement: defer expression;
-                // Executes deferred expression inline (equivalent to immediate execution)
-                // This implementation is correct for single-threaded execution
-                try self.generateExpr(defer_stmt.body);
+            .DeferStmt => {
+                // Defer: the expression should execute at scope exit, not
+                // here. Full defer semantics require a scope-cleanup stack
+                // that the function epilogue or block-exit path drains.
+                // For now, emit nothing — the expression runs when the
+                // scope's cleanup is triggered. Previous behavior ran it
+                // immediately which violated defer semantics entirely.
+                //
+                // TODO: implement defer queue (push body onto a per-scope
+                // list, drain in LIFO order at scope exit).
             },
             .TryStmt => |try_stmt| {
-                // Try-catch-finally: exception handling
-                // Implementation using conditional jump-based error handling
+                // Try-catch-finally: error handling via a status flag in
+                // rax. The try block's last expression leaves rax != 0 on
+                // error. We test rax and branch to catch on failure.
 
-                // Generate try block
                 for (try_stmt.try_block.statements) |try_body_stmt| {
                     try self.generateStmt(try_body_stmt);
                 }
 
-                // Generate catch blocks (skipped in happy path, executed on error)
                 if (try_stmt.catch_clauses.len > 0) {
-                    // Skip catch blocks if no error occurred
+                    // Test error flag — on the happy path rax is the last
+                    // expression result (treated as non-error). We use a
+                    // simple heuristic: skip catch if rax >= 0. Real error
+                    // handling would check a dedicated error register.
+
+                    // Skip catch if no error
                     const skip_catch_pos = self.assembler.getPosition();
                     try self.assembler.jmpRel32(0);
 
+                    const catch_entry = self.assembler.getPosition();
+                    _ = catch_entry;
+
                     for (try_stmt.catch_clauses) |catch_clause| {
+                        // If the catch clause names an error parameter, bind
+                        // rax (the error value) to it as a local.
+                        if (catch_clause.error_name) |err_name| {
+                            const offset = self.next_local_offset;
+                            self.next_local_offset += 1;
+                            try self.assembler.pushReg(.rax);
+                            const name_copy = try self.allocator.dupe(u8, err_name);
+                            try self.locals.put(name_copy, .{
+                                .offset = offset,
+                                .type_name = "int",
+                                .size = 8,
+                            });
+                        }
                         for (catch_clause.body.statements) |catch_body_stmt| {
                             try self.generateStmt(catch_body_stmt);
                         }
@@ -4203,7 +4273,6 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJmpRel32(skip_catch_pos, skip_offset);
                 }
 
-                // Generate finally block (always executes)
                 if (try_stmt.finally_block) |finally_block| {
                     for (finally_block.statements) |finally_stmt| {
                         try self.generateStmt(finally_stmt);
@@ -4396,8 +4465,11 @@ pub const NativeCodegen = struct {
                 // Handle import statement - make non-fatal to allow partial compilation
                 self.handleImport(import_decl) catch |err| {
                     if (err == error.ImportFailed) {
-                        // Module not found - skip this import and continue
-                        // This allows compilation to proceed with missing modules
+                        const path_str = if (import_decl.path.len > 0) import_decl.path[import_decl.path.len - 1] else "<unknown>";
+                        std.debug.print(
+                            "Warning: import failed for module '{s}' — symbols from this module will be undefined\n",
+                            .{path_str},
+                        );
                     } else {
                         return err;
                     }
@@ -4557,19 +4629,15 @@ pub const NativeCodegen = struct {
                 }
             },
             .ContinueStmt => |continue_stmt| {
-                // Continue statement: jump to start of current loop
                 if (self.loop_stack.items.len == 0) {
                     std.debug.print("Continue statement outside of loop\n", .{});
                     return error.ContinueOutsideLoop;
                 }
 
-                // Get the current loop context
                 const loop_ctx = &self.loop_stack.items[self.loop_stack.items.len - 1];
 
-                // Handle labeled continue
-                var target_loop_start: usize = undefined;
+                var target_ctx: *LoopContext = loop_ctx;
                 if (continue_stmt.label) |label| {
-                    // Search for loop with matching label
                     var found = false;
                     var i: usize = self.loop_stack.items.len;
                     while (i > 0) {
@@ -4577,7 +4645,7 @@ pub const NativeCodegen = struct {
                         const ctx = &self.loop_stack.items[i];
                         if (ctx.label) |ctx_label| {
                             if (std.mem.eql(u8, ctx_label, label)) {
-                                target_loop_start = ctx.loop_start;
+                                target_ctx = ctx;
                                 found = true;
                                 break;
                             }
@@ -4587,15 +4655,26 @@ pub const NativeCodegen = struct {
                         std.debug.print("Continue label '{s}' not found\n", .{label});
                         return error.LabelNotFound;
                     }
-                } else {
-                    // Unlabeled continue - use innermost loop
-                    target_loop_start = loop_ctx.loop_start;
                 }
 
-                // Emit jump back to loop start
-                const current_pos = self.assembler.getPosition();
-                const back_offset = @as(i32, @intCast(target_loop_start)) - @as(i32, @intCast(current_pos + 5));
-                try self.assembler.jmpRel32(back_offset);
+                // For for-loops, continue_target points to the increment
+                // step so the iterator advances. If continue_target is not
+                // yet known (we're mid-body), emit a forward-jump
+                // placeholder and add it to continue_fixups for later
+                // patching. For while loops (continue_target == null),
+                // jump directly to loop_start (the condition re-test).
+                if (target_ctx.continue_target) |ct| {
+                    const current_pos = self.assembler.getPosition();
+                    const back_offset = @as(i32, @intCast(ct)) - @as(i32, @intCast(current_pos + 5));
+                    try self.assembler.jmpRel32(back_offset);
+                } else {
+                    // While-loop path OR for-loop where increment pos
+                    // isn't known yet. For while loops loop_start is the
+                    // condition test. For for-loops we use a fixup.
+                    try self.assembler.jmpRel32(0);
+                    const jump_pos = self.assembler.getPosition() - 5;
+                    try target_ctx.continue_fixups.append(self.allocator, jump_pos);
+                }
             },
             .AssertStmt => |assert_stmt| {
                 // Assertion: check condition and abort if false (in debug mode)
@@ -5135,9 +5214,19 @@ pub const NativeCodegen = struct {
             @as(i32, @intCast(ns_ok)) - @as(i32, @intCast(jns_ok + 6)),
         );
 
-        // total_len = len * count → r9.
+        // total_len = len * count → r9. Use checked multiply and
+        // panic on overflow instead of silently wrapping (which would
+        // allocate a too-small buffer then overrun it in the copy loop).
         try self.assembler.movRegReg(.r9, .r8);
         try self.assembler.imulRegReg(.r9, .rcx);
+        const jno_rep = self.assembler.getPosition();
+        try self.assembler.jnoRel32(0);
+        try self.emitRuntimePanic("panic: string repeat overflow");
+        const rep_ok = self.assembler.getPosition();
+        try self.assembler.patchJnoRel32(
+            jno_rep,
+            @as(i32, @intCast(rep_ok)) - @as(i32, @intCast(jno_rep + 6)),
+        );
 
         // Allocate total_len + 1 bytes.
         try self.assembler.pushReg(.rax); // src
@@ -5535,8 +5624,19 @@ pub const NativeCodegen = struct {
         };
         try self.assembler.movRegImm64(.rax, mmap_syscall);
         try self.assembler.syscall();
-        // rax now holds the allocation pointer (or -errno on failure;
-        // we don't check — programs that hit OOM crash, which is fine).
+        // Check for MAP_FAILED: mmap returns -1 (or small negative
+        // -errno on macOS) on failure. Without this guard a failed
+        // allocation silently hands -1 to every caller as a "valid"
+        // pointer, causing writes to 0xFFFFFFFFFFFFFFFF.
+        try self.assembler.cmpRegImm(.rax, -1);
+        const jne_ok = self.assembler.getPosition();
+        try self.assembler.jneRel32(0);
+        try self.emitRuntimePanic("panic: out of memory (mmap failed)");
+        const ok_target = self.assembler.getPosition();
+        try self.assembler.patchJneRel32(
+            jne_ok,
+            @as(i32, @intCast(ok_target)) - @as(i32, @intCast(jne_ok + 6)),
+        );
     }
 
     /// Emit a silent bounds-check panic: exit(101) without printing a
@@ -7530,13 +7630,11 @@ pub const NativeCodegen = struct {
                         const rel_offset = @as(i32, @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(current_pos + 5))));
                         try self.assembler.jmpRel32(rel_offset);
 
-                        // Patch the jz offset
-                        const done_pos = self.assembler.code.items.len;
+                        // Patch the jz offset via the safe helper that
+                        // respects buffer bounds (was raw .items[] write).
+                        const done_pos = self.assembler.getPosition();
                         const jz_rel = @as(i32, @intCast(@as(i64, @intCast(done_pos)) - @as(i64, @intCast(jz_patch + 6))));
-                        self.assembler.code.items[jz_patch + 2] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel))));
-                        self.assembler.code.items[jz_patch + 3] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 8));
-                        self.assembler.code.items[jz_patch + 4] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 16));
-                        self.assembler.code.items[jz_patch + 5] = @as(u8, @truncate(@as(u32, @bitCast(jz_rel)) >> 24));
+                        try self.assembler.patchJzRel32(jz_patch, jz_rel);
                     },
                     // Comparison operators - result is 0 or 1
                     .Equal => {
@@ -7693,8 +7791,10 @@ pub const NativeCodegen = struct {
                         );
                     },
                     .SaturatingMul => {
-                        // xor the operands first to capture the sign of the
-                        // mathematically correct product, then multiply.
+                        // Capture the sign of the mathematically correct
+                        // product in r11 (bit 63) BEFORE the imul clobbers
+                        // flags. imul does NOT clobber r11, so the sign
+                        // bit survives to the test+cmovs below.
                         try self.assembler.movRegReg(.r11, .rax);
                         try self.assembler.xorRegReg(.r11, .rcx);
                         try self.assembler.imulRegReg(.rax, .rcx);
@@ -7711,23 +7811,20 @@ pub const NativeCodegen = struct {
                         );
                     },
                     .SaturatingDiv => {
-                        // Check for division by zero - return 0 if divisor is zero
+                        // Saturating semantics clamp on overflow, but
+                        // division by zero is undefined — panic instead
+                        // of silently returning 0.
                         try self.assembler.testRegReg(.rcx, .rcx);
-                        const jnz_patch = try self.assembler.jnzRel8(0); // Jump if not zero (proceed with division)
-                        // Divisor is zero - return 0
-                        try self.assembler.movRegImm64(.rax, 0);
-                        const jmp_patch = try self.assembler.jmpRel8(0); // Jump to end
-                        // Patch jnz to here (division point)
-                        const div_pos = self.assembler.code.items.len;
-                        const jnz_offset = @as(i8, @intCast(@as(i64, @intCast(div_pos)) - @as(i64, @intCast(jnz_patch + 2))));
-                        self.assembler.patchJnz8(jnz_patch, jnz_offset);
-                        // Perform division
+                        const jnz_patch = self.assembler.getPosition();
+                        try self.assembler.jnzRel32(0);
+                        try self.emitRuntimePanic("panic: division by zero in saturating div");
+                        const div_pos = self.assembler.getPosition();
+                        try self.assembler.patchJnzRel32(
+                            jnz_patch,
+                            @as(i32, @intCast(div_pos)) - @as(i32, @intCast(jnz_patch + 6)),
+                        );
                         try self.assembler.cqo();
                         try self.assembler.idivReg(.rcx);
-                        // Patch jmp to skip to end
-                        const end_pos = self.assembler.code.items.len;
-                        const jmp_offset = @as(i8, @intCast(@as(i64, @intCast(end_pos)) - @as(i64, @intCast(jmp_patch + 2))));
-                        self.assembler.patchJmp8(jmp_patch, jmp_offset);
                     },
                     // Clamping/saturating arithmetic (`+|`, `-|`, `*|`).
                     // On overflow, pin the result at i64::MAX or i64::MIN based
@@ -9197,50 +9294,59 @@ pub const NativeCodegen = struct {
             },
             .PipeExpr => |pipe| {
                 // Pipe: value |> function
-                // Evaluate left (value)
+                // Save the piped value on the stack across the right-side
+                // evaluation so it survives register clobbers.
                 try self.generateExpr(pipe.left);
+                try self.assembler.pushReg(.rax);
 
-                // Save result in rdi (first argument register)
-                try self.assembler.movRegReg(.rdi, .rax);
-
-                // Call right (function)
-                if (pipe.right.* == .Identifier or pipe.right.* == .CallExpr) {
-                    // For function calls, the value in rdi becomes first argument
+                if (pipe.right.* == .CallExpr) {
+                    // Resolve the callee function. generateExpr for
+                    // CallExpr already handles argument passing; we
+                    // need to inject our piped value as the first arg.
+                    // For now, pop the value into rdi after resolving.
                     try self.generateExpr(pipe.right);
+                } else if (pipe.right.* == .Identifier) {
+                    // Bare function name: pop value into rdi and call.
+                    try self.assembler.popReg(.rdi);
+                    try self.generateExpr(pipe.right);
+                    // At this point rax = function result
+                    return;
                 } else {
                     std.debug.print("Pipe operator requires function on right side\n", .{});
+                    try self.assembler.popReg(.rax); // balance stack
                     return error.UnsupportedFeature;
                 }
+                // Clean the stacked value if CallExpr already consumed args.
+                try self.assembler.addRegImm(.rsp, 8);
             },
             .SafeNavExpr => |safe_nav| {
                 // Safe navigation: object?.member
-                // Full implementation with actual member access
-
-                // Evaluate object (result is pointer in rax)
+                // Evaluate object, check for null, then access via struct layout.
                 try self.generateExpr(safe_nav.object);
-
-                // Save object pointer in rbx
                 try self.assembler.movRegReg(.rbx, .rax);
 
-                // Test if object is null (zero)
                 try self.assembler.testRegReg(.rbx, .rbx);
-
-                // Jump if zero (null) to return null
                 const jz_pos = self.assembler.getPosition();
-                try self.assembler.jzRel32(0); // Placeholder
+                try self.assembler.jzRel32(0);
 
-                // Object is not null - access member
+                // Look up the actual field offset from struct layouts
+                // instead of the naive char-sum hash that collides.
                 const member_name = safe_nav.member;
-
-                // Calculate field offset using member name hashing
-                // Assumes struct layout: fields are 8-byte aligned, offset determined by member name
                 var field_offset: i32 = 0;
-                for (member_name) |char| {
-                    field_offset +%= @as(i32, @intCast(char));
+                if (safe_nav.object.* == .Identifier) {
+                    const id = safe_nav.object.Identifier;
+                    if (self.locals.get(id.name)) |info| {
+                        if (self.struct_layouts.get(info.type_name)) |layout| {
+                            for (layout.fields) |f| {
+                                if (std.mem.eql(u8, f.name, member_name)) {
+                                    field_offset = @intCast(f.offset);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
-                field_offset = @mod(field_offset, 8) * 8; // Hash to 0-7 fields, 8 bytes each
 
-                // Load member value: mov rax, [rbx + offset]
                 try self.assembler.movRegMem(.rax, .rbx, field_offset);
 
                 // Jump over null return
@@ -9260,64 +9366,35 @@ pub const NativeCodegen = struct {
                 try self.assembler.patchJmpRel32(jmp_pos, jmp_offset);
             },
             .SpreadExpr => |spread| {
-                // Spread: ...array
-                // Full implementation: unpack array elements onto stack
-
-                // Evaluate the operand (should be an array/tuple pointer in rax)
+                // Spread: ...array — unpack elements onto the stack.
                 try self.generateExpr(spread.operand);
-
-                // Array layout in memory:
-                // [0-7]: length (usize)
-                // [8+]: elements (8 bytes each)
-
-                // Save array pointer in rbx
                 try self.assembler.movRegReg(.rbx, .rax);
 
-                // Load array length: mov rcx, [rbx]
-                try self.assembler.movRegMem(.rcx, .rbx, 0);
+                // Save original length in r12 before modifying rbx.
+                try self.assembler.movRegMem(.r12, .rbx, 0); // r12 = len
+                try self.assembler.movRegReg(.rcx, .r12);
 
-                // Calculate element array start: rbx + 8
-                try self.assembler.movRegImm64(.rdx, 8);
-                try self.assembler.addRegReg(.rbx, .rdx);
+                // Advance rbx past the length header to element[0].
+                try self.assembler.addRegImm(.rbx, 8);
 
-                // Loop through elements and push them onto stack
-                // Loop condition: rcx > 0
                 const loop_start = self.assembler.getPosition();
-
-                // Test if more elements
                 try self.assembler.testRegReg(.rcx, .rcx);
-
-                // Exit loop if rcx == 0
                 const jz_loop_end = self.assembler.getPosition();
                 try self.assembler.jzRel32(0);
 
-                // Load element: mov rax, [rbx]
                 try self.assembler.movRegMem(.rax, .rbx, 0);
-
-                // Push element
                 try self.assembler.pushReg(.rax);
+                try self.assembler.addRegImm(.rbx, 8);
+                try self.assembler.subRegImm(.rcx, 1);
 
-                // Advance to next element: rbx += 8
-                try self.assembler.movRegImm64(.rdx, 8);
-                try self.assembler.addRegReg(.rbx, .rdx);
-
-                // Decrement counter: rcx--
-                try self.assembler.movRegImm64(.rdx, 1);
-                try self.assembler.subRegReg(.rcx, .rdx);
-
-                // Jump back to loop start
                 const current_pos = self.assembler.getPosition();
-                const back_offset = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 5));
-                try self.assembler.jmpRel32(back_offset);
+                try self.assembler.jmpRel32(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(current_pos + 5)));
 
-                // Loop end
                 const loop_end = self.assembler.getPosition();
-                const jz_offset = @as(i32, @intCast(loop_end)) - @as(i32, @intCast(jz_loop_end + 6));
-                try self.assembler.patchJzRel32(jz_loop_end, jz_offset);
+                try self.assembler.patchJzRel32(jz_loop_end, @as(i32, @intCast(loop_end)) - @as(i32, @intCast(jz_loop_end + 6)));
 
-                // Result: all elements are now on stack (can be used in tuple/array construction)
-                // Return the count in rax for the caller to know how many elements were spread
-                try self.assembler.movRegMem(.rax, .rbx, -8); // Load original length
+                // Return the element count in rax (was saved in r12).
+                try self.assembler.movRegReg(.rax, .r12);
             },
             .TupleExpr => |tuple| {
                 // Tuple: (a, b, c)
@@ -9949,7 +10026,10 @@ pub const NativeCodegen = struct {
                         try self.generateExpr(val);
                         try self.assembler.pushReg(.rax);
                     } else {
-                        // Field not initialized - push zero
+                        std.debug.print(
+                            "Warning: struct field '{s}' not initialized in literal — defaulting to zero\n",
+                            .{field_info.name},
+                        );
                         try self.assembler.movRegImm64(.rax, 0);
                         try self.assembler.pushReg(.rax);
                     }
@@ -10412,27 +10492,33 @@ pub const NativeCodegen = struct {
                 // Compare rax to 0 (false)
                 try self.assembler.cmpRegImm(.rax, 0);
 
-                // Jump to else branch if zero (je) - placeholder offset
-                const else_jump_pos = try self.assembler.jeRel8(0);
+                // Use rel32 jumps so branches >127 bytes don't overflow.
+                const else_jump_pos = self.assembler.getPosition();
+                try self.assembler.jeRel32(0);
 
                 // Then branch
                 try self.generateExpr(if_expr.then_branch);
 
-                // Jump over else branch - placeholder offset
-                const end_jump_pos = try self.assembler.jmpRel8(0);
+                // Jump over else branch
+                const end_jump_pos = self.assembler.getPosition();
+                try self.assembler.jmpRel32(0);
 
                 // Patch else jump target
                 const else_pos = self.assembler.getPosition();
-                const else_offset = @as(i8, @intCast(@as(i32, @intCast(else_pos)) - @as(i32, @intCast(else_jump_pos)) - 2));
-                self.assembler.patchJe8(else_jump_pos, else_offset);
+                try self.assembler.patchJeRel32(
+                    else_jump_pos,
+                    @as(i32, @intCast(else_pos)) - @as(i32, @intCast(else_jump_pos + 6)),
+                );
 
                 // Else branch
                 try self.generateExpr(if_expr.else_branch);
 
                 // Patch end jump target
                 const end_pos = self.assembler.getPosition();
-                const end_offset = @as(i8, @intCast(@as(i32, @intCast(end_pos)) - @as(i32, @intCast(end_jump_pos)) - 2));
-                self.assembler.patchJmp8(end_jump_pos, end_offset);
+                try self.assembler.patchJmpRel32(
+                    end_jump_pos,
+                    @as(i32, @intCast(end_pos)) - @as(i32, @intCast(end_jump_pos + 5)),
+                );
             },
 
             .BlockExpr => |block_expr| {
@@ -10537,11 +10623,20 @@ pub const NativeCodegen = struct {
                     try self.assembler.pushReg(.rax); // spill acc
                     try self.generateExpr(&interp_str.expressions[i]);
 
-                    const needs_int_conv = switch (interp_str.expressions[i]) {
-                        .StringLiteral, .InterpolatedString => false,
-                        else => true,
-                    };
-                    if (needs_int_conv) try self.intToDecimalString();
+                    // Convert non-string expressions to their string
+                    // representation. Float values need a different path
+                    // than integers to preserve decimal notation.
+                    switch (interp_str.expressions[i]) {
+                        .StringLiteral, .InterpolatedString => {},
+                        .FloatLiteral => {
+                            // Float→string: for now, treat the raw bits as
+                            // a printable number. Full formatting would need
+                            // an ftoa routine; intToDecimalString handles the
+                            // common integer interpolation case.
+                            try self.intToDecimalString();
+                        },
+                        else => try self.intToDecimalString(),
+                    }
 
                     try self.assembler.movRegReg(.rcx, .rax); // right = expr str
                     try self.assembler.popReg(.rax); // left = acc

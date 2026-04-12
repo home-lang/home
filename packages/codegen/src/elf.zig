@@ -5,14 +5,16 @@ const Io = std.Io;
 pub const ElfWriter = struct {
     allocator: std.mem.Allocator,
     code: []const u8,
+    data: []const u8,
     entry_point: u64,
     io: ?Io = null,
 
-    pub fn init(allocator: std.mem.Allocator, code: []const u8) ElfWriter {
+    pub fn init(allocator: std.mem.Allocator, code: []const u8, data: []const u8) ElfWriter {
         return .{
             .allocator = allocator,
             .code = code,
-            .entry_point = 0x401000, // Standard Linux load address + offset
+            .data = data,
+            .entry_point = 0x401000,
         };
     }
 
@@ -22,16 +24,19 @@ pub const ElfWriter = struct {
         const file = try Io.Dir.cwd().createFile(io_val, path, .{});
         defer file.close(io_val);
 
-        // Write ELF header
         try self.writeElfHeader(io_val, file);
-
-        // Write program header
         try self.writeProgramHeader(io_val, file);
 
-        // Write code at page boundary using positional write
+        // Write code at page boundary.
         try file.writePositionalAll(io_val, self.code, 0x1000);
 
-        // Make executable - use setPermissions
+        // Write data section immediately after code so string
+        // literals and static data are accessible at runtime.
+        if (self.data.len > 0) {
+            const data_offset = 0x1000 + std.mem.alignForward(u64, self.code.len, 16);
+            try file.writePositionalAll(io_val, self.data, data_offset);
+        }
+
         try file.setPermissions(io_val, Io.File.Permissions.fromMode(0o755));
     }
 
@@ -94,9 +99,18 @@ pub const ElfWriter = struct {
     }
 
     fn writeProgramHeader(self: *ElfWriter, io_val: Io, file: Io.File) !void {
-        _ = self;
         var header: [56]u8 = undefined;
         @memset(&header, 0);
+
+        // Use the actual code size rounded up to a page so the loader
+        // maps the full code section — not just the first 4 KB.
+        const page_size: u64 = 0x1000;
+        // Total loadable bytes = code + padding + data, page-aligned.
+        const data_padded = if (self.data.len > 0)
+            std.mem.alignForward(u64, self.code.len, 16) - self.code.len + self.data.len
+        else
+            0;
+        const code_size_aligned = std.mem.alignForward(u64, self.code.len + data_padded, page_size);
 
         // p_type: PT_LOAD (loadable segment)
         std.mem.writeInt(u32, header[0..4], 1, .little);
@@ -105,7 +119,7 @@ pub const ElfWriter = struct {
         std.mem.writeInt(u32, header[4..8], 5, .little);
 
         // p_offset: segment file offset
-        std.mem.writeInt(u64, header[8..16], 0x1000, .little); // Page-aligned
+        std.mem.writeInt(u64, header[8..16], page_size, .little);
 
         // p_vaddr: virtual address
         std.mem.writeInt(u64, header[16..24], 0x401000, .little);
@@ -113,14 +127,14 @@ pub const ElfWriter = struct {
         // p_paddr: physical address (same as virtual for most cases)
         std.mem.writeInt(u64, header[24..32], 0x401000, .little);
 
-        // p_filesz: segment size in file
-        std.mem.writeInt(u64, header[32..40], 0x1000, .little); // One page
+        // p_filesz: segment size in file (actual code, page-aligned)
+        std.mem.writeInt(u64, header[32..40], code_size_aligned, .little);
 
         // p_memsz: segment size in memory
-        std.mem.writeInt(u64, header[40..48], 0x1000, .little);
+        std.mem.writeInt(u64, header[40..48], code_size_aligned, .little);
 
         // p_align: segment alignment
-        std.mem.writeInt(u64, header[48..56], 0x1000, .little); // Page alignment
+        std.mem.writeInt(u64, header[48..56], page_size, .little);
 
         try file.writeStreamingAll(io_val, &header);
     }

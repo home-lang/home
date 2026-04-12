@@ -513,8 +513,9 @@ pub const Parser = struct {
             switch (self.peek().type) {
                 .Fn, .Struct, .Let, .Const, .If, .While, .For, .Return => return,
                 .RightBrace => {
-                    // Consume the closing brace to avoid getting stuck
-                    _ = self.advance();
+                    // Stop before the brace — let the caller's block
+                    // parser consume it. Consuming it here skips the
+                    // block's closing brace and causes cascading errors.
                     return;
                 },
                 else => {},
@@ -1315,8 +1316,10 @@ pub const Parser = struct {
             // Check for associated data type
             var data_type: ?[]const u8 = null;
             if (self.match(&.{.LeftParen})) {
-                const type_token = try self.expect(.Identifier, "Expected type in variant data");
-                data_type = type_token.lexeme;
+                // Accept any type annotation, not just bare identifiers,
+                // so `Some([u8])`, `Err(&str)`, etc. all work.
+                const type_str = try self.parseTypeAnnotation();
+                data_type = type_str;
                 _ = try self.expect(.RightParen, "Expected ')' after variant data type");
             }
 
@@ -2851,6 +2854,18 @@ pub const Parser = struct {
         const pattern = try self.allocator.create(ast.Pattern);
         errdefer self.allocator.destroy(pattern);
 
+        // Negative integer pattern: -N
+        if (self.match(&.{.Minus})) {
+            if (self.match(&.{.Integer})) {
+                const token = self.previous();
+                const pos_value = try std.fmt.parseInt(i64, token.lexeme, 10);
+                pattern.* = ast.Pattern{ .IntLiteral = -pos_value };
+                return pattern;
+            }
+            // Not a negative integer — backtrack the minus
+            self.current -= 1;
+        }
+
         // Integer literal pattern (or range pattern)
         if (self.match(&.{.Integer})) {
             const token = self.previous();
@@ -2865,6 +2880,13 @@ pub const Parser = struct {
                 const inclusive = self.previous().type == .DotDotEqual;
                 const end_token = try self.expect(.Integer, "Expected end value in range pattern");
                 const end_value = try std.fmt.parseInt(i64, end_token.lexeme, 10);
+
+                if (start_value > end_value) {
+                    std.debug.print(
+                        "Warning: range pattern {d}..{d} has start > end — arm will never match\n",
+                        .{ start_value, end_value },
+                    );
+                }
 
                 // Create IntLiteral expressions for start and end
                 const start_expr = try self.allocator.create(ast.Expr);
@@ -2881,10 +2903,15 @@ pub const Parser = struct {
             return pattern;
         }
 
-        // Float literal pattern
+        // Float literal pattern — reject infinity/NaN which would
+        // silently never match any runtime value.
         if (self.match(&.{.Float})) {
             const token = self.previous();
             const value = try std.fmt.parseFloat(f64, token.lexeme);
+            if (std.math.isInf(value) or std.math.isNan(value)) {
+                try self.reportError("float pattern overflows to infinity or NaN and will never match");
+                return error.UnexpectedToken;
+            }
             pattern.* = ast.Pattern{ .FloatLiteral = value };
             return pattern;
         }
@@ -4023,7 +4050,9 @@ pub const Parser = struct {
     fn ternaryExpr(self: *Parser, condition: *ast.Expr) !*ast.Expr {
         const question_token = self.previous();
 
-        const true_val = try self.expression();
+        // Both branches parse at Ternary precedence so nested
+        // ternaries `a ? b ? c : d : e` associate correctly.
+        const true_val = try self.parsePrecedence(.Ternary);
         _ = try self.expect(.Colon, "Expected ':' after true branch of ternary expression");
         const false_val = try self.parsePrecedence(.Ternary);
 

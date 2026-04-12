@@ -461,6 +461,13 @@ pub const Pass = struct {
 
     fn isConstant(expr: *const ast.Expr) bool {
         return switch (expr.*) {
+            .IntegerLiteral => true,
+            else => false,
+        };
+    }
+
+    fn isConstantAny(expr: *const ast.Expr) bool {
+        return switch (expr.*) {
             .IntegerLiteral, .FloatLiteral, .BooleanLiteral => true,
             else => false,
         };
@@ -475,9 +482,18 @@ pub const Pass = struct {
         const right = bin.right.IntegerLiteral.value;
 
         return switch (bin.op) {
-            .Add => left + right,
-            .Sub => left - right,
-            .Mul => left * right,
+            .Add => std.math.add(i64, left, right) catch {
+                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} + {d})\n", .{ left, right });
+                return null;
+            },
+            .Sub => std.math.sub(i64, left, right) catch {
+                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} - {d})\n", .{ left, right });
+                return null;
+            },
+            .Mul => std.math.mul(i64, left, right) catch {
+                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} * {d})\n", .{ left, right });
+                return null;
+            },
             .Div => if (right != 0) @divTrunc(left, right) else null,
             .Mod => if (right != 0) @mod(left, right) else null,
             else => null,
@@ -537,7 +553,6 @@ pub const Pass = struct {
         var found_terminator = false;
         var dead_code_start: ?usize = null;
 
-        // Find unreachable code after return/break/continue
         for (block.statements, 0..) |*stmt, i| {
             if (found_terminator) {
                 if (dead_code_start == null) {
@@ -547,7 +562,6 @@ pub const Pass = struct {
                 changed = true;
             }
 
-            // Check if this statement terminates the block
             switch (stmt.*) {
                 .ReturnStmt, .BreakStmt, .ContinueStmt => {
                     found_terminator = true;
@@ -555,14 +569,15 @@ pub const Pass = struct {
                 else => {},
             }
 
-            // Recursively process nested blocks
             const nested_changed = try self.eliminateDeadCodeInStmt(stmt, stats);
             changed = changed or nested_changed;
         }
 
-        // If we found dead code, we would need to truncate the statements array
-        // For now, we just track that we found it
-        // Full implementation would require allocator to create new slice
+        // Actually truncate the statement slice so the dead code is
+        // gone from the AST before it reaches codegen.
+        if (dead_code_start) |start| {
+            block.statements = block.statements[0..start];
+        }
 
         return changed;
     }

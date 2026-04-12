@@ -218,7 +218,7 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u64, cmd[104..112], 0x100000000 + 0x1000, .little); // addr (32-39)
         std.mem.writeInt(u64, cmd[112..120], code_size, .little); // size (40-47)
         std.mem.writeInt(u32, cmd[120..124], 0x1000, .little); // offset in file (48-51)
-        std.mem.writeInt(u32, cmd[124..128], 2, .little); // align (52-55) - 2^2 = 4 bytes
+        std.mem.writeInt(u32, cmd[124..128], 4, .little); // align (52-55) - 2^4 = 16 bytes
         std.mem.writeInt(u32, cmd[128..132], 0, .little); // reloff (56-59)
         std.mem.writeInt(u32, cmd[132..136], 0, .little); // nreloc (60-63)
         std.mem.writeInt(u32, cmd[136..140], 0x80000400, .little); // flags (64-67)
@@ -235,10 +235,11 @@ pub const MachOWriter = struct {
         var cmd: [152]u8 = undefined;
         @memset(&cmd, 0);
 
-        // Calculate VM address: after __TEXT segment
-        // __TEXT is at 0x100000000, size is code_size_aligned + 0x1000
-        // We'll use a simple scheme: __DATA starts right after __TEXT in VM space
-        const text_vmsize = file_offset; // file_offset is actually text_file_offset + code_size_aligned
+        // __DATA starts right after __TEXT in the virtual address space.
+        // file_offset here equals (header_size + code_size_aligned), which
+        // also happens to be the __TEXT segment's vmsize because the Mach-O
+        // header is mapped as part of __TEXT. We rename for clarity.
+        const text_vmsize = file_offset;
         const data_vmaddr = 0x100000000 + text_vmsize;
 
         // Segment command
@@ -280,9 +281,11 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[4..8], 72, .little);
         @memcpy(cmd[8..18], "__LINKEDIT");
         std.mem.writeInt(u64, cmd[24..32], 0x100000000 + linkedit_offset, .little); // vmaddr
-        std.mem.writeInt(u64, cmd[32..40], 0x1000, .little); // vmsize - 4KB for symbols
+        // vmsize must be page-aligned; filesize is the actual on-disk
+        // bytes (1 null byte). The loader zero-fills the difference.
+        std.mem.writeInt(u64, cmd[32..40], 0x1000, .little); // vmsize
         std.mem.writeInt(u64, cmd[40..48], linkedit_offset, .little); // fileoff
-        std.mem.writeInt(u64, cmd[48..56], 1, .little); // filesize - just 1 null byte
+        std.mem.writeInt(u64, cmd[48..56], 1, .little); // filesize (1 null byte)
         std.mem.writeInt(i32, cmd[56..60], @as(i32, @intCast(VM_PROT_READ)), .little); // maxprot
         std.mem.writeInt(i32, cmd[60..64], @as(i32, @intCast(VM_PROT_READ)), .little); // initprot
 

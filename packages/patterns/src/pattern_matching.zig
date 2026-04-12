@@ -282,16 +282,25 @@ const PatternCoverage = struct {
     pub fn addPattern(self: *PatternCoverage, pattern: Pattern) !void {
         switch (pattern) {
             .Wildcard => self.has_wildcard = true,
-            .Variable => self.has_wildcard = true, // Variable bindings match everything
+            .Variable => self.has_wildcard = true,
             .Literal => |lit| {
-                // Would need to evaluate literal and add to appropriate list
                 _ = lit;
             },
-            .Range => {
-                // Check if range covers all possible values
-                // This is simplified; real implementation would be more complex
+            .Range => {},
+            .Or => |or_pat| {
+                for (or_pat.patterns) |sub| {
+                    try self.addPattern(sub);
+                }
             },
-            else => {},
+            .Guard => |guard| {
+                // The inner pattern contributes to coverage; the guard
+                // condition does NOT — it's a runtime predicate, so a
+                // guarded arm can never prove static exhaustiveness.
+                try self.addPattern(guard.pattern.*);
+            },
+            .Struct => self.has_wildcard = true,
+            .Tuple => self.has_wildcard = true,
+            .Enum => self.has_wildcard = true,
         }
     }
 
@@ -338,12 +347,15 @@ pub const PatternCompiler = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Compile a pattern into a decision tree
+    /// Compile a pattern into a decision tree.
+    ///
+    /// STUB: the native codegen and interpreter both use their own
+    /// pattern-match lowering and never call this. The function exists
+    /// so the PatternCompiler type is a valid empty struct; once there
+    /// is a consumer the real decision-tree algorithm should live here.
     pub fn compile(self: *PatternCompiler, match_expr: *MatchExpr) !DecisionTree {
         _ = self;
         _ = match_expr;
-        // This would generate an efficient decision tree for pattern matching
-        // For now, return a placeholder
         return DecisionTree{ .arms = &[_]CompiledArm{} };
     }
 };
