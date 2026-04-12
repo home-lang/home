@@ -482,18 +482,9 @@ pub const Pass = struct {
         const right = bin.right.IntegerLiteral.value;
 
         return switch (bin.op) {
-            .Add => std.math.add(i64, left, right) catch {
-                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} + {d})\n", .{ left, right });
-                return null;
-            },
-            .Sub => std.math.sub(i64, left, right) catch {
-                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} - {d})\n", .{ left, right });
-                return null;
-            },
-            .Mul => std.math.mul(i64, left, right) catch {
-                std.debug.print("Warning: compile-time integer overflow in constant expression ({d} * {d})\n", .{ left, right });
-                return null;
-            },
+            .Add => std.math.add(i64, left, right) catch return null,
+            .Sub => std.math.sub(i64, left, right) catch return null,
+            .Mul => std.math.mul(i64, left, right) catch return null,
             .Div => if (right != 0) @divTrunc(left, right) else null,
             .Mod => if (right != 0) @mod(left, right) else null,
             else => null,

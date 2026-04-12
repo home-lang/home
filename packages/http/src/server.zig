@@ -539,8 +539,9 @@ pub const Server = struct {
         const method_str = parts_it.next() orelse return error.InvalidMethod;
         const uri_str = parts_it.next() orelse return error.InvalidURI;
 
-        const method = Method.fromString(method_str) orelse .GET;
+        const method = Method.fromString(method_str) orelse return error.InvalidMethod;
         const uri = try self.allocator.dupe(u8, uri_str);
+        errdefer self.allocator.free(uri);
 
         // Parse headers
         while (line_it.next()) |line| {
@@ -580,7 +581,7 @@ pub const Server = struct {
         const start = std.time.milliTimestamp();
         while (self.active_connections.load(.acquire) > 0) {
             if (std.time.milliTimestamp() - start > @as(i64, @intCast(timeout_ms))) {
-                std.debug.print("Graceful shutdown timeout, forcing close\n", .{});
+                std.log.warn("Graceful shutdown timeout, forcing close", .{});
                 break;
             }
             std.time.sleep(10 * std.time.ns_per_ms);

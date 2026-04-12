@@ -87,7 +87,7 @@ pub const ArpResolver = struct {
             if (pending.target_ip.equals(ip)) {
                 // Send the packet
                 pending.callback(mac, pending.packet_data) catch |err| {
-                    std.debug.print("Error sending queued packet: {}\n", .{err});
+                    std.log.err("Error sending queued packet: {}", .{err});
                 };
 
                 // Free packet data

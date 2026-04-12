@@ -108,6 +108,8 @@ pub const Response = struct {
     pub fn redirect(self: *Response, location: []const u8, status: ?Status) !void {
         self.status = status orelse .Found;
         _ = try self.setHeader("Location", location);
+        _ = try self.setHeader("Content-Type", "text/html");
+        self.body = .{ .static = "<html><body>Redirecting...</body></html>" };
     }
 
     /// Set cookie

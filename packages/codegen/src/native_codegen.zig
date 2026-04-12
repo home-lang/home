@@ -3576,20 +3576,23 @@ pub const NativeCodegen = struct {
 
                 if (ret.value) |value| {
                     try self.generateExpr(value);
-                    // Result is in rax
+                } else {
+                    try self.assembler.movRegImm64(.rax, 0);
                 }
 
-                // Jump to epilogue
                 try self.assembler.movRegReg(.rsp, .rbp);
                 try self.assembler.popReg(.rbp);
 
-                // For main function, we need to call exit syscall on macOS
-                // instead of just ret, because main is the entry point
                 if (self.current_function_name) |func_name| {
                     if (std.mem.eql(u8, func_name, "main")) {
-                        // macOS exit syscall: rax = 0x2000001 (exit), rdi = exit code (0)
-                        try self.assembler.movRegImm64(.rax, 0x2000001); // exit syscall number
-                        try self.assembler.movRegImm64(.rdi, 0); // exit code 0
+                        // Use rax (the return value) as exit code.
+                        try self.assembler.movRegReg(.rdi, .rax);
+                        const exit_syscall: u64 = switch (builtin.os.tag) {
+                            .macos => 0x2000001,
+                            .linux => 60,
+                            else => 60,
+                        };
+                        try self.assembler.movRegImm64(.rax, exit_syscall);
                         try self.assembler.syscall();
                     } else {
                         try self.assembler.ret();
@@ -7072,12 +7075,17 @@ pub const NativeCodegen = struct {
             try self.assembler.movRegReg(.rsp, .rbp);
             try self.assembler.popReg(.rbp);
 
-            // For main function, we need to call exit syscall on macOS
-            // instead of just ret, because main is the entry point
             if (std.mem.eql(u8, effective_name, "main")) {
-                // macOS exit syscall: rax = 0x2000001 (exit), rdi = exit code (0)
-                try self.assembler.movRegImm64(.rax, 0x2000001); // exit syscall number
-                try self.assembler.movRegImm64(.rdi, 0); // exit code 0
+                // Implicit main epilogue: exit with code 0. Explicit
+                // `return N` in main uses N as the exit code via the
+                // ReturnStmt handler.
+                const exit_syscall: u64 = switch (builtin.os.tag) {
+                    .macos => 0x2000001,
+                    .linux => 60,
+                    else => 60,
+                };
+                try self.assembler.movRegImm64(.rdi, 0);
+                try self.assembler.movRegImm64(.rax, exit_syscall);
                 try self.assembler.syscall();
             } else {
                 try self.assembler.ret();
@@ -9273,24 +9281,32 @@ pub const NativeCodegen = struct {
                 try self.assembler.patchJmpRel32(jmp_pos, jmp_offset);
             },
             .NullCoalesceExpr => |null_coalesce| {
-                // Null coalesce: left ?? right
-                // In native code, we treat 0 as null for simplicity
+                // Null coalesce: left ?? right (0 == null)
                 try self.generateExpr(null_coalesce.left);
-
-                // Test if left is null (zero)
                 try self.assembler.testRegReg(.rax, .rax);
-
-                // Jump if not zero (has value) to end
                 const jnz_pos = self.assembler.getPosition();
-                try self.assembler.jnzRel32(0); // Placeholder
-
-                // Evaluate right (default value)
+                try self.assembler.jnzRel32(0);
                 try self.generateExpr(null_coalesce.right);
-
-                // Patch jnz to point to end
                 const coalesce_end = self.assembler.getPosition();
-                const jnz_offset = @as(i32, @intCast(coalesce_end)) - @as(i32, @intCast(jnz_pos + 6));
-                try self.assembler.patchJnzRel32(jnz_pos, jnz_offset);
+                try self.assembler.patchJnzRel32(jnz_pos, @as(i32, @intCast(coalesce_end)) - @as(i32, @intCast(jnz_pos + 6)));
+            },
+            .ElvisExpr => |elvis| {
+                // Elvis: left ?: right — identical to null-coalesce
+                try self.generateExpr(elvis.left);
+                try self.assembler.testRegReg(.rax, .rax);
+                const jnz_pos = self.assembler.getPosition();
+                try self.assembler.jnzRel32(0);
+                try self.generateExpr(elvis.right);
+                const elvis_end = self.assembler.getPosition();
+                try self.assembler.patchJnzRel32(jnz_pos, @as(i32, @intCast(elvis_end)) - @as(i32, @intCast(jnz_pos + 6)));
+            },
+            .MapLiteral => {
+                // Map literals need a runtime hashmap allocation.
+                // For now, emit 0 (null map). The interpreter handles
+                // maps fully; the native codegen path will be extended
+                // when the runtime supports heap-allocated hashmaps.
+                std.debug.print("Warning: map literals not yet supported in native codegen — returning null\n", .{});
+                try self.assembler.movRegImm64(.rax, 0);
             },
             .PipeExpr => |pipe| {
                 // Pipe: value |> function
@@ -9689,14 +9705,15 @@ pub const NativeCodegen = struct {
                         try self.generateExpr(reflect_expr.target);
                     },
                     .Abs => {
-                        // @abs(value) - absolute value using conditional move
+                        // @abs(value) — branchless: abs(x) = (x ^ (x >> 63)) - (x >> 63)
                         try self.generateExpr(reflect_expr.target);
-                        // mov rcx, rax
-                        try self.assembler.movRegReg(.rcx, .rax);
-                        // For negative values, negate
-                        // test rax, rax (set flags)
-                        // Note: Using simple approach - check if negative and negate if so
-                        // This is simplified; real abs would use conditional instructions
+                        // rdx = arithmetic right-shift rax by 63
+                        try self.assembler.movRegReg(.rdx, .rax);
+                        try self.assembler.sarRegImm8(.rdx, 63);
+                        // rax ^= rdx
+                        try self.assembler.xorRegReg(.rax, .rdx);
+                        // rax -= rdx
+                        try self.assembler.subRegReg(.rax, .rdx);
                     },
                     .MemSet, .MemCpy => {
                         // Memory operations - for now, just evaluate the first argument
@@ -10276,12 +10293,7 @@ pub const NativeCodegen = struct {
                 const is_ok_jump = self.assembler.getPosition();
                 try self.assembler.jzRel32(0); // Jump if zero (Ok)
 
-                // Error path: Return Err from current function
-                // Load error value from Result: mov rax, [rbx + 8]
-                try self.assembler.movRegMem(.rax, .rbx, 8);
-
-                // Store error value back to Result and return
-                // For simplicity, we'll just move the Result pointer to rax
+                // Error path: propagate the Result (with Err tag) to caller
                 try self.assembler.movRegReg(.rax, .rbx);
 
                 // Return from function with error

@@ -586,7 +586,7 @@ pub const HTTP2Server = struct {
 
         self.running = true;
 
-        std.debug.print("HTTP/2 server listening on {}\n", .{self.address});
+        std.log.info("HTTP/2 server listening on {}", .{self.address});
 
         while (self.running) {
             const client_connection = try self.listener.?.accept();
@@ -609,13 +609,13 @@ pub const HTTP2Server = struct {
         handler: RequestHandler,
     ) void {
         var conn = Connection.init(allocator, stream, settings, handler) catch |err| {
-            std.debug.print("Failed to initialize connection: {}\n", .{err});
+            std.log.err("Failed to initialize connection: {}", .{err});
             return;
         };
         defer conn.deinit();
 
         conn.handle() catch |err| {
-            std.debug.print("Connection error: {}\n", .{err});
+            std.log.err("Connection error: {}", .{err});
         };
     }
 

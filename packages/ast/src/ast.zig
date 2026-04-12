@@ -2400,6 +2400,62 @@ pub const Program = struct {
             .ExprStmt => |expr| {
                 deinitExpr(expr, allocator);
             },
+            .AssertStmt => |assert_stmt| {
+                deinitExpr(assert_stmt.condition, allocator);
+                if (assert_stmt.message) |msg| deinitExpr(msg, allocator);
+                allocator.destroy(assert_stmt);
+            },
+            .DoWhileStmt => |dw| {
+                deinitBlockStmt(dw.body, allocator);
+                deinitExpr(dw.condition, allocator);
+                allocator.destroy(dw);
+            },
+            .DeferStmt => |defer_stmt| {
+                deinitExpr(defer_stmt.body, allocator);
+                allocator.destroy(defer_stmt);
+            },
+            .TryStmt => |try_stmt| {
+                deinitBlockStmt(try_stmt.try_block, allocator);
+                for (try_stmt.catch_clauses) |cc| {
+                    deinitBlockStmt(cc.body, allocator);
+                    allocator.destroy(cc);
+                }
+                allocator.free(try_stmt.catch_clauses);
+                if (try_stmt.finally_block) |fb| deinitBlockStmt(fb, allocator);
+                allocator.destroy(try_stmt);
+            },
+            .IfLetStmt => |if_let| {
+                deinitExpr(if_let.value, allocator);
+                deinitBlockStmt(if_let.then_block, allocator);
+                if (if_let.else_block) |eb| deinitBlockStmt(eb, allocator);
+                allocator.destroy(if_let);
+            },
+            .SwitchStmt => |sw| {
+                deinitExpr(sw.value, allocator);
+                for (sw.cases) |case| {
+                    for (case.patterns) |pat| deinitExpr(pat, allocator);
+                    allocator.free(case.patterns);
+                    allocator.destroy(case);
+                }
+                allocator.free(sw.cases);
+                allocator.destroy(sw);
+            },
+            .MatchStmt => |m| {
+                deinitExpr(m.value, allocator);
+                for (m.arms) |arm| {
+                    if (arm.guard) |g| deinitExpr(g, allocator);
+                    deinitExpr(arm.body, allocator);
+                    allocator.destroy(arm);
+                }
+                allocator.free(m.arms);
+                allocator.destroy(m);
+            },
+            .TupleDestructureDecl => |td| {
+                deinitExpr(td.value, allocator);
+                allocator.destroy(td);
+            },
+            .BreakStmt => |bs| allocator.destroy(bs),
+            .ContinueStmt => |cs| allocator.destroy(cs),
             else => {},
         }
     }
@@ -2516,6 +2572,42 @@ pub const Program = struct {
                 for (sc.args) |arg| deinitExpr(arg, allocator);
                 allocator.free(sc.args);
                 allocator.destroy(sc);
+            },
+            .ElvisExpr => |elvis| {
+                deinitExpr(elvis.left, allocator);
+                deinitExpr(elvis.right, allocator);
+                allocator.destroy(elvis);
+            },
+            .SafeIndexExpr => |si| {
+                deinitExpr(si.object, allocator);
+                deinitExpr(si.index, allocator);
+                allocator.destroy(si);
+            },
+            .IfExpr => |if_e| {
+                deinitExpr(if_e.condition, allocator);
+                deinitExpr(if_e.then_branch, allocator);
+                deinitExpr(if_e.else_branch, allocator);
+                allocator.destroy(if_e);
+            },
+            .IsExpr => |is_e| {
+                deinitExpr(is_e.value, allocator);
+                allocator.destroy(is_e);
+            },
+            .ArrayRepeat => |rep| {
+                deinitExpr(rep.value, allocator);
+                if (rep.count_expr) |ce| deinitExpr(ce, allocator);
+                allocator.destroy(rep);
+            },
+            .ComptimeExpr => |ct| {
+                deinitExpr(ct.expression, allocator);
+                allocator.destroy(ct);
+            },
+            .MatchExpr => |me| {
+                deinitExpr(me.value, allocator);
+                allocator.destroy(me);
+            },
+            .BlockExpr => |be| {
+                allocator.destroy(be);
             },
             else => {},
         }
