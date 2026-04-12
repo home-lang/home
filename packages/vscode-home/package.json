@@ -446,7 +446,7 @@
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.80.0",
     "@typescript-eslint/eslint-plugin": "^5.0.0",
-    "@typescript-eslint/parser": "^5.0.0",
+    "@typescript-eslint/parser": "^8.58.1",
     "eslint": "^8.0.0",
     "typescript": "^5.0.0"
   },
