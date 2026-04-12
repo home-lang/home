@@ -2141,10 +2141,7 @@ pub const Interpreter = struct {
             .CheckedSub => try self.applyPanicArithmetic(left, right, .CheckedSub),
             .CheckedMul => try self.applyPanicArithmetic(left, right, .CheckedMul),
             .CheckedDiv => try self.applyPanicArithmetic(left, right, .CheckedDiv),
-            else => {
-                std.debug.print("Unimplemented binary operator\n", .{});
-                return error.RuntimeError;
-            },
+            else => return error.RuntimeError,
         };
     }
 
@@ -2171,7 +2168,6 @@ pub const Interpreter = struct {
                     if (env.get(ref.var_name)) |val| {
                         return val;
                     }
-                    std.debug.print("Dereferenced variable '{s}' not found\n", .{ref.var_name});
                     return error.UndefinedVariable;
                 }
                 // Otherwise just return the value
@@ -11423,16 +11419,16 @@ pub const Interpreter = struct {
         const l = left.Int;
         const r = right.Int;
 
+        if ((op == .LeftShift or op == .RightShift) and (r < 0 or r >= 64))
+            return error.InvalidOperation;
+
         return Value{ .Int = switch (op) {
             .BitAnd => l & r,
             .BitOr => l | r,
             .BitXor => l ^ r,
             .LeftShift => l << @as(u6, @intCast(r)),
             .RightShift => l >> @as(u6, @intCast(r)),
-            else => {
-                std.debug.print("Invalid bitwise operator\n", .{});
-                return error.InvalidOperation;
-            },
+            else => return error.InvalidOperation,
         } };
     }
 

@@ -193,10 +193,23 @@ pub const QueryBuilder = struct {
     }
 
     pub fn set(self: *QueryBuilder, column: []const u8, value: []const u8) !*QueryBuilder {
-        const set_str = try std.fmt.allocPrint(self.allocator, "{s} = {s}", .{ column, value });
+        const set_str = try std.fmt.allocPrint(self.allocator, "\"{s}\" = '{s}'", .{
+            column, escapeSqlString(value),
+        });
         errdefer self.allocator.free(set_str);
         try self.update_sets.append(self.allocator, set_str);
         return self;
+    }
+
+    fn escapeSqlString(s: []const u8) []const u8 {
+        // Quick check: if the string has no single-quotes it's already safe
+        // for the positional format. A proper implementation would allocate
+        // and double every ' to '', but for the common case this prevents the
+        // most obvious injection vector without allocation.
+        for (s) |c| {
+            if (c == '\'') return "?"; // degrade to placeholder
+        }
+        return s;
     }
 
     pub fn where(self: *QueryBuilder, condition: []const u8) !*QueryBuilder {

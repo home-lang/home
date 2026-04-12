@@ -3414,7 +3414,12 @@ pub const Parser = struct {
         const op_token = self.previous();
         const op = try self.tokenToBinaryOp(op_token.type);
         const precedence = Precedence.fromToken(op_token.type);
-        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        // Power (**) is right-associative: use same precedence so it binds right.
+        const next_prec: u8 = if (op == .Power)
+            @intFromEnum(precedence)
+        else
+            @intFromEnum(precedence) + 1;
+        const right = try self.parsePrecedence(@enumFromInt(next_prec));
 
         if (foldIntegerBinary(op, left, right)) |folded| {
             // The IntegerLiteral operands are leaf nodes with no nested heap

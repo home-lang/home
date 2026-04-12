@@ -72,6 +72,41 @@ pub const Formatter = struct {
                 try self.formatExpression(expr);
             },
             .BlockStmt => |block| try self.formatBlockStmt(block),
+            .ImportDecl => |decl| {
+                try self.writeIndent();
+                try self.output.appendSlice(self.allocator, "import ");
+                for (decl.path, 0..) |seg, i| {
+                    if (i > 0) try self.output.append(self.allocator, '.');
+                    try self.output.appendSlice(self.allocator, seg);
+                }
+            },
+            .WhileStmt => |while_stmt| {
+                try self.writeIndent();
+                try self.output.appendSlice(self.allocator, "while ");
+                try self.formatExpression(while_stmt.condition);
+                try self.output.appendSlice(self.allocator, " {\n");
+                self.indent_level += 1;
+                for (while_stmt.body.statements) |s| {
+                    try self.formatStatement(s);
+                    try self.output.append(self.allocator, '\n');
+                }
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.output.append(self.allocator, '}');
+            },
+            .DeferStmt => |defer_stmt| {
+                try self.writeIndent();
+                try self.output.appendSlice(self.allocator, "defer ");
+                try self.formatExpression(defer_stmt.body);
+            },
+            .BreakStmt => {
+                try self.writeIndent();
+                try self.output.appendSlice(self.allocator, "break");
+            },
+            .ContinueStmt => {
+                try self.writeIndent();
+                try self.output.appendSlice(self.allocator, "continue");
+            },
             else => {},
         }
     }
@@ -240,8 +275,42 @@ pub const Formatter = struct {
                 try self.output.append(self.allocator, ')');
             },
             .TryExpr => |try_expr| {
+                try self.output.appendSlice(self.allocator, "try ");
                 try self.formatExpression(try_expr.operand);
-                try self.output.append(self.allocator, '?');
+            },
+            .NullLiteral => {
+                try self.output.appendSlice(self.allocator, "null");
+            },
+            .ArrayLiteral => |arr| {
+                try self.output.append(self.allocator, '[');
+                for (arr.elements, 0..) |elem, i| {
+                    if (i > 0) try self.output.appendSlice(self.allocator, ", ");
+                    try self.formatExpression(elem);
+                }
+                try self.output.append(self.allocator, ']');
+            },
+            .MemberExpr => |member| {
+                try self.formatExpression(member.object);
+                try self.output.append(self.allocator, '.');
+                try self.output.appendSlice(self.allocator, member.member);
+            },
+            .IndexExpr => |index| {
+                try self.formatExpression(index.array);
+                try self.output.append(self.allocator, '[');
+                try self.formatExpression(index.index);
+                try self.output.append(self.allocator, ']');
+            },
+            .TernaryExpr => |ternary| {
+                try self.formatExpression(ternary.condition);
+                try self.output.appendSlice(self.allocator, " ? ");
+                try self.formatExpression(ternary.true_val);
+                try self.output.appendSlice(self.allocator, " : ");
+                try self.formatExpression(ternary.false_val);
+            },
+            .AssignmentExpr => |assign| {
+                try self.formatExpression(assign.target);
+                try self.output.appendSlice(self.allocator, " = ");
+                try self.formatExpression(assign.value);
             },
             else => {},
         }

@@ -81,6 +81,9 @@ pub const Parser = struct {
     allocator: Allocator,
     source: []const u8,
     pos: usize,
+    depth: u16 = 0,
+
+    const max_depth = 128;
 
     pub fn init(allocator: Allocator, source: []const u8) Parser {
         return .{
@@ -167,15 +170,40 @@ pub const Parser = struct {
         if (self.source[self.pos] != '"') return error.ExpectedQuote;
         self.pos += 1;
 
-        const start = self.pos;
-        while (self.pos < self.source.len) : (self.pos += 1) {
-            if (self.source[self.pos] == '"') {
-                const str = try self.allocator.dupe(u8, self.source[start..self.pos]);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        while (self.pos < self.source.len) {
+            const ch = self.source[self.pos];
+            if (ch == '"') {
                 self.pos += 1;
-                return .{ .string_value = str };
+                return .{ .string_value = try buf.toOwnedSlice(self.allocator) };
             }
-            // Skip escaped characters
-            if (self.source[self.pos] == '\\') {
+            if (ch == '\\') {
+                self.pos += 1;
+                if (self.pos >= self.source.len) return error.UnterminatedString;
+                const esc = self.source[self.pos];
+                self.pos += 1;
+                switch (esc) {
+                    '"' => try buf.append(self.allocator, '"'),
+                    '\\' => try buf.append(self.allocator, '\\'),
+                    '/' => try buf.append(self.allocator, '/'),
+                    'n' => try buf.append(self.allocator, '\n'),
+                    'r' => try buf.append(self.allocator, '\r'),
+                    't' => try buf.append(self.allocator, '\t'),
+                    'b' => try buf.append(self.allocator, 0x08),
+                    'f' => try buf.append(self.allocator, 0x0C),
+                    'u' => {
+                        if (self.pos + 4 > self.source.len) return error.UnterminatedString;
+                        const hex = self.source[self.pos..][0..4];
+                        const cp = std.fmt.parseInt(u21, hex, 16) catch return error.InvalidToken;
+                        self.pos += 4;
+                        var enc: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &enc) catch return error.InvalidToken;
+                        try buf.appendSlice(self.allocator, enc[0..len]);
+                    },
+                    else => try buf.append(self.allocator, esc),
+                }
+            } else {
+                try buf.append(self.allocator, ch);
                 self.pos += 1;
             }
         }
@@ -185,6 +213,9 @@ pub const Parser = struct {
 
     fn parseArray(self: *Parser) ParseError!Value {
         if (self.source[self.pos] != '[') return error.ExpectedOpenBracket;
+        if (self.depth >= max_depth) return error.InvalidToken;
+        self.depth += 1;
+        defer self.depth -= 1;
         self.pos += 1;
 
         var items: std.ArrayList(Value) = .empty;
@@ -229,6 +260,9 @@ pub const Parser = struct {
 
     fn parseObject(self: *Parser) ParseError!Value {
         if (self.source[self.pos] != '{') return error.ExpectedOpenBrace;
+        if (self.depth >= max_depth) return error.InvalidToken;
+        self.depth += 1;
+        defer self.depth -= 1;
         self.pos += 1;
 
         var obj = Value.Object.init(self.allocator);
