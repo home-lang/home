@@ -53,7 +53,7 @@ pub const IntegerInfo = struct {
                 .is_signed = false,
                 .bit_width = 64,
                 .min_value = 0,
-                .max_value = std.math.maxInt(i64), // Use i64 max for now
+                .max_value = std.math.maxInt(u64),
             },
             .I8 => .{
                 .is_signed = true,

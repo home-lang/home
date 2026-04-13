@@ -260,7 +260,8 @@ pub const TraitSystem = struct {
         try self.implementations.append(impl);
     }
 
-    /// Check if a type implements a trait
+    /// Check if a type implements a trait.
+    /// Also returns true if the type implements a sub-trait that extends `trait_name`.
     pub fn implementsTrait(self: *TraitSystem, typ: types.Type, trait_name: []const u8) bool {
         // Check for explicit implementation
         for (self.implementations.items) |*impl| {
@@ -275,6 +276,20 @@ pub const TraitSystem = struct {
         if (self.builtin_traits.get(trait_name)) |info| {
             if (info.auto_derive) {
                 return self.canAutoDeriveBuiltin(typ, trait_name);
+            }
+        }
+
+        // Check if the type implements a sub-trait whose super_traits include
+        // the requested trait (e.g. if Ord extends Eq, implementing Ord implies Eq).
+        for (self.implementations.items) |*impl| {
+            if (self.typesEqual(impl.for_type, typ)) {
+                if (self.traits.get(impl.trait_name)) |trait_def| {
+                    for (trait_def.super_traits) |super_name| {
+                        if (std.mem.eql(u8, super_name, trait_name)) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
 
@@ -343,8 +358,10 @@ pub const TraitSystem = struct {
         return true;
     }
 
-    /// Find the implementation of a trait method for a given type
+    /// Find the implementation of a trait method for a given type.
+    /// If not found in the direct trait, searches super traits recursively.
     pub fn findMethod(self: *TraitSystem, typ: types.Type, trait_name: []const u8, method_name: []const u8) ?*TraitMethodImpl {
+        // Direct lookup in implementations of this trait
         for (self.implementations.items) |*impl| {
             if (std.mem.eql(u8, impl.trait_name, trait_name) and
                 self.typesEqual(impl.for_type, typ))
@@ -354,6 +371,16 @@ pub const TraitSystem = struct {
                 }
             }
         }
+
+        // Method not found — search super traits.
+        if (self.traits.get(trait_name)) |trait_def| {
+            for (trait_def.super_traits) |super_name| {
+                if (self.findMethod(typ, super_name, method_name)) |method| {
+                    return method;
+                }
+            }
+        }
+
         return null;
     }
 

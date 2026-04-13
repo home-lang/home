@@ -131,14 +131,16 @@ pub fn Channel(comptime T: type) type {
                 return error.Empty;
             };
 
-            // Try to remove head
+            // Try to atomically advance head from `head` to `next`.
+            // cmpxchgStrong returns null on success, or the actual value on failure.
             const next = head.next;
-            if (!self.head.cmpxchgStrong(
+            if (self.head.cmpxchgStrong(
                 head,
                 next,
                 .acq_rel,
                 .acquire,
-            )) {
+            ) != null) {
+                // CAS failed — another thread already advanced the head.
                 return error.Empty;
             }
 
@@ -146,6 +148,7 @@ pub fn Channel(comptime T: type) type {
             self.allocator.destroy(head);
 
             if (next == null) {
+                // Queue is now empty — try to reset the tail pointer.
                 _ = self.tail.cmpxchgStrong(head, null, .release, .acquire);
             }
 

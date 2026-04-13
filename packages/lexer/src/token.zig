@@ -152,6 +152,7 @@ pub const TokenType = enum {
     // Special
     Eof,
     Invalid,
+    UnterminatedString,
 
     /// Convert a TokenType to its string representation.
     ///
@@ -292,6 +293,7 @@ pub const TokenType = enum {
             .Extern => "extern",
             .Eof => "eof",
             .Invalid => "invalid",
+            .UnterminatedString => "unterminated string",
         };
     }
 };

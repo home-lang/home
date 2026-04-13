@@ -102,8 +102,12 @@ pub const FunctionInliner = struct {
         // Call cost: overhead of function call (prologue, epilogue, parameter passing)
         const call_cost: i32 = 10;
 
-        // Inline cost: code size increase
-        const inline_cost: i32 = @intCast(func_size * 2);
+        // Inline cost: code size increase.
+        // Clamp to i32 range to prevent overflow for very large functions.
+        const inline_cost: i32 = if (func_size > std.math.maxInt(i32) / 2)
+            std.math.maxInt(i32)
+        else
+            @intCast(func_size * 2);
 
         // Inline benefit: optimization opportunities
         var inline_benefit: i32 = 0;

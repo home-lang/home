@@ -172,15 +172,14 @@ pub const CBOREncoder = struct {
     }
 
     fn encodeFloat(self: *CBOREncoder, value: f64) !void {
-        // Encode as float64
+        // Encode as float64 (CBOR uses big-endian / network byte order).
         try self.output.append(0xFB);
-        const bytes = std.mem.toBytes(value);
-        // CBOR uses big-endian
-        var i: usize = bytes.len;
-        while (i > 0) {
-            i -= 1;
-            try self.output.append(bytes[i]);
-        }
+        // Use Zig's portable endian conversion instead of manual reversal
+        // so this works correctly on both little- and big-endian hosts.
+        const bits: u64 = @bitCast(value);
+        const be = std.mem.nativeToBig(u64, bits);
+        const bytes = std.mem.toBytes(be);
+        try self.output.appendSlice(&bytes);
     }
 
     fn encodeTypeAndValue(self: *CBOREncoder, major_type: CBOR.MajorType, value: u64) !void {
@@ -367,14 +366,13 @@ pub const CBORDecoder = struct {
             // Float64
             if (self.pos + 8 > self.input.len) return CBOR.Error.UnexpectedEndOfInput;
 
-            var bytes: [8]u8 = undefined;
-            // CBOR uses big-endian, need to reverse for native
-            for (0..8) |i| {
-                bytes[7 - i] = self.input[self.pos + i];
-            }
+            // CBOR uses big-endian (network byte order).
+            // Read 8 bytes, convert from big-endian to native.
+            const raw_bytes = self.input[self.pos..][0..8];
             self.pos += 8;
-
-            const value = std.mem.bytesToValue(f64, &bytes);
+            const be_bits = std.mem.bytesToValue(u64, raw_bytes);
+            const native_bits = std.mem.bigToNative(u64, be_bits);
+            const value: f64 = @bitCast(native_bits);
             return CBOR.Value{ .float = value };
         } else {
             return CBOR.Error.UnsupportedType;

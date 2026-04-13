@@ -212,8 +212,10 @@ pub const NullSafetyTracker = struct {
         loc: ast.SourceLocation,
     ) !NullableType {
         const func = self.functions.get(func_name) orelse {
-            // Unknown function - assume non-null return
-            return NullableType.nonNull(Type.Int);
+            // Unknown function — conservatively treat return as nullable so callers
+            // are forced to null-check.  This prevents silent null dereferences from
+            // FFI calls or dynamically resolved functions.
+            return NullableType.nullable(Type.Int);
         };
 
         // Check argument count

@@ -935,9 +935,17 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
         std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
 
         // Register module with incremental compiler for future builds
-        if (inc_compiler) |ic| {
-            _ = ic;
-            // TODO: Re-enable after updating cache API
+        if (inc_compiler) |*ic| {
+            ic.storeCompilation(
+                file_path,
+                source,
+                &.{}, // AST data — not serialised in the current pipeline
+                &.{}, // type info — not serialised in the current pipeline
+                &.{}, // object data — binary is written directly to disk
+                &.{}, // no tracked dependencies yet
+            ) catch |cache_err| {
+                std.debug.print("{s}Warning:{s} Failed to update incremental cache: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), cache_err });
+            };
             std.debug.print("{s}Cache updated:{s} Module registered for incremental compilation\n", .{ Color.Cyan.code(), Color.Reset.code() });
         }
     }

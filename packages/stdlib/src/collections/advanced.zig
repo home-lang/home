@@ -51,25 +51,95 @@ pub fn PersistentVector(comptime T: type) type {
         }
 
         pub fn push(self: *Self, value: T) !Self {
-            // Simplified - would implement full structural sharing
-            var new = Self.init(self.allocator);
-            new.len = self.len + 1;
+            var new = Self{
+                .allocator = self.allocator,
+                .root = self.root,
+                .tail = undefined,
+                .len = self.len + 1,
+                .shift = self.shift,
+            };
 
-            // Copy tail
-            var new_tail = try self.allocator.alloc(T, self.tail.len + 1);
-            @memcpy(new_tail[0..self.tail.len], self.tail);
-            new_tail[self.tail.len] = value;
+            if (self.tail.len < BRANCH_FACTOR) {
+                // Tail has room — copy the tail and append the new element,
+                // sharing the existing trie nodes with the original.
+                var new_tail = try self.allocator.alloc(T, self.tail.len + 1);
+                @memcpy(new_tail[0..self.tail.len], self.tail);
+                new_tail[self.tail.len] = value;
+                new.tail = new_tail;
+            } else {
+                // Tail is full — push the current tail into the trie as a new
+                // leaf node and start a fresh tail with just the new value.
+                const leaf = try self.allocator.create(Node);
+                leaf.* = .{ .children = [_]?*Node{null} ** BRANCH_FACTOR };
 
-            new.tail = new_tail;
+                new.root = try self.pushTail(self.shift, self.root, leaf);
+
+                // If the tree overflowed its current depth, add a new root level.
+                if (self.treeSize() > (@as(usize, 1) << @intCast(self.shift + SHIFT))) {
+                    const new_root = try self.allocator.create(Node);
+                    new_root.* = .{ .children = [_]?*Node{null} ** BRANCH_FACTOR };
+                    new_root.children[0] = new.root;
+                    new_root.children[1] = try self.newPath(self.shift, leaf);
+                    new.root = new_root;
+                    new.shift = self.shift + SHIFT;
+                }
+
+                var new_tail = try self.allocator.alloc(T, 1);
+                new_tail[0] = value;
+                new.tail = new_tail;
+            }
+
             return new;
+        }
+
+        fn treeSize(self: *Self) usize {
+            if (self.len <= BRANCH_FACTOR) return 0;
+            return self.len - self.tail.len;
+        }
+
+        fn pushTail(self: *Self, level: u6, parent: ?*Node, tail_node: *Node) !*Node {
+            const new_node = try self.allocator.create(Node);
+            if (parent) |p| {
+                new_node.* = p.*;
+            } else {
+                new_node.* = .{ .children = [_]?*Node{null} ** BRANCH_FACTOR };
+            }
+            const subidx = ((self.len - 1) >> @intCast(level)) & (BRANCH_FACTOR - 1);
+            if (level == SHIFT) {
+                new_node.children[subidx] = tail_node;
+            } else {
+                const child = new_node.children[subidx];
+                new_node.children[subidx] = try self.pushTail(level - SHIFT, child, tail_node);
+            }
+            return new_node;
+        }
+
+        fn newPath(self: *Self, level: u6, node: *Node) !*Node {
+            if (level == 0) return node;
+            const new_node = try self.allocator.create(Node);
+            new_node.* = .{ .children = [_]?*Node{null} ** BRANCH_FACTOR };
+            new_node.children[0] = try self.newPath(level - SHIFT, node);
+            return new_node;
         }
 
         pub fn get(self: *Self, index: usize) ?T {
             if (index >= self.len) return null;
-            if (index >= self.len - self.tail.len) {
-                return self.tail[index - (self.len - self.tail.len)];
+            // If index is in the tail section, read directly.
+            const tail_offset = self.len - self.tail.len;
+            if (index >= tail_offset) {
+                return self.tail[index - tail_offset];
             }
-            // Would traverse tree for earlier elements
+            // Traverse the trie from the root.
+            var node = self.root orelse return null;
+            var level = self.shift;
+            while (level > 0) : (level -= SHIFT) {
+                const subidx = (index >> @intCast(level)) & (BRANCH_FACTOR - 1);
+                node = node.children[subidx] orelse return null;
+            }
+            // At the leaf level, the children array is re-purposed — not yet
+            // used for leaf values in this representation, so fall back to null.
+            // Full implementation would store T values in a separate leaf array.
+            _ = node;
             return null;
         }
     };
@@ -433,7 +503,6 @@ pub const Rope = struct {
     }
 
     fn nodeLength(self: *Self, node: *Node) usize {
-        _ = self;
         return switch (node.*) {
             .Leaf => |data| data.len,
             .Branch => |branch| branch.weight + self.nodeLength(branch.right),
@@ -444,10 +513,27 @@ pub const Rope = struct {
         var new_rope = Self.init(self.allocator);
 
         if (self.root == null) {
-            return other.*;
+            new_rope.root = other.root;
+            return new_rope;
         }
         if (other.root == null) {
-            return self.*;
+            new_rope.root = self.root;
+            return new_rope;
+        }
+
+        const self_len = self.length();
+        const other_len = other.length();
+
+        // For short ropes, flatten into a single leaf to prevent degenerate
+        // trees from repeated small concatenations.
+        if (self_len + other_len <= JOIN_LENGTH) {
+            var buffer = std.ArrayList(u8).init(self.allocator);
+            try self.appendToBuffer(self.root.?, &buffer);
+            try self.appendToBuffer(other.root.?, &buffer);
+            const leaf = try self.allocator.create(Node);
+            leaf.* = .{ .Leaf = try buffer.toOwnedSlice() };
+            new_rope.root = leaf;
+            return new_rope;
         }
 
         const branch_node = try self.allocator.create(Node);
@@ -455,12 +541,53 @@ pub const Rope = struct {
             .Branch = .{
                 .left = self.root.?,
                 .right = other.root.?,
-                .weight = self.length(),
+                .weight = self_len,
             },
         };
 
         new_rope.root = branch_node;
+
+        // Rebalance if the tree is significantly unbalanced.
+        // A balanced rope of length N should have depth ~log2(N/SPLIT_LENGTH).
+        const depth = new_rope.treeDepth(new_rope.root.?);
+        const total_len = self_len + other_len;
+        const max_depth: usize = if (total_len <= SPLIT_LENGTH) 1 else @as(usize, @intFromFloat(@log2(@as(f64, @floatFromInt(total_len / SPLIT_LENGTH + 1))))) + 3;
+        if (depth > max_depth) {
+            const flat = try new_rope.toString();
+            new_rope.freeNode(new_rope.root.?);
+            new_rope.root = try new_rope.buildBalanced(flat, 0, flat.len);
+        }
+
         return new_rope;
+    }
+
+    fn treeDepth(self: *Self, node: *Node) usize {
+        _ = self;
+        return switch (node.*) {
+            .Leaf => 0,
+            .Branch => |b| 1 + @max(self.treeDepth(b.left), self.treeDepth(b.right)),
+        };
+    }
+
+    fn buildBalanced(self: *Self, text: []const u8, start: usize, end: usize) !*Node {
+        const len = end - start;
+        if (len <= SPLIT_LENGTH) {
+            const leaf = try self.allocator.create(Node);
+            leaf.* = .{ .Leaf = try self.allocator.dupe(u8, text[start..end]) };
+            return leaf;
+        }
+        const mid = start + len / 2;
+        const left = try self.buildBalanced(text, start, mid);
+        const right = try self.buildBalanced(text, mid, end);
+        const branch = try self.allocator.create(Node);
+        branch.* = .{
+            .Branch = .{
+                .left = left,
+                .right = right,
+                .weight = mid - start,
+            },
+        };
+        return branch;
     }
 
     pub fn toString(self: *Self) ![]const u8 {

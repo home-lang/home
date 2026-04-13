@@ -359,6 +359,13 @@ pub const WebSocket = struct {
             masking_key = key;
         }
 
+        // Guard against payloads too large for the address space (e.g. u64
+        // value > usize max on 32-bit targets) and enforce a reasonable
+        // maximum to prevent denial-of-service via huge frames.
+        const max_payload: u64 = 16 * 1024 * 1024; // 16 MiB limit
+        if (payload_len > max_payload) {
+            return error.PayloadTooLarge;
+        }
         const payload = try self.allocator.alloc(u8, @intCast(payload_len));
         errdefer self.allocator.free(payload);
 

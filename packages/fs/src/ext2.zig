@@ -636,7 +636,88 @@ pub const Ext2Filesystem = struct {
             return;
         }
 
-        // Double indirect and triple indirect not implemented
+        // Double indirect (13): indexes blocks_per_indirect^2 blocks
+        const double_indirect_max = 12 + blocks_per_indirect + blocks_per_indirect * blocks_per_indirect;
+        if (block_index < double_indirect_max) {
+            if (inode.i_block[13] == 0) {
+                inode.i_block[13] = try self.allocateBlock();
+                // Zero out the new indirect block
+                var zero_buf: [4096]u8 = [_]u8{0} ** 4096;
+                try self.writeBlock(inode.i_block[13], &zero_buf);
+            }
+
+            const adjusted = block_index - 12 - blocks_per_indirect;
+            const l1_index = adjusted / blocks_per_indirect;
+            const l2_index = adjusted % blocks_per_indirect;
+
+            // Read first-level indirect table
+            var l1_buffer: [4096]u8 = undefined;
+            try self.readBlock(inode.i_block[13], &l1_buffer);
+            const l1_table = @as([*]u32, @ptrCast(@alignCast(&l1_buffer)));
+
+            if (l1_table[l1_index] == 0) {
+                l1_table[l1_index] = try self.allocateBlock();
+                try self.writeBlock(inode.i_block[13], &l1_buffer);
+                var zero_buf: [4096]u8 = [_]u8{0} ** 4096;
+                try self.writeBlock(l1_table[l1_index], &zero_buf);
+            }
+
+            // Read second-level indirect table
+            var l2_buffer: [4096]u8 = undefined;
+            try self.readBlock(l1_table[l1_index], &l2_buffer);
+            const l2_table = @as([*]u32, @ptrCast(@alignCast(&l2_buffer)));
+            l2_table[l2_index] = block_num;
+            try self.writeBlock(l1_table[l1_index], &l2_buffer);
+            return;
+        }
+
+        // Triple indirect (14): indexes blocks_per_indirect^3 blocks
+        const triple_indirect_max = double_indirect_max + blocks_per_indirect * blocks_per_indirect * blocks_per_indirect;
+        if (block_index < triple_indirect_max) {
+            if (inode.i_block[14] == 0) {
+                inode.i_block[14] = try self.allocateBlock();
+                var zero_buf: [4096]u8 = [_]u8{0} ** 4096;
+                try self.writeBlock(inode.i_block[14], &zero_buf);
+            }
+
+            const adjusted = block_index - double_indirect_max;
+            const l1_index = adjusted / (blocks_per_indirect * blocks_per_indirect);
+            const l2_index = (adjusted / blocks_per_indirect) % blocks_per_indirect;
+            const l3_index = adjusted % blocks_per_indirect;
+
+            // Read first-level indirect table
+            var l1_buffer: [4096]u8 = undefined;
+            try self.readBlock(inode.i_block[14], &l1_buffer);
+            const l1_table = @as([*]u32, @ptrCast(@alignCast(&l1_buffer)));
+
+            if (l1_table[l1_index] == 0) {
+                l1_table[l1_index] = try self.allocateBlock();
+                try self.writeBlock(inode.i_block[14], &l1_buffer);
+                var zero_buf: [4096]u8 = [_]u8{0} ** 4096;
+                try self.writeBlock(l1_table[l1_index], &zero_buf);
+            }
+
+            // Read second-level indirect table
+            var l2_buffer: [4096]u8 = undefined;
+            try self.readBlock(l1_table[l1_index], &l2_buffer);
+            const l2_table = @as([*]u32, @ptrCast(@alignCast(&l2_buffer)));
+
+            if (l2_table[l2_index] == 0) {
+                l2_table[l2_index] = try self.allocateBlock();
+                try self.writeBlock(l1_table[l1_index], &l2_buffer);
+                var zero_buf: [4096]u8 = [_]u8{0} ** 4096;
+                try self.writeBlock(l2_table[l2_index], &zero_buf);
+            }
+
+            // Read third-level indirect table and write the block pointer
+            var l3_buffer: [4096]u8 = undefined;
+            try self.readBlock(l2_table[l2_index], &l3_buffer);
+            const l3_table = @as([*]u32, @ptrCast(@alignCast(&l3_buffer)));
+            l3_table[l3_index] = block_num;
+            try self.writeBlock(l2_table[l2_index], &l3_buffer);
+            return;
+        }
+
         return error.BlockIndexTooLarge;
     }
 

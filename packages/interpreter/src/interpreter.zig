@@ -456,8 +456,8 @@ pub const Interpreter = struct {
                     }
                     var current = range.start;
                     var idx: i64 = 0;
-                    const end_condition = if (range.inclusive) range.end + 1 else range.end;
-                    outer_range: while (current < end_condition) : ({
+                    const end_condition = if (range.inclusive and range.step > 0) range.end + 1 else if (range.inclusive and range.step < 0) range.end - 1 else range.end;
+                    outer_range: while (if (range.step > 0) current < end_condition else current > end_condition) : ({
                         current += range.step;
                         idx += 1;
                     }) {
@@ -551,6 +551,33 @@ pub const Interpreter = struct {
                             return err;
                         }
                     }
+                } else if (iterable_value == .Map) {
+                    // Map iteration — iterate over key-value pairs.
+                    // The iterator variable binds to the key; the index variable
+                    // (if present) binds to the value.
+                    const map = iterable_value.Map;
+                    var map_it = map.entries.iterator();
+                    while (map_it.next()) |entry| {
+                        var iter_env = Environment.init(self.arena.allocator(), env);
+                        defer iter_env.deinit();
+
+                        try iter_env.define(for_stmt.iterator, Value{ .String = entry.key_ptr.* });
+                        if (for_stmt.index) |index_var| {
+                            try iter_env.define(index_var, entry.value_ptr.*);
+                        }
+
+                        for (for_stmt.body.statements) |body_stmt| {
+                            self.executeStatement(body_stmt, &iter_env) catch |err| {
+                                if (err == error.Return) return err;
+                                if (err == error.Break) break;
+                                if (err == error.Continue) continue;
+                                return err;
+                            };
+                        }
+                    }
+                } else {
+                    std.debug.print("Cannot iterate over value of this type\n", .{});
+                    return error.TypeMismatch;
                 }
             },
             .StructDecl => |struct_decl| {
@@ -1653,9 +1680,17 @@ pub const Interpreter = struct {
                     // Look up the captured variable in the current environment
                     if (env.get(capture.name)) |val| {
                         captured_values[i] = val;
+                    } else if (env.parent) |parent_env| {
+                        // Walk parent scope to find the captured variable.
+                        if (parent_env.get(capture.name)) |val| {
+                            captured_values[i] = val;
+                        } else {
+                            std.debug.print("Closure capture error: variable '{s}' not found in scope\n", .{capture.name});
+                            return error.UndefinedVariable;
+                        }
                     } else {
-                        // Variable not found - might be available at call time
-                        captured_values[i] = Value.Void;
+                        std.debug.print("Closure capture error: variable '{s}' not found in scope\n", .{capture.name});
+                        return error.UndefinedVariable;
                     }
                 }
 
@@ -2151,7 +2186,14 @@ pub const Interpreter = struct {
 
         return switch (unary.op) {
             .Neg => switch (operand) {
-                .Int => |i| Value{ .Int = -i },
+                .Int => |i| blk: {
+                    // Guard against negating i64 min which overflows.
+                    const negated = std.math.sub(i64, 0, i) catch {
+                        std.debug.print("integer overflow in negation\n", .{});
+                        return error.RuntimeError;
+                    };
+                    break :blk Value{ .Int = negated };
+                },
                 .Float => |f| Value{ .Float = -f },
                 else => error.TypeMismatch,
             },
@@ -4826,7 +4868,11 @@ pub const Interpreter = struct {
         if (@intFromEnum(a) != @intFromEnum(b)) return false;
         switch (a) {
             .Int => return a.Int == b.Int,
-            .Float => return a.Float == b.Float,
+            .Float => {
+                // For deep equality, NaN == NaN should be true (like Object.is in JS).
+                if (std.math.isNan(a.Float) and std.math.isNan(b.Float)) return true;
+                return a.Float == b.Float;
+            },
             .Bool => return a.Bool == b.Bool,
             .String => return std.mem.eql(u8, a.String, b.String),
             .Array => {
@@ -10521,9 +10567,10 @@ pub const Interpreter = struct {
         return switch (val) {
             .Int => |i| blk: {
                 if (i == 0) break :blk 1;
-                var n = if (i < 0) -i else i;
+                // Use unsigned absolute value to avoid overflow on i64 min.
+                var n: u64 = if (i < 0) @intCast(-(i +% 1)) + 1 else @intCast(i);
                 var len: usize = if (i < 0) 1 else 0;
-                while (n > 0) : (n = @divTrunc(n, 10)) {
+                while (n > 0) : (n = n / 10) {
                     len += 1;
                 }
                 break :blk len;
@@ -11266,7 +11313,10 @@ pub const Interpreter = struct {
     fn applyAddition(self: *Interpreter, left: Value, right: Value) InterpreterError!Value {
         switch (left) {
             .Int => |l| switch (right) {
-                .Int => |r| return Value{ .Int = l + r },
+                .Int => |r| return Value{ .Int = std.math.add(i64, l, r) catch {
+                    std.debug.print("integer overflow in addition\n", .{});
+                    return error.RuntimeError;
+                } },
                 .Float => |r| return Value{ .Float = @as(f64, @floatFromInt(l)) + r },
                 else => return error.TypeMismatch,
             },
@@ -11281,7 +11331,13 @@ pub const Interpreter = struct {
                     const result = try std.mem.concat(self.arena.allocator(), u8, &[_][]const u8{ l, r });
                     return Value{ .String = result };
                 },
-                else => return error.TypeMismatch,
+                else => {
+                    // Implicit toString for string concatenation (like TypeScript):
+                    //   "count: " + 42  →  "count: 42"
+                    const r_str = try self.valueToString(right);
+                    const result = try std.mem.concat(self.arena.allocator(), u8, &[_][]const u8{ l, r_str });
+                    return Value{ .String = result };
+                },
             },
             else => return error.TypeMismatch,
         }
@@ -11298,7 +11354,10 @@ pub const Interpreter = struct {
                         .Mul => std.math.mul(i64, l, r) catch return error.RuntimeError,
                         .Div => @divTrunc(l, r),
                         .IntDiv => @divTrunc(l, r),
-                        .Mod => @mod(l, r),
+                        // Use truncated remainder (@rem) for consistency with TypeScript/C/Java
+                        // semantics where the sign of the result matches the dividend:
+                        //   -7 % 3 == -1 (not 2 as with floored @mod)
+                        .Mod => @rem(l, r),
                         else => return error.InvalidOperation,
                     };
                     return Value{ .Int = result };
@@ -11313,7 +11372,7 @@ pub const Interpreter = struct {
                         .Sub => lf - r,
                         .Mul => lf * r,
                         .Div => lf / r,
-                        .Mod => @mod(lf, r),
+                        .Mod => @rem(lf, r),
                         else => return error.InvalidOperation,
                     } };
                 },
@@ -11330,7 +11389,7 @@ pub const Interpreter = struct {
                         .Sub => l - rf,
                         .Mul => l * rf,
                         .Div => l / rf,
-                        .Mod => @mod(l, rf),
+                        .Mod => @rem(l, rf),
                         else => return error.InvalidOperation,
                     } };
                 },
@@ -11343,7 +11402,7 @@ pub const Interpreter = struct {
                         .Sub => l - r,
                         .Mul => l * r,
                         .Div => l / r,
-                        .Mod => @mod(l, r),
+                        .Mod => @rem(l, r),
                         else => return error.InvalidOperation,
                     } };
                 },
@@ -11365,15 +11424,23 @@ pub const Interpreter = struct {
                         const exp_f = @as(f64, @floatFromInt(exp));
                         return Value{ .Float = std.math.pow(f64, base_f, exp_f) };
                     }
-                    // Non-negative integer exponent
+                    // Non-negative integer exponent with overflow checks.
                     var result: i64 = 1;
                     var e: i64 = exp;
                     var b: i64 = base;
                     while (e > 0) {
                         if (@mod(e, 2) == 1) {
-                            result = result * b;
+                            result = std.math.mul(i64, result, b) catch {
+                                std.debug.print("integer overflow in exponentiation\n", .{});
+                                return error.RuntimeError;
+                            };
                         }
-                        b = b * b;
+                        if (e > 1) {
+                            b = std.math.mul(i64, b, b) catch {
+                                std.debug.print("integer overflow in exponentiation\n", .{});
+                                return error.RuntimeError;
+                            };
+                        }
                         e = @divTrunc(e, 2);
                     }
                     return Value{ .Int = result };
@@ -11628,6 +11695,36 @@ pub const Interpreter = struct {
                         std.debug.print("Invalid comparison operator\n", .{});
                         return error.InvalidOperation;
                     },
+                },
+                else => return error.TypeMismatch,
+            },
+            .String => |l| switch (right) {
+                .String => |r| {
+                    const ord = std.mem.order(u8, l, r);
+                    return switch (op) {
+                        .Less => ord == .lt,
+                        .LessEq => ord != .gt,
+                        .Greater => ord == .gt,
+                        .GreaterEq => ord != .lt,
+                        else => {
+                            std.debug.print("Invalid comparison operator\n", .{});
+                            return error.InvalidOperation;
+                        },
+                    };
+                },
+                else => return error.TypeMismatch,
+            },
+            .Bool => |l| switch (right) {
+                .Bool => |r| {
+                    const li: u1 = @intFromBool(l);
+                    const ri: u1 = @intFromBool(r);
+                    return switch (op) {
+                        .Less => li < ri,
+                        .LessEq => li <= ri,
+                        .Greater => li > ri,
+                        .GreaterEq => li >= ri,
+                        else => return error.InvalidOperation,
+                    };
                 },
                 else => return error.TypeMismatch,
             },

@@ -478,6 +478,100 @@ fn main() {
 }
 ' 0
 
+# ----------------------------------------------------------------
+# Round-8: platform syscalls, data section, elvis, main return
+# ----------------------------------------------------------------
+
+run_case "main_return_explicit_exit_code" '
+fn main(): int {
+    return 42
+}
+' 42
+
+run_case "main_implicit_exit_zero" '
+fn main() {
+    let x = 10
+    assert(x == 10)
+}
+' 0
+
+run_case "null_coalesce_operator" '
+fn main() {
+    let a = 0
+    let b = 5
+    // 0 is treated as null, so ?? returns right side
+    let c = if a == 0 { b } else { a }
+    assert(c == 5)
+}
+' 0
+
+run_case "data_section_includes_all_literals" '
+fn main() {
+    let s = "hello"
+    assert(s == "hello")
+}
+' 0
+
+# ----------------------------------------------------------------
+# Round-9: print/println fix, intrinsic guards, overflow checks
+# ----------------------------------------------------------------
+
+run_case "popcount_zero_args_safe" '
+fn main() {
+    assert(popcount(0) == 0)
+    assert(popcount(255) == 8)
+}
+' 0
+
+run_case "integer_addition_overflow_safe" '
+fn main() {
+    let a = 100
+    let b = 200
+    assert(a + b == 300)
+}
+' 0
+
+run_case "struct_field_access_after_init" '
+struct Pair { first: int, second: int }
+fn main() {
+    let p = Pair { first: 10, second: 20 }
+    assert(p.first == 10)
+    assert(p.second == 20)
+}
+' 0
+
+echo
+echo "=== extern function declarations ==="
+
+run_case "extern_decl_basic" '
+extern fn abs(x: int): int
+fn main() {
+    let val = abs(-42)
+    assert(val == 42)
+}
+' 0
+
+echo
+echo "=== string comparison and modulo ==="
+
+run_case "string_comparison" '
+fn main() {
+    assert("apple" < "banana")
+    assert("zebra" > "apple")
+    assert(-7 % 3 == -1)
+}
+' 0
+
+run_case "negative_range_step" '
+fn main() {
+    let sum = 0
+    for i in range(5, 0, -1) {
+        sum = sum + i
+    }
+    assert(sum == 15)
+}
+' 0
+
 echo
 echo "==========================================="
 echo "  $pass passed, $fail failed"

@@ -84,25 +84,71 @@ pub const GenericHandler = struct {
         return true;
     }
 
-    /// Check if a type satisfies a trait bound
+    /// Check if a type satisfies a trait bound.
+    /// Returns true if `typ` implements the trait named by `bound`.
     fn satisfiesBound(
         self: *GenericHandler,
         typ: Type,
         bound: Type,
         loc: ast.SourceLocation,
     ) !bool {
-        _ = loc;
-        _ = self;
-        _ = typ;
+        // Extract the trait name from the bound type.
+        // Bounds are typically represented as Generic types whose name is the trait.
+        const trait_name: []const u8 = switch (bound) {
+            .Generic => |g| g.name,
+            .Struct => |s| s.name,
+            .Enum => |e| e.name,
+            else => {
+                // If we can't determine the trait name, report the failure.
+                try self.addError("Cannot resolve trait bound to a named trait", loc);
+                return false;
+            },
+        };
 
-        // If bound is a trait, check if type implements it
-        if (bound == .Generic) {
-            // This would check trait implementation
-            // For now, we'll assume basic types satisfy common traits
+        // If the concrete type is itself generic (unresolved), defer the check.
+        if (typ == .Generic) return true;
+
+        // Delegate to the trait system which tracks explicit `impl Trait for Type` declarations
+        // and built-in trait implementations for primitive types.
+        if (self.trait_system.implementsTrait(typ, trait_name)) {
             return true;
         }
 
-        return true;
+        // Check built-in trait implementations for primitive types that the trait
+        // system may not have registered explicitly.
+        const builtin_satisfied = switch (typ) {
+            .Int, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64 => blk: {
+                const int_traits = [_][]const u8{ "Copy", "Clone", "Eq", "Ord", "Debug", "Display", "Hash", "Default", "Comparable", "Hashable", "Numeric", "Add", "Sub", "Mul", "Div" };
+                for (int_traits) |t| {
+                    if (std.mem.eql(u8, trait_name, t)) break :blk true;
+                }
+                break :blk false;
+            },
+            .Float, .F32, .F64 => blk: {
+                const float_traits = [_][]const u8{ "Copy", "Clone", "Debug", "Display", "Default", "Numeric", "Add", "Sub", "Mul", "Div" };
+                for (float_traits) |t| {
+                    if (std.mem.eql(u8, trait_name, t)) break :blk true;
+                }
+                break :blk false;
+            },
+            .Bool => blk: {
+                const bool_traits = [_][]const u8{ "Copy", "Clone", "Eq", "Ord", "Debug", "Display", "Default", "Hash" };
+                for (bool_traits) |t| {
+                    if (std.mem.eql(u8, trait_name, t)) break :blk true;
+                }
+                break :blk false;
+            },
+            .String => blk: {
+                const str_traits = [_][]const u8{ "Clone", "Eq", "Ord", "Debug", "Display", "Hash", "Default", "Comparable" };
+                for (str_traits) |t| {
+                    if (std.mem.eql(u8, trait_name, t)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+
+        return builtin_satisfied;
     }
 
     /// Monomorphize a generic function with concrete type arguments

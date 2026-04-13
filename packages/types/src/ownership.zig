@@ -184,14 +184,44 @@ pub const OwnershipTracker = struct {
         }
     }
 
-    /// Check if a type is movable (not Copy)
+    /// Check if a type is movable (not Copy).
+    /// Primitive types and small value types are Copy (not movable).
+    /// Heap-allocated and compound types are movable and subject to ownership rules.
     fn isMovable(self: *OwnershipTracker, typ: Type) bool {
         _ = self;
-        _ = typ;
-        // For now, disable move semantics to avoid false positives
-        // In a real implementation, we'd track whether variables are const/global
-        // and only move heap-allocated types
-        return false;
+        return switch (typ) {
+            // Primitive scalar types are implicitly Copy — assigning them copies
+            // the bits, so there is no ownership transfer.
+            .Int, .I8, .I16, .I32, .I64,
+            .U8, .U16, .U32, .U64,
+            .Float, .F32, .F64,
+            .Bool, .Char, .Void,
+            => false,
+
+            // References and pointers are Copy (the pointer value is copied).
+            .Pointer, .Reference, .MutableReference => false,
+
+            // Heap-owning types: String, Array, Map, structs, enums with data,
+            // closures, and Result types transfer ownership on assignment.
+            .String, .Array, .Map, .Struct, .Closure, .Result => true,
+
+            // Tuples are movable if they could contain non-Copy fields.
+            .Tuple => true,
+
+            // Optional wraps another type — movable if the inner type is.
+            .Optional => true,
+
+            // Enums without data are Copy; with data they are movable.
+            .Enum => true,
+
+            // Generic / unresolved types — conservatively treat as movable so
+            // ownership violations surface early rather than being silently missed.
+            .Generic => true,
+
+            // Everything else (type variables, special forms) — default to Copy
+            // to avoid false positives in edge cases.
+            else => false,
+        };
     }
 
     /// Borrow a variable (immutable or mutable based on parameter)

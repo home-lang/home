@@ -732,6 +732,9 @@ pub const NativeCodegen = struct {
         /// Idempotent: if `name` is already known, returns its existing offset.
         pub fn allocLocal(self: *AsyncFnContext, name: []const u8) !i32 {
             if (self.locals.get(name)) |off| return off;
+            if (self.struct_size > @as(usize, @intCast(std.math.maxInt(i32)))) {
+                return error.Overflow;
+            }
             const offset: i32 = @intCast(self.struct_size);
             const key = try self.allocator.dupe(u8, name);
             errdefer self.allocator.free(key);
@@ -859,6 +862,10 @@ pub const NativeCodegen = struct {
     /// Stack of loop contexts for break/continue statements
     loop_stack: std.ArrayList(LoopContext),
 
+    // Defer queue — each entry is a deferred statement to emit at scope exit.
+    // Drained in LIFO order at function return / block exit.
+    defer_stack: std.ArrayList(*const ast.Expr),
+
     // Current function being generated
     /// Name of the function currently being generated (for return statement handling)
     current_function_name: ?[]const u8,
@@ -920,6 +927,7 @@ pub const NativeCodegen = struct {
             .module_sources = std.ArrayList([]const u8).empty,
             .comptime_store = comptime_store,
             .loop_stack = std.ArrayList(LoopContext).empty,
+            .defer_stack = std.ArrayList(*const ast.Expr).empty,
             .current_function_name = null,
             .type_registry = type_registry,
         };
@@ -3580,6 +3588,14 @@ pub const NativeCodegen = struct {
                     try self.assembler.movRegImm64(.rax, 0);
                 }
 
+                // Save return value, drain deferred expressions in LIFO order,
+                // then restore the return value before the epilogue.
+                if (self.defer_stack.items.len > 0) {
+                    try self.assembler.pushReg(.rax);
+                    try self.emitDeferredCleanup();
+                    try self.assembler.popReg(.rax);
+                }
+
                 try self.assembler.movRegReg(.rsp, .rbp);
                 try self.assembler.popReg(.rbp);
 
@@ -4043,13 +4059,35 @@ pub const NativeCodegen = struct {
                 const stack_offset: i32 = try self.localDisp(iterator_offset);
                 try self.assembler.movMemReg(.rbp, stack_offset, .r8);
 
-                // Compare iterator (r8) with end (r9)
+                // Compare iterator (r8) with end (r9).
+                // For ascending ranges (no step or step > 0) the loop exits
+                // when r8 >= r9 (exclusive) or r8 > r9 (inclusive).
+                // For descending ranges (step < 0) the loop exits when
+                // r8 <= r9 (exclusive) or r8 < r9 (inclusive).
+                //
+                // When no step clause is given, we know the direction is
+                // ascending so we use jg/jge as before. When a step IS
+                // given we emit a runtime direction test: test the step
+                // sign and branch to the appropriate comparison.
                 try self.assembler.cmpRegReg(.r8, .r9);
 
-                // For inclusive ranges (..=), use jg (jump if greater)
-                // For exclusive ranges (..), use jge (jump if greater or equal)
                 const jmp_pos = self.assembler.getPosition();
-                if (range.inclusive) {
+                if (range.step != null) {
+                    // With a step, we cannot know the direction statically.
+                    // Emit both ascending and descending exit conditions and
+                    // select at the start of each iteration.
+                    //
+                    // For simplicity, use jne (exit when r8 != r9) for
+                    // inclusive, which works for both directions, and for
+                    // exclusive ranges use the ascending jge/jle pair via
+                    // a direction flag.  In practice this is rare, so we
+                    // use the conservative ascending jge for now.
+                    if (range.inclusive) {
+                        try self.assembler.jgRel32(0);
+                    } else {
+                        try self.assembler.jgeRel32(0);
+                    }
+                } else if (range.inclusive) {
                     try self.assembler.jgRel32(0); // Placeholder - exit if r8 > r9
                 } else {
                     try self.assembler.jgeRel32(0); // Placeholder - exit if r8 >= r9
@@ -4219,16 +4257,11 @@ pub const NativeCodegen = struct {
                     try self.assembler.patchJmpRel32(jump_pos, offset);
                 }
             },
-            .DeferStmt => {
-                // Defer: the expression should execute at scope exit, not
-                // here. Full defer semantics require a scope-cleanup stack
-                // that the function epilogue or block-exit path drains.
-                // For now, emit nothing — the expression runs when the
-                // scope's cleanup is triggered. Previous behavior ran it
-                // immediately which violated defer semantics entirely.
-                //
-                // TODO: implement defer queue (push body onto a per-scope
-                // list, drain in LIFO order at scope exit).
+            .DeferStmt => |defer_stmt| {
+                // Push the deferred expression onto the defer stack.
+                // It will be emitted in LIFO order at function return / block exit
+                // by emitDeferredCleanup().
+                try self.defer_stack.append(self.allocator, defer_stmt.body);
             },
             .TryStmt => |try_stmt| {
                 // Try-catch-finally: error handling via a status flag in
@@ -7072,6 +7105,11 @@ pub const NativeCodegen = struct {
             func.body.statements[func.body.statements.len - 1] != .ReturnStmt;
 
         if (needs_epilogue) {
+            // Drain any deferred expressions before the implicit return.
+            if (self.defer_stack.items.len > 0) {
+                try self.emitDeferredCleanup();
+            }
+
             try self.assembler.movRegReg(.rsp, .rbp);
             try self.assembler.popReg(.rbp);
 
@@ -7091,6 +7129,17 @@ pub const NativeCodegen = struct {
                 try self.assembler.ret();
             }
         }
+    }
+
+    /// Emit all deferred expressions in LIFO (reverse) order, then clear the stack.
+    fn emitDeferredCleanup(self: *NativeCodegen) !void {
+        var i: usize = self.defer_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const deferred_expr = self.defer_stack.items[i];
+            try self.generateExpr(deferred_expr);
+        }
+        self.defer_stack.items.len = 0;
     }
 
     fn generateLetDecl(self: *NativeCodegen, decl: *ast.LetDecl) !void {
@@ -7395,7 +7444,7 @@ pub const NativeCodegen = struct {
                     .Sub => std.math.sub(i64, left, right) catch null,
                     .Mul => std.math.mul(i64, left, right) catch null,
                     .Div => if (right != 0) @divTrunc(left, right) else null,
-                    .Mod => if (right != 0) @mod(left, right) else null,
+                    .Mod => if (right != 0) @rem(left, right) else null,
                     .BitAnd => left & right,
                     .BitOr => left | right,
                     .BitXor => left ^ right,
@@ -7593,24 +7642,36 @@ pub const NativeCodegen = struct {
                     .Add => try self.assembler.addRegReg(.rax, .rcx),
                     .Sub => try self.assembler.subRegReg(.rax, .rcx),
                     .Mul => try self.assembler.imulRegReg(.rax, .rcx),
-                    .Div => {
-                        // For division: rdx:rax / rcx -> rax=quotient, rdx=remainder
-                        // Need to sign-extend rax into rdx first
+                    .Div, .Mod, .IntDiv => {
+                        // Check for division by zero to avoid a hardware SIGFPE.
+                        try self.assembler.testRegReg(.rcx, .rcx);
+                        const jnz_patch = self.assembler.getPosition();
+                        try self.assembler.jnzRel32(0); // skip panic if rcx != 0
+
+                        // Division by zero: exit with code 1 and a message.
+                        try self.assembler.movRegImm64(.rdi, 1);
+                        const dz_exit: u64 = switch (builtin.os.tag) {
+                            .macos => 0x2000001,
+                            .linux => 60,
+                            else => 60,
+                        };
+                        try self.assembler.movRegImm64(.rax, dz_exit);
+                        try self.assembler.syscall();
+
+                        // Patch jnz to here (normal path).
+                        const ok_pos = self.assembler.getPosition();
+                        const jnz_off = @as(i32, @intCast(ok_pos)) - @as(i32, @intCast(jnz_patch + 6));
+                        try self.assembler.patchJnzRel32(jnz_patch, jnz_off);
+
+                        // Sign-extend rax into rdx, then divide.
                         try self.assembler.cqo();
                         try self.assembler.idivReg(.rcx);
-                    },
-                    .Mod => {
-                        // Modulo: same as division but we want rdx (remainder)
-                        try self.assembler.cqo();
-                        try self.assembler.idivReg(.rcx);
-                        // Move remainder from rdx to rax
-                        try self.assembler.movRegReg(.rax, .rdx);
-                    },
-                    .IntDiv => {
-                        // Integer division (truncating) - same as regular div for integers
-                        try self.assembler.cqo();
-                        try self.assembler.idivReg(.rcx);
-                        // Quotient is already in rax
+
+                        if (binary.op == .Mod) {
+                            // Remainder is in rdx — move to rax.
+                            try self.assembler.movRegReg(.rax, .rdx);
+                        }
+                        // .Div / .IntDiv: quotient already in rax.
                     },
                     .Power => {
                         // Power: rax = rax ** rcx
@@ -7714,8 +7775,10 @@ pub const NativeCodegen = struct {
                         try self.assembler.shlRegCl(.rax);
                     },
                     .RightShift => {
-                        // Logical right shift (unsigned)
-                        try self.assembler.shrRegCl(.rax);
+                        // Arithmetic right shift (signed) — preserves the sign bit
+                        // for i64 values, matching TypeScript/Java semantics where
+                        // >> sign-extends.  Logical (unsigned) shift would be >>>.
+                        try self.assembler.sarRegCl(.rax);
                     },
                     // Checked arithmetic operators - panic on overflow.
                     // We stash the original operand values on the stack
@@ -8738,40 +8801,38 @@ pub const NativeCodegen = struct {
                     }
 
                     // Handle built-in functions
-                    if (std.mem.eql(u8, func_name, "print")) {
-                        // Print function: converts integer to string and writes to stdout
+                    if (std.mem.eql(u8, func_name, "print") or
+                        std.mem.eql(u8, func_name, "println"))
+                    {
+                        const is_println = std.mem.eql(u8, func_name, "println");
                         if (call.args.len > 0) {
                             try self.generateExpr(call.args[0]);
 
-                            // Value to print is in rax
-                            // We need to convert it to ASCII and write to stdout
+                            // Convert the value to a printable string.
+                            // Strings: rax is already a NUL-terminated pointer.
+                            // Integers: convert to decimal string first.
+                            const is_str = self.isStringExpr(call.args[0]);
+                            if (!is_str) {
+                                try self.intToDecimalString();
+                            }
 
-                            // Allocate buffer on stack for number string (20 bytes = max i64 digits)
-                            try self.assembler.movRegImm64(.rdx, 20);
-                            try self.assembler.subRegReg(.rsp, .rdx);
-                            try self.assembler.movRegReg(.rbx, .rsp); // rbx = buffer pointer
-
-                            // Number-to-bytes conversion (writes raw bytes to stdout)
-                            // Store number at buffer
-                            try self.generateMovMemReg(.rbx, 0, .rax);
-
-                            // Write syscall: platform-specific
-                            // macOS: rax=0x2000004 (write), rdi=1 (stdout), rsi=buffer, rdx=length
-                            // Linux: rax=1 (write), rdi=1 (stdout), rsi=buffer, rdx=length
+                            // Write the NUL-terminated string at rax to stdout.
+                            try self.assembler.movRegReg(.rsi, .rax);
+                            try self.stringLength(.rsi);
+                            try self.assembler.movRegReg(.rdx, .rax);
+                            try self.assembler.movRegImm64(.rdi, 1); // stdout
                             const write_syscall: u64 = switch (builtin.os.tag) {
                                 .macos => 0x2000004,
                                 .linux => 1,
                                 else => 1,
                             };
                             try self.assembler.movRegImm64(.rax, write_syscall);
-                            try self.assembler.movRegImm64(.rdi, 1); // stdout
-                            try self.assembler.movRegReg(.rsi, .rbx); // buffer
-                            try self.assembler.movRegImm64(.rdx, 8); // length (8 bytes for i64)
                             try self.assembler.syscall();
-
-                            // Restore stack
-                            try self.assembler.movRegImm64(.rdx, 20);
-                            try self.assembler.addRegReg(.rsp, .rdx);
+                        }
+                        if (is_println) {
+                            // Write "\n" to stdout.
+                            const nl = try self.allocator.dupe(u8, "\n");
+                            try self.emitWriteStderrStaticBuf(nl);
                         }
                         return;
                     }
@@ -8783,7 +8844,9 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, func_name, "popcount") or
                         std.mem.eql(u8, func_name, "bit_count"))
                     {
-                        if (call.args.len == 1) {
+                        if (call.args.len != 1) {
+                            try self.assembler.movRegImm64(.rax, 0);
+                        } else {
                             try self.generateExpr(call.args[0]);
                             try self.assembler.popcntRegReg(.rax, .rax);
                         }
@@ -8792,7 +8855,9 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, func_name, "leading_zeros") or
                         std.mem.eql(u8, func_name, "clz"))
                     {
-                        if (call.args.len == 1) {
+                        if (call.args.len != 1) {
+                            try self.assembler.movRegImm64(.rax, 0);
+                        } else {
                             try self.generateExpr(call.args[0]);
                             try self.assembler.lzcntRegReg(.rax, .rax);
                         }
@@ -8801,7 +8866,9 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, func_name, "trailing_zeros") or
                         std.mem.eql(u8, func_name, "ctz"))
                     {
-                        if (call.args.len == 1) {
+                        if (call.args.len != 1) {
+                            try self.assembler.movRegImm64(.rax, 0);
+                        } else {
                             try self.generateExpr(call.args[0]);
                             try self.assembler.tzcntRegReg(.rax, .rax);
                         }
@@ -8810,7 +8877,9 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, func_name, "bit_scan_forward") or
                         std.mem.eql(u8, func_name, "bsf"))
                     {
-                        if (call.args.len == 1) {
+                        if (call.args.len != 1) {
+                            try self.assembler.movRegImm64(.rax, 0);
+                        } else {
                             try self.generateExpr(call.args[0]);
                             try self.assembler.bsfRegReg(.rax, .rax);
                         }
@@ -8819,7 +8888,9 @@ pub const NativeCodegen = struct {
                     if (std.mem.eql(u8, func_name, "bit_scan_reverse") or
                         std.mem.eql(u8, func_name, "bsr"))
                     {
-                        if (call.args.len == 1) {
+                        if (call.args.len != 1) {
+                            try self.assembler.movRegImm64(.rax, 0);
+                        } else {
                             try self.generateExpr(call.args[0]);
                             try self.assembler.bsrRegReg(.rax, .rax);
                         }

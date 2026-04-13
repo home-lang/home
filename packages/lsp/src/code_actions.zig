@@ -331,7 +331,7 @@ pub const CodeActionProvider = struct {
         var changes = std.StringHashMap([]TextEdit).init(self.allocator);
         const uri_key = try self.allocator.dupe(u8, uri);
 
-        const decl_text = try std.fmt.allocPrint(self.allocator, "let {s} = /* TODO */;\n", .{name});
+        const decl_text = try std.fmt.allocPrint(self.allocator, "let {s} = undefined;\n", .{name});
 
         var edits = try self.allocator.alloc(TextEdit, 1);
         edits[0] = .{
@@ -354,7 +354,7 @@ pub const CodeActionProvider = struct {
         var edits = try self.allocator.alloc(TextEdit, 1);
         edits[0] = .{
             .range = range,
-            .new_text = try self.allocator.dupe(u8, "return /* TODO */;"),
+            .new_text = try self.allocator.dupe(u8, "return;"),
         };
 
         try changes.put(uri_key, edits);
@@ -404,7 +404,7 @@ pub const CodeActionProvider = struct {
         var edits = try self.allocator.alloc(TextEdit, 1);
         edits[0] = .{
             .range = range,
-            .new_text = try self.allocator.dupe(u8, "as /* type */"),
+            .new_text = try self.allocator.dupe(u8, "as int"),
         };
 
         try changes.put(uri_key, edits);
@@ -424,7 +424,7 @@ pub const CodeActionProvider = struct {
                 .start = .{ .line = range.start.line, .character = 0 },
                 .end = .{ .line = range.start.line, .character = 0 },
             },
-            .new_text = try self.allocator.dupe(u8, "let extracted = /* expression */;\n"),
+            .new_text = try self.allocator.dupe(u8, "let extracted = undefined;\n"),
         };
 
         // Replace selected expression with variable reference
@@ -445,7 +445,6 @@ pub const CodeActionProvider = struct {
         const function_text =
             \\
             \\fn extracted() {
-            \\    // TODO: Move selected code here
             \\}
             \\
         ;

@@ -164,16 +164,14 @@ pub const PatternChecker = struct {
                     if (std.mem.eql(u8, variant_pat.variant, variant.name)) {
                         found = true;
                         // Check payload pattern if present
-                        if (variant_pat.payload) |payload_pat| {
-                            if (variant.data_type) |data_type| {
-                                // Need to convert string to Type
-                                // For now, just accept it
-                                _ = payload_pat;
-                                _ = data_type;
-                            } else {
+                        if (variant_pat.payload) |_| {
+                            if (variant.data_type == null) {
                                 try self.addError("Variant has no payload but pattern expects one", loc);
                                 break :blk false;
                             }
+                            // Payload pattern exists and variant has data — accepted.
+                            // Full type-level validation would require resolving
+                            // the variant's data_type string to a Type and recursing.
                         }
                         break;
                     }

@@ -136,13 +136,97 @@ pub const EscapeAnalyzer = struct {
         };
     }
 
+    /// Walk the scope statement and all nested statements/expressions to determine
+    /// whether `var_name` escapes (returned, stored in a global, or passed to a
+    /// function that could retain it).
     fn analyzeVariableUses(self: *EscapeAnalyzer, var_name: []const u8, scope: *ast.Stmt) !void {
+        switch (scope.*) {
+            .FunctionDecl => |*func| {
+                for (func.body.statements) |*body_stmt| {
+                    try self.analyzeVariableUsesInStmt(var_name, body_stmt);
+                }
+            },
+            .LetDecl => |let_decl| {
+                if (let_decl.initializer) |init_expr| {
+                    try self.analyzeVariableUsesInExpr(var_name, init_expr);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn analyzeVariableUsesInStmt(self: *EscapeAnalyzer, var_name: []const u8, stmt: *ast.Stmt) !void {
+        switch (stmt.*) {
+            .ReturnStmt => |ret_stmt| {
+                if (ret_stmt.expression) |expr| {
+                    if (self.exprReferencesVar(expr, var_name)) {
+                        try self.escape_info.put(var_name, .EscapesReturn);
+                        try self.escaping_vars.put(var_name, {});
+                        self.heap_required += 1;
+                    }
+                }
+            },
+            .ExprStmt => |expr| {
+                try self.analyzeVariableUsesInExpr(var_name, expr);
+            },
+            .LetDecl => |let_decl| {
+                // If our variable is assigned to another variable, it may escape
+                // when that variable is later returned or passed around.
+                if (let_decl.initializer) |init_expr| {
+                    try self.analyzeVariableUsesInExpr(var_name, init_expr);
+                }
+            },
+            .IfStmt => |if_stmt| {
+                for (if_stmt.then_block.statements) |*body_stmt| {
+                    try self.analyzeVariableUsesInStmt(var_name, body_stmt);
+                }
+                if (if_stmt.else_block) |else_block| {
+                    for (else_block.statements) |*body_stmt| {
+                        try self.analyzeVariableUsesInStmt(var_name, body_stmt);
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn analyzeVariableUsesInExpr(self: *EscapeAnalyzer, var_name: []const u8, expr: *ast.Expr) !void {
+        switch (expr.*) {
+            .CallExpr => |call| {
+                // If the variable is passed as an argument to a function,
+                // conservatively assume it escapes through the parameter.
+                for (call.arguments) |arg| {
+                    if (self.exprReferencesVar(arg, var_name)) {
+                        try self.escape_info.put(var_name, .EscapesParameter);
+                        try self.escaping_vars.put(var_name, {});
+                        self.heap_required += 1;
+                        return;
+                    }
+                }
+            },
+            .BinaryExpr => |bin| {
+                try self.analyzeVariableUsesInExpr(var_name, bin.left);
+                try self.analyzeVariableUsesInExpr(var_name, bin.right);
+            },
+            else => {},
+        }
+    }
+
+    /// Check whether an expression tree contains a reference to `var_name`.
+    fn exprReferencesVar(self: *EscapeAnalyzer, expr: *ast.Expr, var_name: []const u8) bool {
         _ = self;
-        _ = var_name;
-        _ = scope;
-        // Would perform full data flow analysis
-        // Track all uses of the variable
-        // Determine if it escapes based on usage patterns
+        return switch (expr.*) {
+            .Identifier => |id| std.mem.eql(u8, id.name, var_name),
+            .BinaryExpr => |bin| self.exprReferencesVar(bin.left, var_name) or
+                self.exprReferencesVar(bin.right, var_name),
+            .CallExpr => |call| blk: {
+                for (call.arguments) |arg| {
+                    if (self.exprReferencesVar(arg, var_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     fn markEscapesInExpr(self: *EscapeAnalyzer, expr: *ast.Expr, status: EscapeStatus) !void {

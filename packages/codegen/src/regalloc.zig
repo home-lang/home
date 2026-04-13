@@ -7,16 +7,16 @@ const IR = @import("optimizer.zig").IR;
 /// Register allocation result
 pub const RegisterAllocation = struct {
     allocator: std.mem.Allocator,
-    /// Maps virtual registers to physical registers (u8 -> u8)
-    assignments: std.AutoHashMap(u8, u8),
+    /// Maps virtual registers to physical registers (u16 -> u16)
+    assignments: std.AutoHashMap(u16, u16),
     /// Spilled registers that need stack slots
-    spilled: std.ArrayList(u8),
+    spilled: std.ArrayList(u16),
 
     pub fn init(allocator: std.mem.Allocator) RegisterAllocation {
         return .{
             .allocator = allocator,
-            .assignments = std.AutoHashMap(u8, u8).init(allocator),
-            .spilled = std.ArrayList(u8).empty,
+            .assignments = std.AutoHashMap(u16, u16).init(allocator),
+            .spilled = std.ArrayList(u16).empty,
         };
     }
 
@@ -25,11 +25,11 @@ pub const RegisterAllocation = struct {
         self.spilled.deinit(self.allocator);
     }
 
-    pub fn getPhysicalRegister(self: *const RegisterAllocation, virtual_reg: u8) ?u8 {
+    pub fn getPhysicalRegister(self: *const RegisterAllocation, virtual_reg: u16) ?u16 {
         return self.assignments.get(virtual_reg);
     }
 
-    pub fn isSpilled(self: *const RegisterAllocation, virtual_reg: u8) bool {
+    pub fn isSpilled(self: *const RegisterAllocation, virtual_reg: u16) bool {
         for (self.spilled.items) |spill| {
             if (spill == virtual_reg) return true;
         }
@@ -73,18 +73,18 @@ pub const InterferenceGraph = struct {
         self.allocator.free(self.edges);
     }
 
-    pub fn addEdge(self: *InterferenceGraph, reg1: u8, reg2: u8) void {
+    pub fn addEdge(self: *InterferenceGraph, reg1: usize, reg2: usize) void {
         if (reg1 >= self.num_registers or reg2 >= self.num_registers) return;
         self.edges[reg1][reg2] = true;
         self.edges[reg2][reg1] = true;
     }
 
-    pub fn interferes(self: *const InterferenceGraph, reg1: u8, reg2: u8) bool {
+    pub fn interferes(self: *const InterferenceGraph, reg1: usize, reg2: usize) bool {
         if (reg1 >= self.num_registers or reg2 >= self.num_registers) return false;
         return self.edges[reg1][reg2];
     }
 
-    pub fn degree(self: *const InterferenceGraph, reg: u8) usize {
+    pub fn degree(self: *const InterferenceGraph, reg: usize) usize {
         if (reg >= self.num_registers) return 0;
         var count: usize = 0;
         for (self.edges[reg]) |edge| {
@@ -240,8 +240,8 @@ pub const GraphColoringAllocator = struct {
         var allocation = RegisterAllocation.init(self.allocator);
         errdefer allocation.deinit();
 
-        // Stack for removal order
-        var stack = std.ArrayList(u8).empty;
+        // Stack for removal order (u16 to match RegisterAllocation width)
+        var stack = std.ArrayList(u16).empty;
         defer stack.deinit(self.allocator);
 
         // Track which nodes have been removed
@@ -249,13 +249,10 @@ pub const GraphColoringAllocator = struct {
         defer self.allocator.free(removed);
         @memset(removed, false);
 
-        // Chaitin/Briggs simplify+spill loop. The previous version stopped as
-        // soon as no degree<k node remained and immediately marked everything
-        // else as spilled. That's correct but pessimistic — choosing one
-        // *highest-degree* candidate to optimistically push and continuing the
-        // simplification loop can color most of the remainder, leaving only
-        // truly hard nodes spilled. This is the standard "Briggs optimistic"
-        // refinement of Chaitin's algorithm.
+        // Chaitin/Briggs simplify+spill loop.  Choosing one *highest-degree*
+        // candidate to optimistically push and continuing the simplification
+        // loop can color most of the remainder, leaving only truly hard nodes
+        // spilled.  This is the standard "Briggs optimistic" refinement.
         while (true) {
             var simplified = true;
             while (simplified) {
@@ -264,7 +261,7 @@ pub const GraphColoringAllocator = struct {
                     if (removed[reg]) continue;
                     var deg: usize = 0;
                     for (0..graph.num_registers) |neighbor| {
-                        if (!removed[neighbor] and graph.interferes(@intCast(reg), @intCast(neighbor))) {
+                        if (!removed[neighbor] and graph.interferes(reg, neighbor)) {
                             deg += 1;
                         }
                     }
@@ -277,14 +274,13 @@ pub const GraphColoringAllocator = struct {
             }
 
             // Pick a spill candidate: highest residual degree (Chaitin heuristic).
-            // If everyone's gone we're done.
-            var spill_candidate: ?u8 = null;
+            var spill_candidate: ?u16 = null;
             var spill_degree: usize = 0;
             for (0..graph.num_registers) |reg| {
                 if (removed[reg]) continue;
                 var deg: usize = 0;
                 for (0..graph.num_registers) |neighbor| {
-                    if (!removed[neighbor] and graph.interferes(@intCast(reg), @intCast(neighbor))) {
+                    if (!removed[neighbor] and graph.interferes(reg, neighbor)) {
                         deg += 1;
                     }
                 }
@@ -294,8 +290,6 @@ pub const GraphColoringAllocator = struct {
                 }
             }
             if (spill_candidate) |sc| {
-                // Optimistically push: it might still be colorable in the
-                // assignment phase if its actual neighbors got cheap colors.
                 try stack.append(self.allocator, sc);
                 removed[sc] = true;
                 continue;
@@ -303,15 +297,17 @@ pub const GraphColoringAllocator = struct {
             break;
         }
 
-        // Coloring: assign colors in reverse order
+        // Coloring: assign colors in reverse order.
+        // Use a DynamicBitSet so we are not limited to a fixed number of
+        // physical registers.
         while (stack.items.len > 0) {
             const reg = stack.pop() orelse break;
 
-            // Find available colors (not used by neighbors)
-            var used_colors = std.StaticBitSet(32).initEmpty();
+            var used_colors = try std.bit_set.DynamicBitSet.initEmpty(self.allocator, self.num_physical_regs);
+            defer used_colors.deinit();
 
             for (0..graph.num_registers) |neighbor| {
-                if (graph.interferes(reg, @intCast(neighbor))) {
+                if (graph.interferes(reg, neighbor)) {
                     if (allocation.assignments.get(@intCast(neighbor))) |color| {
                         used_colors.set(color);
                     }
@@ -328,7 +324,6 @@ pub const GraphColoringAllocator = struct {
                 }
             }
 
-            // If no color available, spill this register
             if (!assigned) {
                 try allocation.spilled.append(self.allocator, reg);
             }

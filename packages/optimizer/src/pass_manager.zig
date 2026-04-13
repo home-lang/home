@@ -380,29 +380,48 @@ pub const Pass = struct {
     }
 
     fn foldStmt(self: *Pass, stmt: *ast.Stmt, stats: *PassManager.OptimizationStats) !bool {
+        var changed = false;
         switch (stmt.*) {
             .LetDecl => |let_decl| {
                 if (let_decl.value) |init_expr| {
-                    return try foldExpr(init_expr, stats);
+                    const folded = try foldExpr(init_expr, stats);
+                    changed = changed or folded;
                 }
             },
             .ReturnStmt => |ret_stmt| {
                 if (ret_stmt.value) |expr| {
-                    return try foldExpr(expr, stats);
+                    const folded = try foldExpr(expr, stats);
+                    changed = changed or folded;
                 }
             },
             .FnDecl => |func| {
-                var changed = false;
                 for (func.body.statements) |*body_stmt| {
                     const stmt_changed = try self.foldStmt(body_stmt, stats);
                     changed = changed or stmt_changed;
                 }
-                return changed;
+            },
+            .IfStmt => |if_stmt| {
+                const cond_folded = try foldExpr(if_stmt.condition, stats);
+                changed = changed or cond_folded;
+                for (if_stmt.then_block.statements) |*body_stmt| {
+                    const stmt_changed = try self.foldStmt(body_stmt, stats);
+                    changed = changed or stmt_changed;
+                }
+                if (if_stmt.else_block) |else_block| {
+                    for (else_block.statements) |*body_stmt| {
+                        const stmt_changed = try self.foldStmt(body_stmt, stats);
+                        changed = changed or stmt_changed;
+                    }
+                }
+            },
+            .ExprStmt => |expr| {
+                const folded = try foldExpr(expr, stats);
+                changed = changed or folded;
             },
             else => {},
         }
 
-        return false;
+        return changed;
     }
 
     fn foldExpr(expr: *ast.Expr, stats: *PassManager.OptimizationStats) !bool {
@@ -486,7 +505,7 @@ pub const Pass = struct {
             .Sub => std.math.sub(i64, left, right) catch return null,
             .Mul => std.math.mul(i64, left, right) catch return null,
             .Div => if (right != 0) @divTrunc(left, right) else null,
-            .Mod => if (right != 0) @mod(left, right) else null,
+            .Mod => if (right != 0) @rem(left, right) else null,
             else => null,
         };
     }
@@ -510,18 +529,21 @@ pub const Pass = struct {
             .IfStmt => |if_stmt| {
                 var changed = false;
 
-                // Check if condition is a constant boolean
                 if (if_stmt.condition.* == .BooleanLiteral) {
-                    _ = if_stmt.condition.BooleanLiteral.value;
-
-                    // If condition is always true, replace entire if with then_block
-                    // If condition is always false, replace with else_block (or remove)
-                    // This is a simplification - full implementation would modify the parent
-                    stats.dead_code_removed += 1;
-                    changed = true;
+                    const cond_val = if_stmt.condition.BooleanLiteral.value;
+                    if (cond_val) {
+                        if (if_stmt.else_block) |eb| {
+                            stats.dead_code_removed += eb.statements.len;
+                            eb.statements = eb.statements[0..0];
+                            changed = true;
+                        }
+                    } else {
+                        stats.dead_code_removed += if_stmt.then_block.statements.len;
+                        if_stmt.then_block.statements = if_stmt.then_block.statements[0..0];
+                        changed = true;
+                    }
                 }
 
-                // Recursively process both branches
                 changed = try self.eliminateDeadCodeInBlock(if_stmt.then_block, stats) or changed;
                 if (if_stmt.else_block) |else_block| {
                     changed = try self.eliminateDeadCodeInBlock(else_block, stats) or changed;

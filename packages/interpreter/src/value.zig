@@ -228,7 +228,7 @@ pub const Value = union(enum) {
         return switch (self) {
             .Bool => |b| b,
             .Int => |i| i != 0,
-            .Float => |f| f != 0.0,
+            .Float => |f| f != 0.0 and !std.math.isNan(f),
             .String => |s| s.len > 0,
             .Array => |arr| arr.len > 0,
             .Struct => true,

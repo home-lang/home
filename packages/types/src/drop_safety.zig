@@ -112,8 +112,14 @@ pub const DropSafetyTracker = struct {
         }
         self.scope_drops.deinit();
 
-        self.errors.deinit();
-        self.warnings.deinit();
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
+        self.errors.deinit(self.allocator);
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+        }
+        self.warnings.deinit(self.allocator);
     }
 
     /// Register drop behavior for a type

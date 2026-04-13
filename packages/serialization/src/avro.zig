@@ -186,12 +186,18 @@ pub const AvroEncoder = struct {
     }
 
     fn encodeFloat(self: *AvroEncoder, value: f32) !void {
-        const bytes = std.mem.toBytes(value);
+        // Avro specifies little-endian for floats (IEEE 754).
+        const bits: u32 = @bitCast(value);
+        const le = std.mem.nativeToLittle(u32, bits);
+        const bytes = std.mem.toBytes(le);
         try self.output.appendSlice(&bytes);
     }
 
     fn encodeDouble(self: *AvroEncoder, value: f64) !void {
-        const bytes = std.mem.toBytes(value);
+        // Avro specifies little-endian for doubles (IEEE 754).
+        const bits: u64 = @bitCast(value);
+        const le = std.mem.nativeToLittle(u64, bits);
+        const bytes = std.mem.toBytes(le);
         try self.output.appendSlice(&bytes);
     }
 
@@ -353,14 +359,20 @@ pub const AvroDecoder = struct {
         if (self.pos + 4 > self.input.len) return Avro.Error.UnexpectedEndOfInput;
         const bytes = self.input[self.pos..][0..4];
         self.pos += 4;
-        return std.mem.bytesToValue(f32, bytes);
+        // Avro uses little-endian for floats.
+        const le_bits = std.mem.bytesToValue(u32, bytes);
+        const native_bits = std.mem.littleToNative(u32, le_bits);
+        return @bitCast(native_bits);
     }
 
     fn decodeDouble(self: *AvroDecoder) Avro.Error!f64 {
         if (self.pos + 8 > self.input.len) return Avro.Error.UnexpectedEndOfInput;
         const bytes = self.input[self.pos..][0..8];
         self.pos += 8;
-        return std.mem.bytesToValue(f64, bytes);
+        // Avro uses little-endian for doubles.
+        const le_bits = std.mem.bytesToValue(u64, bytes);
+        const native_bits = std.mem.littleToNative(u64, le_bits);
+        return @bitCast(native_bits);
     }
 
     fn decodeBytes(self: *AvroDecoder) Avro.Error![]const u8 {

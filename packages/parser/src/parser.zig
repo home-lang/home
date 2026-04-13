@@ -179,8 +179,8 @@ pub const Parser = struct {
     module_resolver: ModuleResolver,
     /// Symbol table for tracking imported modules and symbols
     symbol_table: SymbolTable,
-    /// Track pending > from >> in nested generics
-    pending_greater: bool,
+    /// Count of pending > tokens from >> splits in nested generics (e.g. A<B<C>> splits >> into two >)
+    pending_greater: u32,
     /// Macro system for expanding macro invocations
     macro_system: MacroSystem,
 
@@ -213,7 +213,7 @@ pub const Parser = struct {
             .source_text = null,
             .module_resolver = try ModuleResolver.init(allocator, null),
             .symbol_table = SymbolTable.init(allocator),
-            .pending_greater = false,
+            .pending_greater = 0,
             .macro_system = macro_system,
         };
     }
@@ -1854,6 +1854,11 @@ pub const Parser = struct {
                 _ = self.advance();
                 is_volatile = true;
             }
+            // Reject `*volatile const` — the correct order is `*const volatile`.
+            if (is_volatile and !is_const and self.check(.Const)) {
+                try self.reportError("Invalid pointer qualifier order: use '*const volatile' instead of '*volatile const'");
+                return error.UnexpectedToken;
+            }
             const inner_type = try self.parseTypeAnnotation();
             const base = if (is_const and is_volatile)
                 try std.fmt.allocPrint(self.allocator, "*const volatile {s}", .{inner_type})
@@ -1946,6 +1951,11 @@ pub const Parser = struct {
 
                 _ = try self.expect(.RightBracket, "Expected ']'");
 
+                if (size_tokens.items.len == 0) {
+                    try self.reportError("Expected array size after ';' in fixed-size array type");
+                    return error.UnexpectedToken;
+                }
+
                 const size_lexeme = try size_tokens.toOwnedSlice(self.allocator);
                 // Return [T; N] as string
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_lexeme });
@@ -1980,7 +1990,7 @@ pub const Parser = struct {
             var args = std.ArrayList([]const u8).empty;
             defer args.deinit(self.allocator);
 
-            while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
+            while (!self.check(.Greater) and !self.check(.RightShift) and self.pending_greater == 0 and !self.isAtEnd()) {
                 // Check if this is a const generic parameter (integer literal or identifier constant)
                 const arg_type = if (self.check(.Integer) or self.check(.Float)) blk: {
                     // Const generic parameter (e.g., Array<T, 16>)
@@ -1995,15 +2005,13 @@ pub const Parser = struct {
                 if (!self.match(&.{.Comma})) break;
             }
 
-            // Handle both > and >> (for nested generics like HashMap<A, Vec<B>>)
+            // Handle >, >>, and pending > from previous >> splits.
+            // Uses a counter so A<B<C<D>>> (>>> = >> + >) works at any depth.
             if (self.check(.RightShift)) {
-                // >> means we're closing two generics at once
-                // Split the >> by marking that we owe a > to the outer generic
-                self.pending_greater = true;
+                self.pending_greater += 1;
                 _ = self.advance(); // consume >>
-            } else if (self.pending_greater) {
-                // We already consumed a > from a previous >>
-                self.pending_greater = false;
+            } else if (self.pending_greater > 0) {
+                self.pending_greater -= 1;
             } else {
                 _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
             }
@@ -4945,13 +4953,20 @@ pub const Parser = struct {
         }
 
         // Check for invalid tokens and report them clearly
-        if (self.peek().type == .Invalid) {
+        if (self.peek().type == .Invalid or self.peek().type == .UnterminatedString) {
             const token = self.advance();
-            const msg = try std.fmt.allocPrint(
-                self.allocator,
-                "Invalid character '{s}' in source code",
-                .{token.lexeme}
-            );
+            const msg = if (token.type == .UnterminatedString)
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "Unterminated string literal starting with '{s}'",
+                    .{token.lexeme},
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "Invalid character '{s}' in source code",
+                    .{token.lexeme},
+                );
             defer self.allocator.free(msg);
             try self.reportError(msg);
             return error.InvalidCharacter;
@@ -5235,7 +5250,7 @@ pub const Parser = struct {
                     var type_args = std.ArrayList([]const u8).empty;
                     defer type_args.deinit(self.allocator);
 
-                    while (!self.check(.Greater) and !self.check(.RightShift) and !self.pending_greater and !self.isAtEnd()) {
+                    while (!self.check(.Greater) and !self.check(.RightShift) and self.pending_greater == 0 and !self.isAtEnd()) {
                         const arg_type = try self.parseTypeAnnotation();
                         try type_args.append(self.allocator, arg_type);
 
@@ -5244,10 +5259,10 @@ pub const Parser = struct {
 
                     // Handle closing > or >>
                     if (self.check(.RightShift)) {
-                        self.pending_greater = true;
+                        self.pending_greater += 1;
                         _ = self.advance();
-                    } else if (self.pending_greater) {
-                        self.pending_greater = false;
+                    } else if (self.pending_greater > 0) {
+                        self.pending_greater -= 1;
                     } else {
                         _ = try self.expect(.Greater, "Expected '>' after generic type arguments");
                     }

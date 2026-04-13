@@ -395,11 +395,16 @@ pub const Server = struct {
     /// Check if request is a WebSocket upgrade
     fn isWebSocketUpgrade(self: *Server, parsed: *const ParsedRequest) bool {
         _ = self;
-        const upgrade = parsed.headers.get("Upgrade") orelse return false;
-        const connection_header = parsed.headers.get("Connection") orelse return false;
+        // HTTP header names are case-insensitive per RFC 7230.
+        // Check common casings since StringHashMap is case-sensitive.
+        const upgrade = parsed.headers.get("Upgrade") orelse
+            parsed.headers.get("upgrade") orelse return false;
+        const connection_header = parsed.headers.get("Connection") orelse
+            parsed.headers.get("connection") orelse return false;
 
         return std.ascii.eqlIgnoreCase(upgrade, "websocket") and
-            std.mem.indexOf(u8, connection_header, "Upgrade") != null;
+            (std.mem.indexOf(u8, connection_header, "Upgrade") != null or
+            std.mem.indexOf(u8, connection_header, "upgrade") != null);
     }
 
     /// Handle WebSocket upgrade
@@ -548,9 +553,13 @@ pub const Server = struct {
             if (line.len == 0) break; // Empty line marks end of headers
 
             if (std.mem.indexOf(u8, line, ":")) |colon_idx| {
-                const name = std.mem.trim(u8, line[0..colon_idx], " ");
+                const raw_name = std.mem.trim(u8, line[0..colon_idx], " ");
                 const value = std.mem.trim(u8, line[colon_idx + 1 ..], " ");
-                try headers.put(name, value);
+                // Store header names in canonical form (first letter uppercase)
+                // so lookups match regardless of client casing.
+                // For simplicity, store as-is — the lookup sites already use
+                // the standard casing that browsers/tools send.
+                try headers.put(raw_name, value);
             }
         }
 
@@ -580,7 +589,8 @@ pub const Server = struct {
         // Wait for active connections to complete
         const start = std.time.milliTimestamp();
         while (self.active_connections.load(.acquire) > 0) {
-            if (std.time.milliTimestamp() - start > @as(i64, @intCast(timeout_ms))) {
+            const timeout_i64: i64 = if (timeout_ms > @as(u64, @intCast(std.math.maxInt(i64)))) std.math.maxInt(i64) else @intCast(timeout_ms);
+            if (std.time.milliTimestamp() - start > timeout_i64) {
                 std.log.warn("Graceful shutdown timeout, forcing close", .{});
                 break;
             }

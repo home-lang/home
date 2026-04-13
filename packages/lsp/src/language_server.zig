@@ -316,11 +316,25 @@ pub const LanguageServer = struct {
 
         // Add symbols from current document
         for (doc.symbols.items) |symbol| {
+            // Provide the symbol kind as detail so editors show context
+            // (e.g. "Function", "Struct") next to the completion label.
+            const detail: []const u8 = switch (symbol.kind) {
+                .Function => "fn",
+                .Struct => "struct",
+                .Enum => "enum",
+                .Trait => "trait",
+                .Variable => "let",
+                .Constant => "const",
+                .TypeAlias => "type",
+                .Module => "mod",
+                .Field => "field",
+                .EnumVariant => "variant",
+            };
             try completions.append(.{
                 .label = symbol.name,
                 .kind = self.symbolKindToCompletionKind(symbol.kind),
-                .detail = null,
-                .documentation = null,
+                .detail = detail,
+                .documentation = if (symbol.container) |c| c else null,
             });
         }
 
@@ -406,13 +420,16 @@ pub const LanguageServer = struct {
 
             // Add additional information based on symbol kind
             switch (symbol.kind) {
-                .Function => try contents.appendSlice("\n**Function**\n"),
-                .Struct => try contents.appendSlice("\n**Struct**\n"),
-                .Enum => try contents.appendSlice("\n**Enum**\n"),
-                .Trait => try contents.appendSlice("\n**Trait**\n"),
-                .Variable => try contents.appendSlice("\n**Variable**\n"),
-                .Constant => try contents.appendSlice("\n**Constant**\n"),
-                else => {},
+                .Function => try contents.appendSlice("\n*function*\n"),
+                .Struct => try contents.appendSlice("\n*struct type*\n"),
+                .Enum => try contents.appendSlice("\n*enum type*\n"),
+                .Trait => try contents.appendSlice("\n*trait*\n"),
+                .Variable => try contents.appendSlice("\n*variable*\n"),
+                .Constant => try contents.appendSlice("\n*constant*\n"),
+                .TypeAlias => try contents.appendSlice("\n*type alias*\n"),
+                .Module => try contents.appendSlice("\n*module*\n"),
+                .Field => try contents.appendSlice("\n*field*\n"),
+                .EnumVariant => try contents.appendSlice("\n*enum variant*\n"),
             }
 
             if (symbol.container) |container| {

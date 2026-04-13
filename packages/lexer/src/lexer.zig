@@ -346,7 +346,7 @@ pub const Lexer = struct {
         }
 
         if (self.isAtEnd()) {
-            return self.makeToken(.Invalid);
+            return self.makeToken(.UnterminatedString);
         }
 
         _ = self.advance(); // closing quote
@@ -387,7 +387,7 @@ pub const Lexer = struct {
                 _ = self.advance();
             }
         }
-        if (self.isAtEnd()) return self.makeToken(.Invalid);
+        if (self.isAtEnd()) return self.makeToken(.UnterminatedString);
         _ = self.advance(); // closing '
         return self.makeToken(.String);
     }
@@ -407,7 +407,7 @@ pub const Lexer = struct {
 
             const escape_char = self.peek();
             switch (escape_char) {
-                'n', 't', 'r', '\'', '"', '\\', '0' => {
+                'n', 't', 'r', '\'', '"', '\\', '0', '{' => {
                     _ = self.advance();
                 },
                 'x' => {
@@ -545,7 +545,7 @@ pub const Lexer = struct {
         }
 
         if (self.isAtEnd()) {
-            return self.makeToken(.Invalid);
+            return self.makeToken(.UnterminatedString);
         }
 
         if (self.peek() == '$' and self.peekNext() == '{') {
@@ -643,7 +643,7 @@ pub const Lexer = struct {
         }
 
         if (self.isAtEnd()) {
-            return self.makeToken(.Invalid);
+            return self.makeToken(.UnterminatedString);
         }
 
         if (self.peek() == '$' and self.peekNext() == '{') {
@@ -963,7 +963,7 @@ pub const Lexer = struct {
         _ = self.advance(); // 'o' or 'O'
 
         var has_digits = false;
-        while (self.peek() >= '0' and self.peek() <= '7' or self.peek() == '_') {
+        while ((self.peek() >= '0' and self.peek() <= '7') or self.peek() == '_') {
             if (self.peek() == '_') {
                 _ = self.advance();
                 continue;

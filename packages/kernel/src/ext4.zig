@@ -487,7 +487,106 @@ pub const Ext4Filesystem = struct {
             return copy_len;
         }
 
-        // Indirect blocks not implemented for simplicity
+        const ptrs_per_block = self.block_size / 4;
+
+        // Single indirect (block 12)
+        if (logical_block < 12 + ptrs_per_block) {
+            const indirect_block = inode.i_block[12];
+            if (indirect_block == 0) return 0;
+
+            const ind_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(ind_buf);
+            try self.readBlock(indirect_block, ind_buf);
+
+            const table = @as([*]const u32, @ptrCast(@alignCast(ind_buf.ptr)));
+            const phys_block = table[logical_block - 12];
+            if (phys_block == 0) return 0;
+
+            const block_buffer = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(block_buffer);
+            try self.readBlock(phys_block, block_buffer);
+
+            const available = self.block_size - block_offset;
+            const copy_len = @min(to_read, available);
+            @memcpy(buffer[0..copy_len], block_buffer[block_offset..][0..copy_len]);
+            return copy_len;
+        }
+
+        // Double indirect (block 13)
+        const double_start = 12 + ptrs_per_block;
+        const double_range = ptrs_per_block * ptrs_per_block;
+        if (logical_block < double_start + double_range) {
+            const dbl_block = inode.i_block[13];
+            if (dbl_block == 0) return 0;
+
+            const adjusted = logical_block - double_start;
+            const l1_idx = adjusted / ptrs_per_block;
+            const l2_idx = adjusted % ptrs_per_block;
+
+            const l1_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(l1_buf);
+            try self.readBlock(dbl_block, l1_buf);
+            const l1_table = @as([*]const u32, @ptrCast(@alignCast(l1_buf.ptr)));
+            if (l1_table[l1_idx] == 0) return 0;
+
+            const l2_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(l2_buf);
+            try self.readBlock(l1_table[l1_idx], l2_buf);
+            const l2_table = @as([*]const u32, @ptrCast(@alignCast(l2_buf.ptr)));
+            const phys_block = l2_table[l2_idx];
+            if (phys_block == 0) return 0;
+
+            const block_buffer = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(block_buffer);
+            try self.readBlock(phys_block, block_buffer);
+
+            const available = self.block_size - block_offset;
+            const copy_len = @min(to_read, available);
+            @memcpy(buffer[0..copy_len], block_buffer[block_offset..][0..copy_len]);
+            return copy_len;
+        }
+
+        // Triple indirect (block 14)
+        const triple_start = double_start + double_range;
+        const triple_range = ptrs_per_block * ptrs_per_block * ptrs_per_block;
+        if (logical_block < triple_start + triple_range) {
+            const tri_block = inode.i_block[14];
+            if (tri_block == 0) return 0;
+
+            const adjusted = logical_block - triple_start;
+            const l1_idx = adjusted / (ptrs_per_block * ptrs_per_block);
+            const l2_idx = (adjusted / ptrs_per_block) % ptrs_per_block;
+            const l3_idx = adjusted % ptrs_per_block;
+
+            const l1_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(l1_buf);
+            try self.readBlock(tri_block, l1_buf);
+            const l1_table = @as([*]const u32, @ptrCast(@alignCast(l1_buf.ptr)));
+            if (l1_table[l1_idx] == 0) return 0;
+
+            const l2_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(l2_buf);
+            try self.readBlock(l1_table[l1_idx], l2_buf);
+            const l2_table = @as([*]const u32, @ptrCast(@alignCast(l2_buf.ptr)));
+            if (l2_table[l2_idx] == 0) return 0;
+
+            const l3_buf = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(l3_buf);
+            try self.readBlock(l2_table[l2_idx], l3_buf);
+            const l3_table = @as([*]const u32, @ptrCast(@alignCast(l3_buf.ptr)));
+            const phys_block = l3_table[l3_idx];
+            if (phys_block == 0) return 0;
+
+            const block_buffer = try self.allocator.alloc(u8, self.block_size);
+            defer self.allocator.free(block_buffer);
+            try self.readBlock(phys_block, block_buffer);
+
+            const available = self.block_size - block_offset;
+            const copy_len = @min(to_read, available);
+            @memcpy(buffer[0..copy_len], block_buffer[block_offset..][0..copy_len]);
+            return copy_len;
+        }
+
         return error.UnsupportedBlockType;
     }
 
