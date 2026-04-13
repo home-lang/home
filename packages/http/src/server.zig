@@ -555,10 +555,9 @@ pub const Server = struct {
             if (std.mem.indexOf(u8, line, ":")) |colon_idx| {
                 const raw_name = std.mem.trim(u8, line[0..colon_idx], " ");
                 const value = std.mem.trim(u8, line[colon_idx + 1 ..], " ");
-                // Store header names in canonical form (first letter uppercase)
-                // so lookups match regardless of client casing.
-                // For simplicity, store as-is — the lookup sites already use
-                // the standard casing that browsers/tools send.
+                // Reject headers containing CR/LF to prevent header injection.
+                if (std.mem.indexOfAny(u8, raw_name, "\r\n") != null) continue;
+                if (std.mem.indexOfAny(u8, value, "\r\n") != null) continue;
                 try headers.put(raw_name, value);
             }
         }

@@ -159,12 +159,14 @@ const XYZ_TO_REC2020: Matrix3x3 = .{
 // Gamma Functions
 // ============================================================================
 
-/// sRGB gamma encode (linear to sRGB)
+/// sRGB gamma encode (linear to sRGB).
+/// Negative inputs are clamped to 0 to prevent NaN from fractional pow.
 pub fn srgbGammaEncode(linear: f64) f64 {
-    if (linear <= 0.0031308) {
-        return linear * 12.92;
+    const v = @max(0.0, linear);
+    if (v <= 0.0031308) {
+        return v * 12.92;
     }
-    return 1.055 * std.math.pow(f64, linear, 1.0 / 2.4) - 0.055;
+    return 1.055 * std.math.pow(f64, v, 1.0 / 2.4) - 0.055;
 }
 
 /// sRGB gamma decode (sRGB to linear)

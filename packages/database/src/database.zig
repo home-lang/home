@@ -202,14 +202,19 @@ pub const QueryBuilder = struct {
     }
 
     fn escapeSqlString(s: []const u8) []const u8 {
-        // Quick check: if the string has no single-quotes it's already safe
-        // for the positional format. A proper implementation would allocate
-        // and double every ' to '', but for the common case this prevents the
-        // most obvious injection vector without allocation.
+        // Quick check: if no single-quotes, the string is already safe.
+        var has_quote = false;
         for (s) |c| {
-            if (c == '\'') return "?"; // degrade to placeholder
+            if (c == '\'') {
+                has_quote = true;
+                break;
+            }
         }
-        return s;
+        if (!has_quote) return s;
+        // For strings with quotes, the full escaping (doubling every ')
+        // requires allocation. In this non-allocating path, use a
+        // parameterized placeholder to avoid SQL injection entirely.
+        return "?";
     }
 
     pub fn where(self: *QueryBuilder, condition: []const u8) !*QueryBuilder {
@@ -261,7 +266,7 @@ pub const QueryBuilder = struct {
         // FROM clause
         if (self.table) |table_name| {
             try sql.appendSlice(self.allocator, " FROM ");
-            try sql.appendSlice(self.allocator, table_name);
+            try self.quoteIdentifier(sql, table_name);
         }
 
         try self.appendWhere(sql);
@@ -270,11 +275,22 @@ pub const QueryBuilder = struct {
         try self.appendOffset(sql);
     }
 
+    /// Quote an identifier (table/column name) to prevent SQL injection.
+    /// Doubles any embedded double-quotes per ANSI SQL.
+    fn quoteIdentifier(self: *QueryBuilder, sql: *std.ArrayList(u8), name: []const u8) !void {
+        try sql.append(self.allocator, '"');
+        for (name) |ch| {
+            if (ch == '"') try sql.append(self.allocator, '"');
+            try sql.append(self.allocator, ch);
+        }
+        try sql.append(self.allocator, '"');
+    }
+
     fn buildInsert(self: *QueryBuilder, sql: *std.ArrayList(u8)) !void {
         try sql.appendSlice(self.allocator, "INSERT INTO ");
 
         if (self.table) |table_name| {
-            try sql.appendSlice(self.allocator, table_name);
+            try self.quoteIdentifier(sql, table_name);
         }
 
         // Columns
@@ -282,7 +298,7 @@ pub const QueryBuilder = struct {
             try sql.appendSlice(self.allocator, " (");
             for (self.insert_columns.items, 0..) |col, i| {
                 if (i > 0) try sql.appendSlice(self.allocator, ", ");
-                try sql.appendSlice(self.allocator, col);
+                try self.quoteIdentifier(sql, col);
             }
             try sql.appendSlice(self.allocator, ")");
         }
@@ -302,7 +318,7 @@ pub const QueryBuilder = struct {
         try sql.appendSlice(self.allocator, "UPDATE ");
 
         if (self.table) |table_name| {
-            try sql.appendSlice(self.allocator, table_name);
+            try self.quoteIdentifier(sql, table_name);
         }
 
         // SET clause
@@ -321,7 +337,7 @@ pub const QueryBuilder = struct {
         try sql.appendSlice(self.allocator, "DELETE FROM ");
 
         if (self.table) |table_name| {
-            try sql.appendSlice(self.allocator, table_name);
+            try self.quoteIdentifier(sql, table_name);
         }
 
         try self.appendWhere(sql);
@@ -371,6 +387,9 @@ pub const ConnectionPool = struct {
     mutex: SpinMutex,
     max_connections: usize,
     db_path: []const u8,
+    /// Number of connections currently checked out (not returned).
+    /// If this is non-zero at deinit time, connections have leaked.
+    in_use: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8, max_connections: usize) !ConnectionPool {
         const db_path_copy = try allocator.dupe(u8, db_path);
@@ -426,6 +445,7 @@ pub const ConnectionPool = struct {
             return error.NoAvailableConnections;
         }
 
+        self.in_use += 1;
         return self.available.orderedRemove(0);
     }
 
@@ -434,6 +454,7 @@ pub const ConnectionPool = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        if (self.in_use > 0) self.in_use -= 1;
         try self.available.append(self.allocator, conn);
     }
 

@@ -234,16 +234,16 @@ pub const Protobuf = struct {
         _ = self;
 
         var result: u64 = 0;
-        var shift: u6 = 0;
+        var shift: u7 = 0; // u7 to avoid overflow on shift += 7
 
         while (true) {
             const byte = try reader.readByte();
-            result |= @as(u64, byte & 0x7f) << shift;
+            if (shift >= 64) return error.VarintOverflow;
+            result |= @as(u64, byte & 0x7f) << @intCast(shift);
 
             if (byte & 0x80 == 0) break;
 
             shift += 7;
-            if (shift >= 64) return error.VarintOverflow;
         }
 
         return result;

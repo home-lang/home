@@ -32,7 +32,10 @@ pub const Metrics = struct {
         }
 
         pub fn add(self: *Counter, delta: u64) void {
-            _ = self.value.fetchAdd(delta, .monotonic);
+            // Saturate at u64::MAX instead of wrapping around silently.
+            const current = self.value.load(.monotonic);
+            const new_val = current +| delta; // saturating add
+            self.value.store(new_val, .monotonic);
         }
 
         pub fn get(self: *Counter) u64 {

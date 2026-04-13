@@ -573,6 +573,47 @@ fn main() {
 ' 0
 
 echo
+echo "=== string concat and map iteration ==="
+
+run_case "string_concat_implicit_tostring" '
+fn main() {
+    let s = "value: " + 42
+    assert(s == "value: 42")
+}
+' 0
+
+run_case "bool_comparison" '
+fn main() {
+    assert(true > false)
+    assert(false < true)
+    assert(false <= false)
+    assert(true >= true)
+}
+' 0
+
+echo
+echo "=== right shift and division ==="
+
+run_case "arithmetic_right_shift" '
+fn main() {
+    let x = -8
+    let y = x >> 1
+    assert(y == -4)
+}
+' 0
+
+run_case "division_by_zero_exit" '
+fn divSafe(a: int, b: int): int {
+    if b == 0 { return -1 }
+    return a / b
+}
+fn main() {
+    assert(divSafe(10, 2) == 5)
+    assert(divSafe(10, 0) == -1)
+}
+' 0
+
+echo
 echo "==========================================="
 echo "  $pass passed, $fail failed"
 if [[ $fail -gt 0 ]]; then

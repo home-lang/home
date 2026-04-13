@@ -162,6 +162,14 @@ pub const Parser = struct {
         }
 
         const num_str = self.source[start..self.pos];
+        // Try to parse as integer first to preserve precision for large ints.
+        // JSON numbers without '.', 'e', 'E' are safe to parse as i64.
+        const has_frac = std.mem.indexOfAny(u8, num_str, ".eE") != null;
+        if (!has_frac) {
+            if (std.fmt.parseInt(i64, num_str, 10)) |int_val| {
+                return .{ .number_value = @floatFromInt(int_val) };
+            } else |_| {}
+        }
         const value = try std.fmt.parseFloat(f64, num_str);
         return .{ .number_value = value };
     }
@@ -196,6 +204,10 @@ pub const Parser = struct {
                         const hex = self.source[self.pos..][0..4];
                         const cp = std.fmt.parseInt(u21, hex, 16) catch return error.InvalidToken;
                         self.pos += 4;
+                        // Reject surrogate code points (U+D800..U+DFFF) — they are
+                        // not valid scalar values and cannot be encoded as UTF-8.
+                        if (cp >= 0xD800 and cp <= 0xDFFF) return error.InvalidToken;
+                        if (cp > 0x10FFFF) return error.InvalidToken;
                         var enc: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cp, &enc) catch return error.InvalidToken;
                         try buf.appendSlice(self.allocator, enc[0..len]);
@@ -386,7 +398,28 @@ pub const Stringifier = struct {
             },
             .string_value => |s| {
                 try self.buffer.append(self.allocator, '"');
-                try self.buffer.appendSlice(self.allocator, s);
+                for (s) |ch| {
+                    switch (ch) {
+                        '"' => try self.buffer.appendSlice(self.allocator, "\\\""),
+                        '\\' => try self.buffer.appendSlice(self.allocator, "\\\\"),
+                        '\n' => try self.buffer.appendSlice(self.allocator, "\\n"),
+                        '\r' => try self.buffer.appendSlice(self.allocator, "\\r"),
+                        '\t' => try self.buffer.appendSlice(self.allocator, "\\t"),
+                        0x08 => try self.buffer.appendSlice(self.allocator, "\\b"),
+                        0x0C => try self.buffer.appendSlice(self.allocator, "\\f"),
+                        else => {
+                            if (ch < 0x20) {
+                                // Control characters as \u00XX
+                                const hex = "0123456789abcdef";
+                                try self.buffer.appendSlice(self.allocator, "\\u00");
+                                try self.buffer.append(self.allocator, hex[ch >> 4]);
+                                try self.buffer.append(self.allocator, hex[ch & 0x0F]);
+                            } else {
+                                try self.buffer.append(self.allocator, ch);
+                            }
+                        },
+                    }
+                }
                 try self.buffer.append(self.allocator, '"');
             },
             .array_value => |arr| try self.stringifyArray(arr),

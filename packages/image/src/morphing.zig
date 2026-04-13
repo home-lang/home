@@ -142,8 +142,13 @@ fn sampleImage(img: *const Image, x: f32, y: f32, options: WarpOptions) Color {
                 return img.getPixel(cx, cy);
             },
             .wrap => {
-                const wx = @as(u32, @intFromFloat(@mod(x, @as(f32, @floatFromInt(img.width)))));
-                const wy = @as(u32, @intFromFloat(@mod(y, @as(f32, @floatFromInt(img.height)))));
+                const fw = @as(f32, @floatFromInt(img.width));
+                const fh = @as(f32, @floatFromInt(img.height));
+                // Guard against NaN — clamp to 0.
+                const mx = @mod(x, fw);
+                const my = @mod(y, fh);
+                const wx: u32 = if (std.math.isNan(mx)) 0 else @intFromFloat(mx);
+                const wy: u32 = if (std.math.isNan(my)) 0 else @intFromFloat(my);
                 return img.getPixel(wx, wy);
             },
         };

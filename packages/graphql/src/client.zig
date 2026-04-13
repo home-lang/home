@@ -349,7 +349,16 @@ pub const QueryBuilder = struct {
             .float => |v| try writer.print("{d}", .{v}),
             .string => |v| {
                 try writer.writeAll("\"");
-                try writer.writeAll(v);
+                for (v) |ch| {
+                    switch (ch) {
+                        '"' => try writer.writeAll("\\\""),
+                        '\\' => try writer.writeAll("\\\\"),
+                        '\n' => try writer.writeAll("\\n"),
+                        '\r' => try writer.writeAll("\\r"),
+                        '\t' => try writer.writeAll("\\t"),
+                        else => try writer.writeByte(ch),
+                    }
+                }
                 try writer.writeAll("\"");
             },
             .boolean => |v| try writer.writeAll(if (v) "true" else "false"),

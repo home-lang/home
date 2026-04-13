@@ -33,7 +33,7 @@ pub const ElfWriter = struct {
         // Write data section immediately after code so string
         // literals and static data are accessible at runtime.
         if (self.data.len > 0) {
-            const data_offset = 0x1000 + std.mem.alignForward(u64, self.code.len, 16);
+            const data_offset = 0x1000 + std.mem.alignForward(u64, self.code.len, 0x10);
             try file.writePositionalAll(io_val, self.data, data_offset);
         }
 

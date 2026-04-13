@@ -7565,11 +7565,9 @@ pub const NativeCodegen = struct {
                     const offset_plus_one = local_info.offset +% 1;
                     const byte_offset = offset_plus_one *% 8;
 
-                    // Check if the value fits in i32 range
+                    // Reject stack frames that overflow the i32 displacement range.
                     if (byte_offset > @as(usize, std.math.maxInt(i32))) {
-                        std.debug.print("Warning: Stack offset overflow for variable '{s}' (offset={}), using 0\n", .{id.name, local_info.offset});
-                        try self.assembler.movRegImm64(.rax, 0);
-                        return;
+                        return error.StackTooLarge;
                     }
                     const stack_offset: i32 = -@as(i32, @intCast(byte_offset));
 

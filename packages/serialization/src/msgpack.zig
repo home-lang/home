@@ -327,7 +327,7 @@ pub const MessagePack = struct {
             UINT32 => Value{ .unsigned = try reader.readInt(u32, .big) },
             UINT64 => Value{ .unsigned = try reader.readInt(u64, .big) },
 
-            INT8 => Value{ .integer = try reader.readByte() },
+            INT8 => Value{ .integer = @as(i8, @bitCast(try reader.readByte())) },
             INT16 => Value{ .integer = try reader.readInt(i16, .big) },
             INT32 => Value{ .integer = try reader.readInt(i32, .big) },
             INT64 => Value{ .integer = try reader.readInt(i64, .big) },

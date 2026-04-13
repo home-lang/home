@@ -21,22 +21,27 @@ const TokenType = @import("lexer").TokenType;
 pub fn parseClosureExpr(self: *Parser) !*ast.Expr {
     const start_token = self.peek();
 
-    // Check for 'async' keyword
-    const is_async = if (self.match(&.{.Identifier}) and std.mem.eql(u8, self.previous().lexeme, "async"))
-        true
-    else blk: {
-        // If we consumed an identifier but it wasn't 'async', put it back
-        if (self.current > 0) {
-            const prev = self.previous();
-            if (prev.type == .Identifier and !std.mem.eql(u8, prev.lexeme, "async") and !std.mem.eql(u8, prev.lexeme, "move")) {
-                self.current -= 1;
-            }
+    // Check for 'async' keyword.
+    // Save position so we can backtrack if the identifier isn't 'async'.
+    const saved_pos = self.current;
+    const is_async = if (self.match(&.{.Identifier})) blk: {
+        if (std.mem.eql(u8, self.previous().lexeme, "async")) {
+            break :blk true;
         }
+        // Consumed an identifier that wasn't 'async' — put it back.
+        self.current = saved_pos;
         break :blk false;
-    };
+    } else false;
 
-    // Check for 'move' keyword
-    const is_move = self.match(&.{.Identifier}) and std.mem.eql(u8, self.previous().lexeme, "move");
+    // Check for 'move' keyword with proper backtracking.
+    const move_saved = self.current;
+    const is_move = if (!self.isAtEnd() and self.match(&.{.Identifier})) blk: {
+        if (std.mem.eql(u8, self.previous().lexeme, "move")) {
+            break :blk true;
+        }
+        self.current = move_saved;
+        break :blk false;
+    } else false;
 
     // Parse parameters
     var params = std.ArrayList(ast.ClosureParam).empty;

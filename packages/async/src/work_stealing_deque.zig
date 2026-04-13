@@ -104,12 +104,14 @@ pub fn WorkStealingDeque(comptime T: type) type {
             if (len >= @as(i64, @intCast(buf.capacity))) {
                 const new_buf = try buf.grow(self.allocator, t, b);
 
-                // Update buffer pointer
+                // Update buffer pointer atomically so stealers see the new buffer.
                 self.buffer.store(new_buf, .release);
 
-                // Defer cleanup of old buffer
-                // In production, use epoch-based reclamation
-                defer buf.deinit(self.allocator);
+                // NOTE: The old buffer is intentionally leaked here rather than
+                // freed immediately, because concurrent stealers may still be
+                // reading from it.  Proper epoch-based or hazard-pointer
+                // reclamation should be used to free old buffers.  Immediate
+                // free (the previous code) was a use-after-free bug.
 
                 buf = new_buf;
             }

@@ -118,23 +118,56 @@ pub const Request = struct {
         const query_start = std.mem.indexOf(u8, self.uri, "?") orelse return;
         if (query_start + 1 >= self.uri.len) return;
 
-        const query_string = self.uri[query_start + 1 ..];
+        // Strip fragment (#...) from the query string if present.
+        const after_q = self.uri[query_start + 1 ..];
+        const query_string = if (std.mem.indexOf(u8, after_q, "#")) |frag|
+            after_q[0..frag]
+        else
+            after_q;
+
         var it = std.mem.splitSequence(u8, query_string, "&");
 
         while (it.next()) |pair| {
+            if (pair.len == 0) continue; // skip empty segments (&&)
             if (std.mem.indexOf(u8, pair, "=")) |eq_idx| {
-                const key = pair[0..eq_idx];
-                const value = pair[eq_idx + 1 ..];
+                const key = try percentDecode(self.allocator, pair[0..eq_idx]);
+                errdefer self.allocator.free(key);
 
-                const owned_key = try self.allocator.dupe(u8, key);
-                errdefer self.allocator.free(owned_key);
+                const value = try percentDecode(self.allocator, pair[eq_idx + 1 ..]);
+                errdefer self.allocator.free(value);
 
-                const owned_value = try self.allocator.dupe(u8, value);
-                errdefer self.allocator.free(owned_value);
-
-                try self.query.put(owned_key, owned_value);
+                try self.query.put(key, value);
             }
         }
+    }
+
+    /// Decode percent-encoded sequences (%XX) and '+' → ' ' in query strings.
+    fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var result = std.ArrayList(u8).init(allocator);
+        var i: usize = 0;
+        while (i < input.len) {
+            if (input[i] == '%' and i + 2 < input.len) {
+                const hi = std.fmt.charToDigit(input[i + 1], 16) catch {
+                    try result.append(input[i]);
+                    i += 1;
+                    continue;
+                };
+                const lo = std.fmt.charToDigit(input[i + 2], 16) catch {
+                    try result.append(input[i]);
+                    i += 1;
+                    continue;
+                };
+                try result.append((hi << 4) | lo);
+                i += 3;
+            } else if (input[i] == '+') {
+                try result.append(' ');
+                i += 1;
+            } else {
+                try result.append(input[i]);
+                i += 1;
+            }
+        }
+        return result.toOwnedSlice();
     }
 };
 

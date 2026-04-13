@@ -812,10 +812,11 @@ pub const Interpreter = struct {
             .TryStmt => |try_stmt| {
                 // Execute try block
                 var try_failed = false;
+                var caught_error_name: []const u8 = "unknown error";
                 for (try_stmt.try_block.statements) |try_body_stmt| {
                     self.executeStatement(try_body_stmt, env) catch |err| {
                         if (err == error.Return) return err;
-                        // On any error, mark as failed and break
+                        caught_error_name = @errorName(err);
                         try_failed = true;
                         break;
                     };
@@ -830,8 +831,8 @@ pub const Interpreter = struct {
                         var catch_env = Environment.init(self.arena.allocator(), env);
                         defer catch_env.deinit();
 
-                        // Define error variable with string value
-                        try catch_env.define(error_name, Value{ .String = "error" });
+                        // Bind the caught error name so user code can inspect it.
+                        try catch_env.define(error_name, Value{ .String = caught_error_name });
 
                         for (catch_clause.body.statements) |catch_body_stmt| {
                             self.executeStatement(catch_body_stmt, &catch_env) catch |err| {
@@ -9209,6 +9210,11 @@ pub const Interpreter = struct {
             if (old_val != .String or new_val != .String) {
                 std.debug.print("replace() arguments must be strings\n", .{});
                 return error.TypeMismatch;
+            }
+            if (old_val.String.len == 0) {
+                // Empty search string: return the original string unchanged
+                // (avoids infinite loop in replaceOwned).
+                return Value{ .String = try allocator.dupe(u8, str) };
             }
 
             const result = try std.mem.replaceOwned(u8, allocator, str, old_val.String, new_val.String);

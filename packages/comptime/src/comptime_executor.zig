@@ -255,22 +255,43 @@ pub const ComptimeExecutor = struct {
             return error.InvalidArgCount;
         }
 
-        // In a real implementation, would evaluate the type and return its size
-        _ = self;
-        _ = args;
-        return ComptimeValue{ .Int = 8 }; // Placeholder
+        // Evaluate the type argument and return its size.
+        const type_val = try self.evaluateExpr(&args[0]);
+        if (type_val == .Type) {
+            const size: i64 = switch (type_val.Type) {
+                .Bool => 1,
+                .I8, .U8 => 1,
+                .I16, .U16 => 2,
+                .I32, .U32, .Float, .F32 => 4,
+                .I64, .U64, .F64, .Int => 8,
+                .Pointer, .Reference, .MutableReference, .String => 8,
+                .Void => 0,
+                else => 8, // default for complex types
+            };
+            return ComptimeValue{ .Int = size };
+        }
+
+        return ComptimeValue{ .Int = 8 };
     }
 
-    /// @typeof(expr) - get type of expression
+    /// @typeof(expr) - get type of expression at compile time
     fn executeTypeof(self: *ComptimeExecutor, args: []ast.Expr) !ComptimeValue {
         if (args.len != 1) {
             return error.InvalidArgCount;
         }
 
-        _ = self;
-        _ = args;
-        // Would need type inference here
-        return ComptimeValue{ .Type = types.Type.Int };
+        // Evaluate the expression and infer its type from the result value.
+        const val = try self.evaluateExpr(&args[0]);
+        const inferred_type: types.Type = switch (val) {
+            .Int => .Int,
+            .Float => .Float,
+            .Bool => .Bool,
+            .String => .String,
+            .Type => |t| t,
+            .Array => .{ .Array = .{ .element_type = &types.Type.Int } },
+            .Null => .Void,
+        };
+        return ComptimeValue{ .Type = inferred_type };
     }
 
     /// @typeInfo(type) - get reflection information about a type

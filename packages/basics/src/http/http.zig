@@ -114,7 +114,17 @@ pub const Http = struct {
         }
 
         pub fn get(self: *const Headers, key: []const u8) ?[]const u8 {
-            return self.map.get(key);
+            // Try exact match first, then case-insensitive scan for RFC 7230 compliance.
+            if (self.map.get(key)) |v| return v;
+            var it = self.map.iterator();
+            while (it.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, key)) return entry.value_ptr.*;
+            }
+            return null;
+        }
+
+        pub fn has(self: *const Headers, key: []const u8) bool {
+            return self.get(key) != null;
         }
 
         pub fn remove(self: *Headers, key: []const u8) bool {

@@ -109,7 +109,8 @@ pub const Response = struct {
         self.status = status orelse .Found;
         _ = try self.setHeader("Location", location);
         _ = try self.setHeader("Content-Type", "text/html");
-        self.body = .{ .static = "<html><body>Redirecting...</body></html>" };
+        self.body.items.len = 0; // clear existing body
+        try self.body.appendSlice(self.allocator, "<html><body>Redirecting...</body></html>");
     }
 
     /// Set cookie
@@ -117,6 +118,14 @@ pub const Response = struct {
         var cookie_value = std.ArrayList(u8).init(self.allocator);
         defer cookie_value.deinit();
 
+        // Cookie names and values must not contain special characters
+        // like semicolons, commas, or spaces without proper encoding.
+        // Validate basic safety — reject obviously invalid names.
+        for (name) |ch| {
+            if (ch == ';' or ch == '=' or ch == ' ' or ch == '\t') {
+                return error.InvalidCookieName;
+            }
+        }
         try cookie_value.writer().print("{s}={s}", .{ name, value });
 
         if (options.max_age) |max_age| {
@@ -160,11 +169,13 @@ pub const Response = struct {
 
         // Set Content-Length if not already set
         if (!self.headers.has("Content-Length")) {
-            try self.headers.set("Content-Length", try std.fmt.allocPrint(
+            const cl_str = try std.fmt.allocPrint(
                 self.allocator,
                 "{d}",
                 .{self.body.items.len},
-            ));
+            );
+            defer self.allocator.free(cl_str);
+            try self.headers.set("Content-Length", cl_str);
         }
 
         // Headers

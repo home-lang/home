@@ -158,15 +158,18 @@ pub fn verifyPassword(password: []const u8, stored_hash: *const PasswordHash) !b
     return constantTimeEqual(&candidate.hash, &stored_hash.hash);
 }
 
-/// Constant-time comparison of two byte arrays
+/// Constant-time comparison of two byte arrays.
+/// Always compares the full length of `a` to prevent timing side-channels.
 fn constantTimeEqual(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-
+    // XOR-accumulate over the shorter length, then fold in the length mismatch.
+    // This avoids an early return that would leak the length difference via timing.
+    const min_len = @min(a.len, b.len);
     var result: u8 = 0;
-    for (a, b) |a_byte, b_byte| {
-        result |= a_byte ^ b_byte;
+    for (0..min_len) |i| {
+        result |= a[i] ^ b[i];
     }
-
+    // Lengths must match too — fold this into the result without branching.
+    result |= @as(u8, @intFromBool(a.len != b.len));
     return result == 0;
 }
 

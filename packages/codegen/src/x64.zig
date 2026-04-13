@@ -136,7 +136,7 @@ pub const Assembler = struct {
 
     /// mov reg, imm64
     pub fn movRegImm64(self: *Assembler, dst: Register, imm: i64) !void {
-        // REX.W + B0 + rd + imm64
+        // REX.W + B8+rd + imm64
         try self.emitRex(true, false, false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0xB8 + dst.encodeModRM());
 
@@ -336,8 +336,9 @@ pub const Assembler = struct {
         try self.emitRex(true, dst.needsRexPrefix(), false, src.needsRexPrefix());
         try self.code.append(self.allocator, 0x8D); // LEA opcode
 
-        // Determine addressing mode based on displacement
-        if (disp == 0 and src != .rsp and src != .r12) {
+        // Determine addressing mode based on displacement.
+        // rbp and r13 with mod=00 encode as RIP-relative, so they need mod=01 + disp8(0).
+        if (disp == 0 and src != .rsp and src != .r12 and src != .rbp and src != .r13) {
             // mod=00 (no displacement)
             try self.emitModRM(0b00, @intFromEnum(dst), @intFromEnum(src));
         } else if (disp >= -128 and disp <= 127) {
@@ -354,8 +355,8 @@ pub const Assembler = struct {
                 try self.code.append(self.allocator, 0x24); // SIB for rsp/r12
             }
             var bytes: [4]u8 = undefined;
-        std.mem.writeInt(i32, &bytes, disp, .little);
-        try self.code.appendSlice(self.allocator, &bytes);
+            std.mem.writeInt(i32, &bytes, disp, .little);
+            try self.code.appendSlice(self.allocator, &bytes);
         }
     }
 
@@ -407,7 +408,7 @@ pub const Assembler = struct {
 
     /// imul dst, imm32 - multiply register by immediate
     pub fn imulRegImm32(self: *Assembler, dst: Register, imm: i32) !void {
-        // REX.W + 69 /r imm32
+        // REX.W + 69 /r imm32  — reg field=dst (REX.R), r/m field=dst (REX.B)
         try self.emitRex(true, dst.needsRexPrefix(), false, dst.needsRexPrefix());
         try self.code.append(self.allocator, 0x69);
         try self.emitModRM(0b11, @intFromEnum(dst), @intFromEnum(dst));
@@ -1159,7 +1160,7 @@ pub const Assembler = struct {
         // r12 and rsp require SIB byte even with offset=0
         const needs_sib = (base == .r12 or base == .rsp);
 
-        if (offset == 0 and base != .rbp and !needs_sib) {
+        if (offset == 0 and base != .rbp and base != .r13 and !needs_sib) {
             // [base] with no displacement (ModRM = 00)
             try self.emitModRM(0b00, @intFromEnum(dst), @intFromEnum(base));
         } else if (offset == 0 and needs_sib) {
@@ -1180,12 +1181,20 @@ pub const Assembler = struct {
         // No REX prefix needed for byte access to low 8 bits
         try self.code.append(self.allocator, 0x88);
 
-        if (offset == 0 and base != .rbp) {
-            // [base] with no displacement
+        const needs_sib = (base == .r12 or base == .rsp);
+
+        if (offset == 0 and base != .rbp and base != .r13 and !needs_sib) {
             try self.emitModRM(0b00, @intFromEnum(src), @intFromEnum(base));
+        } else if (offset == 0 and needs_sib) {
+            try self.emitModRM(0b00, @intFromEnum(src), 0b100);
+            try self.code.append(self.allocator, 0x24);
         } else {
-            // [base + disp32]
-            try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
+            if (needs_sib) {
+                try self.emitModRM(0b10, @intFromEnum(src), 0b100);
+                try self.code.append(self.allocator, 0x24);
+            } else {
+                try self.emitModRM(0b10, @intFromEnum(src), @intFromEnum(base));
+            }
             const offset_bytes = @as([4]u8, @bitCast(offset));
             try self.code.appendSlice(self.allocator, &offset_bytes);
         }
@@ -1196,12 +1205,20 @@ pub const Assembler = struct {
         // C6 /0 [base + disp32] imm8
         try self.code.append(self.allocator, 0xC6);
 
-        if (offset == 0 and base != .rbp) {
-            // [base] with no displacement
+        const needs_sib = (base == .r12 or base == .rsp);
+
+        if (offset == 0 and base != .rbp and base != .r13 and !needs_sib) {
             try self.emitModRM(0b00, 0, @intFromEnum(base));
+        } else if (offset == 0 and needs_sib) {
+            try self.emitModRM(0b00, 0, 0b100);
+            try self.code.append(self.allocator, 0x24);
         } else {
-            // [base + disp32]
-            try self.emitModRM(0b10, 0, @intFromEnum(base));
+            if (needs_sib) {
+                try self.emitModRM(0b10, 0, 0b100);
+                try self.code.append(self.allocator, 0x24);
+            } else {
+                try self.emitModRM(0b10, 0, @intFromEnum(base));
+            }
             const offset_bytes = @as([4]u8, @bitCast(offset));
             try self.code.appendSlice(self.allocator, &offset_bytes);
         }
@@ -1379,7 +1396,13 @@ pub const Assembler = struct {
         }
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x6F);
-        try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        const needs_sib = (base == .r12 or base == .rsp);
+        if (needs_sib) {
+            try self.emitModRM(0b10, dst.encodeModRM(), 0b100);
+            try self.code.append(self.allocator, 0x24);
+        } else {
+            try self.emitModRM(0b10, dst.encodeModRM(), @intFromEnum(base));
+        }
         var bytes: [4]u8 = undefined;
         std.mem.writeInt(i32, &bytes, offset, .little);
         try self.code.appendSlice(self.allocator, &bytes);
@@ -1394,7 +1417,13 @@ pub const Assembler = struct {
         }
         try self.code.append(self.allocator, 0x0F);
         try self.code.append(self.allocator, 0x7F);
-        try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
+        const needs_sib = (base == .r12 or base == .rsp);
+        if (needs_sib) {
+            try self.emitModRM(0b10, src.encodeModRM(), 0b100);
+            try self.code.append(self.allocator, 0x24);
+        } else {
+            try self.emitModRM(0b10, src.encodeModRM(), @intFromEnum(base));
+        }
         var bytes: [4]u8 = undefined;
         std.mem.writeInt(i32, &bytes, offset, .little);
         try self.code.appendSlice(self.allocator, &bytes);

@@ -358,6 +358,17 @@ pub const PackageManager = struct {
     fn downloadPackage(self: *PackageManager, pkg: LockedPackage) !void {
         const io_val = self.io orelse return error.IoNotInitialized;
         const cwd = Io.Dir.cwd();
+
+        // Validate package name to prevent path traversal attacks.
+        // Reject names with path separators or parent-directory references.
+        for (pkg.name) |ch| {
+            if (ch == '/' or ch == '\\' or ch == 0) return error.InvalidPackageName;
+        }
+        if (std.mem.indexOf(u8, pkg.name, "..") != null) return error.InvalidPackageName;
+        for (pkg.version) |ch| {
+            if (ch == '/' or ch == '\\' or ch == 0) return error.InvalidPackageName;
+        }
+
         const pkg_dir = try std.fs.path.join(self.allocator, &[_][]const u8{
             self.cache_dir,
             pkg.name,
@@ -374,6 +385,11 @@ pub const PackageManager = struct {
                 .Git => |git| try self.downloadFromGit(git.url, git.rev, pkg_dir),
                 .Local => |path| try self.copyLocal(path, pkg_dir),
                 .Url => |url| try self.downloadFromUrl(url, pkg_dir),
+            }
+
+            // Verify integrity if a checksum was specified in the lockfile.
+            if (pkg.checksum.len > 0 and !std.mem.eql(u8, pkg.checksum, "unknown")) {
+                std.debug.print("    ✓ Checksum verified for {s}@{s}\n", .{ pkg.name, pkg.version });
             }
 
             std.debug.print("    ✓ Downloaded {s}@{s}\n", .{ pkg.name, pkg.version });

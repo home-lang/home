@@ -752,6 +752,12 @@ const ReassemblyEntry = struct {
         const data_copy = try self.allocator.alloc(u8, data.len);
         @memcpy(data_copy, data);
 
+        // Check for duplicate/overlapping fragment — free old data first.
+        if (self.fragments[slot_idx]) |existing| {
+            self.received_len -= existing.data.len;
+            self.allocator.free(existing.data);
+        }
+
         self.fragments[slot_idx] = .{
             .offset = offset,
             .data = data_copy,

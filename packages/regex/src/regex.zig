@@ -211,8 +211,15 @@ pub const Regex = struct {
                     captures,
                 ));
 
-                // Move past this match
-                pos = if (result.end > result.start) result.end else result.end + 1;
+                // Move past this match.  For empty matches, advance by one byte
+                // to guarantee progress and prevent an infinite loop.
+                if (result.end > result.start) {
+                    pos = result.end;
+                } else {
+                    pos = result.end + 1;
+                    // Don't advance past the end of the input.
+                    if (pos > input.len) break;
+                }
             } else {
                 break;
             }
@@ -1452,6 +1459,21 @@ pub fn split(allocator: std.mem.Allocator, pattern: []const u8, input: []const u
     var regex = try Regex.compile(allocator, pattern);
     defer regex.deinit();
     return regex.split(allocator, input);
+}
+
+/// Escape all regex meta-characters in `input` so it can be used as a literal
+/// pattern.  This prevents ReDoS when user-supplied strings are embedded in
+/// regex patterns.
+pub fn escapePattern(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const meta = "\\^$.|?*+()[]{}";
+    var result = std.ArrayList(u8).init(allocator);
+    for (input) |ch| {
+        if (std.mem.indexOfScalar(u8, meta, ch) != null) {
+            try result.append('\\');
+        }
+        try result.append(ch);
+    }
+    return result.toOwnedSlice();
 }
 
 // ============================================================================
