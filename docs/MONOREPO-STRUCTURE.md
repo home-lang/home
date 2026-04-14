@@ -129,7 +129,9 @@ home-pkg (no deps)
 ## Benefits of This Structure
 
 ### 1. **Clear Separation of Concerns**
+
 Each package has a single, well-defined responsibility:
+
 - `lexer`: Tokenization only
 - `parser`: Syntax analysis only
 - `ast`: Abstract syntax tree definitions
@@ -137,21 +139,25 @@ Each package has a single, well-defined responsibility:
 - etc.
 
 ### 2. **Independent Development**
+
 - Each package can be developed independently
 - Run tests for a single package: `cd packages/lexer && zig test src/lexer.zig`
 - Packages can have their own versioning
 
 ### 3. **Reusability**
+
 - Packages can be used independently
 - Other projects can depend on just the lexer, parser, etc.
 - Easier to create tools that use parts of Home
 
 ### 4. **Better Testing**
+
 - Unit tests stay within each package
 - Integration tests in root `tests/` directory
 - Faster feedback loop when testing specific components
 
 ### 5. **Workspace Features**
+
 Home's package manager supports workspace operations:
 ```bash
 # Discover all packages in workspace
@@ -170,6 +176,7 @@ ion pkg scripts
 
 1. Create directory: `mkdir -p packages/my-package/src`
 2. Create `packages/my-package/ion.toml`:
+
    ```toml
    [package]
    name = "home-my-package"
@@ -179,11 +186,12 @@ ion pkg scripts
    license = "MIT"
 
    [dependencies]
-   # Add dependencies here
+# Add dependencies here
 
    [scripts]
    test = "zig test src/main.zig"
    ```
+
 3. Add your code to `packages/my-package/src/`
 4. The workspace will automatically discover it
 
@@ -224,6 +232,7 @@ user/repo = { git = "..." }     # GitHub
 ## Current Status
 
 ✅ **Completed:**
+
 - Created packages/ directory structure
 - Moved all code to individual packages
 - Created ion.toml for each package
@@ -232,6 +241,7 @@ user/repo = { git = "..." }     # GitHub
 - All builds and tests passing
 
 🚧 **Future Work:**
+
 - Migrate build system to fully use packages/ (currently uses src/)
 - Update all imports to use package references
 - Add per-package testing in CI
@@ -241,16 +251,19 @@ user/repo = { git = "..." }     # GitHub
 ## Transition Plan
 
 The codebase currently maintains both structures:
+
 - `src/` - Original structure (currently active)
 - `packages/` - New structure (ready for migration)
 
 This allows for:
+
 1. Gradual migration without breaking changes
 2. Testing the new structure in parallel
 3. Validating workspace features
 4. Maintaining backwards compatibility
 
 To complete the migration:
+
 1. Update `build.zig` to use packages/ paths
 2. Update all import paths in src/main.zig and src/ion.zig
 3. Remove old src/ subdirectories
@@ -295,6 +308,7 @@ home-parser = { path = "../home/packages/parser" }
 ## Summary
 
 The monorepo structure provides:
+
 - ✅ Clear organization
 - ✅ Independent packages
 - ✅ Workspace management

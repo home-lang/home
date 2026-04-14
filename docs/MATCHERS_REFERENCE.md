@@ -195,6 +195,7 @@ try expect.toBeCloseTo(0.3, 1); // ✓ Pass (matches to 1 decimal)
 ```
 
 **Parameters:**
+
 - `expected`: Expected floating-point value
 - `precision`: Number of decimal places (default: 2)
 
@@ -302,8 +303,8 @@ try expect.toBeOdd(); // ✗ Fail
 Value must be NaN (Not a Number).
 
 ```zig
-const nan_value = std.math.nan(f64);
-expect.* = test.expect(allocator, nan_value, failures);
+const nan*value = std.math.nan(f64);
+expect.* = test.expect(allocator, nan*value, failures);
 try expect.toBeNaN(); // ✓ Pass
 
 expect.* = test.expect(allocator, 42.0, failures);
@@ -319,12 +320,12 @@ try expect.toBeNaN(); // ✗ Fail
 Value must be positive or negative infinity.
 
 ```zig
-const inf_value = std.math.inf(f64);
-expect.* = test.expect(allocator, inf_value, failures);
+const inf*value = std.math.inf(f64);
+expect.* = test.expect(allocator, inf*value, failures);
 try expect.toBeInfinite(); // ✓ Pass
 
-const neg_inf = -std.math.inf(f64);
-expect.* = test.expect(allocator, neg_inf, failures);
+const neg*inf = -std.math.inf(f64);
+expect.* = test.expect(allocator, neg*inf, failures);
 try expect.toBeInfinite(); // ✓ Pass
 ```
 
@@ -421,6 +422,7 @@ try expect.toMatch("*.txt"); // ✓ Pass
 ```
 
 **Pattern syntax:**
+
 - `*` matches any sequence of characters
 - Literal characters must match exactly
 
@@ -434,7 +436,7 @@ Compare value against saved snapshot.
 
 ```zig
 expect.* = test.expect(allocator, output, failures);
-try expect.toMatchSnapshot("component_render", &framework.snapshots);
+try expect.toMatchSnapshot("component*render", &framework.snapshots);
 ```
 
 **First run:** Creates snapshot
@@ -655,6 +657,6 @@ All matchers provide clear error messages:
 
 ## See Also
 
-- [Quick Start Guide](TESTING_QUICK_START.md)
-- [Complete Testing Guide](MODERN_TESTING_GUIDE.md)
+- [Quick Start Guide](TESTING*QUICK*START.md)
+- [Complete Testing Guide](MODERN*TESTING_GUIDE.md)
 - [Examples](../packages/testing/examples/)

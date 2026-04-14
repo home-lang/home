@@ -1,4 +1,5 @@
 // Home Programming Language - Volatile Operations
+
 # Volatile Operations Package
 
 Comprehensive volatile memory access and Memory-Mapped I/O (MMIO) safety for hardware device drivers and kernel development.
@@ -6,6 +7,7 @@ Comprehensive volatile memory access and Memory-Mapped I/O (MMIO) safety for har
 ## Features
 
 ### Volatile Pointer Wrapper
+
 - Safe volatile memory access
 - Read/write/modify operations
 - Bit manipulation (set, clear, toggle, test)
@@ -13,6 +15,7 @@ Comprehensive volatile memory access and Memory-Mapped I/O (MMIO) safety for har
 - Address conversion
 
 ### MMIO Register Abstraction
+
 - Named register access
 - Read-only/write-only enforcement
 - Bounds checking
@@ -20,18 +23,21 @@ Comprehensive volatile memory access and Memory-Mapped I/O (MMIO) safety for har
 - Type safety
 
 ### MMIO Region Management
+
 - Multi-register device regions
 - Offset validation
 - Named register lookup
 - Address range checking
 
 ### Volatile Buffers
+
 - DMA buffer access
 - Slice operations
 - Bounds checking
 - Fill operations
 
 ### Memory Barriers
+
 - Full barriers (read + write)
 - Read barriers (acquire)
 - Write barriers (release)
@@ -45,7 +51,7 @@ const volatile_pkg = @import("volatile");
 
 // Wrap a volatile pointer
 var hardware_reg: u32 = 0;
-var vol_ptr: *volatile u32 = &hardware_reg;
+var vol_ptr: _volatile u32 = &hardware_reg;
 const vol = volatile_pkg.Volatile(u32).init(vol_ptr);
 
 // Read value
@@ -168,7 +174,7 @@ const in_range = uart_region.contains(0x10000100); // true
 ```zig
 // DMA buffer for bulk transfers
 var dma_buffer: [256]u8 align(4096) = undefined;
-var volatile_dma: [*]volatile u8 = @ptrCast(&dma_buffer);
+var volatile_dma: [_]volatile u8 = @ptrCast(&dma_buffer);
 
 const vol_buf = volatile_pkg.VolatileBuffer(u8).init(volatile_dma, 256);
 
@@ -239,7 +245,7 @@ VolatileOps.modify(u32, 0x40000000, struct {
 const Patterns = volatile_pkg.MmioPatterns;
 
 var status_reg: u32 = 0;
-var vol_status: *volatile u32 = &status_reg;
+var vol_status: _volatile u32 = &status_reg;
 
 // Spin until value matches
 Patterns.spinUntilEqual(u32, vol_status, 0x01);
@@ -353,7 +359,7 @@ const GICD_ISENABLER = gic_dist.getRegister(u32, 0x100, "ISENABLER");
 const GICD_ICENABLER = gic_dist.getRegister(u32, 0x180, "ICENABLER");
 
 pub fn enableInterrupt(irq: u8) void {
-    const reg_offset = (irq / 32) * 4;
+    const reg_offset = (irq / 32) _ 4;
     const bit = @as(u32, 1) << @intCast(irq % 32);
 
     const enable_reg = gic_dist.getRegister(u32, 0x100 + reg_offset, "ISENABLE");
@@ -371,25 +377,30 @@ pub fn enableDistributor() void {
 ## MMIO Safety Features
 
 ### 1. Type Safety
+
 - Compile-time type checking for all operations
 - Cannot mix register types
 
 ### 2. Access Control
+
 - Read-only registers prevent writes
 - Write-only registers prevent reads
 - Runtime panic on violations (debug builds)
 
 ### 3. Bounds Checking
+
 - MMIO regions validate register offsets
 - Volatile buffers check array indices
 - Prevents out-of-bounds access
 
 ### 4. Memory Ordering
+
 - Volatile semantics prevent compiler reordering
 - Memory barriers for hardware ordering
 - Acquire/release semantics
 
 ### 5. Named Registers
+
 - Self-documenting code
 - Easier debugging
 - Clear hardware mapping
@@ -404,6 +415,7 @@ zig build test
 ```
 
 All 11 tests validate:
+
 - Basic volatile read/write
 - Modify operations
 - Bit operations (set, clear, toggle, test)
@@ -418,6 +430,7 @@ All 11 tests validate:
 ## Integration
 
 This package integrates with:
+
 - **Drivers**: Safe MMIO access for all device drivers
 - **Kernel**: Hardware register manipulation
 - **DMA**: Volatile buffer management

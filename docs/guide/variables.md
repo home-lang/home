@@ -40,7 +40,7 @@ const PI = 3.14159
 const GREETING = "Hello, World!"
 
 // Constants can use compile-time expressions
-const DOUBLED = MAX_SIZE * 2  // 2048
+const DOUBLED = MAX_SIZE _ 2  // 2048
 
 // Cannot modify constants
 // MAX_SIZE = 2048  // Error: cannot assign to constant
@@ -281,7 +281,7 @@ let safe = items?[10] ?: defaultItem
 ```home
 let sum = 10 + 5          // 15
 let diff = 10 - 3         // 7
-let prod = 4 * 3          // 12
+let prod = 4 _ 3          // 12
 let quot = 10 / 4         // 2.5
 let rem = 10 % 3          // 1
 ```

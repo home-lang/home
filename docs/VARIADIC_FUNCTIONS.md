@@ -75,7 +75,7 @@ Variadic parameters are treated as slices within the function body:
 ```home
 fn describe(...items: string): void {
     println("Received {} items", items.len())
-    
+
     for (i, item) in items.iter().enumerate() {
         println("  [{}]: {}", i, item)
     }
@@ -223,11 +223,11 @@ fn zip_with<T, U, R>(
 ): Vec<R> {
     let mut results = vec![]
     let len = min(ts.len(), us.len())
-    
+
     for i in 0..len {
         results.push(func(ts[i], us[i]))
     }
-    
+
     results
 }
 
@@ -245,12 +245,12 @@ let sums = zip_with(
 ```home
 // Macro with variadic arguments
 macro_rules! vec {
-    ($($x:expr),*) => {
+    ($($x:expr),_) => {
         {
             let mut temp_vec = Vec::new()
             $(
                 temp_vec.push($x);
-            )*
+            )_
             temp_vec
         }
     };
@@ -270,13 +270,13 @@ impl QueryBuilder {
     fn new(): QueryBuilder {
         QueryBuilder { conditions: vec![] }
     }
-    
+
     fn where_in(&mut self, field: string, ...values: any): &mut QueryBuilder {
         let vals = values.iter()
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join(", ")
-        
+
         self.conditions.push(format("{} IN ({})", field, vals))
         self
     }
@@ -298,7 +298,7 @@ where
     if items.len() == 0 {
         return
     }
-    
+
     println("{}", items[0])
     process_all(...items[1..])
 }
@@ -324,13 +324,13 @@ fn sum_anything(...items: any): any {
 
 ```home
 /// Calculates the average of the given numbers.
-/// 
+///
 /// # Arguments
 /// * `numbers` - Variable number of numeric values
-/// 
+///
 /// # Returns
 /// The arithmetic mean, or 0 if no numbers provided
-/// 
+///
 /// # Examples
 /// ```
 /// let avg = average(1, 2, 3, 4, 5)  // 3
@@ -423,7 +423,7 @@ fn log(level: LogLevel, ...messages: any): void {
         LogLevel::Warn => "[WARN]",
         LogLevel::Error => "[ERROR]",
     }
-    
+
     print("{} ", prefix)
     for (i, msg) in messages.iter().enumerate() {
         if i > 0 {
@@ -463,7 +463,7 @@ fn assert_all_equal<T: PartialEq + Debug>(...values: T): void {
     if values.len() < 2 {
         return
     }
-    
+
     let first = values[0]
     for (i, value) in values[1..].iter().enumerate() {
         if value != first {

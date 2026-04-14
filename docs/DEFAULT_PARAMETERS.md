@@ -124,13 +124,13 @@ draw_rect(10, 20, height: 200)  // x=10, y=20, width=100, height=200
 
 ### Named-Only Parameters
 
-Parameters after a `*` separator can only be passed by name:
+Parameters after a `_` separator can only be passed by name:
 
 ```home
 fn connect(
     host: string,
     port: i32 = 8080,
-    *,  // Everything after this is named-only
+    _,  // Everything after this is named-only
     timeout: i32 = 30,
     retries: i32 = 3,
     ssl: bool = false
@@ -214,12 +214,12 @@ fn process(
 
 ```home
 /// Connects to a database
-/// 
+///
 /// # Parameters
-/// * `host` - Database host
-/// * `port` - Database port (default: 5432)
-/// * `timeout` - Connection timeout in seconds (default: 30)
-/// * `pool_size` - Connection pool size (default: 10)
+/// _ `host` - Database host
+/// _ `port` - Database port (default: 5432)
+/// _ `timeout` - Connection timeout in seconds (default: 30)
+/// _ `pool_size` - Connection pool size (default: 10)
 fn connect_db(
     host: string,
     port: i32 = 5432,
@@ -237,7 +237,7 @@ Use named-only parameters for boolean flags and configuration:
 fn copy_file(
     source: string,
     dest: string,
-    *,
+    _,
     overwrite: bool = false,
     preserve_metadata: bool = true,
     follow_symlinks: bool = false
@@ -303,7 +303,7 @@ fn process(items: Option<Vec<i32>> = None): void {
 ```home
 fn start_server(
     port: i32 = 8080,
-    *,
+    _,
     workers: i32 = 4,
     max_connections: i32 = 1000,
     timeout: i32 = 30,
@@ -352,7 +352,7 @@ for i in range(0, 20, 2) {     // 0, 2, 4, ..., 18
 fn format_number(
     num: f64,
     decimals: i32 = 2,
-    *,
+    _,
     thousands_sep: string = ",",
     decimal_point: string = "."
 ): string {
@@ -371,7 +371,7 @@ format_number(1234.5678, decimal_point: ",")  // "1,234,57"
 ```home
 fn get(
     url: string,
-    *,
+    _,
     timeout: i32 = 30,
     headers: HashMap<string, string> = HashMap::new(),
     follow_redirects: bool = true,
@@ -397,7 +397,7 @@ let response = get("https://api.example.com/private", headers: headers)?
 ```home
 fn query<T>(
     sql: string,
-    *,
+    _,
     params: Vec<any> = vec![],
     timeout: i32 = 30,
     readonly: bool = false
@@ -406,17 +406,17 @@ fn query<T>(
 }
 
 // Simple query
-let users = query::<User>("SELECT * FROM users")?
+let users = query::<User>("SELECT _ FROM users")?
 
 // With parameters
 let users = query::<User>(
-    "SELECT * FROM users WHERE age > ?",
+    "SELECT _ FROM users WHERE age > ?",
     params: vec![18]
 )?
 
 // Read-only query
 let count = query::<i32>(
-    "SELECT COUNT(*) FROM users",
+    "SELECT COUNT(_) FROM users",
     readonly: true
 )?
 ```

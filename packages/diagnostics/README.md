@@ -9,6 +9,7 @@ The diagnostics package provides Rust-quality error reporting with rich visual f
 ## Features
 
 ### Enhanced Error Reporting
+
 - **Rich visual formatting**: Color-coded errors, warnings, and notes
 - **Source context**: Shows relevant code lines with line numbers
 - **Multi-character spans**: Highlights full identifiers and operators (`^~~~`)
@@ -16,6 +17,7 @@ The diagnostics package provides Rust-quality error reporting with rich visual f
 - **Severity levels**: Error, Warning, Note, Help
 
 ### Developer Experience
+
 - **Actionable suggestions**: Provides fix recommendations with code replacements
 - **Configurable output**: Control colors, context lines, and suggestion display
 - **Source file tracking**: Maintains source content for accurate diagnostics
@@ -116,6 +118,7 @@ error[E0308]: mismatched types
 ### EnhancedReporter
 
 **Methods:**
+
 - `init(allocator, config)`: Create new reporter
 - `deinit()`: Clean up resources
 - `registerSource(file_path, source)`: Register source file for context

@@ -63,8 +63,8 @@ Default capture mode - borrows variables immutably.
 
 ```home
 let x = 42
-let print_x = || println("x = {}", x)  // Captures &x
-print_x()
+let print*x = || println("x = {}", x)  // Captures &x
+print*x()
 println("{}", x)  // x is still accessible
 ```
 
@@ -121,9 +121,9 @@ trait Fn<Args> {
 
 // Example
 let x = 10
-let add_x: impl Fn(i32): i32 = |y| x + y
-println("{}", add_x(5))  // 15
-println("{}", add_x(10)) // 20
+let add*x: impl Fn(i32): i32 = |y| x + y
+println("{}", add*x(5))  // 15
+println("{}", add*x(10)) // 20
 ```
 
 ### FnMut - Mutable Borrow
@@ -132,7 +132,7 @@ Can be called multiple times, captures by mutable reference.
 
 ```home
 trait FnMut<Args>: Fn<Args> {
-    fn call_mut(&mut self, args: Args): Self::Output
+    fn call*mut(&mut self, args: Args): Self::Output
 }
 
 // Example
@@ -152,7 +152,7 @@ Can be called only once, takes ownership of captures.
 ```home
 trait FnOnce<Args> {
     type Output
-    fn call_once(self, args: Args): Self::Output
+    fn call*once(self, args: Args): Self::Output
 }
 
 // Example
@@ -180,8 +180,8 @@ let parse: fn(&str): Result<i32, Error> = |s| {
 }
 
 // Generic closures
-fn apply<F>(f: F, x: i32): i32 
-where 
+fn apply<F>(f: F, x: i32): i32
+where
     F: Fn(i32): i32
 {
     f(x)
@@ -195,12 +195,12 @@ let result = apply(|x| x + 1, 5)  // 6
 Use `move` to transfer ownership of captured variables:
 
 ```home
-fn create_closure(): impl Fn(): i32 {
+fn create*closure(): impl Fn(): i32 {
     let x = 42
     move || x  // x is moved into closure
 }
 
-let closure = create_closure()
+let closure = create*closure()
 println("{}", closure())  // 42
 ```
 
@@ -226,18 +226,18 @@ Closures can be returned using trait objects or `impl Trait`:
 ### Using impl Trait
 
 ```home
-fn make_adder(x: i32): impl Fn(i32): i32 {
+fn make*adder(x: i32): impl Fn(i32): i32 {
     move |y| x + y
 }
 
-let add_5 = make_adder(5)
-println("{}", add_5(10))  // 15
+let add*5 = make*adder(5)
+println("{}", add*5(10))  // 15
 ```
 
 ### Using Box<dyn Fn>
 
 ```home
-fn make_closure(choice: bool): Box<dyn Fn(i32): i32> {
+fn make*closure(choice: bool): Box<dyn Fn(i32): i32> {
     if choice {
         Box::new(|x| x * 2)
     } else {
@@ -245,7 +245,7 @@ fn make_closure(choice: bool): Box<dyn Fn(i32): i32> {
     }
 }
 
-let closure = make_closure(true)
+let closure = make*closure(true)
 println("{}", closure(5))  // 10
 ```
 
@@ -276,14 +276,14 @@ let sum = numbers.iter()
 ### Custom Higher-Order Functions
 
 ```home
-fn apply_twice<F>(f: F, x: i32): i32 
-where 
+fn apply*twice<F>(f: F, x: i32): i32
+where
     F: Fn(i32): i32
 {
     f(f(x))
 }
 
-let result = apply_twice(|x| x + 1, 5)  // 7
+let result = apply*twice(|x| x + 1, 5)  // 7
 
 fn compose<F, G, A, B, C>(f: F, g: G): impl Fn(A): C
 where
@@ -293,10 +293,10 @@ where
     move |x| f(g(x))
 }
 
-let add_one = |x| x + 1
+let add*one = |x| x + 1
 let double = |x| x * 2
-let add_then_double = compose(double, add_one)
-println("{}", add_then_double(5))  // 12
+let add*then*double = compose(double, add*one)
+println("{}", add*then*double(5))  // 12
 ```
 
 ## Async Closures
@@ -311,7 +311,7 @@ let fetch = async || {
 }
 
 // Using async closures
-async fn process_data<F, Fut>(f: F): Result<()>
+async fn process*data<F, Fut>(f: F): Result<()>
 where
     F: Fn(): Fut,
     Fut: Future<Output = Result<Data>>,
@@ -321,8 +321,8 @@ where
     Ok(())
 }
 
-process_data(async || {
-    fetch_from_api().await
+process*data(async || {
+    fetch*from*api().await
 }).await?
 ```
 
@@ -355,14 +355,14 @@ numbers.map(|x: i32|: i32 { x * 2 })
 
 ```home
 // Good - focused closure
-let is_even = |x| x % 2 == 0
-numbers.filter(is_even)
+let is*even = |x| x % 2 == 0
+numbers.filter(is*even)
 
 // Avoid - too complex
 numbers.filter(|x| {
-    let result = complex_calculation(x)
-    let adjusted = adjust_value(result)
-    validate(adjusted) && check_bounds(adjusted)
+    let result = complex*calculation(x)
+    let adjusted = adjust*value(result)
+    validate(adjusted) && check*bounds(adjusted)
 })
 ```
 
@@ -370,10 +370,10 @@ numbers.filter(|x| {
 
 ```home
 // Good - named for reuse
-let is_positive = |x| x > 0
-let is_even = |x| x % 2 == 0
+let is*positive = |x| x > 0
+let is*even = |x| x % 2 == 0
 
-numbers.filter(is_positive).filter(is_even)
+numbers.filter(is*positive).filter(is*even)
 
 // Avoid - inline everything
 numbers.filter(|x| x > 0).filter(|x| x % 2 == 0)
@@ -422,21 +422,21 @@ let factorial = fix(|f| move |n| {
 
 ```home
 struct Button {
-    on_click: Box<dyn FnMut()>,
+    on*click: Box<dyn FnMut()>,
 }
 
 impl Button {
-    fn new<F>(handler: F): Button 
-    where 
+    fn new<F>(handler: F): Button
+    where
         F: FnMut() + 'static
     {
         Button {
-            on_click: Box::new(handler),
+            on*click: Box::new(handler),
         }
     }
-    
+
     fn click(&mut self) {
-        (self.on_click)()
+        (self.on*click)()
     }
 }
 
@@ -471,19 +471,19 @@ where
             value: None,
         }
     }
-    
+
     fn get(&mut self): &T {
-        if self.value.is_none() {
+        if self.value.is*none() {
             let init = self.init.take().unwrap()
             self.value = Some(init())
         }
-        self.value.as_ref().unwrap()
+        self.value.as*ref().unwrap()
     }
 }
 
 let mut lazy = Lazy::new(|| {
     println("Computing...")
-    expensive_computation()
+    expensive*computation()
 })
 
 // Not computed yet
@@ -503,7 +503,7 @@ impl QueryBuilder {
     fn new(): QueryBuilder {
         QueryBuilder { filters: vec![] }
     }
-    
+
     fn filter<F>(mut self, f: F): QueryBuilder
     where
         F: Fn(&Record): bool + 'static,
@@ -511,7 +511,7 @@ impl QueryBuilder {
         self.filters.push(Box::new(f))
         self
     }
-    
+
     fn execute(&self, records: &[Record]): Vec<&Record> {
         records.iter()
             .filter(|r| self.filters.iter().all(|f| f(r)))

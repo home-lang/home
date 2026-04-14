@@ -523,6 +523,7 @@ fn main() {
 ## Best Practices
 
 1. **Don't block in async code**:
+
    ```home
    // Bad: Blocks the async runtime
    async fn bad() {
@@ -541,6 +542,7 @@ fn main() {
    ```
 
 2. **Use structured concurrency**:
+
    ```home
    // Good: Clear task lifetime
    task.scope(|s| async {
@@ -553,6 +555,7 @@ fn main() {
    ```
 
 3. **Handle cancellation properly**:
+
    ```home
    async fn with_cleanup(cancel: CancellationToken) {
        select! {
@@ -568,6 +571,7 @@ fn main() {
    ```
 
 4. **Bound channel sizes**:
+
    ```home
    // Good: Prevents unbounded memory growth
    let (tx, rx) = mpsc.channel::<Event>(100)
@@ -577,6 +581,7 @@ fn main() {
    ```
 
 5. **Use timeouts for external operations**:
+
    ```home
    async fn fetch_with_timeout(url: string) -> Result<Response, Error> {
        with_timeout(

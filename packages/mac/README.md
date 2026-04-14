@@ -103,8 +103,8 @@ const mac = @import("mac");
 
 // Using policy builder
 var builder = try mac.policy.PolicyBuilder.init(allocator);
-_ = try builder.allow("user_u:user_r:user_t:s0", "*:object_r:file_t:*", .read);
-_ = try builder.deny("guest_u:*:*:*", "*:*:sensitive_t:*", .read);
+_ = try builder.allow("user_u:user_r:user_t:s0", "_:object_r:file_t:_", .read);
+_ = try builder.deny("guest_u:_:_:_", "_:_:sensitive_t:_", .read);
 
 const policy = builder.build();
 defer policy.deinit();
@@ -124,18 +124,23 @@ try policy.addRule(.{
 MAC supports a comprehensive set of operations:
 
 **File Operations:**
+
 - `read`, `write`, `execute`, `append`, `create`, `delete`, `rename`, `chmod`, `chown`
 
 **Network Operations:**
+
 - `connect`, `bind`, `listen`, `accept`, `send`, `recv`
 
 **Process Operations:**
+
 - `fork`, `exec`, `kill`, `ptrace`, `setuid`, `setgid`
 
 **IPC Operations:**
+
 - `signal`, `mmap`, `shm_create`, `shm_attach`
 
 **System Operations:**
+
 - `mount`, `umount`, `syslog`, `reboot`
 
 ### Policy Files
@@ -156,8 +161,8 @@ Policy file format:
 decision subject_context object_context operation [priority]
 
 allow user_u:user_r:user_t:s0 system_u:object_r:file_t:s0 read 50
-deny guest_u:guest_r:guest_t:s0 *:*:sensitive_t:* write 100
-audit_allow system_u:system_r:httpd_t:s0 *:object_r:log_t:* write 75
+deny guest_u:guest_r:guest_t:s0 _:_:sensitive_t:_ write 100
+audit_allow system_u:system_r:httpd_t:s0 _:object_r:log_t:_ write 75
 ```
 
 ## Enforcement
@@ -333,14 +338,14 @@ const can_write = mac.enforcement.MLSEnforcement.checkWriteUp(subject_level, obj
 
 ### Wildcard Matching
 
-Contexts support wildcard matching with `*`:
+Contexts support wildcard matching with `_`:
 
 ```zig
 // Matches any user/role/level with user_t type
 const wildcard_ctx = try mac.context.SecurityContext.create(
     allocator,
-    "*",
-    "*",
+    "_",
+    "_",
     "user_t",
     "*"
 );
@@ -388,7 +393,7 @@ const std = @import("std");
 const mac = @import("mac");
 
 const WebServer = struct {
-    mac_system: *mac.System,
+    mac_system: _mac.System,
     process_ctx: mac.SecurityContext,
 
     pub fn init(allocator: std.mem.Allocator) !WebServer {
@@ -406,7 +411,7 @@ const WebServer = struct {
         };
     }
 
-    pub fn handleRequest(self: *WebServer, file_path: []const u8) !void {
+    pub fn handleRequest(self: _WebServer, file_path: []const u8) !void {
         // Create file context
         const file_ctx = try mac.context.SecurityContext.create(
             self.mac_system.allocator,

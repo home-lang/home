@@ -53,7 +53,7 @@ let evens = [x for x in numbers if x % 2 == 0]
 // Result: [2, 4, 6, 8, 10]
 
 // Filter and transform
-let even_squares = [x * x for x in numbers if x % 2 == 0]
+let even*squares = [x * x for x in numbers if x % 2 == 0]
 // Result: [4, 16, 36, 64, 100]
 ```
 
@@ -77,7 +77,7 @@ let result = [x for x in numbers if x % 2 == 0 and x > 5]
 let names = ["alice", "bob", "charlie"]
 
 // Uppercase
-let upper = [name.to_uppercase() for name in names]
+let upper = [name.to*uppercase() for name in names]
 // Result: ["ALICE", "BOB", "CHARLIE"]
 
 // String formatting
@@ -95,7 +95,7 @@ let trimmed = [s.trim() for s in strings]
 // Result: ["hello", "world", "!"]
 
 // Chain operations
-let processed = [s.trim().to_uppercase() for s in strings]
+let processed = [s.trim().to*uppercase() for s in strings]
 // Result: ["HELLO", "WORLD", "!"]
 ```
 
@@ -146,7 +146,7 @@ let doubled = [x * 2 for row in matrix for x in row if x > 3]
 ### Basic Dict Comprehension
 
 ```home
-// Syntax: {key_expr: value_expr for variable in iterable}
+// Syntax: {key*expr: value*expr for variable in iterable}
 let numbers = [1, 2, 3, 4, 5]
 
 // Number to square mapping
@@ -165,7 +165,7 @@ let lengths = {name: name.len() for name in names}
 let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 // Only even numbers
-let even_squares = {x: x * x for x in numbers if x % 2 == 0}
+let even*squares = {x: x * x for x in numbers if x % 2 == 0}
 // Result: {2: 4, 4: 16, 6: 36, 8: 64, 10: 100}
 ```
 
@@ -176,7 +176,7 @@ let data = [("a", 1), ("b", 2), ("c", 3)]
 
 // Uppercase keys, doubled values
 let transformed = {
-    k.to_uppercase(): v * 2
+    k.to*uppercase(): v * 2
     for (k, v) in data
 }
 // Result: {"A": 2, "B": 4, "C": 6}
@@ -195,7 +195,7 @@ let unique = {x for x in numbers}
 // Result: {1, 2, 3, 4}
 
 // Unique squares
-let unique_squares = {x * x for x in numbers}
+let unique*squares = {x * x for x in numbers}
 // Result: {1, 4, 9, 16}
 ```
 
@@ -205,10 +205,10 @@ let unique_squares = {x * x for x in numbers}
 let words = ["apple", "banana", "apricot", "blueberry", "avocado"]
 
 // Unique first letters of words starting with 'a'
-let first_letters = {
+let first*letters = {
     word[0]
     for word in words
-    if word.starts_with("a")
+    if word.starts*with("a")
 }
 // Result: {'a'}
 ```
@@ -237,13 +237,13 @@ for square in squares.take(5) {
 
 ```home
 // Array comprehension - creates full array in memory
-let big_array = [x * x for x in 0..1000000]  // Uses lots of memory
+let big*array = [x * x for x in 0..1000000]  // Uses lots of memory
 
 // Generator - computes on demand
-let big_gen = (x * x for x in 0..1000000)    // Minimal memory
+let big*gen = (x * x for x in 0..1000000)    // Minimal memory
 
 // Use in sum
-let sum = big_gen.sum()  // Efficient
+let sum = big*gen.sum()  // Efficient
 ```
 
 ## Best Practices
@@ -268,8 +268,8 @@ let result = [
 
 ```home
 // Good
-let user_names = [user.name for user in users]
-let active_ids = [user.id for user in users if user.active]
+let user*names = [user.name for user in users]
+let active*ids = [user.id for user in users if user.active]
 
 // Avoid
 let x = [u.n for u in us]
@@ -285,9 +285,9 @@ let doubled = [x * 2 for x in numbers]
 // Avoid - use regular loop for complex logic
 let result = []
 for x in numbers {
-    if complex_condition(x) {
-        let processed = complex_processing(x)
-        if another_condition(processed) {
+    if complex*condition(x) {
+        let processed = complex*processing(x)
+        if another*condition(processed) {
             result.push(processed)
         }
     }
@@ -311,12 +311,12 @@ let sum = [x * x for x in 0..1000000].sum()
 let result = [x * y for x in range1 for y in range2 if x > 0 if y > 0 if x + y < 10]
 
 // Good - break into steps
-let positive_x = [x for x in range1 if x > 0]
-let positive_y = [y for y in range2 if y > 0]
+let positive*x = [x for x in range1 if x > 0]
+let positive*y = [y for y in range2 if y > 0]
 let result = [
     x * y
-    for x in positive_x
-    for y in positive_y
+    for x in positive*x
+    for y in positive*y
     if x + y < 10
 ]
 ```
@@ -328,7 +328,7 @@ let result = [
 ```home
 // Get lengths of long words
 let words = ["a", "hello", "hi", "world", "hey"]
-let long_lengths = [word.len() for word in words if word.len() > 2]
+let long*lengths = [word.len() for word in words if word.len() > 2]
 // Result: [5, 5, 3]
 ```
 
@@ -344,7 +344,7 @@ struct User {
 let users = [/* ... */]
 
 // Extract names of active users
-let active_names = [user.name for user in users if user.active]
+let active*names = [user.name for user in users if user.active]
 
 // Extract ages
 let ages = [user.age for user in users]
@@ -378,11 +378,11 @@ let labels = [
 let text = "Hello World"
 
 // Character codes
-let codes = [c.to_code() for c in text]
+let codes = [c.to*code() for c in text]
 
 // Uppercase vowels
 let processed = [
-    c.to_uppercase() if c in "aeiou" else c
+    c.to*uppercase() if c in "aeiou" else c
     for c in text
 ]
 ```
@@ -400,7 +400,7 @@ let data = [
 ]
 
 // High scorers
-let high_scorers = [
+let high*scorers = [
     item["name"]
     for item in data
     if item["score"] >= 90
@@ -435,7 +435,7 @@ let diagonal = [matrix[i][i] for i in 0..3]
 ### File Processing
 
 ```home
-let lines = read_file("data.txt").lines()
+let lines = read*file("data.txt").lines()
 
 // Non-empty lines
 let content = [line for line in lines if line.trim().len() > 0]

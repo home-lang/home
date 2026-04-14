@@ -253,7 +253,7 @@ let name = value["name"].as_string()?
 let age = value["age"].as_int()?
 
 // Parse to typed struct
-#[derive(Deserialize)]
+# [derive(Deserialize)]
 struct User {
   name: string,
   age: int
@@ -267,7 +267,7 @@ let user: User = json.from_str("{\"name\": \"Alice\", \"age\": 30}")?
 ```home
 import std::json
 
-#[derive(Serialize)]
+# [derive(Serialize)]
 struct User {
   name: string,
   age: int
@@ -337,12 +337,12 @@ let counter = Mutex.new(0)
 
 spawn(|| {
   let mut num = counter.lock()
-  *num += 1
+  _num += 1
 })
 
 spawn(|| {
   let mut num = counter.lock()
-  *num += 1
+  _num += 1
 })
 ```
 
@@ -356,7 +356,7 @@ let data = RwLock.new(vec![1, 2, 3])
 // Multiple readers
 spawn(|| {
   let read = data.read()
-  print("{:?}", *read)
+  print("{:?}", _read)
 })
 
 // Single writer
@@ -467,7 +467,7 @@ stmt.bind(1, "Alice")
 stmt.execute()?
 
 // Query
-let rows = db.query("SELECT * FROM users WHERE id = ?", [1])?
+let rows = db.query("SELECT _ FROM users WHERE id = ?", [1])?
 for (row in rows) {
   print("User: {}", row.get::<string>("name")?)
 }

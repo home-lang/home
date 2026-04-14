@@ -32,7 +32,7 @@ struct Vector2 {
 
 impl Add for Vector2 {
     type Output = Vector2
-    
+
     fn add(self, rhs: Vector2): Vector2 {
         Vector2 {
             x: self.x + rhs.x,
@@ -121,7 +121,7 @@ impl BitOr for Flags {
     }
 }
 
-let flags = FLAG_READ | FLAG_WRITE  // Calls FLAG_READ.bitor(FLAG_WRITE)
+let flags = FLAG*READ | FLAG*WRITE  // Calls FLAG*READ.bitor(FLAG*WRITE)
 ```
 
 ### Shl (<<), Shr (>>)
@@ -137,22 +137,22 @@ impl Shl<u32> for u64 {
 
 ## Compound Assignment Operators
 
-### AddAssign (+=), SubAssign (-=), etc.
+### AddAssign (+=), SubAssign (-=), etc
 
 ```home
 trait AddAssign<Rhs = Self> {
-    fn add_assign(&mut self, rhs: Rhs): void
+    fn add*assign(&mut self, rhs: Rhs): void
 }
 
 impl AddAssign for Vector2 {
-    fn add_assign(&mut self, rhs: Vector2): void {
+    fn add*assign(&mut self, rhs: Vector2): void {
         self.x += rhs.x
         self.y += rhs.y
     }
 }
 
 let mut v = Vector2 { x: 1.0, y: 2.0 }
-v += Vector2 { x: 3.0, y: 4.0 }  // Calls v.add_assign(...)
+v += Vector2 { x: 3.0, y: 4.0 }  // Calls v.add*assign(...)
 ```
 
 ## Indexing Operators
@@ -166,7 +166,7 @@ trait Index<Idx> {
 }
 
 trait IndexMut<Idx>: Index<Idx> {
-    fn index_mut(&mut self, index: Idx): &mut Self::Output
+    fn index*mut(&mut self, index: Idx): &mut Self::Output
 }
 
 // Example: Custom array type
@@ -176,21 +176,21 @@ struct MyArray<T> {
 
 impl<T> Index<usize> for MyArray<T> {
     type Output = T
-    
+
     fn index(&self, index: usize): &T {
         &self.data[index]
     }
 }
 
 impl<T> IndexMut<usize> for MyArray<T> {
-    fn index_mut(&mut self, index: usize): &mut T {
+    fn index*mut(&mut self, index: usize): &mut T {
         &mut self.data[index]
     }
 }
 
 let arr = MyArray { data: [1, 2, 3, ...] }
 let value = arr[0]  // Calls arr.index(0)
-arr[1] = 42         // Calls arr.index_mut(1)
+arr[1] = 42         // Calls arr.index*mut(1)
 ```
 
 ## Deref Operator
@@ -204,7 +204,7 @@ trait Deref {
 }
 
 trait DerefMut: Deref {
-    fn deref_mut(&mut self): &mut Self::Target
+    fn deref*mut(&mut self): &mut Self::Target
 }
 
 // Smart pointer example
@@ -214,7 +214,7 @@ struct Box<T> {
 
 impl<T> Deref for Box<T> {
     type Target = T
-    
+
     fn deref(&self): &T {
         unsafe { &*self.ptr }
     }
@@ -280,18 +280,18 @@ let v3 = v + 5.0                          // Vector + f64
 
 | Operator | Trait | Method | Description |
 |----------|-------|--------|-------------|
-| `+=` | `AddAssign<Rhs>` | `add_assign(&mut self, rhs: Rhs)` | Add and assign |
-| `-=` | `SubAssign<Rhs>` | `sub_assign(&mut self, rhs: Rhs)` | Subtract and assign |
-| `*=` | `MulAssign<Rhs>` | `mul_assign(&mut self, rhs: Rhs)` | Multiply and assign |
-| `/=` | `DivAssign<Rhs>` | `div_assign(&mut self, rhs: Rhs)` | Divide and assign |
-| `%=` | `RemAssign<Rhs>` | `rem_assign(&mut self, rhs: Rhs)` | Remainder and assign |
+| `+=` | `AddAssign<Rhs>` | `add*assign(&mut self, rhs: Rhs)` | Add and assign |
+| `-=` | `SubAssign<Rhs>` | `sub*assign(&mut self, rhs: Rhs)` | Subtract and assign |
+| `*=` | `MulAssign<Rhs>` | `mul*assign(&mut self, rhs: Rhs)` | Multiply and assign |
+| `/=` | `DivAssign<Rhs>` | `div*assign(&mut self, rhs: Rhs)` | Divide and assign |
+| `%=` | `RemAssign<Rhs>` | `rem*assign(&mut self, rhs: Rhs)` | Remainder and assign |
 
 ### Indexing
 
 | Operator | Trait | Method | Description |
 |----------|-------|--------|-------------|
 | `[]` | `Index<Idx>` | `index(&self, index: Idx): &Output` | Immutable indexing |
-| `[]` | `IndexMut<Idx>` | `index_mut(&mut self, index: Idx): &mut Output` | Mutable indexing |
+| `[]` | `IndexMut<Idx>` | `index*mut(&mut self, index: Idx): &mut Output` | Mutable indexing |
 
 ## Best Practices
 
@@ -319,6 +319,7 @@ let result = a.add(temp)
 ```
 
 This happens during type checking, allowing the compiler to:
+
 - Verify trait implementations exist
 - Resolve the correct method to call
 - Determine the result type
@@ -329,8 +330,8 @@ This happens during type checking, allowing the compiler to:
 Operator overloading is fully integrated with Home's type system:
 
 ```home
-fn add_vectors<T>(a: T, b: T): T::Output 
-where 
+fn add*vectors<T>(a: T, b: T): T::Output
+where
     T: Add<T>
 {
     a + b  // Compiler knows T implements Add

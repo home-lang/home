@@ -400,6 +400,7 @@ const suggestion = ErrorSuggestions.suggestSimilarName(
 ```
 
 **Algorithm**: Dynamic programming implementation of Levenshtein distance
+
 - Maximum distance: 3 edits
 - O(n×m) time complexity
 - Stack allocation for strings < 100 chars
@@ -534,7 +535,7 @@ try diag.display(file_path, source, writer);
 
 ```zig
 // When an error occurs during parsing
-fn parseStatement(self: *Parser) !*ast.Stmt {
+fn parseStatement(self: _Parser) !_ast.Stmt {
     if (self.match(.Let)) {
         return self.parseLetDeclaration() catch |err| {
             // Report the error

@@ -52,7 +52,7 @@ fn main() {
 Small, simple types implement Copy for implicit duplication:
 
 ```home
-#[derive(Copy, Clone)]
+# [derive(Copy, Clone)]
 struct Point {
     x: i32,
     y: i32,
@@ -247,7 +247,7 @@ struct BumpAllocator {
 }
 
 impl Allocator for BumpAllocator {
-    fn allocate(&mut self, layout: Layout) -> Result<*mut u8, AllocError> {
+    fn allocate(&mut self, layout: Layout) -> Result<_mut u8, AllocError> {
         let aligned_offset = align_up(self.offset, layout.align())
         let end = aligned_offset + layout.size()
 
@@ -255,12 +255,12 @@ impl Allocator for BumpAllocator {
             return Err(AllocError)
         }
 
-        let ptr = &mut self.arena[aligned_offset] as *mut u8
+        let ptr = &mut self.arena[aligned_offset] as _mut u8
         self.offset = end
         Ok(ptr)
     }
 
-    fn deallocate(&mut self, _ptr: *mut u8, _layout: Layout) {
+    fn deallocate(&mut self, _ptr: _mut u8, _layout: Layout) {
         // Bump allocators don't deallocate individually
     }
 }
@@ -277,7 +277,7 @@ let vec: Vec<i32, BumpAllocator> = Vec.new_in(allocator)
 ```home
 // Heap allocation with single ownership
 let boxed = Box.new(5)
-print(*boxed)  // Dereference to access value
+print(_boxed)  // Dereference to access value
 
 // Recursive types require Box
 struct Node {
@@ -416,7 +416,7 @@ static COUNTER: Mutex<i32> = Mutex.new(0)
 
 fn increment() {
     let mut count = COUNTER.lock().unwrap()
-    *count += 1
+    _count += 1
 }  // Lock released here
 
 fn main() {
@@ -428,7 +428,7 @@ fn main() {
         h.join().unwrap()
     }
 
-    print("Final: {}", *COUNTER.lock().unwrap())  // 10
+    print("Final: {}", _COUNTER.lock().unwrap())  // 10
 }
 ```
 
@@ -438,14 +438,14 @@ fn main() {
 
 ```home
 // Raw pointer operations
-unsafe fn deref_raw(ptr: *const i32) -> i32 {
-    *ptr
+unsafe fn deref_raw(ptr: _const i32) -> i32 {
+    _ptr
 }
 
 // Calling unsafe functions
 fn use_raw_pointer() {
     let x = 42
-    let ptr = &x as *const i32
+    let ptr = &x as _const i32
 
     unsafe {
         print("Value: {}", deref_raw(ptr))
@@ -475,7 +475,7 @@ fn split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
 
 ```home
 pub struct SafeBuffer {
-    ptr: *mut u8,
+    ptr: _mut u8,
     len: usize,
     cap: usize,
 }
@@ -520,6 +520,7 @@ impl Drop for SafeBuffer {
 ## Best Practices
 
 1. **Minimize unsafe code**:
+
    ```home
    // Encapsulate unsafe in small, well-audited functions
    fn safe_wrapper(data: &[u8]) -> u32 {
@@ -528,6 +529,7 @@ impl Drop for SafeBuffer {
    ```
 
 2. **Prefer borrowing over ownership transfer**:
+
    ```home
    // Good: Only borrows what it needs
    fn analyze(data: &[Point]) -> Summary
@@ -537,6 +539,7 @@ impl Drop for SafeBuffer {
    ```
 
 3. **Use appropriate smart pointers**:
+
    ```home
    // Single owner: Box
    let data = Box.new(large_struct)
@@ -549,6 +552,7 @@ impl Drop for SafeBuffer {
    ```
 
 4. **Document lifetime requirements**:
+
    ```home
    /// Returns a reference to the first matching element.
    ///
@@ -557,6 +561,7 @@ impl Drop for SafeBuffer {
    ```
 
 5. **Use RAII for resource management**:
+
    ```home
    struct FileGuard {
        handle: FileHandle,

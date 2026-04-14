@@ -30,6 +30,7 @@ The Home OS bootloader implements the **Multiboot2 specification** to boot a 64-
 **Purpose:** Defines Multiboot2 data structures and parsing functions
 
 **Key Features:**
+
 - Magic number verification
 - Tag-based information parsing
 - Memory map interpretation
@@ -58,6 +59,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 **Purpose:** Early boot code that transitions from 32-bit to 64-bit mode
 
 **Key Operations:**
+
 1. **CPUID Check** - Verify CPU supports long mode
 2. **Page Tables** - Setup identity-mapped pages (first 1GB)
 3. **PAE Enable** - Enable Physical Address Extension
@@ -67,6 +69,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 7. **Jump** - Far jump to 64-bit kernel entry
 
 **Memory Layout:**
+
 - Stack: 16KB (`.bss` section)
 - PML4: 4KB page table (level 4)
 - PDPT: 4KB page table (level 3)
@@ -77,6 +80,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 **Purpose:** Main kernel initialization in 64-bit mode
 
 **Initialization Sequence:**
+
 1. Initialize VGA and serial console
 2. Verify Multiboot2 magic number
 3. Parse Multiboot2 information
@@ -91,6 +95,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 **Purpose:** Controls memory layout and section placement
 
 **Key Sections:**
+
 - `.multiboot` - Multiboot2 header (must be in first 32KB)
 - `.text` - Kernel code (4KB aligned)
 - `.rodata` - Read-only data (4KB aligned)
@@ -99,6 +104,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 - `.tdata/.tbss` - Thread-local storage
 
 **Symbols Exported:**
+
 - `__kernel_start` / `__kernel_end` - Kernel boundaries
 - `__text_start` / `__text_end` - Code section
 - `__bss_start` / `__bss_end` - BSS section
@@ -109,6 +115,7 @@ if (mb_info.getCommandLine()) |cmdline| {
 **Purpose:** Bootloader menu configuration
 
 **Boot Options:**
+
 - **Default** - Normal boot
 - **Debug Mode** - Boot with verbose logging
 - **Safe Mode** - Boot with minimal features
@@ -215,7 +222,7 @@ zig test tests/test_boot.zig
 # Test basic boot
 zig build qemu
 
-# Expected output:
+# Expected output
 # ╔════════════════════════════════════════╗
 # ║     Home Operating System v0.1.0      ║
 # ║   Built with Home Programming Lang    ║
@@ -224,7 +231,7 @@ zig build qemu
 # ✓ Multiboot2 magic verified
 # === Multiboot2 Information ===
 # Bootloader: GRUB 2.xx
-# ...
+#
 ```
 
 ### Debugging with GDB
@@ -281,6 +288,7 @@ while (iter.next()) |tag| {
 
 **Problem:** QEMU shows blank screen
 **Solution:**
+
 1. Check if ISO was created: `ls zig-out/iso/home-os.iso`
 2. Verify kernel was built: `ls zig-out/bin/home-kernel.elf`
 3. Check serial output: `zig build qemu` (output goes to stdout)
@@ -289,6 +297,7 @@ while (iter.next()) |tag| {
 
 **Problem:** GRUB says "no multiboot header found"
 **Solution:**
+
 1. Ensure `.multiboot` section is in first 32KB
 2. Verify linker script places it correctly
 3. Check with: `objdump -h zig-out/bin/home-kernel.elf | grep multiboot`
@@ -297,6 +306,7 @@ while (iter.next()) |tag| {
 
 **Problem:** Triple fault or page fault exception
 **Solution:**
+
 1. Verify page tables are correctly setup in `boot.s`
 2. Check stack is properly aligned (16-byte boundary)
 3. Enable QEMU debug: `qemu-system-x86_64 -d int,cpu_reset`
@@ -305,6 +315,7 @@ while (iter.next()) |tag| {
 
 **Problem:** GDB can't connect to localhost:1234
 **Solution:**
+
 1. Ensure QEMU is started with `-s -S` flags
 2. Check if port 1234 is already in use: `lsof -i :1234`
 3. Try different port: `-gdb tcp::5678`

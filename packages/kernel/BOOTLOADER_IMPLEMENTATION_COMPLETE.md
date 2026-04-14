@@ -355,6 +355,7 @@ packages/kernel/
 ### ✅ Boot Information
 
 The kernel can extract:
+
 - Bootloader name and version
 - Command line arguments
 - Physical memory map
@@ -523,7 +524,7 @@ The Home Operating System is now ready for the next phase of development: implem
 
 ---
 
-**Status**: ✅ **COMPLETE AND READY FOR OS DEVELOPMENT**
+**Status**: ✅**COMPLETE AND READY FOR OS DEVELOPMENT**
 
 **Date**: 2025-10-28
 **Version**: 1.0.0

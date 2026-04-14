@@ -278,7 +278,7 @@ const loader = @import("loader");
 var kernel_loader = loader.KernelLoader.init(allocator);
 
 // Load kernel from binary
-const kernel_data = try std.fs.cwd().readFileAlloc(allocator, "/boot/kernel.elf", 10 * 1024 * 1024);
+const kernel_data = try std.fs.cwd().readFileAlloc(allocator, "/boot/kernel.elf", 10 _ 1024 _ 1024);
 defer allocator.free(kernel_data);
 
 // Parse ELF and prepare for execution
@@ -390,7 +390,7 @@ try std.fs.cwd().writeFile("/boot/home.conf", serialized);
 
 ## Migration from GRUB
 
-### Why Replace GRUB?
+### Why Replace GRUB
 
 1. **Complexity**: GRUB has accumulated significant complexity over decades
 2. **Security**: Tighter integration with Home OS security model
@@ -516,16 +516,19 @@ qemu-system-x86_64 \
 ### Boot Failures
 
 **Problem**: Bootloader doesn't start
+
 - Check UEFI boot order
 - Verify EFI system partition is properly mounted
 - Ensure bootloader is installed to correct path (`/EFI/Home/bootx64.efi`)
 
 **Problem**: Kernel not found
+
 - Verify kernel path in configuration
 - Check file permissions
 - Ensure kernel is valid ELF64 binary
 
 **Problem**: Secure Boot verification failed
+
 - Install trusted certificates
 - Sign kernel with valid key
 - Check certificate validity dates
@@ -533,11 +536,13 @@ qemu-system-x86_64 \
 ### Menu Issues
 
 **Problem**: Menu doesn't display
+
 - Check UEFI console output support
 - Verify UTF-16 string conversion
 - Test with different firmware
 
 **Problem**: Keyboard input not working
+
 - Ensure UEFI input protocol is available
 - Check keyboard scan codes
 - Try different keyboard

@@ -60,7 +60,7 @@ trait Animal {
 ```home
 trait Iterator {
     type Item
-    
+
     fn next(&mut self): Option<Self::Item>
 }
 ```
@@ -70,7 +70,7 @@ trait Iterator {
 ```home
 trait Greet {
     fn name(&self): string
-    
+
     // Default implementation
     fn greet(&self): string {
         "Hello, " + self.name()
@@ -91,7 +91,7 @@ impl Animal for Dog {
     fn make_sound(&self): string {
         "Woof!"
     }
-    
+
     fn get_name(&self): string {
         self.name
     }
@@ -105,7 +105,7 @@ impl Dog {
     fn new(name: string): Dog {
         Dog { name }
     }
-    
+
     fn bark(&self): void {
         println("{}", self.make_sound())
     }
@@ -170,7 +170,7 @@ Associated types allow traits to define placeholder types that implementers must
 trait Graph {
     type Node
     type Edge
-    
+
     fn nodes(&self): Vec<Self::Node>
     fn edges(&self): Vec<Self::Edge>
 }
@@ -182,7 +182,7 @@ struct SimpleGraph {
 impl Graph for SimpleGraph {
     type Node = u32
     type Edge = (u32, u32)
-    
+
     fn nodes(&self): Vec<u32> { ... }
     fn edges(&self): Vec<(u32, u32)> { ... }
 }
@@ -210,7 +210,7 @@ Traits can provide default method implementations:
 ```home
 trait Summary {
     fn summarize_author(&self): string
-    
+
     // Default implementation
     fn summarize(&self): string {
         "Read more from " + self.summarize_author() + "..."
@@ -258,7 +258,7 @@ struct ColoredCircle {
 // Must implement all super traits
 impl Shape for ColoredCircle {
     fn area(&self): f64 {
-        3.14159 * self.radius * self.radius
+        3.14159 _ self.radius _ self.radius
     }
 }
 
@@ -350,7 +350,7 @@ For complex trait bounds, use where clauses:
 fn complex<T: Clone + Debug, U: Clone + Debug>(t: T, u: U): void { ... }
 
 // Use this:
-fn complex<T, U>(t: T, u: U): void 
+fn complex<T, U>(t: T, u: U): void
 where
     T: Clone + Debug,
     U: Clone + Debug
@@ -385,7 +385,7 @@ trait Clone {
 }
 
 // Derive automatically
-#[derive(Clone)]
+# [derive(Clone)]
 struct Point {
     x: i32,
     y: i32,
@@ -398,7 +398,7 @@ struct Point {
 trait Copy: Clone {}
 
 // Copy types can be duplicated by simple bit copy
-#[derive(Copy, Clone)]
+# [derive(Copy, Clone)]
 struct Point {
     x: i32,
     y: i32,
@@ -412,7 +412,7 @@ trait Debug {
     fn fmt(&self, f: &mut Formatter): Result<(), Error>
 }
 
-#[derive(Debug)]
+# [derive(Debug)]
 struct User {
     name: string,
     age: u32,
@@ -445,7 +445,7 @@ trait PartialEq {
 
 trait Eq: PartialEq {}
 
-#[derive(PartialEq, Eq)]
+# [derive(PartialEq, Eq)]
 struct Point {
     x: i32,
     y: i32,
@@ -469,15 +469,15 @@ trait Ord: Eq + PartialOrd {
 ```home
 trait Iterator {
     type Item
-    
+
     fn next(&mut self): Option<Self::Item>
-    
+
     // Provided methods
     fn map<B, F>(self, f: F): Map<Self, F>
     where
         F: FnMut(Self::Item): B
     { ... }
-    
+
     fn filter<P>(self, predicate: P): Filter<Self, P>
     where
         P: FnMut(&Self::Item): bool
@@ -492,7 +492,7 @@ trait Default {
     fn default(): Self
 }
 
-#[derive(Default)]
+# [derive(Default)]
 struct Config {
     timeout: u32,  // 0
     retries: u32,  // 0
@@ -549,11 +549,11 @@ impl Repository<User> for UserRepository {
     fn find_by_id(&self, id: u64): Option<User> {
         self.db.query("SELECT * FROM users WHERE id = ?", id)
     }
-    
+
     fn save(&mut self, user: User): Result<(), Error> {
         self.db.execute("INSERT INTO users ...", user)
     }
-    
+
     fn delete(&mut self, id: u64): Result<(), Error> {
         self.db.execute("DELETE FROM users WHERE id = ?", id)
     }
@@ -565,7 +565,7 @@ impl Repository<User> for UserRepository {
 ```home
 trait Builder {
     type Output
-    
+
     fn build(self): Self::Output
 }
 
@@ -577,7 +577,7 @@ struct UserBuilder {
 
 impl Builder for UserBuilder {
     type Output = Result<User, Error>
-    
+
     fn build(self): Result<User, Error> {
         Ok(User {
             name: self.name.ok_or("Name required")?,

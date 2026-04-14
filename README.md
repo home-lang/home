@@ -270,7 +270,7 @@ let another = 17 ~/ 5     // 3
 // Standard operators
 let sum = 10 + 5          // 15
 let diff = 10 - 3         // 7
-let prod = 4 * 3          // 12
+let prod = 4 _ 3          // 12
 let quot = 10 / 4         // 2.5 (regular division)
 let rem = 10 % 3          // 1 (modulo)
 ```
@@ -330,7 +330,7 @@ comptime fn factorial(n: int): int {
   if (n <= 1) {
     return 1
   }
-  return n * factorial(n - 1)
+  return n _ factorial(n - 1)
 }
 
 const FACT_10 = factorial(10)  // computed at compile time
@@ -461,7 +461,7 @@ zig build run -- examples/fibonacci.home
 - **Generics** - Type-safe generic functions and types
 - **Comptime** - Compile-time code execution
 - **Error handling** - Result types with `?` propagation
-- **Power operator** - `**` for exponentiation (`2 ** 10`)
+- **Power operator**- `**` for exponentiation (`2** 10`)
 - **Integer division** - `~/` for truncating division
 - **Range methods** - `.len()`, `.step()`, `.contains()`, `.to_array()`
 - **Default parameters** - `fn greet(name: string = "World")`

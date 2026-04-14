@@ -9,23 +9,27 @@ The comptime package provides sophisticated compile-time code execution, enablin
 ## Features
 
 ### Type Reflection
+
 - **Field introspection**: Query struct fields, names, types, offsets
 - **Type queries**: Check type properties (numeric, aggregate, callable)
 - **Generic support**: Works with type parameters and generic types
 - **Size and alignment**: Query type metadata
 
 ### String Operations (16 operations)
+
 - **Transformations**: concat, toUpper, toLower, trim, repeat, reverse
 - **Queries**: length, contains, startsWith, endsWith, indexOf
 - **Manipulation**: substring, replaceAll, split, join
 
 ### Array Operations (15 operations)
+
 - **Access**: length, get, append, prepend, concat, slice
 - **Functional**: map, filter, reduce
 - **Predicates**: contains, indexOf, all, any
 - **Aggregations**: sum, min, max
 
 ### Macro System
+
 - **Built-in macros**: todo!, unreachable!, assert!, debug_assert!, unimplemented!
 - **Custom macros**: Define your own compile-time transformations
 - **AST manipulation**: Transform code at compile time
@@ -130,7 +134,7 @@ comptime {
     const idx = array.indexOf(numbers, 4);     // 3
 
     // Functional programming
-    const doubled = array.map(numbers, fn(x) { x * 2 });  // [2, 4, 6, 8, 10]
+    const doubled = array.map(numbers, fn(x) { x _ 2 });  // [2, 4, 6, 8, 10]
     const evens = array.filter(numbers, fn(x) { x % 2 == 0 });  // [2, 4]
     const sum = array.reduce(numbers, 0, fn(acc, x) { acc + x });  // 15
 
@@ -321,7 +325,7 @@ comptime fn generateGetters(T: type): []const u8 {
 
         // Generate getter method
         code.appendSlice(std.fmt.allocPrint(allocator,
-            \\pub fn get_{s}(self: *{s}): {s} {{
+            \\pub fn get_{s}(self: _{s}): {s} {{
             \\    return self.{s};
             \\}}
             \\
@@ -400,11 +404,13 @@ comptime {
 ## Performance
 
 ### Compile-Time Execution
+
 - **Zero runtime cost**: All comptime code executes during compilation
 - **Caching**: Results are memoized and reused across compilation units
 - **Constant folding**: Complex expressions reduced to constants
 
 ### Memory Usage
+
 - **Compile-time only**: No runtime memory overhead
 - **Result caching**: Efficient storage of computed values
 - **Incremental**: Only recomputes when dependencies change

@@ -73,6 +73,7 @@ The **FFI/C Compatibility Layer** for the Home programming language has been suc
 ### ✅ Calling Conventions
 
 Supports 12 calling conventions:
+
 - [x] C (standard C calling convention)
 - [x] Stdcall (Windows stdcall)
 - [x] Fastcall (register-based)
@@ -118,28 +119,34 @@ Supports 12 calling conventions:
 ### ✅ C Standard Library Bindings
 
 **Memory Functions:**
+
 - malloc, calloc, realloc, free
 - memcpy, memmove, memset, memcmp
 
 **String Functions:**
+
 - strlen, strcmp, strncmp
 - strcpy, strncpy, strcat, strchr
 
 **I/O Functions:**
+
 - printf, sprintf, snprintf
 - fopen, fclose, fread, fwrite
 
 **Conversion Functions:**
+
 - atoi, atol, atof
 - strtol, strtod
 
 **Math Functions:**
+
 - sqrt, pow, exp, log, log10
 - sin, cos, tan, asin, acos, atan, atan2
 - sinh, cosh, tanh
 - ceil, floor, round, fabs, fmod, hypot
 
 **Process Control:**
+
 - exit, abort, atexit
 
 ### ✅ Variadic Function Support
@@ -192,9 +199,9 @@ Supports 12 calling conventions:
 Home Types           FFI Layer            C Types
 -----------         ----------           --------
 i32, i64      <-->  Convert.toC()  <-->  int, long
-[]u8          <-->  CString        <-->  char*
-*T            <-->  Convert.ptrToC <-->  void*
-[]T           <-->  arrayToC       <-->  T*
+[]u8          <-->  CString        <-->  char_
+_T            <-->  Convert.ptrToC <-->  void_
+[]T           <-->  arrayToC       <-->  T_
 ```
 
 ### Memory Layout
@@ -236,7 +243,7 @@ Native C Call
 const ffi = @import("ffi");
 
 // Use strlen
-const str: [*:0]const u8 = "Hello!";
+const str: [_:0]const u8 = "Hello!";
 const len = ffi.CStdLib.strlen(str);  // Returns 6
 
 // Use memcpy
@@ -256,7 +263,7 @@ const c_str = try ffi.CString.fromHome(allocator, home_str);
 defer allocator.free(c_str);
 
 // C string to Home string
-const c_input: [*:0]const u8 = "C String";
+const c_input: [_:0]const u8 = "C String";
 const home_output = ffi.CString.toHome(c_input);
 ```
 
@@ -269,21 +276,21 @@ const ffi = @import("ffi");
 pub const sqlite3 = opaque {};
 
 pub extern "c" fn sqlite3_open(
-    filename: [*:0]const u8,
-    ppDb: *?*sqlite3,
+    filename: [_:0]const u8,
+    ppDb: _?_sqlite3,
 ) c_int;
 
-pub extern "c" fn sqlite3_close(db: ?*sqlite3) c_int;
+pub extern "c" fn sqlite3_close(db: ?_sqlite3) c_int;
 
 // Wrapper
 pub const DB = struct {
-    db: ?*sqlite3,
+    db: ?_sqlite3,
 
     pub fn open(path: []const u8, allocator: Allocator) !DB {
         const c_path = try ffi.CString.fromHome(allocator, path);
         defer allocator.free(c_path);
 
-        var db: ?*sqlite3 = null;
+        var db: ?_sqlite3 = null;
         if (sqlite3_open(c_path, &db) != 0) {
             return error.OpenFailed;
         }
@@ -445,6 +452,7 @@ packages/ffi/
 ### SQLite Database (examples/sqlite_example.zig)
 
 **Features:**
+
 - Type-safe database wrapper
 - Automatic resource cleanup
 - Error handling
@@ -473,6 +481,7 @@ while (try stmt.step()) {
 ### C Math Library (examples/math_example.zig)
 
 **Features:**
+
 - All standard math functions
 - Trigonometry (sin, cos, tan, etc.)
 - Hyperbolic functions
@@ -495,16 +504,19 @@ const dist = Math.distance(0, 0, 3, 4);  // 5.0
 ## Performance Characteristics
 
 ### String Conversions
+
 - **Bulk conversions**: 1000 strings in <1ms
 - **Memory overhead**: Null terminator only (1 byte)
 - **Allocation**: Uses provided allocator
 
 ### Type Conversions
+
 - **Integer conversions**: Zero-cost (compile-time)
 - **Pointer conversions**: Zero-cost (cast only)
 - **Array conversions**: Zero-cost (pointer arithmetic)
 
 ### Calling Overhead
+
 - **Direct C calls**: Near-zero overhead
 - **Wrapped calls**: Single function call overhead
 - **Callback calls**: Two-level indirection
@@ -514,17 +526,20 @@ const dist = Math.distance(0, 0, 3, 4);  // 5.0
 ## Technical Specifications
 
 ### Supported Platforms
+
 - **x86-64**: Full support (Linux, macOS, Windows)
 - **ARM64**: Full support
 - **x86**: Full support (32-bit)
 - **Other**: Partial support (calling conventions may vary)
 
 ### Zig Version
+
 - **Minimum**: Zig 0.11.0
 - **Tested**: Zig 0.16.0
 - **Recommended**: Zig 0.16.0+
 
 ### C Standard
+
 - **Minimum**: C99
 - **Tested**: C11, C17
 - **Compatible**: C++11+ (with extern "C")
@@ -607,6 +622,7 @@ The FFI/C Compatibility Layer is **complete and production-ready**. It provides:
 ✅ **Complete documentation**
 
 The Home Operating System can now seamlessly integrate with:
+
 - **C drivers** (AHCI, NVMe, USB, etc.)
 - **C libraries** (SQLite, zlib, OpenSSL, etc.)
 - **Legacy code** (decades of C software)
@@ -614,7 +630,7 @@ The Home Operating System can now seamlessly integrate with:
 
 ---
 
-**Status**: ✅ **COMPLETE AND PRODUCTION-READY**
+**Status**: ✅**COMPLETE AND PRODUCTION-READY**
 
 **Date**: 2025-10-28
 **Version**: 1.0.0

@@ -48,6 +48,7 @@ The lexer transforms source code into a stream of tokens. It handles:
 - **String Escapes**: `\n`, `\t`, `\r`, `\"`, `\\`, `\xNN` (hex), `\u{NNNN}` (unicode)
 
 **Features**:
+
 - Line and column tracking for error reporting
 - Invalid character detection
 - Zero-copy string slicing
@@ -63,6 +64,7 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 **Supported Constructs**:
 
 #### Expressions
+
 - Literals: integers, floats, strings, booleans, arrays
 - Binary operations with proper precedence
 - Unary operations (`-`, `!`)
@@ -74,6 +76,7 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 - Assignment: `x = value`
 
 #### Statements
+
 - Variable declarations: `let x = 10;`
 - Function declarations: `fn add(a: int, b: int): int { ... }`
 - Struct declarations: `struct Point { x: int, y: int }`
@@ -86,12 +89,14 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 - Expression statements
 
 **Error Recovery**:
+
 - Panic mode recovery on syntax errors
 - Synchronization at statement boundaries (`;`, `}`, keywords)
 - Collects multiple errors (up to 100) before stopping
 - Block-level error recovery
 
 **Recursion Safety**:
+
 - Maximum expression nesting depth: 256 levels
 - Prevents stack overflow on deeply nested expressions
 
@@ -99,17 +104,19 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 
 ### 3. Semantic Analysis (Type Checker)
 
-**Location**: `/packages/types/src/type_system.zig`
+**Location**: `/packages/types/src/type*system.zig`
 
 The type checker performs type inference and validates type correctness.
 
 **Type System**:
+
 - **Primitive Types**: `int` (i64), `float` (f64), `bool`, `string`, `void`
 - **Composite Types**: Arrays, Structs, Enums, Functions
 - **Advanced Types**: Generics (`Result<T, E>`), References (`&T`, `&mut T`)
 - **Type Aliases**: User-defined type names
 
 **Type Checking Features**:
+
 - Type inference from expressions
 - Function signature verification
 - Struct field type checking
@@ -120,6 +127,7 @@ The type checker performs type inference and validates type correctness.
 - Slice expression validation
 
 **Compile-Time Error Detection**:
+
 - Division by zero detection
 - Type mismatches
 - Undefined variables
@@ -127,6 +135,7 @@ The type checker performs type inference and validates type correctness.
 - Overflow in numeric literals
 
 **Ownership Tracking** (Location: `/packages/types/src/ownership.zig`):
+
 - Move semantics for non-copy types
 - Use-after-move detection
 - Copy types: `int`, `float`, `bool`
@@ -141,6 +150,7 @@ The type checker performs type inference and validates type correctness.
 The interpreter executes the type-checked AST directly.
 
 **Memory Management**:
+
 - **Strategy**: Arena allocator pattern
 - All runtime values allocated from single arena
 - Zero memory leaks by design
@@ -148,6 +158,7 @@ The interpreter executes the type-checked AST directly.
 - Optimal for script execution and short-lived programs
 
 **Value Types** (Location: `/packages/interpreter/src/value.zig`):
+
 - Int (i64), Float (f64), Bool, String
 - Array (slices of values)
 - Struct (name + field map)
@@ -155,6 +166,7 @@ The interpreter executes the type-checked AST directly.
 - Void
 
 **Execution Features**:
+
 - Variable binding and environment management
 - Function calls with parameter passing
 - Control flow (if/else, while, for loops)
@@ -165,6 +177,7 @@ The interpreter executes the type-checked AST directly.
 - Return value handling
 
 **Runtime Error Detection**:
+
 - Division by zero
 - Array index out of bounds
 - Slice bounds validation
@@ -173,11 +186,12 @@ The interpreter executes the type-checked AST directly.
 
 ### 5. Code Generation (Codegen)
 
-**Location**: `/packages/codegen/src/native_codegen.zig`
+**Location**: `/packages/codegen/src/native*codegen.zig`
 
 The code generator produces native machine code for x86-64 architecture.
 
 **Status**: Basic implementation (185 lines)
+
 - ELF file format generation
 - x86-64 instruction encoding
 - System call support (in progress)
@@ -193,6 +207,7 @@ The code generator produces native machine code for x86-64 architecture.
 Comprehensive error and warning reporting system.
 
 **Features**:
+
 - **Severity Levels**: Error, Warning, Info, Hint
 - **Source Location Tracking**: File, line, column
 - **Colorized Output**: Terminal-friendly error display
@@ -201,39 +216,45 @@ Comprehensive error and warning reporting system.
 - **JSON Output**: LSP-compatible diagnostic format
 
 **Warning Detection** (Location: `/packages/diagnostics/src/warnings.zig`):
+
 - Unused variable detection
 - Prefix with `_` convention for intentionally unused variables
 - Extensible warning framework
 
 ## Design Decisions
 
-### Why Arena Allocator for Interpreter?
+### Why Arena Allocator for Interpreter
 
 **Advantages**:
+
 1. **Memory Safety**: Impossible to leak or double-free
 2. **Performance**: Fast bump allocation, no per-value overhead
 3. **Simplicity**: No complex lifetime tracking required
 4. **Correctness**: Zero memory bugs by design
 
 **Trade-offs**:
+
 - Memory usage grows during execution
 - Cannot free individual values
 - Best suited for scripts and short-running programs
 - Long-running REPL sessions may need periodic arena reset
 
 **Documented in**:
+
 - `/packages/interpreter/src/value.zig` (lines 19-36)
 - `/packages/interpreter/src/interpreter.zig` (lines 18-37)
 
-### Why Recursive Descent Parser?
+### Why Recursive Descent Parser
 
 **Advantages**:
+
 1. **Simplicity**: Easy to understand and maintain
 2. **Error Messages**: Clear context for syntax errors
 3. **Flexibility**: Easy to add new constructs
 4. **Performance**: O(n) parsing for most grammars
 
 **Limitations**:
+
 - Left-recursive grammars require transformation
 - Deep nesting can cause stack overflow (mitigated with depth limit)
 
@@ -249,6 +270,7 @@ Inspired by Rust's ownership system but simplified:
 ## Testing Strategy
 
 ### Unit Tests
+
 - **Lexer**: 23 tests (token recognition, escape sequences, edge cases)
 - **Parser**: 33 tests (all language constructs, error recovery)
 - **Type System**: 38+ tests (ownership, type inference, error detection)
@@ -257,6 +279,7 @@ Inspired by Rust's ownership system but simplified:
 **Total**: 244+ unit tests, all passing, zero memory leaks
 
 ### Integration Tests
+
 - End-to-end pipeline tests
 - Real-world code examples
 - Located in `/tests/integrathome/`
@@ -264,19 +287,23 @@ Inspired by Rust's ownership system but simplified:
 ## Performance Characteristics
 
 ### Lexer
+
 - **Time Complexity**: O(n) where n = source length
 - **Space Complexity**: O(1) - zero-copy token slicing
 
 ### Parser
+
 - **Time Complexity**: O(n) for most cases
 - **Space Complexity**: O(n) for AST storage
 - **Max Nesting Depth**: 256 levels
 
 ### Type Checker
+
 - **Time Complexity**: O(n) single-pass type inference
 - **Space Complexity**: O(n) for type information
 
 ### Interpreter
+
 - **Time Complexity**: O(n) for tree-walking interpretation
 - **Space Complexity**: O(n) with arena allocator (monotonic growth)
 
@@ -293,6 +320,7 @@ Inspired by Rust's ownership system but simplified:
 See [TODO.md](../TODO.md) for detailed roadmap.
 
 **High Priority**:
+
 - Integration test debugging (arena allocator issue)
 - String interpolation
 - Pattern matching integration
@@ -300,11 +328,13 @@ See [TODO.md](../TODO.md) for detailed roadmap.
 - Native codegen completion
 
 **Medium Priority**:
+
 - String interning for memory optimization
 - Long-running REPL support
 - Incremental compilation
 
 **Low Priority**:
+
 - LSP server implementation
 - Standard library expansion
 - Parallel compilation

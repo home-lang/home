@@ -125,6 +125,7 @@ defer keypair.deinit();
 ```
 
 **Properties:**
+
 - Key Size: 256 bytes (2048 bits)
 - Signature Size: 256 bytes
 - Security: Suitable for most use cases
@@ -141,6 +142,7 @@ defer keypair.deinit();
 ```
 
 **Properties:**
+
 - Key Size: 512 bytes (4096 bits)
 - Signature Size: 512 bytes
 - Security: Very high security for sensitive modules
@@ -157,6 +159,7 @@ defer keypair.deinit();
 ```
 
 **Properties:**
+
 - Key Size: 32 bytes
 - Signature Size: 64 bytes
 - Security: Equivalent to RSA-3072
@@ -185,7 +188,7 @@ defer private_key.deinit();
 const module_file = try std.fs.cwd().openFile("driver.ko", .{});
 defer module_file.close();
 
-const module_data = try module_file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+const module_data = try module_file.readToEndAlloc(allocator, 10 _ 1024 _ 1024);
 defer allocator.free(module_data);
 
 // Create signature
@@ -201,7 +204,7 @@ std.debug.print("Signed with {s}\n", .{signature.algorithm.name()});
 const module_file = try std.fs.cwd().openFile("driver.ko.signed", .{});
 defer module_file.close();
 
-const signed_data = try module_file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+const signed_data = try module_file.readToEndAlloc(allocator, 10 _ 1024 _ 1024);
 defer allocator.free(signed_data);
 
 // Get module information
@@ -223,12 +226,12 @@ try info.print(std.io.getStdOut().writer());
 const signed_data = try std.fs.cwd().readFileAlloc(
     allocator,
     "driver.ko.signed",
-    10 * 1024 * 1024,
+    10 _ 1024 _ 1024,
 );
 defer allocator.free(signed_data);
 
 const result = try modsign.sign.extractSignature(allocator, signed_data);
-defer if (result.signature) |*sig| sig.deinit();
+defer if (result.signature) |_sig| sig.deinit();
 
 // Save unsigned module
 const out_file = try std.fs.cwd().createFile("driver.ko.unsigned", .{});
@@ -236,7 +239,7 @@ defer out_file.close();
 
 try out_file.writeAll(result.module_data);
 
-if (result.signature) |*sig| {
+if (result.signature) |_sig| {
     std.debug.print("Extracted signature: {s}\n", .{sig.algorithm.name()});
 }
 ```
@@ -483,6 +486,7 @@ sudo depmod -a
 ### Functions
 
 **modsign.keys:**
+
 - `PrivateKey.generate()`: Generate new private key
 - `PrivateKey.savePem()`: Save key in PEM format
 - `PrivateKey.loadPem()`: Load key from PEM file
@@ -490,6 +494,7 @@ sudo depmod -a
 - `KeyPair.generate()`: Generate matched key pair
 
 **modsign.sign:**
+
 - `signModule()`: Sign module data in memory
 - `signModuleFile()`: Sign module file, write signed output
 - `serializeSignature()`: Convert signature to binary
@@ -497,6 +502,7 @@ sudo depmod -a
 - `extractSignature()`: Extract module and signature from signed file
 
 **modsign.verify:**
+
 - `verifySignature()`: Verify signature against public key
 - `verifyModuleFile()`: Verify signed module file
 - `verifyWithKeyRing()`: Verify using key ring
@@ -504,6 +510,7 @@ sudo depmod -a
 - `KeyRing.findKey()`: Find key by ID
 
 **modsign.format:**
+
 - `printSignature()`: Display signature information
 - `printPublicKey()`: Display key information
 - `hasSignature()`: Check if module is signed

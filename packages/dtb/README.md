@@ -37,7 +37,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Load DTB from file or memory
-    const dtb_data = try std.fs.cwd().readFileAlloc(allocator, "device-tree.dtb", 1024 * 1024);
+    const dtb_data = try std.fs.cwd().readFileAlloc(allocator, "device-tree.dtb", 1024 _ 1024);
     defer allocator.free(dtb_data);
 
     // Parse device tree
@@ -66,7 +66,7 @@ if (device_tree.findNode("/memory")) |memory_node| {
         std.debug.print("Memory: 0x{x} - 0x{x} ({d} MB)\n", .{
             mem.address,
             mem.address + mem.size,
-            mem.size / (1024 * 1024),
+            mem.size / (1024 _ 1024),
         });
     }
 }
@@ -183,7 +183,7 @@ for (reservations) |reservation| {
 // Parse interrupts property
 const interrupts = try dtb.parseInterrupts(node, allocator);
 defer {
-    for (interrupts) |*int| {
+    for (interrupts) |_int| {
         int.deinit(allocator);
     }
     allocator.free(interrupts);
@@ -262,7 +262,7 @@ if (device_tree.findNode("/memory")) |mem_node| {
         total += mem.size;
     }
 
-    std.debug.print("Total RAM: {d} GB\n", .{total / (1024 * 1024 * 1024)});
+    std.debug.print("Total RAM: {d} GB\n", .{total / (1024 _ 1024 _ 1024)});
 }
 ```
 
@@ -320,11 +320,11 @@ for (soc.children.items) |device| {
 
 ```zig
 pub fn findDevicesByCompatible(
-    dt: *dtb.DeviceTree,
+    dt: _dtb.DeviceTree,
     allocator: std.mem.Allocator,
     compatible: []const u8,
-) ![]* dtb.Node {
-    var devices = std.ArrayList(*dtb.Node).init(allocator);
+) ![]_ dtb.Node {
+    var devices = std.ArrayList(_dtb.Node).init(allocator);
 
     try searchNodes(dt.root, &devices, allocator, compatible);
 
@@ -332,8 +332,8 @@ pub fn findDevicesByCompatible(
 }
 
 fn searchNodes(
-    node: *dtb.Node,
-    devices: *std.ArrayList(*dtb.Node),
+    node: _dtb.Node,
+    devices: _std.ArrayList(_dtb.Node),
     allocator: std.mem.Allocator,
     compatible: []const u8,
 ) !void {
@@ -400,7 +400,7 @@ for (ethernet_devices) |eth| {
 if (device_tree.findNode("/timer")) |timer| {
     const interrupts = try dtb.parseInterrupts(timer, allocator);
     defer {
-        for (interrupts) |*int| {
+        for (interrupts) |_int| {
             int.deinit(allocator);
         }
         allocator.free(interrupts);
@@ -519,7 +519,7 @@ zig test packages/dtb/src/address.zig
 // ARM64 boot: DTB address passed in x0 register
 extern fn getDeviceTreeAddress() usize;
 
-pub fn initDeviceTree(allocator: std.mem.Allocator) !*dtb.DeviceTree {
+pub fn initDeviceTree(allocator: std.mem.Allocator) !_dtb.DeviceTree {
     const dtb_phys_addr = getDeviceTreeAddress();
 
     // Map DTB into virtual memory
@@ -532,7 +532,7 @@ pub fn initDeviceTree(allocator: std.mem.Allocator) !*dtb.DeviceTree {
 ### Driver Initialization
 
 ```zig
-pub fn initDrivers(dt: *dtb.DeviceTree, allocator: std.mem.Allocator) !void {
+pub fn initDrivers(dt: _dtb.DeviceTree, allocator: std.mem.Allocator) !void {
     // Initialize console first
     if (dt.findNode("/chosen")) |chosen| {
         if (chosen.getProperty("stdout-path")) |prop| {

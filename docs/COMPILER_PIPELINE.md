@@ -13,6 +13,7 @@ The Home compiler implements a sophisticated multi-pass architecture that includ
 **Location**: `packages/lexer/src/lexer.zig`
 
 The lexer tokenizes source code into a stream of tokens, identifying:
+
 - Keywords (fn, let, struct, if, match, etc.)
 - Identifiers and literals
 - Operators and punctuation
@@ -27,6 +28,7 @@ The lexer tokenizes source code into a stream of tokens, identifying:
 The parser constructs an Abstract Syntax Tree (AST) from the token stream.
 
 **Key Features**:
+
 - **Macro Expansion**: Built-in macros (`todo!`, `assert!`, `unreachable!`, `debug_assert!`, `unimplemented!`) are expanded directly during parsing into their equivalent AST representations
 - **Error Recovery**: Continues parsing after errors to report multiple issues
 - **Module Resolution**: Handles import statements and module dependencies
@@ -57,6 +59,7 @@ if (!(x > 0)) {
 The comptime executor initializes before type checking to prepare for compile-time code execution.
 
 **Features**:
+
 - **Type Reflection**: Query struct fields, type properties, sizes, and alignments
 - **String Operations**: concat, toUpper, toLower, trim, split, join (16 operations)
 - **Array Operations**: map, filter, reduce, sum, min, max (15 operations)
@@ -80,6 +83,7 @@ comptime {
 The type checker verifies type correctness and performs type inference.
 
 **Features**:
+
 - **Type Inference**: Deduces types from context when not explicitly specified
 - **Generic Type Resolution**: Handles parametric polymorphism
 - **Trait Bounds**: Validates trait implementations
@@ -94,6 +98,7 @@ The type checker verifies type correctness and performs type inference.
 The borrow checker enforces Rust-style ownership and borrowing rules.
 
 **Features**:
+
 - **Ownership Tracking**: Ensures each value has a single owner
 - **Lifetime Analysis**: Validates that references don't outlive their referents
 - **Move Semantics**: Prevents use-after-move errors
@@ -122,11 +127,13 @@ error[E0502]: cannot borrow `x` as mutable because it is also borrowed as immuta
 The code generator produces native machine code or IR.
 
 **Backends**:
+
 - **LLVM Backend**: Generates optimized native code via LLVM
 - **Kernel Mode**: Special codegen for bare-metal kernel development
 - **Interpreter Backend**: Direct AST interpretation for REPL and testing
 
 **Optimizations**:
+
 - Constant folding
 - Dead code elimination
 - Inline expansion
@@ -141,12 +148,14 @@ The code generator produces native machine code or IR.
 The cache system dramatically speeds up incremental builds.
 
 **Features**:
+
 - **Content-Based Fingerprinting**: SHA-256 hashes detect real changes (not just timestamps)
 - **Dependency Tracking**: Automatically invalidates dependent modules
 - **Artifact Management**: Caches IR, object files, and metadata
 - **LRU Eviction**: Manages cache size (default 1GB limit)
 
 **Workflow**:
+
 1. Compute SHA-256 fingerprint of source file
 2. Check if fingerprint matches cached version
 3. If match and dependencies unchanged: use cached artifacts (< 1ms)
@@ -161,6 +170,7 @@ The cache system dramatically speeds up incremental builds.
 The diagnostics system provides compiler-quality error messages.
 
 **Features**:
+
 - **Rich Visual Formatting**: Color-coded errors, warnings, and notes
 - **Source Context**: Shows relevant code lines with line numbers
 - **Multi-Character Spans**: Highlights full identifiers (`^~~~`)
@@ -251,6 +261,7 @@ Source Code (.home)
 ### Diagnostics (All Stages)
 
 The enhanced diagnostics reporter is integrated throughout the pipeline:
+
 - **Parser**: Syntax errors with source context
 - **Type Checker**: Type mismatches with suggestions
 - **Borrow Checker**: Ownership violations with detailed explanations
@@ -259,6 +270,7 @@ The enhanced diagnostics reporter is integrated throughout the pipeline:
 ### Incremental Compilation (Build System)
 
 The cache system optimizes the entire pipeline:
+
 - **Before Parsing**: Check if source fingerprint matches cache
 - **Cache Hit**: Skip compilation, use cached artifacts (< 1ms)
 - **Cache Miss**: Run full pipeline, update cache
@@ -277,7 +289,8 @@ The cache system optimizes the entire pipeline:
 
 ## Example: Full Compilation
 
-### Input (`main.home`):
+### Input (`main.home`)
+
 ```zig
 comptime {
     const numbers = [1, 2, 3];
@@ -295,7 +308,7 @@ fn main(): i32 {
 }
 ```
 
-### Compilation Steps:
+### Compilation Steps
 
 1. **Lexer**: Tokenizes source → 45 tokens
 2. **Parser**:
@@ -316,24 +329,28 @@ fn main(): i32 {
    - Stores artifacts with SHA-256 fingerprint
    - Next build: instant if unchanged
 
-### Output:
+### Output
+
 - Executable binary
 - Cached artifacts in `.home-cache/`
 - Zero runtime overhead for comptime evaluation
 
 ## Performance Characteristics
 
-### First Build (Cold Cache):
+### First Build (Cold Cache)
+
 - Small project (< 1000 LOC): ~200ms
 - Medium project (1K-10K LOC): ~2s
 - Large project (10K-100K LOC): ~20s
 
-### Incremental Build (Warm Cache, 1 file changed):
+### Incremental Build (Warm Cache, 1 file changed)
+
 - Cache hit (unchanged files): < 1ms per file
 - Recompile (changed file): ~200ms for typical file
 - Speedup: **10x-100x** depending on project size
 
-### Memory Usage:
+### Memory Usage
+
 - Compiler: ~50MB base + ~100KB per 1000 LOC
 - Cache: ~1GB default limit (configurable)
 - Runtime: Zero overhead for comptime features
@@ -380,6 +397,7 @@ Potential improvements to the pipeline:
 The Home compiler provides a modern, sophisticated compilation pipeline that rivals production compilers like Rust and Swift. The integration of macro expansion, compile-time evaluation, ownership checking, and incremental compilation ensures both developer productivity and runtime performance.
 
 Key achievements:
+
 - ✅ Rust-quality borrow checking
 - ✅ Compile-time evaluation with type reflection
 - ✅ Built-in macro system

@@ -27,7 +27,7 @@ struct DefaultLayout {
 // Size: 16 bytes (with padding)
 
 // Packed layout - no padding
-#[repr(packed)]
+# [repr(packed)]
 struct PackedLayout {
     a: u8,
     b: u64,
@@ -70,7 +70,7 @@ struct ParticleSystem {
 // Process positions in tight loop - excellent cache performance
 fn update_positions(system: &mut ParticleSystem, dt: f32) {
     for i in 0..system.positions.len() {
-        system.positions[i] += system.velocities[i] * dt
+        system.positions[i] += system.velocities[i] _ dt
     }
 }
 ```
@@ -79,7 +79,7 @@ fn update_positions(system: &mut ParticleSystem, dt: f32) {
 
 ```home
 // Ensure cache-line alignment (typically 64 bytes)
-#[repr(align(64))]
+# [repr(align(64))]
 struct CacheLineAligned {
     data: [u8; 64],
 }
@@ -131,7 +131,7 @@ use std.alloc.Arena
 
 fn process_request(request: &Request) -> Response {
     // Create arena for request lifetime
-    let arena = Arena.new(64 * 1024)  // 64KB
+    let arena = Arena.new(64 _ 1024)  // 64KB
 
     // All allocations use arena
     let parsed = arena.alloc(parse_body(&request.body))
@@ -200,16 +200,16 @@ fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
     let mut sum = f32x8.splat(0.0)
 
     for i in 0..chunks {
-        let va = f32x8.from_slice(&a[i * 8..])
-        let vb = f32x8.from_slice(&b[i * 8..])
-        sum += va * vb
+        let va = f32x8.from_slice(&a[i _ 8..])
+        let vb = f32x8.from_slice(&b[i _ 8..])
+        sum += va _ vb
     }
 
     let mut result = sum.reduce_add()
 
     // Handle remainder
-    for i in (chunks * 8)..a.len() {
-        result += a[i] * b[i]
+    for i in (chunks _ 8)..a.len() {
+        result += a[i] _ b[i]
     }
 
     result
@@ -220,10 +220,10 @@ fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
 
 ```home
 // Help the compiler vectorize
-#[inline(always)]
+# [inline(always)]
 fn process_chunk(data: &mut [f32; 8], factor: f32) {
     for i in 0..8 {
-        data[i] *= factor
+        data[i] _= factor
     }
 }
 
@@ -238,7 +238,7 @@ fn process_all(data: &mut [f32], factor: f32) {
     }
 
     for x in remainder {
-        *x *= factor
+        _x _= factor
     }
 }
 ```
@@ -246,26 +246,26 @@ fn process_all(data: &mut [f32], factor: f32) {
 ### Platform-Specific SIMD
 
 ```home
-#[cfg(target_feature = "avx2")]
+# [cfg(target_feature = "avx2")]
 fn sum_avx2(data: &[i32]) -> i32 {
-    use std.arch.x86_64.*
+    use std.arch.x86_64._
 
     unsafe {
         let mut sum = _mm256_setzero_si256()
 
         for chunk in data.chunks_exact(8) {
-            let v = _mm256_loadu_si256(chunk.as_ptr() as *const _)
+            let v = _mm256_loadu_si256(chunk.as_ptr() as _const _)
             sum = _mm256_add_epi32(sum, v)
         }
 
         // Horizontal sum
         let mut result = [0i32; 8]
-        _mm256_storeu_si256(result.as_mut_ptr() as *mut _, sum)
+        _mm256_storeu_si256(result.as_mut_ptr() as _mut _, sum)
         result.iter().sum()
     }
 }
 
-#[cfg(not(target_feature = "avx2"))]
+# [cfg(not(target_feature = "avx2"))]
 fn sum_avx2(data: &[i32]) -> i32 {
     data.iter().sum()
 }
@@ -306,7 +306,7 @@ impl<T> LockFreeStack<T> {
 
         loop {
             let head = self.head.load(Ordering.Acquire)
-            unsafe { (*node).next = head }
+            unsafe { (_node).next = head }
 
             if self.head.compare_exchange_weak(
                 head,
@@ -326,7 +326,7 @@ impl<T> LockFreeStack<T> {
                 return null
             }
 
-            let next = unsafe { (*head).next }
+            let next = unsafe { (_head).next }
 
             if self.head.compare_exchange_weak(
                 head,
@@ -381,21 +381,21 @@ fn reload_config(config: &SharedConfig) {
 
 ```home
 // Always inline hot paths
-#[inline(always)]
+# [inline(always)]
 fn fast_path(x: i32) -> i32 {
-    x * 2
+    x _ 2
 }
 
 // Never inline cold paths
-#[cold]
-#[inline(never)]
+# [cold]
+# [inline(never)]
 fn error_handler(e: &Error) {
     log.error("{e}")
     collect_diagnostics()
 }
 
 // Conditional inlining
-#[inline]  // Hint to compiler
+# [inline]  // Hint to compiler
 fn moderate_function(data: &[u8]) -> u32 {
     // Compiler decides based on context
     calculate_checksum(data)
@@ -429,7 +429,7 @@ fn validate(input: &Input) -> Result<Output, Error> {
 ### Built-in Benchmarking
 
 ```home
-#[bench]
+# [bench]
 fn bench_algorithm(b: &mut Bencher) {
     let data = generate_test_data(1000)
 
@@ -438,7 +438,7 @@ fn bench_algorithm(b: &mut Bencher) {
     })
 }
 
-#[bench]
+# [bench]
 fn bench_comparison(b: &mut Bencher) {
     let data = generate_test_data(1000)
 
@@ -455,7 +455,7 @@ fn bench_comparison(b: &mut Bencher) {
 ```home
 use std.profile.{profile_scope, profile_function}
 
-#[profile_function]
+# [profile_function]
 fn expensive_operation() {
     profile_scope!("initialization") {
         initialize()
@@ -475,13 +475,13 @@ fn expensive_operation() {
 
 ```home
 // Track compilation time
-#[track_compile_time]
+# [track_compile_time]
 mod heavy_generics {
     // Complex generic code
 }
 
 // Limit monomorphization
-#[max_instantiations(10)]
+# [max_instantiations(10)]
 fn generic_function<T: Process>(item: T) {
     // Warning if instantiated more than 10 times
 }
@@ -490,6 +490,7 @@ fn generic_function<T: Process>(item: T) {
 ## Best Practices
 
 1. **Measure before optimizing**:
+
    ```home
    #[bench]
    fn bench_before(b: &mut Bencher) {
@@ -500,6 +501,7 @@ fn generic_function<T: Process>(item: T) {
    ```
 
 2. **Prefer stack allocation**:
+
    ```home
    // Good: Stack allocated
    let buffer: [u8; 256] = [0; 256]
@@ -509,6 +511,7 @@ fn generic_function<T: Process>(item: T) {
    ```
 
 3. **Use appropriate data structures**:
+
    ```home
    // For iteration: Vec
    let items: Vec<Item> = ...
@@ -521,6 +524,7 @@ fn generic_function<T: Process>(item: T) {
    ```
 
 4. **Minimize allocations in hot paths**:
+
    ```home
    // Bad: Allocates on every call
    fn process(input: &str) -> String {
@@ -537,6 +541,7 @@ fn generic_function<T: Process>(item: T) {
    ```
 
 5. **Document performance characteristics**:
+
    ```home
    /// Sorts the slice in place.
    ///
@@ -548,13 +553,15 @@ fn generic_function<T: Process>(item: T) {
    ```
 
 6. **Use release builds for benchmarking**:
+
    ```bash
-   # Debug builds are not representative
+# Debug builds are not representative
    home build --release
    home bench --release
    ```
 
 7. **Consider SIMD for numerical code**:
+
    ```home
    // Scalar version
    fn sum_scalar(data: &[f32]) -> f32 {

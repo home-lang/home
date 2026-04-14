@@ -7,9 +7,11 @@
 ## ✅ FULLY IMPLEMENTED (Production Ready)
 
 ### 1. Network I/O ✅
+
 **Files:** `src/io/network.zig`
 
 **Implemented:**
+
 - ✅ HTTP/HTTPS source with range request support
 - ✅ HEAD request for capabilities detection (Content-Length, Accept-Ranges)
 - ✅ Streaming reads with automatic retry
@@ -23,9 +25,11 @@
 ---
 
 ### 2. FFT & Audio Visualization ✅
+
 **Files:** `src/audio/fft.zig`, `src/audio/visualization.zig`
 
 **Implemented:**
+
 - ✅ Cooley-Tukey FFT algorithm (radix-2 decimation-in-time)
 - ✅ Inverse FFT (IFFT)
 - ✅ Power spectrum calculation
@@ -45,9 +49,11 @@
 ---
 
 ### 3. GPU Compute (CPU Fallback) ✅
+
 **Files:** `src/gpu/compute.zig`, `src/gpu/shaders.zig`
 
 **Implemented:**
+
 - ✅ GPU backend detection (Metal/Vulkan/CUDA/OpenCL)
 - ✅ Device enumeration with CPU core count
 - ✅ Buffer management (upload/download)
@@ -63,6 +69,7 @@
 **Lines:** ~300 lines + shader code
 
 **Note:** CPU fallbacks work correctly. GPU dispatch would require platform-specific APIs:
+
 - Metal: `MTLDevice`, `MTLCommandQueue`, `MTLComputeCommandEncoder`
 - Vulkan: `VkDevice`, `VkQueue`, `VkCommandBuffer`, `vkCreateComputePipeline`
 - CUDA: `cudaSetDevice`, `cudaMalloc`, kernel launch syntax
@@ -70,6 +77,7 @@
 ---
 
 ### 4. Core Types & Structures ✅
+
 **All enums, structs, type definitions fully implemented**
 
 - Video/Audio formats, codecs, pixel formats
@@ -81,6 +89,7 @@
 ---
 
 ### 5. Container Parsing ✅
+
 **All major container readers fully functional**
 
 - MP4/MOV reader with box parsing
@@ -95,6 +104,7 @@
 ---
 
 ### 6. Codec Analysis ✅
+
 **Full codec detection and header parsing**
 
 - H.264/AVC: NAL unit parsing, SPS/PPS, emulation prevention
@@ -110,6 +120,7 @@
 ---
 
 ### 7. Subtitle Formats ✅
+
 **Complete parsing and conversion**
 
 - SRT parser with timestamp parsing
@@ -125,6 +136,7 @@
 ---
 
 ### 8. Video Filters ✅
+
 **Basic implementations working**
 
 - Scale (nearest/bilinear/bicubic/lanczos)
@@ -142,6 +154,7 @@
 ---
 
 ### 9. Audio Filters ✅
+
 **Full implementations**
 
 - Volume adjustment (dB)
@@ -155,6 +168,7 @@
 ---
 
 ### 10. Home Language Bindings ✅
+
 **Complete FFI and high-level API**
 
 - Zig FFI layer with C compatibility
@@ -166,6 +180,7 @@
 ---
 
 ### 11. Testing Suite ✅
+
 **140+ comprehensive unit tests**
 
 - Audio tests (20+)
@@ -179,14 +194,17 @@
 ## ⚠️ PARTIAL IMPLEMENTATIONS (Needs Work)
 
 ### 1. Container Muxers
+
 **Status:** Structures exist, some placeholder size calculations
 
 **What's Done:**
+
 - WAV writer structure
 - MP4 muxer box writing
 - WebM muxer basic structure
 
 **What's Missing:**
+
 - Fix placeholder size calculations in MOV/MP4 muxer
 - Complete stco/stts/stsz table generation
 - Fix 0xFFFFFFFF placeholders in WAV muxer
@@ -198,13 +216,16 @@
 ---
 
 ### 2. Subtitle Embedding
+
 **Status:** Interface exists, MP4/MKV embedding incomplete
 
 **What's Done:**
+
 - Subtitle timing adjustments
 - Format conversion
 
 **What's Missing:**
+
 - MP4 tx3g box generation
 - WebM subtitle track embedding
 - Style/formatting boxes
@@ -215,13 +236,16 @@
 ---
 
 ### 3. Video Probe Deep Parsing
+
 **Status:** Format detection works, deep parsing is placeholder
 
 **What's Done:**
+
 - Magic byte detection
 - Basic format identification
 
 **What's Missing:**
+
 - Full MP4 atom/box parsing for metadata
 - EBML structure parsing for WebM
 - RIFF chunk parsing for AVI
@@ -234,13 +258,16 @@
 ---
 
 ### 4. GIF Encoding
+
 **Status:** Reader works, encoder has placeholder color quantization
 
 **What's Done:**
+
 - GIF decoder
 - Header writing
 
 **What's Missing:**
+
 - Proper color quantization (median cut algorithm)
 - LZW compression implementation
 - Palette optimization
@@ -253,9 +280,11 @@
 ## ❌ NOT IMPLEMENTED (Stubs Only)
 
 ### 1. Hardware Decoders
+
 **Status:** Structures only, no actual decoder integration
 
 **What's Needed:**
+
 - **VideoToolbox (macOS):**
   - `VTDecompressionSessionCreate`
   - `VTDecompressionSessionDecodeFrame`
@@ -280,9 +309,11 @@
 ---
 
 ### 2. Video Encoding
+
 **Status:** No implementation, would require codec libraries
 
 **What's Needed:**
+
 - **H.264 Encoder:**
   - x264 library integration OR
   - VideoToolbox hardware encoder OR
@@ -300,6 +331,7 @@
   - libaom or SVT-AV1 integration
 
 **Approach Options:**
+
 1. **FFI to existing libraries** (fastest, recommended)
 2. **Hardware encoder APIs** (VideoToolbox, NVENC, QuickSync)
 3. **Native implementation** (months of work, not recommended)
@@ -310,9 +342,11 @@
 ---
 
 ### 3. Advanced Filters
+
 **Status:** Basic structure, no implementation
 
 **What's Needed:**
+
 - **Video Stabilization:**
   - Feature point detection (Harris corners, FAST)
   - Feature tracking (optical flow, Lucas-Kanade)
@@ -333,9 +367,11 @@
 ---
 
 ### 4. RTSP/RTP Streaming (Live)
+
 **Status:** RTSP handshake works, RTP packet reading not implemented
 
 **What's Needed:**
+
 - Complete RTSP state machine:
   - DESCRIBE → SDP parsing
   - SETUP → RTP/RTCP port negotiation
@@ -355,10 +391,13 @@
 ---
 
 ### 5. GPU Actual Dispatch
+
 **Status:** CPU fallbacks work, GPU calls not implemented
 
 **What's Needed:**
+
 - **Metal (macOS):**
+
   ```zig
   const device = MTLCreateSystemDefaultDevice();
   const queue = device.newCommandQueue();
@@ -409,22 +448,23 @@
 | GPU (CPU Fallback) | ✅ 90% | ~300 | Done |
 | Home Bindings | ✅ 100% | ~1,500 | Done |
 | Tests | ✅ 100% | ~2,000 | Done |
-| **Subtotal (Working)** | | **~29,950** | |
+| **Subtotal (Working)**| |**~29,950** | |
 | | | | |
 | Container Muxers | ⚠️ 60% | ~800 | 3-4 hours |
 | Subtitle Embedding | ⚠️ 40% | ~200 | 2-3 hours |
 | Video Probe | ⚠️ 30% | ~150 | 4-5 hours |
 | GIF Encoding | ⚠️ 50% | ~300 | 3-4 hours |
-| **Subtotal (Partial)** | | **~1,450** | **~15 hours** |
+| **Subtotal (Partial)**| |**~1,450**|**~15 hours** |
 | | | | |
 | Hardware Decoders | ❌ 0% | 0 | 2-3 weeks |
 | Video Encoding | ❌ 0% | 0 | 3-4 weeks |
 | Advanced Filters | ❌ 10% | ~100 | 1-2 weeks |
 | Live Streaming | ❌ 20% | ~200 | 1-2 weeks |
 | GPU Dispatch | ❌ 0% | 0 | 2-3 weeks/platform |
-| **Subtotal (Stubs)** | | **~300** | **~10-14 weeks** |
+| **Subtotal (Stubs)**| |**~300**|**~10-14 weeks** |
 
 ### Grand Total
+
 - **Implemented Code:** ~31,700 lines
 - **Remaining Work:** ~10-14 weeks for full production readiness
 - **Current Status:** ~75% complete with robust foundation
@@ -434,22 +474,26 @@
 ## 🎯 RECOMMENDED NEXT STEPS
 
 ### Immediate (1-2 days)
+
 1. ✅ Fix container muxer placeholders
 2. ✅ Complete subtitle embedding
 3. ✅ Implement video probe deep parsing
 4. ✅ Complete GIF color quantization
 
 ### Short Term (1-2 weeks)
+
 5. Implement RTSP/RTP packet reading
 6. Add video stabilization filter
 7. Improve deinterlacing implementation
 
 ### Medium Term (1 month)
+
 8. Integrate x264/x265 for encoding (FFI approach)
 9. Add Metal GPU dispatch for macOS
 10. Implement Vulkan compute for cross-platform
 
 ### Long Term (2-3 months)
+
 11. VideoToolbox hardware decoder (macOS)
 12. NVDEC support (NVIDIA)
 13. VAAPI support (Linux)
@@ -460,6 +504,7 @@
 ## 💡 ARCHITECTURE STRENGTHS
 
 **What's Excellent:**
+
 1. ✅ Clean API design - easy to use and extend
 2. ✅ Comprehensive error handling with context
 3. ✅ Memory safety - no leaks in tests
@@ -472,6 +517,7 @@
 10. ✅ Network streaming capabilities
 
 **Current Limitations:**
+
 1. ⚠️ No hardware acceleration (CPU fallbacks work)
 2. ⚠️ No video encoding (requires codec libraries)
 3. ⚠️ Some muxers need completion
@@ -482,27 +528,36 @@
 ## 📝 FOR NEXT SESSION
 
 ### Priority 1: Complete Partial Implementations (~15 hours)
+
 ```
+
 1. Fix all placeholder size calculations in muxers
 2. Complete subtitle embedding (MP4/WebM)
 3. Implement deep video probing
 4. Add proper GIF color quantization
+
 ```
 
 ### Priority 2: Add Missing Core Features (~4 weeks)
+
 ```
+
 1. Video encoding (x264/x265 FFI)
 2. Complete RTSP/RTP streaming
 3. Advanced filters (stabilization, better deinterlacing)
+
 ```
 
 ### Priority 3: Platform-Specific Optimization (~8 weeks)
+
 ```
+
 1. Metal GPU dispatch (macOS)
 2. VideoToolbox hardware decoding (macOS)
 3. Vulkan compute (cross-platform)
 4. NVDEC (NVIDIA GPUs)
 5. VAAPI (Linux)
+
 ```
 
 ---
@@ -510,6 +565,7 @@
 ## 🚀 CONCLUSION
 
 The Home Video Library has a **solid, production-ready foundation** with ~32,000 lines of working code covering:
+
 - Complete parsing for all major formats
 - Full codec analysis capabilities
 - Comprehensive subtitle support
@@ -519,6 +575,7 @@ The Home Video Library has a **solid, production-ready foundation** with ~32,000
 - Extensive test coverage
 
 The remaining work is primarily in three areas:
+
 1. **Polishing** existing partial implementations (~15 hours)
 2. **Encoding** via codec library integration (~4 weeks)
 3. **Hardware acceleration** for performance (~8 weeks)

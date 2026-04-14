@@ -10,6 +10,7 @@ This document provides implementation guidance for complex features that require
 **Current Status**: Header parsing complete, frame decoding needed
 
 **Required Components**:
+
 - Huffman decoding tables (main_data, scalefac, etc.)
 - IMDCT (Inverse Modified Discrete Cosine Transform)
 - Polyphase synthesis filterbank (32 subbands)
@@ -18,6 +19,7 @@ This document provides implementation guidance for complex features that require
 - Psychoacoustic model (for encoding)
 
 **Implementation Steps**:
+
 1. Decode Huffman-coded spectral coefficients
 2. Requantize and reorder coefficients
 3. Apply stereo processing (if joint stereo)
@@ -27,6 +29,7 @@ This document provides implementation guidance for complex features that require
 7. Output PCM samples
 
 **References**:
+
 - ISO/IEC 11172-3 (MPEG-1 Audio)
 - ISO/IEC 13818-3 (MPEG-2 Audio)
 - minimp3 (C reference implementation)
@@ -39,6 +42,7 @@ This document provides implementation guidance for complex features that require
 **Current Status**: ADTS header parsing complete
 
 **Required Components**:
+
 - MDCT/IMDCT implementation
 - Temporal Noise Shaping (TNS)
 - Prediction (Main/LTP profiles)
@@ -48,6 +52,7 @@ This document provides implementation guidance for complex features that require
 - Quantization/Dequantization
 
 **Implementation Steps**:
+
 1. Parse ADTS/ADIF/LATM containers
 2. Decode Huffman-coded spectral data
 3. Dequantize coefficients using scale factors
@@ -58,6 +63,7 @@ This document provides implementation guidance for complex features that require
 8. Optionally apply PS (stereo reconstruction)
 
 **References**:
+
 - ISO/IEC 14496-3 (MPEG-4 Audio)
 - FAAD2 (open-source AAC decoder)
 - FDK-AAC (Fraunhofer implementation)
@@ -70,6 +76,7 @@ This document provides implementation guidance for complex features that require
 **Current Status**: Ogg container parsing complete
 
 **Required Components**:
+
 - MDCT implementation
 - Floor/residue decoding
 - Codebook (Huffman-style VQ) decoding
@@ -77,6 +84,7 @@ This document provides implementation guidance for complex features that require
 - Channel coupling
 
 **Implementation Steps**:
+
 1. Parse Vorbis headers (identification, comment, setup)
 2. Decode audio packet (floor, residue, coupling)
 3. Reconstruct floor curve
@@ -86,6 +94,7 @@ This document provides implementation guidance for complex features that require
 7. Overlap-add synthesis
 
 **References**:
+
 - Xiph.org Vorbis I Specification
 - libvorbis (reference implementation)
 - stb_vorbis (single-file decoder)
@@ -98,6 +107,7 @@ This document provides implementation guidance for complex features that require
 **Current Status**: Ogg Opus container parsing complete
 
 **Required Components**:
+
 - SILK decoder (speech codec, LP-based)
 - CELT decoder (music codec, MDCT-based)
 - Hybrid mode (SILK + CELT)
@@ -105,6 +115,7 @@ This document provides implementation guidance for complex features that require
 - Packet loss concealment
 
 **Implementation Steps**:
+
 1. Parse Opus packet TOC (table of contents)
 2. Range decode packet data
 3. For SILK frames: LP synthesis, LTP prediction
@@ -114,6 +125,7 @@ This document provides implementation guidance for complex features that require
 7. Handle packet loss with concealment
 
 **References**:
+
 - RFC 6716 (Opus specification)
 - libopus (reference implementation)
 - Opus codec website (opus-codec.org)
@@ -126,6 +138,7 @@ This document provides implementation guidance for complex features that require
 **Benefit**: 4-8x performance improvement
 
 **Required**:
+
 - AVX/AVX2 intrinsics for x86-64
 - NEON intrinsics for ARM
 - Radix-2/4/8 butterfly operations
@@ -145,7 +158,7 @@ pub fn fft_avx2(real: []f32, imag: []f32) void {
 
     // Cooley-Tukey FFT with AVX2 vectorization
     var step: usize = 2;
-    while (step <= n) : (step *= 2) {
+    while (step <= n) : (step _= 2) {
         const half_step = step / 2;
 
         // Process 8 butterflies at a time with AVX2
@@ -154,24 +167,24 @@ pub fn fft_avx2(real: []f32, imag: []f32) void {
             var j: usize = 0;
             while (j < half_step) : (j += 8) {
                 // Load 8 complex values
-                const r1: @Vector(8, f32) = real[k + j..][0..8].*;
-                const i1: @Vector(8, f32) = imag[k + j..][0..8].*;
-                const r2: @Vector(8, f32) = real[k + j + half_step..][0..8].*;
-                const i2: @Vector(8, f32) = imag[k + j + half_step..][0..8].*;
+                const r1: @Vector(8, f32) = real[k + j..][0..8]._;
+                const i1: @Vector(8, f32) = imag[k + j..][0..8]._;
+                const r2: @Vector(8, f32) = real[k + j + half_step..][0..8]._;
+                const i2: @Vector(8, f32) = imag[k + j + half_step..][0..8]._;
 
                 // Twiddle factors
                 const wr: @Vector(8, f32) = getTwiddleReal(j, step);
                 const wi: @Vector(8, f32) = getTwiddleImag(j, step);
 
-                // Complex multiplication: (r2 + i*i2) * (wr + i*wi)
-                const tr = r2 * wr - i2 * wi;
-                const ti = r2 * wi + i2 * wr;
+                // Complex multiplication: (r2 + i_i2) _ (wr + i_wi)
+                const tr = r2 _ wr - i2 _ wi;
+                const ti = r2 _ wi + i2 _ wr;
 
                 // Butterfly
-                real[k + j..][0..8].* = r1 + tr;
-                imag[k + j..][0..8].* = i1 + ti;
-                real[k + j + half_step..][0..8].* = r1 - tr;
-                imag[k + j + half_step..][0..8].* = i1 - ti;
+                real[k + j..][0..8]._ = r1 + tr;
+                imag[k + j..][0..8]._ = i1 + ti;
+                real[k + j + half_step..][0..8]._ = r1 - tr;
+                imag[k + j + half_step..][0..8]._ = i1 - ti;
             }
         }
     }
@@ -185,6 +198,7 @@ pub fn fft_avx2(real: []f32, imag: []f32) void {
 **Complexity**: Medium (~1,000 lines)
 
 **Required Components**:
+
 - HTTP client with streaming support
 - Icecast metadata parsing
 - Ring buffer for stream data
@@ -198,10 +212,10 @@ pub const StreamingClient = struct {
     url: []const u8,
     http_client: std.http.Client,
     ring_buffer: RingBuffer,
-    decoder: *AudioDecoder,
-    metadata_callback: ?*const fn([]const u8) void,
+    decoder: _AudioDecoder,
+    metadata_callback: ?_const fn([]const u8) void,
 
-    pub fn connect(self: *Self) !void {
+    pub fn connect(self: _Self) !void {
         // Parse URL
         // Connect to server
         // Send HTTP GET with Icy-MetaData: 1
@@ -209,7 +223,7 @@ pub const StreamingClient = struct {
         // Start receive loop
     }
 
-    pub fn receiveLoop(self: *Self) !void {
+    pub fn receiveLoop(self: _Self) !void {
         while (true) {
             // Read data chunk
             // Extract metadata if present
@@ -227,6 +241,7 @@ pub const StreamingClient = struct {
 **Complexity**: Very High (~10,000+ lines)
 
 **VST3 Requirements**:
+
 - COM-style interface implementation
 - Parameter automation
 - MIDI event handling
@@ -235,6 +250,7 @@ pub const StreamingClient = struct {
 - Preset management
 
 **Audio Unit Requirements** (macOS):
+
 - Core Audio component model
 - Audio Unit v2/v3 APIs
 - Property listeners
@@ -242,6 +258,7 @@ pub const StreamingClient = struct {
 - View management (Cocoa)
 
 **Recommendation**: Use existing bridge libraries
+
 - JUCE (C++ framework with Zig bindings)
 - clap (CLAP plugin API, simpler than VST)
 
@@ -255,6 +272,7 @@ pub const StreamingClient = struct {
 **Open Alternative - Ambisonic Spatial Audio**:
 
 **Required Components**:
+
 - Spherical harmonics encoding/decoding
 - HRTF convolution
 - Binaural rendering
@@ -267,7 +285,7 @@ pub const AmbisonicEncoder = struct {
     order: u8, // 1st order = 4 channels, 2nd = 9, 3rd = 16
 
     pub fn encodeSource(
-        self: *Self,
+        self: _Self,
         source: []const f32,
         azimuth: f32,
         elevation: f32,
@@ -282,7 +300,7 @@ pub const BinauralRenderer = struct {
     hrtf_database: HrtfDatabase,
 
     pub fn renderBinaural(
-        self: *Self,
+        self: _Self,
         ambisonics: [][]const f32,
         left: []f32,
         right: []f32,
@@ -309,6 +327,7 @@ pub const BinauralRenderer = struct {
 2. **Deep Learning** (Recommended):
 
 **Required Components**:
+
 - RNN/LSTM or Transformer model
 - ONNX runtime integration
 - Pretrained models (e.g., Microsoft DNS Challenge models)
@@ -320,7 +339,7 @@ pub const SpeechEnhancer = struct {
     model: onnx.Model,
     stft: STFT,
 
-    pub fn enhance(self: *Self, noisy: []const f32, clean: []f32) !void {
+    pub fn enhance(self: _Self, noisy: []const f32, clean: []f32) !void {
         // 1. Compute STFT of input
         var magnitude = try self.stft.forward(noisy);
 
@@ -328,8 +347,8 @@ pub const SpeechEnhancer = struct {
         var mask = try self.model.infer(magnitude);
 
         // 3. Apply mask to magnitude
-        for (magnitude, mask) |*mag, m| {
-            mag.* *= m;
+        for (magnitude, mask) |_mag, m| {
+            mag._ _= m;
         }
 
         // 4. Inverse STFT
@@ -339,6 +358,7 @@ pub const SpeechEnhancer = struct {
 ```
 
 **Pretrained Models**:
+
 - Facebook's Demucs (source separation)
 - Microsoft DNS Challenge models
 - Nvidia's NeMo toolkit
@@ -364,6 +384,7 @@ For each completed feature:
 ## Performance Optimization
 
 **General Guidelines**:
+
 - Use SIMD where possible (@Vector types)
 - Minimize allocations in hot paths
 - Use comptime for constants
@@ -375,8 +396,8 @@ For each completed feature:
 ```zig
 // Before: Scalar processing
 pub fn applyGain(samples: []f32, gain: f32) void {
-    for (samples) |*s| {
-        s.* *= gain;
+    for (samples) |_s| {
+        s._ _= gain;
     }
 }
 
@@ -387,9 +408,9 @@ pub fn applyGainSIMD(samples: []f32, gain: f32) void {
 
     var i: usize = 0;
     while (i + vec_len <= samples.len) : (i += vec_len) {
-        var vec: @Vector(vec_len, f32) = samples[i..][0..vec_len].*;
-        vec *= gain_vec;
-        samples[i..][0..vec_len].* = vec;
+        var vec: @Vector(vec_len, f32) = samples[i..][0..vec_len]._;
+        vec _= gain_vec;
+        samples[i..][0..vec_len]._ = vec;
     }
 
     // Handle remainder
@@ -404,6 +425,7 @@ pub fn applyGainSIMD(samples: []f32, gain: f32) void {
 ## Priority Recommendations
 
 **For Production Use**:
+
 1. ✅ Complete multiband compressor (DONE)
 2. ✅ Complete sidechain compression (DONE)
 3. ✅ Complete modulation effects (DONE)
@@ -412,11 +434,13 @@ pub fn applyGainSIMD(samples: []f32, gain: f32) void {
 6. ⏳ Other codecs as needed
 
 **For Advanced Features**:
+
 1. Implement basic HTTP streaming
 2. Add Ambisonic spatial audio support
 3. Integrate pretrained AI models for speech enhancement
 
 **For Plugin Ecosystem**:
+
 1. Consider CLAP plugin support (simpler than VST)
 2. Build plugin scanner/manager
 3. Implement preset system

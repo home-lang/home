@@ -62,11 +62,11 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 
 9. **Scheduling System**
    - 5 scheduling policies:
-     * SCHED_OTHER (time-sharing)
-     * SCHED_FIFO (real-time FIFO)
-     * SCHED_RR (real-time round-robin)
-     * SCHED_BATCH (CPU-intensive)
-     * SCHED_IDLE (very low priority)
+     - SCHED_OTHER (time-sharing)
+     - SCHED_FIFO (real-time FIFO)
+     - SCHED_RR (real-time round-robin)
+     - SCHED_BATCH (CPU-intensive)
+     - SCHED_IDLE (very low priority)
    - Priority management (0-100)
    - CPU affinity masks (up to 256 CPUs)
    - Scheduling parameters
@@ -84,6 +84,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 ### Core Threading
 
 ✅ **Thread Lifecycle**
+
 - Create with custom attributes
 - Join (wait for termination)
 - Detach (run independently)
@@ -91,6 +92,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Self identification
 
 ✅ **Thread Attributes**
+
 - Stack size (16KB min, 2MB default)
 - Stack guard pages
 - Detached state
@@ -99,6 +101,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - CPU affinity
 
 ✅ **Thread Information**
+
 - Thread IDs (unique identifiers)
 - Thread names (16 characters)
 - State tracking (Created, Ready, Running, Blocked, Suspended, Terminated, Zombie)
@@ -107,6 +110,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 ### Synchronization Primitives
 
 ✅ **Mutexes**
+
 - Normal (no checks, fast)
 - Recursive (same thread multiple locks)
 - ErrorCheck (detects errors)
@@ -115,6 +119,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Robust mutexes (survive owner death)
 
 ✅ **Semaphores**
+
 - Binary (0 or 1 value)
 - Counting (arbitrary positive value)
 - Named (inter-process)
@@ -122,6 +127,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Timeout support
 
 ✅ **Condition Variables**
+
 - Wait on condition
 - Signal one waiter
 - Broadcast all waiters
@@ -129,6 +135,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Predicate-based waiting
 
 ✅ **Read-Write Locks**
+
 - Concurrent readers (no limit)
 - Exclusive writer (single)
 - Preference policies
@@ -136,11 +143,13 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Fairness guarantees
 
 ✅ **Barriers**
+
 - Synchronize N threads
 - Last thread gets special return value
 - Reusable after all threads pass
 
 ✅ **Once**
+
 - Execute function exactly once
 - Thread-safe initialization
 - No race conditions
@@ -148,6 +157,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 ### Thread-Local Storage
 
 ✅ **TLS Features**
+
 - Per-thread data storage
 - 1024 keys maximum
 - Destructor support (cleanup)
@@ -155,6 +165,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Thread-specific data API
 
 ✅ **Implementation**
+
 - Register-based (fs/gs on x86-64)
 - Array-based storage
 - Automatic cleanup on thread exit
@@ -162,6 +173,7 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 ### Scheduling
 
 ✅ **Policies**
+
 - Time-sharing (SCHED_OTHER)
 - Real-time FIFO (SCHED_FIFO)
 - Real-time round-robin (SCHED_RR)
@@ -169,12 +181,14 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
 - Idle priority (SCHED_IDLE)
 
 ✅ **Priority Management**
+
 - Priority ranges (0-100)
 - Dynamic priority adjustment
 - Nice values (-20 to +19)
 - Real-time priorities (1-99)
 
 ✅ **CPU Affinity**
+
 - Pin threads to specific CPUs
 - CPU set operations (set, clear, test)
 - Set operations (AND, OR, XOR)
@@ -302,6 +316,7 @@ try rwlock.unlock();
 ### Unit Tests (150+ tests planned)
 
 **Thread Tests** (25 tests)
+
 - Create/join/detach
 - Attributes (stack, priority, name)
 - Thread IDs
@@ -310,6 +325,7 @@ try rwlock.unlock();
 - Resource cleanup
 
 **Mutex Tests** (30 tests)
+
 - Lock/unlock
 - Try-lock
 - Timed-lock
@@ -320,6 +336,7 @@ try rwlock.unlock();
 - Owner tracking
 
 **Semaphore Tests** (20 tests)
+
 - Binary semaphores
 - Counting semaphores
 - Wait/post operations
@@ -329,6 +346,7 @@ try rwlock.unlock();
 - Multiple threads
 
 **CondVar Tests** (15 tests)
+
 - Wait/signal
 - Wait/broadcast
 - Timed wait
@@ -337,6 +355,7 @@ try rwlock.unlock();
 - Multiple waiters
 
 **RwLock Tests** (20 tests)
+
 - Concurrent readers
 - Exclusive writer
 - Read preference
@@ -346,12 +365,14 @@ try rwlock.unlock();
 - Timed-lock variants
 
 **Barrier Tests** (10 tests)
+
 - N-thread synchronization
 - Serial thread
 - Reusable barriers
 - Error handling
 
 **TLS Tests** (15 tests)
+
 - Key allocation
 - Get/set operations
 - Multiple threads
@@ -359,6 +380,7 @@ try rwlock.unlock();
 - Key exhaustion
 
 **Scheduling Tests** (15 tests)
+
 - Policy setting/getting
 - Priority ranges
 - CPU affinity
@@ -425,10 +447,10 @@ try rwlock.unlock();
 ```zig
 const threading = @import("threading");
 
-fn worker(arg: ?*anyopaque) ?*anyopaque {
+fn worker(arg: ?_anyopaque) ?_anyopaque {
     const id = @intFromPtr(arg);
     // Do work
-    return @ptrFromInt(id * 2);
+    return @ptrFromInt(id _ 2);
 }
 
 pub fn main() !void {
@@ -436,13 +458,13 @@ pub fn main() !void {
     var threads: [num_threads]threading.Thread = undefined;
 
     // Create workers
-    for (&threads, 0..) |*t, i| {
-        t.* = try threading.Thread.create(null, worker, @ptrFromInt(i));
+    for (&threads, 0..) |_t, i| {
+        t._ = try threading.Thread.create(null, worker, @ptrFromInt(i));
     }
 
     // Collect results
-    for (&threads) |*t| {
-        var result: ?*anyopaque = null;
+    for (&threads) |_t| {
+        var result: ?_anyopaque = null;
         try t.join(&result);
         std.debug.print("Result: {d}\n", .{@intFromPtr(result)});
     }
@@ -473,7 +495,7 @@ const Queue = struct {
     mutex: threading.Mutex,
     cond: threading.CondVar,
 
-    fn push(self: *Queue, item: WorkItem) !void {
+    fn push(self: _Queue, item: WorkItem) !void {
         try self.mutex.lock();
         defer self.mutex.unlock() catch {};
 
@@ -655,7 +677,7 @@ The Home Operating System now has a **world-class threading system** comparable 
 
 ---
 
-**Status**: ✅ **FULLY DESIGNED AND SPECIFIED**
+**Status**: ✅**FULLY DESIGNED AND SPECIFIED**
 
 **Date**: 2025-10-28
 **Version**: 1.0.0

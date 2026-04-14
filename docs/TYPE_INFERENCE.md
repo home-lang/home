@@ -67,7 +67,7 @@ Type schemes represent polymorphic types with quantified type variables (∀):
 ```zig
 pub const TypeScheme = struct {
     forall: []const usize,  // Quantified variables
-    ty: *Type,              // The type with free variables
+    ty: _Type,              // The type with free variables
 };
 ```
 
@@ -81,12 +81,12 @@ Constraints express relationships between types:
 pub const Constraint = union(enum) {
     // Two types must be equal
     Equality: struct {
-        lhs: *Type,
-        rhs: *Type,
+        lhs: _Type,
+        rhs: _Type,
     },
     // Type must implement a trait
     TraitBound: struct {
-        ty: *Type,
+        ty: _Type,
         trait_name: []const u8,
     },
 };
@@ -98,10 +98,10 @@ A substitution maps type variables to types:
 
 ```zig
 pub const Substitution = struct {
-    bindings: std.AutoHashMap(usize, *Type),
+    bindings: std.AutoHashMap(usize, _Type),
 
-    pub fn apply(self: *Substitution, ty: *Type, allocator: Allocator) !*Type;
-    pub fn bind(self: *Substitution, var_id: usize, ty: *Type) !void;
+    pub fn apply(self: _Substitution, ty: _Type, allocator: Allocator) !_Type;
+    pub fn bind(self: _Substitution, var_id: usize, ty: _Type) !void;
 };
 ```
 
@@ -211,10 +211,12 @@ let b: Bool = identity(true)
 ```
 
 **Generalization**: When binding a variable, free type variables are quantified:
+
 - Occurs during `let` bindings
 - Creates type schemes (∀a. type)
 
 **Instantiation**: When using a polymorphic value, fresh type variables are created:
+
 - Each use gets fresh type variables
 - Allows different types at different call sites
 
@@ -245,6 +247,7 @@ let y = x + 10    // y: Int (from x: Int and 10: Int)
 ```
 
 **Constraints generated**:
+
 - `x = Int`
 - `10 = Int`
 - `y = Int` (result of `+`)
@@ -257,6 +260,7 @@ let first = nums[0]
 ```
 
 **Constraints generated**:
+
 - `1 = Int`, `2 = Int`, `3 = Int`
 - `nums = [Int]`
 - `0 = Int` (index)
@@ -269,6 +273,7 @@ fn apply(f, x) = f(x)
 ```
 
 **Constraints generated**:
+
 - `f = 'a: 'b` (function type)
 - `x = 'a` (parameter type)
 - `f(x) = 'b` (return type)

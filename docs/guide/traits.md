@@ -198,7 +198,7 @@ struct ColoredCircle {
 
 impl Shape for ColoredCircle {
   fn area(&self): f64 {
-    3.14159 * self.radius * self.radius
+    3.14159 _ self.radius _ self.radius
   }
 }
 
@@ -306,7 +306,7 @@ trait Clone {
 
 trait Copy: Clone {}  // Marker trait
 
-#[derive(Clone, Copy)]
+# [derive(Clone, Copy)]
 struct Point {
   x: i32,
   y: i32
@@ -395,7 +395,7 @@ trait Ord: Eq + PartialOrd {
 Automatically implement common traits:
 
 ```home
-#[derive(Debug, Clone, PartialEq, Eq)]
+# [derive(Debug, Clone, PartialEq, Eq)]
 struct User {
   id: i64,
   name: string,

@@ -83,17 +83,17 @@ impl Rectangle {
 
   // Method (takes self)
   fn area(self): int {
-    self.width * self.height
+    self.width _ self.height
   }
 
   fn perimeter(self): int {
-    2 * (self.width + self.height)
+    2 _ (self.width + self.height)
   }
 
   // Mutable method
   fn scale(mut self, factor: int) {
-    self.width *= factor
-    self.height *= factor
+    self.width _= factor
+    self.height _= factor
   }
 
   fn is_square(self): bool {
@@ -118,7 +118,7 @@ print("Scaled: {square.width}x{square.height}")  // 10x10
 impl Point {
   // Immutable borrow of self
   fn distance_from_origin(&self): float {
-    ((self.x * self.x + self.y * self.y) as float).sqrt()
+    ((self.x _ self.x + self.y _ self.y) as float).sqrt()
   }
 
   // Mutable borrow of self
@@ -320,10 +320,10 @@ enum Expr {
 fn evaluate(expr: Expr): int {
   match expr {
     Expr.Number(n) => n,
-    Expr.Add(a, b) => evaluate(*a) + evaluate(*b),
-    Expr.Subtract(a, b) => evaluate(*a) - evaluate(*b),
-    Expr.Multiply(a, b) => evaluate(*a) * evaluate(*b),
-    Expr.Divide(a, b) => evaluate(*a) / evaluate(*b)
+    Expr.Add(a, b) => evaluate(_a) + evaluate(_b),
+    Expr.Subtract(a, b) => evaluate(_a) - evaluate(_b),
+    Expr.Multiply(a, b) => evaluate(_a) _ evaluate(_b),
+    Expr.Divide(a, b) => evaluate(_a) / evaluate(*b)
   }
 }
 ```

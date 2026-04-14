@@ -11,7 +11,7 @@ Enhanced Home's modern testing framework with **20+ new matchers** and improved 
 ### Before
 
 ```zig
-const modern = @import("testing/modern_test.zig");
+const modern = @import("testing/modern*test.zig");
 
 try modern.describe("Suite", ...);
 try modern.it("test", ...);
@@ -21,7 +21,7 @@ expect.* = modern.expect(...);
 ### After (New API)
 
 ```zig
-const testing = @import("testing/modern_test.zig");
+const testing = @import("testing/modern*test.zig");
 const test = testing.test;
 
 try test.describe("Suite", ...);
@@ -30,6 +30,7 @@ expect.* = test.expect(...);
 ```
 
 **Benefits:**
+
 - ✅ Cleaner namespace (`test.*` vs `modern.*`)
 - ✅ More intuitive for users
 - ✅ Consistent with testing conventions
@@ -162,16 +163,18 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 ### Error Matchers (2 new - stubs)
 
 20. **`toThrow()`** - Function throws error
-21. **`toThrowError(error_type)`** - Function throws specific error
+21. **`toThrowError(error*type)`** - Function throws specific error
 
 ---
 
 ## Matcher Count Summary
 
 ### Before Enhancement
+
 - 10 matchers total
 
 ### After Enhancement
+
 - **30+ matchers total** (+200% increase)
 
 ### Breakdown by Category
@@ -193,8 +196,10 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 ## Files Created/Updated
 
 ### 1. Core Framework (Updated)
-**File:** `packages/testing/src/modern_test.zig`
+
+**File:** `packages/testing/src/modern*test.zig`
 **Changes:**
+
 - Added 20+ new matcher functions
 - Added `test` namespace for cleaner API
 - Enhanced numeric comparison capabilities
@@ -203,11 +208,13 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 **Lines Added:** ~250 lines of new matcher code
 
 ### 2. Comprehensive Example (New)
-**File:** `packages/testing/examples/matchers_showcase.zig`
+
+**File:** `packages/testing/examples/matchers*showcase.zig`
 **Size:** ~340 lines
 **Purpose:** Demonstrates all matchers with working examples
 
 **Sections:**
+
 - Equality matchers
 - Truthiness matchers
 - Numeric comparison matchers
@@ -216,11 +223,13 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 - Negation examples
 
 ### 3. Complete Reference (New)
-**File:** `docs/MATCHERS_REFERENCE.md`
+
+**File:** `docs/MATCHERS*REFERENCE.md`
 **Size:** ~650 lines
 **Purpose:** Complete documentation of all matchers
 
 **Includes:**
+
 - Detailed description of each matcher
 - Code examples for every matcher
 - Use case recommendations
@@ -229,7 +238,8 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 - Quick reference chart
 
 ### 4. API Improvements Summary (New)
-**File:** `docs/TESTING_API_IMPROVEMENTS.md`
+
+**File:** `docs/TESTING*API*IMPROVEMENTS.md`
 **Purpose:** This document - summary of changes
 
 ---
@@ -407,7 +417,7 @@ try test.describe("Number categorization", struct {
 }.run);
 
 fn testEven(expect: *testing.ModernTest.Expect) !void {
-    const evens = [_]i32{ 0, 2, 4, 100, -2 };
+    const evens = [*]i32{ 0, 2, 4, 100, -2 };
 
     for (evens) |num| {
         expect.* = test.expect(expect.allocator, num, expect.failures);
@@ -416,7 +426,7 @@ fn testEven(expect: *testing.ModernTest.Expect) !void {
 }
 
 fn testOdd(expect: *testing.ModernTest.Expect) !void {
-    const odds = [_]i32{ 1, 3, 99, -1 };
+    const odds = [*]i32{ 1, 3, 99, -1 };
 
     for (odds) |num| {
         expect.* = test.expect(expect.allocator, num, expect.failures);
@@ -467,8 +477,8 @@ try expect.toStartWith("Hello");
 
 **RSpec:**
 ```ruby
-expect(value).to be_positive
-expect(value).to be_between(1, 10)
+expect(value).to be*positive
+expect(value).to be*between(1, 10)
 expect(str).to start_with('Hello')
 ```
 

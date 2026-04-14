@@ -33,7 +33,7 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile("input.mp4", .{});
     defer file.close();
 
-    const data = try file.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    const data = try file.readToEndAlloc(allocator, 100 _ 1024 _ 1024);
     defer allocator.free(data);
 
     // Parse MP4
@@ -96,7 +96,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Read WAV
-    const data = try std.fs.cwd().readFileAlloc(allocator, "input.wav", 100 * 1024 * 1024);
+    const data = try std.fs.cwd().readFileAlloc(allocator, "input.wav", 100 _ 1024 _ 1024);
     defer allocator.free(data);
 
     var reader = try video.WavReader.fromMemory(allocator, data);
@@ -125,7 +125,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const srt_data = try std.fs.cwd().readFileAlloc(allocator, "subtitles.srt", 1024 * 1024);
+    const srt_data = try std.fs.cwd().readFileAlloc(allocator, "subtitles.srt", 1024 _ 1024);
     defer allocator.free(srt_data);
 
     var parser = try video.SrtParser.init(allocator, srt_data);
@@ -268,7 +268,7 @@ try std.fs.cwd().writeFile("thumb.jpg", thumb);
 ### Parse HLS Playlist
 
 ```zig
-const m3u8 = try std.fs.cwd().readFileAlloc(allocator, "playlist.m3u8", 1024 * 1024);
+const m3u8 = try std.fs.cwd().readFileAlloc(allocator, "playlist.m3u8", 1024 _ 1024);
 defer allocator.free(m3u8);
 
 var playlist = try video.HlsPlaylist.parse(allocator, m3u8);

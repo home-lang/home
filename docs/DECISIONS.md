@@ -9,7 +9,8 @@ Track architectural and design decisions to maintain consistency and provide his
 ## Language Design
 
 ### D001: Borrow Annotations - Implicit vs Explicit
-**Status**: ✅ **Decided**: Hybrid (Option C)  
+
+**Status**: ✅**Decided**: Hybrid (Option C)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -64,11 +65,12 @@ fn modify(data: mut string) {  // inferred: &mut string
 *Pros*: Best of both worlds  
 *Cons*: Need to learn inference rules
 
-**Chosen**: **Option C (Hybrid)**  
+**Chosen**:**Option C (Hybrid)**  
 
 **Rationale**: Reduces ceremony for common cases while allowing explicit control. Most functions don't need ownership, so default to borrowing.
 
 **Implementation**:
+
 - Compiler infers `&T` when function doesn't move
 - `own T` keyword for explicit ownership transfer
 - `mut` implies `&mut T` for parameters
@@ -77,7 +79,8 @@ fn modify(data: mut string) {  // inferred: &mut string
 ---
 
 ### D002: Generic Syntax
-**Status**: ✅ **Decided**: Parentheses (Option B)  
+
+**Status**: ✅**Decided**: Parentheses (Option B)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -122,7 +125,7 @@ let list: Vec[int] = Vec.new()
 *Pros*: Clear separation, no parsing ambiguity  
 *Cons*: Two syntaxes to learn
 
-**Chosen**: **Option B (Parentheses)**  
+**Chosen**:**Option B (Parentheses)**  
 
 **Rationale**: Easier parsing, no `>>` issues, consistent with function calls. Zig-style syntax familiar to systems programmers.
 
@@ -136,7 +139,8 @@ let map: Map(string, User) = Map.new()
 ---
 
 ### D003: Error Handling - Result Type Signature
-**Status**: ✅ **Decided**: Default Error Type (Option B)  
+
+**Status**: ✅**Decided**: Default Error Type (Option B)  
 **Priority**: MEDIUM  
 **Decided**: 2025-10-21
 
@@ -147,7 +151,7 @@ Need to decide Result type API and default error type.
 
 **A) Explicit Error Type (Rust-style)**:
 ```home
-fn read_file(path: string): Result<string, IOError> {
+fn read*file(path: string): Result<string, IOError> {
   // ...
 }
 ```
@@ -156,7 +160,7 @@ fn read_file(path: string): Result<string, IOError> {
 
 **B) Default Error Type**:
 ```home
-fn read_file(path: string): Result<string> {  // Error type implicit
+fn read*file(path: string): Result<string> {  // Error type implicit
   // returns Result<string, Error>
 }
 ```
@@ -165,21 +169,21 @@ fn read_file(path: string): Result<string> {  // Error type implicit
 
 **C) Multiple Return Values (Go-style)**:
 ```home
-fn read_file(path: string): (string, error) {
+fn read*file(path: string): (string, error) {
   // ...
 }
 ```
 *Pros*: Simple, familiar to Go devs  
 *Cons*: No `?` operator, must check manually
 
-**Chosen**: **Option B (Default with override)**  
+**Chosen**:**Option B (Default with override)**  
 
 **Rationale**: Reduce ceremony for typical errors while allowing specificity when needed. Global `Error` trait that custom errors implement.
 
 **Implementation**:
 ```home
 // Default error type
-fn read_file(path: string): Result(string) { }
+fn read*file(path: string): Result(string) { }
 
 // Explicit when needed
 fn parse(input: string): Result(Config, ParseError) { }
@@ -188,7 +192,8 @@ fn parse(input: string): Result(Config, ParseError) { }
 ---
 
 ### D004: Module System - File-based vs Explicit
-**Status**: ✅ **Decided**: Hybrid (Option C)  
+
+**Status**: ✅**Decided**: Hybrid (Option C)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -245,7 +250,7 @@ import parser { Lexer, Parser }
 *Pros*: Control over public API, familiar  
 *Cons*: Need to maintain re-exports
 
-**Chosen**: **Option C (Hybrid)**  
+**Chosen**:**Option C (Hybrid)**  
 
 **Rationale**: File-based for simplicity with explicit exports for API control. Matches TypeScript/Rust patterns.
 
@@ -262,7 +267,8 @@ import parser { Lexer, Parser }
 ---
 
 ### D005: String Type - UTF-8 or Byte Slice
-**Status**: ✅ **Decided**: UTF-8 with Unsafe Escape (Option D)  
+
+**Status**: ✅**Decided**: UTF-8 with Unsafe Escape (Option D)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -298,25 +304,26 @@ let b: &str = "Hello"    // UTF-8 slice, borrowed
 **D) UTF-8 with unsafe escape**:
 ```home
 let s: string = "Hello"  // Validated by default
-let raw = unsafe { string.from_bytes(bytes) }  // Skip validation
+let raw = unsafe { string.from*bytes(bytes) }  // Skip validation
 ```
 *Pros*: Safe by default, fast path available  
 *Cons*: Unsafe blocks for performance
 
-**Chosen**: **Option D (UTF-8 + unsafe)**  
+**Chosen**:**Option D (UTF-8 + unsafe)**  
 
 **Rationale**: Default to safety and correctness. Provide unsafe path for performance-critical code. Most code doesn't need raw bytes.
 
 **Implementation**:
 ```home
 let s: string = "Hello"  // UTF-8 validated
-let raw = unsafe { string.from_bytes(bytes) }  // Skip validation
+let raw = unsafe { string.from*bytes(bytes) }  // Skip validation
 ```
 
 ---
 
 ### D006: Integer Overflow Behavior
-**Status**: ✅ **Decided**: Debug Panic + Explicit (Option A+D)  
+
+**Status**: ✅**Decided**: Debug Panic + Explicit (Option A+D)  
 **Priority**: MEDIUM  
 **Decided**: 2025-10-21
 
@@ -345,21 +352,21 @@ let y = x + 1  // Always wraps to 0
 
 **D) Explicit Methods**:
 ```home
-let y = x.wrapping_add(1)  // Explicit wrapping
-let y = x.saturating_add(1)  // Saturates at max
-let y = x.checked_add(1)  // Returns Result
+let y = x.wrapping*add(1)  // Explicit wrapping
+let y = x.saturating*add(1)  // Saturates at max
+let y = x.checked*add(1)  // Returns Result
 ```
 
-**Chosen**: **Option A + D (Debug panic, release wrap, explicit methods)**  
+**Chosen**:**Option A + D (Debug panic, release wrap, explicit methods)**  
 
 **Rationale**: Catch bugs in development while maintaining performance in production. Provide explicit methods for different semantics.
 
 **Implementation**:
 ```home
 let y = x + 1              // Panic in debug, wrap in release
-let y = x.wrapping_add(1)  // Explicit wrapping
-let y = x.saturating_add(1) // Saturating
-let y = x.checked_add(1)?  // Returns Result
+let y = x.wrapping*add(1)  // Explicit wrapping
+let y = x.saturating*add(1) // Saturating
+let y = x.checked*add(1)?  // Returns Result
 ```
 
 ---
@@ -367,13 +374,15 @@ let y = x.checked_add(1)?  // Returns Result
 ## Compiler Architecture
 
 ### D007: IR Format - SSA or Register-based
-**Status**: ✅ **Decided**: SSA  
+
+**Status**: ✅**Decided**: SSA  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
 **Chosen**: SSA (Static Single Assignment)
 
 **Rationale**:
+
 - Easier optimization (def-use chains)
 - Better for incremental compilation
 - Cranelift expects SSA
@@ -381,8 +390,8 @@ let y = x.checked_add(1)?  // Returns Result
 
 **Implementation**:
 ```
-%0 = load @var_x
-%1 = load @var_y
+%0 = load @var*x
+%1 = load @var*y
 %2 = add i32 %0, %1
 ret %2
 ```
@@ -390,13 +399,15 @@ ret %2
 ---
 
 ### D008: Backend - Cranelift vs LLVM vs Custom
-**Status**: ✅ **Decided**: Cranelift primary, LLVM optional  
+
+**Status**: ✅**Decided**: Cranelift primary, LLVM optional  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
 **Chosen**: Cranelift for development builds, optional LLVM for release
 
 **Rationale**:
+
 - Cranelift compiles faster (critical for DX)
 - LLVM optimizes better (important for production)
 - Backend abstraction allows both
@@ -411,13 +422,15 @@ ion build --opt   # Uses LLVM (slow but optimized)
 ---
 
 ### D009: Cache Storage - Filesystem vs Database
-**Status**: ✅ **Decided**: Filesystem (content-addressable)  
+
+**Status**: ✅**Decided**: Filesystem (content-addressable)  
 **Priority**: MEDIUM  
 **Decided**: 2025-10-21
 
 **Chosen**: Content-addressable filesystem cache
 
 **Rationale**:
+
 - Simple, no external dependencies
 - Easy to inspect/debug
 - Git-like model (familiar)
@@ -437,7 +450,8 @@ ion build --opt   # Uses LLVM (slow but optimized)
 ---
 
 ### D010: Borrow Checker Algorithm
-**Status**: ✅ **Decided**: Hybrid (Option D)  
+
+**Status**: ✅**Decided**: Hybrid (Option D)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -447,29 +461,34 @@ Which algorithm to use for borrow checking?
 **Options**:
 
 **A) NLL (Non-Lexical Lifetimes) - Rust 2018**:
+
 - Flow-sensitive analysis
 - Precise but complex
 
 **B) Polonius - Next-gen Rust**:
+
 - Datalog-based
 - More precise than NLL
 - Still experimental
 
 **C) Conservative - Simple Scopes**:
+
 - Lexical scopes only
 - Simple but restrictive
 - Fast to implement
 
 **D) Hybrid - Conservative with NLL hints**:
+
 - Start conservative
 - Add NLL for common patterns
 - Progressive enhancement
 
-**Chosen**: **Option D (Hybrid)**  
+**Chosen**:**Option D (Hybrid)**  
 
 **Rationale**: Ship conservative checker quickly (Month 5), iterate to NLL precision (Month 8). Avoid premature complexity.
 
 **Implementation Plan**:
+
 - **Phase 1 (Month 5)**: Conservative lexical scopes
 - **Phase 2 (Month 8)**: Add NLL for common patterns
 - **Phase 3 (Month 12)**: Full NLL precision
@@ -479,7 +498,8 @@ Which algorithm to use for borrow checking?
 ## Tooling
 
 ### D011: LSP - Standalone vs Embedded
-**Status**: ✅ **Decided**: Both (Option C)  
+
+**Status**: ✅**Decided**: Both (Option C)  
 **Priority**: MEDIUM  
 **Decided**: 2025-10-21
 
@@ -507,7 +527,7 @@ ion daemon lsp   # Via daemon
 *Pros*: Flexibility  
 *Cons*: Maintenance burden
 
-**Chosen**: **Option C (Both)**  
+**Chosen**:**Option C (Both)**  
 
 **Rationale**: Maximum flexibility for different editor setups. Daemon provides shared cache, standalone for simplicity.
 
@@ -522,7 +542,8 @@ ion daemon lsp   # Via daemon (shared cache)
 ## Standard Library
 
 ### D012: Async Runtime - Bundled vs Optional
-**Status**: ✅ **Decided**: Implicit Tree-Shakeable (Option C)  
+
+**Status**: ✅**Decided**: Implicit Tree-Shakeable (Option C)  
 **Priority**: HIGH  
 **Decided**: 2025-10-21
 
@@ -542,7 +563,7 @@ import std/runtime { Runtime }
 
 fn main() {
   let rt = Runtime.new()
-  rt.block_on(async_main())
+  rt.block*on(async*main())
 }
 ```
 *Pros*: Minimal binaries when not needed  
@@ -556,7 +577,7 @@ async fn handler() { }  // Pulls in runtime automatically
 *Pros*: Zero boilerplate, minimal when unused  
 *Cons*: Magic linking
 
-**Chosen**: **Option C (Implicit + tree-shakeable)**  
+**Chosen**:**Option C (Implicit + tree-shakeable)**  
 
 **Rationale**: Best DX. Linker can eliminate runtime if no async functions. Compiler warns if runtime size is large.
 
@@ -570,7 +591,8 @@ fn main() { }           // No async = no runtime overhead
 ---
 
 ### D013: Collections - Interface-based vs Concrete
-**Status**: ✅ **Decided**: Hybrid (Option C)  
+
+**Status**: ✅**Decided**: Hybrid (Option C)  
 **Priority**: MEDIUM  
 **Decided**: 2025-10-21
 
@@ -597,7 +619,7 @@ let v: Vec<int> = Vec.new()
 fn process(items: impl Iterator<int>) { }
 ```
 
-**Chosen**: **Option C (Hybrid)**  
+**Chosen**:**Option C (Hybrid)**  
 
 **Rationale**: Concrete for simplicity, traits for abstraction. Most code doesn't need interface indirection.
 
@@ -616,26 +638,34 @@ fn process(items: impl Iterator(int)) { }
 
 Questions that need research before deciding:
 
-### Q001: Can we achieve zero-cost async?
+### Q001: Can we achieve zero-cost async
+
 **Research Needed**:
+
 - Measure overhead vs hand-rolled state machines
 - Compare with Rust's async
 - Profile typical async workloads
 
-### Q002: How to handle C interop with borrow checker?
+### Q002: How to handle C interop with borrow checker
+
 **Research Needed**:
+
 - Study Rust's FFI model
 - Consider automatic `unsafe` boundaries
 - Test with real C libraries
 
-### Q003: WASM target performance expectations?
+### Q003: WASM target performance expectations
+
 **Research Needed**:
+
 - Benchmark Cranelift WASM output
 - Compare with Rust/C WASM
 - Identify optimization opportunities
 
-### Q004: Can comptime replace macros entirely?
+### Q004: Can comptime replace macros entirely
+
 **Research Needed**:
+
 - List all macro use cases (Rust, C++)
 - Prototype in comptime
 - Identify gaps
@@ -655,6 +685,7 @@ Questions that need research before deciding:
 7. **Review**: Revisit if problems emerge
 
 **Decision Criteria Priority**:
+
 1. Compile time performance (beat Zig)
 2. Runtime performance (match Zig)
 3. Developer experience (beat Rust)
@@ -673,6 +704,7 @@ Questions that need research before deciding:
 - **Phase 6** (Months 21-24): No breaking changes, 1.0 prep
 
 **After 1.0**:
+
 - Breaking changes only in major versions
 - Deprecation warnings for 2+ minor versions
 - Edition system (like Rust) if needed

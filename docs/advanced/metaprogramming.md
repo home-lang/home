@@ -221,7 +221,7 @@ const fn derive_serialize<T>() {
 
                         serializer.field(key, &self.{field_name})?;
                     }
-                )*
+                )_
 
                 serializer.end_object()
             }
@@ -229,7 +229,7 @@ const fn derive_serialize<T>() {
     }
 }
 
-#[derive(Serialize)]
+# [derive(Serialize)]
 struct Product {
     id: u64,
     #[rename = "product_name"]
@@ -254,7 +254,7 @@ const fn derive_clone_if_possible<T>() {
                     Self {
                         $(
                             {field.name}: self.{field.name}.clone()
-                        ),*
+                        ),_
                     }
                 }
             }
@@ -275,9 +275,9 @@ const fn derive_clone_if_possible<T>() {
 ### Query DSL
 
 ```home
-macro query($($tokens:tt)*) {
+macro query($($tokens:tt)_) {
     comptime {
-        let ast = parse_query!($($tokens)*)
+        let ast = parse_query!($($tokens)_)
         validate_query(ast)?
         generate_query_code(ast)
     }
@@ -285,7 +285,7 @@ macro query($($tokens:tt)*) {
 
 fn get_users() -> Vec<User> {
     query! {
-        SELECT * FROM users
+        SELECT _ FROM users
         WHERE active = true
         AND created_at > @start_date
         ORDER BY name
@@ -299,9 +299,9 @@ fn get_users() -> Vec<User> {
 ### State Machine DSL
 
 ```home
-macro state_machine($name:ident { $($states:tt)* }) {
+macro state_machine($name:ident { $($states:tt)_ }) {
     comptime {
-        let states = parse_states!($($states)*)
+        let states = parse_states!($($states)_)
         validate_transitions(states)?
 
         generate_state_enum(states)
@@ -338,7 +338,7 @@ macro builder($struct:ty) {
         struct {$struct}Builder {
             $(
                 {field.name}: Option<{field.ty}>
-            ),*
+            ),_
         }
 
         impl {$struct}Builder {
@@ -346,7 +346,7 @@ macro builder($struct:ty) {
                 Self {
                     $(
                         {field.name}: None
-                    ),*
+                    ),_
                 }
             }
 
@@ -355,21 +355,21 @@ macro builder($struct:ty) {
                     self.{field.name} = Some(value)
                     self
                 }
-            )*
+            )_
 
             fn build(self) -> Result<{$struct}, BuilderError> {
                 Ok({$struct} {
                     $(
                         {field.name}: self.{field.name}
                             .ok_or(BuilderError.missing("{field.name}"))?
-                    ),*
+                    ),_
                 })
             }
         }
     }
 }
 
-#[builder]
+# [builder]
 struct Request {
     method: HttpMethod,
     url: Url,
@@ -492,25 +492,25 @@ newtype_wrapper!(u64, "OrderId")
 newtype_wrapper!(string, "Email")
 
 // Type system prevents mixing them up
-fn get_user(id: UserId) -> User { /* ... */ }
-fn get_order(id: OrderId) -> Order { /* ... */ }
+fn get_user(id: UserId) -> User { /_ ... _/ }
+fn get_order(id: OrderId) -> Order { /_ ... _/ }
 ```
 
 ### Aspect-Oriented Programming
 
 ```home
-macro aspect($aspect:ident, $($method:ident),*) {
+macro aspect($aspect:ident, $($method:ident),_) {
     comptime {
         $(
             let original = get_method::<Self>($method)
 
-            fn $method($(original.params)*) -> $(original.return_type) {
+            fn $method($(original.params)_) -> $(original.return_type) {
                 $aspect::before(stringify!($method))
-                let result = original.call($(original.param_names)*)
+                let result = original.call($(original.param_names)_)
                 $aspect::after(stringify!($method), &result)
                 result
             }
-        )*
+        )_
     }
 }
 
@@ -542,7 +542,7 @@ trait Plugin {
     fn shutdown(&mut self)
 }
 
-macro register_plugins($($plugin:ty),*) {
+macro register_plugins($($plugin:ty),_) {
     comptime {
         static PLUGINS: []PluginInfo = [
             $(
@@ -576,18 +576,20 @@ register_plugins!(
 ## Best Practices
 
 1. **Generate readable code**:
+
    ```home
    // Generated code should be human-readable for debugging
    const fn generate_impl<T>() {
        comptime {
            // Add comments explaining generation
            /// Auto-generated implementation for {type_name::<T>()}
-           impl Debug for T { /* ... */ }
+           impl Debug for T { /_ ... _/ }
        }
    }
    ```
 
 2. **Provide good error messages**:
+
    ```home
    const fn derive_feature<T>() {
        comptime {
@@ -603,6 +605,7 @@ register_plugins!(
    ```
 
 3. **Test generated code**:
+
    ```home
    #[test]
    fn test_generated_serializer() {
@@ -618,6 +621,7 @@ register_plugins!(
    ```
 
 4. **Document generation behavior**:
+
    ```home
    /// Generates a builder for the annotated struct.
    ///
@@ -629,10 +633,11 @@ register_plugins!(
    /// # Attributes
    /// - `#[default = value]` - Provides default value
    /// - `#[required]` - Must be set before build
-   macro builder($struct:ty) { /* ... */ }
+   macro builder($struct:ty) { /_ ... _/ }
    ```
 
 5. **Prefer standard derives when available**:
+
    ```home
    // Use built-in derives when possible
    #[derive(Debug, Clone, PartialEq)]
@@ -640,5 +645,5 @@ register_plugins!(
 
    // Custom derives for domain-specific needs
    #[derive(Serialize, Validate, Audit)]
-   struct DomainObject { /* ... */ }
+   struct DomainObject { /_ ... _/ }
    ```

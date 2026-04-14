@@ -54,7 +54,7 @@ fn read_config() -> Result<Config, Error> {
 let result: Result<i32, Error> = Ok(42)
 
 // Transform success value
-let doubled = result.map(|n| n * 2)  // Ok(84)
+let doubled = result.map(|n| n _ 2)  // Ok(84)
 
 // Transform error value
 let with_context = result.map_err(|e| Error.wrap(e, "context"))
@@ -195,7 +195,7 @@ fn process_file(path: &str) -> Result<Data, AppError> {
 ### The #[derive(Error)] Macro
 
 ```home
-#[derive(Error, Debug)]
+# [derive(Error, Debug)]
 enum ServiceError {
     #[error("Network error: {0}")]
     Network(#[from] NetworkError),
@@ -236,7 +236,7 @@ fn read_config(path: &str) -> Result<Config, Error> {
 
 ```home
 fn load_user(id: u64) -> Result<User, Error> {
-    let row = database.query("SELECT * FROM users WHERE id = ?", id)
+    let row = database.query("SELECT _ FROM users WHERE id = ?", id)
         .context("Failed to query database")?
 
     let user = User.from_row(row)
@@ -302,7 +302,7 @@ fn main() {
 ### Custom Panic Handlers
 
 ```home
-#[panic_handler]
+# [panic_handler]
 fn custom_panic(info: &PanicInfo) -> never {
     // Log the panic
     log.error("PANIC: {info}")
@@ -508,6 +508,7 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
 ## Best Practices
 
 1. **Use Result for recoverable errors, panic for bugs**:
+
    ```home
    // Good: File might not exist
    fn read_file(path: &str) -> Result<string, IoError>
@@ -520,6 +521,7 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
    ```
 
 2. **Create domain-specific error types**:
+
    ```home
    // Good: Clear error domain
    enum UserServiceError {
@@ -533,12 +535,14 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
    ```
 
 3. **Provide context at error sites**:
+
    ```home
    file.write_all(data)
        .context("Failed to save user preferences")?
    ```
 
 4. **Don't ignore errors**:
+
    ```home
    // Bad: Error ignored
    let _ = file.write(data)
@@ -550,6 +554,7 @@ fn with_transaction<T>(f: fn(&Transaction) -> Result<T, Error>) -> Result<T, Err
    ```
 
 5. **Use early returns for clarity**:
+
    ```home
    fn process(input: Input) -> Result<Output, Error> {
        if !input.is_valid() {

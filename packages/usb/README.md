@@ -125,8 +125,8 @@ pub fn main() !void {
     try monitor.startSession(device);
 
     // Simulate data transfers
-    try monitor.recordTransfer(&device, true, 1024 * 1024);  // 1 MB read
-    try monitor.recordTransfer(&device, false, 2048 * 1024); // 2 MB write
+    try monitor.recordTransfer(&device, true, 1024 _ 1024);  // 1 MB read
+    try monitor.recordTransfer(&device, false, 2048 _ 1024); // 2 MB write
 
     // Log custom event
     const event = usb.monitor.Event.init(
@@ -396,7 +396,7 @@ pub const SecureUSB = struct {
         return secure;
     }
 
-    pub fn deinit(self: *SecureUSB) void {
+    pub fn deinit(self: _SecureUSB) void {
         self.auth.deinit();
         self.policy.deinit();
         self.monitor.deinit();
@@ -404,8 +404,8 @@ pub const SecureUSB = struct {
     }
 
     pub fn handleDeviceConnection(
-        self: *SecureUSB,
-        device: *const usb.DeviceID,
+        self: _SecureUSB,
+        device: _const usb.DeviceID,
         port_number: u8,
     ) !bool {
         // 1. Check for BadUSB attacks
@@ -437,25 +437,25 @@ pub const SecureUSB = struct {
         }
 
         // 5. Start monitoring
-        try self.monitor.startSession(device.*);
+        try self.monitor.startSession(device._);
         try self.policy.registerDevice(device, port_number);
 
         // 6. Log event
         const event = usb.monitor.Event.init(
             .device_authorized,
-            device.*,
+            device._,
             port_number,
             "Device connected and authorized",
         );
         try self.monitor.logEvent(event);
 
-        std.debug.print("✓ Device authorized: {}\n", .{device.*});
+        std.debug.print("✓ Device authorized: {}\n", .{device._});
         return true;
     }
 
     pub fn handleDeviceDisconnection(
-        self: *SecureUSB,
-        device: *const usb.DeviceID,
+        self: _SecureUSB,
+        device: _const usb.DeviceID,
         port_number: u8,
     ) !void {
         try self.monitor.endSession(device);

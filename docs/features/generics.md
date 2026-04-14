@@ -443,8 +443,8 @@ struct Order {}
 type UserId = Id<u64, User>
 type OrderId = Id<u64, Order>
 
-fn get_user(id: UserId) -> User { /* ... */ }
-fn get_order(id: OrderId) -> Order { /* ... */ }
+fn get_user(id: UserId) -> User { /_ ... _/ }
+fn get_order(id: OrderId) -> Order { /_ ... _/ }
 
 let user_id: UserId = Id { value: 1 }
 let order_id: OrderId = Id { value: 1 }
@@ -550,6 +550,7 @@ let v = collect::<i32, _>(iter)
 ## Best Practices
 
 1. **Use trait bounds judiciously**:
+
    ```home
    // Only bound what you actually use
    fn process<T: Clone>(value: T) -> T {
@@ -563,6 +564,7 @@ let v = collect::<i32, _>(iter)
    ```
 
 2. **Prefer associated types for unique mappings**:
+
    ```home
    // Good: each Iterator has one Item type
    trait Iterator {
@@ -577,6 +579,7 @@ let v = collect::<i32, _>(iter)
    ```
 
 3. **Use where clauses for readability**:
+
    ```home
    // Hard to read
    fn foo<T: Clone + Debug + Send + Sync, U: From<T> + Default>(a: T, b: U)
@@ -589,6 +592,7 @@ let v = collect::<i32, _>(iter)
    ```
 
 4. **Consider turbofish for explicit instantiation**:
+
    ```home
    // When type inference fails
    let parsed = parse::<i32>("42")
@@ -596,11 +600,12 @@ let v = collect::<i32, _>(iter)
    ```
 
 5. **Document type parameter meanings**:
+
    ```home
    /// A mapping from keys to values.
    ///
    /// # Type Parameters
-   /// * `K` - The key type, must be hashable and comparable
-   /// * `V` - The value type
-   struct HashMap<K: Hash + Eq, V> { /* ... */ }
+   /// _ `K` - The key type, must be hashable and comparable
+   /// _ `V` - The value type
+   struct HashMap<K: Hash + Eq, V> { /_ ... _/ }
    ```

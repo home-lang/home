@@ -416,6 +416,7 @@ my-project/
 ```
 
 **Benefits:**
+
 - Themed naming that fits the Home ecosystem
 - Clear separation from other package managers
 - Easy to identify Home dependencies
@@ -425,6 +426,7 @@ my-project/
 The `.freezer` file is Home's lockfile that ensures reproducible builds:
 
 **Purpose:**
+
 - Locks exact versions of all dependencies
 - Stores integrity checksums for security
 - Records the source of each package
@@ -453,12 +455,14 @@ The `.freezer` file is Home's lockfile that ensures reproducible builds:
 ```
 
 **Source Types:**
+
 - `registry` - Official Home package registry
 - `git` - Git repository with exact commit hash
 - `path` - Local file path (for development)
 - `url` - Direct download URL
 
 **Best Practices:**
+
 - ✅ Commit `.freezer` to version control
 - ✅ Use `.freezer` for CI/CD reproducibility
 - ✅ Run `home install` to sync with `.freezer`
@@ -476,4 +480,3 @@ pantry/
 ```
 
 Note: You should commit `.freezer` but NOT `pantry/`. The example above shows both for completeness, but in practice, remove `.freezer` from `.gitignore` after your first install.
-

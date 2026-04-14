@@ -101,7 +101,7 @@ pub fn main() !void {
 
     // Critical section
     std.debug.print("In critical section, signals are blocked\n", .{});
-    std.time.sleep(std.time.ns_per_s * 2);
+    std.time.sleep(std.time.ns_per_s _ 2);
 
     // Unblock all signals
     try set.unblockAll();
@@ -128,7 +128,7 @@ pub fn main() !void {
     std.debug.print("Alarm set for 5 seconds\n", .{});
 
     // Wait for alarm
-    std.time.sleep(std.time.ns_per_s * 10);
+    std.time.sleep(std.time.ns_per_s _ 10);
 
     // Cancel alarm if needed
     signal.cancelAlarm();
@@ -212,6 +212,7 @@ pub fn main() !void {
 ## Error Handling
 
 All signal operations return errors for:
+
 - `error.OperationNotSupported` - Operation not supported on this platform
 - `error.InvalidSignal` - Invalid signal number
 - `error.BlockFailed` - Failed to block signal

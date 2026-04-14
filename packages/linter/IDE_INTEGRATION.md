@@ -93,7 +93,7 @@ null_ls.setup({
   sources = {
     -- Home linter
     null_ls.builtins.diagnostics.home_lint,
-    
+
     -- Home formatter
     null_ls.builtins.formatting.home_fmt,
   },
@@ -166,7 +166,7 @@ Create `Home.sublime-settings`:
 Create `.git/hooks/pre-commit`:
 
 ```bash
-#!/bin/bash
+# !/bin/bash
 
 # Get all staged .home files
 FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.home$')
@@ -176,8 +176,8 @@ if [ -n "$FILES" ]; then
   
   for FILE in $FILES; do
     home lint --fix "$FILE"
-    
-    # Re-add the file if it was modified
+
+# Re-add the file if it was modified
     git add "$FILE"
   done
 fi
@@ -198,7 +198,7 @@ For development, you can use a file watcher:
 watchexec -e home -- home lint --fix src/
 
 # Using entr
-find src -name "*.home" | entr home lint --fix /_
+find src -name "_.home" | entr home lint --fix /_
 ```
 
 ### CI/CD
@@ -214,15 +214,19 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+
       - uses: actions/checkout@v3
-      
+
       - name: Setup Home
+
         uses: home-lang/setup-home@v1
-      
+
       - name: Lint
+
         run: home lint src/
-      
+
       - name: Check formatting
+
         run: |
           home fmt src/
           git diff --exit-code
@@ -234,9 +238,11 @@ jobs:
 lint:
   stage: test
   script:
+
     - home lint src/
     - home fmt src/
     - git diff --exit-code
+
 ```
 
 ## LSP Server Integration
@@ -337,7 +343,7 @@ vendor/
 # Build output
 dist/
 build/
-*.o
+_.o
 *.a
 
 # Generated files
@@ -351,6 +357,6 @@ tests/fixtures/
 
 For issues or questions:
 
-- GitHub: https://github.com/home-lang/home
-- Discord: https://discord.gg/home-lang
-- Docs: https://home-lang.dev/docs/linter
+- GitHub: <https://github.com/home-lang/home>
+- Discord: <https://discord.gg/home-lang>
+- Docs: <https://home-lang.dev/docs/linter>

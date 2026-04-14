@@ -149,6 +149,7 @@ fn processVideo(vid: *video.Video) !void {
 ## Common Errors and Solutions
 
 ### InvalidFormat
+
 **Cause**: File doesn't match expected format
 **Solution**: Use format detection before parsing
 ```zig
@@ -156,6 +157,7 @@ const format = video.detectFormat(data);
 ```
 
 ### CodecNotSupported
+
 **Cause**: Required codec not available
 **Solution**: Check codec support before use
 ```zig
@@ -165,6 +167,7 @@ if (!video.canDecode(.hevc)) {
 ```
 
 ### OutOfMemory
+
 **Cause**: Insufficient memory for operation
 **Solution**: Process in chunks or reduce resolution
 ```zig
@@ -176,6 +179,7 @@ while (try reader.nextPacket()) |packet| {
 ```
 
 ### HardwareNotAvailable
+
 **Cause**: Hardware acceleration not available
 **Solution**: Fallback to software processing
 ```zig

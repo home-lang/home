@@ -7,9 +7,11 @@ Complete development tooling for the Home programming language.
 ## 📦 Components
 
 ### 1. VSCode Extension
+
 **Location:** `../packages/vscode-home/`
 
 Full-featured VSCode extension with:
+
 - Syntax highlighting
 - Language Server Protocol integration
 - Debugging support
@@ -22,9 +24,11 @@ Full-featured VSCode extension with:
 **[Documentation](../docs/TOOLING_COMPLETE.md#vscode-extension)**
 
 ### 2. Package Registry
+
 **Location:** `../packages/registry/`
 
 Centralized package hosting and distribution:
+
 - RESTful API
 - User authentication
 - Package publishing
@@ -68,6 +72,7 @@ npm run dev
 ## ✨ Features
 
 ### IDE Support
+
 - ✅ Syntax highlighting for `.home` files
 - ✅ Auto-completion
 - ✅ Go to definition
@@ -78,6 +83,7 @@ npm run dev
 - ✅ InlayHints for types
 
 ### Debugging
+
 - ✅ Breakpoints
 - ✅ Step through code
 - ✅ Variable inspection
@@ -86,6 +92,7 @@ npm run dev
 - ✅ Profiler integration
 
 ### Profiling
+
 - ✅ Function timing
 - ✅ Call count tracking
 - ✅ Performance reports
@@ -93,6 +100,7 @@ npm run dev
 - ✅ Timeline view
 
 ### Package Management
+
 - ✅ Publish packages
 - ✅ Search packages
 - ✅ Install dependencies
@@ -104,6 +112,7 @@ npm run dev
 ## 🛠️ Development
 
 ### Prerequisites
+
 - Node.js 18+
 - VSCode 1.80+
 - MongoDB (for registry)
@@ -162,7 +171,7 @@ Home Tooling
 | Debugger | Integrated | ~500 | ✅ Complete |
 | Profiler | Integrated | ~400 | ✅ Complete |
 | Package Registry | 10+ | ~1,500 | ✅ Complete |
-| **Total** | **20+** | **~3,200** | **✅ Complete** |
+| **Total**|**20+**|**~3,200**|**✅ Complete** |
 
 ---
 

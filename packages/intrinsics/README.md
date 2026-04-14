@@ -5,6 +5,7 @@ Comprehensive hardware intrinsics and low-level operations for the Home Programm
 ## Features
 
 ### SIMD Operations (`simd.zig`)
+
 - Vector types and operations (add, sub, mul, div)
 - Vector reductions (sum, min, max)
 - Horizontal operations
@@ -13,6 +14,7 @@ Comprehensive hardware intrinsics and low-level operations for the Home Programm
 - Common vector sizes: Vec2f32, Vec4f32, Vec8f32, Vec4i32, etc.
 
 ### Bit Manipulation (`bits.zig`)
+
 - Count leading/trailing zeros (CLZ, CTZ)
 - Population count (POPCNT)
 - Byte swap and bit reverse
@@ -22,7 +24,9 @@ Comprehensive hardware intrinsics and low-level operations for the Home Programm
 - Power-of-two detection and rounding
 
 ### BMI Instructions (`bmi.zig`)
+
 BMI1:
+
 - Extract lowest set bit (BLSI)
 - Clear lowest set bit (BLSR)
 - AND NOT (ANDN)
@@ -30,6 +34,7 @@ BMI1:
 - Trailing zero count (TZCNT)
 
 BMI2:
+
 - Parallel bits deposit (PDEP)
 - Parallel bits extract (PEXT)
 - Zero high bits (BZHI)
@@ -37,6 +42,7 @@ BMI2:
 - Shift operations without flags (SHLX, SHRX, SARX, RORX)
 
 ### Atomic Operations (`atomic.zig`)
+
 - Atomic load/store with memory ordering
 - Compare-and-swap (weak and strong)
 - Fetch-and-add/sub/and/or/xor
@@ -45,6 +51,7 @@ BMI2:
 - Spin loop hints
 
 ### Floating-Point Operations (`float.zig`)
+
 - FP classification (normal, subnormal, zero, infinity, NaN)
 - Rounding modes (nearest, zero, positive, negative)
 - Fused multiply-add variants (FMA, FMS, FNMA, FNMS)
@@ -55,6 +62,7 @@ BMI2:
 - nextAfter (next representable value)
 
 ### Cryptographic Acceleration (`crypto.zig`)
+
 - AES-NI availability detection
 - SHA extensions detection
 - CRC32 with hardware acceleration
@@ -65,6 +73,7 @@ BMI2:
 Note: Hardware-accelerated crypto operations require platform-specific inline assembly and are marked as compile errors for now. Software fallbacks are provided where applicable (e.g., CRC32).
 
 ### CPU Features (`cpu.zig`)
+
 - Runtime CPU feature detection
 - x86/x86_64: SSE, SSE2, SSE3, SSSE3, SSE4.1/4.2, AVX, AVX2, AVX512, FMA, AES, PCLMUL, POPCNT, BMI1/2, LZCNT
 - ARM/AArch64: NEON, SVE, CRC32, Crypto, FP16, DotProd
@@ -72,6 +81,7 @@ Note: Hardware-accelerated crypto operations require platform-specific inline as
 - Page size detection
 
 ### Memory Barriers (`memory_barriers.zig`)
+
 - Full memory barrier
 - Acquire/release barriers
 - Load/store barriers
@@ -79,6 +89,7 @@ Note: Hardware-accelerated crypto operations require platform-specific inline as
 - Custom fence with ordering
 
 ### Prefetch Operations (`prefetch.zig`)
+
 - Prefetch for read/write
 - Prefetch with locality hints (none, low, medium, high)
 - Instruction cache prefetch
@@ -88,6 +99,7 @@ Note: Hardware-accelerated crypto operations require platform-specific inline as
 - Next cache line prefetch
 
 ### System Instructions (`system.zig`)
+
 - Debug trap and breakpoint
 - Return address and frame address
 - Compiler and memory barriers
@@ -163,6 +175,7 @@ Current test coverage: 38 tests passing
 ## Performance
 
 All intrinsics are designed for zero-overhead abstraction:
+
 - Inline functions where possible
 - Compile-time feature detection
 - No runtime overhead for availability checks

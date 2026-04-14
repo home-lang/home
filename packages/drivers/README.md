@@ -5,6 +5,7 @@ Comprehensive hardware driver system for Home Operating System with extensive de
 ## Features
 
 ### Core Infrastructure
+
 - ✅ **PCI/PCIe Enumeration** - Full PCI bus scanning and device discovery
 - ✅ **ACPI Parser** - ACPI table parsing for hardware configuration
 - ✅ **Device Tree** - ARM device tree parsing and hardware discovery
@@ -12,39 +13,47 @@ Comprehensive hardware driver system for Home Operating System with extensive de
 - ✅ **Event System** - Input event queue and handling
 
 ### Serial & Console
+
 - ✅ **UART 16550** - Standard PC serial port (x86_64)
 - ✅ **UART PL011** - ARM UART for serial console (ARM64)
 
 ### Storage
+
 - ✅ **NVMe** - High-performance PCIe SSD driver
 - ✅ **AHCI** - SATA/AHCI controller for HDDs and SSDs
 - ✅ **Block Device Abstraction** - Unified block device interface
 
 ### Network
+
 - ✅ **Intel E1000** - Intel Gigabit Ethernet driver
 - ✅ **VirtIO-Net** - Paravirtualized network device
 - ✅ **Network Stack Integration** - Packet send/receive with queuing
 
 ### Graphics
+
 - ✅ **Framebuffer** - Direct framebuffer access with drawing primitives
 - ✅ **VGA Text Mode** - 80x25 text console
 
 ### Input
+
 - ✅ **PS/2 Keyboard** - Scancode translation and event generation
 - ✅ **PS/2 Mouse** - Packet-based mouse input
 - ✅ **Input Event Queue** - Unified input event handling
 
 ### Time
+
 - ✅ **RTC (CMOS)** - Real-time clock for x86_64
 - ✅ **RTC (PL031)** - ARM PL031 RTC for ARM64
 - ✅ **BCM Timer** - Broadcom timer for Raspberry Pi
 
 ### Platform-Specific
+
 - ✅ **Broadcom GPIO** - GPIO control for Raspberry Pi
 - ✅ **Broadcom Mailbox** - VideoCore communication for Raspberry Pi
 - ✅ **Broadcom Timer** - System timer for Raspberry Pi
 
 ### Architecture Support
+
 - ✅ **x86_64** - Full support for Intel/AMD platforms
 - ✅ **ARM64** - Full support for ARM platforms
 
@@ -106,7 +115,7 @@ if (acpi.findTable(.MADT)) |madt_header| {
 
     // Iterate MADT entries
     madt.iterateEntries(struct {
-        fn callback(entry: *const drivers.acpi.MADT.EntryHeader) void {
+        fn callback(entry: _const drivers.acpi.MADT.EntryHeader) void {
             std.debug.print("Entry type: {}\n", .{entry.entry_type});
         }
     }.callback);
@@ -142,7 +151,7 @@ const fb_info = drivers.graphics.FramebufferInfo{
     .address = 0xFD000000, // From bootloader/firmware
     .width = 1024,
     .height = 768,
-    .pitch = 1024 * 4,
+    .pitch = 1024 _ 4,
     .bpp = 32,
     .format = .rgba8888,
 };
@@ -301,13 +310,13 @@ defer registry.deinit();
 const MyDriver = struct {
     initialized: bool = false,
 
-    fn init(ctx: *anyopaque) drivers.DriverError!void {
-        const self: *MyDriver = @ptrCast(@alignCast(ctx));
+    fn init(ctx: _anyopaque) drivers.DriverError!void {
+        const self: _MyDriver = @ptrCast(@alignCast(ctx));
         self.initialized = true;
     }
 
-    fn deinit(ctx: *anyopaque) void {
-        const self: *MyDriver = @ptrCast(@alignCast(ctx));
+    fn deinit(ctx: _anyopaque) void {
+        const self: _MyDriver = @ptrCast(@alignCast(ctx));
         self.initialized = false;
     }
 };
@@ -401,15 +410,19 @@ const custom_drivers = registry.findByType(.custom);
 ## Key Codes
 
 ### Letters
+
 - A-Z: Scancodes 0x1E-0x2C (QWERTY layout)
 
 ### Numbers
+
 - 0-9: Scancodes 0x0B, 0x02-0x0A
 
 ### Function Keys
+
 - F1-F12: Scancodes 0x3B-0x58
 
 ### Special Keys
+
 - Enter: 0x1C
 - Space: 0x39
 - Backspace: 0x0E
@@ -418,6 +431,7 @@ const custom_drivers = registry.findByType(.custom);
 - Caps Lock: 0x3A
 
 ### Navigation
+
 - Arrow keys: Up=0x48, Down=0x50, Left=0x4B, Right=0x4D
 - Page Up/Down: 0x49/0x51
 - Home/End: 0x47/0x4F
@@ -524,6 +538,7 @@ zig build run-examples   # Run all examples
 ## Architecture Notes
 
 ### PCI/PCIe
+
 - Uses I/O port 0xCF8 for address selection
 - Uses I/O port 0xCFC for data access
 - Scans all 256 buses, 32 devices per bus, 8 functions per device
@@ -531,18 +546,21 @@ zig build run-examples   # Run all examples
 - Validates vendor ID (0xFFFF = no device)
 
 ### ACPI
+
 - Searches EBDA and BIOS areas for RSDP
 - Validates checksums on all tables
 - Supports both ACPI 1.0 (RSDT) and 2.0+ (XSDT)
 - Parses common tables: MADT, MCFG, HPET, FADT
 
 ### Graphics
+
 - Direct framebuffer access via memory-mapped I/O
 - Supports multiple pixel formats with automatic conversion
 - Bresenham algorithms for line and circle drawing
 - VGA text mode uses memory at 0xB8000
 
 ### Input
+
 - PS/2 keyboard on IRQ 1, data port 0x60
 - PS/2 mouse on IRQ 12, 3-byte packet protocol
 - Scancode Set 1 support

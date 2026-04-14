@@ -161,13 +161,13 @@ const ParseError = error{
 };
 
 // Return errors, don't panic
-fn parse() ParseError!*Ast {
+fn parse() ParseError!_Ast {
     if (invalid) return error.InvalidSyntax;
     return ast;
 }
 
 // Use errdefer for cleanup
-fn allocateAndParse() !*Ast {
+fn allocateAndParse() !_Ast {
     const mem = try allocator.alloc(u8, size);
     errdefer allocator.free(mem);
     return try parse(mem);
@@ -184,10 +184,10 @@ fn allocateAndParse() !*Ast {
 test "module - specific behavior" {
     // Arrange
     const input = "test input";
-    
+
     // Act
     const result = parse(input);
-    
+
     // Assert
     try testing.expectEqual(expected, result);
 }
@@ -250,6 +250,7 @@ Fixes #123
 ```
 
 Types:
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation
@@ -289,7 +290,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
 
 ---
 
-## Questions?
+## Questions
 
 - Open a GitHub issue for questions
 - Check existing issues/PRs before submitting

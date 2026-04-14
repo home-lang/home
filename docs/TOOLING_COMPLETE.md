@@ -32,16 +32,19 @@ The Home tooling suite provides a complete development environment:
 ## VSCode Extension
 
 ### Location
+
 `packages/vscode-home/`
 
 ### Features Implemented
 
 #### ✅ Language Support
+
 - Syntax highlighting for `.home` files
 - Language configuration (brackets, comments, auto-closing)
 - File icon support
 
 #### ✅ Language Server Protocol (LSP)
+
 - Go to definition
 - Find references
 - Hover information
@@ -50,6 +53,7 @@ The Home tooling suite provides a complete development environment:
 - Error diagnostics
 
 #### ✅ Commands
+
 - `ion.run` - Run current Home file
 - `ion.build` - Build Home file
 - `ion.check` - Type check Home file
@@ -63,16 +67,19 @@ The Home tooling suite provides a complete development environment:
 - `ion.packageManager.install` - Install package
 
 #### ✅ Formatters
+
 - Document formatting provider
 - Format on save option
 - Configurable tab size
 
 #### ✅ CodeLens
+
 - "Run" button above `main()` function
 - "Debug" button above `main()` function
 - "Run Test" buttons above test functions
 
 #### ✅ Configuration Options
+
 ```json
 {
   "ion.path": "ion",
@@ -91,6 +98,7 @@ The Home tooling suite provides a complete development environment:
 ```
 
 ### File Structure
+
 ```
 packages/vscode-home/
 ├── package.json                    # Extension manifest
@@ -133,20 +141,24 @@ vsce publish
 ## Debugger
 
 ### Location
+
 `packages/vscode-home/src/debugAdapter.ts`
 
 ### Features Implemented
 
 #### ✅ Debug Adapter Protocol (DAP)
+
 - Full DAP implementation
 - Compatible with VSCode's debugger UI
 
 #### ✅ Breakpoints
+
 - Set/remove breakpoints
 - Conditional breakpoints support
 - Breakpoint verification
 
 #### ✅ Execution Control
+
 - Continue execution
 - Step over
 - Step into
@@ -155,21 +167,25 @@ vsce publish
 - Stop/terminate
 
 #### ✅ Variable Inspection
+
 - Local variables
 - Global variables
 - Variable modification
 - Hover evaluation
 
 #### ✅ Call Stack
+
 - Stack frame navigation
 - Source location mapping
 
 #### ✅ Exception Handling
+
 - Break on all exceptions
 - Break on uncaught exceptions
 - Exception info display
 
 #### ✅ Advanced Features
+
 - Profiler integration
 - Output capture (stdout/stderr)
 - Process attachment
@@ -233,28 +249,33 @@ Add to `.vscode/launch.json`:
 ## Profiler
 
 ### Location
+
 `packages/vscode-home/src/profiler.ts`
 
 ### Features Implemented
 
 #### ✅ Performance Profiling
+
 - Function call timing
 - Call count tracking
 - Min/max/average times
 - Timeline visualization
 
 #### ✅ Real-time Monitoring
+
 - Live profiling during execution
 - Status bar indicator
 - Output channel logging
 
 #### ✅ Report Generation
+
 - JSON format reports
 - HTML visualization
 - Top functions by time
 - Call timeline
 
 #### ✅ Integration
+
 - Standalone profiling
 - Debug session profiling
 - Automatic report saving
@@ -294,21 +315,25 @@ The profiler expects the Home compiler to output profiling data in this format:
 ### Usage
 
 #### Start Profiling
+
 ```
 Cmd/Ctrl + Shift + P: "Start Home Profiler"
 ```
 
 #### Stop Profiling
+
 ```
 Cmd/Ctrl + Shift + P: "Stop Home Profiler"
 ```
 
 #### View Report
+
 ```
 Cmd/Ctrl + Shift + P: "View Profiler Report"
 ```
 
 #### Programmatic Usage
+
 ```typescript
 import { HomeProfiler } from './profiler';
 
@@ -324,11 +349,13 @@ await profiler.viewReport();
 ## Package Registry
 
 ### Location
+
 `packages/registry/`
 
 ### Features Implemented
 
 #### ✅ Package Management
+
 - Publish packages
 - Search packages
 - Install packages
@@ -336,30 +363,35 @@ await profiler.viewReport();
 - Version management
 
 #### ✅ User Management
+
 - User registration
 - Authentication (JWT)
 - User profiles
 - Package ownership
 
 #### ✅ REST API
+
 - Full REST API
 - JSON responses
 - Error handling
 - Request validation
 
 #### ✅ Storage
+
 - MongoDB for metadata
 - Redis for caching
 - File system for tarballs
 - Automatic indexing
 
 #### ✅ Search
+
 - Full-text search
 - Keyword search
 - Auto-suggestions
 - Cached results
 
 #### ✅ Statistics
+
 - Download tracking
 - Popular packages
 - Recent packages
@@ -441,6 +473,7 @@ GET /api/stats/package/:name
 ### Setup
 
 #### Prerequisites
+
 - Node.js 18+
 - MongoDB
 - Redis
@@ -522,27 +555,31 @@ package {
 ### Publishing Workflow
 
 1. **Create package**
+
    ```bash
    cd my-package
-   # Create package.home with metadata
+# Create package.home with metadata
    ```
 
 2. **Build package**
+
    ```bash
    home build --release
    ```
 
 3. **Create tarball**
+
    ```bash
    tar -czf my-package-1.0.0.tgz .
    ```
 
 4. **Publish** (via VSCode or CLI)
+
    ```bash
-   # Via CLI
+# Via CLI
    home package publish
 
-   # Via VSCode
+# Via VSCode
    Cmd/Ctrl + Shift + P: "Publish Package"
    ```
 
@@ -619,7 +656,7 @@ fn main() {
 }
 
 fn calculate(n: i32): i32 {
-    return n * 2  // Set breakpoint here
+    return n _ 2  // Set breakpoint here
 }
 ```
 
@@ -670,7 +707,7 @@ pub fn add(a: i32, b: i32): i32 {
 }
 
 pub fn multiply(a: i32, b: i32): i32 {
-    return a * b
+    return a _ b
 }
 ```
 
@@ -758,12 +795,14 @@ npm test
 ## Performance
 
 ### VSCode Extension
+
 - Fast syntax highlighting
 - Lazy LSP activation
 - Cached search results
 - Async operations
 
 ### Package Registry
+
 - Redis caching (5min TTL)
 - MongoDB indexes
 - Gzip compression
@@ -774,11 +813,13 @@ npm test
 ## Security
 
 ### VSCode Extension
+
 - No credential storage
 - HTTPS for registry communication
 - Input validation
 
 ### Package Registry
+
 - JWT authentication
 - Password hashing (bcrypt)
 - Input sanitization
@@ -791,6 +832,7 @@ npm test
 ## Troubleshooting
 
 ### Extension Not Activating
+
 ```bash
 # Check Home path
 which ion
@@ -800,6 +842,7 @@ which ion
 ```
 
 ### LSP Server Not Starting
+
 ```bash
 # Verify Home LSP support
 ion lsp --version
@@ -809,6 +852,7 @@ Cmd/Ctrl + Shift + P: "Restart Home Language Server"
 ```
 
 ### Debugger Not Working
+
 ```bash
 # Check debug adapter
 ion debug --version
@@ -818,6 +862,7 @@ View: Debug Console
 ```
 
 ### Registry Connection Failed
+
 ```bash
 # Check services
 mongod --version
@@ -832,6 +877,7 @@ tail -f combined.log
 ## Future Enhancements
 
 ### VSCode Extension
+
 - [ ] Semantic highlighting
 - [ ] Refactoring support
 - [ ] Test explorer integration
@@ -839,18 +885,21 @@ tail -f combined.log
 - [ ] Remote development support
 
 ### Debugger
+
 - [ ] Time-travel debugging
 - [ ] Memory profiling
 - [ ] CPU profiling
 - [ ] Multi-threaded debugging
 
 ### Profiler
+
 - [ ] Flame graphs
 - [ ] Memory allocation tracking
 - [ ] GC profiling
 - [ ] Export to Chrome DevTools format
 
 ### Package Registry
+
 - [ ] Package signatures
 - [ ] Vulnerability scanning
 - [ ] Dependency graph visualization
@@ -869,12 +918,14 @@ All Home tooling has been successfully implemented:
 ✅ **Package Registry** - Centralized package management
 
 ### File Count
+
 - VSCode Extension: 7 files
 - Debugger: Integrated in extension
 - Profiler: Integrated in extension
 - Package Registry: 10+ files
 
 ### Total Lines of Code
+
 - VSCode Extension: ~800 lines
 - Debugger: ~500 lines
 - Profiler: ~400 lines

@@ -8,18 +8,21 @@
 ## 🎯 Key Features
 
 ### ✅ Compile-Time Type Safety
+
 - **Field validation** - Wrong field names = compile error
 - **Type checking** - Wrong types = compile error
 - **Relationship validation** - Invalid relationships = compile error
 - **SQL generation** - All validated at compile time
 
 ### ✅ Zero Runtime Overhead
+
 - No reflection at runtime
 - No dynamic dispatch
 - Direct struct field access
 - Optimized queries
 
 ### ✅ Elegant API
+
 - Chainable query builder
 - Type-safe relationships
 - Clean model definitions
@@ -50,7 +53,7 @@ const typed_orm = @import("typed_orm");
 const UserModel = typed_orm.Model(User);
 ```
 
-### 3. Use It!
+### 3. Use It
 
 ```zig
 // Create
@@ -560,14 +563,14 @@ try user.save();
 ```zig
 fn paginate(
     allocator: std.mem.Allocator,
-    connection: *database.Connection,
+    connection: _database.Connection,
     page: usize,
     per_page: usize,
 ) ![]typed_orm.Model(User) {
     var query = typed_orm.Query(User).init(allocator, connection);
     defer query.deinit();
 
-    const offset = (page - 1) * per_page;
+    const offset = (page - 1) _ per_page;
 
     _ = query.limit(per_page);
     _ = query.offset(offset);
@@ -586,17 +589,20 @@ defer allocator.free(page_1);
 ## 📊 Performance Characteristics
 
 ### Compile-Time Overhead
+
 - ✅ All type checking at compile time
 - ✅ No runtime reflection
 - ✅ Zero-cost abstractions
 
 ### Runtime Performance
+
 - ✅ Direct struct field access
 - ✅ No virtual dispatch
 - ✅ Optimized SQL generation
 - ✅ Connection pooling ready
 
 ### Memory Usage
+
 - ✅ No hidden allocations
 - ✅ Explicit lifetime management
 - ✅ Arena-friendly patterns
@@ -638,18 +644,21 @@ defer allocator.free(page_1);
 ## ✨ Benefits Summary
 
 ### For Developers
+
 - ✅ **Catch errors early** - At compile time, not in production
 - ✅ **IDE support** - Full autocomplete and type hints
 - ✅ **Refactoring safety** - Rename a field, compiler finds all uses
 - ✅ **Less testing** - Type system proves correctness
 
 ### For Performance
+
 - ✅ **Zero overhead** - No runtime type checking
 - ✅ **Native speed** - Direct memory access
 - ✅ **Small binaries** - No reflection metadata
 - ✅ **Predictable** - No hidden allocations
 
 ### For Maintenance
+
 - ✅ **Self-documenting** - Types are documentation
 - ✅ **Refactor-friendly** - Compiler enforces correctness
 - ✅ **Less bugs** - Type errors impossible at runtime
@@ -672,6 +681,6 @@ The Home Typed ORM provides:
 
 ---
 
-*Home Programming Language - Typed ORM*
-*Version 1.0.0*
-*Generated: 2025-10-24*
+_Home Programming Language - Typed ORM_
+_Version 1.0.0_
+_Generated: 2025-10-24_

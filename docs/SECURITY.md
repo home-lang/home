@@ -74,6 +74,7 @@ The following are treated as potentially untrusted:
 ### FFI Boundaries
 
 Foreign function interface (FFI) code:
+
 - Is inherently unsafe
 - Can violate memory safety guarantees
 - Should be minimized and carefully audited
@@ -110,16 +111,19 @@ Please report security vulnerabilities by:
 ### For Language Users
 
 1. **Enable strict validation** for untrusted input
+
    ```zig
    const config = ValidationConfig.strict();
    ```
 
 2. **Use Result types** for error handling
+
    ```home
    fn read_file(path: string) -> Result<string, Error>
    ```
 
 3. **Validate external data** at system boundaries
+
    ```home
    fn handle_request(data: []u8) -> Result<Response, Error> {
        let validated = try validate(data);
@@ -163,6 +167,7 @@ Home does not include cryptographic primitives in the standard library. For cryp
 ### Standards
 
 Home aims to comply with:
+
 - CERT Secure Coding Guidelines
 - OWASP recommendations
 - CWE/SANS Top 25
@@ -170,6 +175,7 @@ Home aims to comply with:
 ### Security Testing
 
 Regular security testing includes:
+
 - Static analysis (linter)
 - Fuzz testing (packages/fuzz)
 - Code review for security-sensitive changes

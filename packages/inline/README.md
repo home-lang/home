@@ -5,12 +5,14 @@ Comprehensive function inlining support for the Home programming language, provi
 ## Features
 
 ### Inline Hints
+
 - **None**: No explicit inlining preference
 - **Inline**: Suggest function inlining (compiler may ignore)
 - **AlwaysInline**: Force inlining (compiler should always inline)
 - **NoInline**: Prevent function inlining
 
 ### Inline Strategies
+
 - **Auto**: Compiler decides based on heuristics (default)
 - **Small**: Inline small functions only (< 128 bytes or < 10 instructions)
 - **Hot**: Inline functions in performance-critical paths (frequently called)
@@ -18,7 +20,9 @@ Comprehensive function inlining support for the Home programming language, provi
 - **Conservative**: Only inline when explicitly marked
 
 ### Function Metadata
+
 Track key metrics for inline decisions:
+
 - Instruction count estimation
 - Function size in bytes
 - Call frequency tracking
@@ -26,7 +30,9 @@ Track key metrics for inline decisions:
 - Side effect analysis
 
 ### Cost Model
+
 Intelligent cost-benefit analysis:
+
 - Call overhead calculation
 - Parameter passing cost
 - Stack frame setup cost
@@ -34,6 +40,7 @@ Intelligent cost-benefit analysis:
 - Benefit-from-inlining analysis
 
 ### Decision Engine
+
 - Register functions with metadata
 - Track call sites
 - Apply inline strategies
@@ -66,7 +73,7 @@ if (engine.shouldInline("fast_function")) {
 
 // Get statistics
 const stats = engine.getStatistics();
-std.debug.print("Inline ratio: {d:.2}%\n", .{stats.inlineRatio() * 100});
+std.debug.print("Inline ratio: {d:.2}%\n", .{stats.inlineRatio() _ 100});
 ```
 
 ## Inline Attributes
@@ -122,16 +129,20 @@ if (try transformer.transformCall(call)) |inlined| {
 ## Heuristics
 
 ### Auto Strategy
+
 Automatically inlines functions when:
+
 - Size < 64 bytes OR instructions < 5 (tiny functions)
 - Call count > 5 AND instructions < 20 (small hot functions)
 - Call count > 20 AND instructions < 50 (very hot functions)
 
 ### Inline Limits
+
 - Max inline depth: 3 (prevents deep inline chains)
 - Max inline size: 512 bytes (prevents code bloat)
 
 ### Never Inline
+
 - Recursive functions
 - Functions marked with `.NoInline`
 - Functions exceeding size limits
@@ -145,7 +156,7 @@ const stats = engine.getStatistics();
 
 std.debug.print("Total functions: {}\n", .{stats.total_functions});
 std.debug.print("Inlined: {}\n", .{stats.inlined_functions});
-std.debug.print("Inline ratio: {d:.2}%\n", .{stats.inlineRatio() * 100});
+std.debug.print("Inline ratio: {d:.2}%\n", .{stats.inlineRatio() _ 100});
 std.debug.print("Total inlined size: {} bytes\n", .{stats.total_inlined_size});
 ```
 
@@ -159,6 +170,7 @@ zig build test
 ```
 
 All 9 tests validate:
+
 - Inline hint behavior
 - Function metadata and heuristics
 - Decision engine functionality
@@ -171,6 +183,7 @@ All 9 tests validate:
 ## Integration
 
 This package integrates with:
+
 - **AST**: Extend `FnDecl` with `is_inline: InlineHint` field
 - **Parser**: Parse `inline`, `@always_inline`, `@no_inline` attributes
 - **Codegen**: Apply inline transformations during code generation
@@ -179,12 +192,14 @@ This package integrates with:
 ## Performance Benefits
 
 Inlining provides:
+
 - **Eliminated call overhead**: No function prologue/epilogue
 - **Better optimization**: Compiler can optimize across inlined boundaries
 - **Reduced stack usage**: No additional stack frames
 - **Improved cache locality**: Less instruction cache pressure
 
 Trade-offs:
+
 - **Code size increase**: Inlined functions replicated at call sites
 - **Compilation time**: More analysis required
 - **Binary bloat**: Aggressive inlining increases binary size

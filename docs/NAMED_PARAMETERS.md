@@ -136,13 +136,13 @@ configure(host: "localhost", 8080, 30, 3)
 
 ### Separator Syntax
 
-Use `*` to mark parameters as named-only:
+Use `_` to mark parameters as named-only:
 
 ```home
 fn connect(
     host: string,
     port: i32,
-    *,  // Everything after this is named-only
+    _,  // Everything after this is named-only
     timeout: i32 = 30,
     ssl: bool = false,
     verify_cert: bool = true
@@ -159,7 +159,7 @@ connect("localhost", 8080, ssl: true, verify_cert: false)
 connect("localhost", 8080, 60, true, false)
 ```
 
-### Why Use Named-Only?
+### Why Use Named-Only
 
 1. **Prevent mistakes** - Force explicit parameter names
 2. **Future-proof** - Can add parameters without breaking calls
@@ -169,7 +169,7 @@ connect("localhost", 8080, 60, true, false)
 // Good - flags must be named
 fn process_data(
     data: string,
-    *,
+    _,
     validate: bool = true,
     transform: bool = true,
     cache: bool = false
@@ -191,7 +191,7 @@ fn create_window(
     title: string,
     width: i32 = 800,
     height: i32 = 600,
-    *,
+    _,
     resizable: bool = true,
     fullscreen: bool = false,
     vsync: bool = true,
@@ -231,7 +231,7 @@ log("Debug info", color: false)
 ```home
 // Good - configuration with named args
 fn start_server(
-    *,
+    _,
     port: i32 = 8080,
     workers: i32 = 4,
     max_connections: i32 = 1000,
@@ -292,7 +292,7 @@ write_file("output.txt", content, encoding: "latin1")?
 // Good - logical grouping
 fn create_button(
     text: string,
-    *,
+    _,
     // Size parameters
     width: i32 = 100,
     height: i32 = 30,
@@ -314,8 +314,8 @@ fn create_button(
 ```home
 fn query_builder(
     table: string,
-    *,
-    columns: Vec<string> = vec!["*"],
+    _,
+    columns: Vec<string> = vec!["_"],
     where_clause: Option<string> = None,
     order_by: Option<string> = None,
     limit: Option<i32> = None,
@@ -339,7 +339,7 @@ let query = query_builder(
 fn http_request(
     method: string,
     url: string,
-    *,
+    _,
     headers: HashMap<string, string> = HashMap::new(),
     body: Option<string> = None,
     timeout: i32 = 30,
@@ -361,7 +361,7 @@ http_request(
 
 ```home
 fn connect_db(
-    *,
+    _,
     host: string = "localhost",
     port: i32 = 5432,
     database: string,
@@ -389,7 +389,7 @@ connect_db(
 
 ```home
 fn create_cache<K, V>(
-    *,
+    _,
     capacity: usize = 100,
     ttl: i32 = 3600,
     eviction_policy: EvictionPolicy = EvictionPolicy::LRU
@@ -409,7 +409,7 @@ let cache = create_cache::<string, User>(
 fn sort_by<T, F>(
     items: &mut [T],
     compare: F,
-    *,
+    _,
     reverse: bool = false,
     stable: bool = true
 ): void
@@ -427,7 +427,7 @@ sort_by(&mut items, |a, b| a.name.cmp(&b.name), reverse: true)
 ```home
 fn wrapper_function(
     data: string,
-    *,
+    _,
     timeout: i32 = 30,
     retries: i32 = 3
 ): Result<()> {
@@ -446,7 +446,7 @@ fn wrapper_function(
 
 ```home
 fn configure_app(
-    *,
+    _,
     log_level: LogLevel = LogLevel::Info,
     log_file: string = "app.log",
     port: i32 = 8080,
@@ -482,7 +482,7 @@ fn draw_circle(
     x: f64,
     y: f64,
     radius: f64,
-    *,
+    _,
     fill_color: Color = Color::Black,
     stroke_color: Color = Color::Black,
     stroke_width: f64 = 1.0,
@@ -499,7 +499,7 @@ draw_circle(100.0, 100.0, 50.0, fill_color: Color::Red, alpha: 0.5)
 ```home
 fn assert_response(
     response: Response,
-    *,
+    _,
     status: i32 = 200,
     content_type: string = "application/json",
     contains: Option<string> = None,

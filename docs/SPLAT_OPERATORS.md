@@ -500,7 +500,7 @@ let modified = {
 ```home
 fn create_user(name: string, age: i32, ...options: UserOption): User {
     let mut user = User { name, age }
-    
+
     for option in options {
         match option {
             UserOption::Email(email) => user.email = email,
@@ -508,7 +508,7 @@ fn create_user(name: string, age: i32, ...options: UserOption): User {
             UserOption::Active(active) => user.active = active,
         }
     }
-    
+
     user
 }
 

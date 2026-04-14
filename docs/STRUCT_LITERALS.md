@@ -408,14 +408,14 @@ let custom = HttpConfig {
 fn test_user_creation() {
     let name = "Test User"
     let email = "test@example.com"
-    
+
     let user = User {
         name,
         age: 25,
         email,
         active: true,
     }
-    
+
     assert_eq!(user.name, "Test User")
 }
 ```
@@ -426,7 +426,7 @@ fn test_user_creation() {
 fn handle_request(req: Request): Response {
     let status = 200
     let body = "OK"
-    
+
     Response {
         status,
         body,
@@ -510,7 +510,7 @@ struct DbRecord {
 
 fn create_record(data: string): DbRecord {
     let now = DateTime::now()
-    
+
     DbRecord {
         id: generate_id(),
         created_at: now,
@@ -571,7 +571,7 @@ fn handle_click(x: i32, y: i32, button: MouseButton): void {
         modifiers: get_modifiers(),
         timestamp: current_time(),
     }
-    
+
     process_event(event)
 }
 ```

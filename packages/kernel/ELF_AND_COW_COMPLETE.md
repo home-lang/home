@@ -9,6 +9,7 @@ Fully implemented ELF loading with memory mapping and Copy-on-Write (COW) for ef
 ### 1. Complete ELF Loader (`elf_loader.zig`)
 
 **Full Implementation Features:**
+
 - ✅ Physical page allocation for segments
 - ✅ Page table mapping with proper permissions
 - ✅ Segment data copying from ELF file
@@ -21,6 +22,7 @@ Fully implemented ELF loading with memory mapping and Copy-on-Write (COW) for ef
 **Key Functions:**
 
 #### mapPage()
+
 Maps a physical page to a virtual address with specified permissions:
 ```zig
 try elf_loader.mapPage(page_mapper, virt_addr, phys_addr, .{
@@ -31,6 +33,7 @@ try elf_loader.mapPage(page_mapper, virt_addr, phys_addr, .{
 ```
 
 #### SegmentLoader.loadSegment()
+
 Complete segment loading with memory allocation:
 ```zig
 // 1. Allocates physical pages
@@ -53,6 +56,7 @@ ELF Segment: vaddr=0x400000, filesz=0x2500, memsz=0x3000
 ```
 
 #### StackSetup.setupStack()
+
 Sets up program stack with arguments:
 ```zig
 const stack_ptr = try StackSetup.setupStack(
@@ -96,6 +100,7 @@ Low Address
 ### 2. Copy-on-Write Implementation (`cow.zig`)
 
 **Full COW Features:**
+
 - ✅ Physical page reference counting
 - ✅ COW bit management in page flags
 - ✅ Page fault handler for write faults
@@ -107,6 +112,7 @@ Low Address
 **Architecture:**
 
 #### PageRefCount
+
 Reference counting for physical pages:
 ```zig
 pub const PageRefCount = struct {
@@ -145,10 +151,11 @@ Fork Event:
 ```
 
 #### COW Bit Management
+
 Uses available bits in page table entries:
 ```zig
 // Mark page as COW
-pub fn markCowPage(flags: *paging.PageFlags) void {
+pub fn markCowPage(flags: _paging.PageFlags) void {
     flags.available1 |= (1 << COW_BIT);
     flags.writable = false;  // Must be read-only
 }
@@ -160,10 +167,11 @@ pub fn isCowPage(flags: paging.PageFlags) bool {
 ```
 
 #### CowFaultHandler.handleFault()
+
 Complete page fault handler:
 ```zig
 pub fn handleFault(
-    page_mapper: *paging.PageMapper,
+    page_mapper: _paging.PageMapper,
     virt_addr: u64,
     is_write: bool,
 ) !bool {
@@ -251,7 +259,7 @@ pub fn handleFault(
 
 **CowFork.setupCowFork():**
 ```zig
-pub fn setupCowFork(parent: *Process, child: *Process) !void {
+pub fn setupCowFork(parent: _Process, child: _Process) !void {
     // 1. Mark all writable pages in parent as COW
     try markAddressSpaceCow(
         &parent.address_space.page_mapper,
@@ -314,6 +322,7 @@ pub fn handlePageFault(
 ## Performance Characteristics
 
 ### ELF Loading
+
 - **Time Complexity**: O(n) where n = number of pages in all segments
 - **Space Complexity**: O(n) physical pages allocated
 - **Optimizations**:
@@ -322,6 +331,7 @@ pub fn handlePageFault(
   - Single-pass segment processing
 
 ### Copy-on-Write
+
 - **Fork Time**: O(p) where p = number of pages (just marking, not copying)
 - **First Write Time**: O(1) per page
 - **Memory Savings**: Up to 2x for fork-exec pattern
@@ -333,20 +343,24 @@ pub fn handlePageFault(
 **Benchmark Example:**
 ```
 Traditional fork (copy all):
+
 - 100MB process
 - Fork time: ~50ms (copying all memory)
 - Memory usage: +100MB immediately
 
 COW fork:
+
 - 100MB process
 - Fork time: ~2ms (just marking pages)
 - Memory usage: +4KB (page tables only)
 - After writes: +actual modified pages only
+
 ```
 
 ## Statistics and Monitoring
 
 ### COW Statistics
+
 ```zig
 const stats = cow.getCowStats();
 std.debug.print("COW Faults:       {}\n", .{stats.cow_faults.load(.Monotonic)});
@@ -356,6 +370,7 @@ std.debug.print("Active COW Pages: {}\n", .{stats.active_cow_pages.load(.Monoton
 ```
 
 ### Fork Statistics (from fork.zig)
+
 ```zig
 const fork_stats = fork.getForkStats();
 std.debug.print("Total Forks:   {}\n", .{fork_stats.total_forks});
@@ -366,6 +381,7 @@ std.debug.print("Pages Shared:  {}\n", .{fork_stats.pages_shared});
 ## Usage Examples
 
 ### Complete Process Loading
+
 ```zig
 const kernel = @import("kernel");
 
@@ -398,6 +414,7 @@ std.debug.print("Entry point: 0x{X}\n", .{entry_point});
 ```
 
 ### Fork with COW
+
 ```zig
 // Parent process with 1000 pages of memory
 const parent = getCurrentProcess();
@@ -418,6 +435,7 @@ const child = try kernel.fork.fork(parent, allocator);
 ```
 
 ### Handling Page Faults
+
 ```zig
 // In interrupt handler
 pub fn pageFaultHandler() void {
@@ -437,6 +455,7 @@ pub fn pageFaultHandler() void {
 ## Security Features
 
 ### W^X Enforcement in ELF Loading
+
 ```zig
 // Segment loading enforces W^X
 const flags = phdr.p_flags;
@@ -449,6 +468,7 @@ if (writable and executable) {
 ```
 
 ### NX Stack
+
 ```zig
 // Stack is always non-executable
 try mapPage(page_mapper, stack_addr, phys_page, .{
@@ -459,6 +479,7 @@ try mapPage(page_mapper, stack_addr, phys_page, .{
 ```
 
 ### User-Space Isolation
+
 All loaded segments marked as user-accessible but protected from kernel:
 ```zig
 .user = true,  // User mode can access
@@ -468,6 +489,7 @@ All loaded segments marked as user-accessible but protected from kernel:
 ## Testing
 
 ### Unit Tests
+
 ```bash
 # Test ELF loader
 zig test src/elf_loader.zig
@@ -480,6 +502,7 @@ zig test src/fork.zig
 ```
 
 ### Integration Test Example
+
 ```zig
 test "complete fork-exec with COW" {
     const allocator = std.testing.allocator;
@@ -530,9 +553,10 @@ test "complete fork-exec with COW" {
 | Fork Integration | ✅ **COMPLETE** | setupCowFork() replaces stubs |
 | Statistics | ✅ **COMPLETE** | COW and fork stats tracking |
 
-**Overall Status**: ✅ **FULLY IMPLEMENTED**
+**Overall Status**: ✅**FULLY IMPLEMENTED**
 
 Both ELF loading and COW are production-ready with:
+
 - Complete memory management
 - Security features (W^X, NX stack)
 - Performance optimizations

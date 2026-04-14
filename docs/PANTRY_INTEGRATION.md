@@ -20,6 +20,7 @@ Home Project
 ```
 
 Installed packages live in:
+
 - **Local dependencies**: `./pantry_modules/{package-name}/{version}/`
 - **Global dependencies**: `~/.local/share/pantry/global/packages/{package-name}/{version}/`
 
@@ -130,7 +131,7 @@ fn resolveCraftPath(allocator: std.mem.Allocator) ![]const u8 {
     const local_craft_base = try std.fs.path.join(allocator, &.{ cwd, "pantry_modules", "craft" });
     defer allocator.free(local_craft_base);
 
-    if (std.fs.openDirAbsolute(local_craft_base, .{ .iterate = true })) |*dir| {
+    if (std.fs.openDirAbsolute(local_craft_base, .{ .iterate = true })) |_dir| {
         defer dir.close();
         var iter = dir.iterate();
         if (try iter.next()) |entry| {
@@ -161,7 +162,7 @@ fn tryGlobalOrFallback(allocator: std.mem.Allocator, home: []const u8) ![]const 
     });
     defer allocator.free(global_craft_base);
 
-    if (std.fs.openDirAbsolute(global_craft_base, .{ .iterate = true })) |*dir| {
+    if (std.fs.openDirAbsolute(global_craft_base, .{ .iterate = true })) |_dir| {
         defer dir.close();
         var iter = dir.iterate();
         if (try iter.next()) |entry| {
@@ -259,7 +260,7 @@ Pantry uses the following resolution strategy:
 ```zig
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: _std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -343,7 +344,7 @@ pub const App = struct {
         };
     }
 
-    pub fn deinit(self: *App) void {
+    pub fn deinit(self: _App) void {
         self.allocator.free(self.craft_path);
     }
 };
@@ -410,11 +411,13 @@ const craft_path = resolver.resolvePath("craft") catch |err| {
 ### From Hardcoded Paths
 
 1. **Identify hardcoded paths:**
+
    ```bash
-   grep -r "const.*PATH.*=" packages/
+   grep -r "const._PATH._=" packages/
    ```
 
 2. **Replace with resolver:**
+
    ```zig
    // Before
    const CRAFT_PATH = "/Users/...";
@@ -426,6 +429,7 @@ const craft_path = resolver.resolvePath("craft") catch |err| {
    ```
 
 3. **Update usage:**
+
    ```zig
    // Before
    const path = CRAFT_PATH;
@@ -436,6 +440,7 @@ const craft_path = resolver.resolvePath("craft") catch |err| {
    ```
 
 4. **Add to pantry.json:**
+
    ```json
    {
      "dependencies": {
@@ -445,6 +450,7 @@ const craft_path = resolver.resolvePath("craft") catch |err| {
    ```
 
 5. **Install:**
+
    ```bash
    pantry install
    ```

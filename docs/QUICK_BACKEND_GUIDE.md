@@ -1,6 +1,6 @@
 # Home Backend Quick Guide
 
-## TL;DR - Which Backend Should I Use?
+## TL;DR - Which Backend Should I Use
 
 ### The Answer: **USE BOTH**
 
@@ -86,7 +86,7 @@ ion test                       # Verify performance
 # One-time build for production
 ion build --backend=llvm -O3  # Takes 15 seconds
 # → Runs 2-4x faster for weeks/months/years
-# → Completely worth the extra 13 seconds!
+# → Completely worth the extra 13 seconds
 ```
 
 ---
@@ -155,6 +155,7 @@ LLVM -Oz (size optimized):
 ```
 
 **For distribution:**
+
 - Smaller downloads
 - Less disk space
 - Faster startup
@@ -171,11 +172,13 @@ LLVM -Oz (size optimized):
 **Server costs:**
 ```
 Native backend:
+
 - Handles 1,000 requests/sec
 - Need 4 servers @ $100/month
 - Total: $400/month
 
 LLVM backend:
+
 - Handles 2,000 requests/sec (2x faster)
 - Need 2 servers @ $100/month
 - Total: $200/month
@@ -205,40 +208,48 @@ Net gain: $192/month = $2,304/year
 ### Native Backend Wins
 
 ✅ **Development iteration**
+
 - Change code, rebuild 50+ times/day
 - 2s vs 6s = 3 mins saved per cycle
 - 2.5 hours saved per day
 
 ✅ **Quick scripts**
+
 - Run once, don't care about performance
 - Just want it to work NOW
 
 ✅ **Testing**
+
 - Run tests 100+ times
 - Fast feedback loop critical
 
 ✅ **Learning/Teaching**
+
 - Predictable output
 - Easy to understand generated code
 
 ### LLVM Backend Wins
 
 ✅ **Production deployments**
+
 - Build once, run for months
 - 2-4x performance gain
 - 10% smaller binaries
 
 ✅ **Performance-critical code**
+
 - Games (need 60+ FPS)
 - Servers (handle more requests)
 - Scientific computing (process data faster)
 
 ✅ **Distribution to users**
+
 - Smaller downloads
 - Faster execution
 - Better user experience
 
 ✅ **Cost optimization**
+
 - Need fewer servers
 - Lower cloud bills
 - Better resource utilization
@@ -292,19 +303,19 @@ ion link -o myapp
 
 ## Common Questions
 
-### Q: Will LLVM break my code?
+### Q: Will LLVM break my code
 
 **A: No.** LLVM is more aggressive but correct. If it breaks, it's a bug we need to fix.
 
-### Q: Should I commit binaries?
+### Q: Should I commit binaries
 
 **A: No.** Commit code, let CI build with both backends.
 
-### Q: Can I mix backends in one project?
+### Q: Can I mix backends in one project
 
 **A: Yes!** (Advanced) Compile hot paths with LLVM, rest with native.
 
-### Q: What about compile time in CI?
+### Q: What about compile time in CI
 
 **A: Use native for tests, LLVM for releases:**
 ```yaml
@@ -317,11 +328,11 @@ release:
   home package
 ```
 
-### Q: Is the performance gain real?
+### Q: Is the performance gain real
 
 **A: Yes!** We measured 2.45x faster control flow, 1.63x faster loops in real benchmarks.
 
-### Q: What if I want maximum performance?
+### Q: What if I want maximum performance
 
 **A: Use LLVM -O3:**
 ```bash
@@ -335,11 +346,13 @@ ion build --backend=llvm -O3 --lto
 ## Migration Path
 
 ### Week 1: Keep Everything The Same
+
 - Continue using native backend
 - No changes needed
 - Establish baseline
 
 ### Week 2: Try LLVM for Releases
+
 ```bash
 # Keep dev workflow
 ion build --backend=native
@@ -349,6 +362,7 @@ ion build --backend=llvm -O2 --release
 ```
 
 ### Week 3: Benchmark
+
 ```bash
 # Compare performance
 ./benchmark-native
@@ -359,6 +373,7 @@ ls -lh binary-native binary-llvm
 ```
 
 ### Week 4: Switch Production
+
 ```bash
 # If benchmarks look good, use LLVM for production
 ion build --backend=llvm -O2
@@ -366,10 +381,11 @@ ion deploy
 ```
 
 ### Ongoing: Best of Both Worlds
+
 ```bash
 # Daily work: native (fast)
 # Releases: LLVM (performant)
-# Everyone's happy!
+# Everyone's happy
 ```
 
 ---
@@ -386,21 +402,25 @@ ion deploy
 ### The Impact
 
 **On your codebase:**
+
 - Zero changes needed
 - Just a compiler flag
 - Works with existing code
 
 **On binary size:**
+
 - LLVM -O2: 10% **smaller**
 - LLVM -Oz: 40% **smaller**
 - Not larger!
 
 **On performance:**
+
 - 1.7-2.5x faster on average
 - Up to 10x faster for specific code
 - Measurably better
 
 **On development:**
+
 - 3x slower builds (6s vs 2s)
 - But only for production builds
 - Dev stays fast with native
@@ -408,12 +428,13 @@ ion deploy
 ### The Recommendation
 
 ```bash
-# This is the sweet spot:
+# This is the sweet spot
 dev:     native      # Fast iteration
 release: llvm -O2    # Great performance, good size
 ```
 
 **You get:**
+
 - ✅ Fast development (native)
 - ✅ Fast runtime (LLVM)
 - ✅ Small binaries (LLVM)
@@ -429,16 +450,19 @@ release: llvm -O2    # Great performance, good size
 ## Action Items
 
 **Today:**
+
 1. Keep using native for development
 2. Try one LLVM build: `ion build --backend=llvm -O2`
 3. Compare the binaries
 
 **This week:**
+
 4. Update `ion.toml` with backend configs
 5. Run benchmarks comparing both
 6. Update CI to use LLVM for releases
 
 **Going forward:**
+
 7. Native for all dev work
 8. LLVM for all production deployments
 9. Enjoy the best of both worlds!

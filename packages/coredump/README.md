@@ -71,7 +71,7 @@ pub fn main() !void {
     const dump_data = try std.fs.cwd().readFileAlloc(
         allocator,
         "core.1234",
-        100 * 1024 * 1024, // 100MB max
+        100 _ 1024 _ 1024, // 100MB max
     );
     defer allocator.free(dump_data);
 
@@ -150,6 +150,7 @@ defer key.deinit();
 ```
 
 **Properties:**
+
 - Key Size: 32 bytes (256 bits)
 - Nonce Size: 12 bytes (96 bits)
 - Auth Tag: 16 bytes (128 bits)
@@ -169,6 +170,7 @@ defer key.deinit();
 ```
 
 **Properties:**
+
 - Key Size: 32 bytes (256 bits)
 - Nonce Size: 12 bytes (96 bits)
 - Auth Tag: 16 bytes (128 bits)
@@ -259,7 +261,7 @@ Control which memory regions to encrypt:
 const config = coredump.DumpConfig{
     .algorithm = .aes_256_gcm,
     .compress = true,
-    .max_dump_size = 100 * 1024 * 1024, // 100MB
+    .max_dump_size = 100 _ 1024 _ 1024, // 100MB
     .encrypt_stack = true,
     .encrypt_heap = true,
     .encrypt_registers = true,
@@ -268,6 +270,7 @@ const config = coredump.DumpConfig{
 ```
 
 **Options:**
+
 - `encrypt_stack`: Encrypt stack memory (usually contains local variables)
 - `encrypt_heap`: Encrypt heap memory (dynamically allocated data)
 - `encrypt_registers`: Encrypt CPU register values
@@ -318,6 +321,7 @@ defer allocator.free(redacted);
 ```
 
 **Redacted Patterns:**
+
 - `password=`, `pwd=` - Password fields
 - `api_key=`, `token=` - API credentials
 - `-----BEGIN` - SSH/TLS private keys
@@ -424,12 +428,12 @@ Encrypted core dump file structure:
 const std = @import("std");
 const coredump = @import("coredump");
 
-var global_keyring: ?*coredump.keys.KeyRing = null;
+var global_keyring: ?_coredump.keys.KeyRing = null;
 
 pub fn initCrashHandler(allocator: std.mem.Allocator) !void {
     // Initialize key ring
     const keyring = try allocator.create(coredump.keys.KeyRing);
-    keyring.* = coredump.keys.KeyRing.init(allocator);
+    keyring._ = coredump.keys.KeyRing.init(allocator);
     global_keyring = keyring;
 
     // Load or generate key
@@ -550,7 +554,7 @@ pub fn encryptTool(allocator: std.mem.Allocator, args: [][]const u8) !void {
     defer key.deinit();
 
     // Read dump
-    const dump_data = try std.fs.cwd().readFileAlloc(allocator, input_path, 1024 * 1024 * 1024);
+    const dump_data = try std.fs.cwd().readFileAlloc(allocator, input_path, 1024 _ 1024 _ 1024);
     defer allocator.free(dump_data);
 
     // Extract metadata from filename or use defaults

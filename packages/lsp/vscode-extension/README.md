@@ -22,8 +22,8 @@ The Home Language Server must be installed and accessible. You can specify its l
 
 This extension contributes the following settings:
 
-* `homeLanguageServer.path`: Path to the Home language server executable
-* `homeLanguageServer.trace.server`: Enable/disable tracing of the language server communication
+- `homeLanguageServer.path`: Path to the Home language server executable
+- `homeLanguageServer.trace.server`: Enable/disable tracing of the language server communication
 
 ## Getting Started
 
@@ -34,17 +34,19 @@ This extension contributes the following settings:
 
 ## Commands
 
-* `Home: Restart Language Server` - Restart the language server
+- `Home: Restart Language Server` - Restart the language server
 
 ## Language Features
 
 ### Type System
+
 - Rust-style ownership and borrowing
 - Pattern matching with exhaustiveness checking
 - Generics with trait bounds
 - Result types for error handling
 
 ### Syntax
+
 - Function declarations with `fn`
 - Struct, enum, and trait definitions
 - Pattern matching with `match`
@@ -77,6 +79,7 @@ enum Result<T, E> {
 ### 0.1.0
 
 Initial release with core language server features:
+
 - Syntax highlighting
 - Code completion
 - Go to definition

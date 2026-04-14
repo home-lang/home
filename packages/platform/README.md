@@ -1,4 +1,5 @@
 // Home Programming Language - Platform-Specific Code Blocks
+
 # Platform-Specific Code Blocks Package
 
 Comprehensive platform detection and conditional compilation for handling x86, ARM, RISC-V, and OS differences in the Home programming language.
@@ -6,6 +7,7 @@ Comprehensive platform detection and conditional compilation for handling x86, A
 ## Features
 
 ### Architecture Detection
+
 - **x86**: 32-bit Intel/AMD
 - **x86_64**: 64-bit Intel/AMD (AMD64)
 - **ARM**: 32-bit ARM
@@ -14,6 +16,7 @@ Comprehensive platform detection and conditional compilation for handling x86, A
 - **WebAssembly**: wasm32 and wasm64
 
 ### OS Detection
+
 - **Linux**: All distributions
 - **macOS**: Darwin/XNU kernel
 - **Windows**: Win32/Win64
@@ -22,6 +25,7 @@ Comprehensive platform detection and conditional compilation for handling x86, A
 - **Freestanding**: Bare metal/kernel mode
 
 ### Platform Categories
+
 - **Unix**: Linux, macOS, BSD
 - **BSD**: macOS, FreeBSD, OpenBSD, NetBSD
 - **64-bit**: x86_64, aarch64, riscv64, wasm64
@@ -206,7 +210,7 @@ const impl = platform.CodeBlock{
         \\ li a0, 0
         \\ ecall
     ,
-    .default = "/* Generic implementation */",
+    .default = "/_ Generic implementation _/",
 };
 
 // Select appropriate code for current platform
@@ -288,8 +292,8 @@ pub fn addVectors(dst: []f32, a: []const f32, b: []const f32) void {
         addVectorsNEON(dst, a, b);
     } else {
         // Fallback scalar implementation
-        for (dst, a, b) |*d, a_val, b_val| {
-            d.* = a_val + b_val;
+        for (dst, a, b) |_d, a_val, b_val| {
+            d._ = a_val + b_val;
         }
     }
 }
@@ -329,12 +333,12 @@ pub fn joinPath(allocator: std.mem.Allocator, parts: []const []const u8) ![]cons
 ### Example 5: Atomic Operations
 
 ```zig
-pub fn atomicIncrement(ptr: *usize) usize {
+pub fn atomicIncrement(ptr: _usize) usize {
     if (platform.Features.hasAtomics()) {
         return @atomicRmw(usize, ptr, .Add, 1, .seq_cst);
     } else {
         // Fallback for platforms without atomics
-        const old = ptr.*;
+        const old = ptr._;
         ptr.* += 1;
         return old;
     }
@@ -388,6 +392,7 @@ zig build test
 ```
 
 All 11 tests validate:
+
 - Architecture detection
 - OS detection
 - Platform detection and naming
@@ -403,6 +408,7 @@ All 11 tests validate:
 ## Integration
 
 This package integrates with:
+
 - **Codegen**: Generate platform-specific assembly
 - **Syscall**: Use correct syscall numbers per platform
 - **Memory**: Respect alignment requirements

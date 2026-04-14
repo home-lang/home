@@ -9,6 +9,7 @@
 ## 🎯 Vision
 
 Home aims to combine:
+
 - **PHP's ease of use** for web development
 - **TypeScript's type safety** and developer experience
 - **Rust's performance** and safety guarantees
@@ -22,10 +23,13 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 ## Phase 1: Core Web Primitives (Months 1-3)
 
 ### 1.1 HTTP Server Framework ✅ STARTED
+
 **Status**: Foundation in place
 
 **Needed**:
+
 - [ ] High-level HTTP router (like Express.js/Laravel routing)
+
   ```home
   let app = HttpServer.new();
   app.get("/users/:id", async (req, res) => {
@@ -33,12 +37,15 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
       res.json(user);
   });
   ```
+
 - [ ] Middleware system
+
   ```home
   app.use(cors());
   app.use(bodyParser());
   app.use(authenticate());
   ```
+
 - [ ] Request/Response helpers
 - [ ] Cookie management
 - [ ] Session management
@@ -49,6 +56,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Server-Sent Events (SSE)
 
 **Success Criteria**:
+
 - Build a REST API in <100 lines of code
 - Performance: 100K+ req/sec on commodity hardware
 - DX: Better than Express.js, comparable to Laravel
@@ -56,9 +64,11 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 ---
 
 ### 1.2 Database Connectivity
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] PostgreSQL driver (async)
 - [ ] MySQL/MariaDB driver (async)
 - [ ] SQLite driver (embedded)
@@ -68,6 +78,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 - [ ] Transaction support
 - [ ] Prepared statements
 - [ ] Query builder (like Knex.js/Eloquent)
+
   ```home
   let users = await db.table("users")
       .where("active", true)
@@ -77,6 +88,7 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
   ```
 
 **Success Criteria**:
+
 - Connection pool handles 10K+ concurrent connections
 - Query builder prevents SQL injection by default
 - Performance within 10% of native drivers
@@ -84,10 +96,13 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 ---
 
 ### 1.3 ORM (Object-Relational Mapping)
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Model definitions with decorators/attributes
+
   ```home
   @table("users")
   struct User {
@@ -103,7 +118,9 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
       created_at: DateTime,
   }
   ```
+
 - [ ] Relationships (one-to-one, one-to-many, many-to-many)
+
   ```home
   impl User {
       fn posts(self: &Self): HasMany<Post> {
@@ -111,9 +128,11 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
       }
   }
   ```
+
 - [ ] Eager loading (N+1 prevention)
 - [ ] Lazy loading
 - [ ] Migrations system
+
   ```home
   migration.create_table("users", |table| {
       table.id();
@@ -122,12 +141,14 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
       table.timestamps();
   });
   ```
+
 - [ ] Seeds/fixtures
 - [ ] Model events (hooks)
 - [ ] Soft deletes
 - [ ] Pagination
 
 **Success Criteria**:
+
 - Ergonomic as Laravel's Eloquent
 - Type-safe queries at compile time
 - Performance: <1ms overhead vs raw SQL
@@ -137,31 +158,38 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 ## Phase 2: Modern Web Features (Months 4-6)
 
 ### 2.1 Authentication & Authorization
+
 **Status**: Crypto foundation in place
 
 **Needed**:
+
 - [ ] JWT authentication
+
   ```home
   let token = JWT.sign(user_id, secret, expires_in: 24h);
   let user_id = JWT.verify(token, secret)?;
   ```
+
 - [ ] OAuth 2.0 client (Google, GitHub, etc.)
 - [ ] OAuth 2.0 server implementation
 - [ ] API key authentication
 - [ ] Rate limiting middleware
 - [ ] Role-based access control (RBAC)
+
   ```home
   @authorize("admin")
   async fn delete_user(req: Request): Response {
       // Only admins can delete users
   }
   ```
+
 - [ ] Permission system
 - [ ] Password hashing (Argon2/bcrypt) ✅ DONE (via crypto.zig)
 - [ ] Two-factor authentication (TOTP)
 - [ ] Sesshome-based auth
 
 **Success Criteria**:
+
 - Complete auth in <50 lines
 - Secure by default (constant-time comparisons, etc.)
 - Plug-and-play modules
@@ -169,9 +197,11 @@ Result: A **modern, safe, fast language for building web applications, APIs, and
 ---
 
 ### 2.2 Email & Notifications
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] SMTP client
 - [ ] Email templates (HTML + text)
 - [ ] Mailgun/SendGrid/SES integrations
@@ -192,10 +222,13 @@ await Mail.to(user.email)
 ---
 
 ### 2.3 Validation & Sanitization
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Input validation library
+
   ```home
   let rules = Validator.new()
       .field("email").required().email()
@@ -204,6 +237,7 @@ await Mail.to(user.email)
 
   let validated = rules.validate(request.body())?;
   ```
+
 - [ ] Custom validation rules
 - [ ] Async validators (e.g., unique email check)
 - [ ] Form request validation
@@ -212,6 +246,7 @@ await Mail.to(user.email)
 - [ ] Type coercion with validation
 
 **Success Criteria**:
+
 - Declarative like Yup/Joi/Laravel validation
 - Compile-time validation where possible
 - Clear error messages
@@ -221,20 +256,25 @@ await Mail.to(user.email)
 ## Phase 3: Developer Experience (Months 7-9)
 
 ### 3.1 CLI Framework
+
 **Status**: ✅ DONE (`cli.zig`)
 
 **Enhancements Needed**:
+
 - [ ] Interactive prompts
+
   ```home
   let name = prompt("What's your name?");
   let confirmed = confirm("Are you sure?");
   let choice = select("Choose option:", ["A", "B", "C"]);
   ```
+
 - [ ] Progress bars
 - [ ] Spinners
 - [ ] Colored output (styled text)
 - [ ] Tables (ASCII/Unicode)
 - [ ] Command scaffolding
+
   ```home
   @command("make:controller")
   async fn make_controller(name: String) {
@@ -245,10 +285,13 @@ await Mail.to(user.email)
 ---
 
 ### 3.2 Testing Framework
+
 **Status**: Basic Zig tests only
 
 **Needed**:
+
 - [ ] BDD-style testing (like Jest/RSpec)
+
   ```home
   describe("User", || {
       it("should create a user", async || {
@@ -261,6 +304,7 @@ await Mail.to(user.email)
       });
   });
   ```
+
 - [ ] Mocking/stubbing
 - [ ] HTTP request testing
 - [ ] Database testing (transactions, factories)
@@ -270,6 +314,7 @@ await Mail.to(user.email)
 - [ ] Watch mode for tests
 
 **Success Criteria**:
+
 - Ergonomic as Jest/Vitest
 - Fast: 1000+ tests in <1s
 - Integrated with IDE
@@ -277,9 +322,11 @@ await Mail.to(user.email)
 ---
 
 ### 3.3 Package Ecosystem
+
 **Status**: ✅ Package manager done
 
 **Needed**:
+
 - [ ] Official package registry (like npm/crates.io)
 - [ ] Package discovery (website with search)
 - [ ] Package quality metrics
@@ -292,26 +339,34 @@ await Mail.to(user.email)
 ---
 
 ### 3.4 Code Generation & Scaffolding
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Project templates
+
   ```bash
   home new myapp --template=web-api
   home new mysite --template=fullstack
   ```
+
 - [ ] Code generators
+
   ```bash
   home make:controller UserController
   home make:model User --migration
   home make:migration create_users_table
   home make:middleware Auth
   ```
+
 - [ ] CRUD scaffolding
+
   ```bash
   home make:resource Post
-  # Generates: model, migration, controller, routes, tests
+# Generates: model, migration, controller, routes, tests
   ```
+
 - [ ] OpenAPI spec generation from code
 - [ ] GraphQL schema generation
 
@@ -320,10 +375,13 @@ await Mail.to(user.email)
 ## Phase 4: Frontend Integration (Months 10-12)
 
 ### 4.1 SSR (Server-Side Rendering)
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Template engine
+
   ```html
   <!-- views/user.home.html -->
   <h1>{{ user.name }}</h1>
@@ -334,6 +392,7 @@ await Mail.to(user.email)
       <article>{{ post.title }}</article>
   }
   ```
+
 - [ ] Component system (like Vue/Svelte components)
 - [ ] Partial rendering
 - [ ] Layouts and sections
@@ -344,11 +403,14 @@ await Mail.to(user.email)
 ---
 
 ### 4.2 API Generation
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] REST API scaffolding
 - [ ] GraphQL server
+
   ```home
   @graphql_query
   fn users(limit: i32): Vec<User> {
@@ -360,8 +422,10 @@ await Mail.to(user.email)
       User.create(input)
   }
   ```
+
 - [ ] GraphQL schema generation
 - [ ] tRPC-like type-safe RPC
+
   ```home
   // Server
   let router = trpc.router({
@@ -371,25 +435,31 @@ await Mail.to(user.email)
 
   // Client (TypeScript) gets full type safety!
   ```
+
 - [ ] OpenAPI/Swagger documentation
 - [ ] API versioning support
 
 ---
 
 ### 4.3 Real-time Features
+
 **Status**: WebSocket foundation in place
 
 **Needed**:
+
 - [ ] WebSocket rooms/channels
+
   ```home
   ws.join("room:123");
   ws.broadcast("room:123", { type: "message", data: "Hello" });
   ```
+
 - [ ] Presence tracking (who's online)
 - [ ] Broadcasting (Redis/RabbitMQ)
 - [ ] Server-Sent Events (SSE) wrapper
 - [ ] Long polling fallback
 - [ ] Real-time database subscriptions
+
   ```home
   let subscription = db.table("posts")
       .where("author_id", user.id)
@@ -403,23 +473,29 @@ await Mail.to(user.email)
 ## Phase 5: Production Features (Months 13-15)
 
 ### 5.1 Logging & Monitoring
+
 **Status**: Basic std.log only
 
 **Needed**:
+
 - [ ] Structured logging
+
   ```home
   log.info("User created", { user_id: user.id, email: user.email });
   ```
+
 - [ ] Log levels (trace, debug, info, warn, error)
 - [ ] Multiple log outputs (file, stdout, syslog)
 - [ ] Log rotation
 - [ ] JSON log formatting
 - [ ] Contextual logging (request IDs, etc.)
 - [ ] Performance metrics
+
   ```home
   metrics.counter("requests.total").inc();
   metrics.histogram("request.duration").observe(duration);
   ```
+
 - [ ] Prometheus exporter
 - [ ] Datadog/New Relic integration
 - [ ] Error tracking (Sentry integration)
@@ -428,31 +504,38 @@ await Mail.to(user.email)
 ---
 
 ### 5.2 Caching
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] In-memory cache (LRU)
 - [ ] Redis cache driver
 - [ ] Memcached driver
 - [ ] Cache tags/groups
 - [ ] Cache-aside pattern helpers
 - [ ] Response caching
+
   ```home
   @cache(ttl: 5m, key: "user:{id}")
   async fn get_user(id: i64): User {
       User.find(id)
   }
   ```
+
 - [ ] Cache warming
 - [ ] Distributed caching
 
 ---
 
 ### 5.3 Queue & Background Jobs
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Job queue system
+
   ```home
   struct SendEmailJob {
       to: String,
@@ -469,15 +552,18 @@ await Mail.to(user.email)
   SendEmailJob { to: "user@example.com", subject: "Hello" }
       .dispatch();
   ```
+
 - [ ] Redis queue backend
 - [ ] RabbitMQ backend
 - [ ] Job retries with exponential backoff
 - [ ] Failed job tracking
 - [ ] Job scheduling (cron-like)
+
   ```home
   schedule.every("1 hour").do(cleanup_temp_files);
-  schedule.cron("0 0 * * *").do(send_daily_report);
+  schedule.cron("0 0 _ _ *").do(send_daily_report);
   ```
+
 - [ ] Job priority queues
 - [ ] Worker management
 - [ ] Horizon-like dashboard
@@ -485,9 +571,11 @@ await Mail.to(user.email)
 ---
 
 ### 5.4 Deployment & DevOps
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Docker image generation
 - [ ] Kubernetes manifests generation
 - [ ] Health check endpoints
@@ -505,14 +593,17 @@ await Mail.to(user.email)
 ## Phase 6: Enterprise Features (Months 16-18)
 
 ### 6.1 Multi-tenancy
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Tenant identification (subdomain, header, JWT claim)
 - [ ] Database-per-tenant
 - [ ] Schema-per-tenant
 - [ ] Shared database with tenant_id
 - [ ] Tenant-aware models
+
   ```home
   @tenant_aware
   struct Post {
@@ -521,15 +612,18 @@ await Mail.to(user.email)
       title: String,
   }
   ```
+
 - [ ] Tenant migrations
 - [ ] Cross-tenant data prevention
 
 ---
 
 ### 6.2 Event Sourcing & CQRS
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] Event store
 - [ ] Event versioning
 - [ ] Event projections
@@ -541,9 +635,11 @@ await Mail.to(user.email)
 ---
 
 ### 6.3 Microservices Support
+
 **Status**: Not started
 
 **Needed**:
+
 - [ ] gRPC server/client
 - [ ] Service discovery (Consul, etcd)
 - [ ] Circuit breaker pattern
@@ -558,6 +654,7 @@ await Mail.to(user.email)
 ### 7.1 Compete with PHP Ecosystem
 
 **Laravel-equivalent features**:
+
 - [ ] Artisan-like CLI (scaffolding, migrations, etc.) - Partially done
 - [ ] Blade-like templates - Not started
 - [ ] Eloquent-like ORM - Not started
@@ -571,6 +668,7 @@ await Mail.to(user.email)
 - [ ] Collections (chainable array operations) - Not started
 
 **WordPress-like**:
+
 - [ ] Plugin system
 - [ ] Theme system
 - [ ] Admin panel generation
@@ -581,6 +679,7 @@ await Mail.to(user.email)
 ### 7.2 Compete with TypeScript/Node.js Ecosystem
 
 **Express/Fastify-equivalent**:
+
 - [x] Async/await - Done
 - [ ] Middleware system - Not started
 - [ ] Router with params - Not started
@@ -588,6 +687,7 @@ await Mail.to(user.email)
 - [ ] File uploads - Not started
 
 **NestJS-equivalent**:
+
 - [ ] Dependency injection
 - [ ] Module system (beyond basic imports)
 - [ ] Decorators for routes, middleware
@@ -595,12 +695,14 @@ await Mail.to(user.email)
 - [ ] Pipes (validation & transformation)
 
 **Prisma-equivalent**:
+
 - [ ] Schema-first ORM
 - [ ] Type-safe queries
 - [ ] Migration generation from schema
 - [ ] Database introspection
 
 **Zod/Yup-equivalent**:
+
 - [ ] Runtime validation with type inference
 - [ ] Schema composition
 
@@ -609,6 +711,7 @@ await Mail.to(user.email)
 ### 7.3 Compete with Python Ecosystem
 
 **Django-equivalent**:
+
 - [ ] Admin interface auto-generation
 - [ ] Forms system
 - [ ] User authentication (built-in)
@@ -616,12 +719,14 @@ await Mail.to(user.email)
 - [ ] ORM with migrations
 
 **FastAPI-equivalent**:
+
 - [ ] Auto-generated API docs (OpenAPI)
 - [ ] Type-based validation
 - [ ] Dependency injection
 - [ ] Async support (Done ✅)
 
 **Flask-equivalent**:
+
 - [ ] Minimal web framework
 - [ ] Extension system
 - [ ] Blueprint-like modularity
@@ -633,11 +738,13 @@ await Mail.to(user.email)
 ### 8.1 What PHP/TypeScript/Python DON'T Have
 
 **Memory Safety**:
+
 - [x] Ownership & borrowing - Done ✅
 - [x] No null pointer exceptions (Option types) - Done ✅
 - [x] No data races (Send/Sync) - Done ✅
 
 **Performance**:
+
 - [x] Native binary compilation - Done ✅
 - [x] 20-30% faster compilation than Zig - Done ✅
 - [ ] Sub-millisecond cold starts
@@ -646,6 +753,7 @@ await Mail.to(user.email)
 - [ ] Faster than PHP by 10-100x
 
 **Developer Experience**:
+
 - [x] Fast compilation (incremental) - Done ✅
 - [x] LSP with IntelliSense - Done ✅
 - [ ] Zero-config projects
@@ -655,19 +763,25 @@ await Mail.to(user.email)
 - [ ] Auto-fix suggestions - Via LSP ✅
 
 **Unique Features**:
+
 - [x] Comptime execution - Done ✅
 - [ ] Comptime web framework (zero runtime overhead)
+
   ```home
   @comptime
   let routes = generate_routes_from_directory("./controllers");
   ```
+
 - [ ] SQL in comptime (validated at compile time)
+
   ```home
   @comptime_sql("SELECT * FROM users WHERE id = ?")
   fn get_user(id: i64): User;
   ```
+
 - [ ] Type-safe HTML templates (prevents XSS at compile time)
 - [ ] Automatic API client generation
+
   ```home
   // Server defines routes
   // TypeScript/Swift/Kotlin clients auto-generated with full types
@@ -678,6 +792,7 @@ await Mail.to(user.email)
 ## Priority Order (MVP to Ecosystem Leader)
 
 ### Tier 1: Basic Web App (Months 1-6)
+
 **Goal**: Build a CRUD API + simple web app
 
 1. HTTP server framework with routing ⭐
@@ -694,6 +809,7 @@ await Mail.to(user.email)
 ---
 
 ### Tier 2: Production Ready (Months 7-12)
+
 **Goal**: Deploy to production
 
 1. Migrations & seeds
@@ -710,6 +826,7 @@ await Mail.to(user.email)
 ---
 
 ### Tier 3: Ecosystem Maturity (Months 13-18)
+
 **Goal**: Compete with Laravel/Django
 
 1. Query builder (advanced)
@@ -726,6 +843,7 @@ await Mail.to(user.email)
 ---
 
 ### Tier 4: Ecosystem Leader (Months 19-24)
+
 **Goal**: Be THE choice for new projects
 
 1. AI/ML integration
@@ -744,6 +862,7 @@ await Mail.to(user.email)
 ## Success Metrics
 
 ### Developer Adoption
+
 - [ ] 1K GitHub stars (Month 6)
 - [ ] 10K GitHub stars (Month 12)
 - [ ] 100K GitHub stars (Month 24)
@@ -751,6 +870,7 @@ await Mail.to(user.email)
 - [ ] 1000 community packages (Month 24)
 
 ### Performance Benchmarks
+
 - [ ] Faster than Node.js (>2x)
 - [ ] Faster than PHP (>10x)
 - [ ] Faster than Python (>50x)
@@ -758,12 +878,14 @@ await Mail.to(user.email)
 - [ ] Smaller binaries than Go
 
 ### Developer Experience
+
 - [ ] Build full CRUD API in <100 LOC
 - [ ] Zero to deployed app in <1 hour
 - [ ] IDE support equals TypeScript
 - [ ] Error messages better than Rust
 
 ### Production Usage
+
 - [ ] 10 companies using in production (Month 12)
 - [ ] 100 companies using in production (Month 18)
 - [ ] 1000 companies using in production (Month 24)
@@ -792,6 +914,7 @@ await Mail.to(user.email)
 | **Compile-time Validation** | ✅ Comptime | ❌ | ❌ | ❌ | ❌ | ⚠️ Macros |
 
 **Home's Unique Selling Points**:
+
 1. **Safety + Speed**: Only language with memory safety AND native speed AND fast compilation
 2. **Web-First**: Unlike Rust/Go, designed for web development from day one
 3. **Developer Experience**: Hot reload + LSP + fast compilation + helpful errors
@@ -802,18 +925,21 @@ await Mail.to(user.email)
 ## Next Steps
 
 ### Immediate (Next 3 Months)
+
 1. **HTTP Router** - Priority #1
 2. **PostgreSQL Driver** - Priority #2
 3. **Basic ORM** - Priority #3
 4. **Testing Framework** - Priority #4
 
 ### Short Term (Months 4-6)
+
 1. **Template Engine**
 2. **Authentication**
 3. **Validation**
 4. **Migrations**
 
 ### Medium Term (Months 7-12)
+
 1. **Production Features** (logging, monitoring, etc.)
 2. **Background Jobs**
 3. **Admin Panel**
@@ -821,7 +947,8 @@ await Mail.to(user.email)
 
 ---
 
-**Current Status**: ✅ **Foundation Complete**
+**Current Status**: ✅**Foundation Complete**
+
 - Compiler, type system, ownership, async, comptime, LSP, package manager all done
 - Standard library has crypto, datetime, process, CLI, regex, networking, JSON
 - **Ready to build the web framework on top of this solid foundation!**

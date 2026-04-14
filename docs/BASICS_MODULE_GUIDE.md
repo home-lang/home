@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 What is Basics?
+## 🎯 What is Basics
 
 `Basics` is Home's answer to Zig's `std` library. Instead of the generic "standard library" naming, Home uses **Basics** - a more welcoming, descriptive name that aligns with our philosophy of making programming feel like home.
 
@@ -18,19 +18,22 @@ const Basics = @import("basics");
 
 ---
 
-## 🌟 Why Basics?
+## 🌟 Why Basics
 
 ### More Welcoming
+
 - "Basics" is friendly and descriptive
 - Easier for newcomers to understand
 - Aligns with Home's philosophy
 
 ### Same Power
+
 - Full access to all core functionality
 - Zero overhead - just a naming wrapper
 - All Zig std features available
 
 ### Home Conventions
+
 - Follows Home's naming style
 - Includes Home-specific helpers
 - Better developer experience
@@ -366,6 +369,7 @@ const User = struct {
 ## 🆚 Comparison
 
 ### Zig (std)
+
 ```zig
 const std = @import("std");
 
@@ -376,6 +380,7 @@ std.time.sleep(1_000_000_000);
 ```
 
 ### Home (Basics)
+
 ```zig
 const Basics = @import("basics");
 
@@ -386,6 +391,7 @@ Basics.sleepSec(1);
 ```
 
 **Benefits:**
+
 - ✅ More descriptive names
 - ✅ Friendly helper functions
 - ✅ Same performance (zero overhead)
@@ -396,53 +402,65 @@ Basics.sleepSec(1);
 ## 📦 Module Organization
 
 ### Memory (`Basics.mem`)
+
 - Allocator types
 - Memory operations
 - String utilities
 
 ### Heap (`Basics.heap`)
+
 - Allocator implementations
 - Memory management
 
 ### Debug (`Basics.debug`)
+
 - Printing
 - Assertions
 - Debugging tools
 
 ### Format (`Basics.fmt`)
+
 - String formatting
 - Parsing
 
 ### Math (`Basics.math`)
+
 - Mathematical operations
 - Constants (pi, e)
 
 ### File System (`Basics.fs`)
+
 - File operations
 - Directory management
 
 ### Network (`Basics.net`)
+
 - TCP/UDP
 - Address handling
 
 ### Time (`Basics.time`)
+
 - Timestamps
 - Sleep functions
 - Timers
 
 ### Threading (`Basics.Thread`)
+
 - Thread spawning
 - Synchronization primitives
 
 ### JSON (`Basics.json`)
+
 - Parsing
 - Serialization
 
 ### Crypto (`Basics.crypto`)
+
 - Hashing
 - Random generation
 
 ### Testing (`Basics.testing`)
+
 - Test utilities
 - Assertions
 
@@ -451,21 +469,25 @@ Basics.sleepSec(1);
 ## 🎯 Design Philosophy
 
 ### 1. Friendly Naming
+
 - Use descriptive, welcoming names
 - Avoid abbreviations where possible
 - Make code self-documenting
 
 ### 2. Convenience Without Sacrifice
+
 - Add helpful shortcuts
 - Never sacrifice performance
 - Zero-overhead abstractions
 
 ### 3. Gradual Learning
+
 - Start with simple helpers
 - Access advanced features when needed
 - Progressive complexity
 
 ### 4. Home Style
+
 - Follow Home conventions
 - Integrate with Home ecosystem
 - Feel at home in Home
@@ -477,6 +499,7 @@ Basics.sleepSec(1);
 ### From Zig std to Home Basics
 
 1. **Change import:**
+
    ```zig
    // Before
    const std = @import("std");
@@ -486,6 +509,7 @@ Basics.sleepSec(1);
    ```
 
 2. **Use friendly helpers:**
+
    ```zig
    // Before
    std.debug.print("Hello\n", .{});
@@ -495,6 +519,7 @@ Basics.sleepSec(1);
    ```
 
 3. **Leverage Home extensions:**
+
    ```zig
    // Before
    if (std.mem.eql(u8, a, b)) { }
@@ -526,6 +551,6 @@ The **Basics** module provides:
 
 ---
 
-*Home Programming Language - Basics Module*
-*Making core functionality feel like home*
-*Version 1.0.0*
+_Home Programming Language - Basics Module_
+_Making core functionality feel like home_
+_Version 1.0.0_

@@ -99,9 +99,9 @@ impl Drawable for Circle {
     fn draw(&self): void {
         println("Drawing circle")
     }
-    
+
     fn bounds(&self): Rect {
-        Rect { x: self.x, y: self.y, w: self.radius * 2, h: self.radius * 2 }
+        Rect { x: self.x, y: self.y, w: self.radius _ 2, h: self.radius _ 2 }
     }
 }
 ```
@@ -136,6 +136,7 @@ fn render(shapes: &[dyn Drawable]): void {
 ## Built-in Traits
 
 ### Core Traits
+
 - `Clone` - Duplicate values
 - `Copy` - Bitwise copy (marker trait)
 - `Debug` - Debug formatting
@@ -143,36 +144,44 @@ fn render(shapes: &[dyn Drawable]): void {
 - `Default` - Default values
 
 ### Comparison Traits
+
 - `PartialEq` - Equality comparison
 - `Eq` - Full equality
 - `PartialOrd` - Partial ordering
 - `Ord` - Total ordering
 
 ### Conversion Traits
+
 - `From<T>` - Value conversion
 - `Into<T>` - Consuming conversion
 
 ### Iterator Trait
+
 - `Iterator` - Iteration protocol
 
 ### Operator Traits (21 total)
 
 **Arithmetic:**
+
 - `Add`, `Sub`, `Mul`, `Div`, `Rem`
 - `Neg` (unary -)
 
 **Bitwise:**
+
 - `BitAnd`, `BitOr`, `BitXor`
 - `Shl`, `Shr`
 - `Not` (unary !)
 
 **Compound Assignment:**
+
 - `AddAssign`, `SubAssign`, `MulAssign`, `DivAssign`, `RemAssign`
 
 **Indexing:**
+
 - `Index`, `IndexMut`
 
 **Dereferencing:**
+
 - `Deref`, `DerefMut`
 
 ## Type Checking Integration
@@ -222,6 +231,7 @@ zig build test
 ## Examples
 
 See comprehensive examples in:
+
 - `/examples/traits.home` - Basic trait usage
 - `/examples/operator_overloading.home` - Operator traits
 - `/docs/TRAITS.md` - Full documentation
@@ -230,24 +240,28 @@ See comprehensive examples in:
 ## Integration Status
 
 ✅ **Phase 1: Core Integration (Complete)**
+
 - Lexer keywords (trait, impl, where, dyn, Self, self)
 - AST nodes (TraitDecl, ImplDecl, WhereClause, etc.)
 - Parser implementation
 - Build system integration
 
 ✅ **Phase 2: Type Checking (Complete)**
+
 - TraitChecker implementation
 - Trait bounds verification
 - Associated types resolution
 - Super trait checking
 
 ✅ **Phase 3: Operator Overloading (Complete)**
+
 - 21 operator traits defined
 - Operator resolution
 - Expression desugaring
 - Full integration
 
 🔄 **Phase 4: Runtime (In Progress)**
+
 - VTable generation ✅
 - Dynamic dispatch ✅
 - Trait method calls (needs codegen)

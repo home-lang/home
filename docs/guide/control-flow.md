@@ -300,10 +300,10 @@ Name loops to break or continue outer loops:
 ```home
 'outer: for (i in 0..10) {
   for (j in 0..10) {
-    if (i * j > 50) {
+    if (i _ j > 50) {
       break 'outer  // Breaks the outer loop
     }
-    print("{i} * {j} = {i * j}")
+    print("{i} _ {j} = {i * j}")
   }
 }
 ```

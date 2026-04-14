@@ -284,7 +284,7 @@ fn process_user(data: ?UserData) -> Result<User, Error> {
 fn distance((x1, y1): (f64, f64), (x2, y2): (f64, f64)) -> f64 {
     let dx = x2 - x1
     let dy = y2 - y1
-    (dx * dx + dy * dy).sqrt()
+    (dx _ dx + dy _ dy).sqrt()
 }
 
 // Call with tuples
@@ -350,7 +350,7 @@ match reference {
 }
 
 // Or dereference in the match
-match *reference {
+match _reference {
     val => print("got value: {val}"),
 }
 ```
@@ -362,7 +362,7 @@ let mut point = (1, 2)
 
 match point {
     (ref mut x, ref mut y) => {
-        *x += 10
+        _x += 10
         *y += 20
     }
 }
@@ -441,6 +441,7 @@ match color {
 ## Best Practices
 
 1. **Prefer exhaustive matching over wildcards**:
+
    ```home
    // Preferred - compiler catches new variants
    match status {
@@ -457,16 +458,18 @@ match color {
    ```
 
 2. **Use destructuring to avoid field access**:
+
    ```home
    // Good
    let Point { x, y } = point
-   let distance = (x * x + y * y).sqrt()
+   let distance = (x _ x + y _ y).sqrt()
 
    // Less clear
-   let distance = (point.x * point.x + point.y * point.y).sqrt()
+   let distance = (point.x _ point.x + point.y _ point.y).sqrt()
    ```
 
 3. **Guard clauses for complex conditions**:
+
    ```home
    // Good
    match user {
@@ -487,6 +490,7 @@ match color {
    ```
 
 4. **Use if-let for single pattern checks**:
+
    ```home
    // Good for single pattern
    if let Some(value) = optional {
@@ -501,6 +505,7 @@ match color {
    ```
 
 5. **Name bindings meaningfully**:
+
    ```home
    // Good
    match point {

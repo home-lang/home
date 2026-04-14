@@ -30,6 +30,7 @@ Kernel.sync          // Synchronization primitives
 Complete x86_64 assembly operations with type safety:
 
 #### I/O Port Operations
+
 ```zig
 // Read/write bytes
 const value = Kernel.asm.inb(0x60);  // Read from keyboard
@@ -45,6 +46,7 @@ Kernel.asm.outl(0xCF8, 0x80000000);
 ```
 
 #### CPU Control
+
 ```zig
 Kernel.asm.hlt();         // Halt CPU
 Kernel.asm.pause();       // Pause (for spinloops)
@@ -58,6 +60,7 @@ Kernel.asm.sfence();      // Store barrier
 ```
 
 #### CPU Feature Detection
+
 ```zig
 const features = Kernel.asm.CpuFeatures.detect();
 
@@ -75,6 +78,7 @@ features.syscall, features.nx
 ```
 
 #### Control Registers
+
 ```zig
 // CR0 - Control flags
 const cr0 = Kernel.asm.readCr0();
@@ -94,6 +98,7 @@ Kernel.asm.writeCr4(cr4);
 ```
 
 #### MSR Operations
+
 ```zig
 const IA32_EFER: u32 = 0xC0000080;
 
@@ -109,6 +114,7 @@ Kernel.asm.wrmsr(IA32_EFER, efer | (1 << 11));  // Enable NX
 ### 2. Memory Management (`Kernel.memory`)
 
 #### Memory-Mapped I/O (Type-Safe)
+
 ```zig
 // Create MMIO register
 const uart_data = Kernel.MMIO(u8){ .address = 0x3F8 };
@@ -130,6 +136,7 @@ uart_data.modify(struct {
 ```
 
 #### Hardware Register Abstraction
+
 ```zig
 const UartData = Kernel.memory.Register.define(.{
     .Type = u8,
@@ -144,6 +151,7 @@ const ch = uart.read();
 ```
 
 #### Page Alignment Utilities
+
 ```zig
 const addr: usize = 0x1234;
 
@@ -154,6 +162,7 @@ const pages = Kernel.memory.pageCount(0x5000);       // 5 pages
 ```
 
 #### Bump Allocator (Early Boot)
+
 ```zig
 var bump = Kernel.memory.BumpAllocator.init(0x100000, 0x10000);
 
@@ -169,6 +178,7 @@ bump.reset(0x100000);
 ```
 
 #### Slab Allocator (Fixed-Size Objects)
+
 ```zig
 const Task = struct { id: u64, next: u64 };
 
@@ -189,6 +199,7 @@ slab.free(task1);
 ```
 
 #### Buddy Allocator (Variable-Size)
+
 ```zig
 var buddy = Kernel.memory.BuddyAllocator.init(0x200000, 0x100000);
 
@@ -206,6 +217,7 @@ buddy.free(large);
 ### 3. Interrupt Handling (`Kernel.interrupts`)
 
 #### IDT Management
+
 ```zig
 // Create and initialize IDT
 var idt = Kernel.Idt.init();
@@ -223,14 +235,15 @@ idt.load();
 ```
 
 #### Exception Handlers
+
 ```zig
 // Handler without error code
-fn divideByZeroHandler(frame: *Kernel.InterruptFrame) callconv(.Interrupt) void {
+fn divideByZeroHandler(frame: _Kernel.InterruptFrame) callconv(.Interrupt) void {
     Kernel.panic("Divide by zero!");
 }
 
 // Handler with error code
-fn pageFaultHandler(frame: *Kernel.interrupts.InterruptFrameWithError) callconv(.Interrupt) void {
+fn pageFaultHandler(frame: _Kernel.interrupts.InterruptFrameWithError) callconv(.Interrupt) void {
     const error_code: Kernel.interrupts.PageFaultError = @bitCast(frame.error_code);
     const fault_addr = Kernel.asm.readCr2();
 
@@ -246,6 +259,7 @@ fn pageFaultHandler(frame: *Kernel.interrupts.InterruptFrameWithError) callconv(
 ```
 
 #### PIC Management
+
 ```zig
 // Remap PIC to avoid conflicts with CPU exceptions
 Kernel.interrupts.PIC.remap(32, 40);
@@ -262,6 +276,7 @@ Kernel.interrupts.PIC.disable();
 ```
 
 #### Interrupt Manager
+
 ```zig
 var manager = Kernel.InterruptManager.init();
 
@@ -284,6 +299,7 @@ manager.unregisterIrq(1);
 ### 4. Page Tables and Virtual Memory (`Kernel.paging`)
 
 #### Page Flags
+
 ```zig
 var flags = Kernel.PageFlags.new(0x1000, .{
     .writable = true,
@@ -296,6 +312,7 @@ flags.setAddress(0x2000);
 ```
 
 #### Page Mapper
+
 ```zig
 var mapper = try Kernel.PageMapper.init(allocator);
 defer mapper.deinit();
@@ -330,6 +347,7 @@ mapper.activate();
 ```
 
 #### Virtual Address Decomposition
+
 ```zig
 const vaddr = Kernel.paging.VirtualAddress.fromU64(0x0000_1234_5678_9ABC);
 
@@ -351,6 +369,7 @@ const aligned_up = vaddr.alignUp();
 ```
 
 #### Kernel/User Address Spaces
+
 ```zig
 const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
 const USER_END: u64 = 0x0000_7FFF_FFFF_FFFF;
@@ -370,6 +389,7 @@ var id_mapper = try Kernel.paging.createIdentityMap(allocator, 0x100000);
 ```
 
 #### TLB Management
+
 ```zig
 // Flush entire TLB
 Kernel.paging.TLB.flushAll();
@@ -386,6 +406,7 @@ Kernel.paging.TLB.flushRange(0x400000, 0x10000);
 ### 5. Atomic Operations (`Kernel.atomic`)
 
 #### Atomic Types
+
 ```zig
 var counter = Kernel.AtomicU64.init(0);
 
@@ -417,6 +438,7 @@ const old_val2 = counter.dec(.SeqCst);
 ```
 
 #### Memory Ordering
+
 ```zig
 // Available orderings
 .Relaxed   // No ordering constraints
@@ -435,6 +457,7 @@ Kernel.atomic.Barrier.release();   // Compiler + store
 ```
 
 #### Atomic Pointer
+
 ```zig
 var atomic_ptr = Kernel.atomic.AtomicPtr(Task).init(initial_ptr);
 
@@ -449,6 +472,7 @@ if (atomic_ptr.compareExchange(expected, desired, .SeqCst, .SeqCst) == null) {
 ```
 
 #### Atomic Flag
+
 ```zig
 var flag = Kernel.AtomicFlag.init(false);
 
@@ -465,6 +489,7 @@ flag.clear(.Release);
 ```
 
 #### Reference Counting
+
 ```zig
 var refcount = Kernel.AtomicRefCount.init(1);
 
@@ -481,6 +506,7 @@ const count = refcount.get();
 ```
 
 #### Lock-Free Stack
+
 ```zig
 const Stack = Kernel.atomic.AtomicStack(u64);
 
@@ -495,6 +521,7 @@ if (stack.pop()) |popped| {
 ```
 
 #### Lock-Free Queue (MPSC)
+
 ```zig
 const Queue = Kernel.atomic.AtomicQueue(u64);
 
@@ -510,6 +537,7 @@ if (queue.dequeue()) |dequeued| {
 ```
 
 #### Atomic Bitset
+
 ```zig
 var bitset = Kernel.atomic.AtomicBitset(256).init();
 
@@ -527,6 +555,7 @@ const was_set = bitset.testAndSet(7, .AcqRel);
 ```
 
 #### Sequence Lock
+
 ```zig
 var seqlock = Kernel.atomic.SeqLock.init();
 
@@ -551,6 +580,7 @@ while (true) {
 ### 6. Synchronization Primitives (`Kernel.sync`)
 
 #### Spinlock
+
 ```zig
 var lock = Kernel.Spinlock.init();
 
@@ -569,6 +599,7 @@ lock.withLock(myFunction, .{ arg1, arg2 });
 ```
 
 #### IRQ Spinlock (Disables Interrupts)
+
 ```zig
 var lock = Kernel.IrqSpinlock.init();
 
@@ -583,6 +614,7 @@ if (lock.tryAcquire()) {
 ```
 
 #### Reader-Writer Spinlock
+
 ```zig
 var rwlock = Kernel.RwSpinlock.init();
 
@@ -605,6 +637,7 @@ rwlock.withWriteLock(writeFunction, .{});
 ```
 
 #### Mutex (Ticket-Based, Fair)
+
 ```zig
 var mutex = Kernel.Mutex.init();
 
@@ -620,6 +653,7 @@ mutex.withLock(criticalFunction, .{});
 ```
 
 #### Semaphore
+
 ```zig
 var sem = Kernel.Semaphore.init(5);  // Max 5 concurrent
 
@@ -639,6 +673,7 @@ const available = sem.getCount();
 ```
 
 #### Barrier (Synchronization Point)
+
 ```zig
 var barrier = Kernel.sync.SyncBarrier.init(4);  // 4 threads
 
@@ -648,6 +683,7 @@ barrier.wait();
 ```
 
 #### Once (Execute Exactly Once)
+
 ```zig
 var once = Kernel.Once.init();
 
@@ -665,11 +701,12 @@ if (once.isCalled()) {
 ```
 
 #### Lazy Initialization
+
 ```zig
 var lazy_config = Kernel.sync.Lazy(Config).init();
 
 fn createConfig() Config {
-    return Config{ /* ... */ };
+    return Config{ /_ ... _/ };
 }
 
 // Gets or initializes on first call
@@ -677,6 +714,7 @@ const config = lazy_config.get(createConfig);
 ```
 
 #### Wait Queue
+
 ```zig
 var wq = Kernel.sync.WaitQueue.init();
 
@@ -801,5 +839,5 @@ The kernel package embodies Home's core principles:
 
 ---
 
-*Home Programming Language - Kernel Package v0.1.0*
-*Date: 2025-10-24*
+_Home Programming Language - Kernel Package v0.1.0_
+_Date: 2025-10-24_

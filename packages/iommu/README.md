@@ -13,7 +13,7 @@ The `iommu` package provides comprehensive DMA protection features:
 - **Fault Handling**: Detect and log DMA violations
 - **Intel VT-d Support**: Industry-standard IOMMU implementation
 
-## Why IOMMU?
+## Why IOMMU
 
 Without an IOMMU, devices can access any physical memory via DMA (Direct Memory Access), enabling:
 
@@ -204,7 +204,7 @@ defer domain.deinit();
 // Map 2MB buffer
 const iova = 0x100000;   // What device sees
 const paddr = 0x500000;  // Actual memory
-const size = 2 * 1024 * 1024;
+const size = 2 _ 1024 _ 1024;
 
 const access = iommu.iommu_domain.AccessFlags{
     .read = true,
@@ -220,6 +220,7 @@ const translated = domain.translate(iova + 0x1000);
 ```
 
 **Benefits:**
+
 - Devices can't access unmapped memory
 - Multiple devices get isolated address spaces
 - Kernel memory protected from malicious devices
@@ -243,6 +244,7 @@ try gpu_domain.attachDevice(graphics_card);
 ```
 
 **Domain Types:**
+
 - `dma`: Normal DMA domain with remapping
 - `identity`: 1:1 mapping (passthrough mode)
 - `unmanaged`: User-managed page tables
@@ -289,6 +291,7 @@ try walker.unmap(virtual_addr);
 ```
 
 **Page Levels:**
+
 - Level 1: 4KB pages
 - Level 2: 2MB pages (huge pages)
 - Level 3: 1GB pages (giant pages)
@@ -316,6 +319,7 @@ const translation_errors = io.status.getTranslationErrors();
 ```
 
 **Fault Types:**
+
 - `invalid_address`: Unmapped memory access
 - `permission_denied`: Read-only write attempt
 - `page_not_present`: Missing page table entry
@@ -369,7 +373,7 @@ pub const SecureIOMMU = struct {
         return secure;
     }
 
-    pub fn deinit(self: *SecureIOMMU) void {
+    pub fn deinit(self: _SecureIOMMU) void {
         self.iommu.disable();
         self.ir_manager.disable();
         self.domain_alloc.deinit();
@@ -378,9 +382,9 @@ pub const SecureIOMMU = struct {
     }
 
     pub fn isolateDevice(
-        self: *SecureIOMMU,
+        self: _SecureIOMMU,
         device_id: iommu.DeviceID,
-    ) !*iommu.iommu_domain.Domain {
+    ) !_iommu.iommu_domain.Domain {
         // Create isolated domain
         var domain = try self.domain_alloc.allocate(.dma);
         try domain.attachDevice(device_id);
@@ -397,8 +401,8 @@ pub const SecureIOMMU = struct {
     }
 
     pub fn mapDeviceBuffer(
-        self: *SecureIOMMU,
-        domain: *iommu.iommu_domain.Domain,
+        self: _SecureIOMMU,
+        domain: _iommu.iommu_domain.Domain,
         iova: u64,
         paddr: u64,
         size: usize,
@@ -433,7 +437,7 @@ pub fn main() !void {
         net_domain,
         0x10000,  // IOVA
         0x200000, // Physical
-        64 * 1024, // 64KB
+        64 _ 1024, // 64KB
         true,     // Writable
     );
 
@@ -505,6 +509,7 @@ io.enable() catch |err| {
 ### DMA Faults
 
 Common causes:
+
 - Device driver bug (mapping wrong address)
 - Buffer freed while device still using it
 - Device firmware bug
@@ -513,6 +518,7 @@ Common causes:
 ### Performance Issues
 
 If IOMMU causes slowdown:
+
 1. Check for excessive TLB misses
 2. Use larger page sizes
 3. Enable caching in IOMMU

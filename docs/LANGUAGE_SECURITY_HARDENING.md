@@ -10,6 +10,7 @@
 This document outlines security improvements at the **programming language level** (compiler, runtime, type system) beyond the kernel security features already implemented.
 
 Your language already has:
+
 - ✅ Ownership/borrow checking (Rust-style)
 - ✅ Unsafe block tracking
 - ✅ Type system with dependent types
@@ -22,6 +23,7 @@ Your language already has:
 ### 1. **Enhanced Type System Security**
 
 #### A. Taint Tracking System
+
 **Purpose**: Track untrusted data flow through the program
 
 ```zig
@@ -50,6 +52,7 @@ pub const TaintedType = struct {
 ```
 
 **Implementation**:
+
 - Track taint level in type system
 - Prevent untrusted data in security-critical contexts
 - Require explicit sanitization functions
@@ -67,6 +70,7 @@ execute_query(user_input); // ERROR: Cannot pass UserInput taint to Trusted para
 ```
 
 #### B. Capability-Based Types
+
 **Purpose**: Embed security capabilities in types
 
 ```zig
@@ -104,6 +108,7 @@ fn open_file(path: String): File requires ReadFile {
 ```
 
 #### C. Information Flow Control
+
 **Purpose**: Prevent information leakage via types
 
 ```zig
@@ -131,6 +136,7 @@ pub const SecureType = struct {
 ### 2. **Compile-Time Security Checks**
 
 #### A. Integer Overflow Detection
+
 ```zig
 // packages/safety/src/overflow_check.zig
 pub const OverflowChecker = struct {
@@ -153,11 +159,13 @@ pub const OverflowChecker = struct {
 ```
 
 **Compiler Integration**:
+
 - Insert overflow checks by default (opt-in to unchecked)
 - Flag: `--overflow-checks=on` (default)
 - Allow `unchecked { }` blocks for performance-critical code
 
 #### B. Null Safety Enforcement
+
 ```zig
 // packages/types/src/null_safety.zig
 pub const NullSafety = enum {
@@ -188,11 +196,12 @@ if (value) |v| {
 ```
 
 #### C. Array Bounds Checking
+
 ```zig
 // packages/safety/src/bounds_check.zig
 pub fn insertBoundsCheck(
-    array_access: *ast.ArrayAccess,
-    index_expr: *ast.Expr,
+    array_access: _ast.ArrayAccess,
+    index_expr: _ast.Expr,
     array_len: *ast.Expr,
 ) !void {
     // Insert runtime check: if (index >= len) panic
@@ -205,11 +214,12 @@ pub fn insertBoundsCheck(
 ### 3. **Memory Safety Enhancements**
 
 #### A. Lifetime Analysis
+
 ```zig
 // packages/safety/src/lifetime_analysis.zig
 pub const Lifetime = struct {
     id: u32,
-    scope: *Scope,
+    scope: _Scope,
 
     pub fn outlives(self: Lifetime, other: Lifetime) bool {
         // Check if self's scope contains other's scope
@@ -229,6 +239,7 @@ pub const LifetimeChecker = struct {
 ```
 
 #### B. Use-After-Move Detection
+
 ```zig
 // packages/safety/src/move_checker.zig
 pub const MoveState = enum {
@@ -240,7 +251,7 @@ pub const MoveState = enum {
 pub const MoveChecker = struct {
     states: std.StringHashMap(MoveState),
 
-    pub fn checkMove(self: *MoveChecker, var_name: []const u8) !void {
+    pub fn checkMove(self: _MoveChecker, var_name: []const u8) !void {
         const state = self.states.get(var_name) orelse .Initialized;
 
         if (state == .Moved) {
@@ -250,7 +261,7 @@ pub const MoveChecker = struct {
         try self.states.put(var_name, .Moved);
     }
 
-    pub fn checkUse(self: *MoveChecker, var_name: []const u8) !void {
+    pub fn checkUse(self: _MoveChecker, var_name: []const u8) !void {
         const state = self.states.get(var_name) orelse .Initialized;
 
         if (state == .Moved) {
@@ -261,10 +272,11 @@ pub const MoveChecker = struct {
 ```
 
 #### C. Drop Safety
+
 ```zig
 // packages/safety/src/drop_safety.zig
 pub const DropChecker = struct {
-    pub fn checkDoubleDrop(value: *Value) !void {
+    pub fn checkDoubleDrop(value: _Value) !void {
         if (value.is_dropped) {
             return error.DoubleDrop;
         }
@@ -286,6 +298,7 @@ pub const DropChecker = struct {
 ### 4. **Concurrency Safety**
 
 #### A. Data Race Detection
+
 ```zig
 // packages/safety/src/race_detector.zig
 pub const AccessPattern = struct {
@@ -307,6 +320,7 @@ pub const RaceDetector = struct {
 ```
 
 #### B. Send/Sync Trait System
+
 ```zig
 // packages/traits/src/concurrency_traits.zig
 pub const Send = struct {
@@ -338,6 +352,7 @@ fn share_reference<T: Sync>(data: &T) {
 ```
 
 #### C. Deadlock Detection
+
 ```zig
 // packages/safety/src/deadlock_detector.zig
 pub const LockGraph = struct {
@@ -355,26 +370,28 @@ pub const LockGraph = struct {
 ### 5. **Runtime Security**
 
 #### A. Stack Overflow Protection
+
 ```zig
 // packages/interpreter/src/stack_guard.zig
 pub const StackGuard = struct {
     max_depth: usize,
     current_depth: usize,
 
-    pub fn enterFunction(self: *StackGuard) !void {
+    pub fn enterFunction(self: _StackGuard) !void {
         self.current_depth += 1;
         if (self.current_depth > self.max_depth) {
             return error.StackOverflow;
         }
     }
 
-    pub fn exitFunction(self: *StackGuard) void {
+    pub fn exitFunction(self: _StackGuard) void {
         self.current_depth -= 1;
     }
 };
 ```
 
 #### B. Heap Guard Pages
+
 ```zig
 // packages/interpreter/src/heap_guard.zig
 pub const HeapGuard = struct {
@@ -393,6 +410,7 @@ pub const HeapGuard = struct {
 ```
 
 #### C. Fuzzing Support
+
 ```zig
 // packages/testing/src/property_fuzzer.zig
 pub const PropertyFuzzer = struct {
@@ -419,6 +437,7 @@ pub const PropertyFuzzer = struct {
 ### 6. **Sanitization & Validation**
 
 #### A. Input Validation Framework
+
 ```zig
 // packages/safety/src/validation.zig
 pub const Validator = struct {
@@ -454,6 +473,7 @@ pub const Validator = struct {
 ```
 
 #### B. SQL Injection Prevention
+
 ```zig
 // packages/database/src/sql_safe.zig
 pub const SqlSafe = struct {
@@ -476,17 +496,18 @@ pub const SqlSafe = struct {
 **Example**:
 ```home
 // Good - parameterized
-let query = SqlSafe.prepare("SELECT * FROM users WHERE id = ?");
+let query = SqlSafe.prepare("SELECT _ FROM users WHERE id = ?");
 query.bind(user_id);
 db.execute(query);
 
 // Bad - compile error
 let user_input = get_input();
-let query = "SELECT * FROM users WHERE name = '" + user_input + "'";
+let query = "SELECT _ FROM users WHERE name = '" + user_input + "'";
 db.execute(query); // ERROR: Raw string concatenation in SQL
 ```
 
 #### C. XSS Prevention
+
 ```zig
 // packages/web/src/html_escape.zig
 pub const HtmlSafe = struct {
@@ -510,6 +531,7 @@ pub const HtmlSafe = struct {
 ### 7. **Secure Coding Patterns**
 
 #### A. Builder Pattern with Validation
+
 ```zig
 // packages/patterns/src/secure_builder.zig
 pub fn SecureBuilder(comptime T: type) type {
@@ -517,7 +539,7 @@ pub fn SecureBuilder(comptime T: type) type {
         data: T,
         validated: std.EnumSet(ValidatedField),
 
-        pub fn build(self: *@This()) !T {
+        pub fn build(self: _@This()) !T {
             // Ensure all required fields are validated
             if (!self.validated.containsAll(required_fields)) {
                 return error.IncompleteValidation;
@@ -529,18 +551,19 @@ pub fn SecureBuilder(comptime T: type) type {
 ```
 
 #### B. Resource Cleanup with RAII
+
 ```zig
 // packages/safety/src/raii.zig
 pub fn Resource(comptime T: type) type {
     return struct {
         inner: T,
-        cleanup: fn(*T) void,
+        cleanup: fn(_T) void,
 
-        pub fn acquire(value: T, cleanup_fn: fn(*T) void) @This() {
+        pub fn acquire(value: T, cleanup_fn: fn(_T) void) @This() {
             return .{ .inner = value, .cleanup = cleanup_fn };
         }
 
-        pub fn deinit(self: *@This()) void {
+        pub fn deinit(self: _@This()) void {
             self.cleanup(&self.inner);
         }
     };
@@ -552,6 +575,7 @@ pub fn Resource(comptime T: type) type {
 ### 8. **Compiler Hardening Flags**
 
 #### A. Security Compilation Modes
+
 ```zig
 // build.zig
 pub const SecurityLevel = enum {
@@ -587,6 +611,7 @@ pub fn setSecurityLevel(b: *std.Build, level: SecurityLevel) void {
 ```
 
 #### B. Warnings as Errors
+
 ```zig
 pub const SecurityWarnings = struct {
     treat_as_error: bool = true,
@@ -604,6 +629,7 @@ pub const SecurityWarnings = struct {
 ### 9. **Standard Library Security**
 
 #### A. Secure Random Number Generator
+
 ```zig
 // packages/std/src/crypto_random.zig
 pub const CryptoRandom = struct {
@@ -621,6 +647,7 @@ pub const CryptoRandom = struct {
 ```
 
 #### B. Secure String Comparison
+
 ```zig
 // packages/std/src/crypto.zig
 pub fn constantTimeEqual(a: []const u8, b: []const u8) bool {
@@ -636,6 +663,7 @@ pub fn constantTimeEqual(a: []const u8, b: []const u8) bool {
 ```
 
 #### C. Secure Memory Clearing
+
 ```zig
 pub fn secureZero(buffer: []u8) void {
     @memset(buffer, 0);
@@ -669,6 +697,7 @@ pub const SecurityLinter = struct {
 ```
 
 **Security Rules**:
+
 - Warn on `unsafe { }` blocks
 - Flag string concatenation in SQL/HTML contexts
 - Detect potential integer overflows
@@ -680,6 +709,7 @@ pub const SecurityLinter = struct {
 ## 📋 Implementation Priority
 
 ### Phase 1: Critical (Implement First)
+
 1. ✅ Overflow checking (your language may already have this)
 2. ✅ Null safety enforcement
 3. ✅ Array bounds checking
@@ -687,6 +717,7 @@ pub const SecurityLinter = struct {
 5. ⬜ Use-after-move detection
 
 ### Phase 2: High Priority
+
 6. ⬜ Data race detection
 7. ⬜ Send/Sync traits
 8. ⬜ Stack overflow protection
@@ -694,6 +725,7 @@ pub const SecurityLinter = struct {
 10. ⬜ SQL injection prevention
 
 ### Phase 3: Medium Priority
+
 11. ⬜ Capability-based types
 12. ⬜ Information flow control
 13. ⬜ Lifetime analysis improvements
@@ -701,6 +733,7 @@ pub const SecurityLinter = struct {
 15. ⬜ Fuzzing support
 
 ### Phase 4: Nice-to-Have
+
 16. ⬜ Heap guard pages
 17. ⬜ XSS prevention
 18. ⬜ Security linter
@@ -724,12 +757,14 @@ These can be implemented quickly with high security impact:
 ## 📚 Resources
 
 ### Similar Language Security Features
+
 - **Rust**: Ownership, lifetimes, unsafe blocks
 - **Ada/SPARK**: Formal verification, contracts
 - **Cyclone**: Region-based memory management
 - **TypeScript**: Taint tracking plugins
 
 ### Papers
+
 - "Taint Tracking for Program Analysis" (Schwartz et al.)
 - "Information Flow Control for Standard OS Abstractions" (Zeldovich et al.)
 - "Capability-Based Computer Systems" (Levy)
@@ -749,6 +784,7 @@ Your language can add these security layers **beyond kernel security**:
 7. **Tooling**: Security linter, compilation modes
 
 This creates a **defense-in-depth** strategy where security is enforced at:
+
 - Hardware level (kernel features)
 - OS level (kernel syscalls)
 - Language level (compiler/type system)

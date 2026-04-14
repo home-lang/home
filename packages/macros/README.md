@@ -9,6 +9,7 @@ The macro system provides hygienic macro expansion with pattern matching, AST tr
 ## Features
 
 ### Built-in Macros
+
 - **todo!**: Mark unimplemented code with optional message
 - **unimplemented!**: Alternative to todo! for clarity
 - **unreachable!**: Mark code paths that should never execute
@@ -16,12 +17,14 @@ The macro system provides hygienic macro expansion with pattern matching, AST tr
 - **debug_assert!**: Debug-only assertions (zero cost in release builds)
 
 ### Custom Macros
+
 - **Pattern matching**: Match against AST patterns
 - **AST transformation**: Generate and manipulate code structures
 - **Hygienic expansion**: Prevents variable capture and naming conflicts
 - **Compile-time evaluation**: Executes during compilation
 
 ### Macro System Features
+
 - **Macro registration**: Register custom macros with the compiler
 - **Expansion tracking**: Maintain expansion history for debugging
 - **Error reporting**: Clear error messages for macro expansion failures
@@ -44,7 +47,7 @@ MacroSystem
 
 ## Built-in Macros
 
-### todo!
+### todo
 
 Mark code that needs to be implemented:
 
@@ -70,7 +73,7 @@ fn complex_algorithm() {
 panic("not yet implemented: message")
 ```
 
-### unimplemented!
+### unimplemented
 
 Semantic alias for todo!, often used for clarity:
 
@@ -82,7 +85,7 @@ fn handle_websocket() {
 // panic: not yet implemented: WebSocket support planned for v2.0
 ```
 
-### unreachable!
+### unreachable
 
 Mark code paths that should never be reached:
 
@@ -108,7 +111,7 @@ fn handle_status(code: i32): string {
 panic("unreachable code: message")
 ```
 
-### assert!
+### assert
 
 Runtime assertions with custom error messages:
 
@@ -135,7 +138,7 @@ if (!(condition)) {
 }
 ```
 
-### debug_assert!
+### debug_assert
 
 Debug-only assertions (compiled out in release builds):
 
@@ -246,10 +249,10 @@ derive_debug!(Point);
 
 ```zig
 // Repeat patterns
-macro vec!($($elem: expr),*) {
+macro vec!($($elem: expr),_) {
     {
         var v = Vec.init();
-        $(v.push($elem);)*
+        $(v.push($elem);)_
         v
     }
 }
@@ -278,31 +281,31 @@ const numbers = vec!(1, 2, 3, 4, 5);
 fn init(allocator: Allocator): MacroSystem
 
 // Register built-in macros
-fn initBuiltinMacros(self: *MacroSystem): !void
+fn initBuiltinMacros(self: _MacroSystem): !void
 
 // Register custom macro
 fn registerMacro(
-    self: *MacroSystem,
+    self: _MacroSystem,
     name: []const u8,
     expander: MacroExpander,
 ): !void
 
 // Expand macro invocation
 fn expandMacro(
-    self: *MacroSystem,
+    self: _MacroSystem,
     name: []const u8,
     args: []const ast.Node,
 ): !ast.Node
 
 // Check if macro is registered
-fn hasMacro(self: *MacroSystem, name: []const u8): bool
+fn hasMacro(self: _MacroSystem, name: []const u8): bool
 ```
 
 ### MacroExpander
 
 ```zig
 pub const MacroExpander = struct {
-    expand: *const fn (
+    expand: _const fn (
         allocator: Allocator,
         args: []const ast.Node,
     ) anyerror!ast.Node,
@@ -434,7 +437,7 @@ macro lazy!($expr: expr) {
         evaluated: bool = false,
         value: @TypeOf($expr) = undefined,
 
-        fn get(self: *@This()): @TypeOf($expr) {
+        fn get(self: _@This()): @TypeOf($expr) {
             if (!self.evaluated) {
                 self.value = $expr;
                 self.evaluated = true;
@@ -608,16 +611,19 @@ fn handle_event_bad(event: Event): void {
 ## Performance
 
 ### Compile-Time Overhead
+
 - **Macro expansion**: < 1ms per invocation
 - **Pattern matching**: Constant time for simple patterns
 - **AST generation**: Proportional to generated code size
 
 ### Runtime Performance
+
 - **assert!**: Small runtime cost (branch + panic)
 - **debug_assert!**: Zero cost in release builds
 - **todo!/unreachable!**: Immediate panic, no overhead before call
 
 ### Memory Usage
+
 - **Macro registry**: ~100 bytes per registered macro
 - **Expansion cache**: Memoizes expanded macros
 - **AST nodes**: Standard AST node overhead
@@ -625,6 +631,7 @@ fn handle_event_bad(event: Event): void {
 ## Comparison with Other Languages
 
 ### Rust
+
 ```rust
 // Rust
 todo!("implement feature");
@@ -634,6 +641,7 @@ debug_assert!(idx < len);
 ```
 
 ### Home (this package)
+
 ```zig
 // Home - identical syntax!
 todo!("implement feature");

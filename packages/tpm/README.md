@@ -451,6 +451,7 @@ This implementation provides a simulated TPM for development:
 - **RNG**: Uses `std.crypto.random` instead of hardware
 
 For production, extend with:
+
 - `/dev/tpm0` device communication
 - TSS2 ESAPI integration
 - Hardware-backed key operations

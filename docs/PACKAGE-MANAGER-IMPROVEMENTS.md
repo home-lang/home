@@ -33,6 +33,7 @@ fn downloadAllParallel(self: *PackageManager) !void {
 ```
 
 **Benefits**:
+
 - 5-10x faster installations
 - Better network utilization
 - Improved developer experience
@@ -58,6 +59,7 @@ Like Bun, store packages globally and symlink them into projects.
 ```
 
 **Benefits**:
+
 - Install a package once, use everywhere
 - Massive disk space savings
 - Instant installs for cached packages
@@ -79,6 +81,7 @@ http_client.compression = .gzip;
 ```
 
 **Benefits**:
+
 - Smaller downloads
 - Faster transfers
 - Better bandwidth usage
@@ -112,8 +115,8 @@ const ProgressBar = struct {
     total: usize,
     speed_mbps: f64,
 
-    pub fn render(self: *ProgressBar) void {
-        const percent = @as(f64, @floatFromInt(self.current)) / @as(f64, @floatFromInt(self.total)) * 100.0;
+    pub fn render(self: _ProgressBar) void {
+        const percent = @as(f64, @floatFromInt(self.current)) / @as(f64, @floatFromInt(self.total)) _ 100.0;
         const bar_width = 20;
         const filled = @as(usize, @intFromFloat(percent / 100.0 * @as(f64, @floatFromInt(bar_width))));
 
@@ -177,8 +180,8 @@ version = "1.0.0"
 
 [workspaces]
 packages = [
-  "packages/*",
-  "apps/*"
+  "packages/_",
+  "apps/_"
 ]
 ```
 
@@ -199,6 +202,7 @@ my-monorepo/
 ```
 
 **Features**:
+
 - Shared dependencies (hoist to root)
 - Workspace-aware linking
 - Cross-workspace references
@@ -224,6 +228,7 @@ Like Bun, cache package metadata locally:
 ```
 
 **Benefits**:
+
 - Instant dependency resolution
 - Offline capability
 - Reduced registry load
@@ -419,11 +424,13 @@ Show installation summary like Bun:
 📥 21 packages downloaded
 
 Top 5 largest packages:
+
   1. zyte           4.2 MB
   2. http-router    2.1 MB
   3. json-parser    1.8 MB
   4. crypto-utils   1.3 MB
   5. ui-components  0.9 MB
+
 ```
 
 ### 15. Dependency Tree Visualization
@@ -436,7 +443,7 @@ Top 5 largest packages:
 # Show dependency tree
 ion pkg tree
 
-# Output:
+# Output
 my-app@1.0.0
 ├── http-router@1.0.0
 │   ├── url-parser@2.1.0
@@ -460,13 +467,17 @@ my-app@1.0.0
 # Show what changed between versions
 ion pkg diff http-router@1.0.0 http-router@1.1.0
 
-# Output:
+# Output
 Changes from 1.0.0 to 1.1.0:
+
   + Added: WebSocket support
   + Added: HTTP/2 support
+
   ~ Changed: Router API (breaking)
   ~ Fixed: Memory leak in middleware
+
   - Removed: Deprecated legacy API
+
 ```
 
 ### 17. Bundle Size Analysis
@@ -479,22 +490,26 @@ Changes from 1.0.0 to 1.1.0:
 # Analyze bundle impact
 ion pkg why large-package
 
-# Output:
+# Output
 large-package@2.0.0 (4.2 MB):
   Used by: 3 packages
+
     - my-app (direct dependency)
     - http-router (peer dependency)
     - utils (dev dependency)
 
   Size breakdown:
+
     - Code:          2.1 MB (50%)
     - Assets:        1.8 MB (43%)
     - Dependencies:  0.3 MB (7%)
 
   Suggestions:
+
     - Consider lazy-loading assets
     - tree-shake unused exports
     - Use lighter alternative: small-package (1.1 MB)
+
 ```
 
 ## 📝 Configuration Enhancements
@@ -513,6 +528,7 @@ ion pkg init
 # Detects web project
 ✨ Detected: Web application
 📦 Recommended packages:
+
   - http-router (HTTP server)
   - zyte (Desktop UI)
   - json-parser (JSON handling)
@@ -549,24 +565,28 @@ logger = { version = "1.0.0", features = ["fast"] }
 ## 🎯 Implementation Priority
 
 ### Phase 1: Essential Performance (Q1 2025)
+
 1. ✅ GitHub shortcuts and URL support (DONE)
 2. 🟡 Parallel downloads
 3. 🟡 Global content-addressable cache
 4. 🟡 Beautiful progress UI
 
 ### Phase 2: Developer Experience (Q2 2025)
+
 5. 🔴 Package scripts
 6. 🔴 Workspaces
 7. 🔴 Package publishing
 8. 🔴 Audit command
 
 ### Phase 3: Advanced Features (Q3 2025)
+
 9. 🔴 Auto-install on import
 10. 🔴 Dependency deduplication
 11. 🔴 Installation analytics
 12. 🔴 Dependency tree visualization
 
 ### Phase 4: Polish (Q4 2025)
+
 13. 🔴 Package diff
 14. 🔴 Bundle size analysis
 15. 🔴 Smart defaults
@@ -589,6 +609,7 @@ logger = { version = "1.0.0", features = ["fast"] }
 ## 🤝 Contributing
 
 Want to implement any of these features? Check out:
+
 1. `src/pkg/package_manager.zig` - Core package manager
 2. `tests/package_manager_test.zig` - Add tests for new features
 3. This document - Update status as features are implemented
@@ -596,6 +617,7 @@ Want to implement any of these features? Check out:
 ---
 
 **Legend**:
+
 - ✅ Done
 - 🟡 In Progress / Planned
 - 🔴 Not Started

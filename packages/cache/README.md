@@ -9,12 +9,14 @@ The cache package provides sophisticated build artifact caching to dramatically 
 ## Features
 
 ### Incremental Compilation
+
 - **Content-based fingerprinting**: SHA-256 hashes detect real changes, not just timestamps
 - **Dependency tracking**: Automatically invalidates dependent modules when sources change
 - **Artifact management**: Caches IR, object files, and metadata
 - **Smart recompilation**: Only rebuilds what actually changed
 
 ### Cache Management
+
 - **LRU eviction**: Automatically removes old entries when cache exceeds size limit
 - **Configurable limits**: Default 1GB cache with customizable size
 - **Metadata persistence**: Saves and loads compilation metadata from disk
@@ -105,6 +107,7 @@ if (try compiler.loadMetadata("src/main.home")) |metadata| {
 ### IncrementalCompiler
 
 **Methods:**
+
 - `init(allocator, cache_dir)`: Create new compiler instance
 - `deinit()`: Clean up resources
 - `computeFingerprint(file_path)`: Calculate SHA-256 hash of file content
@@ -118,6 +121,7 @@ if (try compiler.loadMetadata("src/main.home")) |metadata| {
 - `getStats()`: Get compilation statistics
 
 **Configuration:**
+
 - `max_cache_size_bytes`: Maximum cache size (default: 1GB)
 
 ### ModuleInfo
@@ -150,7 +154,7 @@ Files are hashed using SHA-256 to create content-based fingerprints:
 
 ```zig
 const file = try std.fs.cwd().openFile(file_path, .{});
-const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+const content = try file.readToEndAlloc(allocator, 10 _ 1024 _ 1024);
 
 var hasher = std.crypto.hash.sha2.Sha256.init(.{});
 hasher.update(content);
@@ -173,6 +177,7 @@ try compiler.invalidate("utils.home");
 ### 3. Smart Recompilation
 
 Modules are only recompiled if:
+
 - Content fingerprint changed
 - Any dependency changed
 - Cached artifacts missing

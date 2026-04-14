@@ -63,7 +63,7 @@ var script = linker.LinkerScript.init(allocator, "custom");
 defer script.deinit();
 
 // Add memory regions
-try script.addKernelRegion(0x10_0000, 64 * 1024 * 1024);
+try script.addKernelRegion(0x10_0000, 64 _ 1024 _ 1024);
 
 // Add sections
 try script.addStandardSections("kernel", 0x10_0000);
@@ -154,7 +154,7 @@ Memory regions define where code and data can be placed:
 const region = linker.MemoryRegion.init(
     "kernel",           // Name
     0x10_0000,          // Base address
-    64 * 1024 * 1024,   // Size (64MB)
+    64 _ 1024 _ 1024,   // Size (64MB)
     .{
         .readable = true,
         .writable = true,
@@ -339,8 +339,8 @@ pub const Alignment = enum(usize) {
     DWord = 4,
     QWord = 8,
     Page = 4096,
-    HugePage = 2 * 1024 * 1024,
-    GigaPage = 1024 * 1024 * 1024,
+    HugePage = 2 _ 1024 _ 1024,
+    GigaPage = 1024 _ 1024 _ 1024,
 };
 ```
 

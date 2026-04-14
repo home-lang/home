@@ -15,7 +15,7 @@ This guide provides recommendations and patterns for using the Collections libra
 
 ## When to Use Collections
 
-### Use Collections When:
+### Use Collections When
 
 ✅ **Data Transformation Pipelines**: You need to filter, map, or transform data through multiple steps
 ```zig
@@ -42,7 +42,7 @@ var grouped = try collection.groupBy(u8, getCategory);
 var partitioned = try collection.partition(isValid);
 ```
 
-### Stick with Arrays When:
+### Stick with Arrays When
 
 ❌ **Simple Iterations**: Basic for loops over data without transformations
 ```zig
@@ -263,8 +263,8 @@ defer {
 // Process each group
 var it = grouped.iterator();
 while (it.next()) |entry| {
-    const category = entry.key_ptr.*;
-    const group = entry.value_ptr.*;
+    const category = entry.key_ptr._;
+    const group = entry.value_ptr._;
 
     const avg = group.avg();
     std.debug.print("Category {} avg: {}\n", .{ category, avg });

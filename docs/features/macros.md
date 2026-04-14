@@ -35,11 +35,13 @@ let strings = vec!["a", "b", "c"]
 ### Pattern Matching in Macros
 
 ```home
-macro match_type($value:expr) {
+macro match*type($value:expr) {
     match $value {
-        _ if std.type_name::<typeof($value)>() == "i32" => "integer",
-        _ if std.type_name::<typeof($value)>() == "string" => "string",
-        _ => "unknown",
+
+        * if std.type*name::<typeof($value)>() == "i32" => "integer",
+        * if std.type*name::<typeof($value)>() == "string" => "string",
+        * => "unknown",
+
     }
 }
 ```
@@ -67,7 +69,7 @@ macro min($first:expr $(, $rest:expr)+) {
 }
 
 // Zero or one (?)
-macro optional_init($name:ident: $type:ty $(= $default:expr)?) {
+macro optional*init($name:ident: $type:ty $(= $default:expr)?) {
     let $name: $type = $($default)?
 }
 ```
@@ -75,7 +77,7 @@ macro optional_init($name:ident: $type:ty $(= $default:expr)?) {
 ### Fragment Types
 
 ```home
-macro demonstrate_fragments(
+macro demonstrate*fragments(
     $ident:ident,        // Identifier
     $expr:expr,          // Expression
     $ty:ty,              // Type
@@ -112,11 +114,11 @@ let n = count!(a b c d e)  // 5
 ### Function-like Procedural Macros
 
 ```home
-#[proc_macro]
+# [proc*macro]
 fn sql(input: TokenStream) -> TokenStream {
-    let query = parse_sql(input)
-    let validated = validate_query(query)
-    generate_query_code(validated)
+    let query = parse*sql(input)
+    let validated = validate*query(query)
+    generate*query*code(validated)
 }
 
 // Usage
@@ -126,11 +128,11 @@ let users = sql!(SELECT * FROM users WHERE age > 18)
 ### Implementing Procedural Macros
 
 ```home
-use home.proc_macro.{TokenStream, TokenTree, Literal, Ident, Punct}
+use home.proc*macro.{TokenStream, TokenTree, Literal, Ident, Punct}
 
-#[proc_macro]
+# [proc*macro]
 fn json(input: TokenStream) -> TokenStream {
-    let parsed = parse_json_tokens(input)
+    let parsed = parse*json*tokens(input)
 
     let mut output = TokenStream.new()
     output.extend(quote! {
@@ -148,7 +150,7 @@ fn json(input: TokenStream) -> TokenStream {
 ### Basic Derive
 
 ```home
-#[derive(Debug, Clone, PartialEq)]
+# [derive(Debug, Clone, PartialEq)]
 struct Point {
     x: f64,
     y: f64,
@@ -163,20 +165,20 @@ struct Point {
 ### Custom Derive Macros
 
 ```home
-#[proc_macro_derive(Serialize)]
-fn derive_serialize(input: TokenStream) -> TokenStream {
-    let ast = parse_derive_input(input)
+# [proc*macro*derive(Serialize)]
+fn derive*serialize(input: TokenStream) -> TokenStream {
+    let ast = parse*derive*input(input)
     let name = ast.ident
-    let fields = get_fields(ast)
+    let fields = get*fields(ast)
 
     quote! {
         impl Serialize for #name {
             fn serialize(&self, serializer: &mut Serializer) -> Result<(), Error> {
-                serializer.begin_object()?
+                serializer.begin*object()?
                 #(
                     serializer.field(stringify!(#fields), &self.#fields)?
                 )*
-                serializer.end_object()
+                serializer.end*object()
             }
         }
     }
@@ -186,19 +188,19 @@ fn derive_serialize(input: TokenStream) -> TokenStream {
 ### Derive with Attributes
 
 ```home
-#[proc_macro_derive(Serialize, attributes(serde))]
-fn derive_serialize_with_attrs(input: TokenStream) -> TokenStream {
+# [proc*macro*derive(Serialize, attributes(serde))]
+fn derive*serialize*with*attrs(input: TokenStream) -> TokenStream {
     // Can now process #[serde(...)] attributes on fields
 }
 
 // Usage
-#[derive(Serialize)]
+# [derive(Serialize)]
 struct User {
-    #[serde(rename = "user_name")]
+    #[serde(rename = "user*name")]
     name: string,
 
     #[serde(skip)]
-    password_hash: string,
+    password*hash: string,
 
     #[serde(default)]
     active: bool,
@@ -210,18 +212,18 @@ struct User {
 ### Basic Attribute Macros
 
 ```home
-#[proc_macro_attribute]
+# [proc*macro*attribute]
 fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let route_path = parse_route_path(attr)
-    let function = parse_fn(item)
+    let route*path = parse*route*path(attr)
+    let function = parse*fn(item)
 
     quote! {
-        #[doc = concat!("Route: ", #route_path)]
+        #[doc = concat!("Route: ", #route*path)]
         #function
 
         inventory.submit! {
             Route {
-                path: #route_path,
+                path: #route*path,
                 handler: #function.name,
             }
         }
@@ -229,8 +231,8 @@ fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // Usage
-#[route("/api/users")]
-fn get_users() -> Response {
+# [route("/api/users")]
+fn get*users() -> Response {
     // ...
 }
 ```
@@ -238,21 +240,21 @@ fn get_users() -> Response {
 ### Transforming Items
 
 ```home
-#[proc_macro_attribute]
-fn async_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let trait_def = parse_trait(item)
+# [proc*macro*attribute]
+fn async*trait(*attr: TokenStream, item: TokenStream) -> TokenStream {
+    let trait*def = parse*trait(item)
 
     // Transform async fn to return BoxFuture
-    let transformed = trait_def.methods.map(|method| {
-        if method.is_async {
-            transform_async_method(method)
+    let transformed = trait*def.methods.map(|method| {
+        if method.is*async {
+            transform*async*method(method)
         } else {
             method
         }
     })
 
     quote! {
-        trait #trait_def.name {
+        trait #trait*def.name {
             #(#transformed)*
         }
     }
@@ -264,12 +266,12 @@ fn async_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ### Hygienic Identifiers
 
 ```home
-macro create_var() {
+macro create*var() {
     let x = 42  // This 'x' won't conflict with outer 'x'
 }
 
 let x = 10
-create_var!()
+create*var!()
 print(x)  // Still 10, macro's x is separate
 ```
 
@@ -287,13 +289,13 @@ print(answer)  // 42 - accessible because we used the caller's identifier
 ### Span Manipulation
 
 ```home
-#[proc_macro]
-fn with_span(input: TokenStream) -> TokenStream {
+# [proc*macro]
+fn with*span(input: TokenStream) -> TokenStream {
     let span = input.span()  // Preserve source location
 
-    quote_spanned! { span =>
+    quote*spanned! { span =>
         // Generated code points to original location for errors
-        compile_error!("Something went wrong")
+        compile*error!("Something went wrong")
     }
 }
 ```
@@ -304,11 +306,11 @@ fn with_span(input: TokenStream) -> TokenStream {
 
 ```home
 // Static assertion
-static_assert!(size_of::<i32>() == 4)
-static_assert!(align_of::<u64>() == 8)
+static*assert!(size*of::<i32>() == 4)
+static*assert!(align*of::<u64>() == 8)
 
 // Const evaluation
-const VALUE: i32 = const_eval!(factorial(10))
+const VALUE: i32 = const*eval!(factorial(10))
 ```
 
 ### Debug and Inspection
@@ -319,10 +321,10 @@ let x = 5
 dbg!(x * 2)  // Prints: [file:line] x * 2 = 10
 
 // Get type name
-let name = type_name!(Vec<i32>)  // "Vec<i32>"
+let name = type*name!(Vec<i32>)  // "Vec<i32>"
 
 // Get file/line/column
-let location = source_location!()  // "src/main.home:42:5"
+let location = source*location!()  // "src/main.home:42:5"
 ```
 
 ### Conditional Compilation
@@ -332,12 +334,12 @@ macro cfg($condition:meta) {
     // Evaluates condition at compile time
 }
 
-#[cfg(target_os = "linux")]
-fn platform_specific() {
+# [cfg(target*os = "linux")]
+fn platform*specific() {
     // Only compiled on Linux
 }
 
-let value = cfg!(debug_mode) ? "debug" : "release"
+let value = cfg!(debug*mode) ? "debug" : "release"
 ```
 
 ## Domain-Specific Languages
@@ -346,14 +348,14 @@ let value = cfg!(debug_mode) ? "debug" : "release"
 
 ```home
 macro sql($($tokens:tt)*) {
-    parse_and_validate_sql!($($tokens)*)
+    parse*and*validate*sql!($($tokens)*)
 }
 
 let query = sql! {
     SELECT name, email
     FROM users
     WHERE active = true
-    ORDER BY created_at DESC
+    ORDER BY created*at DESC
     LIMIT 10
 }
 ```
@@ -362,7 +364,7 @@ let query = sql! {
 
 ```home
 macro html($($tokens:tt)*) {
-    parse_html!($($tokens)*)
+    parse*html!($($tokens)*)
 }
 
 let page = html! {
@@ -383,10 +385,10 @@ let page = html! {
 ```home
 macro regex($pattern:literal) {
     // Compile-time regex validation
-    compile_regex!($pattern)
+    compile*regex!($pattern)
 }
 
-let email_pattern = regex!(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+let email*pattern = regex!(r"^[a-zA-Z0-9.*%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 ```
 
 ## Advanced Techniques
@@ -394,19 +396,19 @@ let email_pattern = regex!(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 ### Token Tree Munching
 
 ```home
-macro parse_list($($tokens:tt)*) {
-    parse_list_impl!([] $($tokens)*)
+macro parse*list($($tokens:tt)*) {
+    parse*list*impl!([] $($tokens)*)
 }
 
-macro parse_list_impl([$($acc:expr),*] $head:expr, $($rest:tt)*) {
-    parse_list_impl!([$($acc,)* $head] $($rest)*)
+macro parse*list*impl([$($acc:expr),*] $head:expr, $($rest:tt)*) {
+    parse*list*impl!([$($acc,)* $head] $($rest)*)
 }
 
-macro parse_list_impl([$($acc:expr),*] $last:expr) {
+macro parse*list*impl([$($acc:expr),*] $last:expr) {
     [$($acc,)* $last]
 }
 
-macro parse_list_impl([$($acc:expr),*]) {
+macro parse*list*impl([$($acc:expr),*]) {
     [$($acc),*]
 }
 ```
@@ -415,14 +417,14 @@ macro parse_list_impl([$($acc:expr),*]) {
 
 ```home
 macro reverse($($items:expr),*) {
-    reverse_impl!([] $($items),*)
+    reverse*impl!([] $($items),*)
 }
 
-macro reverse_impl([$($acc:expr),*] $head:expr $(, $rest:expr)*) {
-    reverse_impl!([$head $(, $acc)*] $($rest),*)
+macro reverse*impl([$($acc:expr),*] $head:expr $(, $rest:expr)*) {
+    reverse*impl!([$head $(, $acc)*] $($rest),*)
 }
 
-macro reverse_impl([$($acc:expr),*]) {
+macro reverse*impl([$($acc:expr),*]) {
     ($($acc),*)
 }
 
@@ -432,17 +434,17 @@ let reversed = reverse!(1, 2, 3, 4, 5)  // (5, 4, 3, 2, 1)
 ### Callback Pattern
 
 ```home
-macro with_each($callback:ident, $($items:expr),*) {
+macro with*each($callback:ident, $($items:expr),*) {
     $(
         $callback!($items);
     )*
 }
 
-macro print_item($item:expr) {
+macro print*item($item:expr) {
     print("{:?}", $item)
 }
 
-with_each!(print_item, 1, 2, 3)
+with*each!(print*item, 1, 2, 3)
 ```
 
 ## Edge Cases
@@ -458,8 +460,8 @@ macro first() { 1 }
 let a = first!()
 
 // Forward references require imports:
-use other_module.later_macro
-let b = later_macro!()
+use other*module.later*macro
+let b = later*macro!()
 ```
 
 ### Ambiguous Syntax
@@ -480,9 +482,9 @@ macro flexible($($tt:tt)*) {
 
 ```home
 // Home has a recursion limit (default 128)
-#![recursion_limit = "256"]
+# ![recursion*limit = "256"]
 
-macro deeply_recursive($n:expr) {
+macro deeply*recursive($n:expr) {
     // ... deep recursion ...
 }
 ```
@@ -490,6 +492,7 @@ macro deeply_recursive($n:expr) {
 ## Best Practices
 
 1. **Prefer functions over macros when possible**:
+
    ```home
    // Use function
    fn add(a: i32, b: i32) -> i32 { a + b }
@@ -499,6 +502,7 @@ macro deeply_recursive($n:expr) {
    ```
 
 2. **Document macro syntax clearly**:
+
    ```home
    /// Creates a HashMap with the given key-value pairs.
    ///
@@ -512,28 +516,31 @@ macro deeply_recursive($n:expr) {
    ```
 
 3. **Provide helpful error messages**:
+
    ```home
-   macro require_even($n:expr) {
-       const _: () = {
+   macro require*even($n:expr) {
+       const *: () = {
            if $n % 2 != 0 {
-               compile_error!(concat!(stringify!($n), " must be even"))
+               compile*error!(concat!(stringify!($n), " must be even"))
            }
        };
    }
    ```
 
 4. **Test macro edge cases**:
+
    ```home
    #[test]
-   fn test_vec_macro() {
-       assert_eq!(vec![], Vec::<i32>.new())
-       assert_eq!(vec![1], vec![1])
-       assert_eq!(vec![1,], vec![1])  // Trailing comma
+   fn test*vec*macro() {
+       assert*eq!(vec![], Vec::<i32>.new())
+       assert*eq!(vec![1], vec![1])
+       assert*eq!(vec![1,], vec![1])  // Trailing comma
        assert_eq!(vec![1, 2, 3], vec![1, 2, 3])
    }
    ```
 
 5. **Use appropriate macro delimiters**:
+
    ```home
    // Parentheses for function-like macros
    println!("hello")

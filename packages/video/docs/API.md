@@ -5,6 +5,7 @@ A comprehensive, dependency-free video processing library for the Home programmi
 ## Core Types
 
 ### Timestamp
+
 Represents a point in time with microsecond precision.
 
 ```zig
@@ -14,6 +15,7 @@ const micros = ts.microseconds;  // 1500000
 ```
 
 ### Duration
+
 Represents a time span.
 
 ```zig
@@ -22,6 +24,7 @@ const ms = d.toMilliseconds();  // 60000
 ```
 
 ### Rational
+
 Represents frame rates and time bases as numerator/denominator.
 
 ```zig
@@ -30,7 +33,9 @@ const fps = frame_rate.toFloat();  // ~29.97
 ```
 
 ### PixelFormat
+
 Supported pixel formats:
+
 - `yuv420p`, `yuv422p`, `yuv444p` - Planar YUV
 - `nv12`, `nv21` - Semi-planar YUV
 - `rgb24`, `bgr24` - 24-bit RGB
@@ -38,7 +43,9 @@ Supported pixel formats:
 - `gray8`, `gray16` - Grayscale
 
 ### SampleFormat
+
 Audio sample formats:
+
 - `u8` - Unsigned 8-bit
 - `s16le`, `s16be` - Signed 16-bit
 - `s24le`, `s24be` - Signed 24-bit
@@ -49,6 +56,7 @@ Audio sample formats:
 ## Container Formats
 
 ### MP4
+
 ```zig
 const video = @import("video");
 
@@ -65,12 +73,14 @@ try muxer.writeVideoPacket(packet);
 ```
 
 ### WebM/Matroska
+
 ```zig
 var reader = try video.WebmReader.init(allocator, data);
 const segment = try reader.parseSegmentInfo();
 ```
 
 ### WAV
+
 ```zig
 // Reading
 var wav = try video.WavReader.fromMemory(allocator, data);
@@ -87,20 +97,22 @@ try writer.writeToFile("output.wav");
 ## Video Codecs
 
 ### H.264/AVC
+
 ```zig
 // Parse NAL units
 var nal_iter = video.H264NalIterator{ .data = bitstream };
 while (nal_iter.next()) |nal| {
     switch (nal.unit_type) {
-        .sps => { /* Parse SPS */ },
-        .pps => { /* Parse PPS */ },
-        .idr_slice => { /* Keyframe */ },
+        .sps => { /_ Parse SPS _/ },
+        .pps => { /_ Parse PPS _/ },
+        .idr_slice => { /_ Keyframe _/ },
         else => {},
     }
 }
 ```
 
 ### H.265/HEVC
+
 ```zig
 var hevc_iter = video.HevcNalIterator{ .data = bitstream };
 while (hevc_iter.next()) |nal| {
@@ -109,12 +121,14 @@ while (hevc_iter.next()) |nal| {
 ```
 
 ### VP9
+
 ```zig
 var parser = video.Vp9FrameParser.init(frame_data);
 const header = try parser.parseUncompressedHeader();
 ```
 
 ### AV1
+
 ```zig
 var obu_iter = video.Av1ObuIterator{ .data = bitstream };
 while (try obu_iter.next()) |obu| {
@@ -125,6 +139,7 @@ while (try obu_iter.next()) |obu| {
 ## Audio Codecs
 
 ### AAC
+
 ```zig
 // Decoding
 var decoder = video.AacDecoder.init(allocator);
@@ -136,11 +151,13 @@ const encoded = try encoder.encodeAdts(&audio_frame);
 ```
 
 ### Opus
+
 ```zig
 const id_header = try video.OpusIdHeader.parse(header_data);
 ```
 
 ### FLAC
+
 ```zig
 var flac = try video.FlacReader.init(allocator, data);
 const info = try flac.readStreamInfo();
@@ -149,6 +166,7 @@ const info = try flac.readStreamInfo();
 ## Video Filters
 
 ### Scale
+
 ```zig
 var scaler = video.ScaleFilter.init(allocator, .{
     .output_width = 1280,
@@ -159,6 +177,7 @@ const scaled = try scaler.apply(&frame);
 ```
 
 ### Color Adjustment
+
 ```zig
 var color = video.ColorFilter.init(.{
     .brightness = 1.1,
@@ -169,6 +188,7 @@ try color.apply(&frame);
 ```
 
 ### Blur/Sharpen
+
 ```zig
 var blur = video.BlurFilter.init(5.0, .gaussian);
 try blur.apply(&frame);
@@ -178,6 +198,7 @@ try sharpen.apply(&frame);
 ```
 
 ### Deinterlace
+
 ```zig
 var deint = video.DeinterlaceFilter.init(.yadif, .top_field_first);
 const progressive = try deint.apply(&interlaced_frame);
@@ -186,6 +207,7 @@ const progressive = try deint.apply(&interlaced_frame);
 ## Audio Filters
 
 ### Resample
+
 ```zig
 var resampler = video.ResampleFilter.init(allocator, .{
     .input_rate = 44100,
@@ -196,12 +218,14 @@ const resampled = try resampler.process(&audio);
 ```
 
 ### Volume
+
 ```zig
 var volume = video.VolumeFilter.init(-6.0);  // -6 dB
 try volume.apply(&audio_frame);
 ```
 
 ### Normalize
+
 ```zig
 var normalizer = video.NormalizeFilter.init(.{
     .target_level = -14.0,  // LUFS
@@ -213,6 +237,7 @@ try normalizer.apply(&audio);
 ## Subtitles
 
 ### SRT
+
 ```zig
 var srt = try video.SrtParser.init(allocator, srt_data);
 while (try srt.nextCue()) |cue| {
@@ -221,12 +246,14 @@ while (try srt.nextCue()) |cue| {
 ```
 
 ### WebVTT
+
 ```zig
 var vtt = try video.VttParser.init(allocator, vtt_data);
 const cues = try vtt.parseAll();
 ```
 
 ### ASS/SSA
+
 ```zig
 var ass = try video.AssParser.init(allocator, ass_data);
 const styles = ass.styles;
@@ -236,6 +263,7 @@ const dialogues = ass.dialogues;
 ## Streaming
 
 ### HLS
+
 ```zig
 var playlist = try video.HlsPlaylist.parse(allocator, m3u8_data);
 for (playlist.segments) |segment| {
@@ -244,6 +272,7 @@ for (playlist.segments) |segment| {
 ```
 
 ### DASH
+
 ```zig
 var manifest = try video.DashManifest.parse(allocator, mpd_data);
 for (manifest.periods) |period| {
@@ -256,6 +285,7 @@ for (manifest.periods) |period| {
 ## Timeline/NLE
 
 ### Creating a Timeline
+
 ```zig
 var timeline = video.Timeline.init(allocator, 1920, 1080, .{ .num = 30, .den = 1 });
 defer timeline.deinit();
@@ -265,6 +295,7 @@ try track.insertClip(clip, 0);
 ```
 
 ### Export
+
 ```zig
 // EDL export
 const edl = try video.EdlExporter.exportEdl(&timeline, allocator);
@@ -278,6 +309,7 @@ const fcpxml = try video.FcpXmlExporter.exportFcpXml(&timeline, allocator, .{
 ## Metadata
 
 ### ID3 Tags
+
 ```zig
 if (video.hasId3v2(data)) {
     const tag = try video.parseId3v2(allocator, data);
@@ -286,6 +318,7 @@ if (video.hasId3v2(data)) {
 ```
 
 ### MP4 Metadata
+
 ```zig
 const meta = try video.parseMp4Metadata(allocator, mp4_data);
 ```
@@ -293,6 +326,7 @@ const meta = try video.parseMp4Metadata(allocator, mp4_data);
 ## Hardware Acceleration
 
 ### Detection
+
 ```zig
 const hw = @import("video").hw;
 const available = hw.detectAvailable();
@@ -304,6 +338,7 @@ if (available.videotoolbox) {
 ## Conversion Pipeline
 
 ### Basic Conversion
+
 ```zig
 var converter = try video.Converter.init(allocator, .{
     .input = "input.mp4",
@@ -315,6 +350,7 @@ try converter.run(progressCallback);
 ```
 
 ### Presets
+
 ```zig
 const options = video.Presets.webOptimized();
 var converter = try video.Converter.init(allocator, options);
@@ -323,12 +359,14 @@ var converter = try video.Converter.init(allocator, options);
 ## Quality Analysis
 
 ### PSNR/SSIM
+
 ```zig
 const psnr = try video.calculatePsnr(&original, &compressed);
 const ssim = try video.calculateSsim(&original, &compressed);
 ```
 
 ### Scene Detection
+
 ```zig
 var detector = video.ScenecutDetector.init(allocator, .{
     .threshold = 0.4,
@@ -360,6 +398,7 @@ const sprite = try extractor.generateSpriteSheet(&video, .{
 ## Home Language API
 
 ### Video Operations
+
 ```zig
 const home = @import("video").bindings;
 
@@ -376,6 +415,7 @@ try video.save("output.mp4");
 ```
 
 ### Audio Operations
+
 ```zig
 var audio = try home.Audio.load(allocator, "input.wav");
 defer audio.deinit();

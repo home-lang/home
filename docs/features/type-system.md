@@ -119,7 +119,7 @@ let list = [1, 2, 3] // [i32; 3]
 
 // Inference through function calls
 fn double(n: i32) -> i32 {
-    n * 2
+    n _ 2
 }
 
 let result = double(21)  // result: i32
@@ -377,7 +377,7 @@ struct Node {
 // Or use explicit reference
 struct TreeNode {
     value: i32,
-    left: ?*TreeNode,
+    left: ?_TreeNode,
     right: ?*TreeNode,
 }
 ```
@@ -416,6 +416,7 @@ type Consumer<T> = fn(T) -> void
 ## Best Practices
 
 1. **Prefer type inference**: Let the compiler infer types when clear
+
    ```home
    // Good
    let numbers = [1, 2, 3, 4, 5]
@@ -425,12 +426,14 @@ type Consumer<T> = fn(T) -> void
    ```
 
 2. **Use type aliases for clarity**: Name complex types
+
    ```home
    type HttpHeaders = HashMap<string, []string>
    type ResponseHandler = fn(Response) -> Result<void, Error>
    ```
 
 3. **Prefer optionals over sentinel values**:
+
    ```home
    // Good
    fn find(items: []Item, id: u64) -> ?Item
@@ -440,6 +443,7 @@ type Consumer<T> = fn(T) -> void
    ```
 
 4. **Use newtypes for type safety**:
+
    ```home
    struct UserId(u64)
    struct OrderId(u64)
@@ -450,6 +454,7 @@ type Consumer<T> = fn(T) -> void
    ```
 
 5. **Constrain generics appropriately**: Only require what you need
+
    ```home
    // Too restrictive
    fn count<T: Clone + Debug + Eq + Hash>(items: []T) -> usize

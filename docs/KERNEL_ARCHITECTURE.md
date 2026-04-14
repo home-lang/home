@@ -178,6 +178,7 @@ pub const BumpAllocator = struct {
 ```
 
 **Characteristics**:
+
 - **Time Complexity**: O(1) allocation
 - **Space Overhead**: Minimal (just two pointers)
 - **Fragmentation**: None (no freeing)
@@ -191,16 +192,17 @@ pub const BumpAllocator = struct {
 ```zig
 pub fn SlabAllocator(comptime T: type) type {
     return struct {
-        free_list: ?*Slab,
+        free_list: ?_Slab,
         lock: sync.Spinlock,
 
-        pub fn alloc() !*T { /* O(1) */ }
-        pub fn free(ptr: *T) void { /* O(1) */ }
+        pub fn alloc() !_T { /_ O(1) _/ }
+        pub fn free(ptr: _T) void { /_ O(1) */ }
     };
 }
 ```
 
 **Characteristics**:
+
 - **Time Complexity**: O(1) alloc/free
 - **Fragmentation**: Minimal (same-size objects)
 - **Cache Locality**: Excellent (LIFO free list)
@@ -214,15 +216,16 @@ pub fn SlabAllocator(comptime T: type) type {
 ```zig
 pub const BuddyAllocator = struct {
     const MAX_ORDER: usize = 11;  // 2^11 = 8MB max
-    free_lists: [MAX_ORDER]?*Block,
+    free_lists: [MAX_ORDER]?_Block,
     lock: sync.Spinlock,
 
-    pub fn alloc(size: usize) ![]u8 { /* O(log n) */ }
-    pub fn free(memory: []u8) void { /* O(log n) with coalescing */ }
+    pub fn alloc(size: usize) ![]u8 { /_ O(log n) _/ }
+    pub fn free(memory: []u8) void { /_ O(log n) with coalescing */ }
 };
 ```
 
 **Characteristics**:
+
 - **Block Sizes**: Powers of 2 from 4KB (2^0 × 4KB) to 8MB (2^10 × 4KB)
 - **Time Complexity**: O(log n) allocation, O(log n) freeing
 - **Coalescing**: Automatic buddy merging on free
@@ -232,6 +235,7 @@ pub const BuddyAllocator = struct {
 **Buddy Algorithm**:
 ```
 Allocate 12KB:
+
 1. Round up to next power-of-2: 16KB (order 2)
 2. Search free lists from order 2 upward
 3. If order 4 block found (64KB):
@@ -240,9 +244,11 @@ Allocate 12KB:
    - Return first 16KB, add buddies to free lists
 
 Free 16KB at address A:
+
 1. Check if buddy at A^16KB is free
 2. If yes: merge → 32KB, check next level
 3. Repeat until buddy is allocated
+
 ```
 
 ### Page Table Management
@@ -258,12 +264,14 @@ Virtual Address (48-bit):
  [47:39][38:30][29:21][20:12] [11:0]
 
 Translation Process:
+
 1. CR3 register → PML4 base address
 2. VA[47:39] → Index into PML4 → PDP address
 3. VA[38:30] → Index into PDP → PD address
 4. VA[29:21] → Index into PD → PT address
 5. VA[20:12] → Index into PT → Physical page
 6. VA[11:0]  → Offset within 4KB page
+
 ```
 
 #### Page Table Entry (x86-64)
@@ -293,7 +301,9 @@ Bit 0:      Present (P)
 #### COW Fork Flow
 
 ```
+
 1. Parent process calls fork()
+
    │
    ├─> Create child process structure
    │
@@ -310,6 +320,7 @@ Bit 0:      Present (P)
        (both processes now share memory)
 
 2. Child writes to shared page
+
    │
    ├─> Page fault (write to read-only page)
    │
@@ -411,14 +422,14 @@ pub const Process = struct {
     state: ProcessState,  // Ready, Running, Blocked, Terminated
 
     // Memory
-    page_table: *PageTable,
+    page_table: _PageTable,
     vma_list: ArrayList(VMA),  // Virtual Memory Areas
     heap_start: usize,
     heap_end: usize,
     stack_top: usize,
 
     // File Descriptors
-    fd_table: [MAX_FDS]?*FileDescriptor,  // 0=stdin, 1=stdout, 2=stderr
+    fd_table: [MAX_FDS]?_FileDescriptor,  // 0=stdin, 1=stdout, 2=stderr
     cwd: []const u8,  // Current working directory
 
     // Scheduling
@@ -431,8 +442,8 @@ pub const Process = struct {
     context: Context,
 
     // Relations
-    parent: ?*Process,
-    children: ArrayList(*Process),
+    parent: ?_Process,
+    children: ArrayList(_Process),
 
     // Synchronization
     wait_queue: ?*WaitQueue,
@@ -485,6 +496,7 @@ Priority 0 (Lowest):     [P8] → [P9] → NULL
 ```
 
 **Algorithm**:
+
 1. Select highest priority non-empty queue
 2. Dequeue first process (FIFO within priority)
 3. Run for time quantum (10ms default)
@@ -538,8 +550,8 @@ Mount Point          Filesystem    Device
 ```zig
 pub const InodeCache = struct {
     const CACHE_SIZE = 1024;
-    entries: HashMap(u64, *Inode),  // ino → inode
-    lru_list: LinkedList(*Inode),
+    entries: HashMap(u64, _Inode),  // ino → inode
+    lru_list: LinkedList(_Inode),
     lock: sync.Mutex,
 
     pub fn get(ino: u64) ?*Inode {
@@ -729,30 +741,46 @@ CLOSED
 ### Packet Flow (Receive)
 
 ```
+
 1. Network card receives Ethernet frame
+
    ↓
+
 2. e1000 driver copies to ring buffer
+
    ↓
+
 3. Raise interrupt (IRQ)
+
    ↓
+
 4. Ethernet layer: validate MAC, extract EtherType
+
    ↓
+
 5. If EtherType == 0x0806 (ARP):
+
    ├─> Update ARP cache
    ├─> If ARP request: send ARP reply
    └─> Done
 
 6. If EtherType == 0x0800 (IPv4):
+
    ↓
+
 7. IPv4 layer: validate checksum, TTL, destination
+
    ↓
+
 8. If protocol == 17 (UDP):
+
    ├─> Validate UDP checksum
    ├─> Find socket by (dest IP, dest port)
    ├─> Copy to socket receive buffer
    └─> Wake up waiting process
 
 9. If protocol == 6 (TCP):
+
    ├─> Validate TCP checksum
    ├─> Find connection by (src IP, src port, dest IP, dest port)
    ├─> Process based on state machine
@@ -802,29 +830,37 @@ Offset    Register
 #### Read/Write Flow
 
 ```
+
 1. Build Command FIS (Frame Information Structure)
+
    ├─ Type: H2D Register FIS
    ├─ Command: READ DMA / WRITE DMA
    ├─ LBA (Logical Block Address)
    └─ Sector count
 
 2. Build PRDT (Physical Region Descriptor Table)
+
    ├─ DMA buffer physical address
    └─ Byte count
 
 3. Build Command Header
+
    ├─ CFL (Command FIS Length)
    ├─ PRDTL (PRDT Length)
    └─ Command Table Base Address
 
 4. Write to Port Command Issue register
+
    ↓
+
 5. Wait for completion (poll or interrupt)
+
    ├─ Check Interrupt Status
    ├─ Check Task File Data
    └─ Handle errors if any
 
 6. Copy DMA buffer to user buffer (for reads)
+
 ```
 
 ### NVMe Driver
@@ -909,7 +945,7 @@ Bit 4 (I/D):  1 = Instruction fetch
 pub const Spinlock = struct {
     locked: atomic.AtomicBool = atomic.AtomicBool.init(false),
 
-    pub fn acquire(self: *Spinlock) void {
+    pub fn acquire(self: _Spinlock) void {
         while (self.locked.swap(true, .Acquire)) {
             while (self.locked.load(.Monotonic)) {
                 asm volatile ("pause");  // x86-64: reduce power
@@ -917,7 +953,7 @@ pub const Spinlock = struct {
         }
     }
 
-    pub fn release(self: *Spinlock) void {
+    pub fn release(self: _Spinlock) void {
         self.locked.store(false, .Release);
     }
 };
@@ -930,18 +966,22 @@ pub const Spinlock = struct {
 ### x86-64 Boot Flow
 
 ```
+
 1. BIOS/UEFI
+
    ├─ Power-on self-test (POST)
    ├─ Initialize hardware
    └─ Load bootloader from MBR
 
 2. Bootloader (GRUB/Limine)
+
    ├─ Load kernel into memory
    ├─ Set up initial page tables
    ├─ Switch to long mode (64-bit)
    └─ Jump to kernel entry (_start)
 
 3. Kernel Initialization
+
    ├─ Initialize GDT (Global Descriptor Table)
    ├─ Initialize IDT (Interrupt Descriptor Table)
    ├─ Set up TSS (Task State Segment)
@@ -965,6 +1005,7 @@ pub const Spinlock = struct {
    └─ Launch init process
 
 4. Init Process
+
    ├─ Mount additional filesystems
    ├─ Start system services
    └─ Launch login/shell

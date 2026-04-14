@@ -53,7 +53,7 @@ pub fn main() !void {
 
     var result = try filtered.map(i32, struct {
         fn call(n: i32) i32 {
-            return n * 2;
+            return n _ 2;
         }
     }.call);
     defer result.deinit();
@@ -126,7 +126,7 @@ _ = col.macro(double_fn); // [2, 4, 6]
 
 // Custom inline macros
 _ = col.macro(struct {
-    fn call(item: *i32) void {
+    fn call(item: _i32) void {
         item.* += 10;
     }
 }.call); // [12, 14, 16]
@@ -340,8 +340,8 @@ std.debug.print("Valid: {}, Invalid indices: {any}\n", .{ result.valid, result.i
 
 // Sanitize by making all positive
 _ = data.sanitize(struct {
-    fn call(item: *i32) void {
-        if (item.* < 0) item.* = -item.*;
+    fn call(item: _i32) void {
+        if (item._ < 0) item._ = -item._;
     }
 }.call);
 ```
@@ -412,8 +412,8 @@ defer data.deinit();
 // Apply multiple transformations
 _ = data.macro(collections.macros.doubleMacro(i32))  // [2, 4, 6, 8, 10]
         .macro(struct {
-            fn call(item: *i32) void {
-                item.* += 1;  // [3, 5, 7, 9, 11]
+            fn call(item: _i32) void {
+                item._ += 1;  // [3, 5, 7, 9, 11]
             }
         }.call);
 ```
@@ -439,6 +439,7 @@ zig build test
 ```
 
 **Test Coverage: 220+ tests passing**
+
 - 100 Collection tests (includes new validation, windowing, diff/patch tests)
 - 7 LazyCollection tests
 - 58 Macro tests (original + new statistical macros)
@@ -447,6 +448,7 @@ zig build test
 ## Performance
 
 Collections are optimized for:
+
 - **Eager Evaluation**: Immediate processing for small datasets
 - **Lazy Evaluation**: Deferred processing with short-circuit optimization
 - **Zero-Copy**: Most operations avoid unnecessary copying
@@ -463,7 +465,7 @@ Collections are optimized for:
 | `reduce()` | O(n) | None | In-place |
 | `sort()` | O(n log n) | None | In-place |
 | `unique()` | O(n) | Yes | Uses HashMap |
-| **Lazy.take()** | **O(k)** | **Yes** | **Short-circuits!** |
+| **Lazy.take()**|**O(k)**|**Yes**|**Short-circuits!** |
 
 ## API Reference
 

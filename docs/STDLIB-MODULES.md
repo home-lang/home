@@ -9,6 +9,7 @@ Complete reference for Home's standard library.
 ### Core Utilities
 
 #### `datetime.zig` - Date and Time
+
 ```home
 import std.datetime;
 
@@ -19,6 +20,7 @@ let timer = Timer.start();
 ```
 
 **Exports**:
+
 - `DateTime` - Date/time manipulation
 - `Duration` - Time duration
 - `Timer` - Elapsed time measurement
@@ -28,6 +30,7 @@ let timer = Timer.start();
 ---
 
 #### `crypto.zig` - Cryptography
+
 ```home
 import std.crypto;
 
@@ -38,6 +41,7 @@ let salt = Password.generateSalt(allocator);
 ```
 
 **Exports**:
+
 - `SHA256`, `SHA512`, `MD5`, `BLAKE3` - Hashing
 - `HMAC` - Message authentication
 - `Base64`, `Hex` - Encoding
@@ -49,6 +53,7 @@ let salt = Password.generateSalt(allocator);
 ---
 
 #### `process.zig` - Process Management
+
 ```home
 import std.process;
 
@@ -58,6 +63,7 @@ let builder = ProcessBuilder.init(allocator)
 ```
 
 **Exports**:
+
 - `exec()`, `execWithInput()`, `shell()` - Execute commands
 - `SpawnedProcess` - Async process
 - `ProcessBuilder` - Fluent process builder
@@ -68,6 +74,7 @@ let builder = ProcessBuilder.init(allocator)
 ---
 
 #### `cli.zig` - Command-Line Arguments
+
 ```home
 import std.cli;
 
@@ -78,6 +85,7 @@ let input = parser.getString("input");
 ```
 
 **Exports**:
+
 - `ArgParser` - Full-featured argument parser
 - `SimpleArgs` - Quick argument parsing
 - `Env` - Environment variable helpers
@@ -85,6 +93,7 @@ let input = parser.getString("input");
 ---
 
 #### `regex.zig` - Regular Expressions
+
 ```home
 import std.regex;
 
@@ -94,6 +103,7 @@ let replaced = regex.replaceAll("text", "replacement");
 ```
 
 **Exports**:
+
 - `Regex` - Pattern matching engine
 - `Match` - Match result
 - `Patterns` - Common patterns (EMAIL, URL, IPV4, etc.)
@@ -103,16 +113,18 @@ let replaced = regex.replaceAll("text", "replacement");
 ### Networking
 
 #### `http.zig` - HTTP Client
+
 ```home
 import std.http;
 
 let client = HttpClient.init(allocator);
 let response = client.get("https://api.example.com/users");
-let json_response = client.post("https://api.example.com/users", 
+let json_response = client.post("https://api.example.com/users",
     .{ .body = "{\"name\":\"John\"}", .content_type = "applicathome/json" });
 ```
 
 **Exports**:
+
 - `HttpClient` - HTTP/HTTPS client
 - `Request`, `Response` - HTTP messages
 - GET, POST, PUT, DELETE, PATCH methods
@@ -120,6 +132,7 @@ let json_response = client.post("https://api.example.com/users",
 ---
 
 #### `tcp.zig` - TCP Sockets
+
 ```home
 import std.tcp;
 
@@ -131,12 +144,14 @@ client.write("Hello");
 ```
 
 **Exports**:
+
 - `TcpServer` - TCP server
 - `TcpClient` - TCP client
 
 ---
 
 #### `udp.zig` - UDP Sockets
+
 ```home
 import std.udp;
 
@@ -145,6 +160,7 @@ socket.sendTo("data", "127.0.0.1", 9000);
 ```
 
 **Exports**:
+
 - `UdpSocket` - UDP socket
 
 ---
@@ -152,6 +168,7 @@ socket.sendTo("data", "127.0.0.1", 9000);
 ### Data Formats
 
 #### `json.zig` - JSON Parsing/Serialization
+
 ```home
 import std.json;
 
@@ -164,6 +181,7 @@ let builder = JSON.object()
 ```
 
 **Exports**:
+
 - `JSON` - Parser and serializer
 - `Value` - JSON value types
 - Builder pattern for construction
@@ -173,6 +191,7 @@ let builder = JSON.object()
 ### File System
 
 #### `file.zig` - File I/O
+
 ```home
 import std.file;
 
@@ -182,6 +201,7 @@ File.append("path/to/file.txt", "more content");
 ```
 
 **Exports**:
+
 - `File` - File operations
 - `Directory` - Directory operations
 - `Path` - Path utilities
@@ -210,6 +230,7 @@ File.append("path/to/file.txt", "more content");
 ## 🎯 Usage Patterns
 
 ### Web API Example
+
 ```home
 import std.http;
 import std.json;
@@ -217,24 +238,25 @@ import std.crypto;
 
 fn main() async {
     let server = HttpServer.new();
-    
+
     server.get("/users/:id", async |req, res| {
         let id = req.params.get("id");
         let user = await db.users.find(id);
         res.json(user);
     });
-    
+
     server.post("/auth/login", async |req, res| {
         let body = JSON.parse(allocator, req.body());
         let token = JWT.create(allocator, body, secret);
         res.json(.{ .token = token });
     });
-    
+
     server.listen(8080);
 }
 ```
 
 ### CLI Tool Example
+
 ```home
 import std.cli;
 import std.file;
@@ -245,12 +267,12 @@ fn main() !void {
     parser.addString("input", 'i', "input", true, null, "Input file");
     parser.addString("output", 'o', "output", false, "out.txt", "Output file");
     parser.addBool("verbose", 'v', "verbose", "Verbose output");
-    
+
     parser.parse(std.process.getArgs(allocator));
-    
+
     let input = parser.getString("input").?;
     let output = parser.getString("output").?;
-    
+
     let content = File.read(allocator, input);
     // ... process content ...
     File.write(output, processed);
@@ -258,6 +280,7 @@ fn main() !void {
 ```
 
 ### Background Job Example
+
 ```home
 import std.process;
 import std.datetime;
@@ -265,18 +288,18 @@ import std.crypto;
 
 fn process_video(path: []const u8) !void {
     let timer = Timer.start();
-    
+
     // Spawn ffmpeg process
     let result = ProcessBuilder.init(allocator)
         .command("ffmpeg")
         .args(&[_][]const u8{"-i", path, "-codec:v", "libx264", "output.mp4"})
         .run();
-    
+
     if (result.exit_code != 0) {
         log.error("Video processing failed: {s}", .{result.stderr});
         return error.ProcessingFailed;
     }
-    
+
     let elapsed = timer.elapsedMillis();
     log.info("Video processed in {d}ms", .{elapsed});
 }
@@ -289,22 +312,26 @@ fn process_video(path: []const u8) !void {
 The following modules are planned:
 
 ### Web Framework (Phase 1)
+
 - `router.zig` - HTTP routing
 - `middleware.zig` - Middleware system
 - `template.zig` - Template engine
 
 ### Database (Phase 1)
+
 - `postgres.zig` - PostgreSQL driver
 - `mysql.zig` - MySQL driver
 - `sqlite.zig` - SQLite driver
 - `orm.zig` - Object-relational mapping
 
 ### Testing (Phase 3)
+
 - `test.zig` - BDD testing framework
 - `mock.zig` - Mocking utilities
 - `assert.zig` - Enhanced assertions
 
 ### Advanced (Phase 5+)
+
 - `cache.zig` - Caching (Redis, in-memory)
 - `queue.zig` - Job queues
 - `email.zig` - Email sending

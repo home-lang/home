@@ -398,7 +398,7 @@ fn combine(a: i32, b: String): String {
 
 ```home
 /// Combines two values into a string.
-/// 
+///
 /// # Dispatch Variants
 /// - `(String, String)` - Concatenation
 /// - `(String, i32)` - Append number
@@ -412,12 +412,12 @@ fn combine(a: impl Display, b: impl Display): String {
 ### 5. Test All Combinations
 
 ```home
-#[test]
+# [test]
 fn test_collisions() {
     let sphere = Sphere::new();
     let box = Box::new();
     let plane = Plane::new();
-    
+
     // Test all combinations
     assert!(collide(sphere, sphere).is_some());
     assert!(collide(sphere, box).is_some());
@@ -504,6 +504,7 @@ for s1 in &shapes {
 ### Optimization
 
 The compiler can optimize dispatch in several ways:
+
 - Inline specific variants
 - Devirtualize when types are known
 - Generate specialized code paths

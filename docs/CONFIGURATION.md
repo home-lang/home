@@ -6,13 +6,13 @@ Home supports multiple configuration file formats for maximum flexibility and co
 
 Home will automatically detect and load configuration from the first file it finds:
 
-1. **`ion.jsonc`** ⭐ **Recommended** - JSON with comments
+1. **`ion.jsonc`**⭐**Recommended** - JSON with comments
 2. **`ion.json`** - Standard JSON
 3. **`package.jsonc`** - NPM-compatible with comments
 4. **`package.json`** - NPM-compatible
 5. **`ion.toml`** - TOML format (legacy support)
 
-## Why JSONC?
+## Why JSONC
 
 We recommend **`ion.jsonc`** for Home projects because:
 
@@ -162,7 +162,7 @@ Home supports standard semantic versioning ranges:
 
 ### GitHub Shortcuts
 
-Home automatically expands `user/repo` to `https://github.com/user/repo.git`:
+Home automatically expands `user/repo` to `<https://github.com/user/repo.git>`:
 
 ```jsonc
 {
@@ -199,8 +199,10 @@ JSONC supports both single-line and multi-line comments:
   "name": "my-project",
 
   /*
+
    * Multi-line comment
    * Can span multiple lines
+
    */
   "version": "1.0.0",
 
@@ -268,11 +270,13 @@ If no config file is found, Home will show an error with suggestions:
 
 ```
 Error: No configuration file found. Expected one of:
+
   - ion.jsonc (recommended)
   - ion.json
   - package.jsonc
   - package.json
   - ion.toml
+
 ```
 
 ## Editor Support
@@ -290,7 +294,7 @@ Install the **"JSONC syntax highlighting"** extension for the best experience wi
 
 JSONC is supported out of the box in WebStorm, IntelliJ IDEA, and other JetBrains IDEs.
 
-## Why Multiple Formats?
+## Why Multiple Formats
 
 Home supports multiple configuration formats to:
 

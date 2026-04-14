@@ -19,8 +19,8 @@ Home FFI offers:
 ```home
 // Declare external C functions
 extern "C" {
-    fn puts(s: *const c_char) -> c_int
-    fn printf(format: *const c_char, ...) -> c_int
+    fn puts(s: *const c*char) -> c*int
+    fn printf(format: *const c*char, ...) -> c*int
     fn malloc(size: usize) -> *mut void
     fn free(ptr: *mut void)
 }
@@ -38,7 +38,7 @@ fn main() {
 
 ```home
 // Link to system library
-#[link(name = "m")]
+# [link(name = "m")]
 extern "C" {
     fn sin(x: f64) -> f64
     fn cos(x: f64) -> f64
@@ -46,15 +46,15 @@ extern "C" {
 }
 
 // Link to static library
-#[link(name = "mylib", kind = "static")]
+# [link(name = "mylib", kind = "static")]
 extern "C" {
-    fn custom_function(x: i32) -> i32
+    fn custom*function(x: i32) -> i32
 }
 
 // Link to dynamic library
-#[link(name = "openssl")]
+# [link(name = "openssl")]
 extern "C" {
-    fn SSL_library_init() -> c_int
+    fn SSL*library*init() -> c*int
 }
 ```
 
@@ -62,19 +62,19 @@ extern "C" {
 
 ```home
 // C-compatible type aliases
-type c_char = i8
-type c_short = i16
-type c_int = i32
-type c_long = i64  // Platform-dependent in C, fixed in Home
-type c_float = f32
-type c_double = f64
-type c_void = void
-type size_t = usize
-type ssize_t = isize
+type c*char = i8
+type c*short = i16
+type c*int = i32
+type c*long = i64  // Platform-dependent in C, fixed in Home
+type c*float = f32
+type c*double = f64
+type c*void = void
+type size*t = usize
+type ssize*t = isize
 
 // Pointer types
-type c_str = *const c_char
-type c_str_mut = *mut c_char
+type c*str = *const c*char
+type c*str*mut = *mut c*char
 ```
 
 ## Struct Layout
@@ -83,20 +83,20 @@ type c_str_mut = *mut c_char
 
 ```home
 // Ensure C-compatible layout
-#[repr(C)]
+# [repr(C)]
 struct Point {
     x: f64,
     y: f64,
 }
 
-#[repr(C)]
+# [repr(C)]
 struct Rectangle {
     origin: Point,
     size: Point,
 }
 
 extern "C" {
-    fn draw_rectangle(rect: *const Rectangle)
+    fn draw*rectangle(rect: *const Rectangle)
 }
 
 fn main() {
@@ -106,7 +106,7 @@ fn main() {
     }
 
     unsafe {
-        draw_rectangle(&rect)
+        draw*rectangle(&rect)
     }
 }
 ```
@@ -115,7 +115,7 @@ fn main() {
 
 ```home
 // Remove padding
-#[repr(C, packed)]
+# [repr(C, packed)]
 struct PackedData {
     flag: u8,
     value: u32,
@@ -123,7 +123,7 @@ struct PackedData {
 }
 
 // Specify alignment
-#[repr(C, align(16))]
+# [repr(C, align(16))]
 struct AlignedData {
     data: [f32; 4],
 }
@@ -132,14 +132,14 @@ struct AlignedData {
 ### Union Types
 
 ```home
-#[repr(C)]
+# [repr(C)]
 union Value {
     i: i64,
     f: f64,
     p: *mut void,
 }
 
-fn use_union() {
+fn use*union() {
     let mut v = Value { i: 42 }
 
     unsafe {
@@ -159,12 +159,12 @@ fn use_union() {
 type CCallback = extern "C" fn(data: *mut void, value: i32) -> i32
 
 extern "C" {
-    fn register_callback(cb: CCallback, data: *mut void)
-    fn trigger_callbacks()
+    fn register*callback(cb: CCallback, data: *mut void)
+    fn trigger*callbacks()
 }
 
 // Home callback with C calling convention
-extern "C" fn my_callback(data: *mut void, value: i32) -> i32 {
+extern "C" fn my*callback(data: *mut void, value: i32) -> i32 {
     let counter = unsafe { &mut *(data as *mut i32) }
     *counter += value
     *counter
@@ -174,8 +174,8 @@ fn main() {
     let mut counter = 0i32
 
     unsafe {
-        register_callback(my_callback, &mut counter as *mut i32 as *mut void)
-        trigger_callbacks()
+        register*callback(my*callback, &mut counter as *mut i32 as *mut void)
+        trigger*callbacks()
         print("Counter: {counter}")
     }
 }
@@ -194,15 +194,15 @@ extern "C" fn trampoline<F: Fn(i32) -> i32>(data: *mut void, value: i32) -> i32 
     (wrapper.callback)(value)
 }
 
-fn with_callback<F: Fn(i32) -> i32>(callback: F) {
+fn with*callback<F: Fn(i32) -> i32>(callback: F) {
     let wrapper = CallbackWrapper { callback }
 
     unsafe {
-        register_callback(
+        register*callback(
             trampoline::<F>,
-            &wrapper as *const _ as *mut void
+            &wrapper as *const * as *mut void
         )
-        trigger_callbacks()
+        trigger*callbacks()
     }
 }
 ```
@@ -214,20 +214,20 @@ fn with_callback<F: Fn(i32) -> i32>(callback: F) {
 ```home
 use std.ffi.{CString, CStr}
 
-fn c_string_example() {
+fn c*string*example() {
     // Create C string from Home string
-    let home_str = "Hello, World!"
-    let c_str = CString.new(home_str).unwrap()
+    let home*str = "Hello, World!"
+    let c*str = CString.new(home*str).unwrap()
 
     unsafe {
-        puts(c_str.as_ptr())
+        puts(c*str.as*ptr())
     }
 
     // Convert C string back to Home string
     unsafe {
-        let ptr = get_c_string()  // Returns *const c_char
-        let c_str = CStr.from_ptr(ptr)
-        let home_str = c_str.to_string()
+        let ptr = get*c*string()  // Returns *const c*char
+        let c*str = CStr.from*ptr(ptr)
+        let home*str = c*str.to*string()
     }
 }
 ```
@@ -236,13 +236,13 @@ fn c_string_example() {
 
 ```home
 // C string literals
-let c_literal = c"This is a C string\0"  // *const c_char
+let c*literal = c"This is a C string\0"  // *const c*char
 
 // Wide string literals
-let wide_literal = w"Wide string"  // *const wchar_t
+let wide*literal = w"Wide string"  // *const wchar*t
 
 // UTF-16 literals (for Windows)
-let utf16_literal = u16"UTF-16 string"  // *const u16
+let utf16*literal = u16"UTF-16 string"  // *const u16
 ```
 
 ## Memory Management
@@ -252,14 +252,14 @@ let utf16_literal = u16"UTF-16 string"  // *const u16
 ```home
 extern "C" {
     // C allocates, we must free
-    fn create_buffer(size: usize) -> *mut u8
-    fn destroy_buffer(ptr: *mut u8)
+    fn create*buffer(size: usize) -> *mut u8
+    fn destroy*buffer(ptr: *mut u8)
 
     // We allocate, C uses
-    fn process_data(data: *const u8, len: usize)
+    fn process*data(data: *const u8, len: usize)
 }
 
-fn safe_buffer_usage() {
+fn safe*buffer*usage() {
     // RAII wrapper for C-allocated memory
     struct CBuffer {
         ptr: *mut u8,
@@ -268,14 +268,14 @@ fn safe_buffer_usage() {
 
     impl CBuffer {
         fn new(size: usize) -> Self {
-            let ptr = unsafe { create_buffer(size) }
+            let ptr = unsafe { create*buffer(size) }
             CBuffer { ptr, len: size }
         }
     }
 
     impl Drop for CBuffer {
         fn drop(mut self) {
-            unsafe { destroy_buffer(self.ptr) }
+            unsafe { destroy*buffer(self.ptr) }
         }
     }
 
@@ -288,21 +288,21 @@ fn safe_buffer_usage() {
 
 ```home
 extern "C" {
-    fn store_data(data: *mut Data)
-    fn retrieve_data() -> *mut Data
+    fn store*data(data: *mut Data)
+    fn retrieve*data() -> *mut Data
 }
 
-fn box_ffi() {
+fn box*ffi() {
     // Pass owned data to C
     let data = Box.new(Data { value: 42 })
     unsafe {
-        store_data(Box.into_raw(data))
+        store*data(Box.into*raw(data))
     }
 
     // Retrieve and take ownership back
     unsafe {
-        let ptr = retrieve_data()
-        let data = Box.from_raw(ptr)
+        let ptr = retrieve*data()
+        let data = Box.from*raw(ptr)
         // data is now managed by Home again
     }
 }
@@ -314,20 +314,20 @@ fn box_ffi() {
 
 ```home
 extern "C" {
-    fn open_file(path: *const c_char) -> c_int
-    fn get_last_error() -> c_int
-    fn error_message(code: c_int) -> *const c_char
+    fn open*file(path: *const c*char) -> c*int
+    fn get*last*error() -> c*int
+    fn error*message(code: c*int) -> *const c*char
 }
 
-fn safe_open(path: &str) -> Result<FileHandle, Error> {
-    let c_path = CString.new(path)?
+fn safe*open(path: &str) -> Result<FileHandle, Error> {
+    let c*path = CString.new(path)?
 
-    let fd = unsafe { open_file(c_path.as_ptr()) }
+    let fd = unsafe { open*file(c*path.as*ptr()) }
 
     if fd < 0 {
-        let code = unsafe { get_last_error() }
+        let code = unsafe { get*last*error() }
         let msg = unsafe {
-            CStr.from_ptr(error_message(code)).to_string()
+            CStr.from*ptr(error*message(code)).to*string()
         }
         Err(Error.new(msg))
     } else {
@@ -341,7 +341,7 @@ fn safe_open(path: &str) -> Result<FileHandle, Error> {
 ```home
 use std.ffi.errno
 
-fn with_errno<T>(f: fn() -> T, success: fn(T) -> bool) -> Result<T, Error> {
+fn with*errno<T>(f: fn() -> T, success: fn(T) -> bool) -> Result<T, Error> {
     errno.set(0)
     let result = f()
 
@@ -349,7 +349,7 @@ fn with_errno<T>(f: fn() -> T, success: fn(T) -> bool) -> Result<T, Error> {
         Ok(result)
     } else {
         let code = errno.get()
-        Err(Error.from_errno(code))
+        Err(Error.from*errno(code))
     }
 }
 ```
@@ -360,15 +360,15 @@ fn with_errno<T>(f: fn() -> T, success: fn(T) -> bool) -> Result<T, Error> {
 
 ```home
 // Opaque type (size unknown)
-#[repr(C)]
+# [repr(C)]
 struct OpaqueHandle {
-    _private: [u8; 0],
+    *private: [u8; 0],
 }
 
 extern "C" {
-    fn create_handle() -> *mut OpaqueHandle
-    fn use_handle(handle: *mut OpaqueHandle)
-    fn destroy_handle(handle: *mut OpaqueHandle)
+    fn create*handle() -> *mut OpaqueHandle
+    fn use*handle(handle: *mut OpaqueHandle)
+    fn destroy*handle(handle: *mut OpaqueHandle)
 }
 
 // Safe wrapper
@@ -378,17 +378,17 @@ struct Handle {
 
 impl Handle {
     fn new() -> Self {
-        Handle { raw: unsafe { create_handle() } }
+        Handle { raw: unsafe { create*handle() } }
     }
 
-    fn use_it(&self) {
-        unsafe { use_handle(self.raw) }
+    fn use*it(&self) {
+        unsafe { use*handle(self.raw) }
     }
 }
 
 impl Drop for Handle {
     fn drop(mut self) {
-        unsafe { destroy_handle(self.raw) }
+        unsafe { destroy*handle(self.raw) }
     }
 }
 ```
@@ -398,39 +398,39 @@ impl Drop for Handle {
 ### Conditional Compilation
 
 ```home
-#[cfg(target_os = "windows")]
-#[link(name = "kernel32")]
+# [cfg(target*os = "windows")]
+# [link(name = "kernel32")]
 extern "C" {
     fn GetLastError() -> u32
     fn SetLastError(code: u32)
 }
 
-#[cfg(target_os = "linux")]
-#[link(name = "pthread")]
+# [cfg(target*os = "linux")]
+# [link(name = "pthread")]
 extern "C" {
-    fn pthread_create(...) -> c_int
-    fn pthread_join(...) -> c_int
+    fn pthread*create(...) -> c*int
+    fn pthread*join(...) -> c*int
 }
 
-#[cfg(target_os = "macos")]
-#[link(name = "System")]
+# [cfg(target*os = "macos")]
+# [link(name = "System")]
 extern "C" {
-    fn dispatch_async(...)
+    fn dispatch*async(...)
 }
 ```
 
 ### Platform-Specific Types
 
 ```home
-#[cfg(target_os = "windows")]
+# [cfg(target*os = "windows")]
 type RawHandle = *mut void
-#[cfg(target_os = "windows")]
-const INVALID_HANDLE: RawHandle = -1 as *mut void
+# [cfg(target*os = "windows")]
+const INVALID*HANDLE: RawHandle = -1 as *mut void
 
-#[cfg(unix)]
-type RawFd = c_int
-#[cfg(unix)]
-const INVALID_FD: RawFd = -1
+# [cfg(unix)]
+type RawFd = c*int
+# [cfg(unix)]
+const INVALID*FD: RawFd = -1
 ```
 
 ## Automatic Binding Generation
@@ -442,10 +442,10 @@ const INVALID_FD: RawFd = -1
 fn main() {
     bindgen.builder()
         .header("wrapper.h")
-        .allowlist_function("mylib_.*")
-        .allowlist_type("MyLib.*")
+        .allowlist*function("mylib*.*")
+        .allowlist*type("MyLib.*")
         .generate()
-        .write_to_file("src/bindings.home")
+        .write*to*file("src/bindings.home")
 }
 
 // Generates type-safe bindings from C headers
@@ -454,16 +454,16 @@ fn main() {
 ### Inline Headers
 
 ```home
-#[ffi_header(r#"
+# [ffi*header(r#"
     typedef struct {
         int x;
         int y;
     } Point;
 
-    Point* create_point(int x, int y);
-    void destroy_point(Point* p);
+    Point* create*point(int x, int y);
+    void destroy*point(Point* p);
 "#)]
-mod c_bindings {}
+mod c*bindings {}
 
 // Automatically generates Home bindings
 ```
@@ -474,15 +474,15 @@ mod c_bindings {}
 
 ```home
 // Export function with C ABI
-#[no_mangle]
-pub extern "C" fn home_add(a: i32, b: i32) -> i32 {
+# [no*mangle]
+pub extern "C" fn home*add(a: i32, b: i32) -> i32 {
     a + b
 }
 
 // Export with custom name
-#[no_mangle]
-#[export_name = "calculate"]
-pub extern "C" fn home_calculate(x: f64) -> f64 {
+# [no*mangle]
+# [export*name = "calculate"]
+pub extern "C" fn home*calculate(x: f64) -> f64 {
     x * x + 2.0 * x + 1.0
 }
 ```
@@ -491,19 +491,19 @@ pub extern "C" fn home_calculate(x: f64) -> f64 {
 
 ```home
 // lib.home
-#[no_mangle]
-pub extern "C" fn library_init() -> c_int {
+# [no*mangle]
+pub extern "C" fn library*init() -> c*int {
     // Initialize library
     0
 }
 
-#[no_mangle]
-pub extern "C" fn library_process(data: *const u8, len: usize) -> *mut u8 {
+# [no*mangle]
+pub extern "C" fn library*process(data: *const u8, len: usize) -> *mut u8 {
     // Process data
 }
 
-#[no_mangle]
-pub extern "C" fn library_cleanup() {
+# [no*mangle]
+pub extern "C" fn library*cleanup() {
     // Cleanup
 }
 ```
@@ -514,10 +514,10 @@ pub extern "C" fn library_cleanup() {
 
 ```home
 extern "C" {
-    fn printf(format: *const c_char, ...) -> c_int
+    fn printf(format: *const c*char, ...) -> c*int
 }
 
-fn call_printf() {
+fn call*printf() {
     unsafe {
         printf(c"Integer: %d, Float: %f\n", 42i32, 3.14f64)
     }
@@ -528,15 +528,15 @@ fn call_printf() {
 
 ```home
 // Bitfields require manual handling
-#[repr(C)]
+# [repr(C)]
 struct Flags {
     bits: u32,
 }
 
 impl Flags {
-    fn flag_a(self) -> bool { (self.bits & 0x1) != 0 }
-    fn flag_b(self) -> bool { (self.bits & 0x2) != 0 }
-    fn set_flag_a(mut self, val: bool) {
+    fn flag*a(self) -> bool { (self.bits & 0x1) != 0 }
+    fn flag*b(self) -> bool { (self.bits & 0x2) != 0 }
+    fn set*flag*a(mut self, val: bool) {
         if val { self.bits |= 0x1 } else { self.bits &= !0x1 }
     }
 }
@@ -547,54 +547,57 @@ impl Flags {
 ```home
 // Be careful with callback lifetimes
 extern "C" {
-    fn async_operation(callback: extern "C" fn(*mut void), data: *mut void)
+    fn async*operation(callback: extern "C" fn(*mut void), data: *mut void)
 }
 
-fn dangerous_example() {
-    let local_data = 42
+fn dangerous*example() {
+    let local*data = 42
 
-    // WRONG: local_data may be gone when callback fires
-    // async_operation(my_callback, &local_data as *const _ as *mut void)
+    // WRONG: local*data may be gone when callback fires
+    // async*operation(my*callback, &local*data as *const * as *mut void)
 
     // CORRECT: Use heap allocation
     let boxed = Box.new(42)
-    async_operation(my_callback, Box.into_raw(boxed) as *mut void)
+    async*operation(my*callback, Box.into*raw(boxed) as *mut void)
 }
 ```
 
 ## Best Practices
 
 1. **Wrap unsafe FFI in safe interfaces**:
+
    ```home
    // Internal unsafe implementation
    mod ffi {
        extern "C" {
-           pub fn dangerous_function(ptr: *mut u8)
+           pub fn dangerous*function(ptr: *mut u8)
        }
    }
 
    // Safe public API
-   pub fn safe_function(data: &mut [u8]) {
+   pub fn safe*function(data: &mut [u8]) {
        unsafe {
-           ffi.dangerous_function(data.as_mut_ptr())
+           ffi.dangerous*function(data.as*mut*ptr())
        }
    }
    ```
 
 2. **Document safety requirements**:
+
    ```home
-   /// Calls the C function `process_buffer`.
+   /// Calls the C function `process*buffer`.
    ///
    /// # Safety
    /// - `ptr` must be valid for reads of `len` bytes
    /// - `ptr` must be properly aligned
    /// - The memory must not be mutated during this call
    unsafe fn process(ptr: *const u8, len: usize) {
-       ffi.process_buffer(ptr, len)
+       ffi.process*buffer(ptr, len)
    }
    ```
 
 3. **Use RAII for resource management**:
+
    ```home
    struct CResource {
        handle: *mut void,
@@ -602,37 +605,39 @@ fn dangerous_example() {
 
    impl Drop for CResource {
        fn drop(mut self) {
-           if !self.handle.is_null() {
-               unsafe { free_resource(self.handle) }
+           if !self.handle.is*null() {
+               unsafe { free*resource(self.handle) }
            }
        }
    }
    ```
 
 4. **Validate at the FFI boundary**:
+
    ```home
-   #[no_mangle]
-   pub extern "C" fn api_function(ptr: *const u8, len: usize) -> c_int {
-       if ptr.is_null() {
+   #[no*mangle]
+   pub extern "C" fn api*function(ptr: *const u8, len: usize) -> c*int {
+       if ptr.is*null() {
            return -1  // Error code
        }
 
-       let slice = unsafe { std.slice.from_raw_parts(ptr, len) }
+       let slice = unsafe { std.slice.from*raw*parts(ptr, len) }
 
-       match internal_function(slice) {
-           Ok(_) => 0,
-           Err(_) => -2,
+       match internal*function(slice) {
+           Ok(*) => 0,
+           Err(*) => -2,
        }
    }
    ```
 
 5. **Test FFI code thoroughly**:
+
    ```home
    #[test]
-   fn test_c_interop() {
+   fn test*c*interop() {
        let data = [1u8, 2, 3, 4]
        let result = unsafe {
-           c_function(data.as_ptr(), data.len())
+           c*function(data.as*ptr(), data.len())
        }
        assert(result == expected_value)
    }

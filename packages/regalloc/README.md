@@ -5,16 +5,19 @@ Comprehensive register allocation support with manual optimization hints for the
 ## Features
 
 ### Architecture Support
+
 - **x86-64**: 16 general purpose registers (rax-r15)
 - **AArch64**: 31 general purpose registers (x0-x30)
 - **RISC-V**: 32 general purpose registers (x0-x31)
 
 Each architecture tracks:
+
 - Total register count
 - Caller-saved registers (temporary values)
 - Callee-saved registers (preserved across calls)
 
 ### Register Classes
+
 - **General**: Integer/pointer registers
 - **Float**: Floating-point registers (xmm, v, f)
 - **Vector**: SIMD/vector registers (ymm, v)
@@ -23,6 +26,7 @@ Each architecture tracks:
 ### Register Hints
 
 #### Hint Types
+
 - **None**: No preference, compiler decides
 - **Prefer**: Suggest specific register (fallback to others)
 - **Require**: Force specific register (error if unavailable)
@@ -120,7 +124,7 @@ const stats = ralloc.getStatistics();
 std.debug.print("Using {}/{} registers ({d:.1}%)\n", .{
     stats.allocated_registers,
     stats.total_registers,
-    stats.utilizationRatio() * 100,
+    stats.utilizationRatio() _ 100,
 });
 ```
 
@@ -170,10 +174,11 @@ const profiling = regalloc.ProfilingData{
 
 // Calculate priority (higher = more important to keep in register)
 const priority = profiling.calculatePriority();
-// Priority: 10000 * (2^3) * 1.5 = 120000
+// Priority: 10000 _ (2^3) * 1.5 = 120000
 ```
 
 Priority calculation:
+
 - Base priority from access count
 - Multiplied by 2^(loop_depth) for nested loops
 - Multiplied by 1.5 for induction variables
@@ -244,10 +249,12 @@ try ralloc.addConstraint("vec_b",
 ### x86-64 Registers
 
 **Caller-saved (9):** rax, rcx, rdx, rsi, rdi, r8-r11
+
 - Use for temporary values
 - Not preserved across function calls
 
 **Callee-saved (7):** rbx, rbp, r12-r15
+
 - Preserved across function calls
 - Good for loop counters and long-lived variables
 
@@ -256,10 +263,12 @@ try ralloc.addConstraint("vec_b",
 ### AArch64 Registers
 
 **Caller-saved (18):** x0-x17
+
 - x0-x7: Argument/result registers
 - x8-x17: Temporary registers
 
 **Callee-saved (11):** x19-x29
+
 - x29: Frame pointer
 - x30: Link register
 
@@ -268,10 +277,12 @@ try ralloc.addConstraint("vec_b",
 ### RISC-V Registers
 
 **Caller-saved (15):** t0-t6, a0-a7
+
 - a0-a7: Arguments/results
 - t0-t6: Temporaries
 
 **Callee-saved (12):** s0-s11
+
 - s0: Frame pointer
 
 ## Testing
@@ -284,6 +295,7 @@ zig build test
 ```
 
 All 9 tests validate:
+
 - Architecture register counts
 - Register constraint creation and validation
 - Live range overlap detection
@@ -297,6 +309,7 @@ All 9 tests validate:
 ## Integration
 
 This package integrates with:
+
 - **Codegen**: Apply register hints during code generation
 - **Optimizer**: Use interference graphs for optimization
 - **AST**: Extend with register hint annotations
@@ -305,12 +318,14 @@ This package integrates with:
 ## Performance Benefits
 
 Register allocation provides:
+
 - **Reduced memory access**: Keep hot variables in registers
 - **Lower latency**: Register access is ~100x faster than L1 cache
 - **Better instruction selection**: More opportunities for register-based instructions
 - **Reduced code size**: Fewer load/store instructions
 
 Trade-offs:
+
 - **Spilling overhead**: May need to save/restore when out of registers
 - **Increased complexity**: Manual hints require understanding of architecture
 - **Portability**: Hints may need adjustment for different architectures

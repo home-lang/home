@@ -7,7 +7,9 @@ GitHub Action to setup the [Home programming language](https://github.com/ion-la
 ### Basic
 
 ```yaml
+
 - uses: ion-lang/ion/packages/action@v0.1
+
   with:
     ion-version: 'latest'
 ```
@@ -15,7 +17,9 @@ GitHub Action to setup the [Home programming language](https://github.com/ion-la
 ### Specific Version
 
 ```yaml
+
 - uses: ion-lang/ion/packages/action@v0.1
+
   with:
     ion-version: '0.1.0'
 ```
@@ -23,7 +27,9 @@ GitHub Action to setup the [Home programming language](https://github.com/ion-la
 ### Using Version File
 
 ```yaml
+
 - uses: ion-lang/ion/packages/action@v0.1
+
   with:
     ion-version-file: '.ion-version'
 ```
@@ -31,7 +37,9 @@ GitHub Action to setup the [Home programming language](https://github.com/ion-la
 ### Disable Caching
 
 ```yaml
+
 - uses: ion-lang/ion/packages/action@v0.1
+
   with:
     ion-version: 'latest'
     cache: 'false'
@@ -80,17 +88,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Setup Home
+
         uses: ion-lang/ion/packages/action@v0.1
         with:
           ion-version: 'latest'
 
       - name: Build project
+
         run: home build
 
       - name: Run tests
+
         run: home test
 ```
 
@@ -110,14 +122,17 @@ jobs:
         ion-version: ['0.1.0', 'latest']
 
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Setup Home ${{ matrix.ion-version }}
+
         uses: ion-lang/ion/packages/action@v0.1
         with:
           ion-version: ${{ matrix.ion-version }}
 
       - name: Run tests
+
         run: home test
 ```
 
@@ -134,15 +149,19 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Setup Home
+
         uses: ion-lang/ion/packages/action@v0.1
 
       - name: Build package
+
         run: home build --release
 
       - name: Publish to registry
+
         run: home pkg publish
         env:
           ION_TOKEN: ${{ secrets.ION_TOKEN }}

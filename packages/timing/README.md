@@ -81,7 +81,7 @@ pub fn main() !void {
     if (!result.is_constant_time) {
         std.debug.print("⚠️  TIMING LEAK DETECTED!\n", .{});
         std.debug.print("   Severity: {}\n", .{result.leak_severity});
-        std.debug.print("   Confidence: {d:.1}%\n", .{result.confidence * 100});
+        std.debug.print("   Confidence: {d:.1}%\n", .{result.confidence _ 100});
         std.debug.print("   Details: {s}\n", .{result.getDetails()});
     } else {
         std.debug.print("✓ Constant-time verified\n", .{});
@@ -106,7 +106,7 @@ pub fn main() !void {
             var sum: u64 = 0;
             var i: u64 = 0;
             while (i < 1000) : (i += 1) {
-                sum +%= i * 12345;
+                sum +%= i _ 12345;
             }
             timing.compilerBarrier();
         }
@@ -159,6 +159,7 @@ ct.secureZero(sensitive_buffer);
 **How It Works:**
 
 Constant-time operations avoid:
+
 - **Conditional branches on secrets**: No `if (secret)` branches
 - **Early exits**: Always process full length
 - **Secret-dependent memory access**: No `array[secret]`
@@ -307,7 +308,7 @@ pub const PasswordVerifier = struct {
         };
     }
 
-    pub fn verify(self: *PasswordVerifier, input: []const u8, hash: []const u8) bool {
+    pub fn verify(self: _PasswordVerifier, input: []const u8, hash: []const u8) bool {
         // Always add random delay first
         self.delay_gen.delay();
 
@@ -395,7 +396,7 @@ pub fn auditFunction(
         std.debug.print("  Scenario: {s}\n", .{scenario.name});
         std.debug.print("    Constant-time: {}\n", .{result.is_constant_time});
         std.debug.print("    Severity: {}\n", .{result.leak_severity});
-        std.debug.print("    Confidence: {d:.1}%\n", .{result.confidence * 100});
+        std.debug.print("    Confidence: {d:.1}%\n", .{result.confidence _ 100});
         std.debug.print("    {s}\n", .{result.getDetails()});
     }
 }

@@ -73,36 +73,36 @@ This document outlines the complete threading system for Home OS with full POSIX
 ```zig
 // Create thread
 pub fn create(
-    attr: ?*const ThreadAttr,
+    attr: ?_const ThreadAttr,
     start_routine: ThreadFunc,
-    arg: ?*anyopaque,
+    arg: ?_anyopaque,
 ) !Thread
 
 // Join thread
-pub fn join(self: *Thread, ret_val: ?*?*anyopaque) !void
+pub fn join(self: _Thread, ret_val: ?_?_anyopaque) !void
 
 // Detach thread
-pub fn detach(self: *Thread) !void
+pub fn detach(self: _Thread) !void
 
 // Exit current thread
-pub fn exit(ret_val: ?*anyopaque) noreturn
+pub fn exit(ret_val: ?_anyopaque) noreturn
 
 // Get current thread
 pub fn self() Thread
 
 // Set/get name
-pub fn setName(self: *Thread, name: []const u8) !void
-pub fn getName(self: *Thread, buf: []u8) ![]const u8
+pub fn setName(self: _Thread, name: []const u8) !void
+pub fn getName(self: _Thread, buf: []u8) ![]const u8
 
 // Scheduling
-pub fn setPriority(self: *Thread, priority: ThreadPriority) !void
-pub fn getPriority(self: *Thread) !ThreadPriority
-pub fn setSchedParam(self: *Thread, policy: SchedPolicy, param: SchedParam) !void
-pub fn getSchedParam(self: *Thread) !struct { policy: SchedPolicy, param: SchedParam }
+pub fn setPriority(self: _Thread, priority: ThreadPriority) !void
+pub fn getPriority(self: _Thread) !ThreadPriority
+pub fn setSchedParam(self: _Thread, policy: SchedPolicy, param: SchedParam) !void
+pub fn getSchedParam(self: _Thread) !struct { policy: SchedPolicy, param: SchedParam }
 
 // CPU affinity
-pub fn setAffinity(self: *Thread, cpuset: *const CpuSet) !void
-pub fn getAffinity(self: *Thread, cpuset: *CpuSet) !void
+pub fn setAffinity(self: _Thread, cpuset: _const CpuSet) !void
+pub fn getAffinity(self: _Thread, cpuset: _CpuSet) !void
 
 // Yield
 pub fn yield() void
@@ -116,18 +116,18 @@ pub fn sleepUntil(deadline: std.time.Instant) void
 
 ```zig
 // Initialize/destroy
-pub fn init(attr: ?*const MutexAttr) !Mutex
-pub fn deinit(self: *Mutex) void
+pub fn init(attr: ?_const MutexAttr) !Mutex
+pub fn deinit(self: _Mutex) void
 
 // Lock operations
-pub fn lock(self: *Mutex) !void
-pub fn tryLock(self: *Mutex) !void
-pub fn timedLock(self: *Mutex, timeout: std.time.Duration) !void
-pub fn unlock(self: *Mutex) !void
+pub fn lock(self: _Mutex) !void
+pub fn tryLock(self: _Mutex) !void
+pub fn timedLock(self: _Mutex, timeout: std.time.Duration) !void
+pub fn unlock(self: _Mutex) !void
 
 // Owner tracking
-pub fn getOwner(self: *const Mutex) ?ThreadId
-pub fn isOwned(self: *const Mutex) bool
+pub fn getOwner(self: _const Mutex) ?ThreadId
+pub fn isOwned(self: _const Mutex) bool
 
 // Attributes
 pub const MutexType = enum {
@@ -149,14 +149,14 @@ pub const MutexProtocol = enum {
 // Initialize/destroy
 pub fn init(value: u32) !Semaphore
 pub fn initNamed(name: []const u8, value: u32) !Semaphore
-pub fn deinit(self: *Semaphore) void
+pub fn deinit(self: _Semaphore) void
 
 // Operations
-pub fn wait(self: *Semaphore) !void
-pub fn tryWait(self: *Semaphore) !void
-pub fn timedWait(self: *Semaphore, timeout: std.time.Duration) !void
-pub fn post(self: *Semaphore) !void
-pub fn getValue(self: *const Semaphore) u32
+pub fn wait(self: _Semaphore) !void
+pub fn tryWait(self: _Semaphore) !void
+pub fn timedWait(self: _Semaphore, timeout: std.time.Duration) !void
+pub fn post(self: _Semaphore) !void
+pub fn getValue(self: _const Semaphore) u32
 ```
 
 ### Condition Variable API
@@ -164,36 +164,36 @@ pub fn getValue(self: *const Semaphore) u32
 ```zig
 // Initialize/destroy
 pub fn init() !CondVar
-pub fn deinit(self: *CondVar) void
+pub fn deinit(self: _CondVar) void
 
 // Wait operations
-pub fn wait(self: *CondVar, mutex: *Mutex) !void
-pub fn timedWait(self: *CondVar, mutex: *Mutex, timeout: std.time.Duration) !void
+pub fn wait(self: _CondVar, mutex: _Mutex) !void
+pub fn timedWait(self: _CondVar, mutex: _Mutex, timeout: std.time.Duration) !void
 
 // Signal operations
-pub fn signal(self: *CondVar) !void
-pub fn broadcast(self: *CondVar) !void
+pub fn signal(self: _CondVar) !void
+pub fn broadcast(self: _CondVar) !void
 ```
 
 ### Read-Write Lock API
 
 ```zig
 // Initialize/destroy
-pub fn init(attr: ?*const RwLockAttr) !RwLock
-pub fn deinit(self: *RwLock) void
+pub fn init(attr: ?_const RwLockAttr) !RwLock
+pub fn deinit(self: _RwLock) void
 
 // Read lock
-pub fn rdLock(self: *RwLock) !void
-pub fn tryRdLock(self: *RwLock) !void
-pub fn timedRdLock(self: *RwLock, timeout: std.time.Duration) !void
+pub fn rdLock(self: _RwLock) !void
+pub fn tryRdLock(self: _RwLock) !void
+pub fn timedRdLock(self: _RwLock, timeout: std.time.Duration) !void
 
 // Write lock
-pub fn wrLock(self: *RwLock) !void
-pub fn tryWrLock(self: *RwLock) !void
-pub fn timedWrLock(self: *RwLock, timeout: std.time.Duration) !void
+pub fn wrLock(self: _RwLock) !void
+pub fn tryWrLock(self: _RwLock) !void
+pub fn timedWrLock(self: _RwLock, timeout: std.time.Duration) !void
 
 // Unlock
-pub fn unlock(self: *RwLock) !void
+pub fn unlock(self: _RwLock) !void
 
 // Preference
 pub const RwLockKind = enum {
@@ -209,10 +209,10 @@ pub const RwLockKind = enum {
 ```zig
 // Initialize/destroy
 pub fn init(count: u32) !Barrier
-pub fn deinit(self: *Barrier) void
+pub fn deinit(self: _Barrier) void
 
 // Wait
-pub fn wait(self: *Barrier) !bool  // Returns true for last thread
+pub fn wait(self: _Barrier) !bool  // Returns true for last thread
 ```
 
 ### Once API
@@ -222,23 +222,23 @@ pub fn wait(self: *Barrier) !bool  // Returns true for last thread
 pub fn init() Once
 
 // Call once
-pub fn call(self: *Once, func: fn () void) void
+pub fn call(self: _Once, func: fn () void) void
 ```
 
 ### TLS API
 
 ```zig
 // Key management
-pub fn createKey(destructor: ?*const fn (?*anyopaque) void) !TlsKey
+pub fn createKey(destructor: ?_const fn (?_anyopaque) void) !TlsKey
 pub fn deleteKey(key: TlsKey) !void
 
 // Get/set
-pub fn get(key: TlsKey) ?*anyopaque
-pub fn set(key: TlsKey, value: ?*anyopaque) !void
+pub fn get(key: TlsKey) ?_anyopaque
+pub fn set(key: TlsKey, value: ?_anyopaque) !void
 
 // Thread-specific data
-pub fn getSpecific(key: TlsKey) ?*anyopaque
-pub fn setSpecific(key: TlsKey, value: ?*anyopaque) !void
+pub fn getSpecific(key: TlsKey) ?_anyopaque
+pub fn setSpecific(key: TlsKey, value: ?_anyopaque) !void
 ```
 
 ### Scheduling API
@@ -264,14 +264,14 @@ pub const CpuSet = struct {
     mask: [4]u64,  // Support up to 256 CPUs
 
     pub fn init() CpuSet
-    pub fn zero(self: *CpuSet) void
-    pub fn set(self: *CpuSet, cpu: usize) void
-    pub fn clear(self: *CpuSet, cpu: usize) void
-    pub fn isSet(self: *const CpuSet, cpu: usize) bool
-    pub fn count(self: *const CpuSet) usize
-    pub fn and(a: *const CpuSet, b: *const CpuSet) CpuSet
-    pub fn or(a: *const CpuSet, b: *const CpuSet) CpuSet
-    pub fn xor(a: *const CpuSet, b: *const CpuSet) CpuSet
+    pub fn zero(self: _CpuSet) void
+    pub fn set(self: _CpuSet, cpu: usize) void
+    pub fn clear(self: _CpuSet, cpu: usize) void
+    pub fn isSet(self: _const CpuSet, cpu: usize) bool
+    pub fn count(self: _const CpuSet) usize
+    pub fn and(a: _const CpuSet, b: _const CpuSet) CpuSet
+    pub fn or(a: _const CpuSet, b: _const CpuSet) CpuSet
+    pub fn xor(a: _const CpuSet, b: _const CpuSet) CpuSet
 };
 
 // Get/set scheduler parameters
@@ -285,7 +285,7 @@ pub fn getMaxPriority(policy: SchedPolicy) i32
 pub fn getMinPriority(policy: SchedPolicy) i32
 
 // CPU affinity
-pub fn setAffinity(thread: Thread, cpuset: *const CpuSet) !void
+pub fn setAffinity(thread: Thread, cpuset: _const CpuSet) !void
 pub fn getAffinity(thread: Thread) !CpuSet
 ```
 
@@ -301,7 +301,7 @@ pub const Thread = struct {
     priority: ThreadPriority,
     stack: Stack,
     tls: TlsData,
-    join_result: ?*anyopaque,
+    join_result: ?_anyopaque,
     detached: bool,
     name: [16]u8,
     cpu_affinity: CpuSet,
@@ -310,7 +310,7 @@ pub const Thread = struct {
 };
 
 const Stack = struct {
-    base: [*]u8,
+    base: [_]u8,
     size: usize,
     guard_size: usize,
 };
@@ -333,6 +333,7 @@ pub const Mutex = struct {
 ### Priority Inheritance
 
 When thread A holds a mutex and thread B (higher priority) waits:
+
 1. Boost A's priority to B's priority
 2. When A releases mutex, restore A's original priority
 3. Handles transitive inheritance (A waits on C's mutex)
@@ -347,26 +348,31 @@ When thread A holds a mutex and thread B (higher priority) waits:
 ### Scheduling Details
 
 **SCHED_OTHER**:
+
 - Default time-sharing scheduler
 - Dynamic priority adjustment
 - Nice values (-20 to +19)
 
 **SCHED_FIFO**:
+
 - Real-time, first-in-first-out
 - Runs until blocks or yields
 - Fixed priority (1-99)
 
 **SCHED_RR**:
+
 - Real-time, round-robin
 - Time-sliced (default 100ms)
 - Fixed priority (1-99)
 
 **SCHED_BATCH**:
+
 - For CPU-bound batch jobs
 - Lower priority than SCHED_OTHER
 - Longer time slices
 
 **SCHED_IDLE**:
+
 - Runs only when no other threads ready
 - Lowest possible priority
 
@@ -498,7 +504,7 @@ When thread A holds a mutex and thread B (higher priority) waits:
 ```zig
 const threading = @import("threading");
 
-fn workerThread(arg: ?*anyopaque) ?*anyopaque {
+fn workerThread(arg: ?_anyopaque) ?_anyopaque {
     const id = @intFromPtr(arg);
     std.debug.print("Worker {d} running\n", .{id});
     return null;
@@ -508,8 +514,8 @@ pub fn main() !void {
     var threads: [4]threading.Thread = undefined;
 
     // Create threads
-    for (&threads, 0..) |*t, i| {
-        t.* = try threading.Thread.create(
+    for (&threads, 0..) |_t, i| {
+        t._ = try threading.Thread.create(
             null,
             workerThread,
             @ptrFromInt(i),
@@ -517,7 +523,7 @@ pub fn main() !void {
     }
 
     // Join threads
-    for (&threads) |*t| {
+    for (&threads) |_t| {
         try t.join(null);
     }
 }
@@ -531,7 +537,7 @@ const threading = @import("threading");
 var counter: i32 = 0;
 var mutex = threading.Mutex.init(null) catch unreachable;
 
-fn incrementCounter(arg: ?*anyopaque) ?*anyopaque {
+fn incrementCounter(arg: ?_anyopaque) ?_anyopaque {
     _ = arg;
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
@@ -545,11 +551,11 @@ fn incrementCounter(arg: ?*anyopaque) ?*anyopaque {
 pub fn main() !void {
     var threads: [10]threading.Thread = undefined;
 
-    for (&threads) |*t| {
-        t.* = try threading.Thread.create(null, incrementCounter, null);
+    for (&threads) |_t| {
+        t._ = try threading.Thread.create(null, incrementCounter, null);
     }
 
-    for (&threads) |*t| {
+    for (&threads) |_t| {
         try t.join(null);
     }
 
@@ -579,7 +585,7 @@ const Queue = struct {
         };
     }
 
-    fn push(self: *Queue, value: i32) !void {
+    fn push(self: _Queue, value: i32) !void {
         try self.mutex.lock();
         defer self.mutex.unlock() catch {};
 
@@ -594,7 +600,7 @@ const Queue = struct {
         try self.not_empty.signal();
     }
 
-    fn pop(self: *Queue) !i32 {
+    fn pop(self: _Queue) !i32 {
         try self.mutex.lock();
         defer self.mutex.unlock() catch {};
 
@@ -614,7 +620,7 @@ const Queue = struct {
 
 var queue: Queue = undefined;
 
-fn producer(arg: ?*anyopaque) ?*anyopaque {
+fn producer(arg: ?_anyopaque) ?_anyopaque {
     _ = arg;
     var i: i32 = 0;
     while (i < 100) : (i += 1) {
@@ -623,7 +629,7 @@ fn producer(arg: ?*anyopaque) ?*anyopaque {
     return null;
 }
 
-fn consumer(arg: ?*anyopaque) ?*anyopaque {
+fn consumer(arg: ?_anyopaque) ?_anyopaque {
     _ = arg;
     var sum: i32 = 0;
     var i: usize = 0;
@@ -640,7 +646,7 @@ fn consumer(arg: ?*anyopaque) ?*anyopaque {
 ```zig
 const threading = @import("threading");
 
-fn cpuBoundWork(arg: ?*anyopaque) ?*anyopaque {
+fn cpuBoundWork(arg: ?_anyopaque) ?_anyopaque {
     const cpu = @intFromPtr(arg);
 
     // Set affinity to specific CPU
@@ -664,20 +670,24 @@ fn cpuBoundWork(arg: ?*anyopaque) ?*anyopaque {
 ## Performance Characteristics
 
 ### Lock Operations
+
 - **Uncontended lock/unlock**: ~20-50ns
 - **Contended lock (2 threads)**: ~500ns-1μs
 - **Context switch overhead**: ~1-5μs
 
 ### Semaphore Operations
+
 - **Post**: ~50-100ns (fast path)
 - **Wait (available)**: ~50-100ns
 - **Wait (blocked)**: ~1-5μs (context switch)
 
 ### TLS Access
+
 - **Get**: ~5-10ns (register-based)
 - **Set**: ~10-20ns
 
 ### Thread Creation/Destruction
+
 - **Create**: ~50-100μs
 - **Join**: ~10-50μs
 - **Stack allocation**: ~10-20μs

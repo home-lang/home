@@ -71,6 +71,7 @@ no-var = { enabled = true, severity = "error", auto_fix = true }
 ### Code Quality
 
 #### `no-unused-vars` ⚠️ Auto-fixable
+
 Disallow unused variables.
 
 ```home
@@ -84,6 +85,7 @@ print(x)
 ```
 
 #### `prefer-const` ⚠️ Auto-fixable
+
 Prefer `const` over `let` for variables that are never reassigned.
 
 ```home
@@ -97,6 +99,7 @@ print(x)
 ```
 
 #### `no-var` 🔴 Auto-fixable
+
 Disallow `var` keyword (deprecated in favor of `let` and `const`).
 
 ```home
@@ -108,6 +111,7 @@ let x = 10
 ```
 
 #### `no-shadow` ⚠️
+
 Disallow variable shadowing.
 
 ```home
@@ -125,23 +129,25 @@ if (true) {
 ```
 
 #### `no-magic-numbers` ⚠️
+
 Disallow magic numbers (use named constants instead).
 
 ```home
 // ❌ Bad
 fn calculateArea(radius: f64): f64 {
-  return 3.14159 * radius * radius
+  return 3.14159 _ radius _ radius
 }
 
 // ✅ Good
 const PI = 3.14159
 
 fn calculateArea(radius: f64): f64 {
-  return PI * radius * radius
+  return PI _ radius _ radius
 }
 ```
 
 #### `explicit-function-return-type` ⚠️
+
 Require explicit return types for functions.
 
 ```home
@@ -157,6 +163,7 @@ fn add(a: i32, b: i32): i32 {
 ```
 
 #### `no-unreachable` 🔴
+
 Disallow unreachable code after return/throw.
 
 ```home
@@ -174,6 +181,7 @@ fn example(): i32 {
 ```
 
 #### `no-empty` ⚠️
+
 Disallow empty blocks.
 
 ```home
@@ -190,12 +198,13 @@ if (condition) {
 ### Style
 
 #### `indent` 🔴 Auto-fixable
+
 Enforce consistent indentation.
 
 ```home
 // ❌ Bad (mixed spaces/tabs)
 fn example() {
-	let x = 10
+    let x = 10
     let y = 20
 }
 
@@ -207,6 +216,7 @@ fn example() {
 ```
 
 #### `max-line-length` ⚠️
+
 Enforce maximum line length (default: 100).
 
 ```home
@@ -214,28 +224,29 @@ Enforce maximum line length (default: 100).
 const veryLongVariableName = "This is a very long string that exceeds the maximum line length limit"
 
 // ✅ Good
-const veryLongVariableName = 
+const veryLongVariableName =
   "This is a very long string that is properly wrapped"
 ```
 
 #### `no-trailing-spaces` ⚠️ Auto-fixable
+
 Disallow trailing whitespace.
 
 ```home
 // ❌ Bad
-let x = 10   
+let x = 10
 
 // ✅ Good
 let x = 10
 ```
 
 #### `no-multiple-empty-lines` ⚠️ Auto-fixable
+
 Disallow multiple consecutive empty lines.
 
 ```home
 // ❌ Bad
 let x = 10
-
 
 let y = 20
 
@@ -246,12 +257,15 @@ let y = 20
 ```
 
 #### `eol-last` ⚠️ Auto-fixable
+
 Require newline at end of file.
 
 #### `no-mixed-spaces-and-tabs` 🔴 Auto-fixable
+
 Disallow mixed spaces and tabs for indentation.
 
 #### `quotes` ⚠️ Auto-fixable
+
 Enforce consistent quote style.
 
 ```home
@@ -264,6 +278,7 @@ let name = "John"
 ```
 
 #### `semi` ⚠️ Auto-fixable
+
 Enforce semicolon usage (or lack thereof).
 
 ```home
@@ -276,6 +291,7 @@ let x = 10
 ```
 
 #### `comma-dangle` ⚠️ Auto-fixable
+
 Enforce trailing commas in multi-line structures.
 
 ```home
@@ -294,6 +310,7 @@ const obj = {
 ```
 
 #### `brace-style` ⚠️ Auto-fixable
+
 Enforce consistent brace style.
 
 ```home
@@ -310,6 +327,7 @@ if (condition) {
 ```
 
 #### `camelcase` ⚠️
+
 Enforce camelCase naming convention.
 
 ```home
@@ -323,6 +341,7 @@ let userName = "John"
 ### Best Practices
 
 #### `no-console` ⚠️
+
 Warn about console.log usage (disabled by default).
 
 ```home
@@ -334,6 +353,7 @@ logger.debug("Debug message")
 ```
 
 #### `prefer-template` ⚠️ Auto-fixable
+
 Prefer template strings over concatenation.
 
 ```home
@@ -407,13 +427,15 @@ home lint src/
 
 ```yaml
 # GitHub Actions
+
 - name: Lint Home code
+
   run: home lint src/
 ```
 
 ```bash
 # Pre-commit hook
-#!/bin/bash
+# !/bin/bash
 home lint --fix $(git diff --cached --name-only --diff-filter=ACM | grep '\.home$')
 ```
 

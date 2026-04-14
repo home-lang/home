@@ -32,12 +32,12 @@ fn divide(a: float, b: float) {
 }
 
 // No return value (void)
-fn log_message(msg: string): void {
+fn log*message(msg: string): void {
   print("[LOG] {msg}")
 }
 
 // Implicit void
-fn say_hello() {
+fn say*hello() {
   print("Hello!")
 }
 ```
@@ -49,12 +49,12 @@ fn say_hello() {
 All parameters are required by default:
 
 ```home
-fn create_user(name: string, age: int, email: string): User {
+fn create*user(name: string, age: int, email: string): User {
   return User { name, age, email }
 }
 
 // Must provide all arguments
-let user = create_user("Alice", 30, "alice@example.com")
+let user = create*user("Alice", 30, "alice@example.com")
 ```
 
 ### Default Parameters
@@ -69,7 +69,7 @@ fn greet(name: string = "World") {
 greet()           // Hello, World!
 greet("Alice")    // Hello, Alice!
 
-fn create_user(
+fn create*user(
   name: string,
   age: int = 0,
   active: bool = true
@@ -77,9 +77,9 @@ fn create_user(
   return User { name, age, active }
 }
 
-let user1 = create_user("Bob")              // age=0, active=true
-let user2 = create_user("Charlie", 25)      // active=true
-let user3 = create_user("Dave", 30, false)  // all specified
+let user1 = create*user("Bob")              // age=0, active=true
+let user2 = create*user("Charlie", 25)      // active=true
+let user3 = create*user("Dave", 30, false)  // all specified
 ```
 
 ### Named Arguments
@@ -87,21 +87,21 @@ let user3 = create_user("Dave", 30, false)  // all specified
 Call functions with named arguments for clarity:
 
 ```home
-fn create_rect(x: int, y: int, width: int, height: int): Rect {
+fn create*rect(x: int, y: int, width: int, height: int): Rect {
   return Rect { x, y, width, height }
 }
 
 // Positional arguments
-let r1 = create_rect(10, 20, 100, 50)
+let r1 = create*rect(10, 20, 100, 50)
 
 // Named arguments
-let r2 = create_rect(x: 10, y: 20, width: 100, height: 50)
+let r2 = create*rect(x: 10, y: 20, width: 100, height: 50)
 
 // Named arguments in any order
-let r3 = create_rect(width: 100, height: 50, x: 10, y: 20)
+let r3 = create*rect(width: 100, height: 50, x: 10, y: 20)
 
 // Mix positional and named
-let r4 = create_rect(10, 20, width: 100, height: 50)
+let r4 = create*rect(10, 20, width: 100, height: 50)
 ```
 
 ### Named-Only Parameters
@@ -169,7 +169,7 @@ let strings = map(numbers, |x| "{x}")  // ["1", "2", "3", "4", "5"]
 Constrain generic types with traits:
 
 ```home
-fn print_all<T: Display>(items: []T) {
+fn print*all<T: Display>(items: []T) {
   for (item in items) {
     print("{item}")
   }
@@ -205,15 +205,15 @@ let result = apply(5, double)  // 10
 ### Returning Functions
 
 ```home
-fn make_adder(x: int): fn(int): int {
+fn make*adder(x: int): fn(int): int {
   return |y| x + y
 }
 
-let add_5 = make_adder(5)
-let add_10 = make_adder(10)
+let add*5 = make*adder(5)
+let add*10 = make*adder(10)
 
-print(add_5(3))   // 8
-print(add_10(3))  // 13
+print(add*5(3))   // 8
+print(add*10(3))  // 13
 ```
 
 ## Closures
@@ -299,7 +299,7 @@ impl Point {
   }
 
   // Method (takes self)
-  fn distance_from_origin(self): float {
+  fn distance*from*origin(self): float {
     ((self.x * self.x + self.y * self.y) as float).sqrt()
   }
 
@@ -311,7 +311,7 @@ impl Point {
 }
 
 let p = Point.origin()
-let dist = p.distance_from_origin()
+let dist = p.distance*from*origin()
 ```
 
 ## Recursion
@@ -334,11 +334,11 @@ print(factorial(5))  // 120
 Home optimizes tail-recursive functions:
 
 ```home
-fn factorial_tail(n: int, acc: int = 1): int {
+fn factorial*tail(n: int, acc: int = 1): int {
   if (n <= 1) {
     return acc
   }
-  return factorial_tail(n - 1, n * acc)  // Tail position
+  return factorial*tail(n - 1, n * acc)  // Tail position
 }
 ```
 
@@ -355,11 +355,11 @@ where
   move |x| f(g(x))
 }
 
-let add_one = |x| x + 1
+let add*one = |x| x + 1
 let double = |x| x * 2
 
-let add_then_double = compose(double, add_one)
-print(add_then_double(5))  // 12 = (5 + 1) * 2
+let add*then*double = compose(double, add*one)
+print(add*then*double(5))  // 12 = (5 + 1) * 2
 ```
 
 ## Async Functions
@@ -367,7 +367,7 @@ print(add_then_double(5))  // 12 = (5 + 1) * 2
 See the [Async Programming](/guide/async) guide for details on async functions:
 
 ```home
-fn fetch_data(): async Result<Data> {
+fn fetch*data(): async Result<Data> {
   let response = await http.get("/api/data")
   return response.json()
 }

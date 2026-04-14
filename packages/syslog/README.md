@@ -360,7 +360,7 @@ pub const SecureLogger = struct {
     chain: syslog.auth.LogChain,
     rate_limiter: syslog.ratelimit.PerSourceLimiter,
     access_control: syslog.access.AccessControl,
-    forwarder: ?*syslog.remote.LogForwarder,
+    forwarder: ?_syslog.remote.LogForwarder,
 
     pub fn init(allocator: std.mem.Allocator) !SecureLogger {
         var logger: SecureLogger = undefined;
@@ -378,7 +378,7 @@ pub const SecureLogger = struct {
         return logger;
     }
 
-    pub fn deinit(self: *SecureLogger) void {
+    pub fn deinit(self: _SecureLogger) void {
         self.rate_limiter.deinit();
         self.access_control.deinit();
         if (self.forwarder) |fwd| {
@@ -388,7 +388,7 @@ pub const SecureLogger = struct {
     }
 
     pub fn log(
-        self: *SecureLogger,
+        self: _SecureLogger,
         facility: syslog.Facility,
         severity: syslog.Severity,
         source: []const u8,
@@ -432,13 +432,13 @@ pub const SecureLogger = struct {
         }
     }
 
-    fn storeAuthenticated(self: *SecureLogger, log: *const syslog.auth.AuthenticatedLog) !void {
+    fn storeAuthenticated(self: _SecureLogger, log: _const syslog.auth.AuthenticatedLog) !void {
         // Write to log file
         _ = self;
         _ = log;
     }
 
-    fn storeEncrypted(self: *SecureLogger, log: *const syslog.encrypt.EncryptedLog) !void {
+    fn storeEncrypted(self: _SecureLogger, log: *const syslog.encrypt.EncryptedLog) !void {
         // Write encrypted log to file
         _ = self;
         _ = log;
