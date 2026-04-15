@@ -133,7 +133,7 @@ test "flow tracker - assignment check success" {
 
     const secret_var = flow.SecureType.init(Type.String, .Secret);
     const public_data = flow.SecureType.init(Type.String, .Public);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Public -> Secret (OK)
     try tracker.checkAssignment("secret_var", secret_var, public_data, loc);
@@ -147,7 +147,7 @@ test "flow tracker - assignment check failure" {
 
     const public_var = flow.SecureType.init(Type.String, .Public);
     const secret_data = flow.SecureType.init(Type.String, .Secret);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Secret -> Public (ILLEGAL)
     try tracker.checkAssignment("public_var", public_var, secret_data, loc);
@@ -180,7 +180,7 @@ test "flow tracker - function call with valid arguments" {
         flow.SecureType.init(Type.String, .Public), // Public -> Internal (OK)
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     const result = try tracker.checkFunctionCall("process_data", &args, loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -207,7 +207,7 @@ test "flow tracker - function call with invalid arguments" {
         flow.SecureType.init(Type.String, .Secret), // Secret -> Public (ILLEGAL)
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     _ = try tracker.checkFunctionCall("public_api", &args, loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -237,7 +237,7 @@ test "flow tracker - function return level propagation" {
         flow.SecureType.init(Type.String, .Secret),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     const result = try tracker.checkFunctionCall("combine", &args, loc);
 
     // Result should be Secret (highest argument level)
@@ -257,7 +257,7 @@ test "implicit flow - conditional" {
         flow.SecureType.init(Type.Int, .Public),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (secret) { public = 1; } // ILLEGAL
     try tracker.checkConditional(secret_condition, &public_assignments, loc);
@@ -275,7 +275,7 @@ test "implicit flow - conditional valid" {
         flow.SecureType.init(Type.Int, .Public),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (public) { public = 1; } // OK
     try tracker.checkConditional(public_condition, &public_assignments, loc);
@@ -292,7 +292,7 @@ test "implicit flow - conditional with secret assignment" {
         flow.SecureType.init(Type.Int, .Secret),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (secret) { secret = 1; } // OK
     try tracker.checkConditional(secret_condition, &secret_assignments, loc);
@@ -311,7 +311,7 @@ test "timing channel - loop warning" {
     const secret_condition = flow.SecurityLevel.Secret;
     const public_body = flow.SecurityLevel.Public;
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // while (secret) { public_operation(); } // WARNING
     try tracker.checkLoop(secret_condition, public_body, loc);
@@ -326,7 +326,7 @@ test "timing channel - loop valid" {
     const public_condition = flow.SecurityLevel.Public;
     const public_body = flow.SecurityLevel.Public;
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkLoop(public_condition, public_body, loc);
 
@@ -341,7 +341,7 @@ test "declassification - authorized" {
     var tracker = flow.FlowTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Enter high-security context
     tracker.enterContext(.Secret);
@@ -360,7 +360,7 @@ test "declassification - unauthorized" {
     var tracker = flow.FlowTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // In public context (default)
     try std.testing.expect(tracker.current_context == .Public);
@@ -377,7 +377,7 @@ test "declassification - context nesting" {
     var tracker = flow.FlowTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     tracker.enterContext(.Confidential);
     try std.testing.expect(tracker.current_context == .Confidential);
@@ -428,7 +428,7 @@ test "edge case - empty function arguments" {
     try tracker.registerFunction(func);
 
     const args = [_]flow.SecureType{};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("no_args", &args, loc);
 
@@ -446,7 +446,7 @@ test "edge case - multiple implicit flows" {
         flow.SecureType.init(Type.Int, .Public),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkConditional(secret_condition, &assignments, loc);
 
@@ -547,9 +547,10 @@ test "complex scenario - encryption declassification" {
         flow.SecureType.init(Type.String, .Secret),
     };
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     const result = try tracker.checkFunctionCall("encrypt", &args, loc);
 
-    // Encrypted secret becomes public
-    try std.testing.expect(result.security_level == .Secret); // Actually takes max of args + func level
+    // checkFunctionCall returns the join (max) of argument levels and the
+    // function's declared return level, so a Secret argument yields Secret.
+    try std.testing.expect(result.security_level == .Secret);
 }

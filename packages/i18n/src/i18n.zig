@@ -298,10 +298,28 @@ pub const Translator = struct {
     }
 
     fn substituteParams(self: *Self, template: []const u8, params: []const []const u8) []const u8 {
-        _ = self;
-        _ = params;
-        // Simple substitution - in real impl would replace :0, :1, etc.
-        return template;
+        // Replace :0, :1, … up to :9 with the matching param. Falls back
+        // to the raw template on any allocation failure so callers still
+        // get back something usable.
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        var i: usize = 0;
+        while (i < template.len) {
+            if (template[i] == ':' and i + 1 < template.len) {
+                const c = template[i + 1];
+                if (c >= '0' and c <= '9') {
+                    const idx: usize = c - '0';
+                    if (idx < params.len) {
+                        buf.appendSlice(params[idx]) catch return template;
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            buf.append(template[i]) catch return template;
+            i += 1;
+        }
+        return buf.toOwnedSlice() catch template;
     }
 
     /// Shorthand for translate

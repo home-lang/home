@@ -250,8 +250,8 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ICCProfile {
     var i: u32 = 0;
     while (i < tag_count and pos + 12 <= data.len) : (i += 1) {
         const tag_sig = std.mem.readInt(u32, data[pos..][0..4], .big);
-        const tag_offset = std.mem.readInt(u32, data[pos + 4 ..][0..8], .big);
-        const tag_size = std.mem.readInt(u32, data[pos + 8 ..][0..12], .big);
+        const tag_offset = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
+        const tag_size = std.mem.readInt(u32, data[pos + 8 ..][0..4], .big);
 
         if (tag_offset + tag_size <= data.len) {
             const tag_data = data[tag_offset..][0..tag_size];
@@ -363,7 +363,14 @@ fn parseTextTag(allocator: std.mem.Allocator, data: []const u8, tag_type: TagTyp
                             }
                         }
 
-                        return allocator.realloc(ascii, k) catch ascii[0..k];
+                        if (allocator.resize(ascii, k)) {
+                            return ascii[0..k];
+                        }
+                        // resize failed; dupe into right-sized buffer
+                        const duped = allocator.alloc(u8, k) catch return ascii[0..k];
+                        @memcpy(duped, ascii[0..k]);
+                        allocator.free(ascii);
+                        return duped;
                     }
                 }
             }

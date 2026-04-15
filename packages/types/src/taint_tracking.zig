@@ -19,7 +19,7 @@ pub const TaintLevel = enum(u8) {
 
     pub fn canAssignTo(self: TaintLevel, target: TaintLevel) bool {
         // Can only assign to same or higher taint level
-        return @intFromEnum(self) >= @intFromEnum(target);
+        return @intFromEnum(self) <= @intFromEnum(target);
     }
 
     pub fn toString(self: TaintLevel) []const u8 {
@@ -103,7 +103,13 @@ pub const TaintTracker = struct {
     pub fn deinit(self: *TaintTracker) void {
         self.taint_map.deinit();
         self.sanitizers.deinit();
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
         self.errors.deinit();
+        for (self.warnings.items) |warn| {
+            self.allocator.free(warn.message);
+        }
         self.warnings.deinit();
     }
 
@@ -413,7 +419,7 @@ test "dangerous context check" {
     defer tracker.deinit();
 
     const tainted = TaintedType.init(Type.String, .UserInput);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDangerousContext(.SqlQuery, tainted, loc);
 

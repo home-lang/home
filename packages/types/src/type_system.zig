@@ -948,11 +948,11 @@ pub const TypeChecker = struct {
                 defer integration.deinit();
                 // Process all comptime expressions in the program
                 integration.processProgram(@constCast(self.program)) catch |err| {
-                    std.debug.print("Warning: comptime evaluation failed: {}\n", .{err});
+                    std.log.warn("comptime evaluation failed: {}", .{err});
                 };
             } else |err| {
                 // If comptime init fails, continue without comptime support
-                std.debug.print("Warning: comptime initialization failed: {}\n", .{err});
+                std.log.warn("comptime initialization failed: {}", .{err});
                 self.comptime_store = null;
             }
         }

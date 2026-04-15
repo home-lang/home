@@ -18,7 +18,9 @@ pub const Executor = struct {
             num_workers;
 
         const worker_threads = try allocator.alloc(std.Thread, actual_workers);
+        errdefer allocator.free(worker_threads);
         const task_queues = try allocator.alloc(TaskQueue, actual_workers);
+        errdefer allocator.free(task_queues);
 
         for (task_queues) |*queue| {
             queue.* = TaskQueue.init(allocator);
@@ -134,14 +136,17 @@ pub const Executor = struct {
     }
 
     fn wrapFunction(comptime F: type, func: F, args: anytype) *const fn (*async_runtime.Task) anyerror!void {
-        _ = func;
-        _ = args;
-        // This would need to be implemented with comptime magic to wrap arbitrary functions
-        // For now, return a placeholder
+        // Use comptime to generate a specialized poll function that captures
+        // the function type and calls it when the task is polled.
         return struct {
             fn poll(task: *async_runtime.Task) anyerror!void {
                 _ = task;
-                // Function execution happens here
+                // Call the wrapped function with its original arguments.
+                const result = @call(.auto, func, args);
+                // If the function returns an error, propagate it.
+                if (@typeInfo(@TypeOf(result)) == .error_union) {
+                    _ = result catch |err| return err;
+                }
             }
         }.poll;
     }
@@ -161,7 +166,7 @@ pub const TaskQueue = struct {
     const INITIAL_CAPACITY = 256;
 
     pub fn init(allocator: std.mem.Allocator) TaskQueue {
-        const buffer = allocator.alloc(?*async_runtime.Task, INITIAL_CAPACITY) catch unreachable;
+        const buffer = allocator.alloc(?*async_runtime.Task, INITIAL_CAPACITY) catch return error.OutOfMemory;
         @memset(buffer, null);
 
         return .{
@@ -213,7 +218,7 @@ pub const TaskQueue = struct {
 
         if (t == b) {
             // Last element, race with steal
-            if (!self.top.cmpxchgStrong(t, t + 1, .seq_cst, .monotonic)) |_| {
+            if (self.top.cmpxchgStrong(t, t + 1, .seq_cst, .monotonic)) |_| {
                 // Lost race
                 self.bottom.store(t + 1, .monotonic);
                 return null;

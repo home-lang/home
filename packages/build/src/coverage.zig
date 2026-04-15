@@ -140,7 +140,8 @@ pub fn printDetailedSummary(result: CoverageResult, options: BuildCoverageOption
 
 fn printCoverageBar(label: []const u8, covered: usize, total: usize, percentage: f64) void {
     const bar_width = 20;
-    const filled = @as(usize, @intFromFloat(percentage / 100.0 * @as(f64, @floatFromInt(bar_width))));
+    const clamped = std.math.clamp(percentage, 0, 100);
+    const filled = @min(bar_width, @as(usize, @intFromFloat(clamped / 100.0 * @as(f64, @floatFromInt(bar_width)))));
 
     std.debug.print("{s} {d}/{d}  ({d:.2}%) ", .{ label, covered, total, percentage });
 

@@ -157,7 +157,10 @@ pub fn Quat(comptime T: type) type {
         /// Normalize to unit quaternion
         pub fn normalize(self: Self) Self {
             const len = self.length();
-            if (len < 0.000001) {
+            // Use a machine-epsilon-relative threshold. For f32, std.math.floatEps
+            // is ~1.19e-7. Squaring gives ~1.4e-14 which is too small; use 1e-7.
+            const eps: T = if (@typeInfo(T) == .float and @sizeOf(T) <= 4) 1e-7 else 1e-12;
+            if (len < eps) {
                 return identity();
             }
             const inv_len = 1.0 / len;

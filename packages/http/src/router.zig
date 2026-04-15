@@ -38,7 +38,16 @@ pub const Route = struct {
     /// Extract route parameters from the path
     pub fn extractParams(self: *const Route, path: []const u8, allocator: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var params = std.StringHashMap([]const u8).init(allocator);
-        errdefer params.deinit();
+        // On failure, free any strings already put into params before
+        // tearing down the map itself.
+        errdefer {
+            var it = params.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            params.deinit();
+        }
 
         if (!self.is_pattern) return params;
 
@@ -73,12 +82,17 @@ fn matchPattern(pattern: []const u8, path: []const u8) bool {
     while (pattern_it.next()) |pattern_segment| {
         const path_segment = path_it.next() orelse return false;
 
-        // If pattern segment starts with ':', it matches any path segment
+        // Wildcard '*' matches all remaining segments.
+        if (std.mem.eql(u8, pattern_segment, "*")) {
+            return true;
+        }
+
+        // ':param' matches any single path segment.
         if (pattern_segment.len > 0 and pattern_segment[0] == ':') {
             continue;
         }
 
-        // Otherwise, segments must match exactly
+        // Otherwise, segments must match exactly.
         if (!std.mem.eql(u8, pattern_segment, path_segment)) {
             return false;
         }
@@ -174,7 +188,9 @@ pub const Router = struct {
         var param_it = params.iterator();
         while (param_it.next()) |entry| {
             const key = try req.allocator.dupe(u8, entry.key_ptr.*);
+            errdefer req.allocator.free(key);
             const value = try req.allocator.dupe(u8, entry.value_ptr.*);
+            errdefer req.allocator.free(value);
             try req.params.put(key, value);
         }
 

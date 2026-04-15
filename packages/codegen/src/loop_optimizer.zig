@@ -60,6 +60,10 @@ pub const LoopAnalysis = struct {
                 // If successor has lower index, it's likely a back edge (loop)
                 if (succ <= block_idx) {
                     var loop = Loop.init(self.allocator, succ, 0);
+                    // Tear down the loop we just built if any append fails
+                    // before it reaches `self.loops` — otherwise its
+                    // internal ArrayLists leak.
+                    errdefer loop.deinit(self.allocator);
                     try loop.blocks.append(self.allocator, block_idx);
                     try loop.blocks.append(self.allocator, succ);
 

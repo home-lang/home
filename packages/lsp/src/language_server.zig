@@ -539,7 +539,7 @@ pub const LanguageServer = struct {
 
     /// Get identifier at position from document text
     fn getIdentifierAtPosition(self: *LanguageServer, doc: Document, position: Position) !?[]const u8 {
-        const lines = std.mem.split(u8, doc.text, "\n");
+        const lines = std.mem.splitScalar(u8, doc.text, '\n');
         var current_line: u32 = 0;
         var line_iter = lines;
 

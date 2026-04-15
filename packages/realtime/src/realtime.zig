@@ -255,7 +255,15 @@ pub const PusherDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        // Re-subscribing to an existing channel should just replace the
+        // callback; otherwise `put` keeps the old key and leaks the new
+        // dupe. Also errdefer the new dupe if put fails.
+        if (self.subscriptions.getPtr(channel)) |cb| {
+            cb.* = callback;
+            return;
+        }
         const channel_copy = try self.allocator.dupe(u8, channel);
+        errdefer self.allocator.free(channel_copy);
         try self.subscriptions.put(channel_copy, callback);
 
         // In real implementation: Send subscribe message
@@ -364,7 +372,12 @@ pub const SocketIODriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        if (self.subscriptions.getPtr(channel)) |cb| {
+            cb.* = callback;
+            return;
+        }
         const channel_copy = try self.allocator.dupe(u8, channel);
+        errdefer self.allocator.free(channel_copy);
         try self.subscriptions.put(channel_copy, callback);
     }
 

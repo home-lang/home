@@ -29,7 +29,9 @@ pub const BlurFilter = struct {
 
     pub fn apply(self: *Self, frame: *const VideoFrame) !*VideoFrame {
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
+        errdefer output.deinit();
 
         switch (self.blur_type) {
             .box => try self.applyBoxBlur(frame, output),
@@ -96,8 +98,8 @@ pub const BlurFilter = struct {
             k.* /= sum;
         }
 
-        // Horizontal pass
-        var temp = try self.allocator.alloc(u8, input.width * input.height);
+        // Horizontal pass — use usize math so the product doesn't overflow u32.
+        var temp = try self.allocator.alloc(u8, @as(usize, input.width) * @as(usize, input.height));
         defer self.allocator.free(temp);
 
         for (0..input.height) |y| {
@@ -169,9 +171,11 @@ pub const SharpenFilter = struct {
 
         // 2. Calculate difference and add to original
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
+        errdefer output.deinit();
 
-        const pixel_count = frame.width * frame.height;
+        const pixel_count: usize = @as(usize, frame.width) * @as(usize, frame.height);
 
         for (0..pixel_count) |i| {
             const original: f32 = @floatFromInt(frame.data[0][i]);
@@ -236,7 +240,9 @@ pub const DenoiseFilter = struct {
     fn applySpatialDenoise(self: *Self, frame: *const VideoFrame) !*VideoFrame {
         // Simple bilateral filter approximation
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
+        errdefer output.deinit();
 
         const radius: i32 = 2;
 
@@ -281,9 +287,11 @@ pub const DenoiseFilter = struct {
     fn applyTemporalDenoise(self: *Self, frame: *const VideoFrame) !*VideoFrame {
         // Average with previous frames
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
+        errdefer output.deinit();
 
-        const pixel_count = frame.width * frame.height;
+        const pixel_count: usize = @as(usize, frame.width) * @as(usize, frame.height);
 
         if (self.temporal_frames.items.len > 0) {
             for (0..pixel_count) |i| {
@@ -301,9 +309,13 @@ pub const DenoiseFilter = struct {
             @memcpy(output.data[0][0..pixel_count], frame.data[0][0..pixel_count]);
         }
 
-        // Store frame for next iteration
+        // Store frame for next iteration. Clean up the clone and the
+        // allocated VideoFrame on failure so a later `append` error
+        // doesn't leak them.
         const frame_copy = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(frame_copy);
         frame_copy.* = try frame.clone(self.allocator);
+        errdefer frame_copy.deinit();
         try self.temporal_frames.append(frame_copy);
 
         // Keep only last 3 frames
@@ -356,7 +368,9 @@ pub const DeinterlaceFilter = struct {
     fn applyBob(self: *Self, frame: *const VideoFrame) !*VideoFrame {
         // Interpolate missing lines
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
+        errdefer output.deinit();
 
         for (0..frame.height) |y| {
             const is_field_line = (y % 2 == 0) == (self.field_order == .top_first);

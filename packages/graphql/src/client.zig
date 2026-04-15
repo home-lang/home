@@ -61,8 +61,16 @@ pub const GraphQLClient = struct {
 
     /// Set HTTP header
     pub fn setHeader(self: *GraphQLClient, name: []const u8, value: []const u8) !void {
+        // Free the old entry's key+value when replacing, reuse the owned
+        // key if it already exists, and errdefer both dupes on put failure.
+        if (self.headers.fetchRemove(name)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
         const key = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(key);
         const val = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(val);
         try self.headers.put(key, val);
     }
 
@@ -244,6 +252,7 @@ pub const QueryBuilder = struct {
     /// Build the GraphQL query string
     pub fn build(self: *QueryBuilder) ![]u8 {
         var output = std.ArrayList(u8).init(self.allocator);
+        errdefer output.deinit();
         const writer = output.writer();
 
         // Write operation type

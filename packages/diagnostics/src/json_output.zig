@@ -54,7 +54,7 @@ pub const JsonDiagnosticWriter = struct {
         try self.writer.writeAll(",\n");
 
         // Source
-        try self.writer.writeAll("      \"source\": \"ion\",\n");
+        try self.writer.writeAll("      \"source\": \"home\",\n");
 
         // Location/Range
         try self.writer.writeAll("      \"range\": {\n");
@@ -69,10 +69,10 @@ pub const JsonDiagnosticWriter = struct {
         try self.writer.writeAll("      }");
 
         // Code (if available)
-        if (diag.code) |code| {
+        if (diag.suggestion) |suggestion| {
             try self.writer.writeAll(",\n");
             try self.writer.writeAll("      \"code\": ");
-            try self.writeJsonString(code);
+            try self.writeJsonString(suggestion);
         }
 
         // Related information (source line)

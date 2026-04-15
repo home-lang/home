@@ -126,6 +126,9 @@ pub const RSDT = struct {
             return drivers.DriverError.InvalidConfiguration;
         }
 
+        // A truncated header would make `length - sizeof(SDTHeader)`
+        // underflow; bail out cleanly instead.
+        if (header.length < @sizeOf(SDTHeader)) return drivers.DriverError.InvalidConfiguration;
         const entry_count = (header.length - @sizeOf(SDTHeader)) / @sizeOf(u32);
         const entries_ptr: [*]const u32 = @ptrCast(@alignCast(@as([*]const u8, @ptrCast(header)) + @sizeOf(SDTHeader)));
         const entries = entries_ptr[0..entry_count];

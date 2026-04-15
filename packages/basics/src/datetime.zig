@@ -25,7 +25,9 @@ pub const DateTime = struct {
     /// Create from components
     pub fn fromComponents(year: u32, month: u8, day: u8, hour: u8, minute: u8, second: u8) !DateTime {
         if (month < 1 or month > 12) return error.InvalidMonth;
-        if (day < 1 or day > 31) return error.InvalidDay;
+        const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        const max_day = if (month == 2 and isLeapYear(year)) 29 else days_in_month[month - 1];
+        if (day < 1 or day > max_day) return error.InvalidDay;
         if (hour > 23) return error.InvalidHour;
         if (minute > 59) return error.InvalidMinute;
         if (second > 59) return error.InvalidSecond;
@@ -133,9 +135,10 @@ pub const DateTime = struct {
 
     /// Convert to components
     pub fn toComponents(self: DateTime) DateTimeComponents {
-        // Convert Unix timestamp to date components
-        // This is a simplified implementation
-        const days_since_epoch = @divTrunc(self.timestamp, 86400);
+        // Convert Unix timestamp to date components.
+        // Use @divFloor/@mod so that negative (pre-epoch) timestamps behave
+        // consistently: seconds_in_day is always in [0, 86400).
+        const days_since_epoch = @divFloor(self.timestamp, 86400);
         const seconds_in_day = @mod(self.timestamp, 86400);
 
         const hour: u8 = @intCast(@divTrunc(seconds_in_day, 3600));
@@ -146,11 +149,21 @@ pub const DateTime = struct {
         var year: u32 = 1970;
         var remaining_days = days_since_epoch;
 
-        // Rough year calculation
-        const years_passed = @divTrunc(remaining_days, 365);
-        year += @intCast(years_passed);
+        // Rough year calculation. Use @divFloor so negative values move the
+        // year backwards correctly instead of panicking on @intCast below.
+        // Clamp to u32 range to prevent overflow on absurdly large timestamps.
+        const years_passed = @divFloor(remaining_days, 365);
+        const max_offset: i64 = std.math.maxInt(u32) - 1970;
+        if (years_passed >= 0) {
+            const clamped = if (years_passed > max_offset) max_offset else years_passed;
+            year += @intCast(clamped);
+        } else {
+            const neg = -years_passed;
+            const clamped = if (neg > 1970) @as(i64, 1970) else neg;
+            year -= @intCast(clamped);
+        }
         remaining_days -= years_passed * 365;
-        remaining_days -= @divTrunc(years_passed, 4); // Account for leap years (simplified)
+        remaining_days -= @divFloor(years_passed, 4); // Account for leap years (simplified)
 
         // Ensure we don't go negative
         while (remaining_days < 0) {
@@ -160,7 +173,7 @@ pub const DateTime = struct {
 
         // Month and day calculation
         var month: u8 = 1;
-        while (month <= 12) {
+        while (month < 12) {
             const days_in_month = getDaysInMonth(year, month);
             if (remaining_days < days_in_month) {
                 break;
@@ -169,7 +182,11 @@ pub const DateTime = struct {
             month += 1;
         }
 
-        const day: u8 = @intCast(remaining_days + 1);
+        // Clamp the day into the month's valid range. Simplified leap-year
+        // handling above can otherwise yield > days_in_month.
+        const dim = getDaysInMonth(year, month);
+        const day_i = remaining_days + 1;
+        const day: u8 = if (day_i < 1) 1 else if (day_i > dim) @intCast(dim) else @intCast(day_i);
 
         return .{
             .year = year,
@@ -273,30 +290,30 @@ pub const Duration = struct {
 
 /// Timer for measuring elapsed time
 pub const Timer = struct {
-    start: i128,
+    start_ns: i128,
 
     pub fn start() Timer {
-        return .{ .start = std.time.nanoTimestamp() };
+        return .{ .start_ns = std.time.nanoTimestamp() };
     }
 
     pub fn elapsed(self: Timer) Duration {
         const now = std.time.nanoTimestamp();
-        const elapsed_ns = now - self.start;
+        const elapsed_ns = now - self.start_ns;
         const seconds = @divTrunc(elapsed_ns, std.time.ns_per_s);
         const nanoseconds = @mod(elapsed_ns, std.time.ns_per_s);
         return .{
-            .seconds = seconds,
+            .seconds = @intCast(seconds),
             .nanoseconds = @intCast(nanoseconds),
         };
     }
 
     pub fn elapsedMillis(self: Timer) i64 {
         const now = std.time.nanoTimestamp();
-        return @divTrunc(now - self.start, std.time.ns_per_ms);
+        return @intCast(@divTrunc(now - self.start_ns, std.time.ns_per_ms));
     }
 
     pub fn reset(self: *Timer) void {
-        self.start = std.time.nanoTimestamp();
+        self.start_ns = std.time.nanoTimestamp();
     }
 };
 

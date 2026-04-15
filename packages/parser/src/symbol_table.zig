@@ -105,6 +105,7 @@ pub const SymbolTable = struct {
         }
 
         const full_name = try name_buf.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(full_name);
 
         // Check if already registered
         if (self.modules.get(full_name)) |_| {
@@ -112,19 +113,18 @@ pub const SymbolTable = struct {
             return; // Already registered
         }
 
-        const module = Module{
+        var module = Module{
             .path = path,
             .full_name = full_name,
             .is_zig = is_zig,
             .symbols = std.StringHashMap(Symbol).init(self.allocator),
             .alias = alias,
         };
+        // If `put` below fails, the newly-created symbols map would also
+        // leak alongside full_name.
+        errdefer module.symbols.deinit();
 
-        if (!self.modules.contains(full_name)) {
-            try self.modules.put(full_name, module);
-        } else {
-            self.allocator.free(full_name);
-        }
+        try self.modules.put(full_name, module);
     }
 
     /// Add a symbol to a module

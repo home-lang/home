@@ -91,7 +91,10 @@ pub const Symbol = struct {
             try writer.print(".", .{});
         }
 
-        try writer.print(";{s}", .{vis_suffix});
+        // The `)` closes the PROVIDE/HIDDEN/... wrapper and must come
+        // BEFORE the terminating `;` — the old order produced invalid
+        // `PROVIDE(name = value;)` linker-script syntax.
+        try writer.print("{s};", .{vis_suffix});
     }
 };
 
@@ -138,14 +141,15 @@ pub const SymbolTable = struct {
         return self.symbols.items.len;
     }
 
-    pub fn getGlobalSymbols(self: *SymbolTable) []Symbol {
+    pub fn getGlobalSymbols(self: *SymbolTable) ![]Symbol {
         var result = std.ArrayList(Symbol).empty;
+        errdefer result.deinit(self.allocator);
         for (self.symbols.items) |symbol| {
             if (symbol.isGlobal()) {
-                result.append(self.allocator, symbol) catch unreachable;
+                try result.append(self.allocator, symbol);
             }
         }
-        return result.toOwnedSlice(self.allocator) catch unreachable;
+        return try result.toOwnedSlice(self.allocator);
     }
 };
 

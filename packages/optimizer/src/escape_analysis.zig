@@ -16,7 +16,7 @@ pub const EscapeAnalyzer = struct {
     /// Current function being analyzed
     current_function: ?[]const u8,
     /// Variables that escape
-    escaping_vars: std.StringHashSet,
+    escaping_vars: std.StringHashMap(void),
     /// Statistics
     stack_eligible: usize,
     heap_required: usize,
@@ -39,7 +39,7 @@ pub const EscapeAnalyzer = struct {
             .allocator = allocator,
             .escape_info = std.StringHashMap(EscapeStatus).init(allocator),
             .current_function = null,
-            .escaping_vars = std.StringHashSet.init(allocator),
+            .escaping_vars = std.StringHashMap(void).init(allocator),
             .stack_eligible = 0,
             .heap_required = 0,
         };
@@ -341,7 +341,7 @@ pub const LifetimeAnalyzer = struct {
 pub const RegisterAllocator = struct {
     allocator: std.mem.Allocator,
     /// Interference graph
-    interference: std.AutoHashMap([]const u8, std.StringHashSet),
+    interference: std.AutoHashMap([]const u8, std.StringHashMap(void)),
     /// Register assignment
     assignment: std.StringHashMap(usize),
     /// Number of available registers
@@ -350,7 +350,7 @@ pub const RegisterAllocator = struct {
     pub fn init(allocator: std.mem.Allocator, num_registers: usize) RegisterAllocator {
         return .{
             .allocator = allocator,
-            .interference = std.AutoHashMap([]const u8, std.StringHashSet).init(allocator),
+            .interference = std.AutoHashMap([]const u8, std.StringHashMap(void)).init(allocator),
             .assignment = std.StringHashMap(usize).init(allocator),
             .num_registers = num_registers,
         };
@@ -368,13 +368,13 @@ pub const RegisterAllocator = struct {
     pub fn addInterference(self: *RegisterAllocator, var1: []const u8, var2: []const u8) !void {
         const entry1 = try self.interference.getOrPut(var1);
         if (!entry1.found_existing) {
-            entry1.value_ptr.* = std.StringHashSet.init(self.allocator);
+            entry1.value_ptr.* = std.StringHashMap(void).init(self.allocator);
         }
         try entry1.value_ptr.put(var2, {});
 
         const entry2 = try self.interference.getOrPut(var2);
         if (!entry2.found_existing) {
-            entry2.value_ptr.* = std.StringHashSet.init(self.allocator);
+            entry2.value_ptr.* = std.StringHashMap(void).init(self.allocator);
         }
         try entry2.value_ptr.put(var1, {});
     }

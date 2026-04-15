@@ -2993,7 +2993,7 @@ pub const NativeCodegen = struct {
 
         // Primitive types
         if (std.mem.eql(u8, resolved_name, "int")) return 8;  // Default int is i64 on x64
-        if (std.mem.eql(u8, type_name, "i32")) return 8;  // i64 on x64
+        if (std.mem.eql(u8, type_name, "i32")) return 4;
         if (std.mem.eql(u8, type_name, "i64")) return 8;
         if (std.mem.eql(u8, type_name, "usize")) return 8; // usize is 8 bytes on x64
         if (std.mem.eql(u8, type_name, "isize")) return 8; // isize is 8 bytes on x64
@@ -3525,6 +3525,8 @@ pub const NativeCodegen = struct {
             .linux => {
                 var writer = elf.ElfWriter.init(self.allocator, code, data);
                 writer.io = self.io;
+                // Set the entry point to account for main()'s offset within the code.
+                writer.entry_point = 0x401000 + main_offset;
                 try writer.write(path);
             },
             else => {
@@ -3675,6 +3677,7 @@ pub const NativeCodegen = struct {
                 var target_tag: i64 = 0;
                 var has_data = false;
 
+                var variant_data_type: []const u8 = "i64";
                 var enum_iter = self.enum_layouts.iterator();
                 while (enum_iter.next()) |entry| {
                     const enum_layout = entry.value_ptr.*;
@@ -3683,6 +3686,7 @@ pub const NativeCodegen = struct {
                             found = true;
                             target_tag = @intCast(idx);
                             has_data = v.data_type != null;
+                            if (v.data_type) |dt| variant_data_type = dt;
                             break;
                         }
                     }
@@ -3722,7 +3726,7 @@ pub const NativeCodegen = struct {
 
                         try self.locals.put(name_copy, .{
                             .offset = offset,
-                            .type_name = "i64", // Default type
+                            .type_name = variant_data_type,
                             .size = 8,
                         });
                     }
@@ -3793,9 +3797,8 @@ pub const NativeCodegen = struct {
                 defer loop_ctx.break_fixups.deinit(self.allocator);
                 defer loop_ctx.continue_fixups.deinit(self.allocator);
 
-                // Patch any continue fixups to jump here (condition re-test).
-                const continue_target = self.assembler.getPosition();
-                _ = continue_target;
+                // Patch continue fixups to jump to condition re-test (loop_start),
+                // which is the correct target for while-loop continues.
                 for (loop_ctx.continue_fixups.items) |cpos| {
                     const coff = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(cpos + 5));
                     try self.assembler.patchJmpRel32(cpos, coff);
@@ -4576,7 +4579,11 @@ pub const NativeCodegen = struct {
                         try self.assembler.jmpRel32(0);
                         try arm_end_jumps.append(self.allocator, self.assembler.getPosition() - 5);
 
-                        // Patch guard fail jump to next arm
+                        // Clean up pattern variables on guard failure path too,
+                        // so they don't leak into the next arm.
+                        try self.cleanupPatternVariables(locals_before);
+
+                        // Patch guard fail jump to here (next arm)
                         const next_pos = self.assembler.getPosition();
                         const guard_offset = @as(i32, @intCast(next_pos)) - @as(i32, @intCast(guard_fail_jump + 6));
                         try self.assembler.patchJzRel32(guard_fail_jump, guard_offset);
@@ -8238,9 +8245,10 @@ pub const NativeCodegen = struct {
                             // rax has string ptr, rcx has index
                             // Add index to pointer: rax = rax + rcx
                             try self.assembler.addRegReg(.rax, .rcx);
-                            // Load 8 bytes at [rax] - for strings this loads the char (byte)
-                            // The caller is expected to handle single byte if needed
-                            try self.assembler.movRegMem(.rax, .rax, 0);
+                            // Load single byte at [rax] and zero-extend to 64-bit.
+                            // Strings are byte arrays; loading 8 bytes would read
+                            // past the character into adjacent memory.
+                            try self.assembler.movzxReg64Mem8(.rax, .rax, 0);
                         } else {
                             try self.assembler.movRegImm64(.rax, 0);
                         }
@@ -9418,6 +9426,7 @@ pub const NativeCodegen = struct {
                 // instead of the naive char-sum hash that collides.
                 const member_name = safe_nav.member;
                 var field_offset: i32 = 0;
+                var field_found = false;
                 if (safe_nav.object.* == .Identifier) {
                     const id = safe_nav.object.Identifier;
                     if (self.locals.get(id.name)) |info| {
@@ -9425,6 +9434,7 @@ pub const NativeCodegen = struct {
                             for (layout.fields) |f| {
                                 if (std.mem.eql(u8, f.name, member_name)) {
                                     field_offset = @intCast(f.offset);
+                                    field_found = true;
                                     break;
                                 }
                             }
@@ -9432,7 +9442,13 @@ pub const NativeCodegen = struct {
                     }
                 }
 
-                try self.assembler.movRegMem(.rax, .rbx, field_offset);
+                // If field wasn't found in struct layout, offset 0 would read the
+                // object header/tag instead of the field — load 0 (null) instead.
+                if (field_found) {
+                    try self.assembler.movRegMem(.rax, .rbx, field_offset);
+                } else {
+                    try self.assembler.xorRegReg(.rax, .rax);
+                }
 
                 // Jump over null return
                 const jmp_pos = self.assembler.getPosition();
@@ -10769,15 +10785,15 @@ pub const NativeCodegen = struct {
                     try self.assembler.cmpRegImm(.rcx, 1);
                     try self.assembler.setzReg(.rax);
                     try self.assembler.movzxReg64Reg8(.rax, .rax);
-                } else if (self.enum_layouts.get(type_name)) |_| {
-                    // Check if the value's tag matches this enum type
-                    // For full enum type checks, compare runtime type info
-                    // This is a simplified version that checks if the enum is valid
+                } else if (self.enum_layouts.get(type_name)) |layout| {
+                    // Check if the value's tag is within the valid range for this enum.
+                    // Tag must be >= 0 and < number of variants.
                     try self.assembler.movRegMem(.rcx, .rax, 0); // Load tag
-                    // Assume enum is valid (non-negative tag)
-                    try self.assembler.cmpRegImm(.rcx, 0);
-                    // Set to 1 if tag >= 0 (always true for valid enums)
-                    try self.assembler.movRegImm64(.rax, 1);
+                    const num_variants: i32 = @intCast(layout.variants.len);
+                    try self.assembler.cmpRegImm(.rcx, num_variants);
+                    // Set to 1 if tag < num_variants (valid enum)
+                    try self.assembler.setlReg(.rax);
+                    try self.assembler.movzxReg64Reg8(.rax, .rax);
                 } else {
                     // For primitive type checks, use a simplified approach
                     // In a full implementation, this would check runtime type tags

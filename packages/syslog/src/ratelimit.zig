@@ -58,7 +58,8 @@ pub const RateLimiter = struct {
 
         if (elapsed <= 0) return;
 
-        const new_tokens = @as(u32, @intCast(@min(elapsed, std.math.maxInt(i32)))) * self.refill_rate;
+        const elapsed_clamped = @as(u32, @intCast(@min(elapsed, std.math.maxInt(i32))));
+        const new_tokens = std.math.mul(u32, elapsed_clamped, self.refill_rate) catch std.math.maxInt(u32);
         if (new_tokens == 0) return;
 
         self.mutex.lock();

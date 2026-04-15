@@ -362,26 +362,66 @@ pub const Request = struct {
         var pairs = std.mem.splitScalar(u8, qs, '&');
 
         while (pairs.next()) |pair| {
+            if (pair.len == 0) continue;
             if (std.mem.indexOf(u8, pair, "=")) |eq_idx| {
                 const key = pair[0..eq_idx];
                 const value = pair[eq_idx + 1 ..];
-                result.put(key, value) catch continue;
+                // Replace '+' with ' ' (application/x-www-form-urlencoded).
+                const decoded_key = self.simpleUrlDecode(key) catch key;
+                const decoded_value = self.simpleUrlDecode(value) catch value;
+                result.put(decoded_key, decoded_value) catch continue;
             }
         }
 
         return result;
     }
 
+    /// Minimal percent-decode: handles %XX sequences and + → space.
+    fn simpleUrlDecode(self: *Self, input: []const u8) ![]const u8 {
+        // Quick check: skip allocation if nothing to decode.
+        if (std.mem.indexOfAny(u8, input, "%+") == null) return input;
+        var buf = std.ArrayList(u8).init(self.allocator);
+        var i: usize = 0;
+        while (i < input.len) {
+            if (input[i] == '%' and i + 2 < input.len) {
+                const hi = std.fmt.charToDigit(input[i + 1], 16) catch {
+                    try buf.append(input[i]);
+                    i += 1;
+                    continue;
+                };
+                const lo = std.fmt.charToDigit(input[i + 2], 16) catch {
+                    try buf.append(input[i]);
+                    i += 1;
+                    continue;
+                };
+                try buf.append((hi << 4) | lo);
+                i += 3;
+            } else if (input[i] == '+') {
+                try buf.append(' ');
+                i += 1;
+            } else {
+                try buf.append(input[i]);
+                i += 1;
+            }
+        }
+        return buf.toOwnedSlice();
+    }
+
     fn parseCookies(self: *Self) ?std.StringHashMap([]const u8) {
         const cookie_header = self.headers.get("cookie") orelse return null;
 
         var result = std.StringHashMap([]const u8).init(self.allocator);
-        var pairs = std.mem.splitSequence(u8, cookie_header, "; ");
+        // Split on "; " (standard) — then trim any leading whitespace from
+        // each pair to also handle ";" without the trailing space, which some
+        // user agents send.
+        var pairs = std.mem.splitSequence(u8, cookie_header, ";");
 
-        while (pairs.next()) |pair| {
+        while (pairs.next()) |raw_pair| {
+            const pair = std.mem.trim(u8, raw_pair, " ");
+            if (pair.len == 0) continue;
             if (std.mem.indexOf(u8, pair, "=")) |eq_idx| {
-                const key = pair[0..eq_idx];
-                const value = pair[eq_idx + 1 ..];
+                const key = std.mem.trim(u8, pair[0..eq_idx], " ");
+                const value = std.mem.trim(u8, pair[eq_idx + 1 ..], " ");
                 result.put(key, value) catch continue;
             }
         }

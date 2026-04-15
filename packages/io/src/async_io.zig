@@ -39,9 +39,10 @@ pub const AsyncRuntime = struct {
         return self.io_impl.io();
     }
 
-    /// Read file asynchronously (TypeScript-like API)
+    /// Read file asynchronously (TypeScript-like API).
+    /// Capped at 256 MiB so a malicious/huge file can't exhaust memory.
     pub fn readFile(self: *AsyncRuntime, path: []const u8) ![]u8 {
-        return try std.fs.cwd().readFileAlloc(path, self.allocator, .unlimited);
+        return try std.fs.cwd().readFileAlloc(path, self.allocator, .{ .max_bytes = 256 * 1024 * 1024 });
     }
 
     /// Write file asynchronously (TypeScript-like API)
@@ -62,9 +63,9 @@ pub const AsyncRuntime = struct {
 /// Simple async file operations (no runtime needed)
 /// TypeScript-like fs module
 pub const fs = struct {
-    /// Read file contents
+    /// Read file contents. Capped at 256 MiB to prevent runaway allocation.
     pub fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
-        return try std.fs.cwd().readFileAlloc(path, allocator, .unlimited);
+        return try std.fs.cwd().readFileAlloc(path, allocator, .{ .max_bytes = 256 * 1024 * 1024 });
     }
 
     /// Write file contents

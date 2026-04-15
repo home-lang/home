@@ -346,6 +346,10 @@ fn listDirectoryContents(
         if (entries_count.* >= entries_buf.len) return;
 
         const entry_path = try storage.Path.join(allocator, &[_][]const u8{ relative_path, entry.name });
+        // If we `continue` below (e.g. the file can't be opened), ensure
+        // entry_path is freed instead of leaked.
+        var entry_path_consumed = false;
+        errdefer if (!entry_path_consumed) allocator.free(entry_path);
 
         const is_dir = entry.kind == .directory;
         var file_size: u64 = 0;
@@ -355,13 +359,20 @@ fn listDirectoryContents(
             const entry_full = try storage.Path.join(allocator, &[_][]const u8{ full_path, entry.name });
             defer allocator.free(entry_full);
 
-            const file = std.fs.openFileAbsolute(entry_full, .{}) catch continue;
+            const file = std.fs.openFileAbsolute(entry_full, .{}) catch {
+                allocator.free(entry_path);
+                continue;
+            };
             defer file.close();
 
-            const stat = file.stat() catch continue;
+            const stat = file.stat() catch {
+                allocator.free(entry_path);
+                continue;
+            };
             file_size = stat.size;
             mtime = stat.mtime.sec;
         }
+        entry_path_consumed = true;
 
         entries_buf[entries_count.*] = .{
             .path = entry_path,

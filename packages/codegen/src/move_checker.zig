@@ -287,8 +287,11 @@ pub const MoveChecker = struct {
         }
     }
 
-    /// Merge variable states from different control flow paths
+    /// Merge variable states from different control flow paths.
+    /// Variables that exist in one path but not the other are treated as
+    /// potentially moved (conservative merge).
     fn mergeStates(self: *MoveChecker, other_states: std.StringHashMap(MoveState)) !void {
+        // Merge states present in the other path.
         var iter = other_states.iterator();
         while (iter.next()) |entry| {
             const var_name = entry.key_ptr.*;
@@ -296,6 +299,15 @@ pub const MoveChecker = struct {
             const current_state = self.tracker.getState(var_name);
 
             try self.tracker.mergePaths(var_name, current_state, other_state);
+        }
+
+        // Check variables in current that are NOT in other — they may have
+        // been moved in the other path, so conservatively mark as MaybeMoved.
+        var cur_iter = self.tracker.var_states.iterator();
+        while (cur_iter.next()) |entry| {
+            if (!other_states.contains(entry.key_ptr.*)) {
+                try self.tracker.mergePaths(entry.key_ptr.*, entry.value_ptr.*, .Valid);
+            }
         }
     }
 

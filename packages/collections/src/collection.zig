@@ -1258,7 +1258,7 @@ pub fn Collection(comptime T: type) type {
         pub fn ensure(self: *Self, predicate: fn (T) bool, comptime message: []const u8) !void {
             for (self.items.items, 0..) |item, i| {
                 if (!predicate(item)) {
-                    std.debug.print("Ensure failed at index {d}: {s}\n", .{ i, message });
+                    std.log.err("Ensure failed at index {d}: {s}", .{ i, message });
                     return ValidationError.ValidationFailed;
                 }
             }

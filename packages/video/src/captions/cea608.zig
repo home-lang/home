@@ -411,6 +411,10 @@ pub const Cea608Decoder = struct {
             else => return,
         };
 
+        // Guard against u8 underflow when the roll-up window is taller
+        // than the current roll base (e.g. rolling up near the top of
+        // the screen).
+        if (rows > self.roll_base + 1) return;
         const start_row = self.roll_base - rows + 1;
 
         // Shift rows up

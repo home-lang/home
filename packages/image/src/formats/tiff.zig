@@ -107,7 +107,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Get IFD offset
     const ifd_offset = readU32(data[4..8], is_little_endian);
-    if (ifd_offset >= data.len) {
+    if (ifd_offset + 2 > data.len) {
         return error.InvalidFormat;
     }
 
@@ -191,6 +191,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (photometric == PHOTOMETRIC_PALETTE and color_map != null) {
         const cm = color_map.?;
         const num_colors = cm.len / 3;
+        // Validate color map has exactly 3 * num_colors entries.
+        if (cm.len < 3 * num_colors) return error.InvalidData;
         img.palette = try allocator.alloc(Color, num_colors);
         var c: usize = 0;
         while (c < num_colors) : (c += 1) {
@@ -557,9 +559,12 @@ const BitReader = struct {
             result = (result << @intCast(bits_to_read)) | bits;
             bits_read += bits_to_read;
 
-            self.bit_pos += @as(u3, @intCast(bits_to_read));
-            if (self.bit_pos == 0) {
+            const new_bit_pos = @as(u4, self.bit_pos) + @as(u4, @intCast(bits_to_read));
+            if (new_bit_pos >= 8) {
+                self.bit_pos = @intCast(new_bit_pos - 8);
                 self.pos += 1;
+            } else {
+                self.bit_pos = @intCast(new_bit_pos);
             }
         }
 

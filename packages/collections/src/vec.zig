@@ -78,6 +78,11 @@ pub fn Vec(comptime T: type) type {
             }
 
             while (better_cap < new_cap) {
+                // Guard against overflow when doubling near the top of usize.
+                if (better_cap > std.math.maxInt(usize) / 2) {
+                    better_cap = new_cap;
+                    break;
+                }
                 better_cap = better_cap * 2;
             }
 
@@ -124,8 +129,9 @@ pub fn Vec(comptime T: type) type {
             self.data[index] = value;
         }
 
-        /// Get pointer to element at index (unsafe, no bounds check)
-        pub fn getPtr(self: *Self, index: usize) *T {
+        /// Get pointer to element at index (bounds-checked)
+        pub fn getPtr(self: *Self, index: usize) ?*T {
+            if (index >= self.len) return null;
             return &self.data[index];
         }
 

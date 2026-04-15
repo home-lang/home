@@ -86,14 +86,18 @@ pub const AudioFingerprinter = struct {
         fft_size: usize,
         hop_size: usize,
     ) !Self {
+        const bands = try allocator.alloc(FrequencyBand, DEFAULT_NUM_BANDS);
+        errdefer allocator.free(bands);
+        const window = try allocator.alloc(f32, fft_size);
+        errdefer allocator.free(window);
         var fp = Self{
             .allocator = allocator,
             .sample_rate = sample_rate,
             .fft_size = fft_size,
             .hop_size = hop_size,
             .num_bands = DEFAULT_NUM_BANDS,
-            .bands = try allocator.alloc(FrequencyBand, DEFAULT_NUM_BANDS),
-            .window = try allocator.alloc(f32, fft_size),
+            .bands = bands,
+            .window = window,
         };
 
         // Copy default bands
@@ -185,8 +189,20 @@ pub const AudioFingerprinter = struct {
             if (frame_idx >= num_frames) break;
         }
 
+        // Shrink to actual frame count so the returned slice's length
+        // matches the allocation (required for correct free()).
+        const final_hashes = if (frame_idx < num_frames) blk: {
+            if (self.allocator.resize(hashes, frame_idx)) {
+                break :blk hashes[0..frame_idx];
+            }
+            const shrunk = try self.allocator.alloc(FingerprintFrame, frame_idx);
+            @memcpy(shrunk, hashes[0..frame_idx]);
+            self.allocator.free(hashes);
+            break :blk shrunk;
+        } else hashes;
+
         return AudioFingerprint{
-            .hashes = hashes[0..frame_idx],
+            .hashes = final_hashes,
             .duration = @as(f64, @floatFromInt(samples.len / channels)) / @as(f64, @floatFromInt(self.sample_rate)),
             .sample_rate = self.sample_rate,
         };
@@ -206,7 +222,12 @@ pub const AudioFingerprinter = struct {
             const low_ratio = self.bands[band].low / nyquist;
             const high_ratio = self.bands[band].high / nyquist;
             const center_freq = (self.bands[band].low + self.bands[band].high) / 2.0;
-            const period = @as(usize, @intFromFloat(@as(f32, @floatFromInt(self.sample_rate)) / center_freq));
+            // Degenerate bands (center_freq <= 0) would produce inf/NaN and
+            // panic inside @intFromFloat — fall through to the raw-energy path.
+            const period: usize = if (center_freq > 0.0)
+                @as(usize, @intFromFloat(@as(f32, @floatFromInt(self.sample_rate)) / center_freq))
+            else
+                0;
 
             if (period > 0 and period < samples.len) {
                 for (period..samples.len) |i| {
@@ -233,6 +254,7 @@ pub const AudioFingerprinter = struct {
 
         // Compare adjacent bands
         for (0..self.num_bands - 1) |band| {
+            if (bit >= 32) break;
             if (current[band] > current[band + 1]) {
                 hash |= (@as(FingerprintHash, 1) << bit);
             }
@@ -241,11 +263,11 @@ pub const AudioFingerprinter = struct {
 
         // Compare with previous frame
         for (0..self.num_bands) |band| {
+            if (bit >= 32) break;
             if (current[band] > previous[band]) {
                 hash |= (@as(FingerprintHash, 1) << bit);
             }
             bit +%= 1;
-            if (bit >= 32) break;
         }
 
         // Add energy ratio bits

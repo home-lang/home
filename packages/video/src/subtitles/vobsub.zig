@@ -88,7 +88,7 @@ pub const VobSubIdx = struct {
     }
 
     pub fn parse(self: *VobSubIdx, data: []const u8) !void {
-        var lines = std.mem.split(u8, data, "\n");
+        var lines = std.mem.splitScalar(u8, data, '\n');
 
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \r\t");
@@ -106,7 +106,7 @@ pub const VobSubIdx = struct {
 
     fn parseSize(self: *VobSubIdx, line: []const u8) !void {
         _ = self;
-        var parts = std.mem.split(u8, std.mem.trim(u8, line, " "), "x");
+        var parts = std.mem.splitScalar(u8, std.mem.trim(u8, line, " "), 'x');
         if (parts.next()) |width_str| {
             const width = try std.fmt.parseInt(u16, std.mem.trim(u8, width_str, " "), 10);
             if (parts.next()) |height_str| {
@@ -118,7 +118,7 @@ pub const VobSubIdx = struct {
     }
 
     fn parsePalette(self: *VobSubIdx, line: []const u8) !void {
-        var parts = std.mem.split(u8, std.mem.trim(u8, line, " "), ",");
+        var parts = std.mem.splitScalar(u8, std.mem.trim(u8, line, " "), ',');
         var i: usize = 0;
 
         while (parts.next()) |color_str| : (i += 1) {
@@ -132,7 +132,7 @@ pub const VobSubIdx = struct {
     fn parseTimestamp(self: *VobSubIdx, line: []const u8) !void {
         // Format: HH:MM:SS:mmm
         const trimmed = std.mem.trim(u8, line, " ");
-        var parts = std.mem.split(u8, trimmed, ":");
+        var parts = std.mem.splitScalar(u8, trimmed, ':');
 
         var hours: u64 = 0;
         var minutes: u64 = 0;

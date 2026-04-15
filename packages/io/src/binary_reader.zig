@@ -18,6 +18,9 @@ pub const BinaryReader = struct {
 
     /// Read bytes into buffer
     pub fn read(self: *BinaryReader, buffer: []u8) !usize {
+        // Guard against pos getting pushed past data.len by a prior
+        // seek — otherwise the subtraction would underflow usize.
+        if (self.pos >= self.data.len) return 0;
         const bytes_left = self.data.len - self.pos;
         const to_read = @min(buffer.len, bytes_left);
         if (to_read == 0) return 0;

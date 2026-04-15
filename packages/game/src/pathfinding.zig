@@ -293,6 +293,10 @@ pub const Grid = struct {
             path_length += 1;
         }
 
+        // Guard against the degenerate empty-path case; without this,
+        // the `i -= 1` below would underflow on the first iteration.
+        if (path_length == 0) return try self.allocator.alloc(game.Vec2, 0);
+
         const path = try self.allocator.alloc(game.Vec2, path_length);
 
         node = end_node;

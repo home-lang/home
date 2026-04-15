@@ -51,7 +51,10 @@ pub const Connection = struct {
         const sql_z = try self.allocator.dupeZ(u8, sql);
         defer self.allocator.free(sql_z);
 
-        var err_msg: [*c]u8 = undefined;
+        // Must be initialized to null; if sqlite3_exec fails without
+        // allocating a message, the null check below guards against
+        // reading undefined memory.
+        var err_msg: [*c]u8 = null;
         const result = c.sqlite3_exec(self.db, sql_z.ptr, null, null, &err_msg);
 
         if (result != c.SQLITE_OK) {
@@ -185,13 +188,15 @@ pub const Statement = struct {
     }
 
     pub fn bindText(self: *Statement, index: c_int, value: []const u8) !void {
-        // Use SQLITE_STATIC (0)
+        // Use SQLITE_TRANSIENT so SQLite copies the string. SQLITE_STATIC
+        // would cause UB if the caller's slice is freed before the
+        // statement is stepped or finalized.
         const result = c.sqlite3_bind_text(
             self.stmt,
             index,
             value.ptr,
             @intCast(value.len),
-            @ptrFromInt(0), // SQLITE_STATIC
+            @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), // SQLITE_TRANSIENT
         );
         if (result != c.SQLITE_OK) {
             return DatabaseError.BindFailed;
@@ -213,12 +218,15 @@ pub const Statement = struct {
     }
 
     pub fn bindBlob(self: *Statement, index: c_int, value: []const u8) !void {
+        // Use SQLITE_TRANSIENT so SQLite copies the blob — otherwise
+        // callers whose buffer is freed before step()/finalize() would
+        // cause SQLite to read freed memory.
         const result = c.sqlite3_bind_blob(
             self.stmt,
             index,
             value.ptr,
             @intCast(value.len),
-            @ptrFromInt(0), // SQLITE_STATIC
+            @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), // SQLITE_TRANSIENT
         );
         if (result != c.SQLITE_OK) {
             return DatabaseError.BindFailed;
@@ -266,6 +274,7 @@ pub const Statement = struct {
         }
 
         const len = c.sqlite3_column_bytes(self.stmt, index);
+        if (len < 0) return "";
         return text_ptr[0..@intCast(len)];
     }
 
@@ -283,6 +292,7 @@ pub const Statement = struct {
             return &[_]u8{};
         }
         const len = c.sqlite3_column_bytes(self.stmt, index);
+        if (len < 0) return &[_]u8{};
         const bytes: [*c]const u8 = @ptrCast(blob_ptr);
         return bytes[0..@intCast(len)];
     }

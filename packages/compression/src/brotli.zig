@@ -139,7 +139,9 @@ pub const BrotliCompressor = struct {
     }
 
     fn writeStreamHeader(self: *BrotliCompressor) !void {
-        // Brotli stream header: window size in bits 0-5
+        // Brotli stream header: window size in bits 0-5. Reject window
+        // sizes below 10 so the subtraction doesn't underflow `u5`.
+        if (self.window_size < 10) return Brotli.Error.InvalidWindowSize;
         const wbits = @as(u8, self.window_size - 10);
         try self.output.append(wbits);
     }
@@ -248,7 +250,7 @@ pub const BrotliCompressor = struct {
                         for (0..match_len) |i| {
                             if (pos + i + 4 <= data.len) {
                                 const skip_hash = self.hashBytes(data[pos + i..][0..4]) % hash_size;
-                                hash_table[skip_hash] = @intCast(pos + i);
+                                hash_table[skip_hash] = @truncate(pos + i);
                             }
                         }
 
@@ -258,8 +260,9 @@ pub const BrotliCompressor = struct {
                 }
             }
 
-            // Update hash table
-            hash_table[hash] = @intCast(pos);
+            // Update hash table. Use @truncate so positions beyond u32
+            // wrap cleanly instead of panicking.
+            hash_table[hash] = @truncate(pos);
             pos += 1;
         }
     }
@@ -342,9 +345,12 @@ pub const BrotliDecompressor = struct {
     pub fn decompress(self: *BrotliDecompressor, input: []const u8) Brotli.Error![]u8 {
         if (input.len == 0) return Brotli.Error.InvalidStream;
 
-        // Read stream header
+        // Read stream header. wbits+10 must fit in `u5` (max 31), and the
+        // Brotli spec restricts the window to 10..24 bits anyway — reject
+        // anything out of range instead of panicking on @intCast.
         var pos: usize = 0;
         const wbits = input[pos] & 0x3F;
+        if (wbits > 21) return Brotli.Error.InvalidWindowSize;
         self.window_size = @intCast(wbits + 10);
         pos += 1;
 

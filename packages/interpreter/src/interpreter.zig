@@ -557,7 +557,7 @@ pub const Interpreter = struct {
                     // (if present) binds to the value.
                     const map = iterable_value.Map;
                     var map_it = map.entries.iterator();
-                    while (map_it.next()) |entry| {
+                    outer_map: while (map_it.next()) |entry| {
                         var iter_env = Environment.init(self.arena.allocator(), env);
                         defer iter_env.deinit();
 
@@ -566,13 +566,31 @@ pub const Interpreter = struct {
                             try iter_env.define(index_var, entry.value_ptr.*);
                         }
 
+                        var iter_err: ?InterpreterError = null;
                         for (for_stmt.body.statements) |body_stmt| {
                             self.executeStatement(body_stmt, &iter_env) catch |err| {
-                                if (err == error.Return) return err;
-                                if (err == error.Break) break;
-                                if (err == error.Continue) continue;
-                                return err;
+                                iter_err = err;
+                                break;
                             };
+                        }
+
+                        if (iter_err) |err| {
+                            if (err == error.Return) return err;
+                            if (err == error.Break) {
+                                if (try self.shouldBreakHere(for_stmt.label)) {
+                                    break :outer_map;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            if (err == error.Continue) {
+                                if (try self.shouldContinueHere(for_stmt.label)) {
+                                    continue :outer_map;
+                                } else {
+                                    return err;
+                                }
+                            }
+                            return err;
                         }
                     }
                 } else {
@@ -1265,7 +1283,10 @@ pub const Interpreter = struct {
                             return error.TypeMismatch;
                         }
                         const idx = end_value.Int;
-                        break :blk if (slice.inclusive) idx + 1 else idx;
+                        break :blk if (slice.inclusive) (std.math.add(i64, idx, 1) catch {
+                            std.debug.print("Slice end index overflow\n", .{});
+                            return error.RuntimeError;
+                        }) else idx;
                     } else str_len;
 
                     // Bounds checking
@@ -1309,9 +1330,12 @@ pub const Interpreter = struct {
                         std.debug.print("Slice end index must be an integer\n", .{});
                         return error.TypeMismatch;
                     }
-                    // Adjust for inclusive range
+                    // Adjust for inclusive range (overflow-safe)
                     const idx = end_value.Int;
-                    break :blk if (slice.inclusive) idx + 1 else idx;
+                    break :blk if (slice.inclusive) (std.math.add(i64, idx, 1) catch {
+                        std.debug.print("Slice end index overflow\n", .{});
+                        return error.RuntimeError;
+                    }) else idx;
                 } else array_len;
 
                 // Bounds checking
@@ -3332,31 +3356,50 @@ pub const Interpreter = struct {
                 const val = try self.evaluateExpression(call.args[0], env);
                 return Value{ .Bool = val == .Float };
             } else if (std.mem.eql(u8, func_name, "floor")) {
-                // floor(value) - floor of float
+                // floor(value) - floor of float, returns Int
                 if (call.args.len != 1) return error.InvalidArguments;
                 const val = try self.evaluateExpression(call.args[0], env);
                 if (val == .Float) {
-                    return Value{ .Int = @intFromFloat(@floor(val.Float)) };
+                    const floored = @floor(val.Float);
+                    // If the result fits in i64, return Int; otherwise Float.
+                    if (floored >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+                        floored <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                    {
+                        return Value{ .Int = @intFromFloat(floored) };
+                    }
+                    return Value{ .Float = floored };
                 } else if (val == .Int) {
                     return val;
                 }
                 return error.TypeMismatch;
             } else if (std.mem.eql(u8, func_name, "ceil")) {
-                // ceil(value) - ceiling of float
+                // ceil(value) - ceiling of float, returns Int
                 if (call.args.len != 1) return error.InvalidArguments;
                 const val = try self.evaluateExpression(call.args[0], env);
                 if (val == .Float) {
-                    return Value{ .Int = @intFromFloat(@ceil(val.Float)) };
+                    const ceiled = @ceil(val.Float);
+                    if (ceiled >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+                        ceiled <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                    {
+                        return Value{ .Int = @intFromFloat(ceiled) };
+                    }
+                    return Value{ .Float = ceiled };
                 } else if (val == .Int) {
                     return val;
                 }
                 return error.TypeMismatch;
             } else if (std.mem.eql(u8, func_name, "round")) {
-                // round(value) - round float to nearest integer
+                // round(value) - round float to nearest integer, returns Int
                 if (call.args.len != 1) return error.InvalidArguments;
                 const val = try self.evaluateExpression(call.args[0], env);
                 if (val == .Float) {
-                    return Value{ .Int = @intFromFloat(@round(val.Float)) };
+                    const rounded = @round(val.Float);
+                    if (rounded >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+                        rounded <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                    {
+                        return Value{ .Int = @intFromFloat(rounded) };
+                    }
+                    return Value{ .Float = rounded };
                 } else if (val == .Int) {
                     return val;
                 }
@@ -4839,9 +4882,13 @@ pub const Interpreter = struct {
             if (args.len > 0 and args[0] == .Int) {
                 len = @intCast(args[0].Int);
             }
-            var result = try allocator.alloc(u8, len);
+            const result = try allocator.alloc(u8, len);
+            // Generate pseudo-random alphanumeric characters using a simple LCG.
+            const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            var seed: u32 = @truncate(@as(u64, @bitCast(std.time.milliTimestamp())));
             for (0..len) |i| {
-                result[i] = 'a';
+                seed = seed *% 1103515245 +% 12345;
+                result[i] = chars[(seed >> 16) % chars.len];
             }
             return Value{ .String = result };
         }
@@ -4851,7 +4898,10 @@ pub const Interpreter = struct {
             var max: i64 = 100;
             if (args.len >= 1 and args[0] == .Int) min = args[0].Int;
             if (args.len >= 2 and args[1] == .Int) max = args[1].Int;
-            return Value{ .Int = min + @divTrunc(max - min, 2) };
+            // Overflow-safe midpoint: avoid (min + max) / 2 which overflows for large ranges.
+            const range = @as(i128, max) - @as(i128, min);
+            const mid: i64 = @intCast(@as(i128, min) + @divTrunc(range, 2));
+            return Value{ .Int = mid };
         }
         // Testing.set_timeout()
         else if (std.mem.eql(u8, method, "set_timeout") or std.mem.eql(u8, method, "setTimeout")) {
@@ -8926,7 +8976,9 @@ pub const Interpreter = struct {
             // Handle return or error
             if (closure_err) |err| {
                 if (err == error.Return) {
-                    return self.return_value orelse Value.Void;
+                    const rv = self.return_value orelse Value.Void;
+                    self.return_value = null; // Clear to prevent leaking into next call
+                    return rv;
                 }
                 return err;
             }
@@ -9133,7 +9185,7 @@ pub const Interpreter = struct {
         }
 
         // contains(substring) - check if string contains substring
-        if (std.mem.eql(u8, method, "contains")) {
+        if (std.mem.eql(u8, method, "contains") or std.mem.eql(u8, method, "includes")) {
             if (args.len != 1) {
                 std.debug.print("contains() expects 1 argument\n", .{});
                 return error.InvalidArguments;
@@ -9145,6 +9197,17 @@ pub const Interpreter = struct {
             }
             const found = std.mem.indexOf(u8, str, substr_val.String) != null;
             return Value{ .Bool = found };
+        }
+
+        // indexOf(substr) - find index of substring
+        if (std.mem.eql(u8, method, "indexOf") or std.mem.eql(u8, method, "index_of")) {
+            if (args.len != 1) return error.InvalidArguments;
+            const substr_val = try self.evaluateExpression(args[0], env);
+            if (substr_val != .String) return error.TypeMismatch;
+            if (std.mem.indexOf(u8, str, substr_val.String)) |idx| {
+                return Value{ .Int = @intCast(idx) };
+            }
+            return Value{ .Int = -1 };
         }
 
         // starts_with(prefix) - check if string starts with prefix
@@ -9517,7 +9580,7 @@ pub const Interpreter = struct {
         }
 
         // find_index(predicate) - returns index of first element matching predicate or -1
-        if (std.mem.eql(u8, method, "find_index")) {
+        if (std.mem.eql(u8, method, "find_index") or std.mem.eql(u8, method, "findIndex")) {
             if (args.len != 1) {
                 std.debug.print("find_index() requires exactly 1 argument (predicate)\n", .{});
                 return error.InvalidArguments;
@@ -9587,15 +9650,20 @@ pub const Interpreter = struct {
 
         // sum() - returns sum of all numeric elements
         if (std.mem.eql(u8, method, "sum")) {
-            var total: i64 = 0;
+            var has_float = false;
+            var int_total: i64 = 0;
+            var float_total: f64 = 0.0;
             for (arr) |elem| {
                 if (elem == .Int) {
-                    total += elem.Int;
+                    int_total += elem.Int;
+                    float_total += @as(f64, @floatFromInt(elem.Int));
                 } else if (elem == .Float) {
-                    total += @as(i64, @intFromFloat(elem.Float));
+                    has_float = true;
+                    float_total += elem.Float;
                 }
             }
-            return Value{ .Int = total };
+            // Return Float if any element was Float, Int otherwise.
+            return if (has_float) Value{ .Float = float_total } else Value{ .Int = int_total };
         }
 
         // avg() / average() - returns average of all numeric elements
@@ -9612,30 +9680,42 @@ pub const Interpreter = struct {
             return Value{ .Float = total / @as(f64, @floatFromInt(arr.len)) };
         }
 
-        // min() - returns minimum value
+        // min() - returns minimum value (handles mixed Int/Float)
         if (std.mem.eql(u8, method, "min")) {
             if (arr.len == 0) return Value.Void;
             var min_val = arr[0];
             for (arr[1..]) |elem| {
-                if (elem == .Int and min_val == .Int) {
-                    if (elem.Int < min_val.Int) min_val = elem;
-                } else if (elem == .Float and min_val == .Float) {
-                    if (elem.Float < min_val.Float) min_val = elem;
-                }
+                const elem_f = switch (elem) {
+                    .Int => |i| @as(f64, @floatFromInt(i)),
+                    .Float => |f| f,
+                    else => continue,
+                };
+                const min_f = switch (min_val) {
+                    .Int => |i| @as(f64, @floatFromInt(i)),
+                    .Float => |f| f,
+                    else => continue,
+                };
+                if (elem_f < min_f) min_val = elem;
             }
             return min_val;
         }
 
-        // max() - returns maximum value
+        // max() - returns maximum value (handles mixed Int/Float)
         if (std.mem.eql(u8, method, "max")) {
             if (arr.len == 0) return Value.Void;
             var max_val = arr[0];
             for (arr[1..]) |elem| {
-                if (elem == .Int and max_val == .Int) {
-                    if (elem.Int > max_val.Int) max_val = elem;
-                } else if (elem == .Float and max_val == .Float) {
-                    if (elem.Float > max_val.Float) max_val = elem;
-                }
+                const elem_f = switch (elem) {
+                    .Int => |i| @as(f64, @floatFromInt(i)),
+                    .Float => |f| f,
+                    else => continue,
+                };
+                const max_f = switch (max_val) {
+                    .Int => |i| @as(f64, @floatFromInt(i)),
+                    .Float => |f| f,
+                    else => continue,
+                };
+                if (elem_f > max_f) max_val = elem;
             }
             return max_val;
         }
@@ -9833,7 +9913,8 @@ pub const Interpreter = struct {
                 }
                 // Execute closure body
                 const predicate_result = try self.evaluateClosureBody(closure, &closure_env);
-                if (predicate_result == .Bool and predicate_result.Bool) {
+                // Accept truthy values (not just Bool true), matching JS/TS semantics.
+                if (predicate_result.isTrue()) {
                     try result.append(allocator, elem);
                 }
             }
@@ -9857,9 +9938,11 @@ pub const Interpreter = struct {
                 try self.evaluateExpression(args[1], env)
             else if (arr.len > 0)
                 arr[0]
-            else
-                Value{ .Int = 0 };
-            const start_idx: usize = if (args.len == 2) 0 else 1;
+            else {
+                std.debug.print("reduce() on empty array requires an initial value\n", .{});
+                return error.InvalidArguments;
+            };
+            const start_idx: usize = if (args.len == 2) 0 else @min(1, arr.len);
             for (arr[start_idx..]) |elem| {
                 var closure_env = Environment.init(allocator, env);
                 // Bind captured variables
@@ -10369,14 +10452,28 @@ pub const Interpreter = struct {
 
     /// Evaluate map/dictionary method calls
     fn evaluateMapMethod(self: *Interpreter, map: MapValue, method: []const u8, args: []const *const ast.Expr, env: *Environment, var_name: ?[]const u8) InterpreterError!Value {
-        // len() / length() - returns map size
-        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length")) {
+        // len() / length() / size() - returns map size
+        if (std.mem.eql(u8, method, "len") or std.mem.eql(u8, method, "length") or std.mem.eql(u8, method, "size")) {
             return Value{ .Int = @as(i64, @intCast(map.entries.count())) };
         }
 
         // is_empty() - check if map is empty
-        if (std.mem.eql(u8, method, "is_empty")) {
+        if (std.mem.eql(u8, method, "is_empty") or std.mem.eql(u8, method, "isEmpty")) {
             return Value{ .Bool = map.entries.count() == 0 };
+        }
+
+        // has(key) - check if key exists (alias for contains_key)
+        if (std.mem.eql(u8, method, "has")) {
+            if (args.len != 1) return error.InvalidArguments;
+            const key_val = try self.evaluateExpression(args[0], env);
+            const key_str = switch (key_val) {
+                .String => |s| s,
+                .Int => |i| blk: {
+                    break :blk try std.fmt.allocPrint(self.arena.allocator(), "{d}", .{i});
+                },
+                else => return error.TypeMismatch,
+            };
+            return Value{ .Bool = map.entries.get(key_str) != null };
         }
 
         // contains_key(key) - check if key exists
@@ -10429,8 +10526,8 @@ pub const Interpreter = struct {
             return Value{ .Struct = .{ .type_name = "None", .fields = none_fields } };
         }
 
-        // remove(key) - removes key and returns Some(value) or None
-        if (std.mem.eql(u8, method, "remove")) {
+        // remove(key) / delete(key) - removes key and returns Some(value) or None
+        if (std.mem.eql(u8, method, "remove") or std.mem.eql(u8, method, "delete")) {
             if (args.len != 1) {
                 std.debug.print("remove() requires exactly 1 argument\n", .{});
                 return error.InvalidArguments;
@@ -10483,14 +10580,16 @@ pub const Interpreter = struct {
             return Value.Void;
         }
 
-        // keys() - returns array of keys
+        // keys() - returns array of keys (copies to decouple from map internals)
         if (std.mem.eql(u8, method, "keys")) {
+            const allocator = self.arena.allocator();
             var keys_list = std.ArrayList(Value).empty;
             var iter = map.entries.keyIterator();
             while (iter.next()) |key| {
-                try keys_list.append(self.arena.allocator(), Value{ .String = key.* });
+                const key_copy = try allocator.dupe(u8, key.*);
+                try keys_list.append(allocator, Value{ .String = key_copy });
             }
-            return Value{ .Array = try keys_list.toOwnedSlice(self.arena.allocator()) };
+            return Value{ .Array = try keys_list.toOwnedSlice(allocator) };
         }
 
         // values() - returns array of values
@@ -10503,17 +10602,18 @@ pub const Interpreter = struct {
             return Value{ .Array = try values_list.toOwnedSlice(self.arena.allocator()) };
         }
 
-        // entries() - returns array of [key, value] pairs
+        // entries() - returns array of [key, value] pairs (copies keys)
         if (std.mem.eql(u8, method, "entries")) {
+            const allocator = self.arena.allocator();
             var entries_list = std.ArrayList(Value).empty;
             var iter = map.entries.iterator();
             while (iter.next()) |entry| {
-                const pair = try self.arena.allocator().alloc(Value, 2);
-                pair[0] = Value{ .String = entry.key_ptr.* };
+                const pair = try allocator.alloc(Value, 2);
+                pair[0] = Value{ .String = try allocator.dupe(u8, entry.key_ptr.*) };
                 pair[1] = entry.value_ptr.*;
-                try entries_list.append(self.arena.allocator(), Value{ .Array = pair });
+                try entries_list.append(allocator, Value{ .Array = pair });
             }
-            return Value{ .Array = try entries_list.toOwnedSlice(self.arena.allocator()) };
+            return Value{ .Array = try entries_list.toOwnedSlice(allocator) };
         }
 
         // insert(key, value) / put(key, value) / set(key, value) - adds or updates entry
@@ -10545,8 +10645,42 @@ pub const Interpreter = struct {
             try new_entries.put(key_str, value_val);
 
             // Update variable if we have a name
+            const new_map = Value{ .Map = .{ .entries = new_entries } };
             if (var_name) |name| {
-                try env.set(name, Value{ .Map = .{ .entries = new_entries } });
+                try env.set(name, new_map);
+            }
+            // Return the inserted value (enables chaining: let v = map.set("k", 42))
+            return value_val;
+        }
+
+        // merge(other_map) - combine two maps (other overrides this)
+        if (std.mem.eql(u8, method, "merge")) {
+            if (args.len != 1) return error.InvalidArguments;
+            const other_val = try self.evaluateExpression(args[0], env);
+            if (other_val != .Map) return error.TypeMismatch;
+            const other = other_val.Map;
+
+            var new_entries = std.StringHashMap(Value).init(self.arena.allocator());
+            var iter = map.entries.iterator();
+            while (iter.next()) |entry| {
+                try new_entries.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var other_iter = other.entries.iterator();
+            while (other_iter.next()) |entry| {
+                try new_entries.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            const merged = Value{ .Map = .{ .entries = new_entries } };
+            if (var_name) |name| {
+                try env.set(name, merged);
+            }
+            return merged;
+        }
+
+        // clear() - remove all entries
+        if (std.mem.eql(u8, method, "clear")) {
+            const empty = Value{ .Map = .{ .entries = std.StringHashMap(Value).init(self.arena.allocator()) } };
+            if (var_name) |name| {
+                try env.set(name, empty);
             }
             return Value.Void;
         }

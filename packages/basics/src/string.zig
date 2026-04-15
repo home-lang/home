@@ -38,7 +38,8 @@ pub fn indexOf(str: String, needle: String) ?usize {
 /// Split string by delimiter
 pub fn split(allocator: Allocator, str: String, delimiter: String) ![]String {
     var list = std.ArrayList(String).init(allocator);
-    var iter = std.mem.split(u8, str, delimiter);
+    errdefer list.deinit();
+    var iter = std.mem.splitSequence(u8, str, delimiter);
     while (iter.next()) |part| {
         try list.append(part);
     }

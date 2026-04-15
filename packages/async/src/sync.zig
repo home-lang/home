@@ -80,11 +80,15 @@ fn LockFuture(comptime T: type) type {
 
         mutex: *Mutex(T),
         registered: bool,
+        guard_storage: ?MutexGuard(T) = null,
 
         pub fn poll(self: *Self, ctx: *Context) PollResult(*MutexGuard(T)) {
             // Try to acquire lock
             if (self.mutex.tryLock()) |guard| {
-                return .{ .Ready = &guard };
+                // Store the guard in the future's own state so the pointer
+                // remains valid after poll() returns (was returning &local).
+                self.guard_storage = guard;
+                return .{ .Ready = &self.guard_storage.? };
             }
 
             // Register waker if not already registered
@@ -256,9 +260,12 @@ fn ReadLockFuture(comptime T: type) type {
         rwlock: *RwLock(T),
         registered: bool,
 
+        guard: ?ReadGuard(T) = null,
+
         pub fn poll(self: *Self, ctx: *Context) PollResult(*ReadGuard(T)) {
             if (self.rwlock.tryRead()) |guard| {
-                return .{ .Ready = &guard };
+                self.guard = guard;
+                return .{ .Ready = &self.guard.? };
             }
 
             if (!self.registered) {
@@ -284,9 +291,12 @@ fn WriteLockFuture(comptime T: type) type {
         rwlock: *RwLock(T),
         registered: bool,
 
+        guard: ?WriteGuard(T) = null,
+
         pub fn poll(self: *Self, ctx: *Context) PollResult(*WriteGuard(T)) {
             if (self.rwlock.tryWrite()) |guard| {
-                return .{ .Ready = &guard };
+                self.guard = guard;
+                return .{ .Ready = &self.guard.? };
             }
 
             if (!self.registered) {

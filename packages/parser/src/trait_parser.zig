@@ -22,30 +22,31 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
         while (!self.check(.Greater) and !self.isAtEnd()) {
             const param_token = try self.expect(.Identifier, "Expected generic parameter name");
             const param_name = try self.allocator.dupe(u8, param_token.lexeme);
-            
+            errdefer self.allocator.free(param_name);
+
             // Parse optional trait bounds (T: Clone + Debug)
             var bounds = std.ArrayList([]const u8).empty;
             defer bounds.deinit(self.allocator);
-            
+
             if (self.match(&.{.Colon})) {
                 while (true) {
                     const bound_token = try self.expect(.Identifier, "Expected trait bound");
                     const bound = try self.allocator.dupe(u8, bound_token.lexeme);
                     try bounds.append(self.allocator, bound);
-                    
+
                     if (!self.match(&.{.Plus})) break;
                 }
             }
-            
+
             try generic_params.append(self.allocator, .{
                 .name = param_name,
                 .bounds = try bounds.toOwnedSlice(self.allocator),
                 .default_type = null,
             });
-            
+
             if (!self.match(&.{.Comma})) break;
         }
-        
+
         _ = try self.expect(.Greater, "Expected '>' after generic parameters");
     }
     
@@ -83,7 +84,8 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
         if (self.match(&.{.Type})) {
             const type_name_token = try self.expect(.Identifier, "Expected associated type name");
             const type_name = try self.allocator.dupe(u8, type_name_token.lexeme);
-            
+            errdefer self.allocator.free(type_name);
+
             var type_bounds = std.ArrayList([]const u8).empty;
             defer type_bounds.deinit(self.allocator);
             
@@ -118,7 +120,8 @@ pub fn parseTraitDeclaration(self: *Parser) !ast.Stmt {
         
         const method_name_token = try self.expect(.Identifier, "Expected method name");
         const method_name = try self.allocator.dupe(u8, method_name_token.lexeme);
-        
+        errdefer self.allocator.free(method_name);
+
         // Parse parameters
         _ = try self.expect(.LeftParen, "Expected '(' after method name");
         
@@ -232,7 +235,8 @@ pub fn parseImplDeclaration(self: *Parser) !ast.Stmt {
         while (!self.check(.Greater) and !self.isAtEnd()) {
             const param_token = try self.expect(.Identifier, "Expected generic parameter name");
             const param_name = try self.allocator.dupe(u8, param_token.lexeme);
-            
+            errdefer self.allocator.free(param_name);
+
             var bounds = std.ArrayList([]const u8).empty;
             defer bounds.deinit(self.allocator);
             
@@ -270,6 +274,7 @@ pub fn parseImplDeclaration(self: *Parser) !ast.Stmt {
         if (self.check(.For)) {
             // This is "impl Trait for Type"
             trait_name = try self.allocator.dupe(u8, first_ident.lexeme);
+            errdefer if (trait_name) |tn| self.allocator.free(tn);
             _ = self.advance(); // consume 'for'
             for_type = try self.parseTypeExpr();
         } else {

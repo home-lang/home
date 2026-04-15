@@ -158,15 +158,22 @@ pub const PreparedStatement = struct {
     }
 
     pub fn deinit(self: *PreparedStatement) void {
+        // Free the per-parameter strings we allocated via allocPrint.
+        for (self.params.items) |param| {
+            if (param) |p| self.allocator.free(p);
+        }
         self.params.deinit();
     }
 
     pub fn bind(self: *PreparedStatement, index: usize, value: anytype) !void {
+        if (index > self.params.items.len) return error.IndexOutOfBounds;
         const value_str = try std.fmt.allocPrint(self.allocator, "{any}", .{value});
+        errdefer self.allocator.free(value_str);
         try self.params.insert(index, value_str);
     }
 
     pub fn bindNull(self: *PreparedStatement, index: usize) !void {
+        if (index > self.params.items.len) return error.IndexOutOfBounds;
         try self.params.insert(index, null);
     }
 

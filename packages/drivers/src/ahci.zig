@@ -453,7 +453,9 @@ pub const AhciPort = struct {
         self.lock.acquire();
         defer self.lock.release();
 
-        if (buffer.len < count * 512) return error.BufferTooSmall;
+        // Compute transfer size in usize so `count * 512` can't overflow u32.
+        const xfer: usize = @as(usize, count) * 512;
+        if (buffer.len < xfer) return error.BufferTooSmall;
 
         const slot = try self.findCommandSlot();
         const cmd_header = &self.command_list[slot];
@@ -471,7 +473,7 @@ pub const AhciPort = struct {
         cmd_header.ctba_upper = @truncate(cmd_table_addr >> 32);
 
         // Setup PRDT
-        cmd_table.prdt[0] = PrdtEntry.init(self.dma_buffer.physical, count * 512);
+        cmd_table.prdt[0] = PrdtEntry.init(self.dma_buffer.physical, xfer);
 
         // Setup Command FIS
         const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));
@@ -481,17 +483,18 @@ pub const AhciPort = struct {
         try self.executeWithRetry(slot);
 
         // Copy from DMA buffer
-        try self.dma_buffer.copyTo(buffer[0 .. count * 512]);
+        try self.dma_buffer.copyTo(buffer[0..xfer]);
     }
 
     pub fn write(self: *AhciPort, lba: u64, count: u32, buffer: []const u8) !void {
         self.lock.acquire();
         defer self.lock.release();
 
-        if (buffer.len < count * 512) return error.BufferTooSmall;
+        const xfer: usize = @as(usize, count) * 512;
+        if (buffer.len < xfer) return error.BufferTooSmall;
 
         // Copy to DMA buffer
-        try self.dma_buffer.copyFrom(buffer[0 .. count * 512]);
+        try self.dma_buffer.copyFrom(buffer[0..xfer]);
 
         const slot = try self.findCommandSlot();
         const cmd_header = &self.command_list[slot];
@@ -509,7 +512,7 @@ pub const AhciPort = struct {
         cmd_header.ctba_upper = @truncate(cmd_table_addr >> 32);
 
         // Setup PRDT
-        cmd_table.prdt[0] = PrdtEntry.init(self.dma_buffer.physical, count * 512);
+        cmd_table.prdt[0] = PrdtEntry.init(self.dma_buffer.physical, xfer);
 
         // Setup Command FIS
         const fis: *FisRegH2D = @ptrCast(@alignCast(&cmd_table.cfis));

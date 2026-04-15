@@ -51,9 +51,11 @@ pub const CropFilter = struct {
 
     /// Apply crop to a video frame
     pub fn apply(self: *const Self, input: *const VideoFrame) !VideoFrame {
-        // Validate crop region
-        if (self.x + self.width > input.width or
-            self.y + self.height > input.height)
+        // Validate crop region. Check each component against the input
+        // dimensions before summing to avoid u32 overflow bypassing the
+        // bounds check (e.g. x=0xFFFFFFFF, width=1 would "wrap" past it).
+        if (self.x > input.width or self.width > input.width - self.x or
+            self.y > input.height or self.height > input.height - self.y)
         {
             return VideoError.InvalidDimensions;
         }

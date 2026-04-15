@@ -192,7 +192,8 @@ pub const ColorConversionKernel = struct {
     }
 
     fn yuvToRgbCpu(input: []u8, output: []u8, width: u32, height: u32) !void {
-        const total_pixels = width * height;
+        // usize multiplication prevents overflow for large frames.
+        const total_pixels: usize = @as(usize, width) * @as(usize, height);
         var i: usize = 0;
         while (i < total_pixels) : (i += 1) {
             const y_val = @as(f32, @floatFromInt(input[i])) / 255.0;
@@ -211,7 +212,7 @@ pub const ColorConversionKernel = struct {
     }
 
     fn rgbToYuvCpu(input: []u8, output: []u8, width: u32, height: u32) !void {
-        const total_pixels = width * height;
+        const total_pixels: usize = @as(usize, width) * @as(usize, height);
         var i: usize = 0;
         while (i < total_pixels) : (i += 1) {
             const r = @as(f32, @floatFromInt(input[i * 3])) / 255.0;
@@ -230,8 +231,8 @@ pub const ColorConversionKernel = struct {
     }
 
     fn yuv420ToRgbCpu(input: []u8, output: []u8, width: u32, height: u32) !void {
-        const y_plane_size = width * height;
-        const uv_plane_size = (width / 2) * (height / 2);
+        const y_plane_size: usize = @as(usize, width) * @as(usize, height);
+        const uv_plane_size: usize = (@as(usize, width) / 2) * (@as(usize, height) / 2);
 
         var y: u32 = 0;
         while (y < height) : (y += 1) {

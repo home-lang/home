@@ -72,7 +72,9 @@ pub const Encoder = struct {
 
     fn addToDynamicTable(self: *Encoder, header: Header) !void {
         const name = try self.allocator.dupe(u8, header.name);
+        errdefer self.allocator.free(name);
         const value = try self.allocator.dupe(u8, header.value);
+        errdefer self.allocator.free(value);
 
         try self.dynamic_table.append(.{
             .name = name,
@@ -166,7 +168,9 @@ pub const Decoder = struct {
         } else if ((first_byte & 0x40) != 0) {
             // Literal with incremental indexing
             const name = try self.decodeLiteralString(reader);
+            errdefer self.allocator.free(name);
             const value = try self.decodeLiteralString(reader);
+            errdefer self.allocator.free(value);
 
             const header = Header{ .name = name, .value = value };
             try self.addToDynamicTable(header);
@@ -174,6 +178,7 @@ pub const Decoder = struct {
         } else {
             // Literal without indexing
             const name = try self.decodeLiteralString(reader);
+            errdefer self.allocator.free(name);
             const value = try self.decodeLiteralString(reader);
             return Header{ .name = name, .value = value };
         }
@@ -195,9 +200,13 @@ pub const Decoder = struct {
         }
 
         const entry = self.dynamic_table.items[dynamic_index];
+        const name = try self.allocator.dupe(u8, entry.name);
+        errdefer self.allocator.free(name);
+        const value = try self.allocator.dupe(u8, entry.value);
+        errdefer self.allocator.free(value);
         return Header{
-            .name = try self.allocator.dupe(u8, entry.name),
-            .value = try self.allocator.dupe(u8, entry.value),
+            .name = name,
+            .value = value,
         };
     }
 
@@ -307,9 +316,10 @@ pub const Decoder = struct {
             return value;
         }
 
-        var m: usize = 0;
+        var m: u8 = 0;
         while (true) {
             const byte = try reader.readByte();
+            if (m >= @bitSizeOf(usize)) return error.IntegerOverflow;
             value += (@as(usize, byte & 0x7F) << @intCast(m));
             m += 7;
 

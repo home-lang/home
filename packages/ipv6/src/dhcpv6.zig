@@ -269,7 +269,8 @@ pub const Client = struct {
 
     /// Generate new transaction ID
     pub fn newTransactionId(self: *Client) void {
-        const seed: u64 = @intCast(std.time.milliTimestamp());
+        const ms = std.time.milliTimestamp();
+        const seed: u64 = if (ms < 0) 0 else @intCast(ms);
         var rng = std.Random.DefaultPrng.init(seed);
         const random = rng.random();
         random.bytes(&self.transaction_id);

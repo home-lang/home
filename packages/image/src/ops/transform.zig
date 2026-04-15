@@ -171,7 +171,8 @@ fn rotate90(img: *const Image) !Image {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             if (img.getPixel(x, y)) |color| {
-                result.setPixel(img.height - 1 - y, x, color);
+                // 90° clockwise: (x,y) → (y, width-1-x)
+                result.setPixel(y, img.width - 1 - x, color);
             }
         }
     }
@@ -205,7 +206,7 @@ fn rotate270(img: *const Image) !Image {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             if (img.getPixel(x, y)) |color| {
-                result.setPixel(y, img.width - 1 - x, color);
+                result.setPixel(img.height - 1 - y, x, color);
             }
         }
     }
@@ -375,8 +376,8 @@ pub fn affine(img: *const Image, matrix: AffineMatrix, new_width: u32, new_heigh
             // Map destination point to source
             const src = inv.transformPoint(@floatFromInt(x), @floatFromInt(y));
 
-            if (src.x >= 0 and src.x < @as(f64, @floatFromInt(img.width - 1)) and
-                src.y >= 0 and src.y < @as(f64, @floatFromInt(img.height - 1)))
+            if (src.x >= 0 and src.x < @as(f64, @floatFromInt(img.width)) and
+                src.y >= 0 and src.y < @as(f64, @floatFromInt(img.height)))
             {
                 // Bilinear interpolation
                 const sx0: u32 = @intFromFloat(src.x);

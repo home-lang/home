@@ -64,7 +64,7 @@ pub const LSPServer = struct {
         // Read headers
         var header_buf: [1024]u8 = undefined;
         while (true) {
-            const line = try reader.readUntilDelimiter(&header_buf, '\n') catch |err| {
+            const line = reader.readUntilDelimiter(&header_buf, '\n') catch |err| {
                 if (err == error.EndOfStream) return null;
                 return err;
             };
@@ -151,7 +151,10 @@ pub const LSPServer = struct {
             \\  "definitionProvider":true,
             \\  "referencesProvider":true,
             \\  "documentFormattingProvider":true,
-            \\  "documentSymbolProvider":true
+            \\  "documentSymbolProvider":true,
+            \\  "codeActionProvider":true,
+            \\  "renameProvider":true,
+            \\  "signatureHelpProvider":{{"triggerCharacters":["(", ","]}}
             \\}}}}}}
         ,
             .{request.id},

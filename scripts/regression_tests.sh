@@ -614,6 +614,189 @@ fn main() {
 ' 0
 
 echo
+echo "=== implicit toString and map ==="
+
+run_case "map_literal_and_access" '
+fn main() {
+    let m = { "a": 1, "b": 2 }
+    assert(m["a"] == 1)
+    assert(m["b"] == 2)
+}
+' 0
+
+run_case "string_methods_basic" '
+fn main() {
+    let s = "Hello World"
+    assert(s.len() == 11)
+    let upper = s.upper()
+    assert(upper == "HELLO WORLD")
+}
+' 0
+
+run_case "power_operator" '
+fn main() {
+    assert(2 ** 10 == 1024)
+    assert(3 ** 0 == 1)
+    assert((-2) ** 3 == -8)
+}
+' 0
+
+echo
+echo "=== array methods ==="
+
+run_case "array_sum_mixed" '
+fn main() {
+    let a = [1, 2, 3]
+    assert(a.sum() == 6)
+}
+' 0
+
+run_case "array_min_max" '
+fn main() {
+    let a = [3, 1, 4, 1, 5]
+    assert(a.min() == 1)
+    assert(a.max() == 5)
+}
+' 0
+
+run_case "array_filter" '
+fn main() {
+    let a = [1, 2, 3, 4, 5]
+    let evens = a.filter(|x| x % 2 == 0)
+    assert(evens.len() == 2)
+}
+' 0
+
+echo
+echo "=== type checks and closures ==="
+
+run_case "is_expression" '
+fn main() {
+    let x = 42
+    assert(x is int)
+}
+' 0
+
+run_case "if_let_enum" '
+enum Option {
+    Some(int),
+    None,
+}
+fn main() {
+    let val = Option.Some(42)
+    if let Some(x) = val {
+        assert(x == 42)
+    }
+}
+' 0
+
+echo
+echo "=== map methods ==="
+
+run_case "map_has_method" '
+fn main() {
+    let m = { "a": 1, "b": 2 }
+    assert(m.has("a") == true)
+    assert(m.has("c") == false)
+    assert(m.size() == 2)
+}
+' 0
+
+run_case "map_delete_method" '
+fn main() {
+    let m = { "a": 1, "b": 2 }
+    m.delete("a")
+    assert(m.has("a") == false)
+}
+' 0
+
+echo
+echo "=== slice operations ==="
+
+run_case "string_slice_inclusive" '
+fn main() {
+    let s = "hello"
+    let sub = s[1..=3]
+    assert(sub == "ell")
+}
+' 0
+
+run_case "array_map_filter_chain" '
+fn main() {
+    let a = [1, 2, 3, 4, 5]
+    let doubled = a.map(|x| x * 2)
+    assert(doubled[0] == 2)
+    assert(doubled[4] == 10)
+}
+' 0
+
+echo
+echo "=== closures and methods ==="
+
+run_case "closure_return_value" '
+fn main() {
+    let add = |a, b| { return a + b }
+    let result = add(3, 4)
+    assert(result == 7)
+}
+' 0
+
+run_case "string_include_index" '
+fn main() {
+    let s = "hello world"
+    assert(s.includes("world") == true)
+    assert(s.includes("xyz") == false)
+}
+' 0
+
+echo
+echo "=== date and math ==="
+
+run_case "basic_while_loop" '
+fn main() {
+    let mut i = 0
+    let mut sum = 0
+    while i < 10 {
+        sum = sum + i
+        i = i + 1
+    }
+    assert(sum == 45)
+}
+' 0
+
+run_case "nested_function_calls" '
+fn double(x: int): int { return x * 2 }
+fn add(a: int, b: int): int { return a + b }
+fn main() {
+    assert(add(double(3), double(4)) == 14)
+}
+' 0
+
+echo
+echo "=== type casting and structs ==="
+
+run_case "struct_field_access" '
+struct Vec2 { x: int, y: int }
+fn main() {
+    let v = Vec2 { x: 10, y: 20 }
+    assert(v.x + v.y == 30)
+}
+' 0
+
+run_case "enum_match_basic" '
+enum Color { Red, Green, Blue }
+fn main() {
+    let c = Color.Green
+    let val = match c {
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
+    }
+    assert(val == 2)
+}
+' 0
+
+echo
 echo "==========================================="
 echo "  $pass passed, $fail failed"
 if [[ $fail -gt 0 ]]; then

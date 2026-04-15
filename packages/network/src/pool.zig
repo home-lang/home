@@ -4,12 +4,12 @@ const dns = @import("dns.zig");
 
 /// Simple spinlock mutex (SpinMutex removed in Zig 0.16)
 const SpinMutex = struct {
-    inner: std.atomic.Mutex = .unlocked,
+    flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     pub fn lock(self: *SpinMutex) void {
-        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+        while (self.flag.swap(true, .acquire)) std.atomic.spinLoopHint();
     }
     pub fn unlock(self: *SpinMutex) void {
-        self.inner.unlock();
+        self.flag.store(false, .release);
     }
 };
 const TcpStream = network.TcpStream;

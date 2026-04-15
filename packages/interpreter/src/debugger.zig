@@ -394,7 +394,7 @@ pub const Debugger = struct {
         };
 
         // Create a Value and store it
-        const val = Value{ .Integer = value };
+        const val = Value{ .Int = value };
         try frame.environment.set(var_name, val);
 
         std.debug.print("Set {s} = {d}\n", .{ var_name, value });

@@ -177,25 +177,33 @@ pub fn getRandom() u64 {
     // Fallback to entropy pool
     var bytes: [8]u8 = undefined;
     getEntropyBytes(&bytes);
-    return @as(*u64, @ptrCast(@alignCast(&bytes))).* ;
+    return @bitCast(bytes);
 }
 
-/// Get random u64 in range [min, max)
+/// Get random u64 in range [min, max) with rejection sampling to avoid modulo bias.
 pub fn getRandomRange(min: u64, max: u64) u64 {
     if (min >= max) return min;
     const range = max - min;
-    const rand = getRandom();
+    // Rejection sampling: discard values that would cause bias.
+    const max_u64: u64 = 0xFFFFFFFFFFFFFFFF;
+    const threshold = max_u64 - (max_u64 % range);
+    var rand = getRandom();
+    while (rand >= threshold) {
+        rand = getRandom();
+    }
     return min + (rand % range);
 }
 
 /// Get random bytes
 pub fn getRandomBytes(out: []u8) void {
-    // Try hardware RNG first for better quality
+    // Try hardware RNG first for better quality. Use std.mem.writeInt to
+    // avoid requiring u64 alignment on the output buffer (which is a []u8
+    // and typically only 1-byte aligned).
     if (hasRdrand()) {
         var i: usize = 0;
         while (i + 8 <= out.len) : (i += 8) {
             if (rdrand()) |value| {
-                @as(*u64, @ptrCast(@alignCast(&out[i]))).* = value;
+                std.mem.writeInt(u64, out[i..][0..8], value, .little);
             } else {
                 getEntropyBytes(out[i..i + 8]);
             }
@@ -205,7 +213,7 @@ pub fn getRandomBytes(out: []u8) void {
         if (i < out.len) {
             var temp: [8]u8 = undefined;
             if (rdrand()) |value| {
-                @as(*u64, @ptrCast(@alignCast(&temp))).* = value;
+                std.mem.writeInt(u64, &temp, value, .little);
             } else {
                 getEntropyBytes(&temp);
             }

@@ -132,7 +132,8 @@ pub const HistogramFilter = struct {
         _ = self;
 
         var histogram = ColorHistogram.init(frame.format);
-        const pixel_count = frame.width * frame.height;
+        // Promote to usize so `width * height` doesn't overflow u32 at 4K+.
+        const pixel_count: usize = @as(usize, frame.width) * @as(usize, frame.height);
 
         // Analyze luma/first channel
         for (0..pixel_count) |i| {
@@ -141,10 +142,10 @@ pub const HistogramFilter = struct {
 
         // Analyze chroma/other channels if present
         if (frame.format == .yuv420p or frame.format == .yuv422p or frame.format == .yuv444p) {
-            const chroma_size = switch (frame.format) {
-                .yuv420p => (frame.width / 2) * (frame.height / 2),
-                .yuv422p => (frame.width / 2) * frame.height,
-                .yuv444p => frame.width * frame.height,
+            const chroma_size: usize = switch (frame.format) {
+                .yuv420p => (@as(usize, frame.width) / 2) * (@as(usize, frame.height) / 2),
+                .yuv422p => (@as(usize, frame.width) / 2) * @as(usize, frame.height),
+                .yuv444p => @as(usize, frame.width) * @as(usize, frame.height),
                 else => 0,
             };
 
@@ -169,7 +170,9 @@ pub const HistogramFilter = struct {
 
     pub fn visualize(self: *Self, histogram: *const ColorHistogram, width: u32, height: u32) !*VideoFrame {
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, width, height, .rgb24);
+        errdefer output.deinit();
 
         // Clear to black
         @memset(output.data[0], 0);
@@ -222,7 +225,8 @@ pub const PSNRCalculator = struct {
             return error.FrameSizeMismatch;
         }
 
-        const pixel_count = frame1.width * frame1.height;
+        const pixel_count: usize = @as(usize, frame1.width) * @as(usize, frame1.height);
+        if (pixel_count == 0) return std.math.inf(f64);
 
         // Calculate MSE (Mean Squared Error)
         var mse: f64 = 0.0;

@@ -52,9 +52,14 @@ pub fn ObjectPool(comptime T: type) type {
             // Calculate index from pointer
             const obj_addr = @intFromPtr(obj);
             const base_addr = @intFromPtr(self.objects.ptr);
-            const index = @divTrunc(obj_addr - base_addr, @sizeOf(T));
+            if (obj_addr < base_addr) return; // Not from this pool
+            const byte_offset = obj_addr - base_addr;
+            // Pointer must be aligned to an element boundary.
+            if (@sizeOf(T) != 0 and byte_offset % @sizeOf(T) != 0) return;
+            const index = if (@sizeOf(T) == 0) 0 else byte_offset / @sizeOf(T);
 
             if (index >= self.capacity) return; // Invalid object
+            if (self.free_count >= self.capacity) return; // Double-free guard
 
             self.free_list[self.free_count] = @intCast(index);
             self.free_count += 1;
@@ -94,7 +99,7 @@ pub const MemoryPool = struct {
     pub fn init(allocator: Allocator, block_size: u32, block_count: u32) !MemoryPool {
         // Ensure block size is at least pointer size
         const actual_block_size = @max(block_size, @sizeOf(PoolNode));
-        const total_size = actual_block_size * block_count;
+        const total_size = std.math.mul(u32, actual_block_size, block_count) catch return error.Overflow;
 
         const memory = try allocator.alloc(u8, total_size);
 
@@ -296,8 +301,7 @@ test "MemoryPool exhaustion" {
 
     // Free one and try again
     pool.free(ptrs[0]);
-    const new_ptr = pool.alloc() orelse return error.PoolExhausted;
-    try std.testing.expect(new_ptr != null);
+    _ = pool.alloc() orelse return error.PoolExhausted;
 }
 
 test "TieredAllocator routing" {

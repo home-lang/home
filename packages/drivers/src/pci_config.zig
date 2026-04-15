@@ -180,7 +180,10 @@ pub const BAR = union(enum) {
                 writeConfigDword(bus, device, function, bar_offset + 4, @truncate(bar_value >> 32));
             }
 
-            const size = ~size_mask + 1;
+            // Two's-complement negation of the mask. Use wrapping add so a
+            // zero size_mask (BAR not implemented) yields 0 instead of
+            // panicking on u64 overflow.
+            const size = ~size_mask +% 1;
 
             return .{ .memory = .{
                 .address = address,

@@ -68,7 +68,10 @@ pub fn executeTests(
     errdefer suite_result.deinit();
 
     for (discovered_tests.tests.items) |test_item| {
-        const result = try executeTest(allocator, program, test_item);
+        var result = try executeTest(allocator, program, test_item);
+        // If append fails, free result's owned error message rather
+        // than dropping it on the floor.
+        errdefer result.deinit(allocator);
         try suite_result.addResult(result);
     }
 
@@ -206,7 +209,7 @@ fn createIdentifierExpr(allocator: std.mem.Allocator, name: []const u8) !*ast.Ex
 /// Prints test execution results
 pub fn printResults(suite_result: *TestSuiteResult, writer: anytype) !void {
     try writer.print("\n{s}Test Results{s}\n", .{ "\x1b[1;36m", "\x1b[0m" });
-    try writer.print("{s}━{s}\n", .{ "\x1b[36m", "\x1b[0m" }) catch {};
+    try writer.print("{s}━{s}\n", .{ "\x1b[36m", "\x1b[0m" });
 
     for (suite_result.results.items) |result| {
         if (result.success) {
@@ -240,7 +243,7 @@ pub fn printResults(suite_result: *TestSuiteResult, writer: anytype) !void {
     }
 
     try writer.print("\n{s}Summary{s}\n", .{ "\x1b[1;36m", "\x1b[0m" });
-    try writer.print("{s}━{s}\n", .{ "\x1b[36m", "\x1b[0m" }) catch {};
+    try writer.print("{s}━{s}\n", .{ "\x1b[36m", "\x1b[0m" });
 
     const pass_color = if (suite_result.passed == suite_result.total) "\x1b[32m" else "\x1b[33m";
     try writer.print("  Tests:    {s}{d} passed{s}, {d} total\n", .{

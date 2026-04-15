@@ -81,6 +81,10 @@ pub const FrameRateConverter = struct {
     }
 
     pub fn convert(self: *Self, input_frame: *const VideoFrame) !?*VideoFrame {
+        // Reject zero denominators up-front — otherwise the divisions
+        // below would produce infinity/NaN and cascade into bogus state.
+        if (self.source_fps.den == 0 or self.target_fps.den == 0) return error.InvalidFrameRate;
+        if (self.source_fps.num == 0 or self.target_fps.num == 0) return error.InvalidFrameRate;
         const source_fps_f: f64 = @as(f64, @floatFromInt(self.source_fps.num)) / @as(f64, @floatFromInt(self.source_fps.den));
         const target_fps_f: f64 = @as(f64, @floatFromInt(self.target_fps.num)) / @as(f64, @floatFromInt(self.target_fps.den));
 
@@ -97,6 +101,7 @@ pub const FrameRateConverter = struct {
 
                     // Clone frame
                     const output = try self.allocator.create(VideoFrame);
+                    errdefer self.allocator.destroy(output);
                     output.* = try input_frame.clone(self.allocator);
                     return output;
                 }
@@ -112,6 +117,7 @@ pub const FrameRateConverter = struct {
                         return output;
                     } else {
                         const output = try self.allocator.create(VideoFrame);
+                        errdefer self.allocator.destroy(output);
                         output.* = try input_frame.clone(self.allocator);
                         return output;
                     }
@@ -121,9 +127,12 @@ pub const FrameRateConverter = struct {
                 if (self.last_frame) |old| {
                     old.deinit();
                     self.allocator.destroy(old);
+                    self.last_frame = null;
                 }
-                self.last_frame = try self.allocator.create(VideoFrame);
-                self.last_frame.?.* = try input_frame.clone(self.allocator);
+                const stored = try self.allocator.create(VideoFrame);
+                errdefer self.allocator.destroy(stored);
+                stored.* = try input_frame.clone(self.allocator);
+                self.last_frame = stored;
 
                 return null;
             },
@@ -136,13 +145,16 @@ pub const FrameRateConverter = struct {
 
     fn blendFrames(self: *Self, frame1: *const VideoFrame, frame2: *const VideoFrame, ratio: f32) !*VideoFrame {
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame1.width, frame1.height, frame1.format);
+        errdefer output.deinit();
 
         const ratio1 = 1.0 - ratio;
         const ratio2 = ratio;
 
-        // Blend luma
-        for (0..frame1.width * frame1.height) |i| {
+        // Blend luma — use usize math so large resolutions don't overflow u32.
+        const luma_count: usize = @as(usize, frame1.width) * @as(usize, frame1.height);
+        for (0..luma_count) |i| {
             const val1: f32 = @floatFromInt(frame1.data[0][i]);
             const val2: f32 = @floatFromInt(frame2.data[0][i]);
             output.data[0][i] = @intFromFloat(val1 * ratio1 + val2 * ratio2);
@@ -150,10 +162,10 @@ pub const FrameRateConverter = struct {
 
         // Blend chroma (if present)
         if (frame1.format == .yuv420p or frame1.format == .yuv422p or frame1.format == .yuv444p) {
-            const chroma_size = switch (frame1.format) {
-                .yuv420p => (frame1.width / 2) * (frame1.height / 2),
-                .yuv422p => (frame1.width / 2) * frame1.height,
-                .yuv444p => frame1.width * frame1.height,
+            const chroma_size: usize = switch (frame1.format) {
+                .yuv420p => (@as(usize, frame1.width) / 2) * (@as(usize, frame1.height) / 2),
+                .yuv422p => (@as(usize, frame1.width) / 2) * @as(usize, frame1.height),
+                .yuv444p => @as(usize, frame1.width) * @as(usize, frame1.height),
                 else => 0,
             };
 

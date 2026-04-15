@@ -209,7 +209,7 @@ test "lifetime tracker - create borrow" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.createBorrow("r", "x", scope_id, loc);
 
     const state = tracker.var_ownership.get("r");
@@ -221,7 +221,7 @@ test "lifetime tracker - borrow from undefined" {
     defer tracker.deinit();
 
     const scope_id = tracker.enterScope();
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.createBorrow("r", "undefined", scope_id, loc);
 
@@ -239,7 +239,7 @@ test "lifetime tracker - borrow from moved" {
     // Move x
     try tracker.var_ownership.put("x", .Moved);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.createBorrow("r", "x", scope_id, loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -253,7 +253,7 @@ test "lifetime tracker - create mutable borrow" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.createBorrowMut("r", "x", scope_id, loc);
 
     const state = tracker.var_ownership.get("r");
@@ -267,7 +267,7 @@ test "lifetime tracker - conflicting mutable borrows" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create first mutable borrow
     try tracker.createBorrowMut("r1", "x", scope_id, loc);
@@ -286,7 +286,7 @@ test "lifetime tracker - shared and mutable borrow conflict" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create mutable borrow
     try tracker.createBorrowMut("r1", "x", scope_id, loc);
@@ -305,7 +305,7 @@ test "lifetime tracker - multiple shared borrows allowed" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create multiple shared borrows
     try tracker.createBorrow("r1", "x", scope_id, loc);
@@ -326,7 +326,7 @@ test "lifetime tracker - move value" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveValue("x", "y", scope_id, loc);
 
     const x_state = tracker.var_ownership.get("x");
@@ -341,7 +341,7 @@ test "lifetime tracker - move from undefined" {
     defer tracker.deinit();
 
     const scope_id = tracker.enterScope();
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.moveValue("undefined", "y", scope_id, loc);
 
@@ -356,7 +356,7 @@ test "lifetime tracker - move from already moved" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Move once
     try tracker.moveValue("x", "y", scope_id, loc);
@@ -379,7 +379,7 @@ test "lifetime tracker - check use of owned" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkUse("x", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -392,7 +392,7 @@ test "lifetime tracker - check use of moved" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveValue("x", "y", scope_id, loc);
 
     // Try to use moved value
@@ -406,7 +406,7 @@ test "lifetime tracker - check use of undefined" {
     var tracker = lifetime.LifetimeTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkUse("undefined", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -420,7 +420,7 @@ test "lifetime tracker - check use of borrowed" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.createBorrow("r", "x", scope_id, loc);
 
     try tracker.checkUse("r", loc);
@@ -442,7 +442,7 @@ test "lifetime tracker - dangling reference detection" {
     const scope2 = tracker.enterScope();
     try tracker.declareOwned("y", scope2);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create borrow from inner scope variable in outer scope
     try tracker.createBorrow("r", "y", scope1, loc);
@@ -463,7 +463,7 @@ test "lifetime tracker - no dangling reference" {
 
     const scope2 = tracker.enterScope();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create borrow from outer scope variable in inner scope
     try tracker.createBorrow("r", "x", scope2, loc);
@@ -485,7 +485,7 @@ test "lifetime tracker - check constraints valid" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.createBorrow("r", "x", scope1, loc);
 
     try tracker.checkConstraints();
@@ -524,7 +524,7 @@ test "edge case - borrow of borrow" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create first borrow
     try tracker.createBorrow("r1", "x", scope_id, loc);
@@ -544,7 +544,7 @@ test "edge case - move after borrow ends" {
 
     const scope2 = tracker.enterScope();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create borrow in inner scope
     try tracker.createBorrow("r", "x", scope2, loc);
@@ -593,7 +593,7 @@ test "stress test - many borrows" {
     const scope_id = tracker.enterScope();
     try tracker.declareOwned("x", scope_id);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create many shared borrows
     var i: usize = 0;
@@ -618,7 +618,7 @@ test "complex scenario - reborrow pattern" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Create first scope with borrow
     const scope2 = tracker.enterScope();
@@ -647,7 +647,7 @@ test "complex scenario - conditional ownership" {
     const scope1 = tracker.enterScope();
     try tracker.declareOwned("x", scope1);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (condition) { move x to y }
     const scope2 = tracker.enterScope();

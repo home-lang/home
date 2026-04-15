@@ -1,19 +1,19 @@
 // Home Programming Language - Mutex Primitives
-// Wrapper around Zig's std.atomic.Mutex
+// Simple spinlock built on std.atomic.Value (std.atomic.Mutex was removed).
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 
 pub const Mutex = struct {
-    inner: std.atomic.Mutex,
+    flag: std.atomic.Value(bool),
 
     pub fn init() ThreadError!Mutex {
-        return Mutex{ .inner = .unlocked };
+        return Mutex{ .flag = std.atomic.Value(bool).init(false) };
     }
 
     pub fn initWithAttr(attr: MutexAttr) ThreadError!Mutex {
         _ = attr; // Recursive mutexes not directly supported yet
-        return Mutex{ .inner = .unlocked };
+        return Mutex{ .flag = std.atomic.Value(bool).init(false) };
     }
 
     pub fn deinit(self: *Mutex) void {
@@ -21,15 +21,15 @@ pub const Mutex = struct {
     }
 
     pub fn lock(self: *Mutex) ThreadError!void {
-        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+        while (self.flag.swap(true, .acquire)) std.atomic.spinLoopHint();
     }
 
     pub fn tryLock(self: *Mutex) ThreadError!bool {
-        return self.inner.tryLock();
+        return !self.flag.swap(true, .acquire);
     }
 
     pub fn unlock(self: *Mutex) ThreadError!void {
-        self.inner.unlock();
+        self.flag.store(false, .release);
     }
 
     pub const Guard = struct {

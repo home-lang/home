@@ -1976,6 +1976,7 @@ pub const Parser = struct {
         // Regular type (identifier, possibly with module path like std.fs.File)
         const type_token = try self.expect(.Identifier, "Expected type name");
         var result = try self.allocator.dupe(u8, type_token.lexeme);
+        errdefer self.allocator.free(result);
 
         // Handle module path: foo.bar.Type
         while (self.match(&.{.Dot})) {
@@ -5245,6 +5246,7 @@ pub const Parser = struct {
 
                 if (looks_like_generics) {
                     var type_name = try self.allocator.dupe(u8, token.lexeme);
+                    errdefer self.allocator.free(type_name);
 
                     // Parse generic type arguments
                     var type_args = std.ArrayList([]const u8).empty;

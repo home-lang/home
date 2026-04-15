@@ -38,6 +38,9 @@ pub const DataFrame = struct {
     }
 
     pub fn encode(self: DataFrame, allocator: std.mem.Allocator) ![]u8 {
+        // HTTP/2 length field is 24 bits; reject oversized payloads
+        // here so @intCast doesn't panic on truncation.
+        if (self.data.len > std.math.maxInt(u24)) return error.FrameTooLarge;
         var buffer = std.ArrayList(u8).init(allocator);
         errdefer buffer.deinit();
 
@@ -78,6 +81,7 @@ pub const HeadersFrame = struct {
     }
 
     pub fn encode(self: HeadersFrame, allocator: std.mem.Allocator) ![]u8 {
+        if (self.fragment.len > std.math.maxInt(u24)) return error.FrameTooLarge;
         var buffer = std.ArrayList(u8).init(allocator);
         errdefer buffer.deinit();
 
@@ -237,6 +241,9 @@ pub const GoAwayFrame = struct {
     debug_data: []const u8,
 
     pub fn encode(self: GoAwayFrame, allocator: std.mem.Allocator) ![]u8 {
+        // Reject debug data that would push the payload past the 24-bit
+        // length field — otherwise @intCast would panic on overflow.
+        if (self.debug_data.len > std.math.maxInt(u24) - 8) return error.FrameTooLarge;
         var buffer = std.ArrayList(u8).init(allocator);
         errdefer buffer.deinit();
 

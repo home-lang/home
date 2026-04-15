@@ -273,8 +273,12 @@ fn writeInteger(writer: anytype, value: anytype, spec: variadic.FormatSpec) !usi
         else => return error.InvalidType,
     };
 
-    const str = if (spec.specifier == .Unsigned or int_value >= 0) blk: {
-        const unsigned: u128 = if (int_value < 0) @bitCast(-int_value) else @intCast(int_value);
+    const str = if (spec.specifier == .Unsigned) blk: {
+        // %u: reinterpret the value as unsigned (two's complement bit-cast).
+        const unsigned: u128 = @bitCast(int_value);
+        break :blk try std.fmt.bufPrint(&buf, "{d}", .{unsigned});
+    } else if (int_value >= 0) blk: {
+        const unsigned: u128 = @intCast(int_value);
         break :blk try std.fmt.bufPrint(&buf, "{d}", .{unsigned});
     } else blk: {
         break :blk try std.fmt.bufPrint(&buf, "{d}", .{int_value});
@@ -306,8 +310,14 @@ fn writeHex(writer: anytype, value: anytype, spec: variadic.FormatSpec) !usize {
     const T = @TypeOf(value);
 
     const int_value: u128 = switch (@typeInfo(T)) {
-        .int => @intCast(value),
-        .comptime_int => value,
+        .int => |info| if (info.signedness == .signed)
+            @as(u128, @bitCast(@as(i128, @intCast(value))))
+        else
+            @intCast(value),
+        .comptime_int => if (value < 0)
+            @as(u128, @bitCast(@as(i128, value)))
+        else
+            value,
         else => return error.InvalidType,
     };
 
@@ -335,8 +345,14 @@ fn writeOctal(writer: anytype, value: anytype, spec: variadic.FormatSpec) !usize
     const T = @TypeOf(value);
 
     const int_value: u128 = switch (@typeInfo(T)) {
-        .int => @intCast(value),
-        .comptime_int => value,
+        .int => |info| if (info.signedness == .signed)
+            @as(u128, @bitCast(@as(i128, @intCast(value))))
+        else
+            @intCast(value),
+        .comptime_int => if (value < 0)
+            @as(u128, @bitCast(@as(i128, value)))
+        else
+            value,
         else => return error.InvalidType,
     };
 
@@ -358,8 +374,14 @@ fn writeBinary(writer: anytype, value: anytype, spec: variadic.FormatSpec) !usiz
     const T = @TypeOf(value);
 
     const int_value: u128 = switch (@typeInfo(T)) {
-        .int => @intCast(value),
-        .comptime_int => value,
+        .int => |info| if (info.signedness == .signed)
+            @as(u128, @bitCast(@as(i128, @intCast(value))))
+        else
+            @intCast(value),
+        .comptime_int => if (value < 0)
+            @as(u128, @bitCast(@as(i128, value)))
+        else
+            value,
         else => return error.InvalidType,
     };
 

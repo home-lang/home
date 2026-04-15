@@ -32,6 +32,14 @@ pub const Cookie = struct {
             .name = "",
             .value = "",
         };
+        // On any error partway through parsing, free whatever we've already
+        // duped so the caller doesn't have to track partial-init cleanup.
+        errdefer {
+            if (cookie.name.len > 0) allocator.free(cookie.name);
+            if (cookie.value.len > 0) allocator.free(cookie.value);
+            if (cookie.domain) |d| allocator.free(d);
+            if (cookie.path) |p| allocator.free(p);
+        }
 
         var iter = std.mem.splitScalar(u8, header, ';');
 
@@ -52,23 +60,25 @@ pub const Cookie = struct {
                 const key = trimmed[0..eq_pos];
                 const value = trimmed[eq_pos + 1 ..];
 
-                if (std.mem.eql(u8, key, "Domain")) {
+                if (std.ascii.eqlIgnoreCase(key, "Domain")) {
                     cookie.domain = try allocator.dupe(u8, value);
-                } else if (std.mem.eql(u8, key, "Path")) {
+                } else if (std.ascii.eqlIgnoreCase(key, "Path")) {
                     cookie.path = try allocator.dupe(u8, value);
-                } else if (std.mem.eql(u8, key, "Max-Age")) {
-                    cookie.max_age = try std.fmt.parseInt(i64, value, 10);
-                } else if (std.mem.eql(u8, key, "SameSite")) {
-                    if (std.mem.eql(u8, value, "Lax")) {
+                } else if (std.ascii.eqlIgnoreCase(key, "Max-Age")) {
+                    cookie.max_age = std.fmt.parseInt(i64, value, 10) catch null;
+                } else if (std.ascii.eqlIgnoreCase(key, "SameSite")) {
+                    if (std.ascii.eqlIgnoreCase(value, "Lax")) {
                         cookie.same_site = .Lax;
-                    } else if (std.mem.eql(u8, value, "Strict")) {
+                    } else if (std.ascii.eqlIgnoreCase(value, "Strict")) {
                         cookie.same_site = .Strict;
+                    } else if (std.ascii.eqlIgnoreCase(value, "None")) {
+                        cookie.same_site = .None;
                     }
                 }
             } else {
-                if (std.mem.eql(u8, trimmed, "Secure")) {
+                if (std.ascii.eqlIgnoreCase(trimmed, "Secure")) {
                     cookie.secure = true;
-                } else if (std.mem.eql(u8, trimmed, "HttpOnly")) {
+                } else if (std.ascii.eqlIgnoreCase(trimmed, "HttpOnly")) {
                     cookie.http_only = true;
                 }
             }
@@ -96,6 +106,10 @@ pub const Cookie = struct {
             try writer.print("; Max-Age={d}", .{max_age});
         }
 
+        if (self.expires) |expires| {
+            try writer.print("; Expires={d}", .{expires});
+        }
+
         if (self.secure) {
             try writer.writeAll("; Secure");
         }
@@ -104,9 +118,7 @@ pub const Cookie = struct {
             try writer.writeAll("; HttpOnly");
         }
 
-        if (self.same_site != .None) {
-            try writer.print("; SameSite={s}", .{self.same_site.toString()});
-        }
+        try writer.print("; SameSite={s}", .{self.same_site.toString()});
 
         return parts.toOwnedSlice();
     }
@@ -144,6 +156,7 @@ pub const CookieJar = struct {
     /// Add cookie to jar
     pub fn add(self: *CookieJar, cookie: Cookie) !void {
         const key = try self.allocator.dupe(u8, cookie.name);
+        errdefer self.allocator.free(key);
         try self.cookies.put(key, cookie);
     }
 

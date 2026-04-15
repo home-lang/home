@@ -101,13 +101,28 @@ pub const Reflection = struct {
                         .offset = offset,
                         .is_public = true, // Home doesn't have visibility modifiers yet
                     });
-                    // Simplistic offset calculation (would need proper alignment)
-                    offset += 8; // Assume 8 bytes per field for now
+                    // Calculate field size based on type name.
+                    const field_size: usize = if (std.mem.eql(u8, field.type_name, "bool") or
+                        std.mem.eql(u8, field.type_name, "u8") or
+                        std.mem.eql(u8, field.type_name, "i8"))
+                        1
+                    else if (std.mem.eql(u8, field.type_name, "u16") or
+                        std.mem.eql(u8, field.type_name, "i16"))
+                        2
+                    else if (std.mem.eql(u8, field.type_name, "u32") or
+                        std.mem.eql(u8, field.type_name, "i32") or
+                        std.mem.eql(u8, field.type_name, "f32"))
+                        4
+                    else
+                        8; // i64, f64, pointers, strings, etc.
+                    offset += field_size;
                 }
 
+                const owned_fields = try fields.toOwnedSlice();
+                errdefer self.allocator.free(owned_fields);
                 const metadata = TypeDatabase.StructMetadata{
                     .name = struct_decl.name,
-                    .fields = try fields.toOwnedSlice(),
+                    .fields = owned_fields,
                     .size = offset,
                     .alignment = 8,
                     .generic_params = struct_decl.type_params,
@@ -130,9 +145,11 @@ pub const Reflection = struct {
                     });
                 }
 
+                const owned_variants = try variants.toOwnedSlice();
+                errdefer self.allocator.free(owned_variants);
                 const metadata = TypeDatabase.EnumMetadata{
                     .name = enum_decl.name,
-                    .variants = try variants.toOwnedSlice(),
+                    .variants = owned_variants,
                     .underlying_type = "int",
                 };
 

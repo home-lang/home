@@ -204,12 +204,16 @@ pub const FunctionInliner = struct {
         // Remove the call instruction
         _ = call_block.instructions.orderedRemove(call_inst_idx);
 
-        // Insert callee's instructions at call site
+        // Insert callee's instructions at call site. Track a moving
+        // insertion index so the instructions land in their original
+        // order — otherwise inserting at a fixed index reverses them.
+        var insert_at = call_inst_idx;
         for (callee.blocks.items) |*callee_block| {
             for (callee_block.instructions.items) |inst| {
                 // Clone instruction and adjust register numbers to avoid conflicts
                 const cloned_inst = try self.cloneInstruction(inst, caller);
-                try call_block.instructions.insert(self.allocator, call_inst_idx, cloned_inst);
+                try call_block.instructions.insert(self.allocator, insert_at, cloned_inst);
+                insert_at += 1;
             }
         }
 

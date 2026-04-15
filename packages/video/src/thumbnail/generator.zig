@@ -54,6 +54,9 @@ pub const SmartSelector = struct {
 
     /// Calculate visual complexity of frame (edge density, color variance)
     pub fn calculateComplexity(pixels: []const u8, width: u32, height: u32) f32 {
+        // Guard against degenerate dimensions — `width - 1` / `height - 1`
+        // would underflow u32 below, and the divisor would be 0.
+        if (width < 2 or height < 2) return 0;
         var edge_count: u32 = 0;
         var color_variance: f32 = 0;
 
@@ -78,7 +81,9 @@ pub const SmartSelector = struct {
             }
         }
 
-        const total_pixels = width * height;
+        // Use usize math so `width * height` doesn't overflow u32 for
+        // large frames (e.g. 4K+).
+        const total_pixels: usize = @as(usize, width) * @as(usize, height);
         const edge_density = @as(f32, @floatFromInt(edge_count)) / @as(f32, @floatFromInt(total_pixels));
 
         // Calculate color variance

@@ -1147,7 +1147,7 @@ pub const Redis = struct {
             return RespValue{ .bulk_string = null };
         }
 
-        const size: usize = @intCast(len);
+        const size = std.math.cast(usize, len) orelse return error.ResponseTooLarge;
         var data = try self.allocator.alloc(u8, size);
         errdefer self.allocator.free(data);
 
@@ -1175,7 +1175,7 @@ pub const Redis = struct {
             return RespValue{ .array = null };
         }
 
-        const size: usize = @intCast(len);
+        const size = std.math.cast(usize, len) orelse return error.ResponseTooLarge;
         var items = try self.allocator.alloc(RespValue, size);
         errdefer self.allocator.free(items);
 

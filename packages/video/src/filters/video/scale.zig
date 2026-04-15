@@ -172,17 +172,22 @@ pub const ScaleFilter = struct {
                 const src_stride = input.linesize[0];
                 const dst_stride = output.linesize[0];
                 const bytes_per_pixel = getBytesPerPixel(input.format);
+                // Guard against zero-sized inputs where `width - 1` /
+                // `height - 1` would underflow usize below.
+                if (input.width == 0 or input.height == 0) return output;
+                const max_src_x = input.width - 1;
+                const max_src_y = input.height - 1;
 
                 for (0..self.height) |dst_y| {
                     const src_yf = @as(f32, @floatFromInt(dst_y)) * scale_y;
-                    const src_y0: usize = @intFromFloat(@floor(src_yf));
-                    const src_y1: usize = @min(src_y0 + 1, input.height - 1);
+                    const src_y0: usize = @min(@as(usize, @intFromFloat(@floor(src_yf))), max_src_y);
+                    const src_y1: usize = @min(src_y0 + 1, max_src_y);
                     const y_frac = src_yf - @floor(src_yf);
 
                     for (0..self.width) |dst_x| {
                         const src_xf = @as(f32, @floatFromInt(dst_x)) * scale_x;
-                        const src_x0: usize = @intFromFloat(@floor(src_xf));
-                        const src_x1: usize = @min(src_x0 + 1, input.width - 1);
+                        const src_x0: usize = @min(@as(usize, @intFromFloat(@floor(src_xf))), max_src_x);
+                        const src_x1: usize = @min(src_x0 + 1, max_src_x);
                         const x_frac = src_xf - @floor(src_xf);
 
                         for (0..bytes_per_pixel) |i| {

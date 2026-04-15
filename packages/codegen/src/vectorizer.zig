@@ -88,6 +88,7 @@ pub const Vectorizer = struct {
     /// Analyze loops for vectorization opportunities
     pub fn analyzeLoops(self: *Vectorizer, func: *const IR.Function) !std.ArrayList(VectorizationOpportunity) {
         var opportunities = std.ArrayList(VectorizationOpportunity).empty;
+        errdefer opportunities.deinit(self.allocator);
 
         var loop_analysis = LoopAnalysis.init(self.allocator);
         defer loop_analysis.deinit();

@@ -136,7 +136,11 @@ pub const CompilationUnit = struct {
 
                 // Add to parsing stack
                 const stack_entry = try self.allocator.dupe(u8, module_key);
+                errdefer self.allocator.free(stack_entry);
                 try self.parsing_stack.append(self.allocator, stack_entry);
+                errdefer {
+                    if (self.parsing_stack.pop()) |entry| self.allocator.free(entry);
+                }
 
                 // Recursively compile the imported module
                 std.debug.print("[CompilationUnit] Compiling dependency: {s} -> {s}\n", .{module_key, resolved.file_path});
@@ -145,11 +149,11 @@ pub const CompilationUnit = struct {
 
                 // Register in modules map
                 const map_key = try self.allocator.dupe(u8, module_key);
+                errdefer self.allocator.free(map_key);
                 try self.modules.put(map_key, dep_module);
 
                 // Remove from parsing stack
-                const popped = self.parsing_stack.pop();
-                self.allocator.free(popped);
+                if (self.parsing_stack.pop()) |popped| self.allocator.free(popped);
             }
         }
 

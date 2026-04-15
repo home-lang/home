@@ -29,6 +29,7 @@ pub const Server = struct {
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !*Self {
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
 
         // Create TCP socket
         const socket = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);

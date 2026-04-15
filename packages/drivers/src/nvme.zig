@@ -245,19 +245,22 @@ pub const NvmeNamespace = struct {
         // Execute with retry
         _ = try self.controller.executeCommandWithRetry(self.controller.io_queue, cmd);
 
-        // Copy data from DMA buffer
+        // Copy data from DMA buffer. Compute the byte count in usize to
+        // avoid `count * block_size` overflowing u32 on very large reads.
+        const xfer: usize = @as(usize, count) * @as(usize, self.block_size);
         const src: [*]const u8 = @ptrFromInt(dma_buf.virtual_addr);
-        @memcpy(buffer[0 .. count * self.block_size], src[0 .. count * self.block_size]);
+        @memcpy(buffer[0..xfer], src[0..xfer]);
     }
 
     pub fn write(self: *NvmeNamespace, lba: u64, count: u32, buffer: []const u8) !void {
-        if (buffer.len < count * self.block_size) {
+        const xfer: usize = @as(usize, count) * @as(usize, self.block_size);
+        if (buffer.len < xfer) {
             return error.BufferTooSmall;
         }
 
         const dma_buf = try dma.allocateBuffer(
             self.controller.allocator,
-            count * self.block_size,
+            xfer,
             4096,
         );
         defer dma.freeBuffer(dma_buf);

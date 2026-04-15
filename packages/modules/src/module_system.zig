@@ -45,7 +45,13 @@ pub const Module = struct {
     }
 
     pub fn addExport(self: *Module, name: []const u8, kind: ExportKind) !void {
+        // Replacing an existing export must free the old key — otherwise
+        // `put` keeps the old key and leaks the new dupe.
+        if (self.exports.fetchRemove(name)) |old| {
+            self.allocator.free(old.key);
+        }
         const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
         try self.exports.put(name_copy, .{ .name = name_copy, .kind = kind });
     }
 };
@@ -81,6 +87,7 @@ pub const ModuleLoader = struct {
 
     pub fn addSearchPath(self: *ModuleLoader, path: []const u8) !void {
         const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
         try self.search_paths.append(self.allocator, path_copy);
     }
 
@@ -109,9 +116,18 @@ pub const ModuleLoader = struct {
         var par = parser_mod.Parser.init(self.allocator, tokens.items);
         const program = try par.parse();
 
+        // Dupe the name and path so Module owns them independently of the
+        // file_path/module_name arguments (both of which are owned by the
+        // caller / freed by defer above).
+        const owned_name = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(owned_name);
+        const owned_path = try self.allocator.dupe(u8, file_path);
+        errdefer self.allocator.free(owned_path);
+
         // Create module
         const module = try self.allocator.create(Module);
-        module.* = Module.init(self.allocator, module_name, file_path, program);
+        errdefer self.allocator.destroy(module);
+        module.* = Module.init(self.allocator, owned_name, owned_path, program);
 
         // Collect exports (functions marked as pub)
         for (program.statements) |stmt| {
@@ -122,8 +138,9 @@ pub const ModuleLoader = struct {
             }
         }
 
-        // Cache the module
+        // Cache the module using its owned name as the key.
         const name_copy = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(name_copy);
         try self.modules.put(name_copy, module);
 
         return module;

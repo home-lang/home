@@ -71,9 +71,13 @@ pub const Gzip = struct {
         var output = std.ArrayList(u8).init(self.allocator);
         errdefer output.deinit();
 
-        // Write header
+        // Write header. GZIP mtime is a u32 of seconds since the epoch; clamp
+        // to the representable range instead of panicking on pre-1970 or
+        // post-2106 clocks.
+        const now = std.time.timestamp();
+        const mtime: u32 = if (now < 0) 0 else if (now > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(now);
         try self.writeHeader(output.writer(), .{
-            .modification_time = @intCast(std.time.timestamp()),
+            .modification_time = mtime,
             .compression_method = GZIP_METHOD_DEFLATE,
             .flags = .{},
             .os = .unix,
@@ -112,13 +116,18 @@ pub const Gzip = struct {
             return error.UnsupportedCompressionMethod;
         }
 
-        // Get compressed data (everything except header, CRC32, and size)
+        // Get compressed data (everything except header, CRC32, and size).
+        // Bail out if header+footer exceeds the input so the subtraction
+        // below can't underflow usize for a truncated stream.
         const header_size = @as(usize, @intCast(stream.pos));
         const footer_size = 8; // CRC32 + size
+        if (header_size + footer_size > data.len) return error.InvalidGzipStream;
         const compressed_size = data.len - header_size - footer_size;
         const compressed = data[header_size .. header_size + compressed_size];
 
-        // Decompress
+        // Decompress. The errdefer below runs automatically on any error
+        // return — we must NOT also call free() in error branches or we
+        // double-free.
         const decompressed = try self.inflate(compressed);
         errdefer self.allocator.free(decompressed);
 
@@ -127,7 +136,6 @@ pub const Gzip = struct {
         const calculated_crc = std.hash.Crc32.hash(decompressed);
 
         if (stored_crc != calculated_crc) {
-            self.allocator.free(decompressed);
             return error.ChecksumMismatch;
         }
 
@@ -136,7 +144,6 @@ pub const Gzip = struct {
         const actual_size: u32 = @truncate(decompressed.len);
 
         if (stored_size != actual_size) {
-            self.allocator.free(decompressed);
             return error.SizeMismatch;
         }
 
@@ -205,18 +212,23 @@ pub const Gzip = struct {
         // Read OS
         const os: Header.OS = @enumFromInt(try reader.readByte());
 
-        // Read optional fields
+        // Read optional fields. Free any already-allocated field if a
+        // later read / allocation fails so partial headers don't leak.
         var extra: ?[]const u8 = null;
+        errdefer if (extra) |e| self.allocator.free(e);
         if (flags.extra) {
             const len = try reader.readInt(u16, .little);
             const data = try self.allocator.alloc(u8, len);
+            errdefer self.allocator.free(data);
             try reader.readNoEof(data);
             extra = data;
         }
 
         var filename: ?[]const u8 = null;
+        errdefer if (filename) |f| self.allocator.free(f);
         if (flags.name) {
             var name_list = std.ArrayList(u8).init(self.allocator);
+            errdefer name_list.deinit();
             while (true) {
                 const byte = try reader.readByte();
                 if (byte == 0) break;
@@ -226,8 +238,10 @@ pub const Gzip = struct {
         }
 
         var comment: ?[]const u8 = null;
+        errdefer if (comment) |c| self.allocator.free(c);
         if (flags.comment) {
             var comment_list = std.ArrayList(u8).init(self.allocator);
+            errdefer comment_list.deinit();
             while (true) {
                 const byte = try reader.readByte();
                 if (byte == 0) break;
@@ -322,7 +336,9 @@ pub const GzipCompressor = struct {
             try self.writer.writeAll(&Gzip.GZIP_MAGIC);
             try self.writer.writeByte(Gzip.GZIP_METHOD_DEFLATE);
             try self.writer.writeByte(0); // Flags
-            try self.writer.writeInt(u32, @intCast(std.time.timestamp()), .little);
+            const now = std.time.timestamp();
+            const mtime: u32 = if (now < 0) 0 else if (now > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(now);
+            try self.writer.writeInt(u32, mtime, .little);
             try self.writer.writeByte(0); // Extra flags
             try self.writer.writeByte(@intFromEnum(Gzip.Header.OS.unix));
             self.header_written = true;

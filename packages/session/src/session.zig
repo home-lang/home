@@ -504,10 +504,13 @@ pub const Csrf = struct {
         return self.session.getString(self.token_key).?;
     }
 
-    /// Verify a CSRF token
+    /// Verify a CSRF token using constant-time comparison to prevent timing attacks.
     pub fn verify(self: *Self, provided_token: []const u8) bool {
         const stored = self.session.getString(self.token_key) orelse return false;
-        return std.mem.eql(u8, stored, provided_token);
+        if (stored.len != provided_token.len) return false;
+        var diff: u8 = 0;
+        for (stored, provided_token) |a, b| diff |= a ^ b;
+        return diff == 0;
     }
 
     /// Regenerate CSRF token

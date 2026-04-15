@@ -23,17 +23,37 @@ pub const S3Driver = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: storage.StorageConfig) !*Self {
+        // Build each owned field first so we can free already-allocated
+        // strings on any subsequent failure. Previously, a later dupe
+        // failure leaked every successful dupe above it.
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+
+        const bucket = try allocator.dupe(u8, config.s3_bucket orelse return error.MissingBucket);
+        errdefer allocator.free(bucket);
+        const region = try allocator.dupe(u8, config.s3_region orelse "us-east-1");
+        errdefer allocator.free(region);
+        const access_key = try allocator.dupe(u8, config.s3_access_key orelse return error.MissingAccessKey);
+        errdefer allocator.free(access_key);
+        const secret_key = try allocator.dupe(u8, config.s3_secret_key orelse return error.MissingSecretKey);
+        errdefer allocator.free(secret_key);
+        const endpoint: ?[]const u8 = if (config.s3_endpoint) |e| try allocator.dupe(u8, e) else null;
+        errdefer if (endpoint) |e| allocator.free(e);
+        const url_base: ?[]const u8 = if (config.url_base) |u| try allocator.dupe(u8, u) else null;
+        errdefer if (url_base) |u| allocator.free(u);
+        const root = try allocator.dupe(u8, config.root);
+        errdefer allocator.free(root);
+
         self.* = .{
             .allocator = allocator,
-            .bucket = try allocator.dupe(u8, config.s3_bucket orelse return error.MissingBucket),
-            .region = try allocator.dupe(u8, config.s3_region orelse "us-east-1"),
-            .access_key = try allocator.dupe(u8, config.s3_access_key orelse return error.MissingAccessKey),
-            .secret_key = try allocator.dupe(u8, config.s3_secret_key orelse return error.MissingSecretKey),
-            .endpoint = if (config.s3_endpoint) |e| try allocator.dupe(u8, e) else null,
+            .bucket = bucket,
+            .region = region,
+            .access_key = access_key,
+            .secret_key = secret_key,
+            .endpoint = endpoint,
             .use_path_style = config.s3_use_path_style,
-            .url_base = if (config.url_base) |u| try allocator.dupe(u8, u) else null,
-            .root = try allocator.dupe(u8, config.root),
+            .url_base = url_base,
+            .root = root,
         };
         return self;
     }
@@ -221,10 +241,12 @@ pub const S3Driver = struct {
         defer self.allocator.free(base_url);
 
         // Add query params (simplified)
+        const now = getTimestamp();
+        const remaining: u64 = if (expiration > now) @intCast(expiration - now) else 0;
         return try std.fmt.allocPrint(
             self.allocator,
             "{s}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires={d}",
-            .{ base_url, @as(u64, @intCast(expiration - getTimestamp())) },
+            .{ base_url, remaining },
         );
     }
 

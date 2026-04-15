@@ -99,6 +99,9 @@ pub fn PersistentVector(comptime T: type) type {
 
         fn pushTail(self: *Self, level: u6, parent: ?*Node, tail_node: *Node) !*Node {
             const new_node = try self.allocator.create(Node);
+            // Destroy the newly-allocated node if the recursive pushTail
+            // below fails — otherwise it leaks.
+            errdefer self.allocator.destroy(new_node);
             if (parent) |p| {
                 new_node.* = p.*;
             } else {
@@ -117,6 +120,7 @@ pub fn PersistentVector(comptime T: type) type {
         fn newPath(self: *Self, level: u6, node: *Node) !*Node {
             if (level == 0) return node;
             const new_node = try self.allocator.create(Node);
+            errdefer self.allocator.destroy(new_node);
             new_node.* = .{ .children = [_]?*Node{null} ** BRANCH_FACTOR };
             new_node.children[0] = try self.newPath(level - SHIFT, node);
             return new_node;
@@ -378,7 +382,13 @@ pub const Trie = struct {
         for (key) |char| {
             const entry = try current.children.getOrPut(char);
             if (!entry.found_existing) {
-                entry.value_ptr.* = try Node.init(self.allocator);
+                // If Node.init fails, back the entry out of the map —
+                // otherwise we'd leave an undefined value_ptr that the
+                // later traversal / deinit would dereference.
+                entry.value_ptr.* = Node.init(self.allocator) catch |err| {
+                    _ = current.children.remove(char);
+                    return err;
+                };
             }
             current = entry.value_ptr.*;
         }
@@ -434,6 +444,7 @@ pub const Trie = struct {
     fn collectWords(self: *Self, node: *Node, prefix: []const u8, results: *std.ArrayList([]const u8)) !void {
         if (node.is_end) {
             const word = try self.allocator.dupe(u8, prefix);
+            errdefer self.allocator.free(word);
             try results.append(word);
         }
 
@@ -491,8 +502,10 @@ pub const Rope = struct {
     pub fn fromString(allocator: std.mem.Allocator, str: []const u8) !Self {
         var rope = Self.init(allocator);
         if (str.len > 0) {
+            const leaf_data = try allocator.dupe(u8, str);
+            errdefer allocator.free(leaf_data);
             const node = try allocator.create(Node);
-            node.* = .{ .Leaf = try allocator.dupe(u8, str) };
+            node.* = .{ .Leaf = leaf_data };
             rope.root = node;
         }
         return rope;
@@ -528,10 +541,13 @@ pub const Rope = struct {
         // trees from repeated small concatenations.
         if (self_len + other_len <= JOIN_LENGTH) {
             var buffer = std.ArrayList(u8).init(self.allocator);
+            errdefer buffer.deinit();
             try self.appendToBuffer(self.root.?, &buffer);
             try self.appendToBuffer(other.root.?, &buffer);
+            const leaf_data = try buffer.toOwnedSlice();
+            errdefer self.allocator.free(leaf_data);
             const leaf = try self.allocator.create(Node);
-            leaf.* = .{ .Leaf = try buffer.toOwnedSlice() };
+            leaf.* = .{ .Leaf = leaf_data };
             new_rope.root = leaf;
             return new_rope;
         }
@@ -572,13 +588,20 @@ pub const Rope = struct {
     fn buildBalanced(self: *Self, text: []const u8, start: usize, end: usize) !*Node {
         const len = end - start;
         if (len <= SPLIT_LENGTH) {
+            // Dupe first so a failed alloc doesn't leave `leaf` dangling.
+            const leaf_data = try self.allocator.dupe(u8, text[start..end]);
+            errdefer self.allocator.free(leaf_data);
             const leaf = try self.allocator.create(Node);
-            leaf.* = .{ .Leaf = try self.allocator.dupe(u8, text[start..end]) };
+            leaf.* = .{ .Leaf = leaf_data };
             return leaf;
         }
         const mid = start + len / 2;
         const left = try self.buildBalanced(text, start, mid);
+        // Free the sub-tree we just built if the right half or the branch
+        // node allocation fails.
+        errdefer self.freeNode(left);
         const right = try self.buildBalanced(text, mid, end);
+        errdefer self.freeNode(right);
         const branch = try self.allocator.create(Node);
         branch.* = .{
             .Branch = .{
@@ -596,6 +619,7 @@ pub const Rope = struct {
         }
 
         var buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer buffer.deinit();
         try self.appendToBuffer(self.root.?, &buffer);
         return buffer.toOwnedSlice();
     }

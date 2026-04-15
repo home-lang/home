@@ -318,8 +318,11 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                     .interlace = 0,
                 };
 
-                unfilterImage(&temp_img, frame_decompressed.items, temp_header) catch {};
-                @memcpy(frame_pixels, temp_img.pixels);
+                if (unfilterImage(&temp_img, frame_decompressed.items, temp_header)) {
+                    @memcpy(frame_pixels, temp_img.pixels);
+                } else |_| {
+                    @memset(frame_pixels, 0);
+                }
             } else if (first_frame_is_default and i == 0) {
                 // First frame uses default image
                 @memcpy(frame_pixels, img.pixels);
@@ -398,7 +401,7 @@ fn unfilterImage(img: *Image, raw_data: []const u8, header: PngHeader) !void {
     var y: u32 = 0;
     while (y < header.height) : (y += 1) {
         const scanline_start = @as(usize, y) * raw_scanline_width;
-        if (scanline_start >= raw_data.len) return error.TruncatedData;
+        if (scanline_start + raw_scanline_width > raw_data.len) return error.TruncatedData;
 
         const filter_type: FilterType = @enumFromInt(raw_data[scanline_start]);
         const raw_scanline = raw_data[scanline_start + 1 ..][0..scanline_width];

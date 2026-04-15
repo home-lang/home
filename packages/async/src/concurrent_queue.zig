@@ -131,13 +131,14 @@ pub fn ConcurrentQueue(comptime T: type) type {
                         // Queue is not empty
                         const value = next.?.value;
 
-                        // Try to swing head to the next node
+                        // Try to swing head to the next node.
+                        // cmpxchgStrong returns null on success.
                         if (self.head.cmpxchgStrong(
                             head,
                             next,
                             .release,
                             .acquire,
-                        ) == head) {
+                        ) == null) {
                             // Success! Free the old head
                             self.allocator.destroy(head.?);
 

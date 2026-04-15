@@ -67,7 +67,14 @@ pub const Monomorphization = struct {
     }
 
     pub fn deinit(self: *Monomorphization) void {
+        // Free the duped keys we allocated in register* before tearing
+        // the maps themselves down.
+        var fn_it = self.generic_functions.keyIterator();
+        while (fn_it.next()) |k| self.allocator.free(k.*);
         self.generic_functions.deinit();
+
+        var struct_it = self.generic_structs.keyIterator();
+        while (struct_it.next()) |k| self.allocator.free(k.*);
         self.generic_structs.deinit();
 
         for (self.instantiations.items) |*item| {
@@ -85,7 +92,12 @@ pub const Monomorphization = struct {
             return Error.InvalidGeneric;
         }
 
+        // Replacing an existing entry must free the old duped key.
+        if (self.generic_functions.fetchRemove(func.name)) |old| {
+            self.allocator.free(old.key);
+        }
         const name_copy = try self.allocator.dupe(u8, func.name);
+        errdefer self.allocator.free(name_copy);
         try self.generic_functions.put(name_copy, func);
     }
 
@@ -95,7 +107,11 @@ pub const Monomorphization = struct {
             return Error.InvalidGeneric;
         }
 
+        if (self.generic_structs.fetchRemove(struct_decl.name)) |old| {
+            self.allocator.free(old.key);
+        }
         const name_copy = try self.allocator.dupe(u8, struct_decl.name);
+        errdefer self.allocator.free(name_copy);
         try self.generic_structs.put(name_copy, struct_decl);
     }
 

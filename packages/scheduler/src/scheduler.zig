@@ -54,6 +54,7 @@ pub const CronExpr = struct {
             const base_part = field[0..slash_pos];
             const step_part = field[slash_pos + 1 ..];
             const step_val = try std.fmt.parseInt(u8, step_part, 10);
+            if (step_val == 0) return error.InvalidCronExpression;
 
             if (std.mem.eql(u8, base_part, "*")) {
                 return .{ .step = .{ .base = 0, .step = step_val } };
@@ -149,12 +150,13 @@ pub const DateTime = struct {
         var remaining = timestamp;
 
         // Calculate seconds, minutes, hours
+        // Use @divFloor/@mod so negative timestamps (pre-epoch) wrap correctly.
         const second: u8 = @intCast(@mod(remaining, 60));
-        remaining = @divTrunc(remaining, 60);
+        remaining = @divFloor(remaining, 60);
         const minute: u8 = @intCast(@mod(remaining, 60));
-        remaining = @divTrunc(remaining, 60);
+        remaining = @divFloor(remaining, 60);
         const hour: u8 = @intCast(@mod(remaining, 24));
-        remaining = @divTrunc(remaining, 24);
+        remaining = @divFloor(remaining, 24);
 
         // Days since epoch (Jan 1, 1970)
         var days = remaining;
@@ -181,7 +183,7 @@ pub const DateTime = struct {
         for (days_in_months) |dim| {
             if (days < dim) break;
             days -= dim;
-            month += 1;
+            if (month < 12) month += 1;
         }
 
         const day: u8 = @intCast(days + 1);

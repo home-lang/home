@@ -33,11 +33,16 @@ pub const IniFile = struct {
         };
 
         pub fn init(allocator: Allocator, name: []const u8) !Section {
+            // Dupe the name first, then errdefer-free it so that a later
+            // `initCapacity` failure doesn't leak the duped name.
+            const name_copy = try allocator.dupe(u8, name);
+            errdefer allocator.free(name_copy);
+            const blocks = try std.ArrayList(Block).initCapacity(allocator, 4);
             return Section{
                 .allocator = allocator,
-                .name = try allocator.dupe(u8, name),
+                .name = name_copy,
                 .properties = HashMap([]const u8, []const u8).init(allocator),
-                .blocks = try std.ArrayList(Block).initCapacity(allocator, 4),
+                .blocks = blocks,
             };
         }
 
@@ -158,6 +163,7 @@ pub const IniFile = struct {
             if (std.mem.startsWith(u8, line, "Object ")) {
                 const section_name = std.mem.trim(u8, line[7..], &std.ascii.whitespace);
                 const section_name_copy = try allocator.dupe(u8, section_name);
+                errdefer allocator.free(section_name_copy);
                 const section = try Section.init(allocator, section_name);
                 try ini.sections.put(section_name_copy, section);
                 current_section = ini.sections.getPtr(section_name_copy);

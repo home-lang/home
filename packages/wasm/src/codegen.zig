@@ -307,13 +307,23 @@ pub const WasmCodeGen = struct {
         }
 
         const type_idx: u32 = @intCast(self.module.types.items.len);
+        // Move both slices off the ArrayLists BEFORE the types.append so
+        // that `results.toOwnedSlice` failing after `params.toOwnedSlice`
+        // succeeded doesn't leak the params slice.
+        const params_slice = try params.toOwnedSlice();
+        errdefer self.allocator.free(params_slice);
+        const results_slice = try results.toOwnedSlice();
+        errdefer self.allocator.free(results_slice);
         try self.module.types.append(.{
-            .params = try params.toOwnedSlice(),
-            .results = try results.toOwnedSlice(),
+            .params = params_slice,
+            .results = results_slice,
         });
 
         // Create function
         var function = Function.init(self.allocator, type_idx);
+        // If anything below fails the accumulated body/locals would leak;
+        // tear the partially-built function down on error.
+        errdefer function.deinit();
         self.current_function = &function;
         self.local_counter = @intCast(func.params.len);
 

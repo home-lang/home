@@ -48,10 +48,12 @@ pub const AttributeList = struct {
     }
 
     pub fn deinit(self: *AttributeList, allocator: std.mem.Allocator) void {
-        for (self.attributes) |*attr| {
-            // Note: we don't call deinit on individual attributes here
-            // because they might be owned by the slice
-            _ = attr;
+        // Each attribute owns its name and argument slice — freeing just
+        // the outer slice leaks them. Cast away const so we can call the
+        // mutating deinit on by-value elements stored in the slice.
+        for (self.attributes) |attr| {
+            var mut_attr = attr;
+            mut_attr.deinit(allocator);
         }
         allocator.free(self.attributes);
     }

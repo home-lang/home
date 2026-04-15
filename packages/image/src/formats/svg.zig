@@ -986,6 +986,8 @@ fn fillEllipse(img: *Image, cx: f32, cy: f32, rx: f32, ry: f32, color: Color, tr
     const center = transform.apply(.{ .x = cx, .y = cy });
     const scaled_rx = rx * transform.a;
     const scaled_ry = ry * transform.d;
+    // Guard against zero-radius ellipses (would cause division by zero below).
+    if (scaled_rx == 0 or scaled_ry == 0) return;
 
     const min_x = @max(0, @as(i32, @intFromFloat(center.x - scaled_rx)));
     const min_y = @max(0, @as(i32, @intFromFloat(center.y - scaled_ry)));
@@ -1061,10 +1063,11 @@ fn drawLineSimple(img: *Image, x1: f32, y1: f32, x2: f32, y2: f32, color: Color)
 
 fn fillPolygon(img: *Image, pts: []Point, color: Color, transform: Transform) void {
     if (pts.len < 3) return;
+    if (pts.len > 256) return; // Too many points for stack buffer
 
     // Transform all points
     var transformed: [256]Point = undefined;
-    const n = @min(pts.len, 256);
+    const n = pts.len;
     for (pts[0..n], 0..) |p, idx| {
         transformed[idx] = transform.apply(p);
     }

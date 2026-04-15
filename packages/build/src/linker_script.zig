@@ -279,7 +279,7 @@ pub const LinkerScript = struct {
         errdefer result.deinit();
 
         // Simple parser - in production would use proper lexer/parser
-        var lines = std.mem.split(u8, script, "\n");
+        var lines = std.mem.splitScalar(u8, script, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r");
             if (trimmed.len == 0 or trimmed[0] == '#') continue;

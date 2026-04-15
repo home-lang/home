@@ -196,6 +196,7 @@ pub const TypeChecker = struct {
     /// Add a type error
     fn addError(self: *TypeChecker, message: []const u8, line: usize, column: usize) !void {
         const msg_copy = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(msg_copy);
         try self.errors.append(.{
             .message = msg_copy,
             .line = line,

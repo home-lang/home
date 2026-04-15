@@ -164,7 +164,8 @@ pub const CPUProfiler = struct {
     }
 
     fn sampleLoop(self: *CPUProfiler) !void {
-        const sleep_ns = (1000 * 1000 * 1000) / self.config.sample_rate;
+        const rate = if (self.config.sample_rate == 0) 1000 else self.config.sample_rate;
+        const sleep_ns = (1000 * 1000 * 1000) / rate;
 
         while (self.running.load(.acquire)) {
             try self.takeSample();
@@ -372,7 +373,13 @@ pub const CallGraphProfiler = struct {
 
         entry.value_ptr.call_count += 1;
         entry.value_ptr.total_time += duration;
-        entry.value_ptr.self_time += duration;
+        // self_time should exclude time spent in child calls.
+        // For leaf functions (no children), self_time == total_time.
+        // For parent functions, self_time is adjusted when children complete.
+        // Only add to self_time if this is a leaf call (no active children).
+        if (self.call_stack.items.len == 0) {
+            entry.value_ptr.self_time += duration;
+        }
     }
 
     pub fn printReport(self: *CallGraphProfiler, writer: anytype) !void {

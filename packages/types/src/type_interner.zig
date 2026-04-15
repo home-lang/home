@@ -31,12 +31,26 @@ pub const TypeInterner = struct {
         self.types.deinit();
     }
 
-    /// Intern a type, returning canonical pointer
+    /// Intern a type, returning canonical pointer.
+    /// Verifies structural equality on hash hit to handle collisions.
     pub fn intern(self: *TypeInterner, ty: Type) !*Type {
-        const hash_val = hashType(&ty);
+        var hash_val = hashType(&ty);
 
         if (self.types.get(hash_val)) |existing| {
-            return existing;
+            // Verify the existing type structurally matches to guard
+            // against hash collisions returning wrong canonical type.
+            if (existing.equals(ty)) {
+                return existing;
+            }
+            // Hash collision — probe with a secondary hash to avoid
+            // evicting the existing entry.
+            hash_val ^= hash_val >> 16;
+            hash_val *%= 0x9E3779B97F4A7C15;
+            if (self.types.get(hash_val)) |existing2| {
+                if (existing2.equals(ty)) {
+                    return existing2;
+                }
+            }
         }
 
         const interned = try self.allocator.create(Type);

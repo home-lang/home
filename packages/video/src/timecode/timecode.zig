@@ -155,13 +155,16 @@ pub const Timecode = struct {
 
     /// Create timecode from seconds
     pub fn fromSeconds(secs: f64, rate: FrameRate) Timecode {
-        const frame_number: u64 = @intFromFloat(secs * rate.framesPerSecond());
+        // Use @round so a fractional frame at the boundary (e.g. 29.9999
+        // instead of 30 due to FP representation) doesn't silently drop a
+        // frame via truncation toward zero.
+        const frame_number: u64 = @intFromFloat(@round(secs * rate.framesPerSecond()));
         return fromFrameNumber(frame_number, rate);
     }
 
     /// Create timecode from milliseconds
     pub fn fromMilliseconds(ms: u64, rate: FrameRate) Timecode {
-        const frame_number = @as(u64, @intFromFloat(@as(f64, @floatFromInt(ms)) * rate.framesPerSecond() / 1000.0));
+        const frame_number = @as(u64, @intFromFloat(@round(@as(f64, @floatFromInt(ms)) * rate.framesPerSecond() / 1000.0)));
         return fromFrameNumber(frame_number, rate);
     }
 
@@ -208,7 +211,8 @@ pub const Timecode = struct {
 
     /// Convert to milliseconds
     pub fn toMilliseconds(self: *const Timecode, rate: FrameRate) u64 {
-        return @intFromFloat(self.toSeconds(rate) * 1000.0);
+        // Round rather than truncate so 0.9999... doesn't drop one ms.
+        return @intFromFloat(@round(self.toSeconds(rate) * 1000.0));
     }
 
     /// Format as string (HH:MM:SS:FF or HH:MM:SS;FF for drop-frame)

@@ -30,7 +30,10 @@ pub fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
     const stat = try file.stat();
-    return try file.readToEndAlloc(allocator, stat.size);
+    // Guard against u64 stat sizes that wouldn't fit in usize on 32-bit
+    // platforms — readToEndAlloc's cap parameter is usize.
+    const max_size = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+    return try file.readToEndAlloc(allocator, max_size);
 }
 
 /// Write data to file
@@ -88,7 +91,8 @@ pub fn getCurrentDirectory(allocator: Allocator) ![]u8 {
 
 /// Change current working directory
 pub fn setCurrentDirectory(path: []const u8) !void {
-    try std.os.chdir(path);
+    // std.os was removed in Zig 0.12+; chdir lives in std.posix now.
+    try std.posix.chdir(path);
 }
 
 /// Get absolute path

@@ -225,7 +225,7 @@ test "bounds tracker - definitely out of bounds" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(10));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(15), loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -240,7 +240,7 @@ test "bounds tracker - definitely in bounds" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(50), loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -254,7 +254,7 @@ test "bounds tracker - boundary access (valid)" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(99), loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -268,7 +268,7 @@ test "bounds tracker - boundary access (invalid)" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(100), loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -282,7 +282,7 @@ test "bounds tracker - negative index" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(-5), loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -297,7 +297,7 @@ test "bounds tracker - possibly out of bounds" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     const range = bounds.IndexRange.init(50, 150); // Might overflow
     try tracker.checkAccess("arr", range, loc);
 
@@ -330,7 +330,7 @@ test "bounds tracker - valid slice" {
 
     const start = bounds.IndexRange.constant(10);
     const end = bounds.IndexRange.constant(50);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const slice_info = try tracker.checkSlice("arr", start, end, loc);
 
@@ -348,7 +348,7 @@ test "bounds tracker - invalid slice (start > end)" {
 
     const start = bounds.IndexRange.constant(50);
     const end = bounds.IndexRange.constant(10);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkSlice("arr", start, end, loc);
 
@@ -366,7 +366,7 @@ test "bounds tracker - slice out of bounds" {
 
     const start = bounds.IndexRange.constant(50);
     const end = bounds.IndexRange.constant(150);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkSlice("arr", start, end, loc);
 
@@ -383,7 +383,7 @@ test "bounds tracker - loop with known length" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkLoop("arr", "i", loc);
 
     const i_range = tracker.getIndexRange("i");
@@ -397,7 +397,7 @@ test "bounds tracker - loop with unknown length" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.unknown());
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkLoop("arr", "i", loc);
 
     try std.testing.expect(tracker.warnings.items.len > 0);
@@ -623,7 +623,7 @@ test "edge case - zero length array" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(0));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", bounds.IndexRange.constant(0), loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -651,7 +651,7 @@ test "stress test - many bounds checks" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(1000));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     var i: usize = 0;
     while (i < 100) : (i += 1) {
@@ -670,7 +670,7 @@ test "complex scenario - loop with array access" {
 
     try tracker.setBounds("arr", bounds.BoundsInfo.constant(100));
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // for i in 0..100 { arr[i] = ... }
     try tracker.checkLoop("arr", "i", loc);
@@ -693,7 +693,7 @@ test "complex scenario - conditional bounds refinement" {
     // if (i < 100) { arr[i] = ... }
     const refined = try tracker.inferFromConditional("i", .LessThan, 100);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccess("arr", refined, loc);
 
     try std.testing.expect(!tracker.hasErrors());

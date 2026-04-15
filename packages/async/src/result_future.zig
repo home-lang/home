@@ -46,7 +46,7 @@ pub fn Result(comptime T: type, comptime E: type) type {
         /// Get error value (panics if Ok)
         pub fn unwrapErr(self: Self) E {
             return switch (self) {
-                .ok => unreachable,
+                .ok => @panic("called unwrapErr on an Ok value"),
                 .err => |e| e,
             };
         }

@@ -314,7 +314,7 @@ pub const Server = struct {
 
         self.is_running = true;
 
-        std.debug.print("Server listening on {}\n", .{self.address});
+        std.log.info("Server listening on {}", .{self.address});
 
         while (self.is_running) {
             const connection = try server.accept();
@@ -322,7 +322,7 @@ pub const Server = struct {
 
             // Handle the request
             self.handleConnection(connection) catch |err| {
-                std.debug.print("Error handling connection: {}\n", .{err});
+                std.log.err("Error handling connection: {}", .{err});
             };
         }
     }

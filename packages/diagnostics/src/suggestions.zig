@@ -40,6 +40,7 @@ pub const SuggestionEngine = struct {
     /// Register a symbol for typo detection
     pub fn registerSymbol(self: *SuggestionEngine, info: SymbolInfo) !void {
         const name_copy = try self.allocator.dupe(u8, info.name);
+        errdefer self.allocator.free(name_copy);
         try self.known_symbols.put(name_copy, info);
     }
 
@@ -71,8 +72,14 @@ pub const SuggestionEngine = struct {
         // Take top N results
         const count = @min(max_results, results.items.len);
         var suggestions = try std.ArrayList([]const u8).initCapacity(self.allocator, count);
+        errdefer {
+            for (suggestions.items) |s| self.allocator.free(s);
+            suggestions.deinit();
+        }
         for (results.items[0..count]) |result| {
-            try suggestions.append(try self.allocator.dupe(u8, result.name));
+            const dup = try self.allocator.dupe(u8, result.name);
+            errdefer self.allocator.free(dup);
+            try suggestions.append(dup);
         }
 
         return try suggestions.toOwnedSlice();
@@ -97,9 +104,14 @@ pub const SuggestionEngine = struct {
             return levenshteinDistanceImpl(s1, s2, &matrix);
         }
 
-        // For larger strings, we'd need heap allocation
-        // For now, just return a large number
-        return 999;
+        // For larger strings, compare just the first 64 characters as an
+        // approximation plus the length difference.  This avoids heap
+        // allocation while still giving useful "did you mean?" results.
+        const prefix_len = @min(64, @min(len1, len2));
+        var matrix: [65][65]usize = undefined;
+        const prefix_dist = levenshteinDistanceImpl(s1[0..prefix_len], s2[0..prefix_len], &matrix);
+        const len_diff = if (len1 > len2) len1 - len2 else len2 - len1;
+        return prefix_dist + len_diff;
     }
 
     fn levenshteinDistanceImpl(s1: []const u8, s2: []const u8, matrix: *[65][65]usize) usize {

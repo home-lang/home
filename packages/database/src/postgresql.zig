@@ -73,6 +73,7 @@ pub const PostgreSQL = struct {
     pub fn connect(allocator: std.mem.Allocator, config: Config) !PostgreSQL {
         const address = try std.net.Address.parseIp(config.host, config.port);
         const stream = try std.net.tcpConnectToAddress(address);
+        errdefer stream.close();
 
         var pg = PostgreSQL{
             .allocator = allocator,
@@ -82,6 +83,16 @@ pub const PostgreSQL = struct {
             .transaction_status = .idle,
             .parameters = std.StringHashMap([]const u8).init(allocator),
         };
+        // On failure, free any parameter strings we may have captured
+        // during startup before tearing down the map.
+        errdefer {
+            var it = pg.parameters.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            pg.parameters.deinit();
+        }
 
         try pg.startup(config);
         try pg.authenticate(config);
@@ -130,7 +141,7 @@ pub const PostgreSQL = struct {
 
             switch (msg.type) {
                 'R' => { // Authentication
-                    const auth_type = std.mem.readIntBig(u32, msg.payload[0..4]);
+                    const auth_type = std.mem.readInt(u32, msg.payload[0..4], .big);
                     switch (auth_type) {
                         0 => break, // Auth OK
                         3 => { // Clear text password
@@ -142,6 +153,7 @@ pub const PostgreSQL = struct {
                         },
                         5 => { // MD5 password
                             if (config.password) |pwd| {
+                                if (msg.payload.len < 8) return error.MalformedAuthMessage;
                                 const salt = msg.payload[4..8];
                                 try self.sendMD5Password(config.user, pwd, salt);
                             } else {
@@ -152,18 +164,27 @@ pub const PostgreSQL = struct {
                     }
                 },
                 'K' => { // BackendKeyData
-                    self.process_id = std.mem.readIntBig(u32, msg.payload[0..4]);
-                    self.secret_key = std.mem.readIntBig(u32, msg.payload[4..8]);
+                    if (msg.payload.len < 8) return error.MalformedBackendKeyData;
+                    self.process_id = std.mem.readInt(u32, msg.payload[0..4], .big);
+                    self.secret_key = std.mem.readInt(u32, msg.payload[4..8], .big);
                 },
                 'S' => { // ParameterStatus
                     var iter = std.mem.splitScalar(u8, msg.payload, 0);
                     const key = iter.next() orelse continue;
                     const value = iter.next() orelse continue;
 
-                    try self.parameters.put(
-                        try self.allocator.dupe(u8, key),
-                        try self.allocator.dupe(u8, value),
-                    );
+                    const value_copy = try self.allocator.dupe(u8, value);
+                    errdefer self.allocator.free(value_copy);
+
+                    const gop = try self.parameters.getOrPut(key);
+                    if (gop.found_existing) {
+                        self.allocator.free(gop.value_ptr.*);
+                    } else {
+                        const key_copy = try self.allocator.dupe(u8, key);
+                        errdefer self.allocator.free(key_copy);
+                        gop.key_ptr.* = key_copy;
+                    }
+                    gop.value_ptr.* = value_copy;
                 },
                 'Z' => { // ReadyForQuery
                     self.transaction_status = @enumFromInt(msg.payload[0]);

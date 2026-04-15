@@ -69,13 +69,21 @@ pub fn Task(comptime T: type) type {
         ///
         /// Returns true if the task completed, false if still pending
         pub fn poll(self: *Self, ctx: *Context) bool {
-            // Set state to running
-            _ = self.state.cmpxchgStrong(
+            // Only transition Pending → Running. If the task is already
+            // Running or Completed, skip the poll entirely.
+            const current = self.state.load(.acquire);
+            if (current == .Completed) return true;
+            if (current == .Running) return false;
+
+            if (self.state.cmpxchgStrong(
                 .Pending,
                 .Running,
                 .acquire,
                 .monotonic,
-            );
+            ) != null) {
+                // Another thread already transitioned the state.
+                return false;
+            }
 
             const result = self.future.poll(ctx);
 

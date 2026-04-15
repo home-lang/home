@@ -17,10 +17,12 @@ pub const SHA256 = struct {
         return std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash_bytes)});
     }
 
-    /// Verify hash matches data
+    /// Verify hash matches data (constant-time)
     pub fn verify(data: []const u8, expected: [32]u8) bool {
         const actual = hash(data);
-        return std.mem.eql(u8, &actual, &expected);
+        var diff: u8 = 0;
+        for (actual, expected) |a, b| diff |= a ^ b;
+        return diff == 0;
     }
 };
 
@@ -186,8 +188,12 @@ pub const SecureRandom = struct {
         return result;
     }
 
-    /// Generate secure random integer in range
+    /// Generate secure random integer in range [min, max] inclusive.
+    /// If min == minInt(T) and max == maxInt(T), returns a full-range int.
     pub fn intRange(comptime T: type, min: T, max: T) T {
+        if (min == std.math.minInt(T) and max == std.math.maxInt(T)) {
+            return int(T);
+        }
         const range = max - min + 1;
         return min + @mod(int(T), range);
     }
@@ -200,8 +206,10 @@ pub const SecureRandom = struct {
 
         bytes(random_bytes);
 
-        const hex_str = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(random_bytes)});
-        return hex_str[0..length];
+        const full = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(random_bytes)});
+        if (full.len == length) return full;
+        defer allocator.free(full);
+        return allocator.dupe(u8, full[0..length]);
     }
 
     /// Generate random base64 string
@@ -243,7 +251,11 @@ pub const Password = struct {
             .{ .ln = 15, .r = 8, .p = 1 },
         );
 
-        return std.mem.eql(u8, &computed, expected_hash);
+        // Constant-time comparison to avoid timing attacks.
+        if (computed.len != expected_hash.len) return false;
+        var diff: u8 = 0;
+        for (computed, expected_hash) |a, b| diff |= a ^ b;
+        return diff == 0;
     }
 
     /// Generate a random salt

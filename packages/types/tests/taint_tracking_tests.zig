@@ -105,7 +105,7 @@ test "taint tracker - assignment check violations" {
 
     const public_var = taint.TaintedType.init(Type.String, .Trusted);
     const secret_data = taint.TaintedType.init(Type.String, .Untrusted);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Try to assign untrusted to trusted (should error)
     try tracker.checkAssignment("public_var", public_var, secret_data, loc);
@@ -121,7 +121,7 @@ test "taint tracker - assignment check success" {
 
     const untrusted_var = taint.TaintedType.init(Type.String, .Untrusted);
     const trusted_data = taint.TaintedType.init(Type.String, .Trusted);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Assign trusted to untrusted (OK)
     try tracker.checkAssignment("untrusted_var", untrusted_var, trusted_data, loc);
@@ -154,7 +154,7 @@ test "sanitizer - removes taint" {
     const untrusted_arg = taint.TaintedType.init(Type.String, .Untrusted);
     const args = [_]taint.TaintedType{untrusted_arg};
     const params = [_]taint.TaintedType{untrusted_arg}; // Sanitizer accepts any taint
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("sanitize_sql", &args, &params, loc);
 
@@ -172,7 +172,7 @@ test "sanitizer - wrong argument count" {
     const arg2 = taint.TaintedType.init(Type.String, .Untrusted);
     const args = [_]taint.TaintedType{ arg1, arg2 };
     const params = [_]taint.TaintedType{arg1};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkFunctionCall("sanitize_sql", &args, &params, loc);
 
@@ -188,7 +188,7 @@ test "dangerous context - sql query" {
     defer tracker.deinit();
 
     const untrusted_data = taint.TaintedType.init(Type.String, .Untrusted);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDangerousContext(.SqlQuery, untrusted_data, loc);
 
@@ -201,7 +201,7 @@ test "dangerous context - html output" {
     defer tracker.deinit();
 
     const network_data = taint.TaintedType.init(Type.String, .Network);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDangerousContext(.HtmlOutput, network_data, loc);
 
@@ -213,7 +213,7 @@ test "dangerous context - shell command" {
     defer tracker.deinit();
 
     const user_input = taint.TaintedType.init(Type.String, .UserInput);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDangerousContext(.ShellCommand, user_input, loc);
 
@@ -225,7 +225,7 @@ test "dangerous context - trusted data allowed" {
     defer tracker.deinit();
 
     const trusted_data = taint.TaintedType.init(Type.String, .Trusted);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDangerousContext(.SqlQuery, trusted_data, loc);
     try tracker.checkDangerousContext(.HtmlOutput, trusted_data, loc);
@@ -263,7 +263,7 @@ test "function call - taint propagation" {
 
     const args = [_]taint.TaintedType{ untrusted_arg, trusted_arg };
     const params = [_]taint.TaintedType{ untrusted_arg, trusted_arg };
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("some_func", &args, &params, loc);
 
@@ -280,7 +280,7 @@ test "function call - parameter mismatch" {
 
     const args = [_]taint.TaintedType{untrusted_arg};
     const params = [_]taint.TaintedType{trusted_param};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkFunctionCall("secure_func", &args, &params, loc);
 
@@ -296,7 +296,7 @@ test "edge case - multiple assignments" {
     var tracker = taint.TaintTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Set initial taint
     try tracker.setTaint("var", taint.TaintedType.init(Type.String, .Trusted));
@@ -316,7 +316,7 @@ test "edge case - empty function arguments" {
 
     const args = [_]taint.TaintedType{};
     const params = [_]taint.TaintedType{};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("no_args_func", &args, &params, loc);
 
@@ -361,7 +361,7 @@ test "edge case - sanitizer chain" {
     const untrusted = taint.TaintedType.init(Type.String, .Untrusted);
     const args1 = [_]taint.TaintedType{untrusted};
     const params = [_]taint.TaintedType{untrusted};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // First sanitization: Untrusted -> Database
     const result1 = try tracker.checkFunctionCall("sanitize1", &args1, &params, loc);

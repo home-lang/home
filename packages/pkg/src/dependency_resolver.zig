@@ -259,17 +259,22 @@ pub const AdvancedDependencyResolver = struct {
 
     /// Add a dependency constraint
     pub fn addConstraint(self: *AdvancedDependencyResolver, package: []const u8, constraint: VersionConstraint) !void {
-        const key = if (self.constraints.contains(package))
-            package
-        else
-            try self.allocator.dupe(u8, package);
-
-        const constraints_ptr = try self.constraints.getOrPut(key);
-        if (!constraints_ptr.found_existing) {
-            constraints_ptr.value_ptr.* = std.ArrayList(VersionConstraint).init(self.allocator);
+        // Look up using the caller's (possibly ephemeral) slice. If we're
+        // inserting a new entry we must own the key string, so dupe up-front
+        // and free on early exit.
+        if (self.constraints.getPtr(package)) |existing| {
+            try existing.append(constraint);
+            return;
         }
 
-        try constraints_ptr.value_ptr.append(constraint);
+        const key = try self.allocator.dupe(u8, package);
+        errdefer self.allocator.free(key);
+
+        var list = std.ArrayList(VersionConstraint).init(self.allocator);
+        errdefer list.deinit();
+        try list.append(constraint);
+
+        try self.constraints.put(key, list);
     }
 
     /// Add a dependency relationship
@@ -391,7 +396,9 @@ pub const AdvancedDependencyResolver = struct {
                 // Found a compatible version
                 const deps = try registry.getDependencies(package_name, version);
 
-                try self.solution.put(try self.allocator.dupe(u8, package_name), .{
+                const solution_key = try self.allocator.dupe(u8, package_name);
+                errdefer self.allocator.free(solution_key);
+                try self.solution.put(solution_key, .{
                     .package_name = package_name,
                     .version = version,
                     .dependencies = deps,
@@ -400,16 +407,24 @@ pub const AdvancedDependencyResolver = struct {
             }
         }
 
-        // No compatible version found - record conflict
+        // No compatible version found - record conflict. Build each owned
+        // field first so we can clean up on partial allocation failure.
+        const conflict_name = try self.allocator.dupe(u8, package_name);
+        errdefer self.allocator.free(conflict_name);
+
+        const conflict_constraints = try self.allocator.dupe(VersionConstraint, constraints.items);
+        errdefer self.allocator.free(conflict_constraints);
+
         const message = try std.fmt.allocPrint(
             self.allocator,
             "No version satisfies all constraints",
             .{},
         );
+        errdefer self.allocator.free(message);
 
         try self.conflicts.append(.{
-            .package_name = try self.allocator.dupe(u8, package_name),
-            .constraints = try self.allocator.dupe(VersionConstraint, constraints.items),
+            .package_name = conflict_name,
+            .constraints = conflict_constraints,
             .message = message,
         });
     }
@@ -580,7 +595,7 @@ test "SemanticVersion - parsing" {
 test "VersionConstraint - caret" {
     const constraint = AdvancedDependencyResolver.VersionConstraint{
         .operator = .Caret,
-        .version = .{ .major = 1, .minor = 2, .minor = 3 },
+        .version = .{ .major = 1, .minor = 2, .patch = 3 },
     };
 
     try std.testing.expect(constraint.satisfies(.{ .major = 1, .minor = 2, .patch = 3 }));

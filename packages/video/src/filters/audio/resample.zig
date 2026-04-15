@@ -48,8 +48,14 @@ pub const ResampleFilter = struct {
             return try input.clone(self.allocator);
         }
 
+        if (input.sample_rate == 0) return VideoError.InvalidSampleRate;
         const ratio = @as(f64, @floatFromInt(self.target_rate)) / @as(f64, @floatFromInt(input.sample_rate));
-        const output_samples: u64 = @intFromFloat(@ceil(@as(f64, @floatFromInt(input.num_samples)) * ratio));
+        const raw_samples = @ceil(@as(f64, @floatFromInt(input.num_samples)) * ratio);
+        // Clamp to u64 range to avoid @intFromFloat UB on overflow.
+        const output_samples: u64 = if (raw_samples >= @as(f64, @floatFromInt(std.math.maxInt(u64))))
+            std.math.maxInt(u64)
+        else
+            @intFromFloat(raw_samples);
 
         var output = try AudioFrame.init(
             self.allocator,
@@ -133,7 +139,10 @@ pub const ResampleFilter = struct {
 
     // Linear interpolation (low quality)
     fn interpolateLinearS16(_: *const Self, src: []u8, pos: f64, ch: usize, channels: u8, max_samples: u64) f64 {
-        const idx0: usize = @intFromFloat(@floor(pos));
+        if (max_samples == 0) return 0;
+        // Clamp idx0 in addition to idx1 — at the right edge of the input
+        // idx0 itself can reach max_samples and read past the buffer.
+        const idx0 = @min(@as(usize, @intFromFloat(@floor(pos))), max_samples - 1);
         const idx1 = @min(idx0 + 1, max_samples - 1);
         const frac = pos - @floor(pos);
 
@@ -144,7 +153,8 @@ pub const ResampleFilter = struct {
     }
 
     fn interpolateLinearF32(_: *const Self, src: []u8, pos: f64, ch: usize, channels: u8, max_samples: u64) f64 {
-        const idx0: usize = @intFromFloat(@floor(pos));
+        if (max_samples == 0) return 0;
+        const idx0 = @min(@as(usize, @intFromFloat(@floor(pos))), max_samples - 1);
         const idx1 = @min(idx0 + 1, max_samples - 1);
         const frac = pos - @floor(pos);
 

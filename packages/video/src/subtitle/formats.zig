@@ -90,7 +90,7 @@ pub const SRTParser = struct {
         var track = SubtitleTrack.init(self.allocator);
         errdefer track.deinit();
 
-        var lines = std.mem.split(u8, data, "\n");
+        var lines = std.mem.splitScalar(u8, data, '\n');
         var current_index: ?u32 = null;
         var current_start: ?Timestamp = null;
         var current_end: ?Timestamp = null;
@@ -243,7 +243,7 @@ pub const WebVTTParser = struct {
         var track = SubtitleTrack.init(self.allocator);
         errdefer track.deinit();
 
-        var lines = std.mem.split(u8, data, "\n");
+        var lines = std.mem.splitScalar(u8, data, '\n');
 
         // Skip WEBVTT header
         if (lines.next()) |header| {
@@ -333,7 +333,7 @@ pub const WebVTTParser = struct {
         var seconds: u32 = 0;
         var milliseconds: u32 = 0;
 
-        var parts = std.mem.split(u8, str, ":");
+        var parts = std.mem.splitScalar(u8, str, ':');
         const p1 = parts.next() orelse return error.InvalidTimestamp;
         const p2 = parts.next() orelse return error.InvalidTimestamp;
         const p3_opt = parts.next();
@@ -343,7 +343,7 @@ pub const WebVTTParser = struct {
             hours = try std.fmt.parseInt(u32, p1, 10);
             minutes = try std.fmt.parseInt(u32, p2, 10);
 
-            var sec_parts = std.mem.split(u8, p3, ".");
+            var sec_parts = std.mem.splitScalar(u8, p3, '.');
             const sec_str = sec_parts.next() orelse return error.InvalidTimestamp;
             const ms_str = sec_parts.next() orelse return error.InvalidTimestamp;
 
@@ -353,7 +353,7 @@ pub const WebVTTParser = struct {
             // MM:SS.mmm
             minutes = try std.fmt.parseInt(u32, p1, 10);
 
-            var sec_parts = std.mem.split(u8, p2, ".");
+            var sec_parts = std.mem.splitScalar(u8, p2, '.');
             const sec_str = sec_parts.next() orelse return error.InvalidTimestamp;
             const ms_str = sec_parts.next() orelse return error.InvalidTimestamp;
 

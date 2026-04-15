@@ -35,9 +35,15 @@ pub const ValidationResult = struct {
         self.valid = false;
 
         var errors = std.ArrayList([]const u8).init(self.allocator);
+        // Free the partially-built list if any operation below fails so
+        // we don't leak on OOM mid-way through.
+        errdefer errors.deinit();
 
-        if (self.errors.get(field)) |existing| {
-            try errors.appendSlice(existing);
+        if (self.errors.fetchRemove(field)) |entry| {
+            // Re-use the previously stored messages, then free the old
+            // container so we don't leak it when we put() below.
+            try errors.appendSlice(entry.value);
+            self.allocator.free(entry.value);
         }
 
         try errors.append(message);
@@ -54,6 +60,7 @@ pub const ValidationResult = struct {
 
     pub fn toJSON(self: *ValidationResult) ![]const u8 {
         var json = std.ArrayList(u8).init(self.allocator);
+        errdefer json.deinit();
         const writer = json.writer();
 
         try writer.writeAll("{\"valid\": ");
@@ -156,7 +163,7 @@ pub const Validator = struct {
     }
 
     pub fn field(self: *Validator, field_name: []const u8) !*FieldValidator {
-        var validator = FieldValidator.init(self.allocator, field_name);
+        const validator = FieldValidator.init(self.allocator, field_name);
         try self.fields.put(field_name, validator);
         return self.fields.getPtr(field_name).?;
     }
@@ -218,7 +225,26 @@ pub const Email = struct {
 
     fn validate(_: *anyopaque, value: ?[]const u8) bool {
         const v = value orelse return true; // Optional
-        return std.mem.indexOf(u8, v, "@") != null and std.mem.indexOf(u8, v, ".") != null;
+        if (v.len == 0 or v.len > 254) return false;
+
+        // Exactly one '@'.
+        const at = std.mem.indexOfScalar(u8, v, '@') orelse return false;
+        if (std.mem.indexOfScalarPos(u8, v, at + 1, '@') != null) return false;
+
+        const local = v[0..at];
+        const domain = v[at + 1 ..];
+        if (local.len == 0 or domain.len == 0) return false;
+
+        // Domain must contain a '.' that is not first/last and produces
+        // non-empty labels on both sides.
+        const dot = std.mem.indexOfScalar(u8, domain, '.') orelse return false;
+        if (dot == 0 or dot == domain.len - 1) return false;
+
+        // No consecutive dots in either side.
+        if (std.mem.indexOf(u8, local, "..") != null) return false;
+        if (std.mem.indexOf(u8, domain, "..") != null) return false;
+
+        return true;
     }
 
     fn message(_: *anyopaque, field: []const u8) []const u8 {

@@ -295,7 +295,7 @@ pub fn parallelMap(
     defer group.deinit();
 
     for (items) |item| {
-        const mapped_fut = future_mod.ready(R, mapper(item), allocator) catch unreachable;
+        const mapped_fut = try future_mod.ready(R, mapper(item), allocator);
         try group.add(mapped_fut);
     }
 
@@ -314,7 +314,7 @@ pub fn parallelFilter(
     defer group.deinit();
 
     for (items) |item| {
-        const pred_fut = future_mod.ready(bool, predicate(item), allocator) catch unreachable;
+        const pred_fut = try future_mod.ready(bool, predicate(item), allocator);
         try group.add(pred_fut);
     }
 
@@ -346,7 +346,7 @@ pub fn timeout(
     try scope.spawn(fut);
 
     // Spawn timeout future
-    const timeout_fut = future_mod.delay(T, @as(T, undefined), duration_ms, allocator) catch unreachable;
+    const timeout_fut = try future_mod.delay(T, @as(T, undefined), duration_ms, allocator);
     try scope.spawn(timeout_fut);
 
     // Race them

@@ -51,6 +51,7 @@ pub const DnsResolver = struct {
 
             // Allocate and populate addresses
             var addresses = try self.allocator.alloc(Address, count);
+            errdefer self.allocator.free(addresses);
             var i: usize = 0;
 
             current = result;
@@ -106,6 +107,7 @@ pub const DnsResolver = struct {
             defer if (result) |res| std.c.freeaddrinfo(res);
 
             var addresses = std.ArrayList(Address).init(self.allocator);
+            errdefer addresses.deinit();
             var current = result;
             while (current) |node| : (current = node.next) {
                 const addr = node.addr orelse continue;
@@ -147,6 +149,7 @@ pub const DnsResolver = struct {
             defer if (result) |res| std.c.freeaddrinfo(res);
 
             var addresses = std.ArrayList(Address).init(self.allocator);
+            errdefer addresses.deinit();
             var current = result;
             while (current) |node| : (current = node.next) {
                 const addr = node.addr orelse continue;
@@ -193,7 +196,7 @@ pub const DnsResolver = struct {
         if (comptime native_os == .linux) {
             return error.ReverseLookupFailed;
         } else {
-            var hostname_buf: [1024]u8 = undefined;
+            var hostname_buf: [1024]u8 = [_]u8{0} ** 1024;
 
             const addr = address.toSockAddr();
             const addr_len = @as(std.c.socklen_t, @intCast(address.getSockAddrSize()));

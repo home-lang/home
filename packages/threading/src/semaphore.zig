@@ -38,7 +38,12 @@ pub const Semaphore = struct {
     }
 
     pub fn post(self: *Semaphore) ThreadError!void {
-        _ = self.permits.fetchAdd(1, .release);
+        // Atomically increment, guarding against overflow with a CAS loop.
+        while (true) {
+            const current = self.permits.load(.monotonic);
+            if (current == std.math.maxInt(u32)) return;
+            if (self.permits.cmpxchgWeak(current, current + 1, .release, .monotonic) == null) return;
+        }
     }
 
     pub fn getValue(self: *Semaphore) ThreadError!i32 {

@@ -284,14 +284,19 @@ pub const FileSource = struct {
     fn seekImpl(ctx: *anyopaque, offset: i64, whence: SeekWhence) anyerror!u64 {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        const std_whence: std.fs.File.SeekableStream.SeekWhence = switch (whence) {
-            .start => .start,
-            .current => .cur,
-            .end => .end,
-        };
-
-        self.file.seekTo(@bitCast(offset)) catch return VideoError.SeekError;
-        _ = std_whence;
+        switch (whence) {
+            .start => {
+                if (offset < 0) return VideoError.SeekError;
+                self.file.seekTo(@intCast(offset)) catch return VideoError.SeekError;
+            },
+            .current => self.file.seekBy(offset) catch return VideoError.SeekError,
+            .end => {
+                const end_pos = self.file.getEndPos() catch return VideoError.SeekError;
+                const target = @as(i64, @intCast(end_pos)) + offset;
+                if (target < 0) return VideoError.SeekError;
+                self.file.seekTo(@intCast(target)) catch return VideoError.SeekError;
+            },
+        }
 
         return self.file.getPos() catch return VideoError.SeekError;
     }

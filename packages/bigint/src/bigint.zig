@@ -239,6 +239,7 @@ pub const BigInt = struct {
         }
 
         var result_digits = try self.allocator.alloc(u64, self.digits.len + 1);
+        errdefer self.allocator.free(result_digits);
         @memset(result_digits, 0);
 
         var carry: u64 = 0;
@@ -256,7 +257,7 @@ pub const BigInt = struct {
         }
 
         if (len < result_digits.len) {
-            var trimmed = try self.allocator.alloc(u64, len);
+            const trimmed = try self.allocator.alloc(u64, len);
             @memcpy(trimmed, result_digits[0..len]);
             self.allocator.free(result_digits);
             result_digits = trimmed;
@@ -289,6 +290,7 @@ pub const BigInt = struct {
     fn addAbs(self: *const BigInt, other: *const BigInt, negative: bool) !BigInt {
         const max_len = @max(self.digits.len, other.digits.len);
         var result_digits = try self.allocator.alloc(u64, max_len + 1);
+        errdefer self.allocator.free(result_digits);
         @memset(result_digits, 0);
 
         var carry: u64 = 0;
@@ -308,7 +310,7 @@ pub const BigInt = struct {
         }
 
         if (len < result_digits.len) {
-            var trimmed = try self.allocator.alloc(u64, len);
+            const trimmed = try self.allocator.alloc(u64, len);
             @memcpy(trimmed, result_digits[0..len]);
             self.allocator.free(result_digits);
             result_digits = trimmed;
@@ -361,6 +363,7 @@ pub const BigInt = struct {
         }
 
         var result_digits = try self.allocator.alloc(u64, larger.digits.len);
+        errdefer self.allocator.free(result_digits);
         @memset(result_digits, 0);
 
         var borrow: u64 = 0;
@@ -385,7 +388,7 @@ pub const BigInt = struct {
         }
 
         if (len < result_digits.len) {
-            var trimmed = try self.allocator.alloc(u64, len);
+            const trimmed = try self.allocator.alloc(u64, len);
             @memcpy(trimmed, result_digits[0..len]);
             self.allocator.free(result_digits);
             result_digits = trimmed;
@@ -406,6 +409,7 @@ pub const BigInt = struct {
 
         const result_len = self.digits.len + other.digits.len;
         var result_digits = try self.allocator.alloc(u64, result_len);
+        errdefer self.allocator.free(result_digits);
         @memset(result_digits, 0);
 
         for (self.digits, 0..) |a, i| {
@@ -425,7 +429,7 @@ pub const BigInt = struct {
         }
 
         if (len < result_digits.len) {
-            var trimmed = try self.allocator.alloc(u64, len);
+            const trimmed = try self.allocator.alloc(u64, len);
             @memcpy(trimmed, result_digits[0..len]);
             self.allocator.free(result_digits);
             result_digits = trimmed;
@@ -672,6 +676,9 @@ pub const BigInt = struct {
         defer ten.deinit();
 
         while (!num.isZero()) {
+            // A BigInt can have more than 256 decimal digits; stop writing
+            // before pos underflows so we don't corrupt the stack buffer.
+            if (pos == 0) break;
             var remainder = num.mod(&ten) catch return;
             defer remainder.deinit();
 

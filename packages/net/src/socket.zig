@@ -214,6 +214,7 @@ fn registerSocket(sock: *Socket) void {
     socket_table_lock.lock();
     defer socket_table_lock.unlock();
 
+    if (sock.fd < 3) return;
     const idx = @as(usize, @intCast(sock.fd - 3));
     if (idx < MAX_SOCKETS) {
         socket_table[idx] = sock;
@@ -224,6 +225,7 @@ fn unregisterSocket(fd: i32) void {
     socket_table_lock.lock();
     defer socket_table_lock.unlock();
 
+    if (fd < 3) return;
     const idx = @as(usize, @intCast(fd - 3));
     if (idx < MAX_SOCKETS) {
         socket_table[idx] = null;
@@ -234,6 +236,7 @@ fn getSocket(fd: i32) ?*Socket {
     socket_table_lock.lock();
     defer socket_table_lock.unlock();
 
+    if (fd < 3) return null;
     const idx = @as(usize, @intCast(fd - 3));
     if (idx < MAX_SOCKETS) {
         return socket_table[idx];
@@ -250,6 +253,7 @@ pub fn socket(allocator: Basics.Allocator, family: AddressFamily, socket_type: S
     const fd = try allocateFd();
 
     const sock = try allocator.create(Socket);
+    errdefer allocator.destroy(sock);
     sock.* = Socket.init(allocator, family, socket_type, protocol, fd);
 
     // Create underlying protocol socket

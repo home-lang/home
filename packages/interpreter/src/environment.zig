@@ -85,9 +85,14 @@ pub const Environment = struct {
     ///
     /// Errors: OutOfMemory if allocation fails
     pub fn define(self: *Environment, name: []const u8, value: Value) !void {
-        // Duplicate the name string for HashMap ownership
-        const name_copy = try self.allocator.dupe(u8, name);
-        try self.bindings.put(name_copy, value);
+        const gop = try self.bindings.getOrPut(name);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = self.allocator.dupe(u8, name) catch |err| {
+                _ = self.bindings.remove(name);
+                return err;
+            };
+        }
+        gop.value_ptr.* = value;
     }
 
     /// Look up a variable by name in this scope or parent scopes.

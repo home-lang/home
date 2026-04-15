@@ -176,7 +176,7 @@ fn base64Decode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
     return decoded;
 }
 
-fn constantTimeCompare(a: []const u8, b: []const u8) bool {
+pub fn constantTimeCompare(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
 
     var result: u8 = 0;

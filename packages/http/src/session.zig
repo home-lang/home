@@ -42,9 +42,12 @@ pub const SessionManager = struct {
         errdefer self.allocator.free(session_id);
 
         const session = try self.allocator.create(Session);
+        errdefer self.allocator.destroy(session);
         session.* = Session.init(self.allocator, session_id);
 
-        try self.sessions.put(try self.allocator.dupe(u8, session_id), session);
+        const key = try self.allocator.dupe(u8, session_id);
+        errdefer self.allocator.free(key);
+        try self.sessions.put(key, session);
 
         return session;
     }

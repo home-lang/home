@@ -21,8 +21,13 @@ pub const Headers = struct {
         self.map.deinit();
     }
 
-    /// Set a header value (case-insensitive name)
+    /// Set a header value (case-insensitive name).
+    /// Rejects names/values containing CR or LF to prevent header injection.
     pub fn set(self: *Headers, name: []const u8, value: []const u8) !void {
+        // Validate: reject CRLF injection in header names and values.
+        if (std.mem.indexOfAny(u8, name, "\r\n") != null) return error.InvalidHeaderName;
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.InvalidHeaderValue;
+
         const lower_name = try self.toLower(name);
         errdefer self.allocator.free(lower_name);
 
@@ -43,6 +48,30 @@ pub const Headers = struct {
         const lower_name = self.toLower(name) catch return null;
         defer self.allocator.free(lower_name);
         return self.map.get(lower_name);
+    }
+
+    /// Append a value to a header, joining with ", " if it already exists.
+    /// Use for multi-value headers (Set-Cookie uses separate set() calls).
+    pub fn append(self: *Headers, name: []const u8, value: []const u8) !void {
+        if (std.mem.indexOfAny(u8, name, "\r\n") != null) return error.InvalidHeaderName;
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.InvalidHeaderValue;
+
+        const lower_name = try self.toLower(name);
+        // If we fail anywhere below, free the just-allocated key.
+        errdefer self.allocator.free(lower_name);
+        if (self.map.get(lower_name)) |existing| {
+            const combined = try std.mem.concat(self.allocator, u8, &.{ existing, ", ", value });
+            // Replace the old value with the combined one.
+            if (self.map.fetchRemove(lower_name)) |old| {
+                self.allocator.free(old.key);
+                self.allocator.free(old.value);
+            }
+            try self.map.put(lower_name, combined);
+        } else {
+            const owned_value = try self.allocator.dupe(u8, value);
+            errdefer self.allocator.free(owned_value);
+            try self.map.put(lower_name, owned_value);
+        }
     }
 
     /// Check if header exists (case-insensitive name)

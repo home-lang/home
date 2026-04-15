@@ -248,6 +248,10 @@ pub const WebSocket = struct {
     }
 
     fn sendFrame(self: *WebSocket, frame_info: Frame) !void {
+        // The stack buffer tops out at 65536-byte payloads; reject larger
+        // frames up-front instead of overflowing the buffer when the
+        // unmasked payload is memcpy'd below.
+        if (frame_info.payload.len > 65536) return error.FrameTooLarge;
         var buffer: [16 + 65536]u8 = undefined;
         var buf_len: usize = 0;
 

@@ -160,7 +160,7 @@ test "drop safety tracker - exit scope" {
     defer tracker.deinit();
 
     try tracker.enterScope();
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     try std.testing.expect(tracker.scope_depth == 0);
@@ -170,7 +170,7 @@ test "drop safety tracker - exit scope without enter" {
     var tracker = drop.DropSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -188,7 +188,7 @@ test "drop safety tracker - drop variable" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.dropVariable("s", loc);
 
     const state = tracker.var_states.get("s");
@@ -199,7 +199,7 @@ test "drop safety tracker - drop undefined" {
     var tracker = drop.DropSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.dropVariable("undefined", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -213,7 +213,7 @@ test "drop safety tracker - double drop" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Drop once
     try tracker.dropVariable("s", loc);
@@ -235,7 +235,7 @@ test "drop safety tracker - drop moved" {
     // Mark as moved
     try tracker.markMoved("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.dropVariable("s", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -268,7 +268,7 @@ test "drop safety tracker - drop order violation" {
     // b depends on a (a must be dropped first)
     try tracker.addDependency("a", "b", "b depends on a");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Try to drop b before a
     try tracker.dropVariable("b", loc);
@@ -288,7 +288,7 @@ test "drop safety tracker - drop order correct" {
     // b depends on a (a must be dropped first)
     try tracker.addDependency("a", "b", "b depends on a");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Drop in correct order
     try tracker.dropVariable("a", loc);
@@ -312,7 +312,7 @@ test "drop safety tracker - scope drops in LIFO order" {
     try tracker.registerVariable("b", "String");
     try tracker.registerVariable("c", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // Check drop order: c, b, a (LIFO)
@@ -329,7 +329,7 @@ test "drop safety tracker - nested scope drops" {
 
     try tracker.registerType("String", .Simple);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.enterScope();
     try tracker.registerVariable("a", "String");
@@ -378,7 +378,7 @@ test "drop safety tracker - moved not dropped on scope exit" {
     // Mark as moved
     try tracker.markMoved("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // s should not be in drop order (it was moved)
@@ -399,7 +399,7 @@ test "drop safety tracker - mark leaked" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.markLeaked("s", loc);
 
     const state = tracker.var_states.get("s");
@@ -423,7 +423,7 @@ test "drop safety tracker - access during drop warning" {
     // Manually set to dropping state
     try tracker.var_states.put("s", .Dropping);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAccessDuringDrop("s", loc);
 
     try std.testing.expect(tracker.warnings.items.len > 0);
@@ -436,7 +436,7 @@ test "drop safety tracker - access after drop error" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.dropVariable("s", loc);
 
     // Try to access after drop
@@ -456,7 +456,7 @@ test "drop safety tracker - complex drop may panic warning" {
 
     try tracker.registerType("Mutex", .Complex);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDropPanic("Mutex", loc);
 
     try std.testing.expect(tracker.warnings.items.len > 0);
@@ -468,7 +468,7 @@ test "drop safety tracker - simple drop no warning" {
 
     try tracker.registerType("String", .Simple);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDropPanic("String", loc);
 
     try std.testing.expect(tracker.warnings.items.len == 0);
@@ -548,7 +548,7 @@ test "edge case - empty scope" {
 
     try tracker.enterScope();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // Should work fine with no variables
@@ -566,7 +566,7 @@ test "edge case - all trivial types in scope" {
     try tracker.registerVariable("b", "Int");
     try tracker.registerVariable("c", "Int");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // No drops needed
@@ -586,7 +586,7 @@ test "edge case - circular dependency" {
     try tracker.addDependency("a", "b", "b depends on a");
     try tracker.addDependency("b", "a", "a depends on b");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Try to drop either one
     try tracker.dropVariable("a", loc);
@@ -614,7 +614,7 @@ test "stress test - many variables in scope" {
         try tracker.registerVariable(var_name, "String");
     }
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // All 100 should be dropped in reverse order
@@ -638,7 +638,7 @@ test "complex scenario - dependency chain" {
     try tracker.addDependency("b", "c", "c depends on b");
     try tracker.addDependency("c", "d", "d depends on c");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Drop in correct order
     try tracker.dropVariable("a", loc);
@@ -669,7 +669,7 @@ test "complex scenario - mixed trivial and non-trivial" {
     try tracker.registerVariable("i2", "Int");
     try tracker.registerVariable("s2", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.exitScope(loc);
 
     // Only strings should be dropped

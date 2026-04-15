@@ -453,7 +453,7 @@ test "capability requirement check" {
     var required = CapabilitySet.initEmpty();
     required.insert(.CAP_WRITE_FILE);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkOperation(required, "write_operation", loc);
 

@@ -112,7 +112,7 @@ test "null safety tracker - safe dereference" {
 
     try tracker.setNullability("ptr", .NonNull);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -124,7 +124,7 @@ test "null safety tracker - unsafe dereference" {
 
     try tracker.setNullability("ptr", .Nullable);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -137,7 +137,7 @@ test "null safety tracker - dereference null" {
 
     try tracker.setNullability("ptr", .Null);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -157,7 +157,7 @@ test "null check - enables safe dereference" {
     const nullability = tracker.getNullability("ptr");
     try std.testing.expect(nullability == .NonNull);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -184,7 +184,7 @@ test "assignment - non-null to non-null" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("var", .NonNull, .NonNull, loc);
 
@@ -195,7 +195,7 @@ test "assignment - nullable to non-null" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("var", .NonNull, .Nullable, loc);
 
@@ -207,7 +207,7 @@ test "assignment - non-null to nullable" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("var", .Nullable, .NonNull, loc);
 
@@ -218,7 +218,7 @@ test "assignment - nullable to nullable" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("var", .Nullable, .Nullable, loc);
 
@@ -231,7 +231,7 @@ test "assignment - updates nullability" {
 
     try tracker.setNullability("var", .NonNull);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAssignment("var", .Nullable, .Nullable, loc);
 
     // Should update to nullable
@@ -314,7 +314,7 @@ test "function call - non-null arguments" {
     try tracker.registerFunction(func);
 
     const args = [_]null_safety.Nullability{ .NonNull, .NonNull };
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("process", &args, loc);
 
@@ -339,7 +339,7 @@ test "function call - nullable argument to non-null parameter" {
     try tracker.registerFunction(func);
 
     const args = [_]null_safety.Nullability{.Nullable};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkFunctionCall("requires_non_null", &args, loc);
 
@@ -364,7 +364,7 @@ test "function call - nullable parameter accepts non-null" {
     try tracker.registerFunction(func);
 
     const args = [_]null_safety.Nullability{.NonNull};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("accepts_nullable", &args, loc);
 
@@ -377,7 +377,7 @@ test "function call - unknown function" {
     defer tracker.deinit();
 
     const args = [_]null_safety.Nullability{.NonNull};
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     const result = try tracker.checkFunctionCall("unknown_func", &args, loc);
 
@@ -394,7 +394,7 @@ test "return - non-null to non-null" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkReturn(.NonNull, .NonNull, loc);
 
@@ -405,7 +405,7 @@ test "return - nullable to non-null" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkReturn(.Nullable, .NonNull, loc);
 
@@ -417,7 +417,7 @@ test "return - non-null to nullable" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkReturn(.NonNull, .Nullable, loc);
 
@@ -434,7 +434,7 @@ test "redundant check - non-null variable" {
 
     try tracker.setNullability("ptr", .NonNull);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.warnRedundantCheck("ptr", loc);
 
     try std.testing.expect(tracker.warnings.items.len > 0);
@@ -446,7 +446,7 @@ test "redundant check - nullable variable" {
 
     try tracker.setNullability("ptr", .Nullable);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.warnRedundantCheck("ptr", loc);
 
     // Should not warn
@@ -483,7 +483,7 @@ test "edge case - multiple assignments to same variable" {
     var tracker = null_safety.NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Start as non-null
     try tracker.checkAssignment("var", .NonNull, .NonNull, loc);
@@ -507,7 +507,7 @@ test "edge case - null check then reassign" {
     try std.testing.expect(tracker.getNullability("ptr") == .NonNull);
 
     // Reassign to nullable
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkAssignment("ptr", .Nullable, .Nullable, loc);
 
     // Should be nullable again
@@ -551,7 +551,7 @@ test "complex scenario - conditional null check" {
 
     try tracker.setNullability("ptr", .Nullable);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (ptr != null) { use(ptr); }
     tracker.enterScope();

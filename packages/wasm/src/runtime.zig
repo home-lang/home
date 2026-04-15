@@ -73,6 +73,7 @@ pub const WasmRuntime = struct {
 
         pub fn init(allocator: std.mem.Allocator, module_bytes: []const u8) !*Instance {
             const instance = try allocator.create(Instance);
+            errdefer allocator.destroy(instance);
             instance.* = .{
                 .allocator = allocator,
                 .module = undefined,
@@ -82,6 +83,14 @@ pub const WasmRuntime = struct {
                 .functions = std.ArrayList(Function).init(allocator),
                 .exports = std.StringHashMap(ExportValue).init(allocator),
             };
+            // Tear down the just-initialized collections if loadModule fails
+            // — otherwise the allocated ArrayList/HashMap storage leaks.
+            errdefer {
+                instance.tables.deinit();
+                instance.globals.deinit();
+                instance.functions.deinit();
+                instance.exports.deinit();
+            }
 
             try instance.loadModule(module_bytes);
             return instance;
@@ -191,14 +200,16 @@ pub const WasmRuntime = struct {
         fn readLEB128(self: *Instance, data: []const u8, result: *u32) !usize {
             _ = self;
             var value: u32 = 0;
-            var shift: u5 = 0;
+            // Use u8 so `shift += 7` past 31 doesn't panic on u5 overflow —
+            // we catch the too-large case via the explicit check below.
+            var shift: u8 = 0;
             var offset: usize = 0;
 
             while (offset < data.len) {
                 const byte = data[offset];
                 offset += 1;
 
-                value |= @as(u32, byte & 0x7F) << shift;
+                value |= @as(u32, byte & 0x7F) << @intCast(shift);
                 if ((byte & 0x80) == 0) break;
 
                 shift += 7;
@@ -239,7 +250,9 @@ pub const WasmRuntime = struct {
         page_size: u32 = 65536, // 64KB
 
         pub fn init(allocator: std.mem.Allocator, min_pages: u32, max_pages: ?u32) !Memory {
-            const size = min_pages * 65536;
+            // Compute in usize so `min_pages * 65536` can't overflow u32
+            // for large but legal page counts.
+            const size: usize = @as(usize, min_pages) * 65536;
             const data = try allocator.alloc(u8, size);
             @memset(data, 0);
 
@@ -257,15 +270,17 @@ pub const WasmRuntime = struct {
 
         pub fn grow(self: *Memory, delta_pages: u32) !u32 {
             const current_pages = @as(u32, @intCast(self.data.len / self.page_size));
+            // Overflow-check the new page count before multiplying.
+            if (delta_pages > std.math.maxInt(u32) - current_pages) return error.MemoryGrowthExceeded;
             const new_pages = current_pages + delta_pages;
 
             if (self.max_pages) |max| {
                 if (new_pages > max) return error.MemoryGrowthExceeded;
             }
 
-            const new_size = new_pages * self.page_size;
+            const new_size: usize = @as(usize, new_pages) * self.page_size;
             self.data = try self.allocator.realloc(self.data, new_size);
-            @memset(self.data[current_pages * self.page_size ..], 0);
+            @memset(self.data[@as(usize, current_pages) * self.page_size ..], 0);
 
             return current_pages;
         }

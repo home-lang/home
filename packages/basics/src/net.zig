@@ -8,9 +8,14 @@ pub const TcpClient = struct {
     pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16) !*TcpClient {
         const address = try std.net.Address.parseIp(host, port);
 
+        // Connect FIRST so we don't leak the heap allocation if the
+        // connection attempt fails.
+        const stream = try std.net.tcpConnectToAddress(address);
+        errdefer stream.close();
+
         const client = try allocator.create(TcpClient);
         client.* = .{
-            .stream = try std.net.tcpConnectToAddress(address),
+            .stream = stream,
             .allocator = allocator,
         };
 
@@ -46,6 +51,9 @@ pub const TcpServer = struct {
         var server = try address.listen(.{
             .reuse_address = true,
         });
+        // If `create` fails we'd otherwise leak the bound listening
+        // socket — tear it down on error.
+        errdefer server.deinit();
 
         const tcp_server = try allocator.create(TcpServer);
         tcp_server.* = .{

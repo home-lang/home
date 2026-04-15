@@ -253,10 +253,10 @@ fn decodeRLE8(img: *Image, pixel_data: []const u8, top_down: bool) !void {
                 1 => { // End of bitmap
                     break;
                 },
-                2 => { // Delta
+                2 => { // Delta - move the drawing position
                     if (pos + 1 >= pixel_data.len) break;
-                    x += pixel_data[pos];
-                    y += pixel_data[pos + 1];
+                    x +|= pixel_data[pos]; // saturating add to prevent overflow
+                    y +|= pixel_data[pos + 1];
                     pos += 2;
                 },
                 else => { // Absolute mode

@@ -38,10 +38,16 @@ pub const Cookie = struct {
     options: CookieOptions,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, value: []const u8, options: CookieOptions) !Cookie {
+        // Dupe in two steps so the first allocation doesn't leak if the
+        // second one fails.
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+        const value_copy = try allocator.dupe(u8, value);
+        errdefer allocator.free(value_copy);
         return .{
             .allocator = allocator,
-            .name = try allocator.dupe(u8, name),
-            .value = try allocator.dupe(u8, value),
+            .name = name_copy,
+            .value = value_copy,
             .options = options,
         };
     }
@@ -53,51 +59,25 @@ pub const Cookie = struct {
 
     /// Serialize cookie to Set-Cookie header format
     pub fn serialize(self: *Cookie) ![]const u8 {
-        var parts = std.ArrayList([]const u8).init(self.allocator);
-        defer parts.deinit();
+        // Build the result directly into a growing buffer so we don't
+        // leak per-attribute allocPrint strings when join() succeeds
+        // (the old implementation appended allocated strings to an
+        // ArrayList that was deinit'd without freeing its items).
+        var buf = std.ArrayList(u8).init(self.allocator);
+        errdefer buf.deinit();
+        const w = buf.writer();
 
-        // Name=Value
-        const name_value = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ self.name, self.value });
-        try parts.append(name_value);
+        try w.print("{s}={s}", .{ self.name, self.value });
 
-        // Max-Age
-        if (self.options.max_age) |age| {
-            const max_age_str = try std.fmt.allocPrint(self.allocator, "Max-Age={d}", .{age});
-            try parts.append(max_age_str);
-        }
+        if (self.options.max_age) |age| try w.print("; Max-Age={d}", .{age});
+        if (self.options.expires) |exp| try w.print("; Expires={d}", .{exp});
+        try w.print("; Path={s}", .{self.options.path});
+        if (self.options.domain) |domain| try w.print("; Domain={s}", .{domain});
+        if (self.options.secure) try w.writeAll("; Secure");
+        if (self.options.http_only) try w.writeAll("; HttpOnly");
+        try w.print("; SameSite={s}", .{self.options.same_site.toString()});
 
-        // Expires
-        if (self.options.expires) |exp| {
-            const expires_str = try std.fmt.allocPrint(self.allocator, "Expires={d}", .{exp});
-            try parts.append(expires_str);
-        }
-
-        // Path
-        const path_str = try std.fmt.allocPrint(self.allocator, "Path={s}", .{self.options.path});
-        try parts.append(path_str);
-
-        // Domain
-        if (self.options.domain) |domain| {
-            const domain_str = try std.fmt.allocPrint(self.allocator, "Domain={s}", .{domain});
-            try parts.append(domain_str);
-        }
-
-        // Secure
-        if (self.options.secure) {
-            try parts.append("Secure");
-        }
-
-        // HttpOnly
-        if (self.options.http_only) {
-            try parts.append("HttpOnly");
-        }
-
-        // SameSite
-        const same_site_str = try std.fmt.allocPrint(self.allocator, "SameSite={s}", .{self.options.same_site.toString()});
-        try parts.append(same_site_str);
-
-        // Join with "; "
-        return std.mem.join(self.allocator, "; ", parts.items);
+        return buf.toOwnedSlice();
     }
 
     /// Parse cookie from Cookie header
@@ -187,9 +167,20 @@ pub const SessionData = struct {
     }
 
     pub fn set(self: *SessionData, key: []const u8, value: []const u8) !void {
-        const key_copy = try self.allocator.dupe(u8, key);
         const value_copy = try self.allocator.dupe(u8, value);
-        try self.data.put(key_copy, value_copy);
+        errdefer self.allocator.free(value_copy);
+
+        // If the key already exists, reuse its owned copy and only replace
+        // the value — otherwise the old key/value pair would leak.
+        if (self.data.fetchRemove(key)) |old| {
+            self.allocator.free(old.value);
+            errdefer self.allocator.free(old.key);
+            try self.data.put(old.key, value_copy);
+        } else {
+            const key_copy = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(key_copy);
+            try self.data.put(key_copy, value_copy);
+        }
         self.last_accessed = std.time.timestamp();
     }
 
@@ -290,8 +281,11 @@ pub const MemorySessionStore = struct {
             if (session.isExpired()) {
                 return null;
             }
-            // Create a copy
-            var copy = try SessionData.init(allocator, session.id, 0);
+            // Create a copy. Seed with a large TTL so the constructor's
+            // computed expires_at (which we overwrite below anyway) never
+            // expires the copy before we've filled it in.
+            var copy = try SessionData.init(allocator, session.id, std.math.maxInt(i32));
+            errdefer copy.deinit();
             copy.created_at = session.created_at;
             copy.last_accessed = session.last_accessed;
             copy.expires_at = session.expires_at;

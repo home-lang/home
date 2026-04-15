@@ -142,7 +142,8 @@ pub const KernelHeap = struct {
 
         // No suitable block found - try to grow heap if enabled
         if (self.config.auto_grow and self.parent_allocator != null) {
-            const growth_size = @max(len * 2, self.current_size / 2);
+            const doubled = std.math.mul(usize, len, 2) catch return null;
+            const growth_size = @max(doubled, self.current_size / 2);
             if (self.current_size + growth_size <= self.config.max_size) {
                 if (self.growHeap(growth_size)) {
                     // Retry allocation

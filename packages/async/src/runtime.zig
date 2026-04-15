@@ -178,7 +178,7 @@ const WakerData = struct {
     fn clone(ptr: *anyopaque) *anyopaque {
         const self = @as(*WakerData, @ptrCast(@alignCast(ptr)));
 
-        const new_data = self.runtime.allocator.create(WakerData) catch unreachable;
+        const new_data = self.runtime.allocator.create(WakerData) catch @panic("OOM cloning WakerData");
         new_data.* = self.*;
 
         return @ptrCast(new_data);

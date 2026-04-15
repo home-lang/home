@@ -61,6 +61,9 @@ pub const Redis = struct {
     pub fn connect(allocator: std.mem.Allocator, config: Config) !Redis {
         const address = try std.net.Address.parseIp(config.host, config.port);
         const stream = try std.net.tcpConnectToAddress(address);
+        // Close the socket if anything below this point fails —
+        // previously AUTH/SELECT failures leaked the open connection.
+        errdefer stream.close();
 
         var redis = Redis{
             .allocator = allocator,
@@ -69,10 +72,11 @@ pub const Redis = struct {
             .subscriptions = std.StringHashMap(SubscriptionCallback).init(allocator),
             .in_transaction = false,
         };
+        errdefer redis.subscriptions.deinit();
 
         // Authenticate if password provided
         if (config.password) |password| {
-            const auth_result = try redis.command(&.{ "AUTH", password });
+            var auth_result = try redis.command(&.{ "AUTH", password });
             defer auth_result.deinit(allocator);
 
             switch (auth_result) {
@@ -85,7 +89,7 @@ pub const Redis = struct {
         if (config.database != 0) {
             var db_str: [20]u8 = undefined;
             const db_str_slice = try std.fmt.bufPrint(&db_str, "{d}", .{config.database});
-            const select_result = try redis.command(&.{ "SELECT", db_str_slice });
+            var select_result = try redis.command(&.{ "SELECT", db_str_slice });
             defer select_result.deinit(allocator);
 
             switch (select_result) {
@@ -329,10 +333,17 @@ pub const Redis = struct {
                         else => return error.UnexpectedResponse,
                     };
 
-                    try map.put(
-                        try self.allocator.dupe(u8, field),
-                        try self.allocator.dupe(u8, value),
-                    );
+                    const field_copy = try self.allocator.dupe(u8, field);
+                    errdefer self.allocator.free(field_copy);
+                    const value_copy = try self.allocator.dupe(u8, value);
+                    errdefer self.allocator.free(value_copy);
+
+                    const gop = try map.getOrPut(field_copy);
+                    if (gop.found_existing) {
+                        self.allocator.free(field_copy);
+                        self.allocator.free(gop.value_ptr.*);
+                    }
+                    gop.value_ptr.* = value_copy;
                 }
             },
             else => return error.UnexpectedResponse,
@@ -449,7 +460,11 @@ pub const Redis = struct {
         _ = try self.command(args.items);
 
         for (channels) |channel| {
-            try self.subscriptions.put(try self.allocator.dupe(u8, channel), callback);
+            const ch_copy = try self.allocator.dupe(u8, channel);
+            errdefer self.allocator.free(ch_copy);
+            const gop = try self.subscriptions.getOrPut(ch_copy);
+            if (gop.found_existing) self.allocator.free(ch_copy);
+            gop.value_ptr.* = callback;
         }
     }
 

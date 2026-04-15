@@ -7,7 +7,7 @@ const builtin = @import("builtin");
 pub const ExecResult = struct {
     stdout: []const u8,
     stderr: []const u8,
-    exit_code: u8,
+    exit_code: u32,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ExecResult) void {
@@ -23,6 +23,11 @@ pub fn exec(allocator: std.mem.Allocator, argv: []const []const u8) !ExecResult 
     child.stderr_behavior = .Pipe;
 
     try child.spawn();
+    // If we bail out before `wait()`, terminate the child and reap it so
+    // we don't leak processes or FDs back to the caller.
+    errdefer {
+        _ = child.kill() catch {};
+    }
 
     const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
     errdefer allocator.free(stdout);
@@ -51,6 +56,9 @@ pub fn execWithInput(allocator: std.mem.Allocator, argv: []const []const u8, std
     child.stderr_behavior = .Pipe;
 
     try child.spawn();
+    errdefer {
+        _ = child.kill() catch {};
+    }
 
     // Write to stdin
     try child.stdin.?.writeAll(stdin_input);

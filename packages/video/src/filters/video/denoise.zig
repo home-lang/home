@@ -230,7 +230,10 @@ pub const DenoiseFilter = struct {
                                 const dst_offset = y_u * dst_stride + x_u * bytes_per_pixel + ch;
                                 if (dst_offset < dst.len) {
                                     const orig = src[y_u * src_stride + x_u * bytes_per_pixel + ch];
-                                    const strength_int: u32 = @intFromFloat(self.strength * 256);
+                                    // Clamp strength to [0,1] before scaling;
+                                    // otherwise (256 - strength_int) would wrap.
+                                    const clamped = std.math.clamp(self.strength, 0.0, 1.0);
+                                    const strength_int: u32 = @intFromFloat(clamped * 256);
                                     const result = ((@as(u32, median) * strength_int) +
                                         (@as(u32, orig) * (256 - strength_int))) / 256;
                                     dst[dst_offset] = @intCast(result);
@@ -265,8 +268,10 @@ pub const DenoiseFilter = struct {
 
         const bytes_per_pixel = getBytesPerPixel(input.format);
         const radius: i32 = @intCast(self.radius);
-        const sigma_space: f32 = @floatFromInt(self.radius);
-        const sigma_color: f32 = 30.0 * self.strength; // Color similarity threshold
+        // Guard against sigma=0 which would divide-by-zero in the Gaussian
+        // weight formulas below.
+        const sigma_space: f32 = @max(@as(f32, @floatFromInt(self.radius)), 0.5);
+        const sigma_color: f32 = @max(30.0 * self.strength, 0.5);
 
         if (input.data[0]) |src| {
             if (output.data[0]) |dst| {

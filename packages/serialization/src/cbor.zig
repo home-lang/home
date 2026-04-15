@@ -124,7 +124,9 @@ pub const CBOREncoder = struct {
     }
 
     fn encodeNegative(self: *CBOREncoder, value: i64) !void {
-        const unsigned_value: u64 = @intCast(-1 - value);
+        if (value >= 0) return error.InvalidNegativeValue;
+        // CBOR encodes -1-n; use unsigned math to avoid i64.min overflow.
+        const unsigned_value: u64 = @as(u64, @bitCast(-(value + 1)));
         try self.encodeTypeAndValue(.negative_integer, unsigned_value);
     }
 

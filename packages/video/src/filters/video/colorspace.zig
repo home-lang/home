@@ -121,6 +121,9 @@ pub const ColorSpaceConverter = struct {
         const is_bgr = self.target_format == .bgr24 or self.target_format == .bgra32;
         const chroma_subsample_x = getChromaSubsampleX(input.format);
         const chroma_subsample_y = getChromaSubsampleY(input.format);
+        // Subsample factors must be >= 1 — defensive guard avoids
+        // divide-by-zero if a pathological format is handled here.
+        if (chroma_subsample_x == 0 or chroma_subsample_y == 0) return VideoError.UnsupportedFormat;
 
         for (0..input.height) |y| {
             const chroma_y = y / chroma_subsample_y;

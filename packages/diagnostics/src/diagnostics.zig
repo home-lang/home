@@ -109,8 +109,16 @@ pub const Diagnostic = struct {
             // Underline/caret pointing to error location
             std.debug.print("   {s}|{s} ", .{ Color.Blue.code(), Color.Reset.code() });
 
-            // Add spaces up to the column
+            // Add spaces up to the column, respecting tabs in the source line.
             var i: usize = 0;
+            while (i < col_num and i < source.len) : (i += 1) {
+                if (source[i] == '\t') {
+                    std.debug.print("\t", .{});
+                } else {
+                    std.debug.print(" ", .{});
+                }
+            }
+            // Remaining columns beyond source length just use spaces.
             while (i < col_num) : (i += 1) {
                 std.debug.print(" ", .{});
             }

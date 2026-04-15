@@ -99,6 +99,12 @@ pub const NullSafetyTracker = struct {
     }
 
     pub fn deinit(self: *NullSafetyTracker) void {
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
+        for (self.warnings.items) |warn| {
+            self.allocator.free(warn.message);
+        }
         self.var_nullability.deinit();
         self.checked_vars.deinit();
         self.functions.deinit();
@@ -493,7 +499,7 @@ test "unsafe dereference detection" {
 
     try tracker.setNullability("ptr", .Nullable);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -510,7 +516,7 @@ test "null check tracking" {
     try std.testing.expect(nullability == .NonNull);
 
     // Now dereference should be safe
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkDereference("ptr", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -520,7 +526,7 @@ test "nullable to non-null assignment" {
     var tracker = NullSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("var", .NonNull, .Nullable, loc);
 

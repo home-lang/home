@@ -292,8 +292,11 @@ pub const FrameLimiter = struct {
     }
 
     pub fn setTargetFPS(self: *FrameLimiter, fps: u32) void {
-        self.target_fps = fps;
-        self.frame_time_ns = @divFloor(1_000_000_000, fps);
+        // Reject fps=0 to avoid division by zero. Callers wanting an
+        // unlimited frame rate should disable the limiter instead.
+        const clamped = @max(fps, 1);
+        self.target_fps = clamped;
+        self.frame_time_ns = @divFloor(1_000_000_000, clamped);
     }
 };
 

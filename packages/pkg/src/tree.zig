@@ -112,10 +112,11 @@ pub const DependencyTree = struct {
         }
 
         // Bubble sort (simple for small lists)
+        if (sorted.items.len == 0) return;
         var i: usize = 0;
         while (i < sorted.items.len) : (i += 1) {
             var j: usize = 0;
-            while (j < sorted.items.len - 1 - i) : (j += 1) {
+            while (i + 1 + j < sorted.items.len) : (j += 1) {
                 if (sorted.items[j].size_mb < sorted.items[j + 1].size_mb) {
                     const temp = sorted.items[j];
                     sorted.items[j] = sorted.items[j + 1];

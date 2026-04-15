@@ -55,6 +55,11 @@ pub const TestFramework = struct {
         }
 
         pub fn deinit(self: *TestContext) void {
+            // All Failure.message fields are owned (duped on append) so
+            // we can free them uniformly here.
+            for (self.failures.items) |f| {
+                self.allocator.free(f.message);
+            }
             self.failures.deinit();
         }
 
@@ -63,8 +68,12 @@ pub const TestFramework = struct {
             self.assertions += 1;
             if (!condition) {
                 self.failed = true;
+                // Dupe so all Failure.message values share the same
+                // ownership semantics (freed by deinit).
+                const msg = try self.allocator.dupe(u8, message);
+                errdefer self.allocator.free(msg);
                 try self.failures.append(.{
-                    .message = message,
+                    .message = msg,
                     .file = "unknown",
                     .line = 0,
                 });
@@ -81,6 +90,7 @@ pub const TestFramework = struct {
                     "Expected {any}, got {any}",
                     .{ expected, actual },
                 );
+                errdefer self.allocator.free(msg);
                 try self.failures.append(.{
                     .message = msg,
                     .file = "unknown",
@@ -99,6 +109,7 @@ pub const TestFramework = struct {
                     "Expected values to be different, but both were {any}",
                     .{expected},
                 );
+                errdefer self.allocator.free(msg);
                 try self.failures.append(.{
                     .message = msg,
                     .file = "unknown",
@@ -121,6 +132,7 @@ pub const TestFramework = struct {
                     "Expected error {s}, but succeeded",
                     .{@errorName(expected_error)},
                 );
+                errdefer self.allocator.free(msg);
                 try self.failures.append(.{
                     .message = msg,
                     .file = "unknown",
@@ -134,6 +146,7 @@ pub const TestFramework = struct {
                         "Expected error {s}, got {s}",
                         .{ @errorName(expected_error), @errorName(err) },
                     );
+                    errdefer self.allocator.free(msg);
                     try self.failures.append(.{
                         .message = msg,
                         .file = "unknown",
@@ -146,8 +159,11 @@ pub const TestFramework = struct {
         /// Fail with message
         pub fn fail(self: *TestContext, message: []const u8) !void {
             self.failed = true;
+            // Dupe for consistent ownership — deinit frees all messages.
+            const msg = try self.allocator.dupe(u8, message);
+            errdefer self.allocator.free(msg);
             try self.failures.append(.{
-                .message = message,
+                .message = msg,
                 .file = "unknown",
                 .line = 0,
             });
@@ -178,6 +194,14 @@ pub const TestFramework = struct {
         }
 
         pub fn deinit(self: *Coverage) void {
+            // Each FileCoverage owns a lines map and branches list that
+            // also need to be released — deiniting just `files` leaks
+            // them.
+            var it = self.files.valueIterator();
+            while (it.next()) |fc| {
+                fc.lines.deinit();
+                fc.branches.deinit();
+            }
             self.files.deinit();
         }
 

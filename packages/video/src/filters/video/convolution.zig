@@ -40,7 +40,9 @@ pub const Kernel = struct {
             .data = data,
             .width = width,
             .height = height,
-            .divisor = divisor,
+            // Prevent a caller-supplied zero divisor from causing NaN/Inf
+            // in the convolution result.
+            .divisor = if (divisor == 0) 1 else divisor,
             .bias = bias,
         };
     }
@@ -158,6 +160,11 @@ pub const ConvolutionFilter = struct {
 
     /// Apply convolution to a video frame
     pub fn apply(self: *const Self, input: *const VideoFrame) !VideoFrame {
+        // Guard degenerate dimensions before we compute `height - 1` /
+        // `width - 1` as clamp bounds.
+        if (input.width == 0 or input.height == 0) {
+            return try VideoFrame.init(self.allocator, input.width, input.height, input.format);
+        }
         var output = try VideoFrame.init(
             self.allocator,
             input.width,

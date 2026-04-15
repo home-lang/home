@@ -111,22 +111,25 @@ pub const Zstd = struct {
             return error.InvalidZstdMagic;
         }
 
-        // Decompress blocks
+        // Decompress blocks. Validate the header/footer sizes don't
+        // exceed the input so `data.len - header_size - footer_size`
+        // can't underflow usize for a truncated / malformed frame.
         const header_size = @as(usize, @intCast(stream.pos));
         const footer_size: usize = if (header.content_checksum) 4 else 0;
+        if (header_size + footer_size > data.len) return error.InvalidZstdFrame;
         const compressed_size = data.len - header_size - footer_size;
         const compressed = data[header_size .. header_size + compressed_size];
 
         const decompressed = try self.decompressBlocks(compressed, header.content_size);
         errdefer self.allocator.free(decompressed);
 
-        // Verify checksum if present
+        // Verify checksum if present. The errdefer above runs on error,
+        // so we must NOT call free() here — that would be a double-free.
         if (header.content_checksum) {
             const stored_checksum = std.mem.readInt(u32, data[data.len - 4 ..][0..4], .little);
             const calculated_checksum = std.hash.XxHash64.hash(0, decompressed);
 
             if (stored_checksum != @as(u32, @truncate(calculated_checksum))) {
-                self.allocator.free(decompressed);
                 return error.ChecksumMismatch;
             }
         }
@@ -137,6 +140,10 @@ pub const Zstd = struct {
     /// Estimate compression ratio for given data
     pub fn estimateCompressionRatio(self: *Zstd, data: []const u8) f64 {
         _ = self;
+
+        // An empty buffer has no entropy to measure — return a neutral
+        // ratio instead of dividing by zero below.
+        if (data.len == 0) return 1.0;
 
         // Simple heuristic based on entropy
         var counts: [256]usize = [_]usize{0} ** 256;

@@ -212,7 +212,7 @@ pub const PartitionPack = struct {
 
         // Parse essence container batch
         var essence_list = std.ArrayList(UniversalLabel).init(allocator);
-        if (data.len >= 101) {
+        if (data.len >= 105) {
             const ec_count = std.mem.readInt(u32, data[97..101], .big);
             const ec_size = std.mem.readInt(u32, data[101..105], .big);
             _ = ec_size;
@@ -242,12 +242,17 @@ pub const PartitionPack = struct {
             .body_offset = body_off,
             .body_sid = bdy_sid,
             .operational_pattern = op,
-            .essence_containers = essence_list.toOwnedSlice() catch &[_]UniversalLabel{},
+            .essence_containers = essence_list.toOwnedSlice() catch blk: {
+                essence_list.deinit();
+                break :blk &[_]UniversalLabel{};
+            },
         };
     }
 
     pub fn deinit(self: *PartitionPack, allocator: Allocator) void {
-        allocator.free(self.essence_containers);
+        // Guard against freeing the static fallback slice used when
+        // toOwnedSlice failed during parsing.
+        if (self.essence_containers.len > 0) allocator.free(self.essence_containers);
     }
 
     pub fn getOperationalPattern(self: *const PartitionPack) OperationalPattern {

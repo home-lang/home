@@ -127,7 +127,7 @@ test "move tracker - check use of initialized" {
 
     try tracker.initialize("x");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkUse("x", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -140,7 +140,7 @@ test "move tracker - check use after move" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.moveValue("x", "y", "String", loc);
 
@@ -158,10 +158,10 @@ test "move tracker - use after move shows location" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const move_loc = ast.SourceLocation{ .line = 10, .column = 5, .file = "test.ion" };
+    const move_loc = ast.SourceLocation{ .line = 10, .column = 5, .file = "test.home" };
     try tracker.moveValue("x", "y", "String", move_loc);
 
-    const use_loc = ast.SourceLocation{ .line = 20, .column = 10, .file = "test.ion" };
+    const use_loc = ast.SourceLocation{ .line = 20, .column = 10, .file = "test.home" };
     try tracker.checkUse("x", use_loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -181,7 +181,7 @@ test "move tracker - move value" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveValue("x", "y", "String", loc);
 
     try std.testing.expect(tracker.getState("x") == .FullyMoved);
@@ -195,7 +195,7 @@ test "move tracker - copy type does not move" {
     try tracker.initialize("x");
     try tracker.registerType("Int", .Copy);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveValue("x", "y", "Int", loc);
 
     // x should still be initialized (copy, not move)
@@ -210,7 +210,7 @@ test "move tracker - move from moved" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Move once
     try tracker.moveValue("x", "y", "String", loc);
@@ -228,7 +228,7 @@ test "move tracker - move from uninitialized" {
 
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveValue("x", "y", "String", loc);
 
     try std.testing.expect(tracker.hasErrors());
@@ -244,7 +244,7 @@ test "move tracker - move field" {
 
     try tracker.initialize("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.moveField("s", "field1", "x", loc);
 
     try std.testing.expect(tracker.getState("s") == .PartiallyMoved);
@@ -257,7 +257,7 @@ test "move tracker - move field twice" {
 
     try tracker.initialize("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Move field once
     try tracker.moveField("s", "field1", "x", loc);
@@ -275,7 +275,7 @@ test "move tracker - move different fields" {
 
     try tracker.initialize("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Move different fields
     try tracker.moveField("s", "field1", "x", loc);
@@ -293,7 +293,7 @@ test "move tracker - move field from fully moved" {
     try tracker.initialize("s");
     try tracker.registerType("Struct", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Fully move the struct
     try tracker.moveValue("s", "t", "Struct", loc);
@@ -314,7 +314,7 @@ test "move tracker - conditional move first time" {
 
     try tracker.initialize("x");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.conditionalMove("x", loc);
 
     try std.testing.expect(tracker.getState("x") == .ConditionallyMoved);
@@ -326,7 +326,7 @@ test "move tracker - conditional move twice becomes fully moved" {
 
     try tracker.initialize("x");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // First conditional move
     try tracker.conditionalMove("x", loc);
@@ -344,7 +344,7 @@ test "move tracker - conditional move from fully moved" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Fully move
     try tracker.moveValue("x", "y", "String", loc);
@@ -410,7 +410,7 @@ test "move tracker - reinitialize after move" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Move x
     try tracker.moveValue("x", "y", "String", loc);
@@ -431,7 +431,7 @@ test "move tracker - reinitialize clears field states" {
 
     try tracker.initialize("s");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Partially move
     try tracker.moveField("s", "field1", "x", loc);
@@ -497,7 +497,7 @@ test "edge case - move copy type multiple times" {
     try tracker.initialize("x");
     try tracker.registerType("Int", .Copy);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // "Move" multiple times (actually copy)
     try tracker.moveValue("x", "y", "Int", loc);
@@ -554,7 +554,7 @@ test "stress test - many moves" {
 
     try tracker.registerType("Int", .Copy); // Use copy so we can move many times
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.initialize("x");
 
@@ -579,7 +579,7 @@ test "complex scenario - ownership transfer chain" {
 
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.initialize("a");
     try tracker.moveValue("a", "b", "String", loc);
@@ -599,7 +599,7 @@ test "complex scenario - conditional with merge" {
     try tracker.initialize("x");
     try tracker.registerType("String", .Move);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // if (cond) { move x } else { keep x }
     // After merge, x is conditionally moved

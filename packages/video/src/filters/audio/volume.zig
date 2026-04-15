@@ -208,6 +208,10 @@ pub const VolumeFilter = struct {
 
     /// Get gain in decibels
     pub fn getDb(self: *const Self) f32 {
+        // log10(0) is -inf and log10(negative) is NaN. Clamp to a
+        // reasonable floor so callers get a finite -120dB for "silence"
+        // instead of an infinity that poisons downstream math.
+        if (self.gain <= 0) return -120.0;
         return 20.0 * std.math.log10(self.gain);
     }
 };

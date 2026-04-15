@@ -58,12 +58,12 @@ pub const LinterConfigLoader = struct {
         // Parse linter settings
         if (BaseConfigLoader.getJsonField(linter_obj, "max_line_length")) |val| {
             if (BaseConfigLoader.getJsonInt(val)) |int_val| {
-                config.max_line_length = @intCast(int_val);
+                if (int_val >= 0) config.max_line_length = @intCast(int_val);
             }
         }
         if (BaseConfigLoader.getJsonField(linter_obj, "indent_size")) |val| {
             if (BaseConfigLoader.getJsonInt(val)) |int_val| {
-                config.indent_size = @intCast(int_val);
+                if (int_val >= 0) config.indent_size = @intCast(int_val);
             }
         }
         if (BaseConfigLoader.getJsonField(linter_obj, "use_spaces")) |val| {

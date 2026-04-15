@@ -97,6 +97,7 @@ pub const JSInterop = struct {
 
         pub fn keys(self: *JSObject) ![][]const u8 {
             var key_list = std.ArrayList([]const u8).init(self.allocator);
+            errdefer key_list.deinit();
             var it = self.properties.keyIterator();
             while (it.next()) |key| {
                 try key_list.append(key.*);

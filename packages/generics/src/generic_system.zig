@@ -150,25 +150,33 @@ pub const GenericInstantiation = struct {
     /// Generate a unique name for this instantiation (for monomorphization)
     pub fn getMonomorphizedName(self: *GenericInstantiation) ![]const u8 {
         var name = std.ArrayList(u8).init(self.allocator);
+        errdefer name.deinit();
         try name.appendSlice(self.generic_name);
         try name.append('_');
 
         for (self.type_args, 0..) |arg, i| {
             if (i > 0) try name.append('_');
-            try name.appendSlice(try self.typeToString(arg));
+            const piece = try self.typeToString(arg);
+            defer if (piece.owned) self.allocator.free(piece.data);
+            try name.appendSlice(piece.data);
         }
 
         return name.toOwnedSlice();
     }
 
-    fn typeToString(self: *GenericInstantiation, typ: types.Type) ![]const u8 {
+    const TypeString = struct { data: []const u8, owned: bool };
+
+    fn typeToString(self: *GenericInstantiation, typ: types.Type) !TypeString {
         return switch (typ) {
-            .Int => "int",
-            .Float => "float",
-            .Bool => "bool",
-            .String => "string",
-            .Void => "void",
-            else => try std.fmt.allocPrint(self.allocator, "type_{d}", .{@intFromPtr(&typ)}),
+            .Int => .{ .data = "int", .owned = false },
+            .Float => .{ .data = "float", .owned = false },
+            .Bool => .{ .data = "bool", .owned = false },
+            .String => .{ .data = "string", .owned = false },
+            .Void => .{ .data = "void", .owned = false },
+            else => .{
+                .data = try std.fmt.allocPrint(self.allocator, "type_{d}", .{@intFromPtr(&typ)}),
+                .owned = true,
+            },
         };
     }
 };

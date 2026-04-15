@@ -139,7 +139,10 @@ pub const ModernTest = struct {
 
         pub fn toBeGreaterThan(self: *Expect, threshold: anytype) !void {
             const actual_num = self.getNumericValue();
-            const threshold_num = @as(f64, @floatFromInt(threshold));
+            const threshold_num: f64 = switch (@typeInfo(@TypeOf(threshold))) {
+                .float, .comptime_float => @as(f64, threshold),
+                else => @as(f64, @floatFromInt(threshold)),
+            };
 
             if (self.not) {
                 if (actual_num > threshold_num) {
@@ -154,7 +157,10 @@ pub const ModernTest = struct {
 
         pub fn toBeLessThan(self: *Expect, threshold: anytype) !void {
             const actual_num = self.getNumericValue();
-            const threshold_num = @as(f64, @floatFromInt(threshold));
+            const threshold_num: f64 = switch (@typeInfo(@TypeOf(threshold))) {
+                .float, .comptime_float => @as(f64, threshold),
+                else => @as(f64, @floatFromInt(threshold)),
+            };
 
             if (self.not) {
                 if (actual_num < threshold_num) {
@@ -244,7 +250,10 @@ pub const ModernTest = struct {
 
         pub fn toBeGreaterThanOrEqual(self: *Expect, threshold: anytype) !void {
             const actual_num = self.getNumericValue();
-            const threshold_num = @as(f64, @floatFromInt(threshold));
+            const threshold_num: f64 = switch (@typeInfo(@TypeOf(threshold))) {
+                .float, .comptime_float => @as(f64, threshold),
+                else => @as(f64, @floatFromInt(threshold)),
+            };
 
             if (self.not) {
                 if (actual_num >= threshold_num) {
@@ -259,7 +268,10 @@ pub const ModernTest = struct {
 
         pub fn toBeLessThanOrEqual(self: *Expect, threshold: anytype) !void {
             const actual_num = self.getNumericValue();
-            const threshold_num = @as(f64, @floatFromInt(threshold));
+            const threshold_num: f64 = switch (@typeInfo(@TypeOf(threshold))) {
+                .float, .comptime_float => @as(f64, threshold),
+                else => @as(f64, @floatFromInt(threshold)),
+            };
 
             if (self.not) {
                 if (actual_num <= threshold_num) {
@@ -613,6 +625,10 @@ pub const ModernTest = struct {
         }
 
         pub fn updateSnapshot(self: *Snapshots, name: []const u8, value: []const u8) !void {
+            // Free the old snapshot value to prevent memory leaks.
+            if (self.snapshots.fetchRemove(name)) |old| {
+                self.allocator.free(old.value);
+            }
             try self.snapshots.put(name, try self.allocator.dupe(u8, value));
         }
     };
@@ -981,6 +997,24 @@ pub const ModernTest = struct {
 
             const test_end = std.time.milliTimestamp();
             const test_duration: f64 = @floatFromInt(test_end - test_start);
+
+            // Check timeout: if the test took longer than the configured
+            // timeout, record it as a failure.
+            if (test_case.timeout_ms) |timeout| {
+                const elapsed: u64 = @intCast(test_end - test_start);
+                if (elapsed > timeout) {
+                    try failures.append(.{
+                        .message = try std.fmt.allocPrint(
+                            self.allocator,
+                            "Test timed out after {d}ms (limit: {d}ms)",
+                            .{ elapsed, timeout },
+                        ),
+                        .expected = null,
+                        .actual = null,
+                        .stack = null,
+                    });
+                }
+            }
 
             if (failures.items.len > 0) {
                 try self.reporter.testFail(test_case.name, failures.items);

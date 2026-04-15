@@ -31,9 +31,12 @@ pub const Field = struct {
     auto_increment: bool = false,
     index: bool = false,
 
-    pub fn toSQL(self: *const Field) ![]const u8 {
-        var buf: [512]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&buf);
+    /// Build the SQL fragment for this field into the caller-provided
+    /// buffer. The returned slice aliases `buf` so its lifetime is tied
+    /// to `buf`. (Previously the function returned a slice into a
+    /// stack-local buffer — a classic use-after-return bug.)
+    pub fn toSQL(self: *const Field, buf: []u8) ![]const u8 {
+        var stream = std.io.fixedBufferStream(buf);
         const writer = stream.writer();
 
         try writer.print("{s} ", .{self.name});
@@ -74,8 +77,7 @@ pub const Field = struct {
             try writer.print(" DEFAULT {s}", .{default});
         }
 
-        const written = stream.getWritten();
-        return written;
+        return stream.getWritten();
     }
 };
 
@@ -111,7 +113,10 @@ pub const Schema = struct {
         try writer.print("CREATE TABLE IF NOT EXISTS {s} (\n", .{self.table_name});
 
         for (self.fields.items, 0..) |*field, i| {
-            const field_sql = try field.toSQL();
+            // toSQL writes into a caller-owned buffer since v2; reuse one
+            // stack buffer per iteration rather than heap allocating.
+            var field_buf: [512]u8 = undefined;
+            const field_sql = try field.toSQL(&field_buf);
             try writer.print("  {s}", .{field_sql});
 
             if (i < self.fields.items.len - 1 or self.timestamps) {

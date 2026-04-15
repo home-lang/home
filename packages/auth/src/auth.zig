@@ -125,10 +125,14 @@ pub const Auth = struct {
         return true;
     }
 
-    /// Logout the current user
+    /// Logout the current user. Clears the remember token best-effort;
+    /// logs the error if clearing fails so silent token-retention bugs
+    /// are visible.
     pub fn logout(self: *Self) void {
         if (self.current_user) |u| {
-            u.setRememberToken(null) catch {};
+            u.setRememberToken(null) catch |err| {
+                std.log.warn("auth.logout: failed to clear remember token: {s}", .{@errorName(err)});
+            };
         }
         self.current_user = null;
     }
@@ -362,7 +366,7 @@ pub const TestUserProvider = struct {
         var iter = self.users.iterator();
         while (iter.next()) |entry| {
             if (entry.value_ptr.*.remember_token) |t| {
-                if (std.mem.eql(u8, t, token)) {
+                if (hash.constantTimeCompare(t, token)) {
                     return entry.value_ptr.*.authenticatable();
                 }
             }
@@ -374,7 +378,7 @@ pub const TestUserProvider = struct {
         _ = ptr;
         const stored_hash = user.getPassword();
         // Simple comparison for testing - real implementation would use hash.verify
-        return std.mem.eql(u8, stored_hash, password);
+        return hash.constantTimeCompare(stored_hash, password);
     }
 
     const vtable = UserProvider.VTable{

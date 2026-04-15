@@ -256,7 +256,7 @@ test "capability tracker - check operation success" {
     var required = cap.CapabilitySet.initEmpty();
     required.insert(.CAP_READ_FILE);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkOperation(required, "read_operation", loc);
 
@@ -272,7 +272,7 @@ test "capability tracker - check operation failure" {
     var required = cap.CapabilitySet.initEmpty();
     required.insert(.CAP_WRITE_FILE);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkOperation(required, "write_operation", loc);
 
@@ -291,7 +291,7 @@ test "capability tracker - multiple missing capabilities" {
     required.insert(.CAP_NET_ADMIN);
     required.insert(.CAP_SYS_ADMIN);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkOperation(required, "privileged_operation", loc);
 
@@ -337,7 +337,7 @@ test "capability tracker - function call check" {
     // Grant capability
     tracker.grantCapability(.CAP_WRITE_FILE);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkFunctionCall("write_file", loc);
 
     try std.testing.expect(!tracker.hasErrors());
@@ -419,7 +419,7 @@ test "edge case - no capabilities required" {
     defer tracker.deinit();
 
     var required = cap.CapabilitySet.initEmpty();
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkOperation(required, "no_caps_needed", loc);
 
@@ -442,7 +442,7 @@ test "edge case - all capabilities granted" {
     required.insert(.CAP_NET_ADMIN);
     required.insert(.CAP_WRITE_FILE);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
     try tracker.checkOperation(required, "any_operation", loc);
 
     try std.testing.expect(!tracker.hasErrors());

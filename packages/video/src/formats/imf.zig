@@ -359,7 +359,9 @@ pub const ImfUuid = struct {
         var random_bytes: [16]u8 = undefined;
 
         // Generate random bytes (simplified - should use crypto random in production)
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+        const ms = std.time.milliTimestamp();
+        const seed: u64 = if (ms < 0) 0 else @intCast(ms);
+        var prng = std.rand.DefaultPrng.init(seed);
         prng.fill(&random_bytes);
 
         // Set version (4) and variant bits
@@ -420,7 +422,7 @@ pub const ImfUtils = struct {
     /// Convert timecode to edit units
     pub fn timecodeToEditUnits(timecode: []const u8, edit_rate: Imf.EditRate) !u64 {
         // Parse timecode (HH:MM:SS:FF)
-        var parts = std.mem.split(u8, timecode, ":");
+        var parts = std.mem.splitScalar(u8, timecode, ':');
         const hours = try std.fmt.parseInt(u32, parts.next() orelse return error.InvalidTimecode, 10);
         const minutes = try std.fmt.parseInt(u32, parts.next() orelse return error.InvalidTimecode, 10);
         const seconds = try std.fmt.parseInt(u32, parts.next() orelse return error.InvalidTimecode, 10);

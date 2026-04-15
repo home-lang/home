@@ -155,7 +155,11 @@ pub const Connection = struct {
             .remote_sequence = 0,
             .ack_bits = 0,
             .last_send_time = 0,
-            .last_receive_time = 0,
+            // Seed with the current timestamp so a freshly-constructed
+            // connection isn't reported as timed-out before any packets
+            // arrive. (Previously `last_receive_time = 0` meant `now - 0`
+            // almost always exceeded `timeout_ms`.)
+            .last_receive_time = getMilliTimestamp(),
             .timeout_ms = 10000,
             .allocator = allocator,
         };
@@ -163,6 +167,7 @@ pub const Connection = struct {
 
     pub fn isTimedOut(self: *const Connection) bool {
         const now = getMilliTimestamp();
+        if (now <= self.last_receive_time) return false;
         return (now - self.last_receive_time) > self.timeout_ms;
     }
 

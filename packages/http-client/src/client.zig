@@ -49,9 +49,17 @@ pub const Headers = struct {
     }
 
     pub fn set(self: *Self, name: []const u8, value: []const u8) !void {
+        // Replace semantics: drop any pre-existing entry first so the old
+        // key/value don't leak. Also errdefer the value_copy so a put
+        // failure doesn't leak it.
+        if (self.map.fetchRemove(name)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
         const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
         try self.map.put(self.allocator, name_copy, value_copy);
     }
 
@@ -152,6 +160,9 @@ pub const Request = struct {
     pub fn init(allocator: std.mem.Allocator, url_str: []const u8) !Self {
         const url = try Url.parse(url_str);
         var headers = Headers.init(allocator);
+        // Previously, a mid-init `headers.set` failure would leak `headers`
+        // (caller never received the partial Request and couldn't deinit it).
+        errdefer headers.deinit();
 
         // Set default headers
         try headers.set("Host", url.host);
@@ -285,10 +296,13 @@ pub const Client = struct {
     }
 
     pub fn setBaseUrl(self: *Self, url: []const u8) !void {
+        // Dupe the new URL FIRST so a failed allocation doesn't leave
+        // `base_url` pointing at freed memory (nor `null` unexpectedly).
+        const new_url = try self.allocator.dupe(u8, url);
         if (self.base_url) |old| {
             self.allocator.free(old);
         }
-        self.base_url = try self.allocator.dupe(u8, url);
+        self.base_url = new_url;
     }
 
     pub fn setDefaultHeader(self: *Self, name: []const u8, value: []const u8) !void {
@@ -349,12 +363,17 @@ pub const Client = struct {
         // 4. Send request
         // 5. Read and parse response
 
+        // Allocate fields in order so we can clean up partial success.
+        const status_text = try request.allocator.dupe(u8, "OK");
+        errdefer request.allocator.free(status_text);
+        const body = try request.allocator.dupe(u8, "");
+        errdefer request.allocator.free(body);
         return Response{
             .allocator = request.allocator,
             .status_code = 200,
-            .status_text = try request.allocator.dupe(u8, "OK"),
+            .status_text = status_text,
             .headers = Headers.init(request.allocator),
-            .body = try request.allocator.dupe(u8, ""),
+            .body = body,
         };
     }
 

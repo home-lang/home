@@ -213,17 +213,20 @@ pub const ThrottleHeaders = struct {
     reset: i64,
     retry_after: ?i64,
 
-    pub fn toHeaderValue(self: ThrottleHeaders, comptime header: []const u8) []const u8 {
-        var buf: [64]u8 = undefined;
+    /// Format the selected header's value into the caller-provided buffer.
+    /// The returned slice aliases `buf`, so its lifetime is tied to `buf`.
+    /// (The previous signature returned a slice into a local buffer — a
+    /// classic dangling-pointer bug.)
+    pub fn toHeaderValue(self: ThrottleHeaders, comptime header: []const u8, buf: []u8) []const u8 {
         if (std.mem.eql(u8, header, "X-RateLimit-Limit")) {
-            return std.fmt.bufPrint(&buf, "{d}", .{self.limit}) catch "0";
+            return std.fmt.bufPrint(buf, "{d}", .{self.limit}) catch "0";
         } else if (std.mem.eql(u8, header, "X-RateLimit-Remaining")) {
-            return std.fmt.bufPrint(&buf, "{d}", .{self.remaining}) catch "0";
+            return std.fmt.bufPrint(buf, "{d}", .{self.remaining}) catch "0";
         } else if (std.mem.eql(u8, header, "X-RateLimit-Reset")) {
-            return std.fmt.bufPrint(&buf, "{d}", .{self.reset}) catch "0";
+            return std.fmt.bufPrint(buf, "{d}", .{self.reset}) catch "0";
         } else if (std.mem.eql(u8, header, "Retry-After")) {
             if (self.retry_after) |ra| {
-                return std.fmt.bufPrint(&buf, "{d}", .{ra}) catch "0";
+                return std.fmt.bufPrint(buf, "{d}", .{ra}) catch "0";
             }
             return "";
         }

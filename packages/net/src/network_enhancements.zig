@@ -123,7 +123,7 @@ pub const ArpResolver = struct {
                     i += 1;
                 } else {
                     // Max retries reached, drop packet
-                    std.debug.print("ARP timeout for {}\n", .{pending.target_ip});
+                    std.log.warn("ARP timeout for {}", .{pending.target_ip});
                     self.allocator.free(pending.packet_data);
                     _ = self.pending_packets.swapRemove(i);
                 }
@@ -184,7 +184,7 @@ pub const IcmpEchoHandler = struct {
 
         _ = self.echo_replies_sent.fetchAdd(1, .monotonic);
 
-        std.debug.print("ICMP: Sent echo reply to {} (id={}, seq={})\n", .{
+        std.log.debug("ICMP: Sent echo reply to {} (id={}, seq={})", .{
             src_ip,
             @byteSwap(icmp_header.identifier),
             @byteSwap(icmp_header.sequence),
@@ -272,7 +272,7 @@ pub const MonotonicClock = struct {
         // Calculate frequency in Hz
         const freq = (elapsed_ticks * 1_000_000_000) / elapsed_ns;
 
-        std.debug.print("TSC calibrated: {} Hz ({}GHz)\n", .{
+        std.log.info("TSC calibrated: {} Hz ({}GHz)", .{
             freq,
             @as(f64, @floatFromInt(freq)) / 1_000_000_000.0,
         });

@@ -367,6 +367,28 @@ pub const BindingsGenerator = struct {
             "[*:0]const u8"
         else if (std.mem.eql(u8, c_type, "const char*"))
             "[*:0]const u8"
+        else if (std.mem.eql(u8, c_type, "size_t"))
+            "usize"
+        else if (std.mem.eql(u8, c_type, "ssize_t"))
+            "isize"
+        else if (std.mem.eql(u8, c_type, "int8_t"))
+            "i8"
+        else if (std.mem.eql(u8, c_type, "int16_t"))
+            "i16"
+        else if (std.mem.eql(u8, c_type, "int32_t"))
+            "i32"
+        else if (std.mem.eql(u8, c_type, "int64_t"))
+            "i64"
+        else if (std.mem.eql(u8, c_type, "uint8_t"))
+            "u8"
+        else if (std.mem.eql(u8, c_type, "uint16_t"))
+            "u16"
+        else if (std.mem.eql(u8, c_type, "uint32_t"))
+            "u32"
+        else if (std.mem.eql(u8, c_type, "uint64_t"))
+            "u64"
+        else if (std.mem.eql(u8, c_type, "bool") or std.mem.eql(u8, c_type, "_Bool"))
+            "bool"
         else
             c_type;
     }

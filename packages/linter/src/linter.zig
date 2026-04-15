@@ -405,13 +405,19 @@ pub const Linter = struct {
                 }
 
                 if (self.config.use_spaces and indent_tabs > 0) {
-                    const fix = LintDiagnostic.Fix{
-                        .message = "Replace tabs with spaces",
-                        .edits = try self.allocator.alloc(LintDiagnostic.TextEdit, 1),
-                    };
-                    const spaces = try self.allocator.alloc(u8, indent_tabs * self.config.indent_size);
+                    const edits = try self.allocator.alloc(LintDiagnostic.TextEdit, 1);
+                    errdefer self.allocator.free(edits);
+                    // Saturate the width computation so a pathological
+                    // `indent_tabs * indent_size` can't wrap usize.
+                    const width: usize = @as(usize, indent_tabs) *| @as(usize, self.config.indent_size);
+                    const spaces = try self.allocator.alloc(u8, width);
+                    errdefer self.allocator.free(spaces);
                     @memset(spaces, ' ');
 
+                    const fix = LintDiagnostic.Fix{
+                        .message = "Replace tabs with spaces",
+                        .edits = edits,
+                    };
                     fix.edits[0] = .{
                         .start_line = line_num,
                         .start_column = 1,

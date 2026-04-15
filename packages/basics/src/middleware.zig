@@ -50,8 +50,12 @@ pub fn cors(options: CorsOptions) http_router.Middleware {
                 _ = try res.setHeader("Access-Control-Allow-Credentials", "true");
             }
 
+            // setHeader stores the value by reference, so we MUST NOT
+            // free the string before the response is sent. Leave it
+            // allocated — caller's allocator arena / response lifetime
+            // is expected to reclaim it. (Previously this used `defer
+            // free`, leaving the header pointing at freed memory.)
             const max_age_str = try std.fmt.allocPrint(res.allocator, "{d}", .{options.max_age});
-            defer res.allocator.free(max_age_str);
             _ = try res.setHeader("Access-Control-Max-Age", max_age_str);
 
             try next();
@@ -276,8 +280,10 @@ pub fn etag() http_router.Middleware {
             // Generate ETag from response body
             if (res.body_content.items.len > 0) {
                 const hash = std.hash.Wyhash.hash(0, res.body_content.items);
+                // The response header map stores the slice pointer directly —
+                // handing it a scope-freed buffer would leave a dangling read.
+                // Response lifetime is responsible for the allocation.
                 const etag_value = try std.fmt.allocPrint(res.allocator, "\"{d}\"", .{hash});
-                defer res.allocator.free(etag_value);
 
                 _ = try res.setHeader("ETag", etag_value);
 

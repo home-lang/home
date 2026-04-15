@@ -7,8 +7,6 @@ pub const File = struct {
     allocator: std.mem.Allocator,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, mode: OpenMode) !*File {
-        const file = try allocator.create(File);
-
         const std_mode: std.fs.File.OpenFlags = switch (mode) {
             .Read => .{ .mode = .read_only },
             .Write => .{ .mode = .write_only },
@@ -16,9 +14,18 @@ pub const File = struct {
             .ReadWrite => .{ .mode = .read_write },
         };
 
+        // Open the file FIRST so the heap struct isn't leaked when the
+        // open fails, and dupe the path before taking ownership so a dup
+        // failure doesn't leak the opened handle either.
+        const handle = try std.fs.cwd().openFile(path, std_mode);
+        errdefer handle.close();
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        const file = try allocator.create(File);
+
         file.* = .{
-            .handle = try std.fs.cwd().openFile(path, std_mode),
-            .path = try allocator.dupe(u8, path),
+            .handle = handle,
+            .path = owned_path,
             .allocator = allocator,
         };
 
@@ -26,11 +33,15 @@ pub const File = struct {
     }
 
     pub fn create(allocator: std.mem.Allocator, path: []const u8) !*File {
+        const handle = try std.fs.cwd().createFile(path, .{});
+        errdefer handle.close();
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
         const file = try allocator.create(File);
 
         file.* = .{
-            .handle = try std.fs.cwd().createFile(path, .{}),
-            .path = try allocator.dupe(u8, path),
+            .handle = handle,
+            .path = owned_path,
             .allocator = allocator,
         };
 
@@ -94,11 +105,15 @@ pub const Dir = struct {
     allocator: std.mem.Allocator,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !*Dir {
+        var handle = try std.fs.cwd().openDir(path, .{ .iterate = true });
+        errdefer handle.close();
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
         const dir = try allocator.create(Dir);
 
         dir.* = .{
-            .handle = try std.fs.cwd().openDir(path, .{ .iterate = true }),
-            .path = try allocator.dupe(u8, path),
+            .handle = handle,
+            .path = owned_path,
             .allocator = allocator,
         };
 
@@ -126,11 +141,19 @@ pub const Dir = struct {
     /// List directory contents
     pub fn list(self: *Dir) ![]DirEntry {
         var entries = std.ArrayList(DirEntry).init(self.allocator);
+        // Free previously-duped names if any subsequent dupe/append
+        // fails before we can hand ownership to the caller.
+        errdefer {
+            for (entries.items) |e| self.allocator.free(e.name);
+            entries.deinit();
+        }
 
         var iter = self.handle.iterate();
         while (try iter.next()) |entry| {
+            const name_copy = try self.allocator.dupe(u8, entry.name);
+            errdefer self.allocator.free(name_copy);
             try entries.append(.{
-                .name = try self.allocator.dupe(u8, entry.name),
+                .name = name_copy,
                 .kind = switch (entry.kind) {
                     .file => .File,
                     .directory => .Directory,

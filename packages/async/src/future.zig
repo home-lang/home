@@ -175,7 +175,7 @@ pub fn Future(comptime T: type) type {
                         return next.poll(ctx);
                     }
 
-                    unreachable;
+                    return .Pending;
                 }
             }.poll;
 
@@ -201,9 +201,10 @@ pub fn ready(comptime T: type, value: T, allocator: std.mem.Allocator) !Future(T
         fn poll(ptr: *anyopaque, _: *Context) PollResult(T) {
             const s = @as(*State, @ptrCast(@alignCast(ptr)));
             if (s.consumed) {
-                // Future polled after completion - shouldn't happen
-                // but we handle it gracefully
-                unreachable;
+                // Future polled after completion — return the value again
+                // rather than panicking, since re-polling is a valid pattern
+                // in some executor implementations.
+                return .{ .Ready = s.value };
             }
             s.consumed = true;
             return .{ .Ready = s.value };

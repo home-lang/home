@@ -106,6 +106,7 @@ pub const InstructionScheduler = struct {
         block: *const IR.BasicBlock,
     ) !std.ArrayList(Dependency) {
         var deps = std.ArrayList(Dependency).empty;
+        errdefer deps.deinit(self.allocator);
 
         // Track last writer of each register
         var last_writer = std.AutoHashMap(u8, usize).init(self.allocator);
@@ -173,6 +174,7 @@ pub const InstructionScheduler = struct {
 
     fn getUses(self: *InstructionScheduler, inst: IR.Instruction) !std.ArrayList(u8) {
         var uses = std.ArrayList(u8).empty;
+        errdefer uses.deinit(self.allocator);
 
         switch (inst) {
             .add, .sub, .mul, .div, .and_, .or_, .xor, .shl, .shr => |op| {
@@ -205,6 +207,7 @@ pub const InstructionScheduler = struct {
 
     fn getDefs(self: *InstructionScheduler, inst: IR.Instruction) !std.ArrayList(u8) {
         var defs = std.ArrayList(u8).empty;
+        errdefer defs.deinit(self.allocator);
 
         switch (inst) {
             .add, .sub, .mul, .div, .and_, .or_, .xor, .shl, .shr => |op| {

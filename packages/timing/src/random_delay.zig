@@ -20,8 +20,12 @@ pub const RandomDelay = struct {
 
     /// Inject a random delay
     pub fn delay(self: *RandomDelay) void {
+        if (self.min_cycles >= self.max_cycles) {
+            busyWait(self.min_cycles);
+            return;
+        }
         const range = self.max_cycles - self.min_cycles;
-        const random_cycles = self.rng.random().uintLessThan(u64, range);
+        const random_cycles = if (range > 0) self.rng.random().uintLessThan(u64, range) else 0;
         const target_cycles = self.min_cycles + random_cycles;
 
         busyWait(target_cycles);
@@ -82,6 +86,7 @@ pub const AdaptiveDelay = struct {
             0;
         const max = self.mean_cycles + self.stddev_cycles;
         const range = max - min;
+        if (range == 0) return min;
 
         return min + self.rng.random().uintLessThan(u64, range);
     }

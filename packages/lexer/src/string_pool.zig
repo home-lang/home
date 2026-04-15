@@ -38,8 +38,13 @@ pub const StringPool = struct {
 
         // Assign new ID
         const id = @as(u32, @intCast(self.interned.items.len));
+
+        // Reserve map capacity before touching `interned` so a failing put
+        // can't leave `owned` referenced only by `interned` (causing a
+        // double-free in deinit combined with the errdefer above).
+        try self.strings.ensureUnusedCapacity(1);
         try self.interned.append(owned);
-        try self.strings.put(owned, id);
+        self.strings.putAssumeCapacityNoClobber(owned, id);
 
         return id;
     }

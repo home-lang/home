@@ -104,7 +104,7 @@ fn decodeDIB(allocator: std.mem.Allocator, data: []const u8, entry: IconDirEntry
     const header_size = std.mem.readInt(u32, data[0..4], .little);
     if (header_size < 40) return error.InvalidFormat;
 
-    const bmp_width: u32 = @bitCast(std.mem.readInt(i32, data[4..8], .little));
+    const bmp_width: u32 = @intCast(@abs(std.mem.readInt(i32, data[4..8], .little)));
     const bmp_height_raw: i32 = std.mem.readInt(i32, data[8..12], .little);
     // Height is doubled in ICO (includes AND mask)
     const bmp_height: u32 = @intCast(@divTrunc(@abs(bmp_height_raw), 2));
@@ -130,10 +130,10 @@ fn decodeDIB(allocator: std.mem.Allocator, data: []const u8, entry: IconDirEntry
     }
 
     const pixel_offset = header_size + color_table_size;
-    if (pixel_offset >= data.len) return error.TruncatedData;
+    if (pixel_offset >= data.len or pixel_offset + 1 > data.len) return error.TruncatedData;
 
     // Parse color table if needed
-    var color_table: [256]Color = undefined;
+    var color_table: [256]Color = [_]Color{Color{ .r = 0, .g = 0, .b = 0, .a = 255 }} ** 256;
     if (bit_count <= 8) {
         const table_data = data[header_size..][0..color_table_size];
         var i: usize = 0;

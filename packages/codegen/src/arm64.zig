@@ -183,20 +183,25 @@ pub const Assembler = struct {
 
     /// LDR (immediate) - Load register from memory
     /// ldr xd, [xn, #imm]
+    /// Unsigned-offset encoding requires non-negative, 8-byte aligned offsets in [0, 32760].
+    /// For negative offsets use LDUR (not implemented here).
     pub fn ldrRegMem(self: *Assembler, dest: Register, base: Register, offset: i32) !void {
+        if (offset < 0 or @rem(offset, 8) != 0 or offset > 32760) return error.InvalidOffset;
         const rd = @intFromEnum(dest);
         const rn = @intFromEnum(base);
-        const imm12 = @as(u32, @bitCast(offset >> 3)) & 0xFFF; // Scaled by 8
+        const imm12 = (@as(u32, @intCast(offset)) >> 3) & 0xFFF; // Scaled by 8
         const instr = 0xF9400000 | (imm12 << 10) | (@as(u32, rn) << 5) | rd;
         try self.emitU32(instr);
     }
 
     /// STR (immediate) - Store register to memory
     /// str xd, [xn, #imm]
+    /// Unsigned-offset encoding requires non-negative, 8-byte aligned offsets in [0, 32760].
     pub fn strRegMem(self: *Assembler, src: Register, base: Register, offset: i32) !void {
+        if (offset < 0 or @rem(offset, 8) != 0 or offset > 32760) return error.InvalidOffset;
         const rt = @intFromEnum(src);
         const rn = @intFromEnum(base);
-        const imm12 = @as(u32, @bitCast(offset >> 3)) & 0xFFF; // Scaled by 8
+        const imm12 = (@as(u32, @intCast(offset)) >> 3) & 0xFFF; // Scaled by 8
         const instr = 0xF9000000 | (imm12 << 10) | (@as(u32, rn) << 5) | rt;
         try self.emitU32(instr);
     }

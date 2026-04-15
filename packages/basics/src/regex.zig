@@ -8,12 +8,17 @@ pub const Regex = struct {
 
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !*Regex {
         const regex = try allocator.create(Regex);
+        errdefer allocator.destroy(regex);
 
-        const compiled = try compilePattern(allocator, pattern);
+        var compiled = try compilePattern(allocator, pattern);
+        errdefer compiled.deinit();
+
+        const owned_pattern = try allocator.dupe(u8, pattern);
+        errdefer allocator.free(owned_pattern);
 
         regex.* = .{
             .allocator = allocator,
-            .pattern = try allocator.dupe(u8, pattern),
+            .pattern = owned_pattern,
             .compiled = compiled,
         };
 
@@ -48,6 +53,7 @@ pub const Regex = struct {
         defer matcher.deinit();
 
         var matches = std.ArrayList(Match).init(self.allocator);
+        errdefer matches.deinit();
 
         while (try matcher.findNext()) |match| {
             try matches.append(match);
@@ -60,6 +66,7 @@ pub const Regex = struct {
     pub fn replace(self: *Regex, text: []const u8, replacement: []const u8) ![]u8 {
         if (self.find(text)) |match| {
             var result = std.ArrayList(u8).init(self.allocator);
+            errdefer result.deinit();
 
             try result.appendSlice(text[0..match.start]);
             try result.appendSlice(replacement);
@@ -81,6 +88,7 @@ pub const Regex = struct {
         }
 
         var result = std.ArrayList(u8).init(self.allocator);
+        errdefer result.deinit();
         var last_end: usize = 0;
 
         for (matches) |match| {
@@ -203,6 +211,8 @@ fn compilePattern(allocator: std.mem.Allocator, pattern: []const u8) !CompiledRe
                 i += 1;
                 const class_start = i;
                 while (i < pattern.len and pattern[i] != ']') : (i += 1) {}
+                if (i >= pattern.len) return error.UnterminatedCharClass;
+                if (class_start == i) return error.EmptyCharClass;
 
                 const negated = pattern[class_start] == '^';
                 const chars_start = if (negated) class_start + 1 else class_start;

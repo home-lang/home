@@ -208,11 +208,27 @@ pub const NotificationManager = struct {
         errdefer results.deinit(self.allocator);
 
         for (channels) |channel| {
+            // Record per-channel errors as failed NotificationResults
+            // instead of aborting the whole broadcast on the first
+            // failure — partial delivery is almost always what callers
+            // actually want.
             const result = switch (channel) {
-                .email => if (content.email_message) |msg| try self.sendEmail(msg) else continue,
-                .sms => if (content.sms_message) |msg| try self.sendSms(msg) else continue,
-                .push => if (content.push_message) |msg| try self.sendPush(msg) else continue,
-                .chat => if (content.chat_message) |msg| try self.sendChat(msg) else continue,
+                .email => if (content.email_message) |msg|
+                    self.sendEmail(msg) catch |e| NotificationResult.err("email", @errorName(e))
+                else
+                    continue,
+                .sms => if (content.sms_message) |msg|
+                    self.sendSms(msg) catch |e| NotificationResult.err("sms", @errorName(e))
+                else
+                    continue,
+                .push => if (content.push_message) |msg|
+                    self.sendPush(msg) catch |e| NotificationResult.err("push", @errorName(e))
+                else
+                    continue,
+                .chat => if (content.chat_message) |msg|
+                    self.sendChat(msg) catch |e| NotificationResult.err("chat", @errorName(e))
+                else
+                    continue,
             };
             try results.append(self.allocator, result);
         }

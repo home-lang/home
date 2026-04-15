@@ -356,7 +356,8 @@ pub const MetadataSerializer = struct {
         for (fields) |*field| {
             field.name = try self.readString(reader);
             field.type_name = try self.readString(reader);
-            field.offset = @intCast(try reader.readInt(u64, .little));
+            const offset_u64 = try reader.readInt(u64, .little);
+            field.offset = std.math.cast(@TypeOf(field.offset), offset_u64) orelse return error.OffsetTooLarge;
         }
 
         return .{

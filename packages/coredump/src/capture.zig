@@ -29,6 +29,7 @@ pub const MemoryRegion = struct {
         end: usize,
         perms: u8,
     ) !MemoryRegion {
+        if (end < start) return error.InvalidRange;
         const region_size = end - start;
         const data = try allocator.alloc(u8, region_size);
 
@@ -116,8 +117,9 @@ pub const ProcessSnapshot = struct {
             try buffer.appendSlice(allocator, &std.mem.toBytes(reg));
         }
 
-        // Write region count
-        const region_count: u32 = @truncate(self.regions.items.len);
+        // Write region count (validate fits in u32)
+        if (self.regions.items.len > std.math.maxInt(u32)) return error.TooManyRegions;
+        const region_count: u32 = @intCast(self.regions.items.len);
         try buffer.appendSlice(allocator, &std.mem.toBytes(region_count));
 
         // Write each region

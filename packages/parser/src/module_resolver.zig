@@ -80,19 +80,24 @@ pub const ModuleResolver = struct {
         }
 
         // Record the file's own directory so string-path imports can
-        // resolve `../foo` relative to the importing file.
+        // resolve `../foo` relative to the importing file. Allocate the
+        // new value FIRST so a failed dupe doesn't leave current_file_dir
+        // pointing at freed memory.
+        const new_dir = try self.allocator.dupe(u8, dir_path.items);
         if (self.current_file_dir) |old| self.allocator.free(old);
-        self.current_file_dir = try self.allocator.dupe(u8, dir_path.items);
+        self.current_file_dir = new_dir;
 
         // Check if we're in a src/ directory and go up to project root
         const dir_str = dir_path.items;
         if (std.mem.endsWith(u8, dir_str, "/src") or std.mem.endsWith(u8, dir_str, "/src/math") or
             std.mem.indexOf(u8, dir_str, "/src/") != null)
         {
-            // Find the project root (parent of src/)
+            // Find the project root (parent of src/). Allocate first so a
+            // failed dupe doesn't leave source_root dangling.
             if (std.mem.indexOf(u8, dir_str, "/src")) |src_pos| {
+                const new_root = try self.allocator.dupe(u8, dir_str[0..src_pos]);
                 if (self.source_root) |old| self.allocator.free(old);
-                self.source_root = try self.allocator.dupe(u8, dir_str[0..src_pos]);
+                self.source_root = new_root;
                 return;
             }
         }
@@ -104,8 +109,11 @@ pub const ModuleResolver = struct {
 
     /// Set the source root directly (without extracting from a file path)
     pub fn setSourceRootDirect(self: *ModuleResolver, root: []const u8) !void {
+        // Allocate first so a failed dupe doesn't leave source_root
+        // pointing at freed memory.
+        const new_root = try self.allocator.dupe(u8, root);
         if (self.source_root) |old| self.allocator.free(old);
-        self.source_root = try self.allocator.dupe(u8, root);
+        self.source_root = new_root;
     }
 
     pub fn deinit(self: *ModuleResolver) void {
@@ -148,6 +156,7 @@ pub const ModuleResolver = struct {
         // source file's directory rather than the package root.
         if (path_segments.len == 1 and isFilePathLike(path_segments[0])) {
             if (try self.resolveFilePath(path_segments)) |module| {
+                errdefer self.allocator.free(module.file_path);
                 try self.module_cache.put(cache_key, module);
                 return module;
             }
@@ -155,14 +164,14 @@ pub const ModuleResolver = struct {
 
         // Try resolving as standard library module
         if (try self.resolveStdLib(path_segments)) |module| {
-            // Keep cache_key for storage in hashmap
+            errdefer self.allocator.free(module.file_path);
             try self.module_cache.put(cache_key, module);
             return module;
         }
 
         // Try resolving as local module
         if (try self.resolveLocal(path_segments)) |module| {
-            // Keep cache_key for storage in hashmap
+            errdefer self.allocator.free(module.file_path);
             try self.module_cache.put(cache_key, module);
             return module;
         }

@@ -30,7 +30,13 @@ pub const Crypto = struct {
         pub fn init() Random {
             var seed: u64 = undefined;
             std.posix.getrandom(std.mem.asBytes(&seed)) catch {
-                seed = @intCast(std.time.milliTimestamp());
+                // Fallback: XOR timestamp with address-space entropy to reduce
+                // predictability.  Still not cryptographically secure, but much
+                // harder to guess than a bare timestamp.
+                const ms = std.time.milliTimestamp();
+                const ts: u64 = if (ms < 0) 0 else @intCast(ms);
+                const addr: u64 = @intFromPtr(&seed);
+                seed = ts ^ (addr *% 0x9E3779B97F4A7C15); // golden ratio hash
             };
 
             return .{
@@ -237,7 +243,11 @@ pub const Crypto = struct {
     /// Constant-time comparison (prevents timing attacks)
     pub fn constantTimeCompare(a: []const u8, b: []const u8) bool {
         if (a.len != b.len) return false;
-        return std.crypto.utils.timingSafeEql([*]const u8, a.ptr, b.ptr, a.len);
+        var diff: u8 = 0;
+        for (a, b) |x, y| {
+            diff |= x ^ y;
+        }
+        return diff == 0;
     }
 
     /// Secure memory wiping

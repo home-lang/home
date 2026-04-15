@@ -119,7 +119,10 @@ pub const Image = struct {
             else => return error.UnsupportedFormat,
         };
 
-        const data = try allocator.alloc(u8, width * height * bytes_per_pixel);
+        // Use usize so a large `width * height * bytes_per_pixel` doesn't
+        // overflow u32 (a 4K RGBA image is 33 MiB — still fits, but a
+        // larger canvas would wrap silently).
+        const data = try allocator.alloc(u8, @as(usize, width) * @as(usize, height) * @as(usize, bytes_per_pixel));
 
         return .{
             .width = width,
@@ -214,7 +217,9 @@ pub const ImageOverlayFilter = struct {
 
     pub fn apply(self: *Self, frame: *VideoFrame) !*VideoFrame {
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try frame.clone(self.allocator);
+        errdefer output.deinit();
 
         // Prepare overlay image (scale if needed)
         const overlay = try self.prepareOverlay();

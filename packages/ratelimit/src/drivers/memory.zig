@@ -57,33 +57,32 @@ pub const MemoryStore = struct {
         const window_start = now - @mod(now, config.window_seconds);
         const reset_at = window_start + config.window_seconds;
 
-        // Get or create entry
-        if (self.entries.get(key)) |entry| {
+        // Get or create entry. When the key already exists we must NOT
+        // dupe a fresh key on every update — std.StringHashMap.put keeps
+        // the existing key, so the new dupe would leak immediately.
+        if (self.entries.getPtr(key)) |entry_ptr| {
             // Check if we're in a new window
-            if (entry.window_start < window_start) {
-                // New window, reset count
-                const new_entry = Entry{ .count = 1, .window_start = window_start };
-                try self.entries.put(try self.allocator.dupe(u8, key), new_entry);
+            if (entry_ptr.window_start < window_start) {
+                entry_ptr.* = .{ .count = 1, .window_start = window_start };
                 return ratelimit.RateLimitResult.allow(config.max_requests - 1, config.max_requests, reset_at);
             }
 
             // Same window, check limit
-            if (entry.count >= config.max_requests) {
+            if (entry_ptr.count >= config.max_requests) {
                 const retry_after = reset_at - now;
                 return ratelimit.RateLimitResult.deny(config.max_requests, reset_at, retry_after);
             }
 
-            // Increment count
-            var updated = entry;
-            updated.count += 1;
-            try self.entries.put(try self.allocator.dupe(u8, key), updated);
+            // Increment count in place.
+            entry_ptr.count += 1;
 
-            const remaining = config.max_requests - updated.count;
+            const remaining = config.max_requests - entry_ptr.count;
             return ratelimit.RateLimitResult.allow(remaining, config.max_requests, reset_at);
         }
 
-        // First request
+        // First request — only now do we need to own the key.
         const new_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(new_key);
         try self.entries.put(new_key, Entry{ .count = 1, .window_start = window_start });
         return ratelimit.RateLimitResult.allow(config.max_requests - 1, config.max_requests, reset_at);
     }

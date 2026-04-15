@@ -92,7 +92,9 @@ pub fn sepia(img: *Image) void {
 
 /// Adjust brightness (-1.0 to 1.0, 0 = no change)
 pub fn brightness(img: *Image, amount: f32) void {
-    const offset: i16 = @intFromFloat(amount * 255);
+    // Clamp to valid range to prevent i16 overflow in the multiplication.
+    const clamped = std.math.clamp(amount, -1.0, 1.0);
+    const offset: i16 = @intFromFloat(clamped * 255);
 
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
@@ -349,17 +351,16 @@ pub fn hslToRgb(hsl: HSL) Color {
     const h = hsl.h / 360;
 
     return Color{
-        .r = @intFromFloat(hueToRgb(p, q, h + 1.0 / 3.0) * 255),
-        .g = @intFromFloat(hueToRgb(p, q, h) * 255),
-        .b = @intFromFloat(hueToRgb(p, q, h - 1.0 / 3.0) * 255),
+        .r = @intFromFloat(std.math.clamp(hueToRgb(p, q, h + 1.0 / 3.0) * 255, 0.0, 255.0)),
+        .g = @intFromFloat(std.math.clamp(hueToRgb(p, q, h) * 255, 0.0, 255.0)),
+        .b = @intFromFloat(std.math.clamp(hueToRgb(p, q, h - 1.0 / 3.0) * 255, 0.0, 255.0)),
         .a = 255,
     };
 }
 
 fn hueToRgb(p: f32, q: f32, t_in: f32) f32 {
-    var t = t_in;
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
+    // Wrap t into [0, 1) using @mod for robustness with extreme inputs.
+    var t = t_in - @floor(t_in);
 
     if (t < 1.0 / 6.0) return p + (q - p) * 6 * t;
     if (t < 0.5) return q;

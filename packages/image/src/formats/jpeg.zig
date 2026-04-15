@@ -382,7 +382,7 @@ const JpegDecoder = struct {
 
             if (code <= table.maxcode[i]) {
                 const idx = table.valptr[i] + code - table.mincode[i];
-                if (idx >= 0 and idx < 256) {
+                if (idx >= 0 and idx < @as(i32, @intCast(table.num_values))) {
                     return table.values[@intCast(idx)];
                 }
             }
@@ -669,12 +669,15 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     while (mcu_y < mcus_y) : (mcu_y += 1) {
         var mcu_x: u32 = 0;
         while (mcu_x < mcus_x) : (mcu_x += 1) {
-            // Decode each component's block
+            // Decode each component's block (max 4 components: Y, Cb, Cr, A)
             var blocks: [4][64]i32 = undefined;
 
+            if (decoder.num_components > 4) return error.InvalidComponent;
             for (0..decoder.num_components) |c| {
                 blocks[c] = try decoder.decodeMCU(&decoder.components[c]);
-                idct(&blocks[c], &decoder.quant_tables[decoder.components[c].quant_table]);
+                const qt_idx = decoder.components[c].quant_table;
+                if (qt_idx >= decoder.quant_tables.len) return error.InvalidQuantTable;
+                idct(&blocks[c], &decoder.quant_tables[qt_idx]);
             }
 
             // Convert to RGB and store

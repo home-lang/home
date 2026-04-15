@@ -54,8 +54,10 @@ pub const ActorSystem = struct {
             try self.allocator.dupe(u8, n)
         else
             try std.fmt.allocPrint(self.allocator, "actor_{d}", .{actor_id});
+        errdefer self.allocator.free(actor_name);
 
         const ctx = try self.allocator.create(ActorContext);
+        errdefer self.allocator.destroy(ctx);
         ctx.* = try ActorContext.init(
             self.allocator,
             actor_id,
@@ -313,8 +315,7 @@ pub const Supervisor = struct {
     fn restartChild(self: *Supervisor, index: usize) !void {
         const child = &self.children.items[index];
         _ = child.ctx.incrementRestarts();
-        // Would restart the actor here
-        _ = self;
+        // Would restart the actor here — self is reserved for future use.
     }
 
     fn restartAllChildren(self: *Supervisor) !void {

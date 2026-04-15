@@ -49,6 +49,13 @@ pub const EffectSystem = struct {
     }
 
     pub fn deinit(self: *EffectSystem) void {
+        // Free owned operation slices inside each effect definition.
+        var it = self.effects.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.operations.len > 0) {
+                self.allocator.free(entry.value_ptr.operations);
+            }
+        }
         self.effects.deinit();
         self.handlers.deinit();
         self.effect_stack.deinit();

@@ -191,8 +191,8 @@ pub const FlowTracker = struct {
                     .kind = .IllegalFlow,
                     .message = try std.fmt.allocPrint(
                         self.allocator,
-                        "Argument {} to '{s}': cannot pass {s} data to {s} parameter",
-                        .{ i, func_name, arg.security_level.toString(), expected.security_level.toString() },
+                        "Argument {d} to '{s}': cannot pass {s} data to {s} parameter",
+                        .{ i + 1, func_name, arg.security_level.toString(), expected.security_level.toString() },
                     ),
                     .location = loc,
                     .source_level = arg.security_level,
@@ -481,7 +481,7 @@ test "illegal flow detection" {
 
     const secret_data = SecureType.init(Type.String, .Secret);
     const public_var = SecureType.init(Type.String, .Public);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkAssignment("public_var", public_var, secret_data, loc);
 
@@ -496,7 +496,7 @@ test "conditional implicit flow" {
     const public_assignments = [_]SecureType{
         SecureType.init(Type.Int, .Public),
     };
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkConditional(secret_condition, &public_assignments, loc);
 
@@ -507,7 +507,7 @@ test "declassification" {
     var tracker = FlowTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Enter high-security context
     tracker.enterContext(.Secret);

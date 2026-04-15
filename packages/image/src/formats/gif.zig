@@ -447,7 +447,7 @@ fn applyFrame(img: *Image, pixels: []const u8, palette: []const Color, left: u16
 
     if (is_interlaced) {
         for (0..4) |pass| {
-            var y = pass_starts[pass];
+            var y: u32 = pass_starts[pass];
             while (y < frame_height) {
                 var x: u16 = 0;
                 while (x < frame_width) : (x += 1) {

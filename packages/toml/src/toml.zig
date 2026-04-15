@@ -153,6 +153,14 @@ pub const Table = struct {
     }
 
     pub fn put(self: *Table, key: []const u8, value: Value) !void {
+        // If the key already exists, reuse its owned copy and free the old
+        // value. StringArrayHashMap.put keeps the existing key on replace,
+        // so duping again would leak both the new key and the old value.
+        if (self.entries.getPtr(key)) |old_val| {
+            old_val.deinit(self.allocator);
+            old_val.* = value;
+            return;
+        }
         const owned_key = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(owned_key);
         try self.entries.put(owned_key, value);
@@ -237,7 +245,8 @@ pub const DateTime = struct {
                     try writer.writeAll("Z");
                 } else {
                     const sign: u8 = if (oh >= 0) '+' else '-';
-                    const abs_hours: u8 = @intCast(@abs(oh));
+                    const abs_hours_val = @abs(oh);
+                    const abs_hours: u8 = if (abs_hours_val <= 23) @intCast(abs_hours_val) else 0;
                     try writer.print("{c}{d:0>2}:{d:0>2}", .{ sign, abs_hours, self.offset_minutes orelse 0 });
                 }
             }
@@ -290,7 +299,8 @@ pub const Toml = struct {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
 
-        const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        // Cap at 64 MiB so a malicious/huge TOML file can't exhaust memory.
+        const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
         defer allocator.free(content);
 
         return parse(allocator, content);
@@ -545,7 +555,6 @@ const Parser = struct {
                 self.skipWhitespace();
 
                 if (self.pos >= self.input.len or self.input[self.pos] != '=') {
-                    self.allocator.free(key);
                     return ParseError.UnexpectedCharacter;
                 }
                 self.pos += 1;
@@ -559,7 +568,6 @@ const Parser = struct {
                 }
 
                 if (current_table.entries.contains(key)) {
-                    self.allocator.free(key);
                     return ParseError.DuplicateKey;
                 }
 
@@ -1236,6 +1244,8 @@ const Parser = struct {
         while (path_iter.next()) |segment| {
             segments.append(segment) catch return ParseError.OutOfMemory;
         }
+
+        if (segments.items.len == 0) return ParseError.InvalidTable;
 
         // Navigate to parent
         for (segments.items[0 .. segments.items.len - 1]) |segment| {

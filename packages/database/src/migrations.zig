@@ -543,12 +543,26 @@ pub const Migrator = struct {
         try self.migrate(migrations);
     }
 
+    /// Escape single quotes in a SQL string literal to prevent injection.
+    fn escapeSqlString(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+        var out = std.ArrayList(u8).init(allocator);
+        errdefer out.deinit();
+        for (value) |c| {
+            if (c == '\'') try out.append('\'');
+            try out.append(c);
+        }
+        return out.toOwnedSlice();
+    }
+
     /// Check if migration is applied
     fn isApplied(self: *Migrator, name: []const u8) !bool {
+        const escaped = try escapeSqlString(self.allocator, name);
+        defer self.allocator.free(escaped);
+
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "SELECT COUNT(*) FROM migrations WHERE name = '{s}'",
-            .{name},
+            .{escaped},
         );
         defer self.allocator.free(sql);
 
@@ -564,10 +578,13 @@ pub const Migrator = struct {
     /// Record migration as applied
     fn recordMigration(self: *Migrator, name: []const u8) !void {
         const timestamp = std.time.timestamp();
+        const escaped = try escapeSqlString(self.allocator, name);
+        defer self.allocator.free(escaped);
+
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "INSERT INTO migrations (name, batch, applied_at) VALUES ('{s}', {d}, {d})",
-            .{ name, self.current_batch, timestamp },
+            .{ escaped, self.current_batch, timestamp },
         );
         defer self.allocator.free(sql);
 
@@ -576,10 +593,13 @@ pub const Migrator = struct {
 
     /// Remove migration record
     fn removeMigration(self: *Migrator, name: []const u8) !void {
+        const escaped = try escapeSqlString(self.allocator, name);
+        defer self.allocator.free(escaped);
+
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "DELETE FROM migrations WHERE name = '{s}'",
-            .{name},
+            .{escaped},
         );
         defer self.allocator.free(sql);
 

@@ -65,7 +65,8 @@ pub const FileDriver = struct {
         const contents = try self.allocator.alloc(u8, stat.size);
         defer self.allocator.free(contents);
 
-        _ = try file.preadAll(contents, 0);
+        const bytes_read = try file.preadAll(contents, 0);
+        if (bytes_read != stat.size) return error.UnexpectedEof;
 
         // Parse session data (simple format: key=value lines)
         var data = session.SessionData.init(self.allocator);

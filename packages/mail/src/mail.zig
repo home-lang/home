@@ -349,16 +349,28 @@ pub const MemoryTransport = struct {
         defer self.mutex.unlock();
 
         // Copy recipients
-        var to_list = try self.allocator.alloc([]const u8, message.to.items.len);
-        for (message.to.items, 0..) |addr, i| {
-            to_list[i] = try self.allocator.dupe(u8, addr.email);
+        const to_list = try self.allocator.alloc([]const u8, message.to.items.len);
+        var copied: usize = 0;
+        errdefer {
+            for (to_list[0..copied]) |entry| self.allocator.free(entry);
+            self.allocator.free(to_list);
+        }
+        while (copied < message.to.items.len) : (copied += 1) {
+            to_list[copied] = try self.allocator.dupe(u8, message.to.items[copied].email);
         }
 
+        const from_copy = try self.allocator.dupe(u8, message.from.?.email);
+        errdefer self.allocator.free(from_copy);
+        const subject_copy = try self.allocator.dupe(u8, message.subject orelse "");
+        errdefer self.allocator.free(subject_copy);
+        const body_copy = try self.allocator.dupe(u8, message.text_body orelse message.html_body orelse "");
+        errdefer self.allocator.free(body_copy);
+
         try self.sent_messages.append(self.allocator, .{
-            .from = try self.allocator.dupe(u8, message.from.?.email),
+            .from = from_copy,
             .to = to_list,
-            .subject = try self.allocator.dupe(u8, message.subject orelse ""),
-            .body = try self.allocator.dupe(u8, message.text_body orelse message.html_body orelse ""),
+            .subject = subject_copy,
+            .body = body_copy,
             .sent_at = getTimestamp(),
         });
     }

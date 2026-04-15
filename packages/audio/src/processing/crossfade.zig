@@ -75,10 +75,13 @@ pub const Crossfader = struct {
     const Self = @This();
 
     pub fn init(allocator: Allocator, sample_rate: u32, channels: u8) Self {
+        // A zero-channel crossfader would divide by zero inside apply-loops.
+        // Treat zero as mono so callers that pass uninitialized channel
+        // counts still get safe (no-op) behavior instead of a panic.
         return Self{
             .allocator = allocator,
             .sample_rate = sample_rate,
-            .channels = channels,
+            .channels = if (channels == 0) 1 else channels,
             .curve = .equal_power,
             .duration_samples = sample_rate, // Default 1 second
         };
@@ -162,6 +165,7 @@ pub const Crossfader = struct {
         track_b: []const f32,
     ) ![]f32 {
         const fade_samples = self.duration_samples * self.channels;
+        if (fade_samples == 0) return try self.allocator.dupe(f32, track_a);
 
         // Total length: track_a (minus fade) + crossfade region + track_b (minus fade)
         const a_non_fade = if (track_a.len > fade_samples) track_a.len - fade_samples else 0;

@@ -19,7 +19,7 @@ pub const Pool = struct {
 
     pub fn init(parent: std.mem.Allocator, block_size: usize, block_count: usize) AllocatorError!Pool {
         const actual_block_size = @max(block_size, @sizeOf(FreeNode));
-        const buffer_size = actual_block_size * block_count;
+        const buffer_size = std.math.mul(usize, actual_block_size, block_count) catch return AllocatorError.OutOfMemory;
         const buffer = parent.alloc(u8, buffer_size) catch return AllocatorError.OutOfMemory;
 
         var pool = Pool{

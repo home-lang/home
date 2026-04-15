@@ -266,7 +266,9 @@ pub const RegisterAllocator = struct {
         const reg_count = self.architecture.getRegisterCount();
 
         if (constraint.specific_register) |specific| {
-            // Specific register requested
+            // Specific register requested. Validate against the active
+            // architecture's register count before touching the bitset.
+            if (specific >= reg_count) return error.InvalidRegisterNumber;
             if (constraint.hint == .Require) {
                 if (self.allocated.isSet(specific)) {
                     return error.RegisterUnavailable;

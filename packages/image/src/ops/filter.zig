@@ -136,9 +136,9 @@ pub fn convolve(img: *const Image, kernel: Kernel) !Image {
             }
 
             result.setPixel(x, y, Color{
-                .r = @intFromFloat(std.math.clamp(r_sum / kernel.divisor + kernel.offset, 0, 255)),
-                .g = @intFromFloat(std.math.clamp(g_sum / kernel.divisor + kernel.offset, 0, 255)),
-                .b = @intFromFloat(std.math.clamp(b_sum / kernel.divisor + kernel.offset, 0, 255)),
+                .r = @intFromFloat(@round(std.math.clamp(r_sum / kernel.divisor + kernel.offset, 0, 255))),
+                .g = @intFromFloat(@round(std.math.clamp(g_sum / kernel.divisor + kernel.offset, 0, 255))),
+                .b = @intFromFloat(@round(std.math.clamp(b_sum / kernel.divisor + kernel.offset, 0, 255))),
                 .a = a,
             });
         }
@@ -335,6 +335,8 @@ pub fn median(img: *const Image, radius: u8) !Image {
                     }
                 }
             }
+
+            if (count == 0) continue;
 
             // Sort and get median
             std.mem.sort(u8, r_values[0..count], {}, std.sort.asc(u8));

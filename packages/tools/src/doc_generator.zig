@@ -62,7 +62,7 @@ pub const DocGenerator = struct {
 
     /// Extract documentation from source
     fn extractDocs(self: *DocGenerator, source: []const u8, file_path: []const u8) !void {
-        var lines = std.mem.split(u8, source, "\n");
+        var lines = std.mem.splitScalar(u8, source, '\n');
         var line_num: usize = 0;
         var current_doc: ?[]const u8 = null;
 

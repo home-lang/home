@@ -287,10 +287,11 @@ pub fn Easing(comptime T: type) type {
         }
 
         /// Parabolic ease with configurable steepness
+        /// Uses Hermite basis: f(0)=0, f(1)=1, f'(0)=f'(1)=steepness
         pub fn parabolicEaseCustom(t: T, steepness: T) T {
             const t2 = t * t;
             const t3 = t2 * t;
-            return (2 + steepness) * t3 - (3 + steepness) * t2 + steepness * t + (1 - steepness) * t2;
+            return (2 * steepness - 2) * t3 + (3 - 3 * steepness) * t2 + steepness * t;
         }
 
         /// Camera zoom ease (smoother for zoom operations)
@@ -340,7 +341,9 @@ pub fn Easing(comptime T: type) type {
 
         /// Map value from one range to another
         pub fn map(value: T, in_min: T, in_max: T, out_min: T, out_max: T) T {
-            return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+            const range = in_max - in_min;
+            if (range == 0) return out_min;
+            return (value - in_min) * (out_max - out_min) / range + out_min;
         }
 
         /// Ping-pong between 0 and 1

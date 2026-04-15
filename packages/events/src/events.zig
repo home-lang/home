@@ -139,8 +139,10 @@ pub fn EventEmitter(comptime Events: type) type {
         pub fn emit(self: *Self, comptime event: []const u8, data: Events.getEventType(event)) void {
             self.mutex.lock();
 
-            // Get listeners for this event
+            // Snapshot listeners AND wildcard listeners under the lock so
+            // iteration below doesn't race with concurrent add/remove.
             const listeners = if (self.listeners.get(event)) |list| list.items else &[_]AnyListener{};
+            const wildcard_snapshot = self.wildcard_listeners.items;
 
             // Copy once listeners to remove after
             var to_remove: std.ArrayList(usize) = .empty;
@@ -159,7 +161,7 @@ pub fn EventEmitter(comptime Events: type) type {
 
             // Call wildcard handlers
             // Note: In a real implementation, we'd serialize data to JSON
-            for (self.wildcard_listeners.items) |wildcard| {
+            for (wildcard_snapshot) |wildcard| {
                 wildcard(event, ""); // Simplified - real impl would serialize data
             }
 
@@ -287,17 +289,27 @@ pub const SimpleEmitter = struct {
 
     /// Emit an event
     pub fn emit(self: *Self, event: []const u8, data: []const u8) void {
+        // Copy handler lists under the lock, then dispatch without holding
+        // the mutex. Track whether each copy was actually allocated so we
+        // don't attempt to free a static-empty fallback slice.
         self.mutex.lock();
-        const handlers_copy = if (self.handlers.get(event)) |list|
-            self.allocator.dupe(SimpleHandler, list.items) catch &[_]SimpleHandler{}
-        else
-            &[_]SimpleHandler{};
-        const wildcard_copy = self.allocator.dupe(WildcardHandler, self.wildcard_handlers.items) catch &[_]WildcardHandler{};
+        var handlers_allocated = false;
+        const handlers_copy = if (self.handlers.get(event)) |list| blk: {
+            if (self.allocator.dupe(SimpleHandler, list.items)) |dup| {
+                handlers_allocated = true;
+                break :blk dup;
+            } else |_| break :blk @as([]SimpleHandler, &[_]SimpleHandler{});
+        } else @as([]SimpleHandler, &[_]SimpleHandler{});
+        var wildcard_allocated = false;
+        const wildcard_copy = if (self.allocator.dupe(WildcardHandler, self.wildcard_handlers.items)) |dup| blk: {
+            wildcard_allocated = true;
+            break :blk dup;
+        } else |_| @as([]WildcardHandler, &[_]WildcardHandler{});
         self.mutex.unlock();
 
         defer {
-            if (handlers_copy.len > 0) self.allocator.free(handlers_copy);
-            if (wildcard_copy.len > 0) self.allocator.free(wildcard_copy);
+            if (handlers_allocated) self.allocator.free(handlers_copy);
+            if (wildcard_allocated) self.allocator.free(wildcard_copy);
         }
 
         for (handlers_copy) |handler| {

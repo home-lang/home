@@ -68,7 +68,7 @@ pub const corsMiddleware: MiddlewareHandler = struct {
 pub const loggerMiddleware: MiddlewareHandler = struct {
     fn handle(req: *Request, res: *Response) !bool {
         _ = res;
-        std.debug.print("[{s}] {s}\n", .{ @tagName(req.method), req.uri });
+        std.log.info("[{s}] {s}", .{ @tagName(req.method), req.uri });
         return true; // Continue to next middleware
     }
 }.handle;

@@ -23,6 +23,8 @@ pub const Cue = struct {
 
     /// Get duration in milliseconds
     pub fn getDuration(self: *const Cue) u64 {
+        // Guard against malformed cues where end < start (would underflow u64).
+        if (self.end_time < self.start_time) return 0;
         return self.end_time - self.start_time;
     }
 
@@ -267,6 +269,7 @@ fn parseTimestamp(ts: []const u8) !u64 {
     const minutes = std.fmt.parseInt(u32, trimmed[3..5], 10) catch return VideoError.InvalidTimestamp;
     const seconds = std.fmt.parseInt(u32, trimmed[6..8], 10) catch return VideoError.InvalidTimestamp;
     const millis = std.fmt.parseInt(u32, trimmed[9..12], 10) catch return VideoError.InvalidTimestamp;
+    if (hours > 99 or minutes >= 60 or seconds >= 60 or millis >= 1000) return VideoError.InvalidTimestamp;
 
     return @as(u64, hours) * 3600000 +
         @as(u64, minutes) * 60000 +

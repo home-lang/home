@@ -117,7 +117,12 @@ pub const TestCache = struct {
             errdefer self.allocator.free(suite_name);
 
             const cache_obj = entry.value_ptr.*;
-            if (cache_obj != .object) continue;
+            if (cache_obj != .object) {
+                // `continue` doesn't trigger errdefer — free manually or
+                // suite_name leaks for every non-object entry.
+                self.allocator.free(suite_name);
+                continue;
+            }
 
             const cache_entry = try self.parseCacheEntry(cache_obj.object, suite_name);
             try self.entries.put(suite_name, cache_entry);
@@ -214,6 +219,7 @@ pub const TestCache = struct {
         }
 
         const key = try self.allocator.dupe(u8, suite.name);
+        errdefer self.allocator.free(key);
         try self.entries.put(key, entry);
         self.modified = true;
     }

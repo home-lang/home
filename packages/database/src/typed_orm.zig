@@ -481,7 +481,7 @@ pub fn Query(comptime T: type) type {
 
         /// Execute query and return typed results
         pub fn get(self: *Self) ![]ModelType {
-            _ = self.builder.select(&.{"*"}) catch unreachable;
+            _ = try self.builder.select(&.{"*"});
 
             const sql = try self.builder.build();
             defer self.allocator.free(sql);
@@ -490,6 +490,7 @@ pub fn Query(comptime T: type) type {
             var result = try self.connection.query(sql);
 
             var models = std.ArrayList(ModelType).init(self.allocator);
+            errdefer models.deinit();
 
             while (result.next()) |row| {
                 const model = try self.rowToModel(row);
@@ -524,7 +525,7 @@ pub fn Query(comptime T: type) type {
 
         /// Count records
         pub fn count(self: *Self) !usize {
-            _ = self.builder.select(&.{"COUNT(*) as count"}) catch unreachable;
+            _ = try self.builder.select(&.{"COUNT(*) as count"});
 
             const sql = try self.builder.build();
             defer self.allocator.free(sql);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const hash = @import("hash.zig");
 const posix = std.posix;
 
 /// Helper to get current timestamp
@@ -169,7 +170,7 @@ pub const Jwt = struct {
         const expected_sig = try self.sign(signing_input);
         defer self.allocator.free(expected_sig);
 
-        if (!std.mem.eql(u8, signature_b64, expected_sig)) {
+        if (!hash.constantTimeCompare(signature_b64, expected_sig)) {
             return error.InvalidSignature;
         }
 
@@ -257,12 +258,16 @@ fn base64UrlDecode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
 
 /// Extract a string value from simple JSON
 fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
+    // Key length is bounded to avoid bufPrint overflow on attacker-controlled input.
+    if (key.len > 120) return null;
+
     // Look for "key":"value"
     var search_buf: [128]u8 = undefined;
     const search = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return null;
 
     const start_pos = std.mem.indexOf(u8, json, search) orelse return null;
     const value_start = start_pos + search.len;
+    if (value_start >= json.len) return null;
 
     const value_end = std.mem.indexOfScalarPos(u8, json, value_start, '"') orelse return null;
 
@@ -271,6 +276,8 @@ fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
 
 /// Extract a number value from simple JSON
 fn extractJsonNumber(json: []const u8, key: []const u8) ?i64 {
+    if (key.len > 122) return null;
+
     // Look for "key":number
     var search_buf: [128]u8 = undefined;
     const search = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;

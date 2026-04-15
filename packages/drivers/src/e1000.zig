@@ -174,13 +174,30 @@ pub const E1000Device = struct {
             .allocator = allocator,
         };
 
-        // Allocate DMA buffers
+        // Allocate DMA buffers. On failure, free any buffers we already
+        // allocated so we don't leak them when error propagates back up.
+        var rx_alloc_count: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < rx_alloc_count) : (i += 1) {
+                device.rx_buffers[i].free();
+            }
+        }
         for (0..RX_RING_SIZE) |i| {
             device.rx_buffers[i] = try dma.DmaBuffer.allocate(allocator, 2048);
+            rx_alloc_count = i + 1;
         }
 
+        var tx_alloc_count: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < tx_alloc_count) : (i += 1) {
+                device.tx_buffers[i].free();
+            }
+        }
         for (0..TX_RING_SIZE) |i| {
             device.tx_buffers[i] = try dma.DmaBuffer.allocate(allocator, 2048);
+            tx_alloc_count = i + 1;
         }
 
         // Initialize device

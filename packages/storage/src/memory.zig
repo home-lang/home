@@ -240,22 +240,22 @@ pub const MemoryDriver = struct {
     fn deleteDirectory(ptr: *anyopaque, path: []const u8) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        // Collect keys to delete
-        var keys_to_delete: [1024][]const u8 = undefined;
-        var delete_count: usize = 0;
+        // Collect keys to delete. Use a heap-backed ArrayList so directories
+        // with more than 1024 entries aren't silently truncated (which
+        // previously left dangling files pointing at a deleted directory).
+        var keys_to_delete = std.ArrayList([]const u8).init(self.allocator);
+        defer keys_to_delete.deinit();
 
         var it = self.files.keyIterator();
         while (it.next()) |key| {
             if (std.mem.startsWith(u8, key.*, path)) {
-                if (delete_count < keys_to_delete.len) {
-                    keys_to_delete[delete_count] = key.*;
-                    delete_count += 1;
-                }
+                try keys_to_delete.append(key.*);
             }
         }
+        const delete_count = keys_to_delete.items.len;
 
         // Delete collected keys
-        for (keys_to_delete[0..delete_count]) |key| {
+        for (keys_to_delete.items[0..delete_count]) |key| {
             _ = try deleteFn(ptr, key);
         }
 

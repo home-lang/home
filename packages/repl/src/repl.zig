@@ -338,7 +338,8 @@ pub const History = struct {
     }
 
     pub fn next(self: *History) ?[]const u8 {
-        if (self.current_index >= self.entries.items.len - 1) return null;
+        if (self.entries.items.len == 0) return null;
+        if (self.current_index + 1 >= self.entries.items.len) return null;
         self.current_index += 1;
         return self.entries.items[self.current_index];
     }
@@ -381,12 +382,12 @@ pub const History = struct {
 /// Tab completion for REPL
 pub const Completer = struct {
     allocator: std.mem.Allocator,
-    keywords: std.StringHashSet,
-    builtins: std.StringHashSet,
+    keywords: std.StringHashMap(void),
+    builtins: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator) Completer {
-        var keywords = std.StringHashSet.init(allocator);
-        var builtins = std.StringHashSet.init(allocator);
+        var keywords = std.StringHashMap(void).init(allocator);
+        var builtins = std.StringHashMap(void).init(allocator);
 
         // Add keywords
         const keyword_list = [_][]const u8{

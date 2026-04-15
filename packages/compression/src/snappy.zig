@@ -146,8 +146,11 @@ pub const SnappyCompressor = struct {
         const hash = self.hashBytes(input, pos);
         const match_pos = self.hash_table[hash];
 
-        // Update hash table with current position
-        self.hash_table[hash] = @intCast(pos);
+        // Update hash table with current position. Use @truncate so that
+        // positions beyond u16 wrap cleanly instead of panicking — this
+        // mirrors how Snappy stores positions relative to the 16-bit
+        // offset window.
+        self.hash_table[hash] = @truncate(pos);
 
         if (match_pos == 0) return null;
         if (pos < match_pos) return null;
@@ -290,8 +293,10 @@ pub const SnappyDecompressor = struct {
         var pos: usize = 0;
         const uncompressed_len = try self.readVarint(input, &pos);
 
-        // Pre-allocate output
-        try self.output.ensureTotalCapacity(uncompressed_len);
+        // Pre-allocate output, capped relative to the compressed input so
+        // a malicious length field can't trigger a huge allocation.
+        const prealloc = @min(uncompressed_len, input.len *| 256);
+        try self.output.ensureTotalCapacity(prealloc);
 
         // Decompress
         while (pos < input.len) {
@@ -339,13 +344,15 @@ pub const SnappyDecompressor = struct {
     fn readVarint(self: *SnappyDecompressor, input: []const u8, pos: *usize) Snappy.Error!usize {
         _ = self;
         var result: usize = 0;
-        var shift: u6 = 0;
+        // Use u8 so `shift += 7` past 63 doesn't panic on u6 overflow —
+        // we catch the too-large case via the explicit check below.
+        var shift: u8 = 0;
 
         while (pos.* < input.len) {
             const byte = input[pos.*];
             pos.* += 1;
 
-            result |= @as(usize, byte & 0x7F) << shift;
+            result |= @as(usize, byte & 0x7F) << @intCast(shift);
 
             if ((byte & 0x80) == 0) {
                 return result;

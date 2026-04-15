@@ -53,10 +53,16 @@ pub fn storeBarrier() void {
     asm volatile ("" ::: .{ .memory = true });
 }
 
-// Custom fence with specific ordering
+// Custom fence with specific ordering.
+// Uses x86-64 instructions where a full barrier is needed; compiler-only
+// fence for weaker orderings since x86 already provides strong ordering
+// for most load/store pairs.
 pub fn fence(comptime ordering: MemoryOrder) void {
-    _ = ordering;
-    asm volatile ("" ::: .{ .memory = true });
+    switch (ordering) {
+        .seq_cst => asm volatile ("mfence" ::: .{ .memory = true }),
+        .acq_rel, .release, .acquire => asm volatile ("" ::: .{ .memory = true }),
+        .relaxed => {},
+    }
 }
 
 // Compiler-only fence (no CPU instructions)

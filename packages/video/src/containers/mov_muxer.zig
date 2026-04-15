@@ -52,7 +52,10 @@ pub const MovMuxer = struct {
         var tracks = std.ArrayList(Track).init(allocator);
         errdefer tracks.deinit();
 
-        const now = @as(u64, @intCast(std.time.timestamp())) + 2082844800; // Seconds since 1904
+        // Seconds since 1904 epoch; clamp negative clocks to 0 so @intCast
+        // to u64 does not panic on machines with a bogus RTC.
+        const ts = std.time.timestamp();
+        const now: u64 = @as(u64, if (ts < 0) 0 else @intCast(ts)) + 2082844800;
 
         // Add video tracks
         for (media.video_streams.items, 0..) |stream, idx| {

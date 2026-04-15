@@ -129,8 +129,11 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             self.capacity = new_capacity;
             self.count = 0;
 
-            // Rehash all existing entries
+            // Rehash all existing entries. If any putNoResize fails we
+            // still need to free the old entries — otherwise this function
+            // leaks the old backing store on error.
             if (old_capacity > 0) {
+                errdefer self.allocator.free(old_entries);
                 for (old_entries) |*entry| {
                     if (entry.occupied) {
                         try self.putNoResize(entry.key, entry.value, entry.hash);

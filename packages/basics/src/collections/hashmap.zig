@@ -58,10 +58,26 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         }
 
         fn hash(key: K) u64 {
-            // Simple FNV-1a hash for demonstration
-            // In production, would use proper hash function
-            const bytes = std.mem.asBytes(&key);
+            // FNV-1a hash. For slice types like []const u8 we hash the
+            // referenced content rather than the {ptr,len} header so that
+            // equal strings in different buffers hash identically.
             var h: u64 = 0xcbf29ce484222325;
+            switch (@typeInfo(K)) {
+                .Pointer => |ptr_info| {
+                    if (ptr_info.size == .Slice) {
+                        for (key) |elem| {
+                            const eb = std.mem.asBytes(&elem);
+                            for (eb) |byte| {
+                                h ^= byte;
+                                h *%= 0x100000001b3;
+                            }
+                        }
+                        return h;
+                    }
+                },
+                else => {},
+            }
+            const bytes = std.mem.asBytes(&key);
             for (bytes) |byte| {
                 h ^= byte;
                 h *%= 0x100000001b3;
@@ -69,14 +85,29 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             return h;
         }
 
+        fn keysEqual(a: K, b: K) bool {
+            // Deep-compare slice keys so strings compare by content.
+            switch (@typeInfo(K)) {
+                .Pointer => |ptr_info| {
+                    if (ptr_info.size == .Slice) {
+                        if (a.len != b.len) return false;
+                        return std.mem.eql(ptr_info.child, a, b);
+                    }
+                },
+                else => {},
+            }
+            return std.meta.eql(a, b);
+        }
+
         pub fn put(self: *Self, key: K, value: V) !void {
+            if (self.capacity == 0) return error.HashMapNotInitialized;
             const h = hash(key);
             const index = h % self.capacity;
 
             // Check if key exists
             var current = self.buckets[index].head;
             while (current) |entry| {
-                if (entry.hash == h and std.meta.eql(entry.key, key)) {
+                if (entry.hash == h and keysEqual(entry.key, key)) {
                     entry.value = value;
                     return;
                 }
@@ -108,7 +139,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
             var current = self.buckets[index].head;
             while (current) |entry| {
-                if (entry.hash == h and std.meta.eql(entry.key, key)) {
+                if (entry.hash == h and keysEqual(entry.key, key)) {
                     return entry.value;
                 }
                 current = entry.next;
@@ -129,7 +160,7 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             var current = self.buckets[index].head;
 
             while (current) |entry| {
-                if (entry.hash == h and std.meta.eql(entry.key, key)) {
+                if (entry.hash == h and keysEqual(entry.key, key)) {
                     const value = entry.value;
 
                     if (prev) |p| {

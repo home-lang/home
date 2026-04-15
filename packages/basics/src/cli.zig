@@ -211,13 +211,17 @@ pub const ArgParser = struct {
             },
             .Bool => try self.parsed.put(def.name, .{ .Bool = std.mem.eql(u8, value, "true") }),
             .StringList => {
-                // For lists, split by comma
+                // For lists, split by comma. Use splitSequence — the old
+                // std.mem.split was renamed. Free the list on errors.
                 var list = std.ArrayList([]const u8).init(self.allocator);
-                var iter = std.mem.split(u8, value, ",");
+                errdefer list.deinit();
+                var iter = std.mem.splitSequence(u8, value, ",");
                 while (iter.next()) |item| {
                     try list.append(std.mem.trim(u8, item, " "));
                 }
-                try self.parsed.put(def.name, .{ .StringList = try list.toOwnedSlice() });
+                const owned = try list.toOwnedSlice();
+                errdefer self.allocator.free(owned);
+                try self.parsed.put(def.name, .{ .StringList = owned });
             },
         }
     }

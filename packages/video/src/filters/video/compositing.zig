@@ -92,9 +92,9 @@ pub const AlphaFilter = struct {
         if (frame.format == .rgba or frame.format == .bgra) {
             for (0..pixel_count) |i| {
                 const alpha: f32 = @as(f32, @floatFromInt(frame.data[0][i * 4 + 3])) / 255.0;
-                output.data[0][i * 4 + 0] = @intFromFloat(@as(f32, @floatFromInt(frame.data[0][i * 4 + 0])) * alpha);
-                output.data[0][i * 4 + 1] = @intFromFloat(@as(f32, @floatFromInt(frame.data[0][i * 4 + 1])) * alpha);
-                output.data[0][i * 4 + 2] = @intFromFloat(@as(f32, @floatFromInt(frame.data[0][i * 4 + 2])) * alpha);
+                output.data[0][i * 4 + 0] = @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(frame.data[0][i * 4 + 0])) * alpha, 0, 255));
+                output.data[0][i * 4 + 1] = @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(frame.data[0][i * 4 + 1])) * alpha, 0, 255));
+                output.data[0][i * 4 + 2] = @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(frame.data[0][i * 4 + 2])) * alpha, 0, 255));
             }
         }
 
@@ -271,14 +271,14 @@ pub const FadeFilter = struct {
     pub fn apply(self: *Self, frame: *const VideoFrame, timestamp: f64) !*VideoFrame {
         var opacity: f32 = 1.0;
 
-        // Fade in
-        if (timestamp < self.fade_in_duration) {
+        // Fade in — guard against zero-duration.
+        if (self.fade_in_duration > 0 and timestamp < self.fade_in_duration) {
             opacity = @floatCast(timestamp / self.fade_in_duration);
         }
 
-        // Fade out
+        // Fade out — guard against zero-duration.
         const fade_out_start = self.total_duration - self.fade_out_duration;
-        if (timestamp > fade_out_start) {
+        if (self.fade_out_duration > 0 and timestamp > fade_out_start) {
             opacity = @floatCast((self.total_duration - timestamp) / self.fade_out_duration);
         }
 
@@ -286,6 +286,7 @@ pub const FadeFilter = struct {
 
         // Apply opacity to frame
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame.width, frame.height, frame.format);
 
         const pixel_count = frame.width * frame.height;
@@ -330,10 +331,13 @@ pub const CrossfadeFilter = struct {
     }
 
     pub fn apply(self: *Self, frame1: *const VideoFrame, frame2: *const VideoFrame, progress: f64) !*VideoFrame {
-        const ratio = std.math.clamp(progress / self.duration, 0.0, 1.0);
+        // Guard against divide-by-zero when duration is not set.
+        const raw_ratio = if (self.duration > 0) progress / self.duration else 1.0;
+        const ratio = std.math.clamp(raw_ratio, 0.0, 1.0);
         const ratio_f32: f32 = @floatCast(ratio);
 
         const output = try self.allocator.create(VideoFrame);
+        errdefer self.allocator.destroy(output);
         output.* = try VideoFrame.init(self.allocator, frame1.width, frame1.height, frame1.format);
 
         const pixel_count = frame1.width * frame1.height;

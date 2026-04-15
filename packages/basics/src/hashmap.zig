@@ -39,13 +39,20 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
 
         /// Insert or update a key-value pair
         pub fn insert(self: *Self, key: K, value: V) !void {
-            // Check load factor and resize if needed
+            // Check load factor and resize if needed. Resize before probing so
+            // that findSlot always has at least one empty slot available.
             const load = @as(f64, @floatFromInt(self.len + 1)) / @as(f64, @floatFromInt(self.capacity));
             if (load > LOAD_FACTOR) {
                 try self.resize();
             }
 
             const index = self.findSlot(key);
+            // If the slot is occupied by a different key the table is full —
+            // resize and retry so we don't clobber an unrelated entry.
+            if (self.entries[index].occupied and !self.keysEqual(self.entries[index].key, key)) {
+                try self.resize();
+                return self.insert(key, value);
+            }
             if (!self.entries[index].occupied) {
                 self.len += 1;
             }
@@ -127,9 +134,9 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
         };
 
         fn findSlot(self: *Self, key: K) usize {
-            var hash = self.hashKey(key);
+            const hash = self.hashKey(key);
             var index = hash % self.capacity;
-            var probe = 0;
+            var probe: usize = 0;
 
             while (probe < self.capacity) : (probe += 1) {
                 if (!self.entries[index].occupied or self.keysEqual(self.entries[index].key, key)) {
@@ -145,7 +152,16 @@ pub fn HashMap(comptime K: type, comptime V: type) type {
             _ = self;
             // Simple hash for different types
             return switch (@typeInfo(K)) {
-                .Int => @as(usize, @intCast(key)),
+                .Int => blk: {
+                    // Cast via bitCast to unsigned of same width to avoid
+                    // panicking on negative values.
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(K));
+                    const u: U = @bitCast(key);
+                    if (@bitSizeOf(U) > @bitSizeOf(usize)) {
+                        break :blk @as(usize, @truncate(u));
+                    }
+                    break :blk @as(usize, u);
+                },
                 .Pointer => |ptr_info| {
                     if (ptr_info.child == u8) {
                         // String hashing

@@ -144,9 +144,16 @@ pub const Engine = struct {
 
     /// Register a template by name
     pub fn register(self: *Self, name: []const u8, content: []const u8) !void {
+        // Replacing a registered template should free the old key+value,
+        // otherwise StringHashMap.put keeps the old key and leaks both.
+        if (self.templates.fetchRemove(name)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
         const content_copy = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(content_copy);
         try self.templates.put(name_copy, content_copy);
     }
 
@@ -156,10 +163,18 @@ pub const Engine = struct {
         defer file.close();
 
         const stat = try file.stat();
-        const content = try self.allocator.alloc(u8, stat.size);
-        _ = try file.preadAll(content, 0);
+        const size = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+        const content = try self.allocator.alloc(u8, size);
+        errdefer self.allocator.free(content);
+        const bytes_read = try file.preadAll(content, 0);
+        if (bytes_read != size) return error.UnexpectedEof;
 
+        if (self.templates.fetchRemove(name)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
         const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
         try self.templates.put(name_copy, content);
     }
 

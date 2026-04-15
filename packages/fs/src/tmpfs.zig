@@ -79,18 +79,48 @@ pub const TmpfsInodeData = struct {
         self.lock.acquireWrite();
         defer self.lock.releaseWrite();
 
+        // Guard against u64 overflow when computing end position.
+        if (offset > std.math.maxInt(u64) - data.len) return error.SizeOverflow;
         const end_pos = offset + data.len;
 
-        // Resize if needed
+        // Resize if needed — call the unlocked variant since we already hold
+        // the write lock (resize() would re-acquire and deadlock).
         if (self.data == null or end_pos > self.capacity) {
             const new_capacity = Basics.mem.alignForward(usize, end_pos, 4096);
-            try self.resize(new_capacity);
+            try self.resizeUnlocked(new_capacity);
         }
 
         const buffer = self.data.?;
         @memcpy(buffer[offset..][0..data.len], data);
 
         return data.len;
+    }
+
+    /// Resize implementation without locking. Caller must hold the write lock.
+    fn resizeUnlocked(self: *TmpfsInodeData, new_size: usize) !void {
+        if (new_size == 0) {
+            if (self.data) |data| {
+                self.allocator.free(data);
+            }
+            self.data = null;
+            self.capacity = 0;
+            return;
+        }
+
+        if (self.data) |old_data| {
+            if (new_size <= self.capacity) {
+                return;
+            }
+
+            const new_data = try self.allocator.alloc(u8, new_size);
+            @memcpy(new_data[0..old_data.len], old_data);
+            self.allocator.free(old_data);
+            self.data = new_data;
+            self.capacity = new_size;
+        } else {
+            self.data = try self.allocator.alloc(u8, new_size);
+            self.capacity = new_size;
+        }
     }
 };
 
@@ -241,8 +271,10 @@ fn tmpfsLookup(inode: *vfs.Inode, name: []const u8) !*vfs.Inode {
     const dir: *TmpfsDir = @ptrCast(@alignCast(inode.fs_data.?));
     const ino = dir.lookup(name) orelse return error.FileNotFound;
 
-    // Get superblock from somewhere
-    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(inode.fs_data.?));
+    // Get the tmpfs superblock from the VFS superblock's fs_data,
+    // NOT from the inode (which stores TmpfsDir, a different type).
+    const vfs_sb = inode.sb orelse return error.FileNotFound;
+    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(vfs_sb.fs_data.?));
     const child_inode = sb.getInode(ino) orelse return error.FileNotFound;
 
     child_inode.acquire();
@@ -253,7 +285,8 @@ fn tmpfsCreate(parent: *vfs.Inode, name: []const u8, mode: vfs.FileMode) !*vfs.I
     _ = mode;
 
     const dir: *TmpfsDir = @ptrCast(@alignCast(parent.fs_data.?));
-    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(parent.fs_data.?));
+    const vfs_sb = parent.sb orelse return error.FileNotFound;
+    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(vfs_sb.fs_data.?));
 
     const ino = sb.allocateIno();
     const inode = try sb.allocator.create(vfs.Inode);
@@ -273,7 +306,8 @@ fn tmpfsMkdir(parent: *vfs.Inode, name: []const u8, mode: vfs.FileMode) !*vfs.In
     _ = mode;
 
     const dir: *TmpfsDir = @ptrCast(@alignCast(parent.fs_data.?));
-    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(parent.fs_data.?));
+    const vfs_sb = parent.sb orelse return error.FileNotFound;
+    const sb: *TmpfsSuperblock = @ptrCast(@alignCast(vfs_sb.fs_data.?));
 
     const ino = sb.allocateIno();
     const inode = try sb.allocator.create(vfs.Inode);

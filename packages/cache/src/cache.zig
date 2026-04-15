@@ -556,7 +556,9 @@ pub const FilesystemCacheDriver = struct {
             hash = hash *% 31 +% c;
         }
 
-        var buf: [256]u8 = undefined;
+        // Use a larger buffer than 256 bytes so long `directory` values
+        // don't blow up bufPrint's fixed buffer when combined with the hash.
+        var buf: [4096]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "{s}/{x}.cache", .{ self.directory, hash });
         return try self.allocator.dupe(u8, path);
     }
@@ -594,11 +596,15 @@ pub const FilesystemCacheDriver = struct {
             return null; // Hash collision
         }
 
-        // Read value - get file size and read remaining
+        // Read value - get file size and read remaining. Guard against a
+        // maliciously large key length and against u64→usize truncation on
+        // 32-bit platforms.
+        if (key_len > 1024 * 1024) return null;
         const stat = file.stat() catch return null;
-        const value_start: usize = 12 + key_len;
-        if (stat.size <= value_start) return null;
-        const value_size = stat.size - value_start;
+        const file_size: usize = std.math.cast(usize, stat.size) orelse return null;
+        const value_start: usize = 12 + @as(usize, key_len);
+        if (file_size <= value_start) return null;
+        const value_size = file_size - value_start;
         const value = self.allocator.alloc(u8, value_size) catch return null;
         _ = file.preadAll(value, value_start) catch {
             self.allocator.free(value);
@@ -621,7 +627,8 @@ pub const FilesystemCacheDriver = struct {
         const effective_ttl = ttl orelse self.config.default_ttl;
         const expires_at: i64 = if (effective_ttl) |t| getTimestamp() + t else 0;
 
-        // Write header
+        // Write header. Reject keys that wouldn't round-trip through u32.
+        if (key.len > std.math.maxInt(u32)) return error.KeyTooLarge;
         var header_buf: [12]u8 = undefined;
         std.mem.writeInt(u32, header_buf[0..4], @intCast(key.len), .little);
         std.mem.writeInt(i64, header_buf[4..12], expires_at, .little);

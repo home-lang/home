@@ -57,6 +57,11 @@ pub const ValidationResult = struct {
             self.allocator.free(err);
         }
         self.allocator.free(self.errors);
+        // Warning.message strings were also allocPrint'd — free each
+        // before releasing the slice.
+        for (self.warnings) |w| {
+            self.allocator.free(w.message);
+        }
         self.allocator.free(self.warnings);
     }
 };
@@ -79,16 +84,21 @@ pub const Validator = struct {
             self.allocator.free(err);
         }
         self.errors.deinit(self.allocator);
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+        }
         self.warnings.deinit(self.allocator);
     }
 
     fn addError(self: *Validator, comptime fmt: []const u8, args: anytype) !void {
         const msg = try std.fmt.allocPrint(self.allocator, fmt, args);
+        errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, msg);
     }
 
     fn addWarning(self: *Validator, severity: Severity, comptime fmt: []const u8, args: anytype) !void {
         const msg = try std.fmt.allocPrint(self.allocator, fmt, args);
+        errdefer self.allocator.free(msg);
         try self.warnings.append(self.allocator, .{
             .message = msg,
             .severity = severity,

@@ -119,13 +119,19 @@ pub fn Fuzzer(comptime Context: type) type {
 
         /// Generate a random mutation of the input
         pub fn mutate(self: *Self, input: []const u8) ![]u8 {
-            var prng = if (self.config.seed) |s|
-                std.Random.DefaultPrng.init(s)
-            else
-                std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+            // Guard the i64→u64 cast when falling back to wall clock so
+            // a pathological negative timestamp doesn't panic.
+            const seed: u64 = if (self.config.seed) |s|
+                s
+            else blk: {
+                const ts = std.time.milliTimestamp();
+                break :blk if (ts < 0) 0 else @intCast(ts);
+            };
+            var prng = std.Random.DefaultPrng.init(seed);
 
             const random = prng.random();
             var output = try self.allocator.alloc(u8, input.len);
+            errdefer self.allocator.free(output);
             @memcpy(output, input);
 
             // Apply random mutation

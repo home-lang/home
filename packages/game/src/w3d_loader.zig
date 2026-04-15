@@ -315,6 +315,10 @@ pub const W3DLoader = struct {
                     var i: usize = 0;
                     var offset = pos;
                     while (i < count and i < vertices.items.len) : (i += 1) {
+                        // Validate we have 12 bytes remaining before reading
+                        // a vertex — a truncated chunk would otherwise read
+                        // past the end of the buffer.
+                        if (offset + 12 > data.len) break;
                         vertices.items[i].position = .{
                             .x = @bitCast(std.mem.readInt(u32, data[offset..][0..4], .little)),
                             .y = @bitCast(std.mem.readInt(u32, data[offset + 4 ..][0..4], .little)),
@@ -328,6 +332,7 @@ pub const W3DLoader = struct {
                     var i: usize = 0;
                     var offset = pos;
                     while (i < count and i < vertices.items.len) : (i += 1) {
+                        if (offset + 12 > data.len) break;
                         vertices.items[i].normal = .{
                             .x = @bitCast(std.mem.readInt(u32, data[offset..][0..4], .little)),
                             .y = @bitCast(std.mem.readInt(u32, data[offset + 4 ..][0..4], .little)),

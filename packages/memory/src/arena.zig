@@ -102,16 +102,21 @@ pub const Arena = struct {
 
     /// Grow the arena by allocating a new buffer segment
     fn grow(self: *Arena, min_size: usize) !bool {
-        // Calculate new buffer size
+        // Calculate new buffer size, clamping the float→int conversion so
+        // a very large current_size × growth_factor can't overflow usize.
         const current_size = self.buffer.len;
-        const growth_size = @max(
-            min_size,
-            @as(usize, @intFromFloat(@as(f64, @floatFromInt(current_size)) * self.config.growth_factor)),
-        );
+        const raw = @as(f64, @floatFromInt(current_size)) * self.config.growth_factor;
+        const from_growth: usize = if (raw >= @as(f64, @floatFromInt(std.math.maxInt(usize))))
+            std.math.maxInt(usize)
+        else
+            @intFromFloat(raw);
+        const growth_size = @max(min_size, from_growth);
 
-        // Check max size limit
-        if (self.config.max_size > 0 and self.total_capacity + growth_size > self.config.max_size) {
-            return false;
+        // Check max size limit with overflow-safe arithmetic.
+        if (self.config.max_size > 0) {
+            if (growth_size > self.config.max_size - self.total_capacity) {
+                return false;
+            }
         }
 
         // Allocate new buffer

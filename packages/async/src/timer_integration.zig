@@ -171,7 +171,8 @@ pub fn timeout(comptime T: type, duration_ns: u64, future: future_mod.Future(T),
             const s = @as(*State, @ptrCast(@alignCast(ptr)));
 
             if (s.completed) {
-                unreachable; // Polled after completion
+                // Polling a completed future returns a terminal Ready.
+                return .{ .Ready = null };
             }
 
             // Check if timeout expired

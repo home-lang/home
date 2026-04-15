@@ -289,6 +289,7 @@ pub const DispatchResolver = struct {
     pub fn deinit(self: *DispatchResolver) void {
         var it = self.dispatch_tables.iterator();
         while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit();
         }
         self.dispatch_tables.deinit();
@@ -299,16 +300,29 @@ pub const DispatchResolver = struct {
         self: *DispatchResolver,
         multi_fn: *MultiDispatchFn,
     ) !void {
-        var table = DispatchTable.init(self.allocator, multi_fn.name);
-        
+        const name_for_table = try self.allocator.dupe(u8, multi_fn.name);
+        errdefer self.allocator.free(name_for_table);
+
+        var table = DispatchTable.init(self.allocator, name_for_table);
+        errdefer table.deinit();
+
         for (multi_fn.variants, 0..) |variant, i| {
             const signature = try self.extractSignature(variant.params);
             const specificity = self.calculateSpecificity(variant.params);
-            
+
             try table.addEntry(signature, i, specificity);
         }
-        
-        try self.dispatch_tables.put(multi_fn.name, table);
+
+        const key_copy = try self.allocator.dupe(u8, multi_fn.name);
+        errdefer self.allocator.free(key_copy);
+
+        const gop = try self.dispatch_tables.getOrPut(key_copy);
+        if (gop.found_existing) {
+            self.allocator.free(key_copy);
+            var old = gop.value_ptr.*;
+            old.deinit();
+        }
+        gop.value_ptr.* = table;
     }
 
     /// Resolve which variant to call for given argument types
@@ -323,7 +337,11 @@ pub const DispatchResolver = struct {
 
     fn extractSignature(self: *DispatchResolver, params: []const DispatchParam) ![]const []const u8 {
         var signature = try self.allocator.alloc([]const u8, params.len);
-        
+        errdefer self.allocator.free(signature);
+
+        var filled: usize = 0;
+        errdefer for (signature[0..filled]) |s| self.allocator.free(s);
+
         for (params, 0..) |param, i| {
             signature[i] = switch (param.type_constraint) {
                 .Concrete => |t| try self.allocator.dupe(u8, t),
@@ -332,8 +350,9 @@ pub const DispatchResolver = struct {
                 .Any => try self.allocator.dupe(u8, "Any"),
                 .Union => try self.allocator.dupe(u8, "Union"),
             };
+            filled = i + 1;
         }
-        
+
         return signature;
     }
 

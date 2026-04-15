@@ -373,7 +373,7 @@ pub const SignatureHelpProvider = struct {
     /// Find the function call context at the cursor position
     fn findCallContext(self: *SignatureHelpProvider, doc_text: []const u8, line: u32, character: u32) !?CallContext {
         // Split document into lines
-        var lines = std.mem.split(u8, doc_text, "\n");
+        var lines = std.mem.splitScalar(u8, doc_text, '\n');
         var current_line: u32 = 0;
 
         // Find the target line

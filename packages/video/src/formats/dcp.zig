@@ -18,7 +18,7 @@ pub const Dcp = struct {
         psa, // Public service announcement
         rating,
         short,
-        test,
+        @"test",
     };
 
     /// Composition Playlist (CPL)
@@ -419,7 +419,9 @@ pub const DcpUtils = struct {
         var random_bytes: [16]u8 = undefined;
 
         // Generate random bytes
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+        const ms = std.time.milliTimestamp();
+        const seed: u64 = if (ms < 0) 0 else @intCast(ms);
+        var prng = std.rand.DefaultPrng.init(seed);
         prng.fill(&random_bytes);
 
         // Set version and variant

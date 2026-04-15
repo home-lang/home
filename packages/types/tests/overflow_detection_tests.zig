@@ -110,14 +110,15 @@ test "value range - division by zero" {
     const range1 = overflow.ValueRange.init(100, 200);
     const range2 = overflow.ValueRange.init(-5, 5); // Includes zero
 
-    try std.testing.expect(range2.canOverflowDiv(range1));
+    // canOverflowDiv(dividend, divisor) checks if the divisor range includes zero
+    try std.testing.expect(range1.canOverflowDiv(range2));
 }
 
 test "value range - division by non-zero" {
     const range1 = overflow.ValueRange.init(100, 200);
     const range2 = overflow.ValueRange.init(1, 10); // Does not include zero
 
-    try std.testing.expect(!range2.canOverflowDiv(range1));
+    try std.testing.expect(!range1.canOverflowDiv(range2));
 }
 
 test "value range - add computation" {
@@ -202,7 +203,7 @@ test "overflow tracker - check addition with overflow" {
 
     const range1 = overflow.ValueRange.init(100, 120);
     const range2 = overflow.ValueRange.init(20, 30);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkAdd(range1, range2, .I8, loc);
 
@@ -218,7 +219,7 @@ test "overflow tracker - check addition without overflow" {
 
     const range1 = overflow.ValueRange.init(10, 20);
     const range2 = overflow.ValueRange.init(5, 10);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkAdd(range1, range2, .I16, loc);
 
@@ -233,7 +234,7 @@ test "overflow tracker - check subtraction underflow" {
 
     const range1 = overflow.ValueRange.init(10, 20);
     const range2 = overflow.ValueRange.init(30, 40);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkSub(range1, range2, .U8, loc);
 
@@ -249,7 +250,7 @@ test "overflow tracker - check multiplication overflow" {
 
     const range1 = overflow.ValueRange.init(200, 300);
     const range2 = overflow.ValueRange.init(100, 200);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkMul(range1, range2, .I16, loc);
 
@@ -265,7 +266,7 @@ test "overflow tracker - check division by zero" {
 
     const dividend = overflow.ValueRange.init(100, 200);
     const divisor = overflow.ValueRange.init(-5, 5); // Includes zero
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDiv(dividend, divisor, loc);
 
@@ -280,7 +281,7 @@ test "overflow tracker - check cast truncation" {
     tracker.setMode(.CompileTime);
 
     const range = overflow.ValueRange.init(1000, 2000);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Cast i32 range to i8 (max 127)
     try tracker.checkCast(range, .I32, .I8, loc);
@@ -297,7 +298,7 @@ test "overflow tracker - unchecked mode warning" {
 
     const range1 = overflow.ValueRange.init(100, 120);
     const range2 = overflow.ValueRange.init(20, 30);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkAdd(range1, range2, .I8, loc);
 
@@ -418,7 +419,7 @@ test "stress test - many range checks" {
 
     tracker.setMode(.CompileTime);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     var i: usize = 0;
     while (i < 100) : (i += 1) {
@@ -437,7 +438,7 @@ test "complex scenario - loop counter" {
 
     tracker.setMode(.CompileTime);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Simulate: for i in 0..100 { x = i * 2 }
     const i_range = overflow.ValueRange.init(0, 100);
@@ -456,7 +457,7 @@ test "complex scenario - accumulator" {
 
     tracker.setMode(.CompileTime);
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Simulate: acc = 0; for i in 0..50 { acc += i }
     var acc_range = overflow.ValueRange.fromConstant(0);

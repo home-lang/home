@@ -330,7 +330,7 @@ pub const OverflowTracker = struct {
         right: ValueRange,
         loc: ast.SourceLocation,
     ) !void {
-        if (right.canOverflowDiv(left)) {
+        if (left.canOverflowDiv(right)) {
             try self.addError(.{
                 .kind = .DivisionByZero,
                 .message = try std.fmt.allocPrint(
@@ -510,7 +510,7 @@ test "overflow tracker addition" {
 
     const range1 = ValueRange.init(100, 120);
     const range2 = ValueRange.init(20, 30);
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     _ = try tracker.checkAdd(range1, range2, .I8, loc);
 
@@ -539,7 +539,7 @@ test "division by zero detection" {
 
     const dividend = ValueRange.init(100, 200);
     const divisor = ValueRange.init(-5, 5); // Includes zero
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.checkDiv(dividend, divisor, loc);
 

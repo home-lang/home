@@ -153,8 +153,8 @@ pub const LZ4Compressor = struct {
         const hash = self.hashPosition(input, pos);
         const match_pos = self.hash_table[hash];
 
-        // Update hash table
-        self.hash_table[hash] = @intCast(pos);
+        // Update hash table; positions beyond u32 wrap cleanly with @truncate.
+        self.hash_table[hash] = @truncate(pos);
 
         // Check if match is valid
         if (match_pos == 0) return null;
@@ -284,6 +284,9 @@ pub const LZ4Compressor = struct {
     }
 
     fn writeU32(self: *LZ4Compressor, value: usize) !void {
+        // @intCast would panic on overflow; surface it as a recoverable
+        // error so callers can abort the compression cleanly.
+        if (value > std.math.maxInt(u32)) return error.SizeTooLarge;
         const val: u32 = @intCast(value);
         try self.output.append(@intCast(val & 0xFF));
         try self.output.append(@intCast((val >> 8) & 0xFF));
@@ -314,8 +317,11 @@ pub const LZ4Decompressor = struct {
         // Read uncompressed size
         const uncompressed_size = self.readU32(input[0..4]);
 
-        // Pre-allocate output buffer
-        try self.output.ensureTotalCapacity(uncompressed_size);
+        // Cap the pre-allocation at a sane multiple of the compressed
+        // input so a maliciously large header field can't trigger a huge
+        // allocation up-front; the buffer will still grow as needed.
+        const max_prealloc = @min(uncompressed_size, input.len *| 256);
+        try self.output.ensureTotalCapacity(max_prealloc);
 
         // Decompress
         var ip: usize = 4; // Skip size header

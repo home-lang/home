@@ -115,11 +115,11 @@ pub const DropSafetyTracker = struct {
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
         }
-        self.errors.deinit(self.allocator);
+        self.errors.deinit();
         for (self.warnings.items) |w| {
             self.allocator.free(w.message);
         }
-        self.warnings.deinit(self.allocator);
+        self.warnings.deinit();
     }
 
     /// Register drop behavior for a type
@@ -518,7 +518,7 @@ test "double drop detection" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Drop once (OK)
     try tracker.dropVariable("s", loc);
@@ -540,7 +540,7 @@ test "drop order dependency" {
     // b depends on a (a must be dropped first)
     try tracker.addDependency("a", "b", "b references a");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     // Try to drop b before a (should error)
     try tracker.dropVariable("b", loc);
@@ -566,7 +566,7 @@ test "scope drop order" {
     var tracker = DropSafetyTracker.init(std.testing.allocator);
     defer tracker.deinit();
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.enterScope();
 
@@ -594,7 +594,7 @@ test "use after drop" {
     try tracker.registerType("String", .Simple);
     try tracker.registerVariable("s", "String");
 
-    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.ion" };
+    const loc = ast.SourceLocation{ .line = 1, .column = 1, .file = "test.home" };
 
     try tracker.dropVariable("s", loc);
 

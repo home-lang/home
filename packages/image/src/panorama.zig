@@ -265,7 +265,9 @@ pub fn estimateHomography(
 
     var best_homography = Homography.identity();
     var best_inlier_count: usize = 0;
-    var rng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+    const ts = std.time.timestamp();
+    const seed: u64 = if (ts < 0) 0 else @intCast(ts);
+    var rng = std.rand.DefaultPrng.init(seed);
 
     for (0..options.max_iterations) |_| {
         // Select 4 random matches
@@ -295,9 +297,9 @@ pub fn estimateHomography(
             const transformed = H.transform(p1.x, p1.y);
             const dx = transformed.x - p2.x;
             const dy = transformed.y - p2.y;
-            const error = @sqrt(dx * dx + dy * dy);
+            const err = @sqrt(dx * dx + dy * dy);
 
-            if (error < options.inlier_threshold) {
+            if (err < options.inlier_threshold) {
                 inlier_count += 1;
             }
         }

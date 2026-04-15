@@ -23,13 +23,12 @@ pub const UtilityTypes = struct {
         defer new_fields.deinit();
 
         for (source.fields) |field| {
-            // Wrap each field type in Optional
-            const optional_type = try self.allocator.create(Type);
-            optional_type.* = Type{ .Optional = &field.type };
-
+            // Wrap each field type in Optional.
+            // Store the Optional type directly in the field (no heap alloc needed
+            // since the inner pointer references the source struct's field type).
             try new_fields.append(.{
                 .name = field.name,
-                .type = optional_type.*,
+                .type = Type{ .Optional = &field.type },
             });
         }
 

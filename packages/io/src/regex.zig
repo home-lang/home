@@ -42,13 +42,16 @@ pub const Regex = struct {
 
     /// Compile a regex pattern
     pub fn compile(allocator: Allocator, pattern: []const u8) !Self {
-        const parser = try Parser.init(allocator, pattern);
+        var parser = try Parser.init(allocator, pattern);
         const ast = try parser.parse();
-        const nfa = try NFA.fromAST(allocator, ast);
+        var nfa = try NFA.fromAST(allocator, ast);
+        // If dupe fails, nfa would leak — tear it down on error.
+        errdefer nfa.deinit();
+        const owned_pattern = try allocator.dupe(u8, pattern);
 
         return Self{
             .allocator = allocator,
-            .pattern = try allocator.dupe(u8, pattern),
+            .pattern = owned_pattern,
             .nfa = nfa,
         };
     }
@@ -101,6 +104,7 @@ pub const Regex = struct {
     pub fn replaceFirst(self: *const Self, text: []const u8, replacement: []const u8) ![]u8 {
         if (self.find(text)) |m| {
             var result: std.ArrayList(u8) = .empty;
+            errdefer result.deinit(self.allocator);
             try result.appendSlice(self.allocator, text[0..m.start]);
             try result.appendSlice(self.allocator, replacement);
             try result.appendSlice(self.allocator, text[m.end..]);

@@ -183,10 +183,10 @@ pub const HTTP2Server = struct {
                     return err;
                 };
 
-                self.processFrame(received_frame) catch |err| {
-                    self.allocator.free(received_frame.payload);
-                    return err;
-                };
+                // processFrame's own `defer self.allocator.free(payload)`
+                // owns the payload regardless of success/failure; freeing
+                // it again here would be a double-free.
+                try self.processFrame(received_frame);
             }
         }
 
@@ -267,12 +267,15 @@ pub const HTTP2Server = struct {
                 self.allocator.free(headers);
             }
 
-            // Store headers
+            // Store headers. Dupe name+value first so a failed second
+            // dupe doesn't leak the first, and an errdefer guards the
+            // `put` call.
             for (headers) |header| {
-                try stream_ptr.headers.put(
-                    try self.allocator.dupe(u8, header.name),
-                    try self.allocator.dupe(u8, header.value),
-                );
+                const name_copy = try self.allocator.dupe(u8, header.name);
+                errdefer self.allocator.free(name_copy);
+                const value_copy = try self.allocator.dupe(u8, header.value);
+                errdefer self.allocator.free(value_copy);
+                try stream_ptr.headers.put(name_copy, value_copy);
             }
 
             // Check if headers are complete
@@ -341,6 +344,9 @@ pub const HTTP2Server = struct {
         }
 
         fn handleWindowUpdateFrame(self: *Connection, received_frame: frame.Frame) !void {
+            // WINDOW_UPDATE carries a 4-byte increment; reject malformed
+            // frames rather than panicking on OOB access.
+            if (received_frame.payload.len < 4) return error.MalformedFrame;
             const increment = (@as(u32, received_frame.payload[0] & 0x7F) << 24) |
                 (@as(u32, received_frame.payload[1]) << 16) |
                 (@as(u32, received_frame.payload[2]) << 8) |
@@ -354,6 +360,8 @@ pub const HTTP2Server = struct {
         }
 
         fn handlePingFrame(self: *Connection, received_frame: frame.Frame) !void {
+            // PING frames carry exactly 8 opaque bytes (RFC 7540 §6.7).
+            if (received_frame.payload.len < 8) return error.MalformedFrame;
             // Send PING ACK
             var pong_frame = frame.PingFrame.init();
             pong_frame.ack = true;
@@ -390,14 +398,17 @@ pub const HTTP2Server = struct {
             };
             defer request.deinit();
 
-            // Copy non-pseudo headers
+            // Copy non-pseudo headers. Dupe each piece into a local so
+            // a failed second dupe doesn't leak the first, and errdefer
+            // guards the `put` call.
             var it = stream_ptr.headers.iterator();
             while (it.next()) |entry| {
                 if (!std.mem.startsWith(u8, entry.key_ptr.*, ":")) {
-                    try request.headers.put(
-                        try self.allocator.dupe(u8, entry.key_ptr.*),
-                        try self.allocator.dupe(u8, entry.value_ptr.*),
-                    );
+                    const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+                    errdefer self.allocator.free(key_copy);
+                    const val_copy = try self.allocator.dupe(u8, entry.value_ptr.*);
+                    errdefer self.allocator.free(val_copy);
+                    try request.headers.put(key_copy, val_copy);
                 }
             }
 

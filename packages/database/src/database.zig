@@ -1,14 +1,19 @@
 const std = @import("std");
 pub const sqlite = @import("sqlite.zig");
 
-/// Simple spinlock mutex (SpinMutex removed in Zig 0.16)
+/// Simple spinlock mutex (SpinMutex removed in Zig 0.16). Uses an atomic
+/// bool as the lock word since std.atomic.Mutex doesn't exist.
 const SpinMutex = struct {
-    inner: std.atomic.Mutex = .unlocked,
+    locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
     pub fn lock(self: *SpinMutex) void {
-        while (!self.inner.tryLock()) std.atomic.spinLoopHint();
+        while (self.locked.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
     }
+
     pub fn unlock(self: *SpinMutex) void {
-        self.inner.unlock();
+        self.locked.store(false, .release);
     }
 };
 
@@ -363,7 +368,6 @@ pub const QueryBuilder = struct {
     fn appendLimit(self: *QueryBuilder, sql: *std.ArrayList(u8)) !void {
         if (self.limit_value) |limit_val| {
             const limit_str = try std.fmt.allocPrint(self.allocator, " LIMIT {d}", .{limit_val});
-            errdefer self.allocator.free(limit_str);
             defer self.allocator.free(limit_str);
             try sql.appendSlice(self.allocator, limit_str);
         }
@@ -372,7 +376,6 @@ pub const QueryBuilder = struct {
     fn appendOffset(self: *QueryBuilder, sql: *std.ArrayList(u8)) !void {
         if (self.offset_value) |offset_val| {
             const offset_str = try std.fmt.allocPrint(self.allocator, " OFFSET {d}", .{offset_val});
-            errdefer self.allocator.free(offset_str);
             defer self.allocator.free(offset_str);
             try sql.appendSlice(self.allocator, offset_str);
         }
