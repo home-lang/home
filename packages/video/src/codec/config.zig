@@ -44,7 +44,8 @@ pub const QualityPreset = enum {
     }
 
     pub fn toBitrate(self: QualityPreset, width: u32, height: u32, fps: f64) u32 {
-        const pixels = width * height;
+        // Widen to u64 so 8K+ resolutions don't overflow the pixel count.
+        const pixels: u64 = @as(u64, width) * @as(u64, height);
         const base_rate: f32 = switch (self) {
             .very_low => 0.05,
             .low => 0.1,
@@ -55,7 +56,12 @@ pub const QualityPreset = enum {
         };
 
         const bits_per_pixel = base_rate * @as(f32, @floatCast(fps));
-        return @intFromFloat(@as(f32, @floatFromInt(pixels)) * bits_per_pixel);
+        const bitrate_f = @as(f32, @floatFromInt(pixels)) * bits_per_pixel;
+        // Clamp so @intFromFloat cannot panic on NaN/Inf/oversized results.
+        if (!std.math.isFinite(bitrate_f) or bitrate_f <= 0) return 0;
+        const max_f: f32 = @floatFromInt(@as(u32, std.math.maxInt(u32)));
+        if (bitrate_f >= max_f) return std.math.maxInt(u32);
+        return @intFromFloat(bitrate_f);
     }
 };
 
@@ -155,7 +161,7 @@ pub const RateControlConfig = struct {
         };
     }
 
-    pub fn crf(quality: u8) RateControlConfig {
+    pub fn withCrf(quality: u8) RateControlConfig {
         return .{
             .mode = .crf,
             .bitrate = 0,
@@ -239,7 +245,7 @@ pub const EncoderConfig = struct {
             .width = width,
             .height = height,
             .fps = fps,
-            .rate_control = RateControlConfig.crf(quality_crf),
+            .rate_control = RateControlConfig.withCrf(quality_crf),
             .gop = GOPConfig.auto(fps),
         };
     }

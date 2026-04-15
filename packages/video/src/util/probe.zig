@@ -223,14 +223,21 @@ pub const Prober = struct {
                 // 64-bit size follows
                 var size64_buf: [8]u8 = undefined;
                 _ = try file.read(&size64_buf);
-                // Handle 64-bit box size
-                try file.seekBy(@intCast(std.mem.readInt(u64, &size64_buf, .big) - 16));
+                // Handle 64-bit box size. Reject malformed sizes so the
+                // unsigned subtraction and the i64 seek cast don't trap.
+                const size64 = std.mem.readInt(u64, &size64_buf, .big);
+                if (size64 < 16) return error.InvalidBoxSize;
+                const skip = size64 - 16;
+                if (skip > std.math.maxInt(i64)) return error.InvalidBoxSize;
+                try file.seekBy(@intCast(skip));
                 continue;
             }
 
             // Parse specific boxes
             if (std.mem.eql(u8, box_type, "moov")) {
-                // Movie metadata box - contains track info
+                // Movie metadata box - contains track info. Reject malformed
+                // sizes so the unsigned subtraction below doesn't underflow.
+                if (size < 8) return error.InvalidBoxSize;
                 const moov_data = try self.allocator.alloc(u8, size - 8);
                 defer self.allocator.free(moov_data);
                 _ = try file.read(moov_data);

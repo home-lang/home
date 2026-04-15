@@ -210,7 +210,7 @@ pub const PathResolutionFlags = struct {
     no_follow_final: bool = false,
     /// Maximum symlink depth
     max_symlink_depth: u32 = 40,
-}
+};
 
 /// Resolve a path to an inode, respecting symlink security
 pub fn resolvePath(start: *Inode, path: []const u8, flags: PathResolutionFlags) !*Inode {

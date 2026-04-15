@@ -74,18 +74,23 @@ pub const Mixer = struct {
         buffer_size: usize,
     ) !Self {
         const channel_volumes = try allocator.alloc(f32, MAX_TRACKS);
+        errdefer allocator.free(channel_volumes);
         @memset(channel_volumes, 1.0);
 
         const channel_pans = try allocator.alloc(f32, MAX_TRACKS);
+        errdefer allocator.free(channel_pans);
         @memset(channel_pans, 0.0);
 
         const channel_mutes = try allocator.alloc(bool, MAX_TRACKS);
+        errdefer allocator.free(channel_mutes);
         @memset(channel_mutes, false);
 
         const channel_solos = try allocator.alloc(bool, MAX_TRACKS);
+        errdefer allocator.free(channel_solos);
         @memset(channel_solos, false);
 
         const mix_buffer = try allocator.alloc(f32, buffer_size * output_channels);
+        errdefer allocator.free(mix_buffer);
         @memset(mix_buffer, 0);
 
         return Self{

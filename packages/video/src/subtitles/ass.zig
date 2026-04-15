@@ -562,11 +562,21 @@ pub const AssWriter = struct {
             // Default style
             try result.appendSlice(allocator, "Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n");
         } else {
+            // Clamp parsed floats to u32 range so @intFromFloat cannot
+            // panic on NaN/negative/out-of-range values from malformed input.
+            const clampToU32 = struct {
+                fn call(v: f32) u32 {
+                    if (!std.math.isFinite(v) or v <= 0) return 0;
+                    const max: f32 = @floatFromInt(@as(u32, std.math.maxInt(u32)));
+                    if (v >= max) return std.math.maxInt(u32);
+                    return @intFromFloat(v);
+                }
+            }.call;
             for (self.styles.items) |style| {
                 const style_line = try std.fmt.allocPrint(allocator, "Style: {s},{s},{d},&H{X:0>8},&H{X:0>8},&H{X:0>8},&H{X:0>8},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}\n", .{
                     style.name,
                     style.fontname,
-                    @as(u32, @intFromFloat(style.fontsize)),
+                    clampToU32(style.fontsize),
                     style.primary_color,
                     style.secondary_color,
                     style.outline_color,
@@ -575,13 +585,13 @@ pub const AssWriter = struct {
                     @as(u8, if (style.italic) 1 else 0),
                     @as(u8, if (style.underline) 1 else 0),
                     @as(u8, if (style.strikeout) 1 else 0),
-                    @as(u32, @intFromFloat(style.scale_x)),
-                    @as(u32, @intFromFloat(style.scale_y)),
-                    @as(u32, @intFromFloat(style.spacing)),
-                    @as(u32, @intFromFloat(style.angle)),
+                    clampToU32(style.scale_x),
+                    clampToU32(style.scale_y),
+                    clampToU32(style.spacing),
+                    clampToU32(style.angle),
                     style.border_style,
-                    @as(u32, @intFromFloat(style.outline)),
-                    @as(u32, @intFromFloat(style.shadow)),
+                    clampToU32(style.outline),
+                    clampToU32(style.shadow),
                     @intFromEnum(style.alignment),
                     style.margin_l,
                     style.margin_r,

@@ -163,22 +163,22 @@ pub const Operand = struct {
         };
     }
 
-    pub fn formatInput(self: Operand) []const u8 {
+    pub fn formatInput(self: Operand) ![]const u8 {
         // Format: [name] "constraint" (value)
         return Basics.fmt.allocPrint(
             Basics.heap.page_allocator,
             "[{s}] \"{s}\" ({s})",
             .{ self.name, self.constraint.format(), self.name },
-        ) catch unreachable;
+        );
     }
 
-    pub fn formatOutput(self: Operand) []const u8 {
+    pub fn formatOutput(self: Operand) ![]const u8 {
         // Format: [name] "=constraint" (-> type)
         return Basics.fmt.allocPrint(
             Basics.heap.page_allocator,
             "[{s}] \"={s}\" (-> {s})",
             .{ self.name, self.constraint.format(), self.value_type },
-        ) catch unreachable;
+        );
     }
 };
 
@@ -258,7 +258,7 @@ pub const InlineAsmBuilder = struct {
             try writer.writeAll("    : ");
             for (self.outputs.items, 0..) |output, i| {
                 if (i > 0) try writer.writeAll(", ");
-                try writer.writeAll(output.formatOutput());
+                try writer.writeAll(try output.formatOutput());
             }
             try writer.writeAll(",\n");
         } else {
@@ -270,7 +270,7 @@ pub const InlineAsmBuilder = struct {
             try writer.writeAll("    : ");
             for (self.inputs.items, 0..) |input, i| {
                 if (i > 0) try writer.writeAll(", ");
-                try writer.writeAll(input.formatInput());
+                try writer.writeAll(try input.formatInput());
             }
             try writer.writeAll(",\n");
         } else {

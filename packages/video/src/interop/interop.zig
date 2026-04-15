@@ -489,6 +489,7 @@ pub const AudioBuffer = struct {
 
     /// Get duration in seconds
     pub fn getDurationSeconds(self: *const Self) f64 {
+        if (self.sample_rate == 0) return 0;
         return @as(f64, @floatFromInt(self.num_samples)) / @as(f64, @floatFromInt(self.sample_rate));
     }
 

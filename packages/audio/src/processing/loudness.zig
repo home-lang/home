@@ -86,22 +86,39 @@ pub const LoudnessMeter = struct {
     };
 
     pub fn init(allocator: Allocator, sample_rate: u32, channels: u8) !Self {
+        if (sample_rate == 0) return error.InvalidSampleRate;
+        if (channels == 0) return error.InvalidChannelCount;
         const momentary_samples = @as(usize, @intFromFloat(@as(f64, @floatFromInt(sample_rate)) * 0.4));
         const short_term_samples = @as(usize, @intFromFloat(@as(f64, @floatFromInt(sample_rate)) * 3.0));
+
+        // Allocate each buffer individually with errdefer so a later OOM
+        // does not leak earlier allocations.
+        const hs_z1 = try allocator.alloc(f64, channels);
+        errdefer allocator.free(hs_z1);
+        const hs_z2 = try allocator.alloc(f64, channels);
+        errdefer allocator.free(hs_z2);
+        const hp_z1 = try allocator.alloc(f64, channels);
+        errdefer allocator.free(hp_z1);
+        const hp_z2 = try allocator.alloc(f64, channels);
+        errdefer allocator.free(hp_z2);
+        const momentary_buffer = try allocator.alloc(f64, momentary_samples);
+        errdefer allocator.free(momentary_buffer);
+        const short_term_buffer = try allocator.alloc(f64, short_term_samples);
+        errdefer allocator.free(short_term_buffer);
 
         var self = Self{
             .allocator = allocator,
             .sample_rate = sample_rate,
             .channels = channels,
-            .hs_z1 = try allocator.alloc(f64, channels),
-            .hs_z2 = try allocator.alloc(f64, channels),
-            .hp_z1 = try allocator.alloc(f64, channels),
-            .hp_z2 = try allocator.alloc(f64, channels),
+            .hs_z1 = hs_z1,
+            .hs_z2 = hs_z2,
+            .hp_z1 = hp_z1,
+            .hp_z2 = hp_z2,
             .block_loudness = .{},
-            .momentary_buffer = try allocator.alloc(f64, momentary_samples),
+            .momentary_buffer = momentary_buffer,
             .momentary_pos = 0,
             .momentary_samples = momentary_samples,
-            .short_term_buffer = try allocator.alloc(f64, short_term_samples),
+            .short_term_buffer = short_term_buffer,
             .short_term_pos = 0,
             .short_term_samples = short_term_samples,
             .momentary_max = -100,

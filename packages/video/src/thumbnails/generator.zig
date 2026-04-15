@@ -106,7 +106,10 @@ pub const ThumbnailGenerator = struct {
 
     /// Check if frame is mostly black
     fn isBlackFrame(self: *Self, frame: *const core.VideoFrame) bool {
-        const pixel_count = frame.width * frame.height;
+        // Widen to u64 to avoid overflow on 8K+ frames (where width*height
+        // in u32 exceeds 2^32).
+        const pixel_count: u64 = @as(u64, frame.width) * @as(u64, frame.height);
+        if (pixel_count == 0) return true;
         var sum: u64 = 0;
 
         // Sample luma channel
@@ -122,6 +125,7 @@ pub const ThumbnailGenerator = struct {
 
     /// Resize frame to thumbnail size
     pub fn resizeFrame(self: *Self, frame: *const core.VideoFrame) !*core.VideoFrame {
+        if (frame.width == 0 or frame.height == 0) return error.InvalidFrameDimensions;
         const output = try self.allocator.create(core.VideoFrame);
 
         // Calculate output dimensions maintaining aspect ratio
@@ -131,6 +135,7 @@ pub const ThumbnailGenerator = struct {
             self.config.height
         else
             @as(u32, @intFromFloat(@as(f32, @floatFromInt(out_width)) / aspect_ratio));
+        if (out_width == 0 or out_height == 0) return error.InvalidOutputDimensions;
 
         output.* = try core.VideoFrame.init(self.allocator, out_width, out_height, frame.format);
 

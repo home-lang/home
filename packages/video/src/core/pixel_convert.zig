@@ -120,17 +120,25 @@ pub const Frame = struct {
         format: PixelFormat,
         allocator: Allocator,
     ) !Frame {
+        // Widen to usize so width*height can't overflow u32 for 8K+ frames.
+        const w: usize = width;
+        const h: usize = height;
+
         var frame = Frame{
             .width = width,
             .height = height,
             .format = format,
             .allocator = allocator,
         };
+        // Free any planes we've already allocated if a later alloc fails.
+        errdefer for (&frame.planes) |*plane| {
+            if (plane.len > 0) allocator.free(plane.*);
+        };
 
         switch (format) {
             .yuv420p => {
-                const y_size = width * height;
-                const uv_size = (width / 2) * (height / 2);
+                const y_size = w * h;
+                const uv_size = (w / 2) * (h / 2);
 
                 frame.planes[0] = try allocator.alloc(u8, y_size);
                 frame.planes[1] = try allocator.alloc(u8, uv_size);
@@ -141,8 +149,8 @@ pub const Frame = struct {
                 frame.strides[2] = width / 2;
             },
             .yuv422p => {
-                const y_size = width * height;
-                const uv_size = (width / 2) * height;
+                const y_size = w * h;
+                const uv_size = (w / 2) * h;
 
                 frame.planes[0] = try allocator.alloc(u8, y_size);
                 frame.planes[1] = try allocator.alloc(u8, uv_size);
@@ -153,7 +161,7 @@ pub const Frame = struct {
                 frame.strides[2] = width / 2;
             },
             .yuv444p => {
-                const size = width * height;
+                const size = w * h;
 
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.planes[1] = try allocator.alloc(u8, size);
@@ -164,8 +172,8 @@ pub const Frame = struct {
                 frame.strides[2] = width;
             },
             .nv12, .nv21 => {
-                const y_size = width * height;
-                const uv_size = width * (height / 2);
+                const y_size = w * h;
+                const uv_size = w * (h / 2);
 
                 frame.planes[0] = try allocator.alloc(u8, y_size);
                 frame.planes[1] = try allocator.alloc(u8, uv_size);
@@ -174,27 +182,27 @@ pub const Frame = struct {
                 frame.strides[1] = width;
             },
             .rgb24, .bgr24 => {
-                const size = width * height * 3;
+                const size = w * h * 3;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 3;
             },
             .rgba32, .bgra32, .argb32 => {
-                const size = width * height * 4;
+                const size = w * h * 4;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 4;
             },
             .yuyv, .uyvy => {
-                const size = width * height * 2;
+                const size = w * h * 2;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 2;
             },
             .gray8 => {
-                const size = width * height;
+                const size = w * h;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width;
             },
             .gray16 => {
-                const size = width * height * 2;
+                const size = w * h * 2;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 2;
             },

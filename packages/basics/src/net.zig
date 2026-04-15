@@ -109,6 +109,7 @@ pub const UdpSocket = struct {
             std.posix.SOCK.DGRAM,
             std.posix.IPPROTO.UDP,
         );
+        errdefer std.posix.close(socket);
 
         try std.posix.bind(socket, &address.any, address.getOsSockLen());
 
