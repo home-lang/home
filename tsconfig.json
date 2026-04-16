@@ -24,5 +24,10 @@
     "skipDefaultLibCheck": true,
     "skipLibCheck": true
   },
-  "exclude": ["docs", "dist", "node_modules", "packages", "pickier.config.ts"]
+  "files": [],
+  "references": [
+    { "path": "packages/action" },
+    { "path": "packages/vscode-home" }
+  ],
+  "exclude": ["docs", "dist", "node_modules"]
 }
