@@ -72,10 +72,10 @@ A **comprehensive POSIX-compatible threading system** has been fully designed an
    - Scheduling parameters
 
 10. **Error Handling**
-    - 50+ specific error types
-    - Thread, mutex, semaphore, condvar errors
-    - Stack, TLS, scheduling errors
-    - Resource management errors
+     - 50+ specific error types
+     - Thread, mutex, semaphore, condvar errors
+     - Stack, TLS, scheduling errors
+     - Resource management errors
 
 ---
 
