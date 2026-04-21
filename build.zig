@@ -97,12 +97,25 @@ pub fn build(b: *std.Build) void {
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
     {
-        const sqlite_c = b.addTranslateC(.{
-            .root_source_file = b.path("packages/database/src/sqlite_c.h"),
-            .target = target,
-            .optimize = optimize,
-        });
-        database_pkg.addImport("c", sqlite_c.createModule());
+        // On Windows CI the system sqlite3.h is unavailable, so fall back
+        // to a hand-rolled stub module that declares just the symbols the
+        // rest of the code type-checks against (it is linked at runtime
+        // only when a sqlite3 library is actually present).
+        if (target.result.os.tag == .windows) {
+            const stub = b.createModule(.{
+                .root_source_file = b.path("packages/database/src/sqlite_c_stub.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            database_pkg.addImport("c", stub);
+        } else {
+            const sqlite_c = b.addTranslateC(.{
+                .root_source_file = b.path("packages/database/src/sqlite_c.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            database_pkg.addImport("c", sqlite_c.createModule());
+        }
     }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
@@ -786,6 +799,7 @@ pub fn build(b: *std.Build) void {
     });
 
     parser_bench.root_module.addImport("home", home_module);
+    parser_bench.root_module.link_libc = true;
 
     b.installArtifact(parser_bench);
 

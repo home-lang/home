@@ -1101,7 +1101,7 @@ fn watchCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
         if (comptime native_os == .windows) {
             // 500ms in 100-nanosecond intervals, negative for relative time
             var delay: i64 = -5_000_000;
-            _ = std.os.windows.ntdll.NtDelayExecution(0, &delay);
+            _ = std.os.windows.ntdll.NtDelayExecution(.FALSE, &delay);
         } else if (comptime native_os == .linux) {
             const linux = std.os.linux;
             _ = linux.nanosleep(&.{ .sec = 0, .nsec = 500_000_000 }, null);

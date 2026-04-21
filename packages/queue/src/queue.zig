@@ -5,6 +5,32 @@ const Io = std.Io;
 const posix = std.posix;
 const c = std.c;
 
+/// Winsock shims. Zig 0.17 dropped most WSA* and berkeley-socket externs
+/// from `std.os.windows.ws2_32`; declare the subset we use here.
+const winsock = if (native_os == .windows) struct {
+    const ws = std.os.windows.ws2_32;
+    const SOCKET = *anyopaque;
+
+    const WSADATA = extern struct {
+        wVersion: u16,
+        wHighVersion: u16,
+        iMaxSockets: u16,
+        iMaxUdpDg: u16,
+        lpVendorInfo: ?[*:0]u8,
+        szDescription: [257]u8,
+        szSystemStatus: [129]u8,
+    };
+
+    extern "ws2_32" fn WSAStartup(wVersionRequested: u16, lpWSAData: *WSADATA) callconv(.winapi) c_int;
+    extern "ws2_32" fn socket(af: c_int, typ: c_int, protocol: c_int) callconv(.winapi) SOCKET;
+    extern "ws2_32" fn connect(s: SOCKET, name: *const ws.sockaddr, namelen: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn closesocket(s: SOCKET) callconv(.winapi) c_int;
+    extern "ws2_32" fn send(s: SOCKET, buf: [*]const u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn recv(s: SOCKET, buf: [*]u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
+
+    const INVALID_SOCKET: SOCKET = @ptrFromInt(std.math.maxInt(usize));
+} else void;
+
 /// Thread-safe mutex (Zig 0.16 compatible - uses atomic spinlock)
 const Mutex = struct {
     state: std.atomic.Mutex = .unlocked,
@@ -811,10 +837,10 @@ pub const RedisQueueDriver = struct {
             const sock_fd = if (comptime native_os == .windows) blk: {
                 const ws = std.os.windows.ws2_32;
                 // Initialize Winsock
-                var wsa_data: ws.WSADATA = undefined;
-                if (ws.WSAStartup(0x0202, &wsa_data) != 0) return error.ConnectionFailed;
-                const s = ws.socket(ws.AF.INET, ws.SOCK.STREAM, 0);
-                if (s == ws.INVALID_SOCKET) return error.ConnectionFailed;
+                var wsa_data: winsock.WSADATA = undefined;
+                if (winsock.WSAStartup(0x0202, &wsa_data) != 0) return error.ConnectionFailed;
+                const s = winsock.socket(ws.AF.INET, ws.SOCK.STREAM, 0);
+                if (s == winsock.INVALID_SOCKET) return error.ConnectionFailed;
                 break :blk s;
             } else if (comptime native_os == .linux) blk: {
                 const linux = std.os.linux;
@@ -851,8 +877,8 @@ pub const RedisQueueDriver = struct {
                     .port = std.mem.nativeToBig(u16, self.port),
                     .addr = ip_addr,
                 };
-                if (ws.connect(self.socket.?, @ptrCast(&addr), @sizeOf(ws.sockaddr.in)) != 0) {
-                    _ = ws.closesocket(self.socket.?);
+                if (winsock.connect(self.socket.?, @ptrCast(&addr), @sizeOf(ws.sockaddr.in)) != 0) {
+                    _ = winsock.closesocket(self.socket.?);
                     self.socket = null;
                     return error.ConnectionFailed;
                 }
@@ -887,7 +913,7 @@ pub const RedisQueueDriver = struct {
         pub fn disconnect(self: *Redis) void {
             if (self.socket) |s| {
                 if (comptime native_os == .windows) {
-                    _ = std.os.windows.ws2_32.closesocket(s);
+                    _ = winsock.closesocket(s);
                 } else {
                     _ = c.close(s);
                 }
@@ -898,7 +924,7 @@ pub const RedisQueueDriver = struct {
         /// Cross-platform socket send
         fn socketSend(sock: posix.socket_t, data: []const u8) bool {
             if (comptime native_os == .windows) {
-                return std.os.windows.ws2_32.send(sock, data.ptr, @intCast(data.len), 0) != -1;
+                return winsock.send(sock, data.ptr, @intCast(data.len), 0) != -1;
             } else if (comptime native_os == .linux) {
                 const linux = std.os.linux;
                 const rc = linux.sendto(sock, data.ptr, data.len, 0, null, 0);
@@ -912,7 +938,7 @@ pub const RedisQueueDriver = struct {
         /// Cross-platform socket recv
         fn socketRecv(sock: posix.socket_t, buf: []u8) i32 {
             if (comptime native_os == .windows) {
-                return std.os.windows.ws2_32.recv(sock, buf.ptr, @intCast(buf.len), 0);
+                return winsock.recv(sock, buf.ptr, @intCast(buf.len), 0);
             } else if (comptime native_os == .linux) {
                 const linux = std.os.linux;
                 const rc = linux.recvfrom(sock, buf.ptr, buf.len, 0, null, null);
