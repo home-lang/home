@@ -194,16 +194,25 @@ pub fn getRandomRange(min: u64, max: u64) u64 {
     return min + (rand % range);
 }
 
+/// Little-endian u64 write without requiring std in this freestanding module.
+inline fn writeU64Le(buf: *[8]u8, value: u64) void {
+    var v = value;
+    for (buf) |*b| {
+        b.* = @truncate(v);
+        v >>= 8;
+    }
+}
+
 /// Get random bytes
 pub fn getRandomBytes(out: []u8) void {
-    // Try hardware RNG first for better quality. Use std.mem.writeInt to
-    // avoid requiring u64 alignment on the output buffer (which is a []u8
+    // Try hardware RNG first for better quality. Write bytes via writeU64Le
+    // to avoid requiring u64 alignment on the output buffer (which is a []u8
     // and typically only 1-byte aligned).
     if (hasRdrand()) {
         var i: usize = 0;
         while (i + 8 <= out.len) : (i += 8) {
             if (rdrand()) |value| {
-                std.mem.writeInt(u64, out[i..][0..8], value, .little);
+                writeU64Le(out[i..][0..8], value);
             } else {
                 getEntropyBytes(out[i..i + 8]);
             }
@@ -213,7 +222,7 @@ pub fn getRandomBytes(out: []u8) void {
         if (i < out.len) {
             var temp: [8]u8 = undefined;
             if (rdrand()) |value| {
-                std.mem.writeInt(u64, &temp, value, .little);
+                writeU64Le(&temp, value);
             } else {
                 getEntropyBytes(&temp);
             }

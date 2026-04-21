@@ -61,7 +61,7 @@ pub fn fence(comptime ordering: MemoryOrder) void {
     switch (ordering) {
         .seq_cst => asm volatile ("mfence" ::: .{ .memory = true }),
         .acq_rel, .release, .acquire => asm volatile ("" ::: .{ .memory = true }),
-        .relaxed => {},
+        .unordered, .monotonic => {},
     }
 }
 
