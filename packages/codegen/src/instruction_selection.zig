@@ -197,7 +197,7 @@ pub const InstructionSelector = struct {
         // value is a constant, it is never the result of a shift.
         return switch (value) {
             .constant => false,
-            .register => |_| {
+            .register => {
                 // In the current IR model, register IDs don't carry provenance
                 // information.  Return false so we fall through to the normal
                 // add_reg_reg pattern — no correctness impact, just a missed

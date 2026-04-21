@@ -167,10 +167,12 @@ pub const IRCache = struct {
 
         // Write cache file format:
         // [source_hash: u64][timestamp: i64][ast_len: u64][type_len: u64][ast_data][type_data]
-        try file.writeInt(u64, ir.source_hash, .little);
-        try file.writeInt(i64, ir.timestamp, .little);
-        try file.writeInt(u64, ir.ast_data.len, .little);
-        try file.writeInt(u64, ir.type_info.len, .little);
+        var header: [32]u8 = undefined;
+        std.mem.writeInt(u64, header[0..8], ir.source_hash, .little);
+        std.mem.writeInt(i64, header[8..16], ir.timestamp, .little);
+        std.mem.writeInt(u64, header[16..24], ir.ast_data.len, .little);
+        std.mem.writeInt(u64, header[24..32], ir.type_info.len, .little);
+        try file.writeStreamingAll(io_val, &header);
         try file.writeStreamingAll(io_val, ir.ast_data);
         try file.writeStreamingAll(io_val, ir.type_info);
     }

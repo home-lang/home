@@ -195,15 +195,15 @@ pub const OwnershipTracker = struct {
             .Int, .I8, .I16, .I32, .I64,
             .U8, .U16, .U32, .U64,
             .Float, .F32, .F64,
-            .Bool, .Char, .Void,
+            .Bool, .Void,
             => false,
 
-            // References and pointers are Copy (the pointer value is copied).
-            .Pointer, .Reference, .MutableReference => false,
+            // References are Copy (the pointer value is copied).
+            .Reference, .MutableReference => false,
 
-            // Heap-owning types: String, Array, Map, structs, enums with data,
-            // closures, and Result types transfer ownership on assignment.
-            .String, .Array, .Map, .Struct, .Closure, .Result => true,
+            // Heap-owning types: String, Array, Map, structs, and Result types
+            // transfer ownership on assignment.
+            .String, .Array, .Map, .Struct, .Result => true,
 
             // Tuples are movable if they could contain non-Copy fields.
             .Tuple => true,

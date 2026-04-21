@@ -1,7 +1,39 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("sqlite3.h");
-});
+const c = @import("c");
+
+// SQLite's SQLITE_TRANSIENT is ((sqlite3_destructor_type)-1). Zig 0.17
+// refuses to materialize a misaligned function pointer at comptime AND
+// forbids widening alignment with @ptrCast. Work around it by binding
+// sqlite3_bind_text via our own extern decl that types the destructor
+// arg as an opaque ?*anyopaque (no alignment constraint).
+const sqlite3_bind_text_raw: *const fn (
+    stmt: ?*c.sqlite3_stmt,
+    idx: c_int,
+    text: [*c]const u8,
+    n: c_int,
+    destructor: ?*const anyopaque,
+) callconv(.c) c_int = @extern(*const fn (
+    ?*c.sqlite3_stmt,
+    c_int,
+    [*c]const u8,
+    c_int,
+    ?*const anyopaque,
+) callconv(.c) c_int, .{ .name = "sqlite3_bind_text" });
+const sqlite3_bind_blob_raw: *const fn (
+    stmt: ?*c.sqlite3_stmt,
+    idx: c_int,
+    data: ?*const anyopaque,
+    n: c_int,
+    destructor: ?*const anyopaque,
+) callconv(.c) c_int = @extern(*const fn (
+    ?*c.sqlite3_stmt,
+    c_int,
+    ?*const anyopaque,
+    c_int,
+    ?*const anyopaque,
+) callconv(.c) c_int, .{ .name = "sqlite3_bind_blob" });
+
+const SQLITE_TRANSIENT_PTR: ?*const anyopaque = @ptrFromInt(std.math.maxInt(usize));
 
 pub const DatabaseError = error{
     OpenFailed,
@@ -191,12 +223,12 @@ pub const Statement = struct {
         // Use SQLITE_TRANSIENT so SQLite copies the string. SQLITE_STATIC
         // would cause UB if the caller's slice is freed before the
         // statement is stepped or finalized.
-        const result = c.sqlite3_bind_text(
+        const result = sqlite3_bind_text_raw(
             self.stmt,
             index,
             value.ptr,
             @intCast(value.len),
-            @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), // SQLITE_TRANSIENT
+            SQLITE_TRANSIENT_PTR,
         );
         if (result != c.SQLITE_OK) {
             return DatabaseError.BindFailed;
@@ -221,12 +253,12 @@ pub const Statement = struct {
         // Use SQLITE_TRANSIENT so SQLite copies the blob — otherwise
         // callers whose buffer is freed before step()/finalize() would
         // cause SQLite to read freed memory.
-        const result = c.sqlite3_bind_blob(
+        const result = sqlite3_bind_blob_raw(
             self.stmt,
             index,
             value.ptr,
             @intCast(value.len),
-            @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))), // SQLITE_TRANSIENT
+            SQLITE_TRANSIENT_PTR,
         );
         if (result != c.SQLITE_OK) {
             return DatabaseError.BindFailed;

@@ -4885,7 +4885,8 @@ pub const Interpreter = struct {
             const result = try allocator.alloc(u8, len);
             // Generate pseudo-random alphanumeric characters using a simple LCG.
             const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            var seed: u32 = @truncate(@as(u64, @bitCast(std.time.milliTimestamp())));
+            var local_for_seed: u8 = 0;
+            var seed: u32 = @truncate(@intFromPtr(&local_for_seed));
             for (0..len) |i| {
                 seed = seed *% 1103515245 +% 12345;
                 result[i] = chars[(seed >> 16) % chars.len];
@@ -10708,7 +10709,7 @@ pub const Interpreter = struct {
             .Int => |i| blk: {
                 if (i == 0) break :blk 1;
                 // Use unsigned absolute value to avoid overflow on i64 min.
-                var n: u64 = if (i < 0) @intCast(-(i +% 1)) + 1 else @intCast(i);
+                var n: u64 = if (i < 0) @as(u64, @intCast(-(i +% 1))) + 1 else @as(u64, @intCast(i));
                 var len: usize = if (i < 0) 1 else 0;
                 while (n > 0) : (n = n / 10) {
                     len += 1;

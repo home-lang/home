@@ -56,6 +56,10 @@ pub const CodegenError = error{
     NarrowingCastOutOfRange,
     /// SIB index field rejected rsp as the index register
     InvalidSibIndex,
+    /// Arithmetic overflow
+    Overflow,
+    /// Stack frame exceeded addressable size
+    StackTooLarge,
 } || std.mem.Allocator.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError;
 
 /// Maximum number of local variables per function.

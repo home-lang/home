@@ -96,6 +96,14 @@ pub fn build(b: *std.Build) void {
     const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize, zig_test_framework);
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
+    {
+        const sqlite_c = b.addTranslateC(.{
+            .root_source_file = b.path("packages/database/src/sqlite_c.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        database_pkg.addImport("c", sqlite_c.createModule());
+    }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
