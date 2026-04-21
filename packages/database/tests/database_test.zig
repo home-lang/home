@@ -109,7 +109,7 @@ test "database: query builder - simple select" {
     const sql = try builder.from("users").build();
     defer allocator.free(sql);
 
-    try testing.expectEqualStrings("SELECT * FROM users", sql);
+    try testing.expectEqualStrings("SELECT * FROM \"users\"", sql);
 }
 
 test "database: query builder - select with fields" {
@@ -125,7 +125,7 @@ test "database: query builder - select with fields" {
         .build();
     defer allocator.free(sql);
 
-    try testing.expectEqualStrings("SELECT id, name, email FROM users", sql);
+    try testing.expectEqualStrings("SELECT id, name, email FROM \"users\"", sql);
 }
 
 test "database: query builder - where clause" {
@@ -140,7 +140,7 @@ test "database: query builder - where clause" {
         .build();
     defer allocator.free(sql);
 
-    try testing.expectEqualStrings("SELECT * FROM users WHERE age > 18", sql);
+    try testing.expectEqualStrings("SELECT * FROM \"users\" WHERE age > 18", sql);
 }
 
 test "database: query builder - order by" {
@@ -155,7 +155,7 @@ test "database: query builder - order by" {
         .build();
     defer allocator.free(sql);
 
-    try testing.expectEqualStrings("SELECT * FROM users ORDER BY name ASC", sql);
+    try testing.expectEqualStrings("SELECT * FROM \"users\" ORDER BY name ASC", sql);
 }
 
 test "database: query builder - limit and offset" {
@@ -171,7 +171,7 @@ test "database: query builder - limit and offset" {
         .build();
     defer allocator.free(sql);
 
-    try testing.expectEqualStrings("SELECT * FROM users LIMIT 10 OFFSET 20", sql);
+    try testing.expectEqualStrings("SELECT * FROM \"users\" LIMIT 10 OFFSET 20", sql);
 }
 
 test "database: query builder - complex query" {
@@ -192,7 +192,7 @@ test "database: query builder - complex query" {
     defer allocator.free(sql);
 
     try testing.expectEqualStrings(
-        "SELECT id, name FROM users WHERE age > 18 AND active = 1 ORDER BY name DESC LIMIT 5",
+        "SELECT id, name FROM \"users\" WHERE age > 18 AND active = 1 ORDER BY name DESC LIMIT 5",
         sql,
     );
 }
