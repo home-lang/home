@@ -111,7 +111,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.16.0-dev.3144+ac6fb0b59'
+          version: '0.17.0-dev.56+a8226cd53'
 
       - name: Verify Zig Installation
         run: zig version
@@ -184,7 +184,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.16.0-dev.3144+ac6fb0b59'
+          version: '0.17.0-dev.56+a8226cd53'
 
       - name: Run kernel memory tests
         run: |
@@ -224,7 +224,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.16.0-dev.3144+ac6fb0b59'
+          version: '0.17.0-dev.56+a8226cd53'
 
       - name: Run filesystem tests
         run: |
@@ -242,7 +242,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.16.0-dev.3144+ac6fb0b59'
+          version: '0.17.0-dev.56+a8226cd53'
 
       - name: Run network stack tests
         run: |
