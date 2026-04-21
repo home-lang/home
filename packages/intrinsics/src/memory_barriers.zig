@@ -2,6 +2,7 @@
 // Memory ordering and synchronization primitives
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const MemoryOrder = enum {
     unordered,
@@ -54,12 +55,16 @@ pub fn storeBarrier() void {
 }
 
 // Custom fence with specific ordering.
-// Uses x86-64 instructions where a full barrier is needed; compiler-only
-// fence for weaker orderings since x86 already provides strong ordering
-// for most load/store pairs.
+// Emits the architecture-appropriate full barrier for seq_cst and a
+// compiler-only fence for weaker orderings (x86 and arm64 both provide
+// strong enough ordering for most load/store pairs without a CPU fence).
 pub fn fence(comptime ordering: MemoryOrder) void {
     switch (ordering) {
-        .seq_cst => asm volatile ("mfence" ::: .{ .memory = true }),
+        .seq_cst => switch (builtin.cpu.arch) {
+            .x86_64, .x86 => asm volatile ("mfence" ::: .{ .memory = true }),
+            .aarch64, .aarch64_be => asm volatile ("dmb sy" ::: .{ .memory = true }),
+            else => asm volatile ("" ::: .{ .memory = true }),
+        },
         .acq_rel, .release, .acquire => asm volatile ("" ::: .{ .memory = true }),
         .unordered, .monotonic => {},
     }
