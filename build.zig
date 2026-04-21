@@ -97,26 +97,27 @@ pub fn build(b: *std.Build) void {
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
     {
-        // translate-c can only locate sqlite3.h on the build host. For any
-        // cross-compile target (including Windows CI and aarch64-linux CI
-        // on an x86_64 runner), fall back to a hand-rolled stub module
-        // that declares just the symbols the rest of the code type-checks
-        // against — the real sqlite3 symbols are resolved at link time
-        // where the library is actually available.
-        if (target.query.isNative()) {
-            const sqlite_c = b.addTranslateC(.{
-                .root_source_file = b.path("packages/database/src/sqlite_c.h"),
-                .target = target,
-                .optimize = optimize,
-            });
-            database_pkg.addImport("c", sqlite_c.createModule());
-        } else {
+        // translate-c can only locate sqlite3.h when it is present on the
+        // build host's default include path. That rules out Windows
+        // (sqlite3-dev isn't a standard install) and any cross-compile
+        // (the target sysroot won't have it). Use the hand-rolled stub
+        // module in those cases — the real sqlite3 symbols are resolved
+        // at link time where the library is actually available.
+        const use_stub = target.result.os.tag == .windows or !target.query.isNative();
+        if (use_stub) {
             const stub = b.createModule(.{
                 .root_source_file = b.path("packages/database/src/sqlite_c_stub.zig"),
                 .target = target,
                 .optimize = optimize,
             });
             database_pkg.addImport("c", stub);
+        } else {
+            const sqlite_c = b.addTranslateC(.{
+                .root_source_file = b.path("packages/database/src/sqlite_c.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            database_pkg.addImport("c", sqlite_c.createModule());
         }
     }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
