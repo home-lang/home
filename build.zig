@@ -392,6 +392,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     parser_tests.root_module.addImport("home", home_module);
+    parser_tests.root_module.link_libc = true;
     if (zig_test_framework) |tf| {
         parser_tests.root_module.addImport("zig-test-framework", tf);
     }
