@@ -68,7 +68,7 @@
       "type": "object",
       "title": "Home",
       "properties": {
-        "ion.trace.server": {
+        "home.trace.server": {
           "scope": "window",
           "type": "string",
           "enum": [
@@ -79,57 +79,57 @@
           "default": "off",
           "description": "Traces the communication between VS Code and the language server."
         },
-        "ion.format.enabled": {
+        "home.format.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable/disable automatic formatting"
         },
-        "ion.linting.enabled": {
+        "home.linting.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable/disable linting"
         },
-        "ion.path": {
+        "home.path": {
           "type": "string",
           "default": "home",
           "description": "Path to home executable"
         },
-        "ion.debugger.enabled": {
+        "home.debugger.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Home debugger"
         },
-        "ion.profiler.enabled": {
+        "home.profiler.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Home profiler"
         },
-        "ion.profiler.autoStart": {
+        "home.profiler.autoStart": {
           "type": "boolean",
           "default": false,
           "description": "Automatically start profiler when debugging"
         },
-        "ion.inlayHints.enabled": {
+        "home.inlayHints.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Show inlay hints for types and parameters"
         },
-        "ion.inlayHints.parameterNames": {
+        "home.inlayHints.parameterNames": {
           "type": "boolean",
           "default": true,
           "description": "Show parameter name hints"
         },
-        "ion.inlayHints.typeAnnotations": {
+        "home.inlayHints.typeAnnotations": {
           "type": "boolean",
           "default": true,
           "description": "Show type annotation hints"
         },
-        "ion.codelens.enabled": {
+        "home.codelens.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable CodeLens for run/test buttons"
         },
-        "ion.format.onSave": {
+        "home.format.onSave": {
           "type": "boolean",
           "default": true,
           "description": "Format Home files on save"
@@ -138,192 +138,192 @@
     },
     "commands": [
       {
-        "command": "ion.restartServer",
+        "command": "home.restartServer",
         "title": "Restart Home Language Server"
       },
       {
-        "command": "ion.run",
+        "command": "home.run",
         "title": "Run Home Program"
       },
       {
-        "command": "ion.build",
+        "command": "home.build",
         "title": "Build Home Program"
       },
       {
-        "command": "ion.check",
+        "command": "home.check",
         "title": "Check Home Program"
       },
       {
-        "command": "ion.test",
+        "command": "home.test",
         "title": "Run Home Tests"
       },
       {
-        "command": "ion.format",
+        "command": "home.format",
         "title": "Format Home Document"
       },
       {
-        "command": "ion.profiler.start",
+        "command": "home.profiler.start",
         "title": "Start Home Profiler"
       },
       {
-        "command": "ion.profiler.stop",
+        "command": "home.profiler.stop",
         "title": "Stop Home Profiler"
       },
       {
-        "command": "ion.profiler.viewReport",
+        "command": "home.profiler.viewReport",
         "title": "View Profiler Report"
       },
       {
-        "command": "ion.packageManager.search",
+        "command": "home.packageManager.search",
         "title": "Search Home Packages"
       },
       {
-        "command": "ion.packageManager.install",
+        "command": "home.packageManager.install",
         "title": "Install Home Package"
       },
       {
-        "command": "ion.cpu.start",
+        "command": "home.cpu.start",
         "title": "Home: Start CPU Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.cpu.stop",
+        "command": "home.cpu.stop",
         "title": "Home: Stop CPU Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.cpu.flamegraph",
+        "command": "home.cpu.flamegraph",
         "title": "Home: View CPU Flame Graph",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.cpu.exportChrome",
+        "command": "home.cpu.exportChrome",
         "title": "Home: Export CPU Profile to Chrome DevTools",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.gc.start",
+        "command": "home.gc.start",
         "title": "Home: Start GC Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.gc.stop",
+        "command": "home.gc.stop",
         "title": "Home: Stop GC Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.gc.report",
+        "command": "home.gc.report",
         "title": "Home: View GC Report",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.gc.analyzePressure",
+        "command": "home.gc.analyzePressure",
         "title": "Home: Analyze GC Pressure",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.memory.start",
+        "command": "home.memory.start",
         "title": "Home: Start Memory Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.memory.stop",
+        "command": "home.memory.stop",
         "title": "Home: Stop Memory Profiler",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.memory.snapshot",
+        "command": "home.memory.snapshot",
         "title": "Home: Take Memory Snapshot",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.memory.findLeaks",
+        "command": "home.memory.findLeaks",
         "title": "Home: Detect Memory Leaks",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.memory.report",
+        "command": "home.memory.report",
         "title": "Home: View Memory Report",
         "category": "Home Profiler"
       },
       {
-        "command": "ion.debug.stepBack",
+        "command": "home.debug.stepBack",
         "title": "Home: Step Back (Time-Travel)",
         "category": "Home Debug"
       },
       {
-        "command": "ion.debug.stepForward",
+        "command": "home.debug.stepForward",
         "title": "Home: Step Forward (Time-Travel)",
         "category": "Home Debug"
       },
       {
-        "command": "ion.debug.showTimeline",
+        "command": "home.debug.showTimeline",
         "title": "Home: Show Execution Timeline",
         "category": "Home Debug"
       },
       {
-        "command": "ion.threads.showAll",
+        "command": "home.threads.showAll",
         "title": "Home: Show All Threads",
         "category": "Home Debug"
       },
       {
-        "command": "ion.threads.showDeadlocks",
+        "command": "home.threads.showDeadlocks",
         "title": "Home: Detect Deadlocks",
         "category": "Home Debug"
       },
       {
-        "command": "ion.threads.showRaces",
+        "command": "home.threads.showRaces",
         "title": "Home: Detect Race Conditions",
         "category": "Home Debug"
       }
     ],
     "keybindings": [
       {
-        "command": "ion.run",
+        "command": "home.run",
         "key": "ctrl+shift+r",
         "mac": "cmd+shift+r",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       },
       {
-        "command": "ion.build",
+        "command": "home.build",
         "key": "ctrl+shift+b",
         "mac": "cmd+shift+b",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       },
       {
-        "command": "ion.test",
+        "command": "home.test",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       },
       {
-        "command": "ion.format",
+        "command": "home.format",
         "key": "alt+shift+f",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       },
       {
-        "command": "ion.debug.stepBack",
+        "command": "home.debug.stepBack",
         "key": "ctrl+shift+left",
         "mac": "cmd+shift+left",
         "when": "inDebugMode"
       },
       {
-        "command": "ion.debug.stepForward",
+        "command": "home.debug.stepForward",
         "key": "ctrl+shift+right",
         "mac": "cmd+shift+right",
         "when": "inDebugMode"
       },
       {
-        "command": "ion.cpu.flamegraph",
+        "command": "home.cpu.flamegraph",
         "key": "ctrl+shift+f",
         "mac": "cmd+shift+f",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       },
       {
-        "command": "ion.memory.snapshot",
+        "command": "home.memory.snapshot",
         "key": "ctrl+shift+m",
         "mac": "cmd+shift+m",
-        "when": "editorTextFocus && resourceLangId == ion"
+        "when": "editorTextFocus && resourceLangId == home"
       }
     ],
     "breakpoints": [
@@ -433,7 +433,7 @@
     ]
   },
   "activationEvents": [
-    "onLanguage:ion"
+    "onLanguage:home"
   ],
   "scripts": {
     "vscode:prepublish": "bun run compile",

@@ -1703,6 +1703,37 @@ pub const Parser = struct {
             return try std.fmt.allocPrint(self.allocator, "mut {s}", .{inner_type});
         }
 
+        // `readonly T` — TS-style readonly modifier on object/array types.
+        // Encoded as the textual prefix "readonly ", consumed by the type
+        // checker via Readonly<T>-style transformations.
+        if (self.match(&.{.Readonly})) {
+            const inner_type = try self.parseTypeAnnotation();
+            return try std.fmt.allocPrint(self.allocator, "readonly {s}", .{inner_type});
+        }
+
+        // `keyof T` — yields the union of property names of T.
+        if (self.match(&.{.Keyof})) {
+            const inner_type = try self.parseTypeAnnotation();
+            return try std.fmt.allocPrint(self.allocator, "keyof {s}", .{inner_type});
+        }
+
+        // `typeof expr` — yields the static type of an expression / value.
+        // Only an identifier expression is accepted in type position; complex
+        // expressions remain available via the existing `@TypeOf(expr)` builtin.
+        if (self.match(&.{.Typeof})) {
+            const tok = try self.expect(.Identifier, "Expected identifier after 'typeof'");
+            return try std.fmt.allocPrint(self.allocator, "typeof {s}", .{tok.lexeme});
+        }
+
+        // `infer U` — only meaningful inside a conditional type's `extends`
+        // branch. We accept it here for forward compatibility so that types
+        // like `T extends Promise<infer U> ? U : never` round-trip through
+        // the parser today even though the type checker may not yet bind U.
+        if (self.match(&.{.Infer})) {
+            const tok = try self.expect(.Identifier, "Expected type variable name after 'infer'");
+            return try std.fmt.allocPrint(self.allocator, "infer {s}", .{tok.lexeme});
+        }
+
         // `async T` return-type modifier. Semantically this means "Future<T>".
         // An async fn already produces a Future header under the hood, so we
         // treat the annotation as transparent and return the inner type.

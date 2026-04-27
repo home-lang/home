@@ -27,6 +27,18 @@ export class HomeWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvid
         return symbols;
     }
 
+    private static readonly SYMBOL_PATTERNS: ReadonlyArray<{
+        regex: RegExp;
+        kind: vscode.SymbolKind;
+    }> = [
+        { regex: /^\s*(?:pub\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)/, kind: vscode.SymbolKind.Function },
+        { regex: /^\s*(?:pub\s+)?struct\s+([A-Z][a-zA-Z0-9_]*)/, kind: vscode.SymbolKind.Struct },
+        { regex: /^\s*(?:pub\s+)?enum\s+([A-Z][a-zA-Z0-9_]*)/, kind: vscode.SymbolKind.Enum },
+        { regex: /^\s*(?:pub\s+)?trait\s+([A-Z][a-zA-Z0-9_]*)/, kind: vscode.SymbolKind.Interface },
+        { regex: /^\s*(?:pub\s+)?type\s+([A-Z][a-zA-Z0-9_]*)/, kind: vscode.SymbolKind.TypeParameter },
+        { regex: /^\s*(?:pub\s+)?const\s+([A-Z_][A-Z0-9_]*)/, kind: vscode.SymbolKind.Constant },
+    ];
+
     private async extractSymbols(
         document: vscode.TextDocument,
         query: string
@@ -38,76 +50,17 @@ export class HomeWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvid
             const line = document.lineAt(i);
             const text = line.text;
 
-            // Function declarations
-            const fnMatch = text.match(/^\s*(?:pub\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
-            if (fnMatch && fnMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    fnMatch[1],
-                    vscode.SymbolKind.Function,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
-            }
-
-            // Struct declarations
-            const structMatch = text.match(/^\s*(?:pub\s+)?struct\s+([A-Z][a-zA-Z0-9_]*)/);
-            if (structMatch && structMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    structMatch[1],
-                    vscode.SymbolKind.Struct,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
-            }
-
-            // Enum declarations
-            const enumMatch = text.match(/^\s*(?:pub\s+)?enum\s+([A-Z][a-zA-Z0-9_]*)/);
-            if (enumMatch && enumMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    enumMatch[1],
-                    vscode.SymbolKind.Enum,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
-            }
-
-            // Trait declarations
-            const traitMatch = text.match(/^\s*(?:pub\s+)?trait\s+([A-Z][a-zA-Z0-9_]*)/);
-            if (traitMatch && traitMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    traitMatch[1],
-                    vscode.SymbolKind.Interface,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
-            }
-
-            // Type aliases
-            const typeMatch = text.match(/^\s*(?:pub\s+)?type\s+([A-Z][a-zA-Z0-9_]*)/);
-            if (typeMatch && typeMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    typeMatch[1],
-                    vscode.SymbolKind.TypeParameter,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
-            }
-
-            // Constants
-            const constMatch = text.match(/^\s*(?:pub\s+)?const\s+([A-Z_][A-Z0-9_]*)/);
-            if (constMatch && constMatch[1].toLowerCase().includes(lowerQuery)) {
-                const range = new vscode.Range(i, 0, i, text.length);
-                symbols.push(new vscode.SymbolInformation(
-                    constMatch[1],
-                    vscode.SymbolKind.Constant,
-                    '',
-                    new vscode.Location(document.uri, range)
-                ));
+            for (const { regex, kind } of HomeWorkspaceSymbolProvider.SYMBOL_PATTERNS) {
+                const match = text.match(regex);
+                if (match && match[1].toLowerCase().includes(lowerQuery)) {
+                    const range = new vscode.Range(i, 0, i, text.length);
+                    symbols.push(new vscode.SymbolInformation(
+                        match[1],
+                        kind,
+                        '',
+                        new vscode.Location(document.uri, range)
+                    ));
+                }
             }
         }
 
@@ -120,28 +73,27 @@ export class HomeWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvid
  * Enables symbol renaming across files
  */
 export class HomeRenameProvider implements vscode.RenameProvider {
+    private static readonly KEYWORDS: ReadonlySet<string> = new Set([
+        'fn', 'let', 'const', 'struct', 'enum', 'trait', 'impl',
+        'if', 'else', 'while', 'for', 'match',
+    ]);
+
     prepareRename(
         document: vscode.TextDocument,
         position: vscode.Position,
-        token: vscode.CancellationToken
+        _token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Range | { range: vscode.Range; placeholder: string }> {
         const wordRange = document.getWordRangeAtPosition(position);
         if (!wordRange) {
-            return null;
+            return Promise.reject(new Error('You cannot rename this element'));
         }
 
         const word = document.getText(wordRange);
-
-        // Only allow renaming identifiers (not keywords)
-        const keywords = ['fn', 'let', 'const', 'struct', 'enum', 'trait', 'impl', 'if', 'else', 'while', 'for', 'match'];
-        if (keywords.includes(word)) {
-            throw new Error('Cannot rename keyword');
+        if (HomeRenameProvider.KEYWORDS.has(word)) {
+            return Promise.reject(new Error(`Cannot rename keyword '${word}'`));
         }
 
-        return {
-            range: wordRange,
-            placeholder: word
-        };
+        return { range: wordRange, placeholder: word };
     }
 
     async provideRenameEdits(

@@ -37,7 +37,7 @@ echo -e "${GREEN}Root version:${NC} ${ROOT_VERSION}"
 echo ""
 
 # Find all package ion.toml files
-PACKAGE_TOMLS=$(find "$ROOT_DIR/packages" -name "ion.toml" -type f 2>/dev/null)
+PACKAGE_TOMLS=$(find "$ROOT_DIR/packages" -name "home.toml" -type f 2>/dev/null)
 PACKAGE_COUNT=$(echo "$PACKAGE_TOMLS" | wc -l | tr -d ' ')
 
 if [[ $PACKAGE_COUNT -eq 0 ]]; then

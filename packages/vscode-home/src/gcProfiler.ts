@@ -1,6 +1,15 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as vscode from 'vscode';
+
+function escapeHtml(value: unknown): string {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 /**
  * Garbage Collection Profiler
@@ -58,10 +67,10 @@ export interface GenerationStats {
 
 export class GCProfiler {
     private events: GCEvent[] = [];
-    private objectLifetimes: Map<string, ObjectLifetime> = new Map();
-    private _isRunning: boolean = false;
-    private _startTime: number = 0;
-    private _outputChannel: vscode.OutputChannel;
+    private readonly objectLifetimes = new Map<string, ObjectLifetime>();
+    private _isRunning = false;
+    private _startTime = 0;
+    private readonly _outputChannel: vscode.OutputChannel;
     private heapHistory: HeapSnapshot[] = [];
 
     constructor() {
@@ -383,7 +392,7 @@ export class GCProfiler {
         );
 
         const html = this.generateReportHTML(stats, genStats, lifetimeAnalysis, pressure);
-        fs.writeFileSync(reportPath, html);
+        await fs.writeFile(reportPath, html);
 
         this._outputChannel.appendLine(`\nReport saved to ${reportPath}`);
 
@@ -470,14 +479,14 @@ export class GCProfiler {
     ${
             pressure.hasPressure
                 ? `
-    <div class="alert ${pressure.severity}">
-        <h3>⚠️ GC Pressure Detected (${pressure.severity})</h3>
+    <div class="alert ${escapeHtml(pressure.severity)}">
+        <h3>⚠️ GC Pressure Detected (${escapeHtml(pressure.severity)})</h3>
         <ul>
-            ${pressure.issues.map(issue => `<li>${issue}</li>`).join('')}
+            ${pressure.issues.map(issue => `<li>${escapeHtml(issue)}</li>`).join('')}
         </ul>
         <h4>Recommendations:</h4>
         <ul>
-            ${pressure.recommendations.map(rec => `<li>${rec}</li>`).join('')}
+            ${pressure.recommendations.map(rec => `<li>${escapeHtml(rec)}</li>`).join('')}
         </ul>
     </div>
     `

@@ -127,13 +127,33 @@ pub const UtilityTypes = struct {
         return result;
     }
 
-    /// Readonly<T> - Make all properties readonly
-    /// Note: This is tracked separately since Home doesn't have readonly in Type
+    /// Readonly<T> - Make all properties readonly. For struct types this
+    /// produces a new struct with the same fields but with `readonly = true`
+    /// on each one; non-struct types are returned unchanged (matching the
+    /// behaviour of TypeScript's Readonly on non-object types).
     pub fn readonly(self: *UtilityTypes, ty: *const Type) !*Type {
-        // In a full implementation, this would add a readonly flag to each field
-        // For now, just return the type as-is
-        _ = self;
-        return @constCast(ty);
+        if (std.meta.activeTag(ty.*) != .Struct) {
+            return @constCast(ty);
+        }
+
+        const original = ty.Struct;
+        var new_fields = try self.allocator.alloc(Type.StructType.Field, original.fields.len);
+        for (original.fields, 0..) |field, i| {
+            new_fields[i] = .{
+                .name = field.name,
+                .type = field.type,
+                .readonly = true,
+            };
+        }
+
+        const result = try self.allocator.create(Type);
+        result.* = Type{
+            .Struct = .{
+                .name = original.name,
+                .fields = new_fields,
+            },
+        };
+        return result;
     }
 
     /// Record<K, V> - Create object type with keys K and values V

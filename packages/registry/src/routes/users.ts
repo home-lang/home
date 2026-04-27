@@ -1,12 +1,11 @@
-import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import { Request, Response, Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { mongoDb, logger } from '../server';
-import { authMiddleware } from '../middleware/auth';
+import { ObjectId } from 'mongodb';
+import { authMiddleware, JWT_SECRET } from '../middleware/auth';
+import { logger, mongoDb } from '../server';
 
 export const userRouter = Router();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // POST /api/users/register - Register a new user
 userRouter.post('/register', async (req: Request, res: Response) => {
@@ -105,8 +104,13 @@ userRouter.post('/login', async (req: Request, res: Response) => {
 // GET /api/users/me - Get current user
 userRouter.get('/me', authMiddleware, async (req: Request, res: Response) => {
     try {
+        const userId = (req as Request & { user?: { userId: string } }).user?.userId;
+        if (!userId || !ObjectId.isValid(userId)) {
+            return res.status(401).json({ error: 'Invalid user' });
+        }
+
         const user = await mongoDb.collection('users').findOne(
-            { _id: (req as any).user.userId },
+            { _id: new ObjectId(userId) },
             { projection: { password: 0 } }
         );
 

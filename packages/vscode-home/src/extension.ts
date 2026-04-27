@@ -1,3 +1,4 @@
+import { spawn } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -5,28 +6,42 @@ import {
     LanguageClientOptions,
     ServerOptions,
 } from 'vscode-languageclient/node';
-import { HomeProfiler } from './profiler';
-import { HomePackageManager } from './packageManager';
+import { HomeCodeActionsProvider } from './codeActions';
+import { HomeCodeLensProvider as AdvancedCodeLensProvider } from './codeLens';
 import { CPUProfiler } from './cpuProfiler';
 import { GCProfiler } from './gcProfiler';
+import { HomeInlayHintsProvider } from './inlayHints';
 import { MemoryProfiler } from './memoryProfiler';
 import { MultiThreadDebugger } from './multiThreadDebugger';
-import { TimeTravelDebugger } from './timeTravelDebugger';
+import { HomePackageManager } from './packageManager';
+import { HomeProfiler } from './profiler';
 import { HomeSemanticTokensProvider, legend } from './semanticTokens';
-import { HomeCodeActionsProvider } from './codeActions';
-import { HomeInlayHintsProvider } from './inlayHints';
-import { HomeCodeLensProvider as AdvancedCodeLensProvider } from './codeLens';
+import { TimeTravelDebugger } from './timeTravelDebugger';
 import { registerWorkspaceProviders } from './workspaceSymbols';
 
-let client: LanguageClient;
-let profiler: HomeProfiler;
-let packageManager: HomePackageManager;
-let cpuProfiler: CPUProfiler;
-let gcProfiler: GCProfiler;
-let memoryProfiler: MemoryProfiler;
-let multiThreadDebugger: MultiThreadDebugger;
-let timeTravelDebugger: TimeTravelDebugger;
-let extensionContext: vscode.ExtensionContext;
+let client: LanguageClient | undefined;
+let profiler!: HomeProfiler;
+let packageManager!: HomePackageManager;
+let cpuProfiler!: CPUProfiler;
+let gcProfiler!: GCProfiler;
+let memoryProfiler!: MemoryProfiler;
+let multiThreadDebugger!: MultiThreadDebugger;
+let timeTravelDebugger!: TimeTravelDebugger;
+let extensionContext: vscode.ExtensionContext | undefined;
+
+const DOCUMENT_SELECTOR: vscode.DocumentSelector = { language: 'home' };
+
+function getHomePath(): string {
+    const config = vscode.workspace.getConfiguration('home');
+    return config.get<string>('path') || 'home';
+}
+
+function shellQuote(value: string): string {
+    if (process.platform === 'win32') {
+        return `"${value.replace(/"/g, '""')}"`;
+    }
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Home language extension is now active');
@@ -46,31 +61,31 @@ export function activate(context: vscode.ExtensionContext) {
     // Register commands
     context.subscriptions.push(
         // Language Server commands
-        vscode.commands.registerCommand('ion.restartServer', restartServer),
+        vscode.commands.registerCommand('home.restartServer', restartServer),
 
         // Build and run commands
-        vscode.commands.registerCommand('ion.run', runProgram),
-        vscode.commands.registerCommand('ion.build', buildProgram),
-        vscode.commands.registerCommand('ion.check', checkProgram),
-        vscode.commands.registerCommand('ion.test', runTests),
-        vscode.commands.registerCommand('ion.format', formatDocument),
+        vscode.commands.registerCommand('home.run', runProgram),
+        vscode.commands.registerCommand('home.build', buildProgram),
+        vscode.commands.registerCommand('home.check', checkProgram),
+        vscode.commands.registerCommand('home.test', runTests),
+        vscode.commands.registerCommand('home.format', formatDocument),
 
         // Basic profiler commands
-        vscode.commands.registerCommand('ion.profiler.start', () => profiler.start()),
-        vscode.commands.registerCommand('ion.profiler.stop', () => profiler.stop()),
-        vscode.commands.registerCommand('ion.profiler.viewReport', () => profiler.viewReport()),
+        vscode.commands.registerCommand('home.profiler.start', () => profiler.start()),
+        vscode.commands.registerCommand('home.profiler.stop', () => profiler.stop()),
+        vscode.commands.registerCommand('home.profiler.viewReport', () => profiler.viewReport()),
 
         // CPU profiler commands
-        vscode.commands.registerCommand('ion.cpu.start', () => cpuProfiler.start()),
-        vscode.commands.registerCommand('ion.cpu.stop', () => cpuProfiler.stop()),
-        vscode.commands.registerCommand('ion.cpu.flamegraph', () => cpuProfiler.generateFlameGraphHTML()),
-        vscode.commands.registerCommand('ion.cpu.exportChrome', () => cpuProfiler.saveChromeProfile()),
+        vscode.commands.registerCommand('home.cpu.start', () => cpuProfiler.start()),
+        vscode.commands.registerCommand('home.cpu.stop', () => cpuProfiler.stop()),
+        vscode.commands.registerCommand('home.cpu.flamegraph', () => cpuProfiler.generateFlameGraphHTML()),
+        vscode.commands.registerCommand('home.cpu.exportChrome', () => cpuProfiler.saveChromeProfile()),
 
         // GC profiler commands
-        vscode.commands.registerCommand('ion.gc.start', () => gcProfiler.start()),
-        vscode.commands.registerCommand('ion.gc.stop', () => gcProfiler.stop()),
-        vscode.commands.registerCommand('ion.gc.report', () => gcProfiler.generateReport()),
-        vscode.commands.registerCommand('ion.gc.analyzePressure', () => {
+        vscode.commands.registerCommand('home.gc.start', () => gcProfiler.start()),
+        vscode.commands.registerCommand('home.gc.stop', () => gcProfiler.stop()),
+        vscode.commands.registerCommand('home.gc.report', () => gcProfiler.generateReport()),
+        vscode.commands.registerCommand('home.gc.analyzePressure', () => {
             const pressure = gcProfiler.detectGCPressure();
             if (pressure.hasPressure) {
                 vscode.window.showWarningMessage(
@@ -87,8 +102,8 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         // Memory profiler commands
-        vscode.commands.registerCommand('ion.memory.start', () => memoryProfiler.start()),
-        vscode.commands.registerCommand('ion.memory.stop', () => {
+        vscode.commands.registerCommand('home.memory.start', () => memoryProfiler.start()),
+        vscode.commands.registerCommand('home.memory.stop', () => {
             const stats = memoryProfiler.stop();
             if (stats.leaks.length > 0) {
                 vscode.window.showWarningMessage(
@@ -103,14 +118,14 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('Memory profiling stopped. No leaks detected.');
             }
         }),
-        vscode.commands.registerCommand('ion.memory.snapshot', () => {
+        vscode.commands.registerCommand('home.memory.snapshot', () => {
             const snapshot = memoryProfiler.takeSnapshot();
             vscode.window.showInformationMessage(
                 `Snapshot taken: ${snapshot.allocations.length} allocations, ` +
                 `${(snapshot.currentUsage / 1024 / 1024).toFixed(2)} MB`
             );
         }),
-        vscode.commands.registerCommand('ion.memory.findLeaks', () => {
+        vscode.commands.registerCommand('home.memory.findLeaks', () => {
             const leaks = memoryProfiler.detectLeaks();
             if (leaks.length > 0) {
                 vscode.window.showWarningMessage(
@@ -125,10 +140,10 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('No memory leaks detected');
             }
         }),
-        vscode.commands.registerCommand('ion.memory.report', () => memoryProfiler.generateReport()),
+        vscode.commands.registerCommand('home.memory.report', () => memoryProfiler.generateReport()),
 
         // Time-travel debugging commands
-        vscode.commands.registerCommand('ion.debug.stepBack', () => {
+        vscode.commands.registerCommand('home.debug.stepBack', () => {
             const snapshot = timeTravelDebugger.stepBack();
             if (snapshot) {
                 vscode.window.showInformationMessage(
@@ -138,7 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('Already at beginning of execution history');
             }
         }),
-        vscode.commands.registerCommand('ion.debug.stepForward', () => {
+        vscode.commands.registerCommand('home.debug.stepForward', () => {
             const snapshot = timeTravelDebugger.stepForward();
             if (snapshot) {
                 vscode.window.showInformationMessage(
@@ -148,8 +163,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('Already at end of execution history');
             }
         }),
-        vscode.commands.registerCommand('ion.debug.showTimeline', () => {
-            const _timeline = timeTravelDebugger.getTimeline();
+        vscode.commands.registerCommand('home.debug.showTimeline', () => {
             const stats = timeTravelDebugger.getStatistics();
             vscode.window.showInformationMessage(
                 `Timeline: ${stats.totalSnapshots} snapshots, ` +
@@ -158,13 +172,13 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         // Multi-threaded debugging commands
-        vscode.commands.registerCommand('ion.threads.showAll', () => {
+        vscode.commands.registerCommand('home.threads.showAll', () => {
             const threads = multiThreadDebugger.getAllThreads();
             vscode.window.showInformationMessage(
                 `Active threads: ${threads.length}`
             );
         }),
-        vscode.commands.registerCommand('ion.threads.showDeadlocks', () => {
+        vscode.commands.registerCommand('home.threads.showDeadlocks', () => {
             const deadlocks = multiThreadDebugger.getDeadlocks();
             if (deadlocks.length > 0) {
                 vscode.window.showWarningMessage(
@@ -183,7 +197,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('No deadlocks detected');
             }
         }),
-        vscode.commands.registerCommand('ion.threads.showRaces', () => {
+        vscode.commands.registerCommand('home.threads.showRaces', () => {
             const races = multiThreadDebugger.getRaceConditions();
             if (races.length > 0) {
                 vscode.window.showWarningMessage(
@@ -196,25 +210,23 @@ export function activate(context: vscode.ExtensionContext) {
         }),
 
         // Package manager commands
-        vscode.commands.registerCommand('ion.packageManager.search', () => packageManager.searchPackages()),
-        vscode.commands.registerCommand('ion.packageManager.install', () => packageManager.installPackage()),
-        vscode.commands.registerCommand('ion.packageManager.publish', () => packageManager.publishPackage()),
-        vscode.commands.registerCommand('ion.packageManager.update', () => packageManager.updatePackages())
+        vscode.commands.registerCommand('home.packageManager.search', () => packageManager.searchPackages()),
+        vscode.commands.registerCommand('home.packageManager.install', () => packageManager.installPackage()),
+        vscode.commands.registerCommand('home.packageManager.publish', () => packageManager.publishPackage()),
+        vscode.commands.registerCommand('home.packageManager.update', () => packageManager.updatePackages())
     );
 
     // Register formatters
     context.subscriptions.push(
-        vscode.languages.registerDocumentFormattingEditProvider('home', {
-            provideDocumentFormattingEdits(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-                return formatDocumentProvider(document);
-            }
+        vscode.languages.registerDocumentFormattingEditProvider(DOCUMENT_SELECTOR, {
+            provideDocumentFormattingEdits: (document) => formatDocumentProvider(document),
         })
     );
 
     // Register semantic tokens provider
     context.subscriptions.push(
         vscode.languages.registerDocumentSemanticTokensProvider(
-            { language: 'home' },
+            DOCUMENT_SELECTOR,
             new HomeSemanticTokensProvider(),
             legend
         )
@@ -223,32 +235,23 @@ export function activate(context: vscode.ExtensionContext) {
     // Register code actions provider
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider(
-            { language: 'home' },
+            DOCUMENT_SELECTOR,
             new HomeCodeActionsProvider(),
-            {
-                providedCodeActionKinds: HomeCodeActionsProvider.providedCodeActionKinds
-            }
+            { providedCodeActionKinds: HomeCodeActionsProvider.providedCodeActionKinds }
         )
     );
 
-    // Register inlay hints provider
-    const config = vscode.workspace.getConfiguration('home');
-    if (config.get<boolean>('inlayHints.enabled', true)) {
+    // Register inlay hints / code lens providers (config-gated)
+    const homeConfig = vscode.workspace.getConfiguration('home');
+    if (homeConfig.get<boolean>('inlayHints.enabled', true)) {
         context.subscriptions.push(
-            vscode.languages.registerInlayHintsProvider(
-                { language: 'home' },
-                new HomeInlayHintsProvider()
-            )
+            vscode.languages.registerInlayHintsProvider(DOCUMENT_SELECTOR, new HomeInlayHintsProvider())
         );
     }
 
-    // Register advanced code lens provider
-    if (config.get<boolean>('codelens.enabled')) {
+    if (homeConfig.get<boolean>('codelens.enabled')) {
         context.subscriptions.push(
-            vscode.languages.registerCodeLensProvider(
-                { language: 'home' },
-                new AdvancedCodeLensProvider()
-            )
+            vscode.languages.registerCodeLensProvider(DOCUMENT_SELECTOR, new AdvancedCodeLensProvider())
         );
     }
 
@@ -258,8 +261,8 @@ export function activate(context: vscode.ExtensionContext) {
     // Format on save
     context.subscriptions.push(
         vscode.workspace.onWillSaveTextDocument(event => {
-            const config = vscode.workspace.getConfiguration('home');
-            if (config.get<boolean>('format.onSave') && event.document.languageId === 'home') {
+            const onSaveConfig = vscode.workspace.getConfiguration('home');
+            if (onSaveConfig.get<boolean>('format.onSave') && event.document.languageId === 'home') {
                 event.waitUntil(formatDocumentProvider(event.document));
             }
         })
@@ -305,12 +308,9 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 function startLanguageServer(_context: vscode.ExtensionContext) {
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-
     // Server options - launch the LSP server
     const serverOptions: ServerOptions = {
-        command: ionPath,
+        command: getHomePath(),
         args: ['lsp'],
         options: {
             env: process.env,
@@ -349,77 +349,62 @@ async function restartServer() {
     }
 }
 
-async function runProgram() {
+async function getActiveHomeFile(): Promise<{ editor: vscode.TextEditor; filePath: string } | null> {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
-        return;
+        return null;
     }
-
     await editor.document.save();
+    return { editor, filePath: editor.document.uri.fsPath };
+}
 
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-    const filePath = editor.document.uri.fsPath;
+async function runProgram(): Promise<void> {
+    const ctx = await getActiveHomeFile();
+    if (!ctx) return;
 
     const terminal = vscode.window.createTerminal('Home Run');
     terminal.show();
-    terminal.sendText(`${ionPath} run "${filePath}"`);
+    terminal.sendText(`${shellQuote(getHomePath())} run ${shellQuote(ctx.filePath)}`);
 }
 
-async function buildProgram() {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'home') {
-        vscode.window.showErrorMessage('No Home file is active');
-        return;
-    }
+async function buildProgram(): Promise<void> {
+    const ctx = await getActiveHomeFile();
+    if (!ctx) return;
 
-    await editor.document.save();
-
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-    const filePath = editor.document.uri.fsPath;
-    const outputPath = filePath.replace(/\.home$/, '');
-
+    const outputPath = ctx.filePath.replace(/\.home$/, '');
     const terminal = vscode.window.createTerminal('Home Build');
     terminal.show();
-    terminal.sendText(`${ionPath} build "${filePath}" -o "${outputPath}"`);
+    terminal.sendText(
+        `${shellQuote(getHomePath())} build ${shellQuote(ctx.filePath)} -o ${shellQuote(outputPath)}`
+    );
 }
 
-async function checkProgram() {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'home') {
-        vscode.window.showErrorMessage('No Home file is active');
-        return;
-    }
-
-    await editor.document.save();
-
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-    const filePath = editor.document.uri.fsPath;
+async function checkProgram(): Promise<void> {
+    const ctx = await getActiveHomeFile();
+    if (!ctx) return;
 
     const terminal = vscode.window.createTerminal('Home Check');
     terminal.show();
-    terminal.sendText(`${ionPath} check "${filePath}"`);
+    terminal.sendText(`${shellQuote(getHomePath())} check ${shellQuote(ctx.filePath)}`);
 }
 
-async function runTests() {
+async function runTests(): Promise<void> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
         vscode.window.showErrorMessage('No workspace folder open');
         return;
     }
 
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-
-    const terminal = vscode.window.createTerminal('Home Tests');
+    const terminal = vscode.window.createTerminal({
+        name: 'Home Tests',
+        cwd: workspaceFolder.uri.fsPath,
+    });
     terminal.show();
-    terminal.sendText(`cd "${workspaceFolder.uri.fsPath}" && ${ionPath} test`);
+    terminal.sendText(`${shellQuote(getHomePath())} test`);
 }
 
-async function formatDocument() {
+async function formatDocument(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'home') {
         vscode.window.showErrorMessage('No Home file is active');
@@ -432,31 +417,22 @@ async function formatDocument() {
     await vscode.workspace.applyEdit(workspaceEdit);
 }
 
-async function formatDocumentProvider(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
-    const config = vscode.workspace.getConfiguration('home');
-    const ionPath = config.get<string>('path') || 'home';
-
-    return new Promise((resolve, _reject) => {
-        const { spawn } = require('child_process');
-        const process = spawn(ionPath, ['format', '-'], {
-            cwd: path.dirname(document.uri.fsPath)
+function formatDocumentProvider(document: vscode.TextDocument): Promise<vscode.TextEdit[]> {
+    return new Promise((resolve) => {
+        const child = spawn(getHomePath(), ['format', '-'], {
+            cwd: path.dirname(document.uri.fsPath),
         });
 
         let stdout = '';
         let stderr = '';
 
-        process.stdin.write(document.getText());
-        process.stdin.end();
+        child.stdin.write(document.getText());
+        child.stdin.end();
 
-        process.stdout.on('data', (data: Buffer) => {
-            stdout += data.toString();
-        });
+        child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+        child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-        process.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString();
-        });
-
-        process.on('exit', (code: number) => {
+        child.on('exit', (code) => {
             if (code === 0 && stdout) {
                 const fullRange = new vscode.Range(
                     document.lineAt(0).range.start,
@@ -471,7 +447,7 @@ async function formatDocumentProvider(document: vscode.TextDocument): Promise<vs
             }
         });
 
-        process.on('error', (error: Error) => {
+        child.on('error', (error) => {
             vscode.window.showErrorMessage(`Formatting failed: ${error.message}`);
             resolve([]);
         });

@@ -232,6 +232,10 @@ pub const Type = union(enum) {
             name: []const u8,
             /// Field type
             type: Type,
+            /// True if this field is `readonly` and forbids mutation after
+            /// initialization. Defaults to false so existing call sites that
+            /// initialize fields positionally / by-name remain compatible.
+            readonly: bool = false,
         };
     };
 

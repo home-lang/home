@@ -23,7 +23,9 @@ export const tokenTypes = [
     'number',
     'regexp',
     'operator',
-];
+] as const;
+
+export type TokenType = (typeof tokenTypes)[number];
 
 // Semantic token modifiers
 export const tokenModifiers = [
@@ -37,10 +39,15 @@ export const tokenModifiers = [
     'modification',
     'documentation',
     'defaultLibrary',
-];
+] as const;
+
+export type TokenModifier = (typeof tokenModifiers)[number];
 
 // Register semantic tokens legend
-export const legend = new vscode.SemanticTokensLegend(tokenTypes, tokenModifiers);
+export const legend = new vscode.SemanticTokensLegend(
+    tokenTypes as readonly string[] as string[],
+    tokenModifiers as readonly string[] as string[],
+);
 
 /**
  * Semantic tokens provider for Home language
@@ -155,22 +162,22 @@ export class HomeSemanticTokensProvider implements vscode.DocumentSemanticTokens
             );
         }
 
-        // let/const with mut modifier
+        // let/const with mut modifier — `const` and bare `let` are immutable;
+        // `let mut` is mutable.
         const varMatch = /\b(let|const)(\s+mut)?\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
         while ((match = varMatch.exec(text)) !== null) {
+            const keyword = match[1];
+            const mutToken = match[2];
             const varName = match[3];
-            const varOffset = match.index + match[1].length + (match[2] ? match[2].length : 0) + 1;
-
-            const modifiers = match[1] === 'const'
-                ? this.getTokenModifier('readonly')
-                : (match[2] ? 0 : this.getTokenModifier('readonly'));
+            const varOffset = match.index + keyword.length + (mutToken?.length ?? 0) + 1;
+            const isImmutable = keyword === 'const' || !mutToken;
 
             builder.push(
                 line.lineNumber,
                 varOffset,
                 varName.length,
                 this.getTokenType('variable'),
-                modifiers
+                isImmutable ? this.getTokenModifier('readonly') : 0,
             );
         }
 
@@ -187,15 +194,15 @@ export class HomeSemanticTokensProvider implements vscode.DocumentSemanticTokens
         }
     }
 
-    private getTokenType(type: string): number {
-        const index = tokenTypes.indexOf(type);
+    private getTokenType(type: TokenType): number {
+        const index = (tokenTypes as readonly string[]).indexOf(type);
         return index >= 0 ? index : 0;
     }
 
-    private getTokenModifier(...modifiers: string[]): number {
+    private getTokenModifier(...modifiers: TokenModifier[]): number {
         let result = 0;
         for (const modifier of modifiers) {
-            const index = tokenModifiers.indexOf(modifier);
+            const index = (tokenModifiers as readonly string[]).indexOf(modifier);
             if (index >= 0) {
                 result |= (1 << index);
             }

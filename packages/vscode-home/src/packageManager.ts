@@ -1,12 +1,31 @@
-import * as vscode from 'vscode';
-import * as https from 'https';
-import * as fs from 'fs';
-import * as path from 'path';
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as https from 'https';
+import * as path from 'path';
+import * as vscode from 'vscode';
+
+interface PackageInfo {
+    name: string;
+    version: string;
+    description: string;
+    author?: string;
+    license?: string;
+    homepage?: string;
+}
+
+interface SearchResponse {
+    packages?: PackageInfo[];
+}
+
+const HTTP_TIMEOUT_MS = 15_000;
+
+function errMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
 
 export class HomePackageManager {
     private readonly REGISTRY_URL = 'https://registry.home-lang.org';
-    private _outputChannel: vscode.OutputChannel;
+    private readonly _outputChannel: vscode.OutputChannel;
 
     constructor() {
         this._outputChannel = vscode.window.createOutputChannel('Home Package Manager');
@@ -51,8 +70,9 @@ export class HomePackageManager {
             }
 
         } catch (error) {
-            this._outputChannel.appendLine(`Error searching packages: ${error}`);
-            vscode.window.showErrorMessage(`Failed to search packages: ${error}`);
+            const msg = errMessage(error);
+            this._outputChannel.appendLine(`Error searching packages: ${msg}`);
+            vscode.window.showErrorMessage(`Failed to search packages: ${msg}`);
         }
     }
 
@@ -97,19 +117,19 @@ export class HomePackageManager {
         }
 
         return new Promise((resolve, reject) => {
-            const process = spawn(ionPath, installArgs, {
+            const child = spawn(ionPath, installArgs, {
                 cwd: workspaceFolder.uri.fsPath
             });
 
-            process.stdout?.on('data', (data) => {
+            child.stdout?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(data.toString());
             });
 
-            process.stderr?.on('data', (data) => {
+            child.stderr?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(`[ERROR] ${data.toString()}`);
             });
 
-            process.on('exit', (code) => {
+            child.on('exit', (code) => {
                 if (code === 0) {
                     this._outputChannel.appendLine(`Successfully installed ${pkgName}`);
                     vscode.window.showInformationMessage(`Package ${pkgName} installed successfully`);
@@ -155,19 +175,19 @@ export class HomePackageManager {
         const ionPath = config.get<string>('path') || 'home';
 
         return new Promise((resolve, reject) => {
-            const process = spawn(ionPath, ['package', 'publish'], {
+            const child = spawn(ionPath, ['package', 'publish'], {
                 cwd: workspaceFolder.uri.fsPath
             });
 
-            process.stdout?.on('data', (data) => {
+            child.stdout?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(data.toString());
             });
 
-            process.stderr?.on('data', (data) => {
+            child.stderr?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(`[ERROR] ${data.toString()}`);
             });
 
-            process.on('exit', (code) => {
+            child.on('exit', (code) => {
                 if (code === 0) {
                     this._outputChannel.appendLine('Package published successfully');
                     vscode.window.showInformationMessage('Package published successfully');
@@ -196,19 +216,19 @@ export class HomePackageManager {
         const ionPath = config.get<string>('path') || 'home';
 
         return new Promise((resolve, reject) => {
-            const process = spawn(ionPath, ['package', 'update'], {
+            const child = spawn(ionPath, ['package', 'update'], {
                 cwd: workspaceFolder.uri.fsPath
             });
 
-            process.stdout?.on('data', (data) => {
+            child.stdout?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(data.toString());
             });
 
-            process.stderr?.on('data', (data) => {
+            child.stderr?.on('data', (data: Buffer) => {
                 this._outputChannel.appendLine(`[ERROR] ${data.toString()}`);
             });
 
-            process.on('exit', (code) => {
+            child.on('exit', (code) => {
                 if (code === 0) {
                     this._outputChannel.appendLine('Packages updated successfully');
                     vscode.window.showInformationMessage('Packages updated successfully');
@@ -225,38 +245,38 @@ export class HomePackageManager {
     private async fetchPackages(query: string): Promise<PackageInfo[]> {
         return new Promise((resolve, reject) => {
             const url = `${this.REGISTRY_URL}/search?q=${encodeURIComponent(query)}`;
+            const options: https.RequestOptions = {
+                headers: { 'User-Agent': 'home-vscode-extension' },
+                timeout: HTTP_TIMEOUT_MS,
+            };
 
-            https.get(url, (res) => {
-                let data = '';
+            const req = https.get(url, options, (res) => {
+                if (res.statusCode && res.statusCode >= 400) {
+                    res.resume();
+                    reject(new Error(`Registry responded with HTTP ${res.statusCode}`));
+                    return;
+                }
 
-                res.on('data', (chunk) => {
-                    data += chunk;
-                });
-
+                const chunks: Buffer[] = [];
+                res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
                 res.on('end', () => {
                     try {
-                        const result = JSON.parse(data);
-                        resolve(result.packages || []);
+                        const result = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as SearchResponse;
+                        resolve(result.packages ?? []);
                     } catch (error) {
                         reject(error);
                     }
                 });
-            }).on('error', (error) => {
-                reject(error);
             });
+
+            req.on('timeout', () => {
+                req.destroy(new Error(`Registry request timed out after ${HTTP_TIMEOUT_MS}ms`));
+            });
+            req.on('error', reject);
         });
     }
 
     public dispose(): void {
         this._outputChannel.dispose();
     }
-}
-
-interface PackageInfo {
-    name: string;
-    version: string;
-    description: string;
-    author?: string;
-    license?: string;
-    homepage?: string;
 }

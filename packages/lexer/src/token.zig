@@ -118,8 +118,10 @@ pub const TokenType = enum {
     Impl,
     Import,
     In,
+    Infer, // infer keyword for binding type variables in conditional types
     Is, // is keyword for type narrowing
     It,
+    Keyof, // keyof type operator (yields union of property names)
     Let,
     Loop,
     Match,
@@ -128,6 +130,7 @@ pub const TokenType = enum {
     Null,
     Or,
     Pub,
+    Readonly, // readonly modifier on struct fields and Readonly<T> utility
     Requires, // requires clause for function contracts
     Return,
     SelfType,
@@ -140,6 +143,7 @@ pub const TokenType = enum {
     True,
     Try,
     Type,
+    Typeof, // typeof type operator (yields the static type of a value)
     Union,
     Unsafe,
     Var, // var keyword for mutable module-level variables
@@ -261,8 +265,10 @@ pub const TokenType = enum {
             .Impl => "impl",
             .Import => "import",
             .In => "in",
+            .Infer => "infer",
             .Is => "is",
             .It => "it",
+            .Keyof => "keyof",
             .Let => "let",
             .Loop => "loop",
             .Match => "match",
@@ -271,6 +277,7 @@ pub const TokenType = enum {
             .Null => "null",
             .Or => "or",
             .Pub => "pub",
+            .Readonly => "readonly",
             .Requires => "requires",
             .Return => "return",
             .SelfType => "Self",
@@ -282,6 +289,7 @@ pub const TokenType = enum {
             .True => "true",
             .Try => "try",
             .Type => "type",
+            .Typeof => "typeof",
             .Union => "union",
             .Unsafe => "unsafe",
             .Var => "var",
@@ -399,8 +407,10 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "impl", .Impl },
     .{ "import", .Import },
     .{ "in", .In },
+    .{ "infer", .Infer },
     .{ "is", .Is },
     .{ "it", .It },
+    .{ "keyof", .Keyof },
     .{ "let", .Let },
     .{ "loop", .Loop },
     .{ "match", .Match },
@@ -409,6 +419,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "null", .Null },
     .{ "or", .Or },
     .{ "pub", .Pub },
+    .{ "readonly", .Readonly },
     .{ "requires", .Requires },
     .{ "return", .Return },
     .{ "Self", .SelfType },
@@ -420,6 +431,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "true", .True },
     .{ "try", .Try },
     .{ "type", .Type },
+    .{ "typeof", .Typeof },
     .{ "union", .Union },
     .{ "unsafe", .Unsafe },
     .{ "where", .Where },

@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -7,7 +8,7 @@ import {
     TransportKind
 } from 'vscode-languageclient/node';
 
-let client: LanguageClient;
+let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Home Language extension is now active');
@@ -50,11 +51,11 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('home.restartServer', () => {
+        vscode.commands.registerCommand('home.restartServer', async () => {
+            if (!client) return;
             vscode.window.showInformationMessage('Restarting Home Language Server...');
-            client.stop().then(() => {
-                client.start();
-            });
+            await client.stop();
+            await client.start();
         })
     );
 }
@@ -67,14 +68,19 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 function findLanguageServer(): string | undefined {
-    // Try to find the language server in common locations
-    const possiblePaths = [
+    const candidates = [
         path.join(__dirname, '..', '..', 'zig-out', 'bin', 'home-lsp'),
         path.join(__dirname, '..', '..', 'build', 'home-lsp'),
-        'home-lsp' // Try system PATH
     ];
 
-    // Check if any of these paths exist
-    // For now, return the first one (would need fs check in real implementation)
-    return possiblePaths[0];
+    for (const candidate of candidates) {
+        try {
+            if (fs.statSync(candidate).isFile()) return candidate;
+        } catch {
+            // continue
+        }
+    }
+
+    // Fall back to PATH lookup
+    return 'home-lsp';
 }

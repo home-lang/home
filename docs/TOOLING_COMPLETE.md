@@ -82,18 +82,18 @@ The Home tooling suite provides a complete development environment:
 
 ```json
 {
-  "ion.path": "ion",
-  "ion.lsp.enabled": true,
-  "ion.format.onSave": true,
-  "ion.format.enabled": true,
-  "ion.linting.enabled": true,
-  "ion.debugger.enabled": true,
-  "ion.profiler.enabled": true,
-  "ion.profiler.autoStart": false,
-  "ion.inlayHints.enabled": true,
-  "ion.inlayHints.parameterNames": true,
-  "ion.inlayHints.typeAnnotations": true,
-  "ion.codelens.enabled": true
+  "home.path": "ion",
+  "home.lsp.enabled": true,
+  "home.format.onSave": true,
+  "home.format.enabled": true,
+  "home.linting.enabled": true,
+  "home.debugger.enabled": true,
+  "home.profiler.enabled": true,
+  "home.profiler.autoStart": false,
+  "home.inlayHints.enabled": true,
+  "home.inlayHints.parameterNames": true,
+  "home.inlayHints.typeAnnotations": true,
+  "home.codelens.enabled": true
 }
 ```
 
@@ -611,9 +611,9 @@ code --install-extension .
 Add to VSCode settings.json:
 ```json
 {
-  "ion.path": "/path/to/ion",
-  "ion.format.onSave": true,
-  "ion.linting.enabled": true
+  "home.path": "/path/to/home",
+  "home.format.onSave": true,
+  "home.linting.enabled": true
 }
 ```
 
@@ -637,7 +637,7 @@ npm run dev
 Update VSCode extension settings:
 ```json
 {
-  "ion.packageManager.registryUrl": "http://localhost:3000"
+  "home.packageManager.registryUrl": "http://localhost:3000"
 }
 ```
 
@@ -838,7 +838,7 @@ npm test
 which ion
 
 # Update settings
-"ion.path": "/usr/local/bin/ion"
+"home.path": "/usr/local/bin/ion"
 ```
 
 ### LSP Server Not Starting

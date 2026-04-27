@@ -1,6 +1,15 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as vscode from 'vscode';
+
+function escapeHtml(value: unknown): string {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 /**
  * Memory Profiler
@@ -46,13 +55,13 @@ export interface MemoryStatistics {
 }
 
 export class MemoryProfiler {
-    private allocations: Map<string, MemoryAllocation> = new Map();
+    private readonly allocations = new Map<string, MemoryAllocation>();
     private allocationHistory: MemoryAllocation[] = [];
     private snapshots: HeapSnapshot[] = [];
-    private _outputChannel: vscode.OutputChannel;
-    private _isRunning: boolean = false;
-    private _startTime: number = 0;
-    private _peakUsage: number = 0;
+    private readonly _outputChannel: vscode.OutputChannel;
+    private _isRunning = false;
+    private _startTime = 0;
+    private _peakUsage = 0;
 
     constructor() {
         this._outputChannel = vscode.window.createOutputChannel('Home Memory Profiler');
@@ -261,28 +270,24 @@ export class MemoryProfiler {
      */
     public getStatistics(): MemoryStatistics {
         const allocationsByType = new Map<string, number>();
+        let totalSize = 0;
+        let totalDeallocations = 0;
 
         for (const alloc of this.allocationHistory) {
-            const count = allocationsByType.get(alloc.type) || 0;
-            allocationsByType.set(alloc.type, count + 1);
+            allocationsByType.set(alloc.type, (allocationsByType.get(alloc.type) ?? 0) + 1);
+            totalSize += alloc.size;
+            if (alloc.freed) totalDeallocations++;
         }
 
-        const totalSize = this.allocationHistory.reduce(
-            (sum, alloc) => sum + alloc.size,
-            0
-        );
-
+        const count = this.allocationHistory.length;
         return {
-            totalAllocations: this.allocationHistory.length,
-            totalDeallocations: this.allocationHistory.filter(a => a.freed).length,
+            totalAllocations: count,
+            totalDeallocations,
             currentAllocations: this.allocations.size,
             peakMemoryUsage: this._peakUsage,
-            averageAllocationSize:
-                this.allocationHistory.length > 0
-                    ? totalSize / this.allocationHistory.length
-                    : 0,
+            averageAllocationSize: count > 0 ? totalSize / count : 0,
             allocationsByType,
-            leaks: this.detectLeaks()
+            leaks: this.detectLeaks(),
         };
     }
 
@@ -304,7 +309,7 @@ export class MemoryProfiler {
         );
 
         const html = this.generateReportHTML(stats);
-        fs.writeFileSync(reportPath, html);
+        await fs.writeFile(reportPath, html);
 
         this._outputChannel.appendLine(`\nReport saved to ${reportPath}`);
 
@@ -330,22 +335,19 @@ export class MemoryProfiler {
     }
 
     /**
-     * Calculate heap fragmentation
+     * Calculate heap fragmentation. Coefficient of variation of allocation
+     * sizes — a real implementation would analyze actual memory layout.
      */
     private calculateFragmentation(): number {
-        // Simplified fragmentation calculation
-        // In real implementation, would analyze actual memory layout
-        const allocations = Array.from(this.allocations.values());
-        if (allocations.length === 0) return 0;
+        const sizes = Array.from(this.allocations.values(), a => a.size);
+        if (sizes.length === 0) return 0;
 
-        const sizes = allocations.map(a => a.size).sort((a, b) => a - b);
-        const variance =
-            sizes.reduce((sum, size) => {
-                const mean = this.getCurrentUsage() / sizes.length;
-                return sum + Math.pow(size - mean, 2);
-            }, 0) / sizes.length;
+        const total = sizes.reduce((sum, s) => sum + s, 0);
+        const mean = total / sizes.length;
+        if (mean === 0) return 0;
 
-        return Math.sqrt(variance) / (this.getCurrentUsage() / sizes.length);
+        const variance = sizes.reduce((sum, s) => sum + (s - mean) ** 2, 0) / sizes.length;
+        return Math.sqrt(variance) / mean;
     }
 
     /**
@@ -366,19 +368,19 @@ export class MemoryProfiler {
      */
     private generateReportHTML(stats: MemoryStatistics): string {
         const typeChart = Array.from(stats.allocationsByType.entries())
-            .map(([type, count]) => `<tr><td>${type}</td><td>${count}</td></tr>`)
+            .map(([type, count]) => `<tr><td>${escapeHtml(type)}</td><td>${count}</td></tr>`)
             .join('');
 
         const leaksList = stats.leaks
             .map(
                 leak => `
-                <tr class="${leak.suspicionLevel}">
-                    <td>${leak.allocation.address}</td>
-                    <td>${this.formatBytes(leak.allocation.size)}</td>
-                    <td>${leak.allocation.type}</td>
+                <tr class="${escapeHtml(leak.suspicionLevel)}">
+                    <td>${escapeHtml(leak.allocation.address)}</td>
+                    <td>${escapeHtml(this.formatBytes(leak.allocation.size))}</td>
+                    <td>${escapeHtml(leak.allocation.type)}</td>
                     <td>${(leak.age / 1000).toFixed(2)}s</td>
-                    <td>${leak.suspicionLevel}</td>
-                    <td>${leak.reason}</td>
+                    <td>${escapeHtml(leak.suspicionLevel)}</td>
+                    <td>${escapeHtml(leak.reason)}</td>
                 </tr>
             `
             )

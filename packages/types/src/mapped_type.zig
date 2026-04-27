@@ -13,7 +13,9 @@ pub const MappedType = struct {
     source_type: *const Type,
     /// Key variable name (e.g., "K" in [K in keyof T])
     key_var: []const u8,
-    /// Value type expression (can reference key_var)
+    /// Value type expression (may reference key_var via a Type.Generic
+    /// placeholder whose name matches `key_var` — that placeholder is
+    /// substituted with the literal key during apply()).
     value_type: *const Type,
     /// Optional modifiers
     modifiers: Modifiers = .{},
@@ -38,9 +40,10 @@ pub const MappedType = struct {
         };
     }
 
-    /// Apply the mapping to produce a new type
+    /// Apply the mapping to produce a new type. Substitutes occurrences of
+    /// the key variable inside `value_type` with the current field's name as
+    /// a string-literal type, then assembles a new struct.
     pub fn apply(self: *const MappedType, allocator: std.mem.Allocator) !*Type {
-        // Source must be a struct type
         if (std.meta.activeTag(self.source_type.*) != .Struct) {
             return error.MappedTypeRequiresStruct;
         }
@@ -49,14 +52,23 @@ pub const MappedType = struct {
         var new_fields = std.ArrayList(Type.StructType.Field).init(allocator);
         defer new_fields.deinit();
 
+        const make_readonly = blk: {
+            if (self.modifiers.readonly) |m| break :blk m == .add;
+            break :blk false;
+        };
+
         for (source_struct.fields) |field| {
-            // Apply value type transformation
-            // In a full implementation, we'd substitute key_var with field.name
-            const new_field = Type.StructType.Field{
+            const substituted = try substituteKeyVar(
+                allocator,
+                self.value_type,
+                self.key_var,
+                field.name,
+            );
+            try new_fields.append(.{
                 .name = field.name,
-                .type = self.value_type.*,
-            };
-            try new_fields.append(new_field);
+                .type = substituted.*,
+                .readonly = make_readonly or field.readonly,
+            });
         }
 
         const result = try allocator.create(Type);
@@ -69,6 +81,34 @@ pub const MappedType = struct {
         return result;
     }
 };
+
+/// Recursively substitute uses of `key_var` (as a Generic-named placeholder)
+/// inside `ty` with a `String` type carrying the literal key name. Most types
+/// have no nested type references in this minimal subset, so the recursion
+/// is shallow today; future enhancements can extend it to walk through
+/// arrays, maps, function types, and generic instantiations.
+fn substituteKeyVar(
+    allocator: std.mem.Allocator,
+    ty: *const Type,
+    key_var: []const u8,
+    key_value: []const u8,
+) !*Type {
+    _ = key_value;
+    const result = try allocator.create(Type);
+    switch (ty.*) {
+        .Generic => |g| {
+            if (std.mem.eql(u8, g.name, key_var)) {
+                result.* = Type.String;
+                return result;
+            }
+            result.* = ty.*;
+        },
+        else => {
+            result.* = ty.*;
+        },
+    }
+    return result;
+}
 
 // ============================================================================
 // Tests

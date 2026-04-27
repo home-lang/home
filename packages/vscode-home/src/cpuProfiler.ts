@@ -1,6 +1,6 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as vscode from 'vscode';
 
 /**
  * CPU Profiler
@@ -55,11 +55,11 @@ export interface ChromeNode {
 
 export class CPUProfiler {
     private samples: CPUSample[] = [];
-    private _isRunning: boolean = false;
-    private _startTime: number = 0;
-    private _outputChannel: vscode.OutputChannel;
-    private sampleInterval: number = 1; // milliseconds
-    private functionProfiles: Map<string, FunctionProfile> = new Map();
+    private _isRunning = false;
+    private _startTime = 0;
+    private readonly _outputChannel: vscode.OutputChannel;
+    private sampleInterval = 1; // milliseconds
+    private readonly functionProfiles = new Map<string, FunctionProfile>();
 
     constructor() {
         this._outputChannel = vscode.window.createOutputChannel('Home CPU Profiler');
@@ -257,7 +257,7 @@ export class CPUProfiler {
         );
 
         const html = this.getFlameGraphHTML(flameGraph);
-        fs.writeFileSync(reportPath, html);
+        await fs.writeFile(reportPath, html);
 
         this._outputChannel.appendLine(`\nFlame graph saved to ${reportPath}`);
 
@@ -298,33 +298,30 @@ export class CPUProfiler {
             nodeId++;
         }
 
-        // Build samples and time deltas
+        // Build samples and time deltas. Chrome DevTools expects all timestamps
+        // in microseconds; our internal samples track ms via Date.now().
         const samples: number[] = [];
         const timeDeltas: number[] = [];
+        const lastTimestamp = this.samples[this.samples.length - 1]?.timestamp ?? this._startTime;
 
         for (let i = 0; i < this.samples.length; i++) {
             const sample = this.samples[i];
             const funcName = sample.stackTrace[0] || 'unknown';
             const key = this.getFunctionKey(funcName, 0);
-            const id = nodeMap.get(key) || 0;
+            const id = nodeMap.get(key) ?? 0;
 
             samples.push(id);
 
-            if (i === 0) {
-                timeDeltas.push(0);
-            } else {
-                timeDeltas.push(
-                    this.samples[i].timestamp - this.samples[i - 1].timestamp
-                );
-            }
+            const prevTimestamp = i === 0 ? this._startTime : this.samples[i - 1].timestamp;
+            timeDeltas.push((sample.timestamp - prevTimestamp) * 1000);
         }
 
         return {
             nodes,
-            startTime: this._startTime * 1000, // microseconds
-            endTime: (this._startTime + (this.samples.length * this.sampleInterval)) * 1000,
+            startTime: this._startTime * 1000,
+            endTime: lastTimestamp * 1000,
             samples,
-            timeDeltas
+            timeDeltas,
         };
     }
 
@@ -345,7 +342,7 @@ export class CPUProfiler {
             'ion-cpu-profile.json'
         );
 
-        fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2));
+        await fs.writeFile(profilePath, JSON.stringify(profile, null, 2));
 
         this._outputChannel.appendLine(`\nChrome profile saved to ${profilePath}`);
 
@@ -372,7 +369,8 @@ export class CPUProfiler {
      * Generate flame graph HTML
      */
     private getFlameGraphHTML(flameGraph: FlameGraphNode): string {
-        const flameGraphData = JSON.stringify(flameGraph);
+        // Escape '<' so a function name containing "</script>" can't break out of the inline <script>.
+        const flameGraphData = JSON.stringify(flameGraph).replace(/</g, '\\u003c');
 
         return `
 <!DOCTYPE html>

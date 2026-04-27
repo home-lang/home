@@ -1,6 +1,7 @@
-import * as vscode from 'vscode';
+import { ChildProcess, spawn } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, ChildProcess } from 'child_process';
+import * as vscode from 'vscode';
 
 /**
  * Home Language Server
@@ -232,7 +233,6 @@ export class HomeLanguageServer {
      */
     private parseJsonImports(document: vscode.TextDocument) {
         const text = document.getText();
-        const fs = require('fs');
 
         // Match: const name = importJson("path/to/file.json")
         const importRegex = /const\s+(\w+)\s+=\s+importJson\("([^"]+)"\)/g;
@@ -890,7 +890,7 @@ export class HomeLanguageServer {
     private async provideCodeActions(
         document: vscode.TextDocument,
         range: vscode.Range,
-        context: vscode.CompletionContext,
+        context: vscode.CodeActionContext,
         token: vscode.CancellationToken
     ): Promise<vscode.CodeAction[]> {
         const actions: vscode.CodeAction[] = [];
@@ -960,7 +960,7 @@ export class HomeLanguageServer {
      * Type check entire workspace
      */
     private async typeCheckWorkspace() {
-        const files = await vscode.workspace.findFiles('**/*.zig', '**/node_modules/**');
+        const files = await vscode.workspace.findFiles('**/*.{home,hm}', '**/node_modules/**');
 
         for (const file of files) {
             const document = await vscode.workspace.openTextDocument(file);

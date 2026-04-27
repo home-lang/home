@@ -54,15 +54,23 @@ interface VariableData {
     variablesReference: number;
 }
 
+type HomeValueType = 'Int' | 'Float' | 'Bool' | 'String' | 'Array' | 'Struct' | 'Function' | string;
+
+interface ProfilerEntry {
+    name: string;
+    duration?: number;
+    [k: string]: unknown;
+}
+
 export class HomeDebugSession extends LoggingDebugSession {
     private static THREAD_ID = 1;
 
-    private _variableHandles = new Handles<VariableData[]>();
-    private _scopeHandles = new Handles<number>(); // Maps to environment/frame ID
+    private readonly _variableHandles = new Handles<VariableData[]>();
+    private readonly _scopeHandles = new Handles<number>(); // Maps to environment/frame ID
     private _ionProcess: ChildProcess | undefined;
-    private _breakpoints = new Map<string, DebugProtocol.Breakpoint[]>();
+    private readonly _breakpoints = new Map<string, DebugProtocol.Breakpoint[]>();
     private _profilerEnabled = false;
-    private _profilerData: any[] = [];
+    private readonly _profilerData: ProfilerEntry[] = [];
     private _debuggerState: DebuggerState = {
         stackFrames: [],
         variables: new Map(),
@@ -584,27 +592,26 @@ export class HomeDebugSession extends LoggingDebugSession {
     /**
      * Format a value for display
      */
-    private formatValue(value: any, type: string): string {
+    private formatValue(value: unknown, type: HomeValueType): string {
         if (value === null || value === undefined) {
             return 'void';
         }
 
         switch (type) {
             case 'Int':
-                return value.toString();
+                return String(value);
             case 'Float':
-                return value.toFixed(2);
+                return typeof value === 'number' ? value.toFixed(2) : String(value);
             case 'Bool':
                 return value ? 'true' : 'false';
             case 'String':
                 return `"${value}"`;
             case 'Array':
-                if (Array.isArray(value)) {
-                    return `[${value.length} elements]`;
-                }
-                return '[Array]';
+                return Array.isArray(value) ? `[${value.length} elements]` : '[Array]';
             case 'Struct':
-                return `{${Object.keys(value || {}).join(', ')}}`;
+                return typeof value === 'object'
+                    ? `{${Object.keys(value as object).join(', ')}}`
+                    : '{}';
             case 'Function':
                 return `<function>`;
             default:
@@ -613,25 +620,31 @@ export class HomeDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * Create variable reference for structured types
+     * Create variable reference for structured types. Children of arrays /
+     * struct fields arrive as `{ value, type }` records from the runtime; raw
+     * (untyped) primitives are stringified directly.
      */
-    private createVariableReference(value: any, type: string): number {
+    private createVariableReference(value: unknown, type: HomeValueType): number {
+        const wrap = (name: string, child: unknown): VariableData => {
+            if (child !== null && typeof child === 'object' && 'value' in child && 'type' in child) {
+                const c = child as { value: unknown; type: HomeValueType };
+                return {
+                    name,
+                    value: this.formatValue(c.value, c.type),
+                    type: c.type ?? 'unknown',
+                    variablesReference: 0,
+                };
+            }
+            return { name, value: String(child), type: 'unknown', variablesReference: 0 };
+        };
+
         if (type === 'Array' && Array.isArray(value)) {
-            const children: VariableData[] = value.map((v, idx) => ({
-                name: `[${idx}]`,
-                value: this.formatValue(v.value, v.type),
-                type: v.type || 'unknown',
-                variablesReference: 0
-            }));
-            return this._variableHandles.create(children);
-        } else if (type === 'Struct' && typeof value === 'object') {
-            const children: VariableData[] = Object.entries(value).map(([key, v]: [string, any]) => ({
-                name: key,
-                value: this.formatValue(v.value, v.type),
-                type: v.type || 'unknown',
-                variablesReference: 0
-            }));
-            return this._variableHandles.create(children);
+            return this._variableHandles.create(value.map((v, idx) => wrap(`[${idx}]`, v)));
+        }
+        if (type === 'Struct' && value !== null && typeof value === 'object') {
+            return this._variableHandles.create(
+                Object.entries(value as Record<string, unknown>).map(([k, v]) => wrap(k, v))
+            );
         }
         return 0;
     }

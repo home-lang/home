@@ -1,13 +1,50 @@
-import * as vscode from 'vscode';
+import { ChildProcess, spawn } from 'child_process';
+import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as fs from 'fs';
-import { spawn, ChildProcess } from 'child_process';
+import * as vscode from 'vscode';
+
+interface ProfileData {
+    type: 'function_call' | string;
+    name: string;
+    duration: number;
+    timestamp: number;
+}
+
+interface FunctionStats {
+    name: string;
+    callCount: number;
+    totalTime: number;
+    minTime: number;
+    maxTime: number;
+    avgTime: number;
+}
+
+interface ProfileSummary {
+    totalTime: number;
+    functionCount: number;
+    topFunctions: FunctionStats[];
+}
+
+interface ProfileReport {
+    timestamp: string;
+    summary: ProfileSummary;
+    data: ProfileData[];
+}
+
+function escapeHtml(value: unknown): string {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 export class HomeProfiler {
     private _isRunning = false;
     private _process: ChildProcess | undefined;
-    private _outputChannel: vscode.OutputChannel;
-    private _statusBarItem: vscode.StatusBarItem;
+    private readonly _outputChannel: vscode.OutputChannel;
+    private readonly _statusBarItem: vscode.StatusBarItem;
     private _profileData: ProfileData[] = [];
 
     constructor() {
@@ -59,19 +96,18 @@ export class HomeProfiler {
                 this._outputChannel.appendLine(`[ERROR] ${data.toString()}`);
             });
 
-            this._process.on('exit', (code) => {
+            this._process.on('exit', async (code) => {
                 this._outputChannel.appendLine(`Profiler exited with code ${code}`);
                 this.stop();
                 if (code === 0) {
-                    this.saveReport();
-                    vscode.window.showInformationMessage(
+                    await this.saveReport();
+                    const selection = await vscode.window.showInformationMessage(
                         'Profiling complete. View report?',
                         'View Report'
-                    ).then(selection => {
-                        if (selection === 'View Report') {
-                            this.viewReport();
-                        }
-                    });
+                    );
+                    if (selection === 'View Report') {
+                        await this.viewReport();
+                    }
                 }
             });
 
@@ -97,17 +133,18 @@ export class HomeProfiler {
         return this._isRunning;
     }
 
-    private processOutput(data: string) {
+    private static readonly PROFILE_PREFIX = '[PROFILE]';
+
+    private processOutput(data: string): void {
         const lines = data.split('\n');
 
         for (const line of lines) {
             this._outputChannel.appendLine(line);
 
-            // Parse profiler data
-            if (line.startsWith('[PROFILE]')) {
+            if (line.startsWith(HomeProfiler.PROFILE_PREFIX)) {
                 try {
-                    const jsonData = line.substring(9).trim();
-                    const profileEntry = JSON.parse(jsonData);
+                    const jsonData = line.slice(HomeProfiler.PROFILE_PREFIX.length).trim();
+                    const profileEntry = JSON.parse(jsonData) as ProfileData;
                     this._profileData.push(profileEntry);
                 } catch (e) {
                     this._outputChannel.appendLine(`Failed to parse profile data: ${e}`);
@@ -116,7 +153,7 @@ export class HomeProfiler {
         }
     }
 
-    private saveReport(): void {
+    private async saveReport(): Promise<void> {
         if (this._profileData.length === 0) {
             this._outputChannel.appendLine('No profiler data collected');
             return;
@@ -128,13 +165,13 @@ export class HomeProfiler {
         }
 
         const reportPath = path.join(workspaceFolder.uri.fsPath, 'ion-profile-report.json');
-        const report = {
+        const report: ProfileReport = {
             timestamp: new Date().toISOString(),
             summary: this.generateSummary(),
-            data: this._profileData
+            data: this._profileData,
         };
 
-        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+        await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
         this._outputChannel.appendLine(`Report saved to ${reportPath}`);
     }
 
@@ -147,14 +184,16 @@ export class HomeProfiler {
 
         const reportPath = path.join(workspaceFolder.uri.fsPath, 'ion-profile-report.json');
 
-        if (!fs.existsSync(reportPath)) {
+        let raw: string;
+        try {
+            raw = await fs.readFile(reportPath, 'utf-8');
+        } catch {
             vscode.window.showErrorMessage('No profiler report found. Run the profiler first.');
             return;
         }
 
-        const reportData = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+        const reportData = JSON.parse(raw) as ProfileReport;
 
-        // Create a webview to display the report
         const panel = vscode.window.createWebviewPanel(
             'ionProfiler',
             'Home Profiler Report',
@@ -206,8 +245,9 @@ export class HomeProfiler {
         };
     }
 
-    private getReportHtml(reportData: any): string {
+    private getReportHtml(reportData: ProfileReport): string {
         const summary = reportData.summary;
+        const totalTime = summary.totalTime || 1; // avoid divide-by-zero in % column
 
         return `
             <!DOCTYPE html>
@@ -266,7 +306,7 @@ export class HomeProfiler {
             </head>
             <body>
                 <h1>Home Profiler Report</h1>
-                <p><em>Generated: ${reportData.timestamp}</em></p>
+                <p><em>Generated: ${escapeHtml(reportData.timestamp)}</em></p>
 
                 <div class="summary">
                     <h2>Summary</h2>
@@ -292,15 +332,15 @@ export class HomeProfiler {
                         </tr>
                     </thead>
                     <tbody>
-                        ${summary.topFunctions.map((fn: FunctionStats) => `
+                        ${summary.topFunctions.map((fn) => `
                             <tr>
-                                <td><code>${fn.name}</code></td>
+                                <td><code>${escapeHtml(fn.name)}</code></td>
                                 <td>${fn.callCount}</td>
                                 <td>${fn.totalTime.toFixed(2)}</td>
                                 <td>${fn.avgTime.toFixed(2)}</td>
                                 <td>${fn.minTime.toFixed(2)}</td>
                                 <td>${fn.maxTime.toFixed(2)}</td>
-                                <td>${((fn.totalTime / summary.totalTime) * 100).toFixed(1)}%</td>
+                                <td>${((fn.totalTime / totalTime) * 100).toFixed(1)}%</td>
                             </tr>
                         `).join('')}
                     </tbody>
@@ -308,9 +348,9 @@ export class HomeProfiler {
 
                 <h2>Call Timeline</h2>
                 <div id="timeline">
-                    ${reportData.data.slice(0, 100).map((entry: any, _index: number) => `
+                    ${reportData.data.slice(0, 100).map((entry) => `
                         <div style="margin: 5px 0;">
-                            <code>${entry.name}</code> - ${entry.duration?.toFixed(2) || 'N/A'}ms
+                            <code>${escapeHtml(entry.name)}</code> - ${entry.duration?.toFixed(2) ?? 'N/A'}ms
                         </div>
                     `).join('')}
                 </div>
@@ -324,26 +364,4 @@ export class HomeProfiler {
         this._outputChannel.dispose();
         this._statusBarItem.dispose();
     }
-}
-
-interface ProfileData {
-    type: string;
-    name: string;
-    duration: number;
-    timestamp: number;
-}
-
-interface FunctionStats {
-    name: string;
-    callCount: number;
-    totalTime: number;
-    minTime: number;
-    maxTime: number;
-    avgTime: number;
-}
-
-interface ProfileSummary {
-    totalTime: number;
-    functionCount: number;
-    topFunctions: FunctionStats[];
 }
