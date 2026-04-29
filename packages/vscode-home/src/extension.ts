@@ -36,6 +36,7 @@ function getHomePath(): string {
     return config.get<string>('path') || 'home';
 }
 
+// eslint-disable-next-line pickier/no-unused-vars
 function shellQuote(value: string): string {
     if (process.platform === 'win32') {
         return `"${value.replace(/"/g, '""')}"`;
