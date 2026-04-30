@@ -212,7 +212,7 @@ Now that you have Home installed, explore these topics:
 
 ### Common Issues
 
-**Zig not found**
+#### Zig not found
 
 Make sure Zig is in your PATH:
 
@@ -221,11 +221,11 @@ which zig
 # Should output the path to zig
 ```
 
-**Build fails with memory error**
+#### Build fails with memory error
 
 Try increasing stack size or check for infinite recursion in your code.
 
-**Permission denied**
+#### Permission denied
 
 Make sure the built executable has execute permissions:
 

@@ -549,7 +549,7 @@ expect.not = false; // Reset for next assertion
 | **String** | 6 | `toContain`, `toStartWith`, `toEndWith`, `toHaveLength`, `toBeEmpty`, `toMatch` |
 | **Special** | 4 | `toMatchSnapshot`, `toHaveBeenCalled`, `toHaveBeenCalledTimes`, `toHaveBeenCalledWith` |
 
-**Total: 30+ matchers**
+### Total: 30+ matchers
 
 ---
 

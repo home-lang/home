@@ -395,7 +395,7 @@ const header = try header_gen.generateHeader(allocator, config);
     - Bulk string conversions
     - Bulk type conversions
 
-**Total: 40+ comprehensive tests**
+#### Total: 40+ comprehensive tests
 
 ---
 

@@ -90,7 +90,7 @@
 
 ### 5. Container Parsing ✅
 
-**All major container readers fully functional**
+#### All major container readers fully functional
 
 - MP4/MOV reader with box parsing
 - WebM/Matroska reader with EBML parsing
@@ -105,7 +105,7 @@
 
 ### 6. Codec Analysis ✅
 
-**Full codec detection and header parsing**
+#### Full codec detection and header parsing
 
 - H.264/AVC: NAL unit parsing, SPS/PPS, emulation prevention
 - H.265/HEVC: NAL parsing, VPS/SPS/PPS
@@ -121,7 +121,7 @@
 
 ### 7. Subtitle Formats ✅
 
-**Complete parsing and conversion**
+#### Complete parsing and conversion
 
 - SRT parser with timestamp parsing
 - VTT parser with cue settings
@@ -137,7 +137,7 @@
 
 ### 8. Video Filters ✅
 
-**Basic implementations working**
+#### Basic implementations working
 
 - Scale (nearest/bilinear/bicubic/lanczos)
 - Crop with bounds checking
@@ -155,7 +155,7 @@
 
 ### 9. Audio Filters ✅
 
-**Full implementations**
+#### Full implementations
 
 - Volume adjustment (dB)
 - Normalization (peak/RMS)
@@ -169,7 +169,7 @@
 
 ### 10. Home Language Bindings ✅
 
-**Complete FFI and high-level API**
+#### Complete FFI and high-level API
 
 - Zig FFI layer with C compatibility
 - Home language wrapper with Result types
@@ -181,7 +181,7 @@
 
 ### 11. Testing Suite ✅
 
-**140+ comprehensive unit tests**
+#### 140+ comprehensive unit tests
 
 - Audio tests (20+)
 - Codec tests (30+)

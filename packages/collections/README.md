@@ -438,7 +438,7 @@ zig build run-advanced
 zig build test
 ```
 
-**Test Coverage: 220+ tests passing**
+### Test Coverage: 220+ tests passing
 
 - 100 Collection tests (includes new validation, windowing, diff/patch tests)
 - 7 LazyCollection tests

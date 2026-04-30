@@ -189,7 +189,7 @@ try expect.toBeBetween(1, 10); // ✓ Pass (inclusive)
 | **Mock/Spy** | 3 | `toHaveBeenCalled`, `toHaveBeenCalledTimes`, `toHaveBeenCalledWith` |
 | **Special** | 3 | `toMatchSnapshot`, `toThrow`, `toThrowError` |
 
-**Total: 32 matchers**
+#### Total: 32 matchers
 
 ---
 

@@ -21,7 +21,7 @@ Full-featured VSCode extension with:
 - InlayHints
 - CodeLens
 
-**[Documentation](../docs/TOOLING_COMPLETE.md#vscode-extension)**
+#### [Documentation](../docs/TOOLING_COMPLETE.md#vscode-extension)
 
 ### 2. Package Registry
 
@@ -36,7 +36,7 @@ Centralized package hosting and distribution:
 - Download statistics
 - MongoDB + Redis backend
 
-**[Documentation](../docs/TOOLING_COMPLETE.md#package-registry)**
+#### [Documentation](../docs/TOOLING_COMPLETE.md#package-registry)
 
 ---
 

@@ -90,7 +90,7 @@ The Home modern testing framework has been **thoroughly tested** with a comprehe
 - ✅ Mock assertions (toHaveBeenCalled, toHaveBeenCalledTimes, toHaveBeenCalledWith)
 - ✅ Snapshot matching (toMatchSnapshot)
 
-**Total: 32 matchers tested**
+##### Total: 32 matchers tested
 
 ---
 
