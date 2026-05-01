@@ -3,11 +3,10 @@
 # Home language installer.
 #
 # Usage:
-#   curl -fsSL https://home-lang.org/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/home-lang/home/main/install.sh | bash
 #
 # Environment variables:
-#   HOME_VERSION       Pin a specific release tag (e.g. v0.1.0). Defaults to "latest".
+#   HOME_VERSION       Pin a release tag (e.g. v0.1.0 or 0.1.0). Defaults to "latest".
 #   HOME_INSTALL_DIR   Where to install Home. Defaults to "$HOME/.home".
 #   HOME_BIN_DIR       Where to place the `home` binary. Defaults to "$HOME_INSTALL_DIR/bin".
 #   HOME_SKIP_CHECKSUM Set to "1" to skip checksum verification (not recommended).
@@ -103,6 +102,10 @@ artifact_extension() {
 main() {
   local version install_dir bin_dir target ext
   version="${HOME_VERSION:-latest}"
+  # Tolerate bare semver — `HOME_VERSION=0.1.0` is the same as `v0.1.0`.
+  case "$version" in
+    [0-9]*) version="v$version" ;;
+  esac
   install_dir="${HOME_INSTALL_DIR:-$HOME/.home}"
   bin_dir="${HOME_BIN_DIR:-$install_dir/bin}"
 
@@ -142,10 +145,9 @@ main() {
     exit 1
   fi
 
-  # Checksum verification. We treat a missing .sha256 as a soft failure for now
-  # because the existing release workflow does not yet emit them — it's tracked
-  # as part of the release-build hardening work. Set HOME_SKIP_CHECKSUM=1 to
-  # silence the warning entirely.
+  # Checksum verification. The release workflow emits a `.sha256` companion
+  # for each artifact; if it's missing (e.g. older release) we warn rather
+  # than fail. Set HOME_SKIP_CHECKSUM=1 to silence the warning entirely.
   if [ "${HOME_SKIP_CHECKSUM:-0}" = "1" ]; then
     warn "skipping checksum verification (HOME_SKIP_CHECKSUM=1)"
   elif [ -z "$checksum_cmd" ]; then

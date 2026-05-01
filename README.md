@@ -44,10 +44,6 @@ For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
 ## Install
 
 ```bash
-# canonical (once home-lang.org is live)
-curl -fsSL https://home-lang.org/install.sh | bash
-
-# GitHub-direct fallback (works today)
 curl -fsSL https://raw.githubusercontent.com/home-lang/home/main/install.sh | bash
 ```
 
@@ -58,15 +54,9 @@ and Windows (x64 + arm64, via Git Bash / WSL).
 
 Useful environment variables:
 
-- `HOME_VERSION=v0.1.0` &mdash; pin a specific release tag (default: `latest`)
+- `HOME_VERSION=v0.1.0` (or `0.1.0`) &mdash; pin a specific release tag (default: `latest`)
 - `HOME_INSTALL_DIR=/opt/home` &mdash; override install location (default: `~/.home`)
 - `HOME_BIN_DIR=/usr/local/bin` &mdash; override where the binary is placed
-
-> **Note:** the installer downloads pre-built binaries from GitHub Releases. The
-> release-build pipeline is being hardened (checksum emission, signing, host
-> domain) — until then, the script may fall back to skipping checksum
-> verification when a `.sha256` companion file is missing. Track progress on
-> the release-build work in the issue tracker.
 
 ## Build from Source
 
