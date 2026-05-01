@@ -394,7 +394,7 @@ Potential improvements to the pipeline:
 
 ## Conclusion
 
-The Home compiler provides a modern, sophisticated compilation pipeline that rivals production compilers like Rust and Swift. The integration of macro expansion, compile-time evaluation, ownership checking, and incremental compilation ensures both developer productivity and runtime performance.
+The Home compiler is a multi-pass pipeline that integrates macro expansion, compile-time evaluation, ownership checking, and incremental compilation. Many pieces are still maturing — see the [Capability Matrix](./CAPABILITY_MATRIX.md) for what is stable today.
 
 Key achievements:
 
@@ -405,4 +405,4 @@ Key achievements:
 - ✅ Incremental compilation (10x+ speedup)
 - ✅ Zero-cost abstractions
 
-The pipeline is production-ready and suitable for systems programming, application development, and even bare-metal kernel development.
+Home is under active development; not all stages are production-quality yet. See the [Capability Matrix](./CAPABILITY_MATRIX.md) for the current status of each component.

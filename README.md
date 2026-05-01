@@ -2,6 +2,45 @@
 
 A modern programming language for systems, apps, and games. Combines the speed of Zig, the safety of Rust, and the joy of TypeScript.
 
+> **Status**: Home is under active development. The lexer, parser, type
+> inference, and tree-walking interpreter are usable today; native codegen,
+> tooling, and most of the stdlib are still maturing. See the [capability
+> matrix](#capability-matrix) below — and [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
+> for the full breakdown — for an honest view of what works vs. what is
+> in progress.
+
+## Capability Matrix
+
+A condensed view; see [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
+for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not yet.
+
+| Area | Feature | Status |
+|---|---|---|
+| Frontend | Lexer | ✅ Stable |
+| Frontend | Parser (with error recovery) | ✅ Stable |
+| Frontend | Type inference | ✅ Stable |
+| Frontend | Tree-walking interpreter | ✅ Stable |
+| Language | Pattern matching | 🚧 In progress |
+| Language | Closures | 🚧 In progress |
+| Language | Traits / `impl` | 🚧 In progress |
+| Language | Trait objects | 🚧 In progress |
+| Language | Generics | 🚧 In progress |
+| Language | Const generics | ❌ Not yet |
+| Language | Comptime evaluation | 🚧 In progress |
+| Language | Async / await | 🚧 In progress |
+| Language | Ownership / borrow checking | 🚧 In progress |
+| Codegen | x86-64 native | 🚧 In progress |
+| Codegen | arm64 native | 🚧 Partial |
+| Codegen | WebAssembly | 🚧 Stub |
+| Codegen | LLVM backend | 🚧 In progress |
+| Tooling | `home check` / `home run` | ✅ Stable |
+| Tooling | `home build` | 🚧 In progress |
+| Tooling | Formatter / Linter / LSP / REPL | 🚧 In progress |
+| Stdlib | Strings, ranges, arrays | ✅ Stable |
+| Stdlib | HTTP, database, threading, FFI | 🚧 In progress |
+
+For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
+
 ## Quick Start
 
 ```bash
@@ -469,12 +508,11 @@ zig build run -- examples/fibonacci.home
 
 ## Current Status
 
-Home is under active development. The compiler infrastructure is functional:
-
-- Lexer and parser
-- Type system with inference
-- Native x64 code generation
-- Basic standard library
+Home is under active development. For a granular, conservative view of what
+works today vs. what is partial, in progress, or not yet started, see the
+[capability matrix](#capability-matrix) above and the longer write-up at
+[`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md). Release notes live
+in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Contributing
 

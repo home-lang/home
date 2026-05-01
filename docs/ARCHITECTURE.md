@@ -1,7 +1,7 @@
 # Home Compiler Architecture
 
-> **Last Updated**: 2025-10-22
-> **Status**: Home is at 88% completion (43/49 tasks complete)
+> **Status**: Home is under active development. For an honest, granular view of what works
+> today vs. what is in progress, see the [Capability Matrix](./CAPABILITY_MATRIX.md).
 
 ## Overview
 
