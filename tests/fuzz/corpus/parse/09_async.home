@@ -1,0 +1,4 @@
+async fn fetch(url: string): string {
+    let body = await get(url)
+    return body
+}

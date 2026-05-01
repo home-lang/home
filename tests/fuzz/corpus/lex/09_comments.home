@@ -1,0 +1,3 @@
+// line comment
+/* block /* nested? */ comment */
+let x = 1 // trailing

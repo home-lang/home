@@ -1,0 +1,63 @@
+name: Fuzz (nightly)
+
+# Long-running fuzz session for the lexer + parser, scheduled rather
+# than per-PR so it doesn't eat CI minutes. Findings (crash + timeout
+# reproducers) are uploaded as artifacts for later triage.
+#
+# Tracks issue #10 (CI fuzzing). Timeouts feed back into issue #16
+# (parser hang) repro set as the parser is fixed.
+
+on:
+  schedule:
+    # 04:17 UTC daily — off-peak, slightly off the hour to dodge the
+    # GitHub Actions cron stampede.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: 'Seconds to fuzz each target (default 900 = 15min)'
+        required: false
+        default: '900'
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz-nightly:
+    name: Nightly fuzz (lex + parse)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.56+a8226cd53'
+
+      - name: Build Home Compiler
+        run: zig build
+
+      - name: Fuzz lexer
+        run: |
+          SECS="${{ github.event.inputs.seconds_per_target || '900' }}"
+          zig build fuzz-lexer -- --seconds "$SECS" --findings fuzz-findings
+
+      - name: Fuzz parser
+        # Run even if lexer found something — we still want parser
+        # data. Crash exit from the lexer step would have failed
+        # already; getting here means lexer was clean.
+        if: always()
+        run: |
+          SECS="${{ github.event.inputs.seconds_per_target || '900' }}"
+          zig build fuzz-parser -- --seconds "$SECS" --findings fuzz-findings
+
+      - name: Upload fuzz findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-nightly-${{ github.run_id }}
+          path: fuzz-findings/
+          if-no-files-found: ignore
+          retention-days: 30

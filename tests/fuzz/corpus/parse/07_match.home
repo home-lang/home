@@ -1,0 +1,7 @@
+fn classify(n: i32): string {
+    match n {
+        0 => "zero"
+        1 => "one"
+        _ => "other"
+    }
+}

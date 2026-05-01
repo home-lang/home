@@ -219,6 +219,49 @@ jobs:
             -Mtesting=packages/testing/src/modern_test.zig
           ./test_integration
 
+  # =========================================================================
+  # Fuzzing (issue #10)
+  # =========================================================================
+  #
+  # Short, mutation-based fuzz session against the lexer and parser on
+  # every PR. The harness is subprocess-isolated so the known parser
+  # hang (issue #16) doesn't wedge CI — timeouts are logged as findings
+  # but do not fail the build. Only actual crashes (signals, unexpected
+  # exit codes) fail this job.
+  #
+  # Long-running fuzzing belongs in fuzz-nightly.yml, not here — CI
+  # minutes are real and a 60s budget is enough to catch obvious
+  # regressions without slowing down PR feedback.
+  fuzz:
+    name: Fuzz (lex + parse, 60s/target)
+    runs-on: ubuntu-latest
+    needs: build-and-test-home
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.56+a8226cd53'
+
+      - name: Build Home Compiler
+        run: zig build
+
+      - name: Fuzz lexer (60s)
+        run: zig build fuzz-lexer -- --seconds 60 --findings fuzz-findings
+
+      - name: Fuzz parser (60s)
+        run: zig build fuzz-parser -- --seconds 60 --findings fuzz-findings
+
+      - name: Upload fuzz findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-${{ github.run_id }}
+          path: fuzz-findings/
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-filesystem:
     name: Filesystem Tests
     runs-on: ubuntu-latest

@@ -756,6 +756,74 @@ pub fn build(b: *std.Build) void {
     // diagnostic regressions too.
     test_step.dependOn(&run_diag_harness.step);
 
+    // ════════════════════════════════════════════════════════════════
+    // Fuzzing (issue #10)
+    // ════════════════════════════════════════════════════════════════
+    //
+    // Mutation-based fuzzer for the lexer (`home parse`) and parser
+    // (`home ast`). Runs the compiler in a subprocess per iteration so
+    // we can enforce a hard wall-clock timeout — the parser is known
+    // to infinite-loop on certain malformed inputs (issue #16) and an
+    // in-process fuzzer would wedge itself.
+    //
+    //   zig build fuzz                        # both targets, 60s budget total
+    //   zig build fuzz-lexer                  # lexer only
+    //   zig build fuzz-parser                 # parser only
+    //   zig build fuzz -- --seconds 30        # custom budget
+    //
+    // The harness fails (exits non-zero) only on actual crashes
+    // (signal / unexpected exit code). Timeouts are saved as findings
+    // for issue #16 but do NOT fail the build.
+    const fuzz_harness = b.addExecutable(.{
+        .name = "fuzz-harness",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/harness.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Per-target run helpers. Each gets its own RunArtifact so the
+    // step graph stays clean.
+    const fuzz_lexer_run = b.addRunArtifact(fuzz_harness);
+    fuzz_lexer_run.step.dependOn(b.getInstallStep());
+    fuzz_lexer_run.addArg(b.build_root.path orelse ".");
+    fuzz_lexer_run.addFileArg(exe.getEmittedBin());
+    fuzz_lexer_run.addArg("lex");
+    if (b.args) |args| fuzz_lexer_run.addArgs(args);
+
+    const fuzz_parser_run = b.addRunArtifact(fuzz_harness);
+    fuzz_parser_run.step.dependOn(b.getInstallStep());
+    fuzz_parser_run.addArg(b.build_root.path orelse ".");
+    fuzz_parser_run.addFileArg(exe.getEmittedBin());
+    fuzz_parser_run.addArg("parse");
+    if (b.args) |args| fuzz_parser_run.addArgs(args);
+
+    const fuzz_all_run = b.addRunArtifact(fuzz_harness);
+    fuzz_all_run.step.dependOn(b.getInstallStep());
+    fuzz_all_run.addArg(b.build_root.path orelse ".");
+    fuzz_all_run.addFileArg(exe.getEmittedBin());
+    fuzz_all_run.addArg("all");
+    if (b.args) |args| fuzz_all_run.addArgs(args);
+
+    const fuzz_lexer_step = b.step(
+        "fuzz-lexer",
+        "Fuzz the lexer (subprocess-isolated; timeouts logged, crashes fail)",
+    );
+    fuzz_lexer_step.dependOn(&fuzz_lexer_run.step);
+
+    const fuzz_parser_step = b.step(
+        "fuzz-parser",
+        "Fuzz the parser (subprocess-isolated; timeouts logged, crashes fail)",
+    );
+    fuzz_parser_step.dependOn(&fuzz_parser_run.step);
+
+    const fuzz_step = b.step(
+        "fuzz",
+        "Fuzz lexer + parser (umbrella; pass --seconds N to size the budget)",
+    );
+    fuzz_step.dependOn(&fuzz_all_run.step);
+
     // Test zig-test-framework integration (only if framework is available)
     if (zig_test_framework) |tf| {
         const framework_integration_mod = b.createModule(.{

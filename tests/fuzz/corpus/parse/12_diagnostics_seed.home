@@ -1,0 +1,5 @@
+fn first() {
+    let a: i32 = "no"
+    let b: bool = 99
+    let c: string = 42
+}
