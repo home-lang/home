@@ -46,12 +46,27 @@ packages/.DS_Store
 /packages/app/.zig-cache
 /packages/compression/.zig-cache
 /dist
-test_reify
-test_reify2
-test_timer
-test_type
-test_type2
-test_typeinfo
+
+# Catch-all for Zig build artifacts in any subdirectory
+# (covers new packages without needing per-package entries above)
+**/.zig-cache/
+**/zig-out/
+**/.test-cache/
+
+# OS detritus
+.DS_Store
+**/.DS_Store
+
+# Stale top-level test binaries / scratch outputs from ad-hoc runs.
+# Anchored to the repo root with a leading slash so they do NOT match
+# files under tests/ (e.g. tests/feature/test_*.test.home is fine).
+/test_reify
+/test_reify2
+/test_timer
+/test_type
+/test_type2
+/test_typeinfo
+/a.out
 
 # Compiled example binaries (sources are .home/.hm files in the same dir)
 /examples/*[!.][!h][!o][!m][!e]

@@ -144,17 +144,17 @@ jobs:
       - name: Test Native Codegen (Unix)
         if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |
-          ./zig-out/bin/home parse tests/integration/11_ternary_advanced.ion
-          ./zig-out/bin/home parse tests/integration/17_switch_advanced.ion
-          ./zig-out/bin/home parse tests/integration/20_combined_features.ion
+          ./zig-out/bin/home parse tests/integration/11_ternary_advanced.home
+          ./zig-out/bin/home parse tests/integration/17_switch_advanced.home
+          ./zig-out/bin/home parse tests/integration/20_combined_features.home
 
       - name: Test Native Codegen (Windows)
         if: matrix.platform == 'windows' && matrix.arch == 'x86_64'
         shell: bash
         run: |
-          ./zig-out/bin/home.exe parse tests/integration/11_ternary_advanced.ion
-          ./zig-out/bin/home.exe parse tests/integration/17_switch_advanced.ion
-          ./zig-out/bin/home.exe parse tests/integration/20_combined_features.ion
+          ./zig-out/bin/home.exe parse tests/integration/11_ternary_advanced.home
+          ./zig-out/bin/home.exe parse tests/integration/17_switch_advanced.home
+          ./zig-out/bin/home.exe parse tests/integration/20_combined_features.home
 
       - name: Upload Home Binary (Unix)
         if: matrix.platform != 'windows'
