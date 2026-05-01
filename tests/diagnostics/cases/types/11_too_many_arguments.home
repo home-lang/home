@@ -1,0 +1,6 @@
+// Wrong number of arguments: function expects one, three supplied.
+fn one(a: i32) {}
+
+fn main() {
+    one(1, 2, 3)
+}

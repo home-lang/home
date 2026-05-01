@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/12_argument_type_mismatch.home
+
+error: Argument type mismatch
+  --> <repo>/tests/diagnostics/cases/types/12_argument_type_mismatch.home:7:19
+   |
+   7 |     let v = divide("a", 2)
+   |                    ^

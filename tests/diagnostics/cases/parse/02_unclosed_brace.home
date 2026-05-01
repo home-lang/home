@@ -1,0 +1,3 @@
+// Parse error: function body brace never closed.
+fn main() {
+    let x = 1

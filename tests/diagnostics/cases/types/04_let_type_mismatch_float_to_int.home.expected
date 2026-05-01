@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/04_let_type_mismatch_float_to_int.home
+
+error: Type mismatch
+  expected: .{ .I32 = void }
+     found: float
+
+  --> <repo>/tests/diagnostics/cases/types/04_let_type_mismatch_float_to_int.home:4:18
+   |
+   4 |     let q: i32 = p
+   |                   ^

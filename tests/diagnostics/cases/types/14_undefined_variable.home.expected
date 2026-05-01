@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/14_undefined_variable.home
+
+error: Undefined variable
+  --> <repo>/tests/diagnostics/cases/types/14_undefined_variable.home:3:13
+   |
+   3 |     let x = y + 1
+   |              ^

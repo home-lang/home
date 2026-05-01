@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/parse/01_unclosed_paren.home:4:1: error[EP0001]: Expected ')' after expression
+  }
+   ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/parse/01_unclosed_paren.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,6 @@
+// Wrong number of arguments: function expects two, only one supplied.
+fn add(a: i32, b: i32) -> i32 { return a + b }
+
+fn main() {
+    let v = add(1)
+}

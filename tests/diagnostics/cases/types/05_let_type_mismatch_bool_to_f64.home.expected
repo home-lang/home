@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/05_let_type_mismatch_bool_to_f64.home
+
+error: Type mismatch
+  expected: .{ .F64 = void }
+     found: bool
+
+  --> <repo>/tests/diagnostics/cases/types/05_let_type_mismatch_bool_to_f64.home:3:18
+   |
+   3 |     let s: f64 = true
+   |                   ^

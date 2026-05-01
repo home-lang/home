@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/08_function_return_type_mismatch.home
+
+error: Type mismatch
+  expected: string
+     found: .{ .I32 = void }
+
+  --> <repo>/tests/diagnostics/cases/types/08_function_return_type_mismatch.home:5:32
+   |
+   5 |     let s: string = returns_i32()
+   |                                 ^

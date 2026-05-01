@@ -1,0 +1,4 @@
+// Type mismatch: i32 binding initialized with a string literal.
+fn main() {
+    let x: i32 = "hello"
+}

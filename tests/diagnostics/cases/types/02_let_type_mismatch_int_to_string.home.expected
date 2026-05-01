@@ -1,0 +1,12 @@
+Checking: <repo>/tests/diagnostics/cases/types/02_let_type_mismatch_int_to_string.home
+
+error: Type mismatch
+  expected: string
+     found: int
+
+  --> <repo>/tests/diagnostics/cases/types/02_let_type_mismatch_int_to_string.home:3:21
+   |
+   3 |     let s: string = 42
+   |                      ^
+   |
+   = help: use .toString() to convert int to string

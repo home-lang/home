@@ -1,0 +1,4 @@
+// Undefined variable referenced in a binary expression.
+fn main() {
+    let x = y + 1
+}

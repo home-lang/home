@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/imports/01_unresolved_import.home:2:12: error[EP0001]: Module 'nope' not found
+  import nope::missing
+              ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/imports/01_unresolved_import.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,4 @@
+// Import error: module `nope` cannot be resolved.
+import nope::missing
+
+fn main() { let x = 0 }

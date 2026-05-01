@@ -1,0 +1,5 @@
+// Type mismatch: f64 inferred from literal, target is i32.
+fn main() {
+    let p = 1.5
+    let q: i32 = p
+}

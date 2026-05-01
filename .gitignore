@@ -1,5 +1,6 @@
 /.zig-cache
 /zig-out
+/.home-cache
 node_modules
 
 # Home package manager

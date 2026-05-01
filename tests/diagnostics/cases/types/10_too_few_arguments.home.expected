@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/10_too_few_arguments.home
+
+error: Wrong number of arguments
+  --> <repo>/tests/diagnostics/cases/types/10_too_few_arguments.home:5:16
+   |
+   5 |     let v = add(1)
+   |                 ^

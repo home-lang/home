@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/11_too_many_arguments.home
+
+error: Wrong number of arguments
+  --> <repo>/tests/diagnostics/cases/types/11_too_many_arguments.home:5:8
+   |
+   5 |     one(1, 2, 3)
+   |         ^

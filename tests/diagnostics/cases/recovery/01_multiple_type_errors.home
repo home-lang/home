@@ -1,0 +1,7 @@
+// Type-checker recovery: three independent type errors should all
+// be reported in a single `home check` run.
+fn first() {
+    let a: i32 = "no"
+    let b: bool = 99
+    let c: string = 42
+}

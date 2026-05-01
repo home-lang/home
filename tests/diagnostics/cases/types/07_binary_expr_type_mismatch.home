@@ -1,0 +1,6 @@
+// Type mismatch inside a binary expression: int + string.
+fn main() {
+    let n: i32 = 10
+    let s: string = "hi"
+    let x: i32 = n + s
+}

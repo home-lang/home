@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/01_let_type_mismatch_string.home
+
+error: Type mismatch
+  expected: .{ .I32 = void }
+     found: string
+
+  --> <repo>/tests/diagnostics/cases/types/01_let_type_mismatch_string.home:3:18
+   |
+   3 |     let x: i32 = "hello"
+   |                   ^

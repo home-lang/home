@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/09_array_to_scalar_mismatch.home
+
+error: Type mismatch
+  expected: .{ .I32 = void }
+     found: [int]
+
+  --> <repo>/tests/diagnostics/cases/types/09_array_to_scalar_mismatch.home:4:19
+   |
+   4 |     let ys: i32 = xs
+   |                    ^

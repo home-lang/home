@@ -1,0 +1,4 @@
+// Type mismatch with helpful suggestion to use .toString().
+fn main() {
+    let s: string = 42
+}

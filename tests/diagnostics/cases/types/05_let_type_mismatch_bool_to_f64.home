@@ -1,0 +1,4 @@
+// Type mismatch: f64 binding given a bool literal.
+fn main() {
+    let s: f64 = true
+}

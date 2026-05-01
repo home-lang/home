@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/13_unknown_struct_field.home
+
+error: Struct 'Point' has no field 'magnitude'
+  --> <repo>/tests/diagnostics/cases/types/13_unknown_struct_field.home:6:14
+   |
+   6 |     let m = p.magnitude
+   |               ^

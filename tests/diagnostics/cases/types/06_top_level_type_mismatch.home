@@ -1,0 +1,4 @@
+// Type mismatch outside a function body (top-level binding).
+let x: i32 = "hello"
+
+fn main() {}

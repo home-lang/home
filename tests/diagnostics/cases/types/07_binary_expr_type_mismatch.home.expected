@@ -1,0 +1,10 @@
+Checking: <repo>/tests/diagnostics/cases/types/07_binary_expr_type_mismatch.home
+
+error: Type mismatch
+  expected: .{ .I32 = void }
+     found: string
+
+  --> <repo>/tests/diagnostics/cases/types/07_binary_expr_type_mismatch.home:5:20
+   |
+   5 |     let x: i32 = n + s
+   |                     ^

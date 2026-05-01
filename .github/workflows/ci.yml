@@ -128,6 +128,10 @@ jobs:
         if: matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')
         run: zig build test --summary all
 
+      - name: Run Diagnostic Snapshot Tests (Native only)
+        if: matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')
+        run: zig build test-diagnostics --summary all
+
       - name: Run Integration Tests (Unix)
         if: (matrix.arch == 'x86_64' || (matrix.os == 'macos-latest' && matrix.arch == 'aarch64')) && matrix.platform != 'windows'
         run: |

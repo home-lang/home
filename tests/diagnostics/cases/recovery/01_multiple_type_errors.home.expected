@@ -1,0 +1,32 @@
+Checking: <repo>/tests/diagnostics/cases/recovery/01_multiple_type_errors.home
+
+error: Type mismatch
+  expected: .{ .I32 = void }
+     found: string
+
+  --> <repo>/tests/diagnostics/cases/recovery/01_multiple_type_errors.home:4:18
+   |
+   4 |     let a: i32 = "no"
+   |                   ^
+
+error: Type mismatch
+  expected: bool
+     found: int
+
+  --> <repo>/tests/diagnostics/cases/recovery/01_multiple_type_errors.home:5:19
+   |
+   5 |     let b: bool = 99
+   |                    ^
+   |
+   = help: use comparison operators (==, !=, <, >) instead of int
+
+error: Type mismatch
+  expected: string
+     found: int
+
+  --> <repo>/tests/diagnostics/cases/recovery/01_multiple_type_errors.home:6:21
+   |
+   6 |     let c: string = 42
+   |                      ^
+   |
+   = help: use .toString() to convert int to string

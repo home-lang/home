@@ -1,0 +1,7 @@
+// Field access on a struct using a name that doesn't exist on it.
+struct Point { x: i32, y: i32 }
+
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    let m = p.magnitude
+}

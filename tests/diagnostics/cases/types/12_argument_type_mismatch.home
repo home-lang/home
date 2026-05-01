@@ -1,0 +1,8 @@
+// Argument type mismatch: passing a string where an i32 is expected.
+fn divide(a: i32, b: i32) -> i32 {
+    return a / b
+}
+
+fn main() {
+    let v = divide("a", 2)
+}

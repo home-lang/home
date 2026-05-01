@@ -1,0 +1,4 @@
+// Type mismatch with helpful suggestion to use comparison operators.
+fn main() {
+    let x: bool = 1 + 1
+}

@@ -1,0 +1,4 @@
+// Parse error: opening paren never closed.
+fn main() {
+    let v = (1 + 2
+}

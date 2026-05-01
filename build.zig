@@ -718,6 +718,44 @@ pub fn build(b: *std.Build) void {
     const run_pantry_tests = b.addRunArtifact(pantry_tests);
     test_step.dependOn(&run_pantry_tests.step);
 
+    // ════════════════════════════════════════════════════════════════
+    // Diagnostic snapshot tests
+    // ════════════════════════════════════════════════════════════════
+    //
+    // Runs the `home` compiler against representative bad programs in
+    // `tests/diagnostics/cases/` and compares stderr to checked-in
+    // `.expected` snapshots. Any drift in error-message UX fails CI.
+    //
+    //   zig build test-diagnostics                # verify
+    //   zig build test-diagnostics -- --update    # accept new output
+    //
+    // The harness depends on a freshly-installed `home` binary so it
+    // tests what users actually get.
+    const diag_harness = b.addExecutable(.{
+        .name = "diagnostic-harness",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/diagnostics/harness.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_diag_harness = b.addRunArtifact(diag_harness);
+    run_diag_harness.step.dependOn(b.getInstallStep());
+    run_diag_harness.addArg(b.build_root.path orelse ".");
+    run_diag_harness.addFileArg(exe.getEmittedBin());
+    if (b.args) |args| run_diag_harness.addArgs(args);
+
+    const test_diagnostics_step = b.step(
+        "test-diagnostics",
+        "Run diagnostic snapshot tests (pass --update to refresh snapshots)",
+    );
+    test_diagnostics_step.dependOn(&run_diag_harness.step);
+
+    // Fold into the umbrella `test` step so `zig build test` covers
+    // diagnostic regressions too.
+    test_step.dependOn(&run_diag_harness.step);
+
     // Test zig-test-framework integration (only if framework is available)
     if (zig_test_framework) |tf| {
         const framework_integration_mod = b.createModule(.{

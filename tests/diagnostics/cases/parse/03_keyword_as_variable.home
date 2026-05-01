@@ -1,0 +1,4 @@
+// Parse error: using a keyword (`if`) as a variable name.
+fn main() {
+    let if = 1
+}

@@ -1,0 +1,6 @@
+// Type mismatch on the return value of a function call.
+fn returns_i32() -> i32 { return 0 }
+
+fn main() {
+    let s: string = returns_i32()
+}
