@@ -1,0 +1,25 @@
+// Regression test for issue #19 — builtin calls with a pointer type
+// as the first argument used to fail with `Expected ',' after type
+// argument` because the parser mis-classified expression-first
+// builtins (e.g. `@ptrFromInt(str)` where `str` is a `u64` parameter
+// shadowing the `str` primitive alias) as type-first.
+fn dt_strlen(str: u64): u32 {
+  var len: u32 = 0
+  while @as(*u8, @ptrFromInt(str + len)).* != 0 {
+    len = len + 1
+  }
+  return len
+}
+
+fn cast_variants(x: u64): u8 {
+  let a = @as(*u8, @ptrFromInt(x)).*
+  let b = @as(*const u8, @ptrFromInt(x)).*
+  let c = @as([*]u8, @ptrFromInt(x))
+  let d = @as(?*u8, @ptrFromInt(x))
+  return a
+}
+
+fn ref_arg(): u64 {
+  var counter: u64 = 0
+  return @intFromPtr(&counter)
+}

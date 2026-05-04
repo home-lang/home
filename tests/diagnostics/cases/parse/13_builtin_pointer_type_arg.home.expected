@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/13_builtin_pointer_type_arg.home
+
+Success: Type checking passed ✓

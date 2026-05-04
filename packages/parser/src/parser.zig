@@ -5243,6 +5243,14 @@ pub const Parser = struct {
             // We disambiguate by peeking: if the first token is a
             // primitive type name (i32, u64, …) and the NEXT token is
             // a comma, treat it as type-first; otherwise expression-first.
+            //
+            // For prefix forms (`*T`, `[*]T`, `[N]T`, `?T`) we always
+            // treat as type-first since these tokens don't start a
+            // valid first-position expression in this context. For a
+            // bare primitive identifier (e.g. `str`, `int`), require
+            // the next token to be `,` so we don't mis-classify a
+            // local/parameter that happens to share a primitive name
+            // (`@ptrFromInt(str)` where `str` is a `u64` parameter).
             var target_type: ?[]const u8 = null;
             var target: *ast.Expr = undefined;
             const has_type_arg =
@@ -5251,7 +5259,28 @@ pub const Parser = struct {
                 kind == .Truncate or kind == .BitCast or kind == .As or
                 kind == .PtrFromInt or kind == .PtrToInt or kind == .IntFromPtr;
             if (has_type_arg) {
-                if (self.isPrimitiveTypeStart()) {
+                const looks_type_first = blk: {
+                    const t = self.peek().type;
+                    // Prefix-only type starts unambiguously identify a
+                    // type. (`&` is intentionally excluded — it also
+                    // starts a reference expression like
+                    // `&local_var`, which is the common case for
+                    // builtins like `@intFromPtr(&x)`.)
+                    if (t == .Star or t == .StarStar or t == .LeftBracket or
+                        t == .Question or t == .QuestionBracket)
+                    {
+                        break :blk true;
+                    }
+                    // Bare primitive identifier — only commit to
+                    // type-first if it is directly followed by `,`.
+                    // Otherwise it is a value-position identifier
+                    // shadowing a primitive name (e.g. `str`).
+                    if (self.isPrimitiveTypeStart() and self.peekNext().type == .Comma) {
+                        break :blk true;
+                    }
+                    break :blk false;
+                };
+                if (looks_type_first) {
                     // Type-first: `@as(u64, length)` etc.
                     target_type = try self.parseTypeAnnotation();
                     _ = try self.expect(.Comma, "Expected ',' after type argument");
