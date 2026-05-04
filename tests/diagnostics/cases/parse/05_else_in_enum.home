@@ -1,0 +1,4 @@
+// Parse error: `else` keyword used as an enum variant name.
+// Regression test for issue #16 — used to hang the parser indefinitely
+// because synchronize() bailed on the trailing '}' without making progress.
+enum Color { Red Green else Blue }

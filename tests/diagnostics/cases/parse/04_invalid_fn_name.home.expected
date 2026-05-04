@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/parse/04_invalid_fn_name.home:4:4: error[EP0001]: Expected function name
+  fn 123 invalid() {}
+      ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/parse/04_invalid_fn_name.home
+
+Success: Type checking passed ✓

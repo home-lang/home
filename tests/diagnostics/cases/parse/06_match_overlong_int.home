@@ -1,0 +1,4 @@
+// Parse error: oversized integer literal followed by an identifier suffix
+// (no whitespace) inside a `match` value.
+// Regression test for issue #16 — used to hang the parser indefinitely.
+match 0xFFFFFFFFFFFFFFFFn { 0 => 0 }

@@ -1,0 +1,4 @@
+// Parse error: numeric literal where a function name is expected.
+// Regression test for issue #16 — used to hang the parser indefinitely
+// before the progress guard in parse() landed.
+fn 123 invalid() {}

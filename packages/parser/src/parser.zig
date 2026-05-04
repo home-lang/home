@@ -542,18 +542,30 @@ pub const Parser = struct {
         defer statements.deinit(self.allocator);
 
         while (!self.isAtEnd()) {
+            // Progress guard: every iteration of the top-level parse loop must
+            // consume at least one token, otherwise we're caught in an infinite
+            // recovery loop (issue #16). Snapshot the cursor before each
+            // attempt and, on failure, ensure synchronize() actually advances.
+            const before = self.current;
             if (self.declaration()) |stmt| {
                 try statements.append(self.allocator, stmt);
                 self.panic_mode = false; // Successfully parsed, exit panic mode
             } else |err| {
+                // Out of memory is fatal — surface immediately.
+                if (err == error.OutOfMemory) return err;
+
                 // Error occurred, synchronize and continue parsing
                 self.synchronize();
 
-                // If this was a real error (not just panic mode), keep going
-                if (err != error.OutOfMemory) {
-                    continue; // Try to parse next statement
+                // If synchronize() didn't advance past the offending token
+                // (e.g. it stopped on a stray '}' or there was no sync point
+                // after the error site), force-advance one token. This is the
+                // last line of defence against parser hangs on malformed input.
+                if (self.current == before and !self.isAtEnd()) {
+                    _ = self.advance();
                 }
-                return err; // Out of memory is fatal
+
+                continue; // Try to parse next statement
             }
         }
 

@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/parse/06_match_overlong_int.home:4:25: error[EP0001]: Expected '{' after match value
+  match 0xFFFFFFFFFFFFFFFFn { 0 => 0 }
+                           ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/parse/06_match_overlong_int.home
+
+Success: Type checking passed ✓
