@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/18_let_through_array_member.home
+
+Success: Type checking passed ✓

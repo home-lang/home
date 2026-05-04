@@ -1,0 +1,8 @@
+// Issue #22 part 6/6: forward-declared local visible immediately
+// after its declaration. Same parser fix as parts 3-4: a `let`
+// followed by a `*p = ... / X` on the next line was being parsed
+// as `let v = denominator * triple_ind`.
+fn split_block(triple_ind: *u64, denominator: u64, block_num: u64) {
+  let blocks_per_double = denominator
+  *triple_ind = block_num / blocks_per_double
+}

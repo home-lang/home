@@ -1,0 +1,6 @@
+// Issue #22 part 5/6: `let X: usize = N` and `var X: isize = N` at
+// module scope. The type-name parser used to recognize u64/i64 but
+// not the platform-pointer-width aliases.
+let RX_BUFFER_SIZE: usize = 256
+var rx_head: usize = 0
+let MIN_OFFSET: isize = -1

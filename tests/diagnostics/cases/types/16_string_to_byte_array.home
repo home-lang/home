@@ -1,0 +1,8 @@
+// Issue #22 part 2/6: string literal -> [u8; N] / [N]u8 coercion.
+// Kernel code initializes fixed-size byte buffers from string
+// literals (NTFS OEM signatures, USB descriptor strings, etc.).
+fn make_oem() -> u8 {
+  var oem: [u8; 4] = "NTFS"
+  var oem_alt: [4]u8 = "NTFS"
+  return oem[0]
+}

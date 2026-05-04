@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/19_usize_module_scope.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/20_forward_declared_local.home
+
+Success: Type checking passed ✓

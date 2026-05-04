@@ -1,0 +1,17 @@
+// Issue #22 part 4/6: `let X = &arr.field[i]` followed by `*p = X.field`
+// on the next line. Parser was eating the `*` of the next statement
+// as multiplication, dropping the binding entirely.
+struct Namespace {
+  block_size: u32
+  block_count: u64
+}
+
+struct Controller {
+  namespaces: [16]Namespace
+  num_namespaces: u32
+}
+
+fn read_block_size(ctrl: *Controller, ns_idx: u32, block_size: *u32) {
+  let ns = &ctrl.namespaces[ns_idx]
+  *block_size = ns.block_size
+}

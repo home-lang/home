@@ -1,0 +1,12 @@
+// Issue #22 part 1/6: pointer + integer arithmetic should typecheck
+// to the same pointer type. Kernel code uses this to walk byte
+// buffers via raw `*u8` pointers and integer offsets.
+fn advance(data: *u8, i: u32) -> *u8 {
+  let p2: *u8 = data + i
+  return p2
+}
+
+fn rewind(data: *u8, i: u32) -> *u8 {
+  let p2: *u8 = data - i
+  return p2
+}

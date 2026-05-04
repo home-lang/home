@@ -1,0 +1,8 @@
+// Issue #22 part 3/6: (*ptr)[i] deref-then-index across a newline
+// boundary. The parser used to swallow the `(` of the next line
+// into the previous expression as a function call.
+fn copy_byte(dest: *[u8; 32]) {
+  let ch: u8 = 5
+  (*dest)[0] = ch
+  let v: u8 = (*dest)[0]
+}
