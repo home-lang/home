@@ -2025,6 +2025,14 @@ pub const TypeChecker = struct {
         };
     }
 
+    /// Check if a type is a pointer-like type (any reference). The
+    /// type system collapses C-style raw pointers (`*T`, `[*]T`,
+    /// `*const T`, `*volatile T`) into Reference / MutableReference,
+    /// so a single test covers them all.
+    fn isPointerLike(t: Type) bool {
+        return t == .Reference or t == .MutableReference;
+    }
+
     /// Check if a type can be coerced to another type
     fn canCoerce(from: Type, to: Type) bool {
         // Value can be coerced to Optional of that type (T -> ?T)
@@ -2405,6 +2413,17 @@ pub const TypeChecker = struct {
                 if (left_type == .Void or right_type == .Void) {
                     return Type.Void;
                 }
+                // Pointer + integer = pointer (C/Zig pointer arithmetic).
+                // Kernel code routinely advances raw pointers by an
+                // integer offset: `let p2 = data + i` where `data: *u8`.
+                // Accept either argument order, but reject pointer +
+                // pointer (no implicit address arithmetic).
+                if (isPointerLike(left_type) and isIntegerType(right_type)) {
+                    return left_type;
+                }
+                if (isIntegerType(left_type) and isPointerLike(right_type)) {
+                    return right_type;
+                }
                 // Numeric addition
                 if (isIntegerType(left_type) and isIntegerType(right_type)) {
                     return Type.Int;
@@ -2425,6 +2444,12 @@ pub const TypeChecker = struct {
                         try self.addError("Division by zero", binary.node.loc);
                         return error.DivisionByZero;
                     }
+                }
+
+                // Pointer - integer = pointer. Pointer - pointer is not
+                // supported (would require a ptrdiff type — out of scope).
+                if (binary.op == .Sub and isPointerLike(left_type) and isIntegerType(right_type)) {
+                    return left_type;
                 }
 
                 if (isIntegerType(left_type) and isIntegerType(right_type)) {
