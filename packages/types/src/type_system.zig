@@ -1953,6 +1953,19 @@ pub const TypeChecker = struct {
             {
                 return;
             }
+            // String literal → fixed-size byte array: `[u8; N]` /
+            // `[N]u8`. The literal's byte length must be ≤ N (the
+            // remainder is zero-padded by codegen). The type system
+            // models both syntaxes uniformly as `Array(U8)` — the
+            // fixed size is enforced by codegen / bounds checks, not
+            // here, so any `Array(u8/integer-family)` destination is
+            // accepted.
+            if (expected == .Array) {
+                const elem = expected.Array.element_type.*;
+                if (elem == .U8 or elem == .I8 or elem == .Int or elem == .Void) {
+                    return;
+                }
+            }
         }
 
         // Compare actual type with expected type
