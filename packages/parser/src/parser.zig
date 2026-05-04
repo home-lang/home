@@ -3720,6 +3720,29 @@ pub const Parser = struct {
 
         // Parse postfix/infix expressions
         while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
+            // Newline-sensitive break: if the next token both starts a
+            // new line AND could begin a fresh statement as a prefix
+            // operator (`*x`, `&x`, `-x`, `+x`) or a parenthesized
+            // expression (`(*p)[i] = ...`), treat the newline as a
+            // statement terminator instead of continuing the current
+            // expression. Without this:
+            //   * `let x = 5\n(*p)[i] = ch` parses as `5(...)`, a
+            //     function call, swallowing the next statement.
+            //   * `let ns = &arr[i]\n*x = ns.field` parses as
+            //     `&arr[i] * x = ns.field` — losing the binding.
+            //   * `let v = denominator\n*p = block_num / v` similarly
+            //     parses as multiplication.
+            // We restrict this to operator tokens that have a
+            // meaningful prefix form so ordinary infix continuation
+            // (e.g. `a +\nb` or `cond &&\nrest`) still works.
+            if (self.isAtNewLine()) {
+                const t = self.peek().type;
+                if (t == .Star or t == .Ampersand or t == .Minus or t == .Plus or
+                    t == .LeftParen)
+                {
+                    break;
+                }
+            }
             if (self.match(&.{ .Plus, .Minus, .Star, .Slash, .Percent, .StarStar, .TildeSlash, .PlusBang, .MinusBang, .StarBang, .SlashBang, .PlusQuestion, .MinusQuestion, .StarQuestion, .SlashQuestion, .PlusPipe, .MinusPipe, .StarPipe })) {
                 expr = try self.binary(expr);
             } else if (self.match(&.{ .EqualEqual, .BangEqual, .Less, .LessEqual, .Greater, .GreaterEqual })) {
